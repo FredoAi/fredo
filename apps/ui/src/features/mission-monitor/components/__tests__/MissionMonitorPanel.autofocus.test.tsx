@@ -120,6 +120,18 @@ vi.mock('../../lib/persistence', () => ({
 }));
 
 // Mock StreamContext — no live deliveries (the graph is driven via the mocked hook).
+
+// P4.2: the panel subscribes typed rows via useEventRows — empty fixtures here
+// (the auto-center tests drive nodes through the mocked useDeliveryGraph; the
+// session metrics are not asserted in this suite).
+vi.mock('@/shared/hooks/useEventRows', () => ({
+  useEventRows: (_eventType: 'Chat' | 'ToolUse') => ({
+    rows: new Map(),
+    epoch: 1,
+    error: null,
+  }),
+}));
+
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useStream: vi.fn(() => ({
     deliveries: [],

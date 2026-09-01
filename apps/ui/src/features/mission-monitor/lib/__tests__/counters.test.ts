@@ -1,16 +1,22 @@
 /**
- * Tests for computeSessionCounters and formatTokenCount.
- *
- * Covers REQ-9 (Header Badges), REQ-10 (Accumulation), REQ-11 (Token Sources).
- *
- * ECE delivery-driven: counters read from ContractDelivery[].tools,
- * .subagents, .tools[].files[].path, and the canonical
- * p.promptTokens / p.completionTokens (per-message per Spec #2711).
+ * Tests for the session bottom-bar aggregation (Spec #2717 R-3.2 / #2743) —
+ * now derived from typed chat rows (Spec #2788 P4.2). The v1 delivery
+ * fixtures are converted through the classifier-semantics converter the
+ * graph suites use. `computeSessionCounters` (the delivery-driven header-
+ * badge counter) was removed with the collectors.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
-import { computeSessionCounters, computeSessionTokenTotals, computeSessionMetrics } from '../counters';
+import { computeSessionTokenTotals, computeSessionMetrics } from '../counters';
 import { formatTokenCount } from '../graph';
+import { rowsFromDeliveries } from '../../hooks/__tests__/fixtures/rowsFromDeliveries';
+
+/** P4.2 adapter: convert v1 delivery fixtures into the typed chat rows the
+ *  session-total functions now consume (the sessionId arg is kept for call-
+ *  site readability — the functions filter by row.sessionId internally). */
+function chatRowsOf(deliveries: ContractDelivery[], _sessionId?: string) {
+  return rowsFromDeliveries(deliveries).chatRows;
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -114,211 +120,6 @@ function makeCompositedDelivery(
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-describe('computeSessionCounters', () => {
-  it('returns zero counters for empty deliveries', () => {
-    const result = computeSessionCounters([]);
-    expect(result).toEqual({ tools: 0, files: 0, subagents: 0, tokens: 0 });
-  });
-
-  it('counts unique tool names from tools array', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        tools: [{ name: 'tool-1' }, { name: 'tool-2' }, { name: 'tool-3' }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.tools).toBe(3);
-  });
-
-  it('deduplicates tool calls by name', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        tools: [{ name: 'tool-1' }, { name: 'tool-1' }, { name: 'tool-2' }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.tools).toBe(2);
-  });
-
-  it('counts unique file paths from tools[].files[].path', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        tools: [{ name: 'edit', files: [{ path: 'src/main.rs' }] }],
-      }),
-      makeDelivery('test-session', 'corr-2', {
-        tools: [{ name: 'view', files: [{ path: 'src/lib.rs' }] }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.files).toBe(2);
-  });
-
-  it('deduplicates file paths', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        tools: [{ name: 'edit', files: [{ path: 'src/main.rs' }] }],
-      }),
-      makeDelivery('test-session', 'corr-2', {
-        tools: [{ name: 'view', files: [{ path: 'src/main.rs' }] }], // same path
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.files).toBe(1);
-  });
-
-  it('counts unique subagent names from subagents array', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        subagents: [{ name: 'agent-1' }, { name: 'agent-2' }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.subagents).toBe(2);
-  });
-
-  it('counts subagents from a single delivery', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        subagents: [{ name: 'subtask-1' }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.subagents).toBe(1);
-  });
-
-  it('deduplicates subagent names', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        subagents: [{ name: 'agent-1' }],
-      }),
-      makeDelivery('test-session', 'corr-2', {
-        subagents: [{ name: 'agent-1' }], // duplicate name
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.subagents).toBe(1);
-  });
-
-  it('sums tokens from promptTokens + completionTokens', () => {
-    const deliveries = [
-      deliveryWithTokens('corr-1', 100, 50),
-      deliveryWithTokens('corr-2', 200, 75),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.tokens).toBe(425);
-  });
-
-  it('treats missing token fields as zero', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {}),
-      deliveryWithTokens('corr-2', 100, 50),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.tokens).toBe(150);
-  });
-
-  it('accumulates counters across multiple deliveries (integration)', () => {
-    const deliveries: ContractDelivery[] = [
-      // Turn 1
-      makeDelivery('test-session', 'corr-1', {
-        promptTokens: 150,
-        completionTokens: 60,
-        // Legacy backward compat
-        info: { turnInputTokens: 150, turnOutputTokens: 60 },
-        tools: [
-          { name: 'tool-1' },
-          { name: 'tool-2', files: [{ path: 'src/main.rs' }] },
-        ],
-      }),
-
-      // Turn 2
-      makeDelivery('test-session', 'corr-2', {
-        promptTokens: 80,
-        completionTokens: 20,
-        // Legacy backward compat
-        info: { turnInputTokens: 80, turnOutputTokens: 20 },
-        subagents: [{ name: 'agent-1' }, { name: 'subtask-1' }],
-        tools: [
-          { name: 'tool-1' },        // same tool, dedup
-          { name: 'tool-3' },        // new tool
-          { name: 'tool-2' },        // existing tool but dedup
-        ],
-      }),
-
-      // Turn 3 — same file via different tool, dedup
-      makeDelivery('test-session', 'corr-3', {
-        promptTokens: 0,
-        completionTokens: 0,
-        // Legacy backward compat
-        info: { turnInputTokens: 0, turnOutputTokens: 0 },
-        tools: [
-          { name: 'view', files: [{ path: 'src/main.rs' }] }, // same file, dedup
-          { name: 'edit', files: [{ path: 'src/lib.rs' }] },  // new file
-        ],
-      }),
-    ];
-
-    const result = computeSessionCounters(deliveries);
-    // Tools: tool-1, tool-2, tool-3, view, edit = 5
-    expect(result.tools).toBe(5);
-    // Files: src/main.rs, src/lib.rs = 2
-    expect(result.files).toBe(2);
-    // Subagents: agent-1, subtask-1 = 2
-    expect(result.subagents).toBe(2);
-    // Tokens: (150+60) + (80+20) + (0+0) = 310
-    expect(result.tokens).toBe(310);
-  });
-
-  it('handles deliveries with null payload gracefully', () => {
-    const deliveries = [
-      { id: '1', contractName: 'chat-node', lifecycle: 'init', key: { sessionId: 's', correlationId: 'c' }, payload: null, timestamp: '' },
-    ] as unknown as ContractDelivery[];
-    const result = computeSessionCounters(deliveries);
-    expect(result).toEqual({ tools: 0, files: 0, subagents: 0, tokens: 0 });
-  });
-
-  it('handles deliveries with empty / no subagents or tools', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {}),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result).toEqual({ tools: 0, files: 0, subagents: 0, tokens: 0 });
-  });
-
-  it('counts tools when tools array contains multiple entries', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        tools: [{ name: 'tool-real-1' }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.tools).toBe(1);
-  });
-
-  it('counts tokens from promptTokens + completionTokens', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        promptTokens: 42,
-        completionTokens: 10,
-        // Legacy backward compat
-        info: { turnInputTokens: 42, turnOutputTokens: 10 },
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.tokens).toBe(52);
-  });
-
-  it('counts subagents from delivery subagents array', () => {
-    const deliveries = [
-      makeDelivery('test-session', 'corr-1', {
-        subagents: [{ name: 'agent-1' }],
-      }),
-    ];
-    const result = computeSessionCounters(deliveries);
-    expect(result.subagents).toBe(1);
-  });
-});
-
 // ── formatTokenCount tests ─────────────────────────────────────────────────────
 
 describe('formatTokenCount', () => {
@@ -365,7 +166,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
   };
 
   it('returns all-zero totals for an empty delivery list', () => {
-    expect(computeSessionTokenTotals([], 'sess-1')).toEqual(ZERO_TOTALS);
+    expect(computeSessionTokenTotals(chatRowsOf([]), 'sess-1')).toEqual(ZERO_TOTALS);
   });
 
   it('filters chat-node deliveries to the selected session only', () => {
@@ -374,7 +175,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
       makeTokenDelivery('sess-2', 'corr-2', 'end', { prompt: 9999, completion: 9999 }),
       makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 27, completion: 10 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.inputTokens).toBe(127);
     expect(result.outputTokens).toBe(60);
     expect(result.totalTokens).toBe(187);
@@ -387,7 +188,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
       makeCompositedDelivery('sess-1', 'sa-corr-1', { prompt: 5000, reasoning: 5000 }),
       makeCompositedDelivery('sess-1', 'sa-corr-2', { prompt: 9000, cacheRead: 7000 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.inputTokens).toBe(100);
     expect(result.outputTokens).toBe(50);
     expect(result.reasoningTokens).toBe(0);
@@ -405,7 +206,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
       makeTokenDelivery('sess-1', 'corr-2', 'init', { prompt: 200, completion: 75 }),
       makeTokenDelivery('sess-1', 'corr-2', 'end',  { prompt: 200, completion: 75 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     // Naive double-count would be 850; last-wins per key = (100+50)+(200+75) = 425.
     expect(result.inputTokens).toBe(300);
     expect(result.outputTokens).toBe(125);
@@ -419,7 +220,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
       }),
       makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, completion: 10 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.inputTokens).toBe(1867);
     expect(result.cacheReadTokens).toBe(1200);
     expect(result.reasoningTokens).toBe(500);
@@ -436,7 +237,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
         prompt: 100, cacheRead: 40, reasoning: 30, completion: 20, cacheWrite: 10000,
       }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.totalTokens).toBe(190); // NOT 10190 — cacheWrite never summed.
   });
 
@@ -446,7 +247,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
       makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: -5, cacheRead: Number.NaN, completion: 50 }),
       makeTokenDelivery('sess-1', 'corr-2', 'end', {}), // all families absent
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.inputTokens).toBe(0);
     expect(result.cacheReadTokens).toBe(0);
     expect(result.reasoningTokens).toBe(0);
@@ -466,7 +267,7 @@ describe('computeSessionTokenTotals (Spec #2717 R-3.2 — session bottom bar)', 
       },
       makeTokenDelivery('sess-1', 'corr-1', 'end', { prompt: 10, completion: 5 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.inputTokens).toBe(10);
     expect(result.totalTokens).toBe(15);
   });
@@ -503,7 +304,7 @@ describe('Spec #2723 ST-3: 3+ node billed-semantics Σ (session bar = Σ RAW per
         prompt: 32, cacheRead: 2304, reasoning: 7, completion: 9,
       }, undefined, { input: 32, cacheRead: 515840, output: 9, reasoning: 7 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     // Billed semantics: CACHE = Σ raw per-request cache-read (the platform's
     // "Input (Cache hit)" column) — never the delta telescope.
     expect(result.cacheReadTokens).toBe(512000 + 513536 + 515840);
@@ -526,7 +327,7 @@ describe('Spec #2723 ST-3: 3+ node billed-semantics Σ (session bar = Σ RAW per
       makeTokenDelivery('sess-1', 'corr-2', 'end', { prompt: 27, cacheRead: 1536, completion: 13 }),
       makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.cacheReadTokens).toBe(512000 + 1536 + 2304);
     expect(result.cacheReadTokens).not.toBe(512000 + 513536 + 515840);
   });
@@ -543,7 +344,7 @@ describe('Spec #2723 ST-3: 3+ node billed-semantics Σ (session bar = Σ RAW per
       makeTokenDelivery('sess-1', 'corr-3', 'init', { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
       makeTokenDelivery('sess-1', 'corr-3', 'end',  { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     // Naive double-count of cache would be 2 × (512000+513536+515840); last-wins
     // per key = exactly the three nodes' raw values.
     expect(result.cacheReadTokens).toBe(512000 + 513536 + 515840);
@@ -575,7 +376,7 @@ describe('Spec #2723 ST-3: 3+ node billed-semantics Σ (session bar = Σ RAW per
       makeTokenDelivery('sess-1', 'corr-13', 'end', { prompt: 12626, cacheRead: 2560, reasoning: 329, completion: 708 }, undefined, { input: 12626, cacheRead: 72064, output: 708, reasoning: 329 }),
       makeTokenDelivery('sess-1', 'corr-14', 'end', { prompt: 1929, cacheRead: 13568, reasoning: 306, completion: 485 }, undefined, { input: 1929, cacheRead: 85632, output: 485, reasoning: 306 }),
     ];
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     // Billed sums (raw per-request) — matches the telemetry sums for the parent.
     expect(result.inputTokens).toBe(63634);
     expect(result.cacheReadTokens).toBe(800640);
@@ -615,7 +416,7 @@ describe('Spec #2734 ST-3: billed-semantics cache reconciliation guard', () => {
       makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
     ];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     // Billed figure: Σ per-request cache-read (512000+513536+515840), NOT the
     // delta telescope (515840).
     expect(result.cacheReadTokens).toBe(512000 + 513536 + 515840);
@@ -633,7 +434,7 @@ describe('Spec #2734 ST-3: billed-semantics cache reconciliation guard', () => {
       makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 1536, completion: 9 }, undefined, { input: 32, cacheRead: 513536, output: 9 }),
     ];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(result.cacheReadTokens).toBe(512000 + 513536);
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -650,7 +451,7 @@ describe('Spec #2734 ST-3: billed-semantics cache reconciliation guard', () => {
       makeTokenDelivery('sess-1', 'corr-3', 'end', { prompt: 32, cacheRead: 2304, completion: 9 }, undefined, { input: 32, cacheRead: 515840, output: 9 }),
     ];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const result = computeSessionTokenTotals(deliveries, 'sess-1');
+    const result = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     // Fallback: turn 2 contributes its delta (1,536) instead of the billed raw
     // cumulative (513,536) — the figure under-states and the guard MUST fire.
     expect(result.cacheReadTokens).toBe(512000 + 1536 + 515840);
@@ -684,7 +485,7 @@ function makeCostDelivery(
 
 describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
   it('returns zero cost + zero messages for an empty delivery list', () => {
-    const result = computeSessionMetrics([], 'sess-1');
+    const result = computeSessionMetrics(chatRowsOf([]), 'sess-1');
     expect(result.totalCostUsd).toBe(0);
     expect(result.totalMessages).toBe(0);
     expect(result.totalTokens).toBe(0);
@@ -700,7 +501,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       makeCostDelivery('sess-1', 'corr-2', 'init', 0.0234, { prompt: 200, completion: 75 }),
       makeCostDelivery('sess-1', 'corr-2', 'end', 0.0234, { prompt: 200, completion: 75 }),
     ];
-    const result = computeSessionMetrics(deliveries, 'sess-1');
+    const result = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
     expect(result.totalCostUsd).toBeCloseTo(0.01 + 0.0234, 10);
     expect(result.totalMessages).toBe(2);
     expect(result.totalTokens).toBe(425);
@@ -713,7 +514,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       makeCostDelivery('sess-1', 'corr-3', 'end', 0.003, { prompt: 30 }),
       makeCostDelivery('sess-2', 'other-1', 'end', 99, { prompt: 999 }),
     ];
-    const result = computeSessionMetrics(deliveries, 'sess-1');
+    const result = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
     expect(result.totalMessages).toBe(3);
     expect(result.totalCostUsd).toBeCloseTo(0.005 + 0.007 + 0.003, 10);
   });
@@ -725,7 +526,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
     ];
     // The composited child carries no cost_usd — assert its composite key does
     // NOT count toward messages either (same exclusion rule).
-    const result = computeSessionMetrics(deliveries, 'sess-1');
+    const result = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
     expect(result.totalCostUsd).toBeCloseTo(0.01, 10);
     expect(result.totalMessages).toBe(1);
   });
@@ -736,7 +537,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       makeCostDelivery('sess-1', 'corr-2', 'end', -1, { prompt: 20 }), // negative → 0
       makeCostDelivery('sess-1', 'corr-3', 'end', 0.02, { prompt: 30 }),
     ];
-    const result = computeSessionMetrics(deliveries, 'sess-1');
+    const result = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
     expect(result.totalCostUsd).toBeCloseTo(0.02, 10);
     expect(Number.isNaN(result.totalCostUsd)).toBe(false);
     expect(result.totalMessages).toBe(3);
@@ -746,7 +547,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
     const deliveries = [
       makeCostDelivery('sess-1', 'corr-1', 'end', 0, { prompt: 10 }),
     ];
-    const result = computeSessionMetrics(deliveries, 'sess-1');
+    const result = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
     expect(result.totalCostUsd).toBe(0);
     expect(result.totalMessages).toBe(1);
   });
@@ -758,8 +559,8 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       }),
       makeCostDelivery('sess-1', 'corr-2', 'end', 0.02, { prompt: 27, completion: 10 }),
     ];
-    const metrics = computeSessionMetrics(deliveries, 'sess-1');
-    const totals = computeSessionTokenTotals(deliveries, 'sess-1');
+    const metrics = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
+    const totals = computeSessionTokenTotals(chatRowsOf(deliveries), 'sess-1');
     expect(metrics.inputTokens).toBe(totals.inputTokens);
     expect(metrics.cacheReadTokens).toBe(totals.cacheReadTokens);
     expect(metrics.cacheWriteTokens).toBe(totals.cacheWriteTokens);
@@ -788,7 +589,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       // messages or cost (Spec #523 exclusion).
       makeCompositedDelivery('sess-1', 'sa-corr-1', { prompt: 5000, reasoning: 5000 }),
     ];
-    const metrics = computeSessionMetrics(deliveries, 'sess-1');
+    const metrics = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
 
     // Messages == the 3 distinct parent chat keys (init+end dedupes to one key
     // per turn; the composited child key is excluded).
@@ -823,7 +624,7 @@ describe('computeSessionMetrics (#2743 ST-1 / AC-12)', () => {
       makeCostDelivery('sess-1', 'corr-2', 'init', 0.0000982352),
       makeCostDelivery('sess-1', 'corr-2', 'end', 0.0000982352),
     ];
-    const metrics = computeSessionMetrics(deliveries, 'sess-1');
+    const metrics = computeSessionMetrics(chatRowsOf(deliveries), 'sess-1');
     expect(metrics.totalCostUsd).toBeCloseTo(0.000220752, 12);
     expect(metrics.totalMessages).toBe(2);
   });

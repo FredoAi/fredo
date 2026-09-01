@@ -1,9 +1,8 @@
 /**
- * Mission Monitor Graph — ECE Delivery-Driven Types.
+ * Mission Monitor Graph — Graph Types.
  *
- * Shared types, empty-state jokes, delivery-verification helpers, and node
- * color palettes for the Mission Monitor graph. All capsules in Spec #318
- * implement against these types.
+ * Shared types, empty-state jokes, and node color palettes for the Mission
+ * Monitor graph. All capsules in Spec #318 implement against these types.
  *
  * Capsule A defines shared types + empty state.
  * Capsule B builds graph nodes/edges from deliveries.
@@ -11,9 +10,12 @@
  * Capsule D renders Tool + File nodes + edge styles.
  * Capsule E builds the session sidebar.
  * Capsule F builds the detail panel.
+ *
+ * Spec #2788 P4.2: the graph is derived from typed RTDB rows
+ * (`lib/rowDerivation.ts`) — the v1 delivery-shaping helpers that lived here
+ * moved to `lib/deliveryCompat.ts` (sidebar-only, deleted in Phase 5).
  */
 
-import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MonitorNodeData } from '../types';
 
 /** Session-level counters displayed in panel header badges. */
@@ -363,60 +365,6 @@ export const EMPTY_STATE_JOKES = [
   "My agent said it had 'one small question' — 847 messages later, we're still debugging a semicolon.",
   "The AI promised to refactor my codebase. It replaced every function with a comment that says '// TODO: implement' — truly, an artist.",
 ] as const;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// DELIVERY VERIFICATION HELPERS
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Verify a ContractDelivery matches the chat-node contract. */
-export function isChatNodeDelivery(d: ContractDelivery): boolean {
-  return d.contractName === 'chat-node';
-}
-
-/** Extract session ID from a ContractDelivery. */
-export function deliverySessionId(d: ContractDelivery): string {
-  return d.key?.sessionId ?? 'unknown';
-}
-
-/** Extract correlation ID from a ContractDelivery. */
-export function deliveryCorrelationId(d: ContractDelivery): string {
-
-  return d.key?.correlationId ?? d.id;
-}
-
-/**
- * Extract the inner payload from a ContractDelivery.
- * The ECE payload has 2-level nesting — delivery.payload['payload'] gets the inner data.
- *
- * Spec #555 (Compaction AC-7): Diagnostic logging to surface when the 'payload'
- * stream field is missing from the ECE delivery's outer payload. The inner
- * payload (delivery.payload['payload']) should contain the event's raw payload
- * object (e.g. `{compacted: true}`). When it's absent, log the available keys
- * and fall back to the full outer payload.
- */
-export function extractDeliveryPayload(d: ContractDelivery): Record<string, unknown> {
-  const inner = d.payload?.['payload'] as Record<string, unknown> | undefined;
-
-  // Spec #555: Diagnostic — log when the inner payload is missing or empty
-  // to help debug AC-7 compaction delivery issues.
-  if (d.contractName === 'chat-node' && d.lifecycle === 'end') {
-    const outerKeys = d.payload ? Object.keys(d.payload) : [];
-    const hasInner = inner !== undefined && inner !== null && typeof inner === 'object' && Object.keys(inner).length > 0;
-    if (!hasInner) {
-      console.debug(
-        '[extractDeliveryPayload] ECE delivery missing inner payload',
-        `contractName=${d.contractName}`,
-        `lifecycle=${d.lifecycle}`,
-        `outerKeys=[${outerKeys.join(',')}]`,
-        `inner=${inner === undefined ? 'undefined' : inner === null ? 'null' : JSON.stringify(inner)}`,
-        `correlationId=${d.key?.correlationId ?? 'N/A'}`,
-        `sessionId=${d.key?.sessionId ?? 'N/A'}`,
-      );
-    }
-  }
-
-  return inner ?? d.payload ?? {};
-}
 
 // -- Status colors ------------------------------------------------------------
 

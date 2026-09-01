@@ -55,7 +55,7 @@ import {
   type FeatureStoreRow,
 } from '../../../shared/lib/featureStore';
 import type { MissionMonitorSession } from './graph';
-import { deliverySessionId, extractDeliveryPayload, isChatNodeDelivery } from './graph';
+import { deliverySessionId, extractDeliveryPayload, isChatNodeDelivery } from './deliveryCompat';
 
 // ── Module-Level Deletion Tracking ──────────────────────────────────────────
 // Survives component unmount — not tied to React lifecycle.

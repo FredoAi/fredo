@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../lib/graph';
-import { isChatNodeDelivery, deliverySessionId, extractDeliveryPayload } from '../lib/graph';
+import { isChatNodeDelivery, deliverySessionId, extractDeliveryPayload } from '../lib/deliveryCompat';
 import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName } from '../lib/persistence';
 import { formatDerivedName, deriveDisplayName } from '../lib/sessionMeta';
 import { hydrateContractEvents } from '../../../shared/lib/contractHydration';

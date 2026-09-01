@@ -17,6 +17,14 @@ import {
   INTERNAL_TOOL_EXECUTION_AGENTS,
   type SessionNameFields,
 } from '../sessionMeta';
+import { rowsFromDeliveries } from '../../hooks/__tests__/fixtures/rowsFromDeliveries';
+
+/** P4.2 adapter: the SUBAGENTS totals now derive from typed ToolUse rows.
+ *  The v1 tool-use-lifecycle fixtures are converted through the same
+ *  classifier-semantics converter the graph suites use. */
+function toolRowsOf(deliveries: ContractDelivery[], _sessionId?: string) {
+  return rowsFromDeliveries(deliveries).toolRows;
+}
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 
@@ -185,14 +193,14 @@ describe('deriveDisplayName', () => {
 
 describe('computeSubagentTokenTotals', () => {
   it('returns 0 for no deliveries and for sessions without task spans', () => {
-    expect(computeSubagentTokenTotals([], SESSION)).toBe(0);
+    expect(computeSubagentTokenTotals(toolRowsOf([]), SESSION)).toBe(0);
     const nonTask = [
       makeDelivery('tool-use-lifecycle', SESSION, 'c1', 'end', T0, {
         'gen_ai.tool.name': 'bash',
         input: JSON.stringify({ command: 'ls' }),
       }),
     ];
-    expect(computeSubagentTokenTotals(nonTask, SESSION)).toBe(0);
+    expect(computeSubagentTokenTotals(toolRowsOf(nonTask), SESSION)).toBe(0);
   });
 
   it('last-wins per composite key — the END delivery overrides the INIT', () => {
@@ -200,7 +208,7 @@ describe('computeSubagentTokenTotals', () => {
       taskDelivery(SESSION, 'task-1', 'init', T0, { childTokens: 0 }),
       taskDelivery(SESSION, 'task-1', 'end', T1, { childTokens: 1_234 }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(1_234);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(1_234);
   });
 
   it('sums multiple distinct subagent dispatches (per composite key)', () => {
@@ -208,7 +216,7 @@ describe('computeSubagentTokenTotals', () => {
       taskDelivery(SESSION, 'task-1', 'end', T0, { childTokens: 1_234 }),
       taskDelivery(SESSION, 'task-2', 'end', T1, { childTokens: 5_678 }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(1_234 + 5_678);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(1_234 + 5_678);
   });
 
   it('is scoped to the requested session only', () => {
@@ -216,7 +224,7 @@ describe('computeSubagentTokenTotals', () => {
       taskDelivery(SESSION, 'task-1', 'end', T0, { childTokens: 100 }),
       taskDelivery(OTHER_SESSION, 'task-2', 'end', T1, { childTokens: 9_999 }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(100);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(100);
   });
 
   it('excludes internal tool-execution agents build/plan (parsed from subagent_type)', () => {
@@ -234,7 +242,7 @@ describe('computeSubagentTokenTotals', () => {
         childTokens: 100,
       }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(100);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(100);
     expect(INTERNAL_TOOL_EXECUTION_AGENTS).toEqual(['build', 'plan']);
   });
 
@@ -248,14 +256,14 @@ describe('computeSubagentTokenTotals', () => {
         childTokens: 999, // aggregate deliberately ≠ breakdown sum — must be ignored
       }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(170);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(170);
   });
 
   it('uses the aggregate childTokens when NO breakdown field is present (legacy)', () => {
     const deliveries = [
       taskDelivery(SESSION, 'task-1', 'end', T0, { childTokens: 1_840 }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(1_840);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(1_840);
   });
 
   it('falls back to the legacy `tool_name` key when gen_ai.tool.name is absent', () => {
@@ -266,7 +274,7 @@ describe('computeSubagentTokenTotals', () => {
         childTokens: 500,
       }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(500);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(500);
   });
 
   it('zero-guards NaN/negative/absent token figures — never NaN, never negative', () => {
@@ -285,7 +293,7 @@ describe('computeSubagentTokenTotals', () => {
       // No child token fields at all → 0.
       taskDelivery(SESSION, 'task-4', 'end', T2, {}),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(0);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(0);
   });
 
   it('ignores malformed task-args JSON (degrades to no exclusion) and non-task spans', () => {
@@ -295,7 +303,7 @@ describe('computeSubagentTokenTotals', () => {
         childTokens: 321,
       }),
     ];
-    expect(computeSubagentTokenTotals(deliveries, SESSION)).toBe(321);
+    expect(computeSubagentTokenTotals(toolRowsOf(deliveries), SESSION)).toBe(321);
   });
 });
 
@@ -308,14 +316,14 @@ describe('computeSubagentTokenTotals', () => {
 
 describe('computeSubagentCostTotals (#2750 AC1)', () => {
   it('returns 0 for no deliveries and for sessions without task spans', () => {
-    expect(computeSubagentCostTotals([], SESSION)).toBe(0);
+    expect(computeSubagentCostTotals(toolRowsOf([]), SESSION)).toBe(0);
     const nonTask = [
       makeDelivery('tool-use-lifecycle', SESSION, 'c1', 'end', T0, {
         'gen_ai.tool.name': 'bash',
         input: JSON.stringify({ command: 'ls' }),
       }),
     ];
-    expect(computeSubagentCostTotals(nonTask, SESSION)).toBe(0);
+    expect(computeSubagentCostTotals(toolRowsOf(nonTask), SESSION)).toBe(0);
   });
 
   it('last-wins per composite key — the END delivery overrides the INIT', () => {
@@ -323,7 +331,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
       taskDelivery(SESSION, 'task-1', 'init', T0, { childCost: 0 }),
       taskDelivery(SESSION, 'task-1', 'end', T1, { childCost: 0.0123 }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBe(0.0123);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBe(0.0123);
   });
 
   it('sums multiple distinct subagent dispatches (per composite key)', () => {
@@ -331,7 +339,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
       taskDelivery(SESSION, 'task-1', 'end', T0, { childCost: 0.0123 }),
       taskDelivery(SESSION, 'task-2', 'end', T1, { childCost: 0.0567 }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.069, 6);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBeCloseTo(0.069, 6);
   });
 
   it('is scoped to the requested session only', () => {
@@ -339,7 +347,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
       taskDelivery(SESSION, 'task-1', 'end', T0, { childCost: 0.01 }),
       taskDelivery(OTHER_SESSION, 'task-2', 'end', T1, { childCost: 9.99 }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.01, 6);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBeCloseTo(0.01, 6);
   });
 
   it('excludes internal tool-execution agents build/plan (parsed from subagent_type)', () => {
@@ -357,7 +365,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
         childCost: 0.01,
       }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.01, 6);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBeCloseTo(0.01, 6);
   });
 
   it('zero-guards NaN/negative/absent cost figures — never NaN, never negative', () => {
@@ -367,7 +375,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
       taskDelivery(SESSION, 'task-3', 'end', T2, {}), // no childCost at all
       taskDelivery(SESSION, 'task-4', 'end', T2, { childCost: 0 }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBe(0);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBe(0);
   });
 
   it('falls back to the legacy `tool_name` key when gen_ai.tool.name is absent', () => {
@@ -378,7 +386,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
         childCost: 0.005,
       }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.005, 6);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBeCloseTo(0.005, 6);
   });
 
   it('ignores malformed task-args JSON (degrades to no exclusion)', () => {
@@ -388,7 +396,7 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
         childCost: 0.0321,
       }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.0321, 6);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBeCloseTo(0.0321, 6);
   });
 
   it('#2750 round-6 (AC1): reproduces the round-5 fixture task span byte-exactly — childCost 0.0020461224 (general subagent, legacy tool_name key)', () => {
@@ -419,6 +427,6 @@ describe('computeSubagentCostTotals (#2750 AC1)', () => {
         childCost: 0.0020461223999999997,
       }),
     ];
-    expect(computeSubagentCostTotals(deliveries, SESSION)).toBeCloseTo(0.0020461224, 12);
+    expect(computeSubagentCostTotals(toolRowsOf(deliveries), SESSION)).toBeCloseTo(0.0020461224, 12);
   });
 });

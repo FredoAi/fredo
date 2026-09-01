@@ -3,32 +3,31 @@
  *
  * A single file-independent home for the AC1 (session display name) and AC3
  * (SUBAGENTS token total) computations shared by the session-list hook, the
- * persistence layer, and the token bar. Pure functions over
- * `ContractDelivery[]` — no React, no IPC, no store access — so they are
- * trivially unit-testable and reusable across surfaces.
+ * persistence layer, and the token bar. Pure functions — no React, no IPC, no
+ * store access — so they are trivially unit-testable and reusable across
+ * surfaces.
  *
- * Data sources (source-verified — G-028 Phase-0 live check was sandbox-denied,
- * see the ST-1 report; canonical paths confirmed in adapter/plugin source):
- * - AC1 name: the adapter-injected top-level `userMessage` field on chat-node
- *   deliveries (`infrastructure/comm/adapters/otlp.rs:1180-1181`;
- *   `opencode.rs:1508`; absent/empty when the turn has no user text).
- * - AC3 SUBAGENTS: the parent `task` tool span's child-completion fields
- *   (`apps/opencode-plugin/src/util.ts:53-61` emits `child_session_id` /
- *   `child_total_tokens` / per-family breakdown; the OTLP adapter projects the
- *   camelCase keys, `otlp.rs:81-90`). Task spans belong to the PARENT session
- *   (the `tool-use-lifecycle` contract's engine-level `excludePayload` already
- *   drops subagent events, MissionMonitorFeature.tsx:100-103) — never the
- *   ECE-composited child-delivery path, which is dead since Spec #2723 AC5.
+ * Spec #2788 P4.2 data sources:
+ * - AC1 name: the adapter-injected top-level `userMessage` on v1 chat-node
+ *   deliveries — the SIDEBAR path (useSessionHistory) still consumes the v1
+ *   delivery stream until its P4.3 migration, so `deriveSessionName` keeps
+ *   its delivery input (helpers from `lib/deliveryCompat.ts`).
+ * - AC3 SUBAGENTS: typed ToolUse rows (`useEventRows('ToolUse')`) — the
+ *   parent session's `task` dispatches. The row's typed columns carry the
+ *   span fields (`toolName`, `toolInputJson`); the `rawJson` escape hatch
+ *   carries the plugin's child-completion long-tail (`childTokens`,
+ *   per-family breakdown — `apps/opencode-plugin/src/util.ts:53-61` emits
+ *   `child_total_tokens`/…; the ingest projector preserves the camelCase
+ *   keys verbatim).
  */
-import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
+import type { ContractDelivery, ToolUseRow } from '../../../shared/classes/EventSubscription';
 import {
   isChatNodeDelivery,
   extractDeliveryPayload,
   deliverySessionId,
-  deliveryCorrelationId,
-  normalizeTokenCount,
-  normalizeCost,
-} from './graph';
+} from './deliveryCompat';
+import { rawPayload } from './rowDerivation';
+import { normalizeTokenCount, normalizeCost } from './graph';
 
 /**
  * Internal opencode tool-execution agents (#2745 AC-4 / R-4). Their `task`
@@ -36,7 +35,7 @@ import {
  * are NOT user-requested @-subagent dispatches — they must be excluded from
  * the SUBAGENTS figure. Keyed on the SAME parsed args field the SubagentNode
  * displays (`subagent_type`). Mirrors `INTERNAL_TOOL_EXECUTION_AGENTS` in
- * hooks/useMissionMonitor.ts:66 (kept local so this pure lib never imports a
+ * hooks/useMissionMonitor.ts (kept local so this pure lib never imports a
  * React hook module).
  */
 export const INTERNAL_TOOL_EXECUTION_AGENTS = ['build', 'plan'];
@@ -90,10 +89,8 @@ function truncateName(name: string): string {
  * non-empty `userMessage` — whitespace-normalized to a single line and
  * truncated to 40 characters including the trailing `…` when truncated.
  *
- * `session.created` init deliveries carry NO `userMessage` (the real prompt
- * arrives on later update/end deliveries — the merge at
- * useMissionMonitor.ts:909,1020), so "first user chat message" is naturally
- * the earliest delivery with non-empty text.
+ * (SIDEBAR path — the delivery input goes away with the P4.3 session-list
+ * migration; the graph path derives from typed rows.)
  *
  * @returns the normalized + truncated name, or `undefined` when the session
  *   has no chat-node delivery carrying non-empty user text (the R-1.2
@@ -155,159 +152,9 @@ export function deriveDisplayName(session: SessionNameFields): string {
   return session.customName ?? session.derivedName ?? session.label;
 }
 
-/**
- * AC3 (R-3.1) — compute the selected session's SUBAGENTS token total from its
- * `tool-use-lifecycle` `task`-span deliveries.
- *
- * Aggregation rule (matches the SubagentNode five-way, SubagentNode.tsx:129-136):
- * 1. `tool-use-lifecycle` deliveries only, scoped to `deliverySessionId(d) ===
- *    sessionId` (task spans belong to the parent session — never composited).
- * 2. Last-wins per composite key `(sessionId, correlationId)` — the LAST
- *    lifecycle delivery per task dispatch wins (end beats init/update), the
- *    same rule the graph builder applies to SubagentNode entries.
- * 3. `task` tool only: `payload['gen_ai.tool.name'] === 'task'` with the
- *    legacy `tool_name` fallback.
- * 4. Internal tool-execution agents excluded: the parsed task-args
- *    `subagent_type` (fallback `agent`) NOT in `INTERNAL_TOOL_EXECUTION_AGENTS`.
- * 5. Per-subagent total: if ANY of the four per-family breakdown fields is
- *    present → sum of normalizeTokenCount(childInputTokens|childCacheReadTokens|
- *    childReasoningTokens|childOutputTokens); else the aggregate
- *    normalizeTokenCount(childTokens) (legacy deliveries).
- * 6. Every figure zero-guarded via `normalizeTokenCount` (absent/NaN/negative
- *    → 0 — never NaN/negative in the figure).
- *
- * @returns the SUBAGENTS total (0 when no qualifying task dispatch carries
- *   child token fields).
- */
-export function computeSubagentTokenTotals(
-  deliveries: ContractDelivery[],
-  sessionId: string,
-): number {
-  // Last-wins per composite key over the session's tool-use-lifecycle deliveries.
-  const lastByKey = new Map<string, ContractDelivery>();
-  for (const d of deliveries) {
-    if (d.contractName !== 'tool-use-lifecycle') continue;
-    if (deliverySessionId(d) !== sessionId) continue;
-    lastByKey.set(`${sessionId}:${deliveryCorrelationId(d)}`, d);
-  }
-
-  let total = 0;
-  for (const d of lastByKey.values()) {
-    const p = extractDeliveryPayload(d);
-
-    // Task tool only — `gen_ai.tool.name` first, legacy `tool_name` fallback.
-    const toolName =
-      typeof p['gen_ai.tool.name'] === 'string' && p['gen_ai.tool.name']
-        ? p['gen_ai.tool.name']
-        : typeof p['tool_name'] === 'string' && p['tool_name']
-          ? p['tool_name']
-          : undefined;
-    if (toolName !== 'task') continue;
-
-    // Internal tool-execution agents (build/plan) — not user-requested
-    // subagents, excluded from the figure (R-4 / AC-4 semantics).
-    const args = parseTaskArgs(typeof p['input'] === 'string' ? p['input'] : '');
-    const subagentType =
-      typeof args['subagent_type'] === 'string' && args['subagent_type']
-        ? args['subagent_type']
-        : typeof args['agent'] === 'string' && args['agent']
-          ? args['agent']
-          : undefined;
-    if (subagentType !== undefined && INTERNAL_TOOL_EXECUTION_AGENTS.includes(subagentType)) {
-      continue;
-    }
-
-    // Per-subagent total: per-family breakdown when ANY field is present,
-    // else the aggregate childTokens (SubagentNode.tsx:129-136 rule).
-    const hasBreakdown =
-      p['childInputTokens'] !== undefined ||
-      p['childCacheReadTokens'] !== undefined ||
-      p['childReasoningTokens'] !== undefined ||
-      p['childOutputTokens'] !== undefined;
-    const subagentTotal = hasBreakdown
-      ? normalizeTokenCount(p['childInputTokens']) +
-        normalizeTokenCount(p['childCacheReadTokens']) +
-        normalizeTokenCount(p['childReasoningTokens']) +
-        normalizeTokenCount(p['childOutputTokens'])
-      : normalizeTokenCount(p['childTokens']);
-
-    total += subagentTotal;
-  }
-
-  return total;
-}
-
-/**
- * AC1 (#2750 ST-1) — compute the selected session's SUBAGENT COST share from
- * its `tool-use-lifecycle` `task`-span deliveries.
- *
- * Mirrors `computeSubagentTokenTotals` exactly (last-wins per composite key,
- * task tool only, build/plan excluded) but sums the delivered CHILD COST
- * (`childCost`) instead of token totals:
- * 1. `tool-use-lifecycle` deliveries only, scoped to `deliverySessionId(d) ===
- *    sessionId` (task spans belong to the parent session — never composited).
- * 2. Last-wins per composite key `(sessionId, correlationId)` — the LAST
- *    lifecycle delivery per task dispatch wins (end beats init/update).
- * 3. `task` tool only: `payload['gen_ai.tool.name'] === 'task'` with the
- *    legacy `tool_name` fallback.
- * 4. Internal tool-execution agents excluded: parsed task-args `subagent_type`
- *    (fallback `agent`) NOT in `INTERNAL_TOOL_EXECUTION_AGENTS`.
- * 5. Per-subagent cost: `normalizeCost(p['childCost'])` — absent/NaN/negative
- *    → 0 (never NaN/negative in the figure; a delivered $0.00 counts as 0).
- *
- * The session bar's ESTIMATED COST is the parent session cost PLUS this share —
- * combined in MissionMonitorPanel (never in the SessionTokenBar component).
- *
- * @returns the SUBAGENT cost share (0 when no qualifying task dispatch carries
- *   a `childCost` field).
- */
-export function computeSubagentCostTotals(
-  deliveries: ContractDelivery[],
-  sessionId: string,
-): number {
-  // Last-wins per composite key over the session's tool-use-lifecycle deliveries.
-  const lastByKey = new Map<string, ContractDelivery>();
-  for (const d of deliveries) {
-    if (d.contractName !== 'tool-use-lifecycle') continue;
-    if (deliverySessionId(d) !== sessionId) continue;
-    lastByKey.set(`${sessionId}:${deliveryCorrelationId(d)}`, d);
-  }
-
-  let total = 0;
-  for (const d of lastByKey.values()) {
-    const p = extractDeliveryPayload(d);
-
-    // Task tool only — `gen_ai.tool.name` first, legacy `tool_name` fallback.
-    const toolName =
-      typeof p['gen_ai.tool.name'] === 'string' && p['gen_ai.tool.name']
-        ? p['gen_ai.tool.name']
-        : typeof p['tool_name'] === 'string' && p['tool_name']
-          ? p['tool_name']
-          : undefined;
-    if (toolName !== 'task') continue;
-
-    // Internal tool-execution agents (build/plan) — not user-requested
-    // subagents, excluded from the figure (R-4 / AC-4 semantics).
-    const args = parseTaskArgs(typeof p['input'] === 'string' ? p['input'] : '');
-    const subagentType =
-      typeof args['subagent_type'] === 'string' && args['subagent_type']
-        ? args['subagent_type']
-        : typeof args['agent'] === 'string' && args['agent']
-          ? args['agent']
-          : undefined;
-    if (subagentType !== undefined && INTERNAL_TOOL_EXECUTION_AGENTS.includes(subagentType)) {
-      continue;
-    }
-
-    total += normalizeCost(p['childCost']);
-  }
-
-  return total;
-}
-
-/** Parse the task tool's arguments JSON (payload['input'] = the adapter-
+/** Parse the task tool's arguments JSON (`toolInputJson` = the adapter-
  *  projected gen_ai.tool.call.arguments string). A parse failure or absent
- *  input degrades to `{}` (mirrors parseTaskArgs in useMissionMonitor.ts:72). */
+ *  input degrades to `{}`. */
 function parseTaskArgs(input: string): Record<string, unknown> {
   if (!input) return {};
   try {
@@ -318,4 +165,107 @@ function parseTaskArgs(input: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/** The session's own `task`-dispatch rows: keyed under the selected session,
+ *  `task` tool only, NOT child-session activity (the `isSubagent` flag
+ *  column replaces the v1 engine-level excludePayload — a parent's own task
+ *  span is `false`, a child session's tools are `true`). One row per key —
+ *  the row store's PK replaces the v1 last-wins dedupe. */
+function sessionTaskRows(toolRows: ToolUseRow[], sessionId: string): ToolUseRow[] {
+  return toolRows.filter(
+    (row) =>
+      row.sessionId === sessionId &&
+      row.toolName === 'task' &&
+      row.isSubagent !== true,
+  );
+}
+
+/** Parsed task-args `subagent_type` (fallback `agent`) — the display name
+ *  key, undefined when neither is a non-empty string. */
+function taskSubagentType(row: ToolUseRow): string | undefined {
+  const args = parseTaskArgs(row.toolInputJson ?? '');
+  const st = args['subagent_type'];
+  if (typeof st === 'string' && st) return st;
+  const ag = args['agent'];
+  if (typeof ag === 'string' && ag) return ag;
+  return undefined;
+}
+
+/**
+ * AC3 (R-3.1) — compute the selected session's SUBAGENTS token total from
+ * its typed `task`-dispatch rows.
+ *
+ * Aggregation rule (matches the SubagentNode five-way, SubagentNode.tsx):
+ * 1. The session's own task rows (see `sessionTaskRows`) — task spans belong
+ *    to the parent session, never composited.
+ * 2. Internal tool-execution agents excluded: parsed task-args
+ *    `subagent_type` (fallback `agent`) NOT in `INTERNAL_TOOL_EXECUTION_AGENTS`.
+ * 3. Per-subagent total: if ANY of the four per-family breakdown fields is
+ *    present (rawJson child-completion long-tail) → sum of
+ *    normalizeTokenCount(childInputTokens|childCacheReadTokens|
+ *    childReasoningTokens|childOutputTokens); else the aggregate
+ *    normalizeTokenCount(childTokens).
+ * 4. Every figure zero-guarded via `normalizeTokenCount` (absent/NaN/negative
+ *    → 0 — never NaN/negative in the figure).
+ *
+ * @returns the SUBAGENTS total (0 when no qualifying task dispatch carries
+ *   child token fields).
+ */
+export function computeSubagentTokenTotals(toolRows: ToolUseRow[], sessionId: string): number {
+  let total = 0;
+  for (const row of sessionTaskRows(toolRows, sessionId)) {
+    // Internal tool-execution agents (build/plan) — not user-requested
+    // subagents, excluded from the figure (R-4 / AC-4 semantics).
+    const subagentType = taskSubagentType(row);
+    if (subagentType !== undefined && INTERNAL_TOOL_EXECUTION_AGENTS.includes(subagentType)) {
+      continue;
+    }
+
+    // Per-subagent total: per-family breakdown when ANY field is present,
+    // else the aggregate childTokens (SubagentNode.tsx rule).
+    const raw = rawPayload(row);
+    const hasBreakdown =
+      raw.childInputTokens !== undefined ||
+      raw.childCacheReadTokens !== undefined ||
+      raw.childReasoningTokens !== undefined ||
+      raw.childOutputTokens !== undefined;
+    const subagentTotal = hasBreakdown
+      ? normalizeTokenCount(raw.childInputTokens) +
+        normalizeTokenCount(raw.childCacheReadTokens) +
+        normalizeTokenCount(raw.childReasoningTokens) +
+        normalizeTokenCount(raw.childOutputTokens)
+      : normalizeTokenCount(raw.childTokens);
+
+    total += subagentTotal;
+  }
+
+  return total;
+}
+
+/**
+ * AC1 (#2750 ST-1) — compute the selected session's SUBAGENT COST share from
+ * its typed `task`-dispatch rows.
+ *
+ * Mirrors `computeSubagentTokenTotals` exactly (same row set, same internal-
+ * agent exclusion) but sums the delivered CHILD COST (`childCost`, rawJson
+ * long-tail) instead of token totals.
+ *
+ * The session bar's ESTIMATED COST is the parent session cost PLUS this share —
+ * combined in MissionMonitorPanel (never in the SessionTokenBar component).
+ *
+ * @returns the SUBAGENT cost share (0 when no qualifying task dispatch carries
+ *   a `childCost` field).
+ */
+export function computeSubagentCostTotals(toolRows: ToolUseRow[], sessionId: string): number {
+  let total = 0;
+  for (const row of sessionTaskRows(toolRows, sessionId)) {
+    const subagentType = taskSubagentType(row);
+    if (subagentType !== undefined && INTERNAL_TOOL_EXECUTION_AGENTS.includes(subagentType)) {
+      continue;
+    }
+    total += normalizeCost(rawPayload(row).childCost);
+  }
+
+  return total;
 }

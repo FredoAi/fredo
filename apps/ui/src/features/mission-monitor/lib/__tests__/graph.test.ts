@@ -1,9 +1,11 @@
 /**
- * Tests for the surviving ECE graph helpers.
+ * Tests for the surviving graph helpers.
  *
- * Covers the delivery-verification helpers that remain public API after the
- * contract* stub cleanup: isChatNodeDelivery, deliverySessionId,
- * deliveryCorrelationId, and extractDeliveryPayload.
+ * Spec #2788 P4.2: the delivery-shaping helpers (isChatNodeDelivery,
+ * deliverySessionId, deliveryCorrelationId, extractDeliveryPayload) moved to
+ * `../deliveryCompat` — the v1 SIDEBAR-only compat module (deleted in
+ * Phase 5). The token/cost guards remain in `../graph` (the row derivation
+ * consumes them).
  */
 import { describe, it, expect } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
@@ -12,6 +14,8 @@ import {
   deliverySessionId,
   deliveryCorrelationId,
   extractDeliveryPayload,
+} from '../deliveryCompat';
+import {
   normalizeTokenCount,
   normalizeCost,
 } from '../graph';

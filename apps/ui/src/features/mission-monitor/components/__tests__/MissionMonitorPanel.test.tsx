@@ -43,6 +43,26 @@ vi.mock('../../lib/persistence', () => ({
 let mockDeliveries: ContractDelivery[] = [];
 
 // Mock StreamContext — deliveries are swapped per test
+
+// P4.2: the panel derives its session metrics from typed rows via
+// useEventRows — mock it to project the SAME fixtures the StreamContext mock
+// serves (rowsFromDeliveries applies the classifier semantics; the epoch is
+// static because tests seed mockDeliveries before render).
+vi.mock('@/shared/hooks/useEventRows', async () => {
+  const { rowsFromDeliveries } = await import('../../hooks/__tests__/fixtures/rowsFromDeliveries');
+  return {
+    useEventRows: (eventType: 'Chat' | 'ToolUse') => {
+      const { chatRows, toolRows } = rowsFromDeliveries(mockDeliveries);
+      const rows = eventType === 'Chat' ? chatRows : toolRows;
+      return {
+        rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+        epoch: 1,
+        error: null,
+      };
+    },
+  };
+});
+
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useStream: vi.fn().mockImplementation(() => ({
     deliveries: mockDeliveries,
