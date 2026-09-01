@@ -974,6 +974,7 @@ impl IngestClassifier {
             return;
         };
         let existing = self.rtdb.cache().get_chat(&session, &corr).unwrap_or(None);
+        let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_chat_row(&session, &corr));
         let old = serde_json::to_value(&row).unwrap_or(Value::Null);
         apply_chat_patch(&mut row, &patch);
@@ -983,6 +984,9 @@ impl IngestClassifier {
         }
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, CHAT_FIELDS);
+        if content_no_op(existed, &changed) {
+            return;
+        }
         if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::Chat(row), &changed) {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "chat row ingest failed");
         }
@@ -1000,11 +1004,15 @@ impl IngestClassifier {
             .cache()
             .get_tool_use(&session, &corr)
             .unwrap_or(None);
+        let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_tool_row(&session, &corr));
         let old = serde_json::to_value(&row).unwrap_or(Value::Null);
         apply_tool_use_patch(&mut row, &patch);
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, TOOL_USE_FIELDS);
+        if content_no_op(existed, &changed) {
+            return;
+        }
         if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::ToolUse(row), &changed) {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "tool-use row ingest failed");
         }
@@ -1022,11 +1030,15 @@ impl IngestClassifier {
             .cache()
             .get_agent_session(&session, &corr)
             .unwrap_or(None);
+        let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_session_row(&session, &corr));
         let old = serde_json::to_value(&row).unwrap_or(Value::Null);
         apply_agent_session_patch(&mut row, &patch);
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, AGENT_SESSION_FIELDS);
+        if content_no_op(existed, &changed) {
+            return;
+        }
         if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::AgentSession(row), &changed) {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "agent-session row ingest failed");
         }
@@ -1227,6 +1239,15 @@ fn changed_fields(old: &Value, new: &Value, fields: &[&str]) -> Vec<String> {
         .filter(|f| old.get(**f) != new.get(**f))
         .map(|f| (*f).to_string())
         .collect()
+}
+
+/// P3.2 idempotency gate: a merge into an EXISTING row that changed nothing
+/// but the wall-clock `updatedAt` stamp is a content no-op — the write is
+/// skipped entirely (no seq allocation, no delivery), so re-deriving
+/// identical content (canonical-backfill re-runs, duplicate span exports)
+/// never bumps seq. New rows always write.
+fn content_no_op(existed: bool, changed: &[String]) -> bool {
+    existed && changed.iter().all(|field| field == "updatedAt")
 }
 
 fn empty_chat_row(session: &str, corr: &str) -> ChatRow {
