@@ -164,24 +164,18 @@ enum PathTarget {
     Interior(&'static FieldDef),
 }
 
-/// A validated filter argument, ready for matching/pushdown.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidatedArg {
-    pub field: Vec<String>,
-    pub op: CompareOp,
-    pub value: serde_json::Value,
-    /// Resolved column type — `Json`/`Object` for interior paths.
-    pub field_type: FieldType,
-}
-
 /// A schema-validated query — validated args + selection, ready for
 /// matching/pushdown (P2.2/P2.3 consume this).
+///
+/// `args` are the POST-validation [`QueryArg`]s (same shape as the parsed
+/// spec, type-correct by the `validate` contract) — the matcher/pushdown
+/// layer evaluates them against the serialized row without re-resolving
+/// schema types.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidatedQuery {
     pub event_type: EventTypeArg,
-    pub args: Vec<ValidatedArg>,
+    pub args: Vec<QueryArg>,
     pub selection: Vec<Vec<String>>,
 }
 
@@ -222,7 +216,7 @@ pub fn validate(spec: &QuerySpec) -> Result<ValidatedQuery, Vec<String>> {
     let mut args = Vec::new();
     for arg in &spec.args {
         match validate_arg(schema, arg, &snippet) {
-            Ok(validated) => args.push(validated),
+            Ok(()) => args.push(arg.clone()),
             Err(message) => errors.push(message),
         }
     }
@@ -246,20 +240,10 @@ pub fn validate(spec: &QuerySpec) -> Result<ValidatedQuery, Vec<String>> {
     }
 }
 
-fn validate_arg(
-    schema: &RowSchema,
-    arg: &QueryArg,
-    snippet: &str,
-) -> Result<ValidatedArg, String> {
+fn validate_arg(schema: &RowSchema, arg: &QueryArg, snippet: &str) -> Result<(), String> {
     match resolve_path(schema, &arg.field, snippet)? {
         PathTarget::Field(field) => {
-            check_field_value(schema, field, arg.op, &arg.value, snippet)?;
-            Ok(ValidatedArg {
-                field: arg.field.clone(),
-                op: arg.op,
-                value: arg.value.clone(),
-                field_type: field.ty,
-            })
+            check_field_value(schema, field, arg.op, &arg.value, snippet)
         }
         PathTarget::Interior(field) => {
             // Json/Object interiors: equality only (the grammar has no
@@ -276,17 +260,7 @@ fn validate_arg(
                     snippet,
                 ));
             }
-            let interior_ty = if field.ty == FieldType::Object {
-                FieldType::Object
-            } else {
-                FieldType::Json
-            };
-            Ok(ValidatedArg {
-                field: arg.field.clone(),
-                op: arg.op,
-                value: arg.value.clone(),
-                field_type: interior_ty,
-            })
+            Ok(())
         }
     }
 }
@@ -460,6 +434,7 @@ mod tests {
         TOOL_USE_FIELDS,
     };
     use serde_json;
+    use serde_json::json;
 
     fn valid_spec(query: &str) -> QuerySpec {
         super::super::parse::parse(query).expect("valid query")
@@ -598,8 +573,11 @@ mod tests {
         .expect("valid query");
         assert_eq!(validated.event_type, EventTypeArg::Chat);
         assert_eq!(validated.args.len(), 2);
-        assert_eq!(validated.args[0].field_type, FieldType::String);
-        assert_eq!(validated.args[1].field_type, FieldType::Number);
+        // Validated args preserve the parsed arg shape (type-correct by contract).
+        assert_eq!(validated.args[0].field, vec!["sessionId"]);
+        assert_eq!(validated.args[0].op, CompareOp::Eq);
+        assert_eq!(validated.args[1].op, CompareOp::Gt);
+        assert_eq!(validated.args[1].value, json!(0));
         assert_eq!(
             validated.selection,
             vec![
@@ -628,7 +606,8 @@ mod tests {
         // Interior equality arg is also valid.
         let validated =
             validate(&valid_spec("chat(key.seq = 3) { sessionId }")).expect("valid query");
-        assert_eq!(validated.args[0].field_type, FieldType::Object);
+        assert_eq!(validated.args[0].field, vec!["key", "seq"]);
+        assert_eq!(validated.args[0].value, json!(3));
     }
 
     #[test]
@@ -711,7 +690,8 @@ mod tests {
         // Equality on the raw string form is the ONLY arg against rawJson.
         let validated = validate(&valid_spec("chat(rawJson = \"{}\") { rawJson }"))
             .expect("valid query");
-        assert_eq!(validated.args[0].field_type, FieldType::Json);
+        assert_eq!(validated.args[0].field, vec!["rawJson"]);
+        assert_eq!(validated.args[0].op, CompareOp::Eq);
         assert_single_error(
             "chat(rawJson > \"{}\") { rawJson }",
             "chat field 'rawJson' is json; only '=' on the raw JSON string form is supported",

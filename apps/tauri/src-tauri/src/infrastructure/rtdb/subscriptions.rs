@@ -91,11 +91,23 @@ impl SubscriptionRegistry {
     pub fn register(&self, query: ValidatedQuery) -> String {
         let query_id = Uuid::new_v4().to_string();
         let mut inner = self.lock();
+        // P2.1 integration: the real ValidatedQuery carries validated args +
+        // selection directly (see query/schema.rs) — reassemble the QuerySpec
+        // the registry stores.
+        let ValidatedQuery {
+            event_type,
+            args,
+            selection,
+        } = query;
         inner.subscriptions.insert(
             query_id.clone(),
             Subscription {
                 query_id: query_id.clone(),
-                spec: query.spec,
+                spec: QuerySpec {
+                    event_type,
+                    args,
+                    selection,
+                },
             },
         );
         query_id
@@ -422,11 +434,9 @@ mod tests {
 
     fn validated(event_type: EventTypeArg, args: Vec<QueryArg>) -> ValidatedQuery {
         ValidatedQuery {
-            spec: QuerySpec {
-                event_type,
-                args,
-                selection: Vec::new(),
-            },
+            event_type,
+            args,
+            selection: Vec::new(),
         }
     }
 
@@ -1016,11 +1026,9 @@ mod tests {
         selection: Vec<Vec<String>>,
     ) -> ValidatedQuery {
         ValidatedQuery {
-            spec: QuerySpec {
-                event_type,
-                args,
-                selection,
-            },
+            event_type,
+            args,
+            selection,
         }
     }
 }

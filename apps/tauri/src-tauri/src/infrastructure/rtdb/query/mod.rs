@@ -13,9 +13,7 @@ pub mod parse;
 pub mod schema;
 
 pub use parse::{parse, QueryParseError};
-pub use schema::{
-    schema_for, validate, FieldDef, FieldType, RowSchema, ValidatedArg, ValidatedQuery,
-};
+pub use schema::{schema_for, validate, FieldDef, FieldType, RowSchema, ValidatedQuery};
 
 use serde::{Deserialize, Serialize};
 
