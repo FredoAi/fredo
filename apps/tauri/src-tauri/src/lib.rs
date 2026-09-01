@@ -16,6 +16,11 @@ use infrastructure::comm::contract::store::{
     DEFAULT_RETENTION_DAYS, MAX_ROWS_KEY, RETENTION_DAYS_KEY,
 };
 use infrastructure::comm::contract::EventContractEngine;
+use infrastructure::rtdb::cache::{run_writer_task as run_rtdb_writer_task, RtdbCache};
+use infrastructure::rtdb::store::{
+    RtdbStore, RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
+    RTDB_RETENTION_DAYS_KEY,
+};
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
@@ -409,6 +414,65 @@ pub fn run() {
             let writer_task_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 run_writer_task(writer_task_handle, contract_event_rx).await;
+            });
+
+            // -- RTDB row store (Spec #2788 P1.2) ------------------------------
+            // SQLite-authoritative typed rows (chat_rows / tool_use_rows /
+            // agent_session_rows in fredo.db) behind an LRU row cache with a
+            // ~30 ms write-behind flush task. telemetry_spans is never touched.
+            let rtdb_store = Arc::new(
+                RtdbStore::open(data_dir.clone()).expect("Failed to open RtdbStore"),
+            );
+            rtdb_store
+                .ensure_schema()
+                .expect("Failed to create rtdb schema");
+            let (rtdb_cache, rtdb_rx) = RtdbCache::new(rtdb_store);
+            app.manage(rtdb_cache.clone());
+
+            // Set RTDB retention defaults if not already configured (AppStore
+            // KV keys — the binding config-first mechanism).
+            {
+                let store_ref = app.state::<Arc<AppStore>>();
+                if store_ref.get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref
+                        .set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
+                }
+                if store_ref.get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref.set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
+                }
+            }
+
+            // Retention prune on startup (mirrors the SpanStore/contract flow;
+            // the writer task re-prunes on a 60-minute interval).
+            {
+                let store_ref = app.state::<Arc<AppStore>>();
+                let retention_days: i64 = store_ref
+                    .get(RTDB_RETENTION_DAYS_KEY)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(RTDB_DEFAULT_RETENTION_DAYS);
+                let max_rows: i64 = store_ref
+                    .get(RTDB_MAX_ROWS_KEY)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(RTDB_DEFAULT_MAX_ROWS);
+                match rtdb_cache.store().prune(retention_days, max_rows) {
+                    Ok(deleted) => {
+                        if deleted > 0 {
+                            tracing::info!(target: "fredo::rtdb", deleted, "rtdb startup prune");
+                        }
+                    }
+                    Err(e) => tracing::error!(target: "fredo::rtdb", error = %e, "rtdb startup prune error"),
+                }
+            }
+
+            // RTDB write-behind task: drains the bounded queue in ~30 ms
+            // batches; overflow sheds the storage write, never in-memory state.
+            let rtdb_writer_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx).await;
             });
 
             // -- IPC server (OpenCode plugin event path) -----------------------------
