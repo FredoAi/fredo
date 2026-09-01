@@ -20,7 +20,7 @@ use tauri::{AppHandle, Emitter};
 use crate::infrastructure::comm::contract::store::ContractEventWriter;
 use crate::infrastructure::comm::contract::types::SubscriptionDelivery;
 use crate::infrastructure::comm::event::FredoEvent;
-use crate::infrastructure::rtdb::project::RowDelivery;
+use crate::infrastructure::rtdb::project::{RowDelivery, RowDeliveryBatch};
 
 /// EventBus emits SubscriptionDelivery on the "fredo-stream-event" Tauri channel.
 ///
@@ -63,16 +63,21 @@ impl EventBus {
         }
     }
 
-    /// Emit one RTDB RowDelivery patch envelope to the same
-    /// "fredo-stream-event" channel (Spec #2788 P2.3, additive coexistence —
-    /// the v1 emit_delivery/emit paths keep working untouched; AppProvider
-    /// will discriminate by field presence in P4.1). This is the ONLY
-    /// sanctioned RTDB emission path — RTDB code never calls
+    /// Emit a BATCH of RTDB RowDelivery envelopes as ONE "fredo-stream-event"
+    /// IPC event (Spec #2788 F-33 fix, W-1): the wire envelope is the
+    /// camelCase `{"rowBatch": RowDelivery[]}` struct (`RowDeliveryBatch` in
+    /// `rtdb/project.rs`), discriminated by the `rowBatch` field in
+    /// AppProvider. Single-delivery consumers on the v1 path are unaffected —
+    /// the v1 emit_delivery/emit paths keep working untouched. This is the
+    /// ONLY sanctioned RTDB emission path — RTDB code never calls
     /// app_handle.emit directly. Row deliveries are LIVE-only: they are never
     /// enqueued into the contract-event persistence writer.
-    pub fn emit_row_delivery(&self, delivery: &RowDelivery) {
-        if let Err(e) = self.app.emit("fredo-stream-event", delivery) {
-            tracing::error!(target: "fredo::comm", error = %e, "emit RowDelivery failed");
+    pub fn emit_row_delivery_batch(&self, deliveries: &[RowDelivery]) {
+        let envelope = RowDeliveryBatch {
+            row_batch: deliveries.to_vec(),
+        };
+        if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
+            tracing::error!(target: "fredo::comm", error = %e, "emit RowDelivery batch failed");
         }
     }
 }

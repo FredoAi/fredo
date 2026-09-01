@@ -8,7 +8,7 @@
 //!   → seq from RtdbStore::next_seq (durable, P1.2)
 //!   → RtdbCache upsert (sync cache + write-behind queue, P1.2)
 //!   → SubscriptionRegistry::match_mutation (P2.2) → RowDeliveries
-//!   → FlushLoop (this module's flush.rs) → EventBus.emit_row_delivery
+//!   → FlushLoop (this module's flush.rs) → EventBus.emit_row_delivery_batch
 //! ```
 //!
 //! Retention evictions flow the same way: `RtdbStore::prune` (P1.2, extended

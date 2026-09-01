@@ -47,7 +47,8 @@ pub enum RowChangeKind {
 /// The patch delivery envelope P2.3 emits (one per matching query per
 /// mutation). `seq` is the row's durable per-key monotonic sequence carried
 /// from the row snapshot (and the last delivered seq on removals).
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// `Deserialize` supports the batch-envelope serde round-trip test (F-33 W-1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowDelivery {
     pub query_id: String,
@@ -60,6 +61,19 @@ pub struct RowDelivery {
     pub patch: Option<serde_json::Value>,
     /// RFC3339 emission time.
     pub timestamp: String,
+}
+
+/// Wire envelope for BATCHED RowDelivery emission (Spec #2788 F-33 fix, W-1).
+/// ONE "fredo-stream-event" IPC event per flush chunk carries this envelope —
+/// camelCase `rowBatch` field discriminates it from single-delivery envelopes
+/// (the frontend `isRowDeliveryBatch` validator checks this exact field;
+/// single-delivery v1 consumers are unaffected). Ownership is a plain `Vec`:
+/// emission chunks are ≤ [`crate::infrastructure::rtdb::flush::
+/// RTDB_MAX_EMISSION_BATCH`] rows, so the per-chunk copy is negligible.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowDeliveryBatch {
+    pub row_batch: Vec<RowDelivery>,
 }
 
 /// Borrowed view of one stored row — the matcher/projector input. The variant
@@ -438,6 +452,63 @@ mod tests {
             let json = serde_json::to_value(kind).expect("serialize kind");
             assert_eq!(json.as_str(), Some(name));
         }
+    }
+
+    // ── Batch envelope (F-33 fix, W-1) ──────────────────────────────────────
+
+    fn sample_delivery(query: &str, seq: i64, correlation: &str) -> RowDelivery {
+        RowDelivery {
+            query_id: query.to_string(),
+            event_type: EventTypeArg::Chat,
+            kind: RowChangeKind::Insert,
+            seq,
+            key: RowKey {
+                session_id: "ses_a".to_string(),
+                correlation_id: correlation.to_string(),
+            },
+            patch: Some(serde_json::json!({ "userMessage": "q", "seq": seq })),
+            timestamp: "2026-08-31T00:00:00+00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn row_batch_envelope_serializes_the_camel_case_row_batch_field() {
+        let batch = RowDeliveryBatch {
+            row_batch: vec![
+                sample_delivery("q-1", 1, "c1"),
+                sample_delivery("q-1", 2, "c2"),
+            ],
+        };
+        let json = serde_json::to_value(&batch).expect("serialize RowDeliveryBatch");
+        let obj = json.as_object().expect("object");
+        assert_eq!(obj.len(), 1, "the envelope carries exactly one field");
+        assert!(
+            obj.contains_key("rowBatch"),
+            "envelope must expose the camelCase `rowBatch` discriminator"
+        );
+        let rows = obj.get("rowBatch").and_then(|v| v.as_array()).expect("array");
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn row_batch_envelope_round_trips_through_serde_unchanged() {
+        let batch = RowDeliveryBatch {
+            row_batch: vec![
+                sample_delivery("q-1", 1, "c1"),
+                sample_delivery("q-2", 2, "c2"),
+            ],
+        };
+        let json = serde_json::to_string(&batch).expect("serialize");
+        let parsed: RowDeliveryBatch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, batch, "serde round-trip must be lossless");
+    }
+
+    #[test]
+    fn row_delivery_itself_round_trips_for_the_batch_elements() {
+        let delivery = sample_delivery("q-1", 3, "c1");
+        let json = serde_json::to_string(&delivery).expect("serialize");
+        let parsed: RowDelivery = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, delivery);
     }
 
     #[test]

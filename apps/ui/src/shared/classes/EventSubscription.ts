@@ -331,6 +331,30 @@ const ROW_CHANGE_KINDS: readonly string[] = ['insert', 'update', 'remove'];
 const ROW_EVENT_TYPES: readonly string[] = ['Chat', 'ToolUse', 'AgentSession'];
 
 /**
+ * RTDB BATCH envelope — the backend flush loop emits ONE "fredo-stream-event"
+ * IPC event per drained flush chunk carrying up to RTDB_MAX_EMISSION_BATCH
+ * (512) RowDelivery envelopes (Spec #2788 F-33 fix, W-1). The camelCase
+ * `rowBatch` field discriminates it from single-delivery envelopes; v1
+ * ContractDelivery consumers are unaffected.
+ */
+export interface RowDeliveryBatch {
+  rowBatch: RowDelivery[];
+}
+
+/**
+ * Discriminate an incoming "fredo-stream-event" payload as an RTDB batch
+ * envelope. Single extraction path — every element MUST pass the production
+ * `isRowDelivery` validator; a batch with any malformed element is rejected
+ * whole (never partially applied).
+ */
+export function isRowDeliveryBatch(msg: unknown): msg is RowDeliveryBatch {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
+  const m = msg as Record<string, unknown>;
+  if (!Array.isArray(m.rowBatch)) return false;
+  return m.rowBatch.every((element) => isRowDelivery(element));
+}
+
+/**
  * Discriminate an incoming "fredo-stream-event" payload as an RTDB
  * RowDelivery (vs the v1 ContractDelivery). Single extraction path — no
  * heuristic fallbacks: the envelope MUST carry the full pinned field set.

@@ -8,10 +8,13 @@
 //! together into one emission.
 //!
 //! Emission goes through an injected [`RowEmitter`]. In the app, lib.rs wires
-//! the emitter to the EventBus's `emit_row_delivery` — the ONLY sanctioned
-//! RTDB emission path (never `app_handle.emit` directly). Tests inject a
-//! capture sink instead, which keeps the coalescing semantics testable
-//! without a Tauri runtime.
+//! the emitter to the EventBus's `emit_row_delivery_batch` — the ONLY
+//! sanctioned RTDB emission path (never `app_handle.emit` directly). Each
+//! emitter call is ONE batch IPC envelope (`{"rowBatch": [...]}`); a drained
+//! window larger than [`RTDB_MAX_EMISSION_BATCH`] is split into multiple
+//! emitter calls WITHIN the same `flush_due` invocation — zero added latency.
+//! Tests inject a capture sink instead, which keeps the coalescing semantics
+//! testable without a Tauri runtime.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -24,6 +27,11 @@ pub const DEFAULT_FLUSH_MS: u64 = 30;
 /// Poll cadence of the background flush task — worst-case added latency on
 /// top of a query's window.
 const FLUSH_POLL_MS: u64 = 5;
+/// Maximum deliveries per emitter call = per batch IPC envelope (F-33 fix,
+/// W-1). A replay of ~58k rows drains as ~113 emitter calls instead of ~58k
+/// individual IPC events. Chunking is intra-window: all chunks of a drained
+/// window emit in the same `flush_due` call — zero added latency.
+pub const RTDB_MAX_EMISSION_BATCH: usize = 512;
 
 /// Emission sink for coalesced batches. One call = one emission for one query
 /// (the batch holds every pending key of that query).
@@ -173,8 +181,10 @@ impl FlushLoop {
     }
 
     /// Emit every armed query whose deadline has passed (one emission per
-    /// query, all pending keys batched). Returns the number of deliveries
-    /// emitted. Called by the background task; tests call it directly for
+    /// query, all pending keys batched; windows larger than
+    /// [`RTDB_MAX_EMISSION_BATCH`] split into multiple emitter calls within
+    /// this same invocation). Returns the number of deliveries emitted.
+    /// Called by the background task; tests call it directly for
     /// deterministic timing.
     pub fn flush_due(&self) -> usize {
         let now = Instant::now();
@@ -192,9 +202,12 @@ impl FlushLoop {
                 window.deadline = None;
             }
         }
-        let emitted = batches.iter().map(Vec::len).sum();
+        let mut emitted = 0;
         for batch in batches {
-            (self.emitter)(&batch);
+            for chunk in batch.chunks(RTDB_MAX_EMISSION_BATCH) {
+                (self.emitter)(chunk);
+                emitted += chunk.len();
+            }
         }
         emitted
     }
@@ -474,5 +487,116 @@ mod tests {
             "the spawned task must deliver without a manual flush_due"
         );
         handle.abort();
+    }
+
+    // ── Batch emission chunking (F-33 fix, W-1) ─────────────────────────────
+
+    /// Sink capturing each emitter CALL separately (call count + sizes), not
+    /// just the flattened delivery stream.
+    type CallSink = Arc<Mutex<Vec<Vec<RowDelivery>>>>;
+
+    fn call_counting_loop() -> (FlushLoop, CallSink) {
+        let sink: CallSink = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&sink);
+        let loop_ = FlushLoop::new(Arc::new(move |deliveries: &[RowDelivery]| {
+            capture
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(deliveries.to_vec());
+        }));
+        (loop_, sink)
+    }
+
+    fn calls(sink: &CallSink) -> Vec<Vec<RowDelivery>> {
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    #[test]
+    fn large_window_chunks_into_emitter_calls_of_at_most_512() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        for i in 0..1500 {
+            loop_.enqueue(delivery(
+                "q1",
+                RowChangeKind::Insert,
+                1,
+                &key("s", &format!("c{i}")),
+                &[("userMessage", serde_json::json!("q"))],
+            ));
+        }
+        assert_eq!(loop_.pending_count(), 1500);
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        assert_eq!(loop_.flush_due(), 1500, "count semantics unchanged");
+
+        let out = calls(&sink);
+        assert_eq!(out.len(), 3, "1500 = 512 + 512 + 476 → three emitter calls");
+        assert_eq!(out[0].len(), RTDB_MAX_EMISSION_BATCH);
+        assert_eq!(out[1].len(), RTDB_MAX_EMISSION_BATCH);
+        assert_eq!(out[2].len(), 476);
+        let total: usize = out.iter().map(Vec::len).sum();
+        assert_eq!(total, 1500, "full content across the chunks — nothing dropped");
+        assert_eq!(loop_.pending_count(), 0);
+    }
+
+    #[test]
+    fn window_of_exactly_one_chunk_emits_a_single_call() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        for i in 0..RTDB_MAX_EMISSION_BATCH {
+            loop_.enqueue(delivery("q1", RowChangeKind::Insert, 1, &key("s", &format!("c{i}")), &[]));
+        }
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        assert_eq!(loop_.flush_due(), RTDB_MAX_EMISSION_BATCH);
+        let out = calls(&sink);
+        assert_eq!(out.len(), 1, "exactly-one-chunk windows do not split");
+        assert_eq!(out[0].len(), RTDB_MAX_EMISSION_BATCH);
+    }
+
+    #[test]
+    fn zero_flush_ms_path_emits_a_single_element_envelope_per_patch() {
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q0", 0);
+        loop_.enqueue(delivery("q0", RowChangeKind::Insert, 1, &key("s", "c1"), &[]));
+        loop_.enqueue(delivery("q0", RowChangeKind::Update, 2, &key("s", "c1"), &[]));
+        let out = calls(&sink);
+        assert_eq!(out.len(), 2, "per-patch emission timing preserved (AC1-c)");
+        assert!(out.iter().all(|call| call.len() == 1));
+    }
+
+    #[test]
+    fn full_50k_row_replay_drains_with_a_bounded_number_of_emitter_calls() {
+        // Regression leg for FM-33: a full-table replay of ~50k rows must
+        // drain in ceil(N / RTDB_MAX_EMISSION_BATCH) emitter calls (= batch
+        // IPC envelopes), never one IPC event per row. Asserts the BOUND,
+        // not an exact count (the batch size is the knob).
+        let (loop_, sink) = call_counting_loop();
+        loop_.set_window("q1", DEFAULT_FLUSH_MS);
+        const ROWS: usize = 50_000;
+        for i in 0..ROWS {
+            loop_.enqueue(delivery(
+                "q1",
+                RowChangeKind::Insert,
+                1,
+                &key(&format!("s{}", i % 7), &format!("c{i}")),
+                &[("userMessage", serde_json::json!("replay"))],
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(DEFAULT_FLUSH_MS + 15));
+        let emitted_count = loop_.flush_due();
+        assert_eq!(emitted_count, ROWS, "every row drains");
+
+        let out = calls(&sink);
+        let expected_calls = ROWS.div_ceil(RTDB_MAX_EMISSION_BATCH); // 98
+        assert_eq!(
+            out.len(),
+            expected_calls,
+            "~50k rows → ~98 batch envelopes, not 50k IPC events"
+        );
+        assert!(out.len() <= 100, "bounded emission (assert the bound)");
+        assert!(out.iter().all(|call| call.len() <= RTDB_MAX_EMISSION_BATCH));
+        let total: usize = out.iter().map(Vec::len).sum();
+        assert_eq!(total, ROWS, "full replay content preserved");
     }
 }

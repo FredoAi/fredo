@@ -179,4 +179,96 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     expect(getRowEpoch('Chat')).toBe(0);
     expect(probe.v1Deliveries).toBe(0);
   });
+
+  // ── Batch envelopes (Spec #2788 F-33 fix, W-2) ──────────────────────────
+
+  it('routes a {"rowBatch": [...]} envelope through the bulk path — rows land with ONE epoch bump', () => {
+    const { adapter, dispatch } = makeAdapter();
+    render(
+      <StreamProvider>
+        <AppProvider adapter={adapter}>
+          <Probe />
+        </AppProvider>
+      </StreamProvider>,
+    );
+
+    const batch = {
+      rowBatch: [
+        { ...ROW_DELIVERY, key: { sessionId: 'ses_a', correlationId: 'c1' } },
+        { ...ROW_DELIVERY, key: { sessionId: 'ses_a', correlationId: 'c2' } },
+        { ...ROW_DELIVERY, key: { sessionId: 'ses_a', correlationId: 'c3' } },
+      ],
+    };
+
+    act(() => {
+      dispatch(batch as unknown as Record<string, unknown>);
+    });
+
+    expect(getRowMap('Chat').size).toBe(3, 'every batch element applied');
+    expect(getRowEpoch('Chat')).toBe(1, 'one batch → ONE epoch bump (not per delivery)');
+    expect(probe.v1Deliveries).toBe(0);
+  });
+
+  it('still routes single RowDelivery envelopes alongside batches (backward compatible)', () => {
+    const { adapter, dispatch } = makeAdapter();
+    render(
+      <StreamProvider>
+        <AppProvider adapter={adapter}>
+          <Probe />
+        </AppProvider>
+      </StreamProvider>,
+    );
+
+    act(() => {
+      dispatch({ rowBatch: [{ ...ROW_DELIVERY, key: { sessionId: 'ses_a', correlationId: 'c1' } }] } as unknown as Record<string, unknown>);
+      dispatch({ ...ROW_DELIVERY, key: { sessionId: 'ses_a', correlationId: 'c2' } } as unknown as Record<string, unknown>);
+    });
+
+    expect(getRowMap('Chat').size).toBe(2);
+    expect(getRowEpoch('Chat')).toBe(2, 'batch bump + single bump');
+  });
+
+  it('rejects a batch envelope carrying a malformed element without mutating the store', () => {
+    const { adapter, dispatch } = makeAdapter();
+    render(
+      <StreamProvider>
+        <AppProvider adapter={adapter}>
+          <Probe />
+        </AppProvider>
+      </StreamProvider>,
+    );
+
+    act(() => {
+      dispatch({
+        rowBatch: [
+          ROW_DELIVERY,
+          { queryId: 'q-1', eventType: 'Chat', kind: 'bogus', seq: 1, key: { sessionId: 'a', correlationId: 'b' } },
+        ],
+      } as unknown as Record<string, unknown>);
+    });
+
+    expect(getRowMap('Chat').size).toBe(0, 'rejected whole — never partially applied');
+    expect(getRowEpoch('Chat')).toBe(0);
+  });
+
+  it('routes batch, single, and v1 contract envelopes independently during coexistence', () => {
+    const { adapter, dispatch } = makeAdapter();
+    render(
+      <StreamProvider>
+        <AppProvider adapter={adapter}>
+          <Probe />
+        </AppProvider>
+      </StreamProvider>,
+    );
+
+    act(() => {
+      dispatch({ rowBatch: [ROW_DELIVERY] } as unknown as Record<string, unknown>);
+      dispatch(ROW_DELIVERY as unknown as Record<string, unknown>);
+      dispatch(CONTRACT_DELIVERY as unknown as Record<string, unknown>);
+    });
+
+    expect(getRowMap('Chat').size).toBe(1, 'same key from batch + single dedupes by row key');
+    expect(getRowEpoch('Chat')).toBe(1, 'the identical re-delivered insert is a content no-op — no extra bump');
+    expect(probe.v1Deliveries).toBe(1, 'v1 pipeline untouched');
+  });
 });

@@ -439,15 +439,15 @@ pub fn run() {
             // -- RTDB live pipeline (Spec #2788 P2.3) --------------------------
             // Registry (P2.2) + flush loop + eviction routing, behind
             // `Arc<Rtdb>` Tauri state. Emission goes through the EventBus's
-            // emit_row_delivery (the ONLY sanctioned RTDB emission path).
+            // emit_row_delivery_batch (the ONLY sanctioned RTDB emission
+            // path) — ONE batch IPC envelope per drained window chunk
+            // (F-33 fix, W-1), never one IPC event per row.
             let rtdb_registry = Arc::new(SubscriptionRegistry::new());
             let rtdb_emit_handle = app.handle().clone();
             let rtdb_flush = Arc::new(FlushLoop::new(Arc::new(
                 move |deliveries: &[RowDelivery]| {
                     let bus = rtdb_emit_handle.state::<EventBus>();
-                    for delivery in deliveries {
-                        bus.emit_row_delivery(delivery);
-                    }
+                    bus.emit_row_delivery_batch(deliveries);
                 },
             )));
             let rtdb: RtdbState = Arc::new(Rtdb::new(

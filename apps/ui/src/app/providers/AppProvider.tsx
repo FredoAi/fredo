@@ -6,8 +6,8 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream, applyRowDelivery } from '../../shared/contexts/StreamContext';
-import { isRowDelivery } from '../../shared/classes/EventSubscription';
+import { useStream, applyRowDelivery, applyRowDeliveries } from '../../shared/contexts/StreamContext';
+import { isRowDelivery, isRowDeliveryBatch } from '../../shared/classes/EventSubscription';
 import type { ContractDelivery } from '../../shared/classes/EventSubscription';
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
@@ -92,11 +92,21 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
 
   // Forward messages from the host's "fredo-stream-event" IPC channel into
   // the two coexisting pipelines (Spec #2788 strangler):
-  //  1. RTDB RowDelivery envelopes → the module-scoped row store (P4.1).
+  //  1. RTDB RowDelivery envelopes → the module-scoped row store (P4.1):
+  //     BATCH envelopes ({"rowBatch": [...]}, F-33 fix W-1) are checked
+  //     FIRST and applied via the bulk path (one epoch bump per touched
+  //     partition); single RowDelivery envelopes keep the per-delivery path.
   //  2. v1 ContractDelivery envelopes (ECE) → StreamContext.addDelivery —
   //     UNTOUCHED; features still run on v1 contracts until P4.2/P4.3.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
+      // RTDB BATCH envelope — discriminate by the `rowBatch` field BEFORE the
+      // single-delivery path (backward compatible: singles still work).
+      if (isRowDeliveryBatch(msg)) {
+        applyRowDeliveries(msg.rowBatch);
+        return;
+      }
+
       // RTDB row delivery — discriminate by field presence (queryId + kind
       // in the insert/update/remove domain; ContractDelivery has none of these).
       if (isRowDelivery(msg)) {

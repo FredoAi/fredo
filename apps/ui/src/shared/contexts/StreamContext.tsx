@@ -471,13 +471,15 @@ function shallowRowEqual(a: RtdbRow, b: RtdbRow): boolean {
 }
 
 /**
- * Apply one RowDelivery envelope to the row store. Called from
- * AppProvider's onMessage routing (after `isRowDelivery` validation).
- * Malformed envelopes are ignored.
+ * Apply one RowDelivery envelope WITHOUT touching the epoch. Returns true if
+ * the store mutated. Shared by `applyRowDelivery` (single) and
+ * `applyRowDeliveries` (bulk) so both paths carry IDENTICAL insert/seq/remove
+ * semantics (F-33 fix, W-2 — the bulk path must never diverge from the
+ * pinned single-delivery behavior). Malformed envelopes are ignored.
  */
-export function applyRowDelivery(delivery: RowDelivery): void {
+function applyRowDeliveryInner(delivery: RowDelivery): boolean {
   const partition = rowPartitionFor(delivery.eventType);
-  if (!partition) return;
+  if (!partition) return false;
   const key = rowKeyString(delivery.key);
   const patch = (delivery.patch ?? {}) as Partial<RtdbRow>;
 
@@ -485,9 +487,9 @@ export function applyRowDelivery(delivery: RowDelivery): void {
     if (partition.rows.has(key)) {
       partition.rows.delete(key);
       partition.seqs.delete(key);
-      bumpRowEpoch(partition);
+      return true;
     }
-    return;
+    return false;
   }
 
   if (delivery.kind === 'insert') {
@@ -496,8 +498,7 @@ export function applyRowDelivery(delivery: RowDelivery): void {
       // First sight of this key — the patch IS the row (full row on insert).
       partition.rows.set(key, { ...patch } as RtdbRow);
       partition.seqs.set(key, delivery.seq);
-      bumpRowEpoch(partition);
-      return;
+      return true;
     }
     // Key exists — spread-merge so init-time fields are never wiped.
     const merged = { ...prev, ...patch } as RtdbRow;
@@ -505,28 +506,63 @@ export function applyRowDelivery(delivery: RowDelivery): void {
     partition.seqs.set(key, delivery.seq);
     if (!shallowRowEqual(prev, merged)) {
       partition.rows.set(key, merged);
-      bumpRowEpoch(partition);
+      return true;
     }
-    return;
+    return false;
   }
 
   // update — drop patches stale relative to the last applied seq for this key.
   const lastSeq = partition.seqs.get(key);
   if (lastSeq !== undefined && delivery.seq < lastSeq) {
-    return;
+    return false;
   }
   const prev = partition.rows.get(key);
   if (!prev) {
     // Update-before-insert (burst reordering): adopt the patch as the row.
     partition.rows.set(key, { ...patch } as RtdbRow);
     partition.seqs.set(key, delivery.seq);
-    bumpRowEpoch(partition);
-    return;
+    return true;
   }
   const merged = { ...prev, ...patch } as RtdbRow;
   partition.seqs.set(key, delivery.seq);
   if (!shallowRowEqual(prev, merged)) {
     partition.rows.set(key, merged);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Apply one RowDelivery envelope to the row store. Called from
+ * AppProvider's onMessage routing (after `isRowDelivery` validation).
+ * The epoch bumps AT MOST ONCE — exactly when the envelope mutated the store.
+ */
+export function applyRowDelivery(delivery: RowDelivery): void {
+  const partition = rowPartitionFor(delivery.eventType);
+  if (!partition) return;
+  if (applyRowDeliveryInner(delivery)) {
+    bumpRowEpoch(partition);
+  }
+}
+
+/**
+ * Apply a BATCH of RowDelivery envelopes (the `{"rowBatch": [...]}` bulk
+ * path, F-33 fix W-2): every envelope is applied with the EXACT
+ * single-delivery insert/seq/remove semantics, then each TOUCHED partition
+ * bumps its epoch exactly ONCE per batch — renders are bounded per applied
+ * batch regardless of wire shape (protects flushMs:0 bursts and any future
+ * per-row emission path, not just the replay leg).
+ */
+export function applyRowDeliveries(deliveries: RowDelivery[]): void {
+  const touched = new Set<RowPartition>();
+  for (const delivery of deliveries) {
+    const partition = rowPartitionFor(delivery.eventType);
+    if (!partition) continue;
+    if (applyRowDeliveryInner(delivery)) {
+      touched.add(partition);
+    }
+  }
+  for (const partition of touched) {
     bumpRowEpoch(partition);
   }
 }
