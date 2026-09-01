@@ -1,12 +1,13 @@
 /**
- * Tests for useDeliverySessions — SQLite-driven session derivation.
+ * Tests for useDeliverySessions — replay-driven session derivation (P4.3).
  *
- * Mocks FeatureStore IPC calls for loadPersistedSessions and deleteSessionFromStore.
- * No deliveries param — hook loads sessions from SQLite on mount.
+ * Mocks the useEventRows row subscription (Chat rows via rowsFromDeliveries —
+ * the classifier semantics) and the FeatureStore IPC calls for
+ * loadPersistedSessions / deleteSessionFromStore.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
+import type { ChatRow, ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../../lib/graph';
 import { deriveDisplayName } from '../../lib/sessionMeta';
 
@@ -28,28 +29,41 @@ vi.mock('../../lib/persistence', () => ({
   initMmTables: vi.fn(),
   persistDelivery: vi.fn(),
   loadPersistedDeliveries: vi.fn(),
+  // Spec #2788 P4.3: tombstone seeding is awaited inside the mount load
+  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Controllable mock for the shared hydration helper (Spec #2768 ST-5).
-// Default: cold/empty store — resolves 0 rows without touching addDelivery.
-const mockHydrateContractEvents = vi.hoisted(() => vi.fn().mockResolvedValue(0));
+// Spec #2788 P4.3: the hook reads the replayed Chat rows via useEventRows —
+// mock it per test with rows converted from the v1 chat-node delivery
+// fixtures (rowsFromDeliveries applies the classifier semantics).
+const mockUseEventRows = vi.hoisted(() => vi.fn());
 
-vi.mock('../../../../shared/lib/contractHydration', () => ({
-  hydrateContractEvents: mockHydrateContractEvents,
-}));
-
-// Controllable mock for StreamContext — allows per-test delivery customization
-const mockUseStream = vi.hoisted(() => vi.fn().mockReturnValue({
-  deliveries: [],
-  isConnected: false,
-  addDelivery: vi.fn(),
-}));
-
-vi.mock('../../../../shared/contexts/StreamContext', () => ({
-  useStream: mockUseStream,
+vi.mock('../../../../shared/hooks/useEventRows', () => ({
+  useEventRows: mockUseEventRows,
 }));
 
 import { useDeliverySessions } from '../useSessionHistory';
+import { rowsFromDeliveries } from './fixtures/rowsFromDeliveries';
+
+/**
+ * Seed the useEventRows mock with Chat rows converted from v1 chat-node
+ * delivery fixtures (the classifier semantics). Deliveries without a
+ * correlationId get their id — one row per fixture delivery. `epoch` must
+ * BUMP across rerenders that add rows (the hook's effects memoize on it).
+ */
+function setChatRows(deliveries: ContractDelivery[], epoch = 1): void {
+  const normalized = deliveries.map((d) => ({
+    ...d,
+    key: { sessionId: d.key.sessionId, correlationId: d.key.correlationId ?? d.id },
+  }));
+  const { chatRows } = rowsFromDeliveries(normalized);
+  mockUseEventRows.mockReturnValue({
+    rows: new Map(chatRows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+    epoch,
+    error: null,
+    ready: true,
+  });
+}
 
 /**
  * #2748 ST-3 — a chat-node delivery carrying the adapter-injected
@@ -94,14 +108,8 @@ describe('useDeliverySessions', () => {
     // test's implementation does not leak into subsequent tests (it would
     // silently filter out any session named 'session-a').
     mockIsSessionDeleted.mockImplementation(() => false);
-    // Restore default StreamContext mock (empty deliveries)
-    mockUseStream.mockReturnValue({
-      deliveries: [],
-      isConnected: false,
-      addDelivery: vi.fn(),
-    });
-    // Restore default hydration mock (cold/empty store — 0 rows)
-    mockHydrateContractEvents.mockResolvedValue(0);
+    // Restore default row-store mock (empty Chat partition, ready)
+    setChatRows([], 1);
   });
 
   it('should return empty sessions when no persisted data exists', async () => {
@@ -454,13 +462,10 @@ describe('useDeliverySessions', () => {
     mockLoadPersistedSessions.mockResolvedValue([
       persistedSession({ sessionId: 'ses-deepseek-run' }),
     ]);
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'ses-deepseek-run', '2026-08-17T10:00:00.000Z',
-          'investigate the deepseek-v4-flash latency regression'),
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 'ses-deepseek-run', '2026-08-17T10:00:00.000Z',
+        'investigate the deepseek-v4-flash latency regression'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -488,12 +493,9 @@ describe('useDeliverySessions', () => {
     ]);
     // 60-char first user message — the display name is truncated at 40 incl. `…`.
     const longMessage = 'first message that is intentionally very long so the derived name gets truncated beyond the 40 character display budget';
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 's-long', '2026-08-17T10:00:00.000Z', longMessage),
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 's-long', '2026-08-17T10:00:00.000Z', longMessage),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -601,7 +603,7 @@ describe('useDeliverySessions', () => {
 
     mockLoadPersistedSessions.mockResolvedValue(persisted);
 
-    // Simulate live deliveries still in StreamContext for session-a
+    // Simulate replayed/live rows still in the row store for session-a
     const liveDelivery: ContractDelivery = {
       id: 'delivery-1',
       contractName: 'chat-node',
@@ -611,10 +613,7 @@ describe('useDeliverySessions', () => {
       timestamp: new Date(2500).toISOString(),
     };
 
-    mockUseStream.mockReturnValue({
-      deliveries: [liveDelivery],
-      isConnected: true,
-    });
+    setChatRows([liveDelivery]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -657,7 +656,7 @@ describe('useDeliverySessions', () => {
 
     expect(result.current.sessions).toHaveLength(0);
 
-    // Simulate new live deliveries arriving after deletion
+    // Simulate new rows arriving after deletion
     const newDelivery: ContractDelivery = {
       id: 'delivery-new',
       contractName: 'chat-node',
@@ -667,10 +666,7 @@ describe('useDeliverySessions', () => {
       timestamp: new Date(3000).toISOString(),
     };
 
-    mockUseStream.mockReturnValue({
-      deliveries: [newDelivery],
-      isConnected: true,
-    });
+    setChatRows([newDelivery], 2);
 
     // Re-render to pick up the new deliveries — session must stay gone
     await act(async () => {
@@ -728,15 +724,13 @@ describe('useDeliverySessions', () => {
       persistedSession({ sessionId: 'session-a' }),
     ]);
 
-    // Array order is append order — the earlier-timestamp message arrives
-    // second, so selection must compare timestamps, not array position.
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'session-a', '2026-01-01T10:02:00.000Z', 'second message, later'),
-        chatDelivery('d2', 'session-a', '2026-01-01T10:00:00.000Z', 'first message, earliest'),
-      ],
-      isConnected: true,
-    });
+    // Row order is row-key insertion order (replay seq order) — the
+    // earlier-timestamp message arrives as a LATER row, so selection must
+    // compare timestamps, not insertion order.
+    setChatRows([
+      chatDelivery('d1', 'session-a', '2026-01-01T10:02:00.000Z', 'second message, later'),
+      chatDelivery('d2', 'session-a', '2026-01-01T10:00:00.000Z', 'first message, earliest'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -753,12 +747,9 @@ describe('useDeliverySessions', () => {
   it('derives the name of a live-only (not-yet-persisted) session (AC1)', async () => {
     mockLoadPersistedSessions.mockResolvedValue([]);
 
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'hello from a live session'),
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'hello from a live session'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -771,38 +762,30 @@ describe('useDeliverySessions', () => {
     expect(session.derivedName).toBe('hello from a live session');
   });
 
-  // ── Reported bug: "some session stop showing, and if I reopen mission monitor
-  //    they show again" ────────────────────────────────────────────────────────
-  // Root cause: `persistedSessions` is loaded ONCE on mount. A session that
-  // starts LIVE during the panel's lifetime is persisted to SQLite by the
-  // panel's persistDelivery effect but never enters the mount-time snapshot —
-  // it is only visible through the live-only path that reads StreamContext
-  // `deliveries`. StreamContext TTL-shrinks `deliveries` after DELIVERY_TTL_MS
-  // (300s): once the session's deliveries age out, the session is in NEITHER
-  // `persistedSessions` (stale snapshot) NOR `deliveries` (shrunk) → it vanishes
-  // from the sidebar. Reopening remounts → loadPersistedSessions() re-reads
-  // SQLite → it returns. The fix: `refreshSessions()` re-reads SQLite into the
-  // snapshot (called by the panel after each persist batch), so the session
-  // survives TTL eviction of its deliveries.
-  it('a live-only session persists in the snapshot after refreshSessions — it does NOT vanish when its deliveries are TTL-shrunk', async () => {
-    // SQLite has no sessions at mount; the session is live-only via deliveries.
+  // ── Spec #2788 P4.3 — replay replaces the v1 TTL-shrink vanish class ────────
+  // Root cause of the v1 bug ("some sessions stop showing, and if I reopen
+  // mission monitor they show again"): a live-only session was visible only
+  // through StreamContext `deliveries`, which TTL-shrink after 300s. The row
+  // store has NO TTL eviction and NO cap — replay restores the full row
+  // history on remount — so the vanish class is structurally gone. This test
+  // pins: a row-only session survives a snapshot refresh, and the row count
+  // is authoritative over a concurrently-refreshed persisted snapshot.
+  it('a row-only session survives refreshSessions — the row store never TTL-evicts (replay replaces hydration)', async () => {
+    // The FeatureStore snapshot is empty at mount; the session is row-only.
     mockLoadPersistedSessions.mockResolvedValue([]);
 
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'first live message'),
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'first live message'),
+    ]);
 
-    const { result, rerender } = renderHook(() => useDeliverySessions());
+    const { result } = renderHook(() => useDeliverySessions());
 
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(1);
     });
 
-    // The panel's persist effect has persisted the session to SQLite — simulate
-    // the refresh it calls afterwards: SQLite now returns the persisted row.
+    // The snapshot refresh lands a persisted row for the session (name prefs /
+    // retention fallback) — it must not change the row-authoritative count.
     mockLoadPersistedSessions.mockResolvedValue([
       persistedSession({
         sessionId: 'session-live',
@@ -817,28 +800,36 @@ describe('useDeliverySessions', () => {
       await result.current.refreshSessions();
     });
 
-    // Still exactly one session — now backed by the SQLite snapshot.
+    // Still exactly one session — row count authoritative (1 row, not
+    // 3-persisted + 1-row), name still row-derived (snapshot has none).
     expect(result.current.sessions).toHaveLength(1);
     expect(result.current.sessions[0].sessionId).toBe('session-live');
+    expect(result.current.sessions[0].deliveryCount).toBe(1);
+    expect(result.current.sessions[0].derivedName).toBe('first live message');
+  });
 
-    // THE regression: StreamContext TTL-shrinks the session's deliveries out of
-    // the array (the 300s sweep). The session must SURVIVE — it is now in the
-    // persisted snapshot, not merely the shrunk live array.
-    mockUseStream.mockReturnValue({
-      deliveries: [],
-      isConnected: true,
-    });
+  it('a persisted session with NO rows (RTDB retention evicted) keeps its persisted snapshot values', async () => {
+    // The session's rows are gone from the row store (retention eviction,
+    // R-2d) — the persisted snapshot is the only source and its values pass
+    // through unchanged (the v1 fallback path).
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({
+        sessionId: 'session-evicted',
+        label: 'Old Session',
+        deliveryCount: 7,
+        startTime: 1000,
+        latestTimestamp: new Date(2000).toISOString(),
+      }),
+    ]);
+    setChatRows([], 1);
 
-    // Force a re-render so the memo recomputes against the shrunk deliveries.
-    rerender();
+    const { result } = renderHook(() => useDeliverySessions());
 
     await waitFor(() => {
-      const sessions = result.current.sessions;
-      expect(sessions).toHaveLength(1);
-      // deliveryCount falls back to the persisted 3 (no live add after shrink).
-      expect(sessions[0].deliveryCount).toBe(3);
+      expect(result.current.sessions).toHaveLength(1);
     });
-    expect(result.current.sessions[0].sessionId).toBe('session-live');
+    expect(result.current.sessions[0].deliveryCount).toBe(7);
+    expect(result.current.sessions[0].startTime).toBe(1000);
   });
 
   it('normalizes the persisted derived name and lets the custom name override it (AC2 R-2.3)', async () => {
@@ -870,12 +861,9 @@ describe('useDeliverySessions', () => {
       persistedSession({ sessionId: 'session-a' }),
     ]);
 
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'session-a', '2026-01-01T10:00:00.000Z', 'first live message'),
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 'session-a', '2026-01-01T10:00:00.000Z', 'first live message'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -892,8 +880,8 @@ describe('useDeliverySessions', () => {
     mockLoadPersistedSessions.mockResolvedValue([
       persistedSession({ sessionId: 'session-a', label: 'No Chat Label' }),
     ]);
-    // No live deliveries at all — no chat-node delivery to derive from.
-    mockUseStream.mockReturnValue({ deliveries: [], isConnected: false });
+    // No rows at all — no chat row to derive from.
+    setChatRows([], 1);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -912,14 +900,11 @@ describe('useDeliverySessions', () => {
       persistedSession({ sessionId: 'session-a', label: 'Empty Msg Label' }),
     ]);
 
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'session-a', '2026-01-01T10:00:00.000Z', '   '),
-        chatDelivery('d2', 'session-a', '2026-01-01T10:01:00.000Z', ''),
-        chatDelivery('d3', 'session-a', '2026-01-01T10:02:00.000Z'), // userMessage absent
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 'session-a', '2026-01-01T10:00:00.000Z', '   '),
+      chatDelivery('d2', 'session-a', '2026-01-01T10:01:00.000Z', ''),
+      chatDelivery('d3', 'session-a', '2026-01-01T10:02:00.000Z'), // userMessage absent
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -988,12 +973,9 @@ describe('useDeliverySessions', () => {
     mockSaveCustomName.mockResolvedValue(undefined);
     mockLoadPersistedSessions.mockResolvedValue([]);
 
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'derived from live'),
-      ],
-      isConnected: true,
-    });
+    setChatRows([
+      chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'derived from live'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -1034,13 +1016,11 @@ describe('useDeliverySessions', () => {
     // must stay armed.
     expect(result.current.userPickedRef.current).toBe(false);
 
-    // A NEW live session starts delivering mid-lifetime.
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'hello from the child run'),
-      ],
-      isConnected: true,
-    });
+    // A NEW live session starts delivering mid-lifetime (epoch bump — the
+    // hook's follow effect keys on the row-store epoch).
+    setChatRows([
+      chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'hello from the child run'),
+    ], 2);
     rerender();
 
     // Selection RETARGETS to the newly started session.
@@ -1072,13 +1052,11 @@ describe('useDeliverySessions', () => {
     expect(result.current.selectedSessionId).toBe('session-a');
     expect(result.current.userPickedRef.current).toBe(true);
 
-    // A new live session starts delivering — focus must NOT be stolen.
-    mockUseStream.mockReturnValue({
-      deliveries: [
-        chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'should not steal focus'),
-      ],
-      isConnected: true,
-    });
+    // A new live session starts delivering — focus must NOT be stolen
+    // (epoch bump).
+    setChatRows([
+      chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'should not steal focus'),
+    ], 2);
     rerender();
 
     await waitFor(() => {
@@ -1111,93 +1089,84 @@ describe('useDeliverySessions', () => {
   });
 });
 
-// ── Spec #2768 (ST-5): mount-time contract hydration ─────────────────────────
-describe('Spec #2768 (ST-5): mount-time contract hydration', () => {
-  /** Stateful StreamContext mock: addDelivery appends so the sessions memo
-   *  re-derives over hydrated rows exactly like the real context would. */
-  function mockStatefulStream(initial: ContractDelivery[] = []) {
-    let current: ContractDelivery[] = [...initial];
-    const addDelivery = vi.fn((d: ContractDelivery) => {
-      current = [...current, d];
+// ── Spec #2788 (P4.3): replay replaces the mount-time hydration ──────────────
+describe('Spec #2788 (P4.3): replay replaces mount-time hydration', () => {
+  /** Seed the row-store mock with a custom result (rows, readiness, error). */
+  function mockRowStore(chatRows: ChatRow[], opts?: { ready?: boolean; error?: string | null; epoch?: number }) {
+    mockUseEventRows.mockReturnValue({
+      rows: new Map(chatRows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+      epoch: opts?.epoch ?? 1,
+      error: opts?.error ?? null,
+      ready: opts?.ready ?? true,
     });
-    mockUseStream.mockImplementation(() => ({
-      deliveries: current,
-      isConnected: false,
-      addDelivery,
-    }));
-    return { addDelivery };
   }
 
-  it('replays persisted rows via addDelivery on mount, before `loaded` flips', async () => {
-    const { addDelivery } = mockStatefulStream();
+  function chatRow(sessionId: string, correlationId: string, updatedAt: string, userMessage: string | null): ChatRow {
+    return {
+      sessionId,
+      correlationId,
+      seq: 1,
+      startedAtNs: null,
+      endedAtNs: null,
+      updatedAt,
+      state: 'Response',
+      userMessage,
+      agentReply: null,
+      promptTokens: null,
+      completionTokens: null,
+      cacheReadTokens: null,
+      costUsd: null,
+      model: null,
+      parentSessionId: null,
+      compositedChildSessionId: null,
+      rawJson: '{}',
+    };
+  }
 
-    // Hydration injects one chat row (real session id shape irrelevant here)
-    const hydratedRow = chatDelivery('hyd-1', 'ses-hydrated', '2026-01-01T09:00:00.000Z', 'hydrated prompt');
-    mockHydrateContractEvents.mockImplementation(
-      (_contracts: unknown, inject: (d: ContractDelivery) => void) => {
-        inject(hydratedRow);
-        return Promise.resolve(1);
-      },
-    );
+  it('replayed snapshot rows are visible the moment `loaded` flips — no separate hydration fetch, no false-empty flash', async () => {
+    // The replay subscription delivered its snapshot (ready) — the backend-only
+    // session is already visible the moment the list unlocks.
+    mockRowStore([chatRow('ses-replayed', 'r1', '2026-01-01T09:00:00.000Z', 'replayed prompt')]);
     mockLoadPersistedSessions.mockResolvedValue([]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
-    // The helper was called for MM's three persistent contracts with the
-    // session list's addDelivery.
+    // `loaded` flips only AFTER both async sources settle — the replayed
+    // session is already in the first unlocked list (no blank flash).
     await waitFor(() => {
-      expect(mockHydrateContractEvents).toHaveBeenCalledWith(
-        ['chat-node', 'tool-use-lifecycle', 'subagent-tool-activity'],
-        expect.any(Function),
-      );
-    });
-    expect(addDelivery).toHaveBeenCalledWith(hydratedRow);
-
-    // `loaded` flips only AFTER hydration settles — the backend-only session
-    // is already visible the moment the list unlocks (no false-empty flash).
-    await waitFor(() => {
-      expect(result.current.sessions.some((s) => s.sessionId === 'ses-hydrated')).toBe(true);
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-replayed')).toBe(true);
     });
   });
 
-  it('hydrated rows do NOT double-count a persisted session (original-id replay)', async () => {
-    mockStatefulStream();
-
-    // The session is in the persisted snapshot with deliveryCount 3 — its
-    // hydrated replay rows (the SAME deliveries, original ids) must not raise
-    // the count to 5.
+  it('replayed rows do NOT double-count a persisted session — the row count REPLACES the snapshot count', async () => {
+    // The session sits in the persisted snapshot with deliveryCount 3 — a
+    // stale v1 figure. The replayed row store holds the session's TWO rows
+    // (full history, no TTL, no cap): the row count is authoritative and the
+    // snapshot count is never added on top (no 5, no 3 — exactly 2).
     mockLoadPersistedSessions.mockResolvedValue([
       persistedSession({ sessionId: 'ses-persisted', deliveryCount: 3 }),
     ]);
-    mockHydrateContractEvents.mockImplementation(
-      (_contracts: unknown, inject: (d: ContractDelivery) => void) => {
-        inject(chatDelivery('hyd-p1', 'ses-persisted', '2026-01-01T09:00:00.000Z', 'first'));
-        inject(chatDelivery('hyd-p2', 'ses-persisted', '2026-01-01T09:01:00.000Z', 'second'));
-        return Promise.resolve(2);
-      },
-    );
+    mockRowStore([
+      chatRow('ses-persisted', 'p1', '2026-01-01T09:00:00.000Z', 'first'),
+      chatRow('ses-persisted', 'p2', '2026-01-01T09:01:00.000Z', 'second'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(1);
     });
-    expect(result.current.sessions[0].deliveryCount).toBe(3);
+    expect(result.current.sessions[0].deliveryCount).toBe(2);
   });
 
-  it('hydrated rows surface a backend-only session through the live-only path', async () => {
-    mockStatefulStream();
-
+  it('replayed rows surface a backend-only session through the row-only path', async () => {
     // No persisted snapshot at all — the session streamed entirely while the
-    // panel was closed; its hydrated rows are the only source.
+    // panel was closed; its replayed rows are the only source.
     mockLoadPersistedSessions.mockResolvedValue([]);
-    mockHydrateContractEvents.mockImplementation(
-      (_contracts: unknown, inject: (d: ContractDelivery) => void) => {
-        inject(chatDelivery('hyd-b1', 'ses-backend-only', '2026-01-01T09:00:00.000Z', 'late prompt'));
-        inject(chatDelivery('hyd-b2', 'ses-backend-only', '2026-01-01T09:01:00.000Z', 'second turn'));
-        return Promise.resolve(2);
-      },
-    );
+    mockRowStore([
+      chatRow('ses-backend-only', 'b1', '2026-01-01T09:00:00.000Z', 'late prompt'),
+      chatRow('ses-backend-only', 'b2', '2026-01-01T09:01:00.000Z', 'second turn'),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -1206,36 +1175,35 @@ describe('Spec #2768 (ST-5): mount-time contract hydration', () => {
     });
     const session = result.current.sessions.find((s) => s.sessionId === 'ses-backend-only');
     expect(session?.deliveryCount).toBe(2);
-    // Derived name from the hydrated row's userMessage (earliest non-empty).
-    expect(session?.derivedName).toBeDefined();
+    // Derived name from the replayed row's userMessage (earliest non-empty).
+    expect(session?.derivedName).toBe('late prompt');
   });
 
-  it('hydration failure degrades gracefully — loaded still flips, no rows, no crash', async () => {
-    mockStatefulStream();
+  it('subscribe failure degrades gracefully — loaded still flips, persisted data only, no crash', async () => {
+    mockRowStore([], { ready: false, error: 'subscribe_events failed for query "chat { ... }"' });
     mockLoadPersistedSessions.mockResolvedValue([
       persistedSession({ sessionId: 'session-a' }),
     ]);
-    mockHydrateContractEvents.mockRejectedValue(new Error('store offline'));
 
     const { result } = renderHook(() => useDeliverySessions());
 
-    // The persisted snapshot still loads; hydration resolved to 0 rows.
+    // The persisted snapshot still loads; the loud error (R-3a, surfaced by
+    // useEventRows) must never wedge the `loaded` gate.
     await waitFor(() => {
       expect(result.current.sessions.some((s) => s.sessionId === 'session-a')).toBe(true);
     });
     expect(result.current.sessions).toHaveLength(1);
   });
 
-  it('a cold/empty store is a no-op — zero hydrated rows, normal empty state', async () => {
-    mockStatefulStream();
+  it('a cold/empty row store is a no-op — zero rows, normal empty state', async () => {
+    mockRowStore([]);
     mockLoadPersistedSessions.mockResolvedValue([]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
     await waitFor(() => {
-      expect(mockHydrateContractEvents).toHaveBeenCalled();
+      expect(result.current.sessions).toEqual([]);
     });
-    expect(result.current.sessions).toEqual([]);
     expect(result.current.selectedSessionId).toBeNull();
   });
 });

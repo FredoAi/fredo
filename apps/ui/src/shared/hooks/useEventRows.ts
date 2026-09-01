@@ -67,6 +67,19 @@ export interface UseEventRowsResult<Row> {
   epoch: number;
   /** Loud subscribe failure (verbatim backend error text) — `null` when subscribed. */
   error: string | null;
+  /**
+   * Replay-snapshot-phase signal (P4.3): true when the latest
+   * `subscribe_events` invocation RESOLVED. The backend runs the replay
+   * snapshot leg synchronously inside `subscribe` BEFORE returning
+   * (`infrastructure/rtdb/commands.rs` — Rtdb::subscribe → replay_query),
+   * so for a `replay: true` subscription a resolved promise means the
+   * snapshot inserts have been routed (they reach the webview within one
+   * flush window). Mount-time "loaded" gates wait on this instead of a
+   * separate hydration fetch. Reset to false on every re-subscribe; a
+   * subscribe FAILURE leaves it false (consumers must open their gate on
+   * `error !== null` too — never wedge on a failed subscription).
+   */
+  ready: boolean;
 }
 
 // ── Query text building ─────────────────────────────────────────────────────
@@ -181,6 +194,7 @@ export function useEventRows(
   const flushMs = options?.flushMs;
 
   const [error, setError] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => subscribeToRowEpoch(eventType, onStoreChange),
@@ -191,6 +205,10 @@ export function useEventRows(
   useEffect(() => {
     let cancelled = false;
     let queryId: string | undefined;
+
+    // Every (re-)subscribe starts in the not-ready state — the previous
+    // subscription's readiness must not leak into the new query.
+    setReady(false);
 
     const queryText = buildQueryText(eventType, args, canonicalFieldsFor(eventType));
     const invokeArgs: Record<string, unknown> = { queries: [queryText], replay };
@@ -213,6 +231,7 @@ export function useEventRows(
         }
         queryId = registered[0].queryId;
         setError(null);
+        setReady(true);
       })
       .catch((err) => {
         // R-3a: loud mount error surfacing — console.error + exposed state,
@@ -244,5 +263,6 @@ export function useEventRows(
     rows: getRowMap(eventType) as Map<string, ChatRow | ToolUseRow | AgentSessionRow>,
     epoch,
     error,
+    ready,
   };
 }

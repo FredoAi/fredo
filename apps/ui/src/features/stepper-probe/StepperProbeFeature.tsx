@@ -1,99 +1,85 @@
 /**
- * Stepper Probe Feature — Spec #2768 ST-6 (AC6 generic-store proof).
+ * Stepper Probe Feature — Spec #2768 ST-6 (AC6 generic-store proof), migrated
+ * to the RTDB row store in Spec #2788 P4.3.
  *
- * A minimal registered probe feature that proves the per-contract event store
- * is a GENERIC mechanism (AC6): it declares a second, non-Mission-Monitor
- * contract (`Fredo_ui_stepper`) with `persistent: true`, hydrates its persisted
- * deliveries on mount via the shared `hydrateContractEvents()` helper, and
- * reads hydrated rows through the existing `useStepperEvents()` hook.
+ * A minimal registered probe feature. Its READ path is now the typed RTDB row
+ * store: `useEventRows('ToolUse', { toolName: 'Fredo_ui_stepper' },
+ * { replay: true })` — the persisted snapshot restores as full-row inserts
+ * (replay replaces the v1 `hydrateContractEvents()` hydration, which this
+ * feature no longer calls) and live patches continue on the same path.
  *
  * ── Real event shape (verified in-repo, ST-6) ────────────────────────────────
  * Stepper events enter the pipeline exclusively via the CLI emit path
- * (`fredo emit` → named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich`
- * → ECE, `infrastructure/ipc.rs:140-160`). The CLI (`emit.rs:109-119`) always
- * builds `transport: hook` and defaults `provider: internal`; the stepper tool
- * is a Fredo UI-control tool invocation, so `event_type: tool_use` with
- * `toolName: "Fredo_ui_stepper"` and `payload: { steps: [...] }`
- * (`SideStepper.tsx:70` requires exactly that shape). A representative emission:
+ * (`fredo emit` → named-pipe `CliCommand::EmitEvent` → InternalAdapter enrich
+ * → ingest classifier, `infrastructure/rtdb/ingest.rs`). The CLI always builds
+ * `transport: hook` and defaults `provider: internal`; `event_type: tool_use`
+ * with `toolName: "Fredo_ui_stepper"` classifies into a ToolUseRow whose
+ * `toolName` column carries the tool name (ingest.rs maps
+ * `event.tool_name` → `tool_name`), so the row query below isolates the probe's
+ * rows by a typed-column equality arg (SQL pushdown on the snapshot leg).
+ * A representative emission:
  *
  *   fredo emit --event-type tool_use --tool-name Fredo_ui_stepper --state Init \
  *     --payload '{"steps":[{"title":"Step A","status":"Waiting"}]}'
  *
- * OTLP (the opencode plugin's only transport, transport `otlp_grpc`, provider
- * `open_code`) never carries stepper events — the providers/transports/
- * eventTypes filters below therefore isolate the contract to the real source.
+ * ── Why the v1 ECE contract stays declared ──────────────────────────────────
+ * The `Fredo_ui_stepper` contract below is KEPT until Phase 5: AppProvider
+ * navigates to the stepper page on any `Fredo_ui_stepper` INIT delivery
+ * (AppProvider.tsx:112) — a live v1 behavior this spec does not change. The
+ * keying on `payload.steps` (a field ONLY stepper events carry) keeps that
+ * path isolated from unrelated CLI tool_use events. The contract's delivery
+ * stream is no longer the probe's read path — it feeds only the v1 ECE
+ * consumers (AppProvider navigation) during coexistence.
  *
- * ── Why the composite key includes `payload.steps` ───────────────────────────
- * The ECE has no toolName filter field (`ContractDeclaration`, types.rs) —
- * `excludePayload` can only EXCLUDE (an absent path never matches), so a key of
- * `['sessionId', 'toolName']` would buffer EVERY CLI tool_use event and fire
- * `init` deliveries under this contract name for unrelated tools (AppProvider
- * navigates to the stepper page on any `Fredo_ui_stepper` init delivery,
- * `AppProvider.tsx:102-106` — a live-behavior regression). Keying on
- * `payload.steps` — a field ONLY stepper events carry — makes the composite-key
- * extraction double as the inclusion filter (REQ-10: a missing key field skips
- * the contract for that event, `engine.rs:303-311`), so non-stepper events
- * never buffer and never deliver. The key stays scoped per session, and the
- * store's `session_id` column (projected from `key.sessionId`,
- * `store.rs:128-132`) supports session-scoped hydration.
+ * ── Row-store note (P4.3) ────────────────────────────────────────────────────
+ * The module-scoped row store is keyed per EVENT TYPE, not per query — the
+ * probe's ToolUse partition is shared with every other ToolUse subscription.
+ * The backend filters this subscription's envelopes by the query args, but
+ * `useEventRows().rows` exposes the whole partition, so the probe filters its
+ * own rows client-side (epoch-keyed memo) — the documented consumer-side
+ * extraction pattern for arg-scoped subscriptions.
  *
- * ── Regression invariants ────────────────────────────────────────────────────
- * - `SideStepper.tsx` is untouched; the deliveries this contract produces are
- *   keyed `"state"` / `"payload.steps"` in the delivery payload, so the legacy
- *   raw-event consumer's `'steps' in event.payload` check (`SideStepper.tsx:70`)
- *   keeps evaluating exactly as before (no contract-derived event satisfies it).
- * - Mission Monitor is untouched; the store knows nothing about any feature.
- * - No `Home.tsx` edit — registration flows through `registerFeature()` +
- *   `allFeatures.ts` auto-glob + the existing `Home.tsx:60-63` contract flatMap.
- *
- * UI surface: a small dev/test-harness readout showing the hydrated-delivery
- * count (the QA-sanctioned probe shape) — nothing more.
+ * UI surface: a small dev/test-harness readout showing the replayed row count
+ * and the row-store epoch (the QA-sanctioned probe shape) — nothing more.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useMemo } from 'react';
 import { Box, Text, VStack } from '@chakra-ui/react';
 import { LuListOrdered } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
 import { FredoFeatureClass } from '../../shared/classes';
 import type { EventFilter } from '../../shared/classes';
 import type { FredoEvent } from '../../shared/contexts/StreamContext';
-import { useStream, useStepperEvents } from '../../shared/contexts/StreamContext';
 import type { ContractDelivery } from '../../shared/classes/EventSubscription';
-import { hydrateContractEvents } from '../../shared/lib/contractHydration';
+import { useEventRows } from '../../shared/hooks/useEventRows';
 
-/** Contract name — matches the legacy `useStepperEvents()` filter (StreamContext.tsx:381). */
+/** Contract name — the v1 ECE contract kept for AppProvider navigation (see header). */
 const STEPPER_CONTRACT = 'Fredo_ui_stepper';
 
+/** Tool name of the probe's row source — `fredo emit --tool-name` classifies
+ *  into ToolUseRow.toolName (ingest.rs), so the row query filters on it. */
+const STEPPER_TOOL_NAME = 'Fredo_ui_stepper';
+
 /**
- * The probe panel — hydrates persisted `Fredo_ui_stepper` deliveries on mount
- * and shows the hydrated-delivery count alongside the live stepper-delivery
- * count from the existing `useStepperEvents()` hook.
+ * The probe panel — subscribes the probe's ToolUse rows with replay (the
+ * persisted snapshot restores as full-row inserts) and shows the replayed row
+ * count alongside the row-store epoch.
  */
 const StepperProbePanel: React.FC = () => {
-  const { addDelivery } = useStream();
-  const stepperDeliveries = useStepperEvents();
+  const { rows, epoch, error, ready } = useEventRows(
+    'ToolUse',
+    { toolName: STEPPER_TOOL_NAME },
+    { replay: true },
+  );
 
-  /** Rows fetched + injected by the hydration helper (null until the call resolves). */
-  const [hydratedCount, setHydratedCount] = useState<number | null>(null);
-  const [hydrationError, setHydrationError] = useState<string | null>(null);
-
-  // Mount-time hydration — runs ONCE (addDelivery is a stable useCallback in
-  // StreamContext). No `deliveries.length` dependency (re-render-loop rule):
-  // the live count is read in render via the memoized useStepperEvents() hook.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const count = await hydrateContractEvents([STEPPER_CONTRACT], addDelivery);
-        if (!cancelled) setHydratedCount(count);
-      } catch (e) {
-        if (!cancelled) setHydrationError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [addDelivery]);
+  // Client-side filter over the shared ToolUse partition (see the header
+  // note) — epoch-keyed so the memo recomputes only on real row mutations
+  // (the #523-cycle-1 no-loop rule).
+  const stepperRows = useMemo(
+    () => [...rows.values()].filter((r) => r.toolName === STEPPER_TOOL_NAME),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, epoch],
+  );
 
   return (
     <Box
@@ -109,8 +95,7 @@ const StepperProbePanel: React.FC = () => {
           Stepper Probe
         </Text>
         <Text fontSize="sm" color="var(--text-secondary)">
-          Persistent contract <Text as="code">{STEPPER_CONTRACT}</Text> — Spec #2768 AC6
-          generic-store proof
+          RTDB rows for <Text as="code">{STEPPER_TOOL_NAME}</Text> — replay + live
         </Text>
         <Box
           border="1px solid var(--border-color)"
@@ -119,14 +104,14 @@ const StepperProbePanel: React.FC = () => {
           width="100%"
         >
           <Text fontSize="sm" color="var(--text-secondary)">
-            Hydrated deliveries
+            Replayed rows
           </Text>
           <Text fontSize="2xl" fontWeight="700" color="var(--accent-primary)">
-            {hydrationError !== null ? '—' : (hydratedCount ?? '…')}
+            {error !== null ? '—' : (ready ? String(stepperRows.length) : '…')}
           </Text>
-          {hydrationError !== null && (
+          {error !== null && (
             <Text fontSize="xs" color="var(--status-error)">
-              Hydration failed: {hydrationError}
+              Subscribe failed: {error}
             </Text>
           )}
         </Box>
@@ -137,10 +122,10 @@ const StepperProbePanel: React.FC = () => {
           width="100%"
         >
           <Text fontSize="sm" color="var(--text-secondary)">
-            Stepper deliveries in stream
+            Row-store epoch
           </Text>
           <Text fontSize="2xl" fontWeight="700" color="var(--text-primary)">
-            {stepperDeliveries.length}
+            {String(epoch)}
           </Text>
         </Box>
       </VStack>
@@ -154,15 +139,16 @@ export class StepperProbeFeature extends FredoFeatureClass {
   readonly icon: IconType = LuListOrdered;
   readonly isMultiWindow = false;
   // Dev/test harness panel — must stay openable from the launcher so QA can
-  // verify hydration against real persisted rows (AC6 test consumer).
+  // verify replay against real persisted rows (AC6 test consumer).
   readonly showable = true;
   // @deprecated — kept for base class compatibility
   readonly eventFilters: EventFilter[] = [];
 
   /**
-   * The ST-6 probe contract (AC6): a second, non-Mission-Monitor persistent
-   * contract. Registration is automatic — Home.tsx flatMaps every feature's
-   * `eventContracts` into `registerEventContracts()` on mount (Home.tsx:60-63).
+   * The ST-6 probe contract (AC6) — KEPT for the v1 ECE consumers during
+   * coexistence (AppProvider navigates on its init deliveries; the delivery
+   * layer persists it while the probe is closed). The probe's READ path is
+   * the RTDB row subscription above; this contract no longer feeds the panel.
    */
   readonly eventContracts = [
     {
@@ -186,19 +172,19 @@ export class StepperProbeFeature extends FredoFeatureClass {
       providers: ['internal'],
       transports: ['hook'],
       eventTypes: ['tool_use'],
-      // ST-6 (AC6): persisted by the delivery layer while the probe is closed;
-      // hydrated on mount via hydrateContractEvents().
+      // ST-6 (AC6): persisted by the delivery layer while the probe is closed.
       persistent: true,
     },
   ];
 
-  // @deprecated — kept for base class compatibility; the probe reads its
-  // deliveries via the useStepperEvents() hook, not handleDelivery.
+  // @deprecated — kept for base class compatibility; the probe reads its rows
+  // via the useEventRows() subscription, not handleDelivery.
   processEvent(_event: FredoEvent): void {}
 
   handleDelivery(_delivery: ContractDelivery): void {
-    // Read path is the useStepperEvents() hook (StreamContext deliveries) —
-    // hydration + live deliveries flow through the same queue.
+    // Read path is the useEventRows() RTDB subscription — replay inserts and
+    // live patches share one path. This no-op remains because the contract is
+    // still registered (AppProvider consumes its init deliveries).
   }
 
   render() {

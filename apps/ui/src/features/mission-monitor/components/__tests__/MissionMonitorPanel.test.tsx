@@ -27,6 +27,8 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
   markSessionDeleted: vi.fn(),
   isSessionDeleted: vi.fn(() => false),
+  // Spec #2788 P4.3: tombstone seeding — awaited inside useDeliverySessions' mount load
+  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
   // ST11: real implementations — pure watermark helpers used by the panel.
   createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
   nextUnseenDeliveries: (deliveries, state) => {
@@ -58,6 +60,8 @@ vi.mock('@/shared/hooks/useEventRows', async () => {
         rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
         epoch: 1,
         error: null,
+        // P4.3: the replay snapshot phase is settled — the loaded gate opens
+        ready: true,
       };
     },
   };

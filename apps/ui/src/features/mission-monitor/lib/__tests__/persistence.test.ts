@@ -58,13 +58,13 @@ describe('persistence', () => {
 
   // ── initMmTables ──────────────────────────────────────────────────────────
 
-  it('initMmTables ensures sessions, events, and session_names tables', async () => {
+  it('initMmTables ensures sessions, events, session_names, and deleted_sessions tables', async () => {
     mockEnsureTable.mockResolvedValue(undefined);
 
     await initMmTables();
 
-    // Should have been called for all three tables
-    expect(mockEnsureTable).toHaveBeenCalledTimes(3);
+    // Should have been called for all four tables
+    expect(mockEnsureTable).toHaveBeenCalledTimes(4);
 
     const sessionsCall = mockEnsureTable.mock.calls.find(
       (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'sessions'
@@ -75,10 +75,16 @@ describe('persistence', () => {
     const namesCall = mockEnsureTable.mock.calls.find(
       (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'session_names'
     );
+    // Spec #2788 P4.3: durable deletion tombstones (RTDB replay must never
+    // resurrect a deleted session after an app restart — REQ-3).
+    const deletedCall = mockEnsureTable.mock.calls.find(
+      (c: unknown[]) => (c[0] as Record<string, unknown>)?.tableName === 'deleted_sessions'
+    );
 
     expect(sessionsCall).toBeDefined();
     expect(eventsCall).toBeDefined();
     expect(namesCall).toBeDefined();
+    expect(deletedCall).toBeDefined();
 
     // Verify sessions columns
     const sessionsArgs = sessionsCall[0] as Record<string, unknown>;

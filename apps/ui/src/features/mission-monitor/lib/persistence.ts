@@ -81,12 +81,62 @@ export function isSessionDeleted(sessionId: string): boolean {
   return deletedSessionIds.has(sessionId);
 }
 
+/**
+ * Spec #2788 P4.3: persist a deletion tombstone so the deleted-session guard
+ * survives an app restart. RTDB replay re-inserts every row the backend
+ * SQLite store holds — a session deleted in a previous app run would
+ * otherwise resurrect in the sidebar (REQ-3 non-resurrection). Idempotent
+ * (INSERT is a no-op on the PK).
+ */
+export async function recordSessionDeleted(sessionId: string): Promise<void> {
+  try {
+    await ensureMmTables();
+    await featureStoreInsert({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_DELETED_SESSIONS_TABLE,
+      rows: [{ session_id: sessionId, deleted_at: new Date().toISOString() }],
+    });
+  } catch (err) {
+    console.warn('[MM] recordSessionDeleted failed:', err);
+  }
+}
+
+/**
+ * Spec #2788 P4.3: seed the module-level deleted set from the durable
+ * tombstones. Called once per mount by useDeliverySessions BEFORE the
+ * `loaded` gate flips, so a deleted session's replayed rows are filtered out
+ * from the first derived list (no deleted-session flash on mount).
+ */
+export async function seedDeletedSessionIdsIntoModule(): Promise<void> {
+  try {
+    await ensureMmTables();
+    const rows = await featureStoreQuery({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_DELETED_SESSIONS_TABLE,
+    });
+    for (const row of rows) {
+      const sid = (row as Record<string, unknown>)['session_id'] as string | undefined;
+      if (sid) deletedSessionIds.add(sid);
+    }
+  } catch (err) {
+    console.warn('[MM] deleted-session tombstone seed failed:', err);
+  }
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const MM_FEATURE_ID = 'mission-monitor';
 const MM_SESSIONS_TABLE = 'sessions';
 const MM_EVENTS_TABLE = 'events';
 const MM_SESSION_NAMES_TABLE = 'session_names';
+// Spec #2788 P4.3: durable deletion tombstones. The v1 anti-resurrection guard
+// relied on the FeatureStore sessions/events rows being the ONLY source a
+// deleted session could come back from (deleteSessionFromStore removed them).
+// With the sidebar deriving from RTDB rows (replay restores every row from the
+// backend SQLite store, which MM's delete cannot touch), a deleted session
+// would resurrect after an app restart. A tombstone row survives restart and
+// re-seeds the module-level deleted set at every mount.
+const MM_DELETED_SESSIONS_TABLE = 'deleted_sessions';
 const MM_MAX_SESSIONS = 50;
 const MM_MAX_DELIVERIES_PER_SESSION = 500;
 
@@ -242,6 +292,15 @@ export async function initMmTables(): Promise<void> {
         { name: 'session_id', colType: 'TEXT', primaryKey: true },
         { name: 'custom_name', colType: 'TEXT', nullable: true },
         { name: 'derived_name', colType: 'TEXT', nullable: true },
+      ],
+    }),
+    // Spec #2788 P4.3: durable deletion tombstones (see the constant comment).
+    featureStoreEnsureTable({
+      featureId: MM_FEATURE_ID,
+      tableName: MM_DELETED_SESSIONS_TABLE,
+      columns: [
+        { name: 'session_id', colType: 'TEXT', primaryKey: true },
+        { name: 'deleted_at', colType: 'TEXT' },
       ],
     }),
   ]);
@@ -762,7 +821,10 @@ export async function deleteSessionFromStore(sessionId: string): Promise<void> {
     // Ordered async: delete each child key's rows and mark it deleted so
     // concurrent child persistDelivery calls cannot resurrect it (REQ-3 for
     // child keys). Child rows are keyed by the CHILD id — invisible to the
-    // root deletes above.
+    // root deletes above. Tombstones are recorded for the root AND every
+    // discovered child (RTDB replay must never resurrect either after a
+    // restart — P4.3).
+    await recordSessionDeleted(sessionId);
     for (const childId of childIds) {
       markSessionDeleted(childId);
       await featureStoreDelete({
@@ -770,6 +832,7 @@ export async function deleteSessionFromStore(sessionId: string): Promise<void> {
         tableName: MM_EVENTS_TABLE,
         whereCols: { session_id: childId },
       });
+      await recordSessionDeleted(childId);
     }
   } catch (err) {
     console.warn('[MM] deleteSessionFromStore failed:', err);

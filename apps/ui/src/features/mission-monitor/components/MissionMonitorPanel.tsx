@@ -11,7 +11,6 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useWindowActions } from '@maomaolabs/core';
-import { useStream } from '../../../shared/contexts/StreamContext';
 import { useEventRows } from '../../../shared/hooks/useEventRows';
 import { tint } from '../../../shared/utils/colorTint';
 import { useDeliveryGraph, type RowGraphSources } from '../hooks/useMissionMonitor';
@@ -26,9 +25,8 @@ import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
-import { deliverySessionId } from '../lib/deliveryCompat';
 import type { DetailOpenTarget } from '../lib/graph';
-import { initMmTables, persistDelivery, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
+import { initMmTables } from '../lib/persistence';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -647,7 +645,15 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 // ── Outer panel ───────────────────────────────────────────────────────────────
 
 export const MissionMonitorPanel: React.FC = () => {
-  const { deliveries } = useStream();
+  // ── #2788 P4.3: the typed-row source for EVERYTHING in the panel ──────────
+  // Graph + session metrics + session list all read the shared module-scoped
+  // row store via `useEventRows(..., { replay: true })` — the persisted
+  // snapshot restores as full-row inserts and live patches continue on the
+  // same path (one rendering path for restored + live, UI/UX parity
+  // constraint 3). `useDeliverySessions` holds its own Chat subscription for
+  // its `ready` gate; duplicate envelopes dedupe by row key (idempotent).
+  const chatRows = useEventRows('Chat', {}, { replay: true });
+  const toolUseRows = useEventRows('ToolUse', {}, { replay: true });
   const {
     sessions,
     filteredSessions,
@@ -656,7 +662,6 @@ export const MissionMonitorPanel: React.FC = () => {
     followSession,
     deleteSession,
     renameSession,
-    refreshSessions,
     searchFilter,
     setSearchFilter,
     userPickedRef,
@@ -693,51 +698,22 @@ export const MissionMonitorPanel: React.FC = () => {
     initMmTables();
   }, []);
 
-  // Persist new deliveries to SQLite (serialized to eliminate concurrent races).
-  // ST11: shrink-safe watermark — the StreamContext deliveries array is TTL-shrunk
-  // from the front (DELIVERY_TTL_MS=300s, 60s sweep). A bare count cursor would go
-  // stale below a shrink and silently strand deliveries appended afterwards
-  // (round-6 signature: 2 rows persisted out of 5 chat spans). The watermark
-  // (count cursor + delivery-id Set) resets on shrink and re-derives the delta
-  // idempotently, so persistence can never skip a delivery that is in the array.
-  // (SIDEBAR path — P4.3 migrates the session list onto replay; the graph no
-  // longer consumes these persisted deliveries.)
-  const persistedWatermarkRef = useRef<DeliveryWatermarkState>(createDeliveryWatermark());
-
-  useEffect(() => {
-    const newDeliveries = nextUnseenDeliveries(deliveries, persistedWatermarkRef.current);
-    if (newDeliveries.length === 0) return;
-    // Serialize persistence calls to eliminate concurrent race conditions.
-    // After the batch lands in SQLite, refresh the session snapshot so a session
-    // that started LIVE during the panel's lifetime (and was only visible via the
-    // live-only path) enters `persistedSessions` — otherwise StreamContext's TTL
-    // eviction of its deliveries (DELIVERY_TTL_MS=300s) makes it vanish from the
-    // sidebar until a remount re-reads SQLite.
-    (async () => {
-      for (const d of newDeliveries) {
-        await persistDelivery(d);
-      }
-      await refreshSessions();
-    })();
-  }, [deliveries.length, refreshSessions]);
-
   // ── Auto-follow new sessions (#2758 round-22 C1) ──────────────────────────
   // Belt-and-suspenders layer over the hook's authoritative follow effect.
-  // Previously this guard was equally one-shot ("only-if-null"): a panel
-  // mounted with any existing session never re-targeted a newly started live
-  // session, leaving its nodes suppressed by the Phase-3 emission filter. Now
-  // a NEWLY SEEN sessionId in deliveries is FOLLOWED even when another session
-  // is already auto-selected — but NEVER over an explicit user pick (row click
-  // flips userPickedRef). First pass seeds the known set: everything observable
-  // at mount predates this panel instance and must not steal focus. Uses
-  // followSession (NOT selectSession) so userPickedRef stays false; membership
-  // of the target in `sessions` excludes deleted sessions (REQ-3).
+  // A NEWLY SEEN sessionId in the Chat row store is FOLLOWED even when another
+  // session is already auto-selected — but NEVER over an explicit user pick
+  // (row click flips userPickedRef). First pass seeds the known set:
+  // everything observable at mount predates this panel instance and must not
+  // steal focus. Uses followSession (NOT selectSession) so userPickedRef stays
+  // false; membership of the target in `sessions` excludes deleted sessions
+  // (REQ-3). Keyed on the row-store EPOCH — never on map identity/size (the
+  // #523-cycle-1 no-loop rule).
   const knownSessionIdsRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (knownSessionIdsRef.current === null) {
       const seed = new Set<string>();
-      for (const d of deliveries) {
-        const sid = deliverySessionId(d);
+      for (const row of chatRows.rows.values()) {
+        const sid = row.sessionId;
         if (sid) seed.add(sid);
       }
       knownSessionIdsRef.current = seed;
@@ -746,8 +722,10 @@ export const MissionMonitorPanel: React.FC = () => {
 
     const known = knownSessionIdsRef.current;
     let newestNewSid: string | null = null;
-    for (const d of deliveries) {
-      const sid = deliverySessionId(d);
+    // Map iteration order is row-key insertion order = arrival order — the
+    // LAST newly seen sessionId wins when several appear in one batch.
+    for (const row of chatRows.rows.values()) {
+      const sid = row.sessionId;
       if (sid && !known.has(sid)) {
         newestNewSid = sid;
       }
@@ -767,9 +745,10 @@ export const MissionMonitorPanel: React.FC = () => {
       followSession(newestNewSid);
     }
     // Deliberately NOT adding non-followed new sids to the known set: until the
-    // derived list catches up they retry on the next deliveries batch —
+    // derived list catches up they retry on the next epoch bump —
     // mirrors the hook's self-healing policy.
-  }, [deliveries, sessions, followSession, userPickedRef]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatRows.epoch, sessions, followSession, userPickedRef]);
 
   // ── Session metrics (Spec #2717 R-1, #2723 R-1, #2743 ST-3 / AC-12) ───────
   // Top-strip figures derived from the same TYPED ROWS the graph builder
@@ -794,12 +773,9 @@ export const MissionMonitorPanel: React.FC = () => {
   // combined `estimatedCost` figure (UI/UX: ONE figure, `$X.XXXX`; the
   // parenthetical in its title/aria-label documents the inclusion).
   // No-subagent sessions sum `+ 0` and render byte-unchanged (AC1-2).
-  // #2788 P4.2: the typed-row source for the graph + session metrics —
-  // `useEventRows('Chat' | 'ToolUse', { replay: true })`. The persisted
-  // snapshot restores as full-row inserts (replay replaces the v1 hydration
-  // path); the shared module-scoped row store survives mount/unmount.
-  const chatRows = useEventRows('Chat', {}, { replay: true });
-  const toolUseRows = useEventRows('ToolUse', {}, { replay: true });
+  // #2788 P4.3: the row sources were subscribed at the top of the component —
+  // `useEventRows('Chat' | 'ToolUse', { replay: true })` over the shared
+  // module-scoped row store. The memo re-derives on the monotonic epochs.
   const rowSources = useMemo(
     () => ({ chat: chatRows, toolUse: toolUseRows }),
     // eslint-disable-next-line react-hooks/exhaustive-deps

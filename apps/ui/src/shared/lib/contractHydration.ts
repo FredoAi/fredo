@@ -1,6 +1,13 @@
 /**
  * Contract hydration helper — Spec #2768 (ST-4).
  *
+ * ⚠ Spec #2788 P4.3 — PREP FOR DELETION (Phase 5): no feature calls this
+ * anymore. Mission Monitor (useSessionHistory) and StepperProbe read the RTDB
+ * row store via `useEventRows(..., { replay: true })`, whose snapshot inserts
+ * replace this mount-time fetch. The export in `src/index.ts` remains only
+ * for the public-API surface during coexistence; the whole file is deleted
+ * together with the v1 `contract_events_hydrate` IPC in Phase 5 (parity-gated).
+ *
  * Pull-based hydration for ANY feature: fetches the persisted
  * `SubscriptionDelivery` rows for the given contract names from the backend
  * `ContractEventStore` and injects them into StreamContext in emission (seq)
