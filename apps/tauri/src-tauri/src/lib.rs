@@ -495,6 +495,20 @@ pub fn run() {
                 run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx).await;
             });
 
+            // RTDB canonical backfill (Spec #2788 P3.2, REQs R-2b/R-4c):
+            // re-derives canonical rows for PRE-CUTOVER history from
+            // telemetry_spans (strictly READ-ONLY) through the SAME ingest
+            // classifier — one shared extract-rule implementation keeps
+            // re-derivation byte-comparable with live derivation (NFR-6).
+            // Spawned: never blocks startup. Idempotent: content-identical
+            // re-merges skip the write (no seq inflation); a one-shot
+            // completion marker keeps later startups O(1).
+            let backfill_handle = app.handle().clone();
+            let backfill_dir = data_dir.clone();
+            tauri::async_runtime::spawn(async move {
+                infrastructure::rtdb::backfill::run_startup_backfill(&backfill_handle, &backfill_dir);
+            });
+
             // -- IPC server (OpenCode plugin event path) -----------------------------
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
