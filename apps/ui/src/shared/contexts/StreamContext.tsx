@@ -16,9 +16,15 @@
  * deliveries.
  */
 
-import React, { createContext, useContext, useReducer, useMemo, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useMemo, useCallback, useEffect, useSyncExternalStore } from 'react';
 import { EVENT_TTL_MS, DELIVERY_TTL_MS, CLEANUP_INTERVALS } from '../constants';
-import type { ContractDelivery } from '../classes/EventSubscription';
+import type {
+  ContractDelivery,
+  RowDelivery,
+  RowEventType,
+  RtdbRow,
+} from '../classes/EventSubscription';
+import { rowKeyString } from '../classes/EventSubscription';
 
 /**
  * Stream event structure (from backend)
@@ -400,4 +406,158 @@ export function useConnectionStatus() {
     () => ({ isConnected }),
     [isConnected]
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RTDB ROW STORE — Spec #2788 P4.1
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Module-scoped row store fed by RowDelivery envelopes routed from
+// AppProvider (the v1 ContractDelivery pipeline above stays untouched —
+// strangler coexistence). Semantics (pinned by P4.1):
+//
+// - `insert` = full-row set; spread-merge into an existing row so init-time
+//   fields are never wiped; sets the per-key seq baseline.
+// - `update` = `{ ...row, ...patch }` merge; patches with a seq LOWER than
+//   the last applied seq for that key are dropped (out-of-order/replayed
+//   burst robustness).
+// - `remove` = delete key (only ever originates from backend retention
+//   eviction); removing an absent key is a no-op.
+// - NO cap/TTL eviction of live rows — the 5000-cap/TTL below governs the v1
+//   delivery LIST only. Replay replaces hydration by re-inserting rows.
+//
+// The store is module-scoped (not React state) per the AGENTS.md persistence
+// rule: feature mounts/unmounts must not wipe live rows. `epoch` is a
+// monotonic per-eventType counter that advances ONLY on a real mutation, so
+// consumers memo/effect off a stable primitive instead of fresh object
+// identities (kills the #523-cycle-1 re-render-loop class at the API level).
+
+interface RowPartition {
+  rows: Map<string, RtdbRow>;
+  /** Last applied seq per row key — stale-patch detection. */
+  seqs: Map<string, number>;
+  epoch: number;
+  listeners: Set<() => void>;
+}
+
+const rowPartitions: Record<RowEventType, RowPartition> = {
+  Chat: { rows: new Map(), seqs: new Map(), epoch: 0, listeners: new Set() },
+  ToolUse: { rows: new Map(), seqs: new Map(), epoch: 0, listeners: new Set() },
+  AgentSession: { rows: new Map(), seqs: new Map(), epoch: 0, listeners: new Set() },
+};
+
+function rowPartitionFor(eventType: RowEventType): RowPartition {
+  return rowPartitions[eventType];
+}
+
+function bumpRowEpoch(partition: RowPartition): void {
+  partition.epoch += 1;
+  for (const listener of partition.listeners) {
+    listener();
+  }
+}
+
+/** Flat rows only (the typed row structs have no nested objects) — shallow
+ * equality over own enumerable keys decides whether a patch mutated. */
+function shallowRowEqual(a: RtdbRow, b: RtdbRow): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (a[key as keyof RtdbRow] !== b[key as keyof RtdbRow]) return false;
+  }
+  return true;
+}
+
+/**
+ * Apply one RowDelivery envelope to the row store. Called from
+ * AppProvider's onMessage routing (after `isRowDelivery` validation).
+ * Malformed envelopes are ignored.
+ */
+export function applyRowDelivery(delivery: RowDelivery): void {
+  const partition = rowPartitionFor(delivery.eventType);
+  if (!partition) return;
+  const key = rowKeyString(delivery.key);
+  const patch = (delivery.patch ?? {}) as Partial<RtdbRow>;
+
+  if (delivery.kind === 'remove') {
+    if (partition.rows.has(key)) {
+      partition.rows.delete(key);
+      partition.seqs.delete(key);
+      bumpRowEpoch(partition);
+    }
+    return;
+  }
+
+  if (delivery.kind === 'insert') {
+    const prev = partition.rows.get(key);
+    if (!prev) {
+      // First sight of this key — the patch IS the row (full row on insert).
+      partition.rows.set(key, { ...patch } as RtdbRow);
+      partition.seqs.set(key, delivery.seq);
+      bumpRowEpoch(partition);
+      return;
+    }
+    // Key exists — spread-merge so init-time fields are never wiped.
+    const merged = { ...prev, ...patch } as RtdbRow;
+    // Inserts set the seq baseline (replay replaces hydration).
+    partition.seqs.set(key, delivery.seq);
+    if (!shallowRowEqual(prev, merged)) {
+      partition.rows.set(key, merged);
+      bumpRowEpoch(partition);
+    }
+    return;
+  }
+
+  // update — drop patches stale relative to the last applied seq for this key.
+  const lastSeq = partition.seqs.get(key);
+  if (lastSeq !== undefined && delivery.seq < lastSeq) {
+    return;
+  }
+  const prev = partition.rows.get(key);
+  if (!prev) {
+    // Update-before-insert (burst reordering): adopt the patch as the row.
+    partition.rows.set(key, { ...patch } as RtdbRow);
+    partition.seqs.set(key, delivery.seq);
+    bumpRowEpoch(partition);
+    return;
+  }
+  const merged = { ...prev, ...patch } as RtdbRow;
+  partition.seqs.set(key, delivery.seq);
+  if (!shallowRowEqual(prev, merged)) {
+    partition.rows.set(key, merged);
+    bumpRowEpoch(partition);
+  }
+}
+
+/** Subscribe to epoch changes for one row event type (useSyncExternalStore). */
+export function subscribeToRowEpoch(eventType: RowEventType, listener: () => void): () => void {
+  const partition = rowPartitionFor(eventType);
+  partition.listeners.add(listener);
+  return () => {
+    partition.listeners.delete(listener);
+  };
+}
+
+/** Current epoch for one row event type — stable primitive, advances only on real mutation. */
+export function getRowEpoch(eventType: RowEventType): number {
+  return rowPartitionFor(eventType).epoch;
+}
+
+/** Live rows map for one event type (read alongside `getRowEpoch`). */
+export function getRowMap(eventType: RowEventType): Map<string, RtdbRow> {
+  return rowPartitionFor(eventType).rows;
+}
+
+/**
+ * Test-only: wipe the module-scoped row store. Never call from app code.
+ */
+export function resetRowStoreForTests(): void {
+  for (const partition of Object.values(rowPartitions)) {
+    partition.rows.clear();
+    partition.seqs.clear();
+    partition.epoch = 0;
+    // Listeners survive — they belong to live hook subscriptions.
+  }
 }

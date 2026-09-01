@@ -145,6 +145,217 @@ export interface EventContractConsumer {
   handleDelivery(delivery: ContractDelivery): void;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RTDB ROW TYPES — Spec #2788 (P4.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Typed row structs mirroring the Rust RTDB rows (`infrastructure/rtdb/
+ * rows.rs`, camelCase serde wire shape). Field names are STABLE — the backend
+ * projects patch keys straight from this serde shape, never re-keyed.
+ *
+ * `state` is PascalCase per the Rust RowState enum (`"Init" | "Update" |
+ * "Response" | "Timeout" | "Error"`).
+ */
+export type RowState = 'Init' | 'Update' | 'Response' | 'Timeout' | 'Error';
+
+/** Root event type of an RTDB subscription (Rust `EventTypeArg`, PascalCase serde). */
+export type RowEventType = 'Chat' | 'ToolUse' | 'AgentSession';
+
+/** Composite row identity — one row per (sessionId, correlationId). */
+export interface RowKey {
+  sessionId: string;
+  correlationId: string;
+}
+
+/** A completed chat turn (one per-turn ECE composite key). */
+export interface ChatRow {
+  sessionId: string;
+  correlationId: string;
+  /** Per-key monotonic sequence — durable, seeded from MAX(seq) on backfill. */
+  seq: number;
+  /** Span start, epoch nanoseconds. */
+  startedAtNs: number | null;
+  /** Span end, epoch nanoseconds (`null` while the turn streams). */
+  endedAtNs: number | null;
+  /** RFC3339 last-write stamp. */
+  updatedAt: string;
+  state: RowState;
+  /** User prompt text (init-time data — survives every later patch). */
+  userMessage: string | null;
+  /** Assistant reply text (latest non-empty wins). */
+  agentReply: string | null;
+  /** Per-turn prompt delta. */
+  promptTokens: number | null;
+  /** Per-turn completion output. */
+  completionTokens: number | null;
+  /** Per-turn cache-read delta. */
+  cacheReadTokens: number | null;
+  /** Per-turn cost in USD. */
+  costUsd: number | null;
+  /** Model id (`gen_ai.response.model`). */
+  model: string | null;
+  /** Parent session attribution join. */
+  parentSessionId: string | null;
+  /** #523 ECE re-key stamp — original child session id on composited rows. */
+  compositedChildSessionId: string | null;
+  /** Escape hatch — the latest raw delivery payload as JSON. */
+  rawJson: string;
+}
+
+/** One tool execution (`execute_tool` span). */
+export interface ToolUseRow {
+  sessionId: string;
+  correlationId: string;
+  seq: number;
+  startedAtNs: number | null;
+  endedAtNs: number | null;
+  updatedAt: string;
+  state: RowState;
+  /** Tool name (`gen_ai.tool.name`). */
+  toolName: string | null;
+  /** Outcome flag (`tool.success` — `false` is a meaningful outcome). */
+  toolSuccess: boolean | null;
+  /** Failure text (`tool.error`). */
+  toolError: string | null;
+  /** Execution duration in milliseconds. */
+  durationMs: number | null;
+  /** Call arguments JSON (fixed at call time). */
+  toolInputJson: string | null;
+  /** Result JSON. */
+  toolOutputJson: string | null;
+  /** Subagent dispatch marker. */
+  isSubagent: boolean | null;
+  rawJson: string;
+}
+
+/** Session-level aggregate (`run_agent` span). */
+export interface AgentSessionRow {
+  sessionId: string;
+  correlationId: string;
+  seq: number;
+  startedAtNs: number | null;
+  endedAtNs: number | null;
+  updatedAt: string;
+  state: RowState;
+  /** Session-cumulative tokens. */
+  totalTokens: number | null;
+  /** Session-cumulative message count. */
+  totalMessages: number | null;
+  /** Session-cumulative cost in USD. */
+  totalCostUsd: number | null;
+  /** Agent display name (`gen_ai.agent.name`). */
+  agentName: string | null;
+  rawJson: string;
+}
+
+export type RtdbRow = ChatRow | ToolUseRow | AgentSessionRow;
+
+/** Canonical per-row-type selection fields — mirrors rows.rs field tables verbatim. */
+export const CHAT_ROW_FIELDS: readonly string[] = [
+  'sessionId',
+  'correlationId',
+  'seq',
+  'startedAtNs',
+  'endedAtNs',
+  'updatedAt',
+  'state',
+  'userMessage',
+  'agentReply',
+  'promptTokens',
+  'completionTokens',
+  'cacheReadTokens',
+  'costUsd',
+  'model',
+  'parentSessionId',
+  'compositedChildSessionId',
+  'rawJson',
+];
+
+export const TOOL_USE_ROW_FIELDS: readonly string[] = [
+  'sessionId',
+  'correlationId',
+  'seq',
+  'startedAtNs',
+  'endedAtNs',
+  'updatedAt',
+  'state',
+  'toolName',
+  'toolSuccess',
+  'toolError',
+  'durationMs',
+  'toolInputJson',
+  'toolOutputJson',
+  'isSubagent',
+  'rawJson',
+];
+
+export const AGENT_SESSION_ROW_FIELDS: readonly string[] = [
+  'sessionId',
+  'correlationId',
+  'seq',
+  'startedAtNs',
+  'endedAtNs',
+  'updatedAt',
+  'state',
+  'totalTokens',
+  'totalMessages',
+  'totalCostUsd',
+  'agentName',
+  'rawJson',
+];
+
+/** What happened to a key in a query's result set. */
+export type RowChangeKind = 'insert' | 'update' | 'remove';
+
+/**
+ * RTDB patch envelope — arrives on the existing "fredo-stream-event" IPC
+ * channel DURING COEXISTENCE with the v1 `ContractDelivery` envelopes.
+ * Discriminate by field presence via `isRowDelivery` (RowDelivery carries
+ * `queryId` + `kind`; ContractDelivery carries `contractName` + `lifecycle`).
+ */
+export interface RowDelivery {
+  queryId: string;
+  eventType: RowEventType;
+  kind: RowChangeKind;
+  /** The row's durable per-key monotonic sequence at this mutation. */
+  seq: number;
+  key: RowKey;
+  /** Full row on insert; changed+selected fields only on update; `null` on remove. */
+  patch: Partial<RtdbRow> | null;
+  /** RFC3339 emission time. */
+  timestamp: string;
+}
+
+const ROW_CHANGE_KINDS: readonly string[] = ['insert', 'update', 'remove'];
+const ROW_EVENT_TYPES: readonly string[] = ['Chat', 'ToolUse', 'AgentSession'];
+
+/**
+ * Discriminate an incoming "fredo-stream-event" payload as an RTDB
+ * RowDelivery (vs the v1 ContractDelivery). Single extraction path — no
+ * heuristic fallbacks: the envelope MUST carry the full pinned field set.
+ */
+export function isRowDelivery(msg: unknown): msg is RowDelivery {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
+  const m = msg as Record<string, unknown>;
+  if (typeof m.queryId !== 'string' || m.queryId.length === 0) return false;
+  if (typeof m.kind !== 'string' || !ROW_CHANGE_KINDS.includes(m.kind)) return false;
+  if (typeof m.seq !== 'number' || !Number.isFinite(m.seq)) return false;
+  if (typeof m.eventType !== 'string' || !ROW_EVENT_TYPES.includes(m.eventType)) return false;
+  const key = m.key;
+  if (!key || typeof key !== 'object' || Array.isArray(key)) return false;
+  const k = key as Record<string, unknown>;
+  return typeof k.sessionId === 'string' && typeof k.correlationId === 'string';
+}
+
+/**
+ * Stable composite key for a RowKey — the Map key used by the row store and
+ * returned by useEventRows (`sessionId` + NUL separator + `correlationId`).
+ */
+export function rowKeyString(key: RowKey): string {
+  return `${key.sessionId}\u0000${key.correlationId}`;
+}
+
 /**
  * Register feature contracts with the ECE via Tauri IPC.
  * Called at feature mount. Returns a function to deregister at unmount.

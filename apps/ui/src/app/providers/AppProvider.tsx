@@ -6,7 +6,8 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream } from '../../shared/contexts/StreamContext';
+import { useStream, applyRowDelivery } from '../../shared/contexts/StreamContext';
+import { isRowDelivery } from '../../shared/classes/EventSubscription';
 import type { ContractDelivery } from '../../shared/classes/EventSubscription';
 import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
@@ -89,12 +90,21 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
     return () => setConnectionStatus(false);
   }, []);
 
-  // Forward ContractDelivery objects from the ECE (Rust backend) via IPC
-  // into StreamContext's delivery queue. The ECE emits SubscriptionDelivery
-  // (serialized as ContractDelivery in TypeScript) on the "fredo-stream-event" IPC channel.
+  // Forward messages from the host's "fredo-stream-event" IPC channel into
+  // the two coexisting pipelines (Spec #2788 strangler):
+  //  1. RTDB RowDelivery envelopes → the module-scoped row store (P4.1).
+  //  2. v1 ContractDelivery envelopes (ECE) → StreamContext.addDelivery —
+  //     UNTOUCHED; features still run on v1 contracts until P4.2/P4.3.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
-      // ContractDelivery from the ECE — the new pipeline
+      // RTDB row delivery — discriminate by field presence (queryId + kind
+      // in the insert/update/remove domain; ContractDelivery has none of these).
+      if (isRowDelivery(msg)) {
+        applyRowDelivery(msg);
+        return;
+      }
+
+      // ContractDelivery from the ECE — the v1 pipeline
       if (msg && typeof msg === 'object' && 'contractName' in msg && 'lifecycle' in msg) {
         const delivery = msg as unknown as ContractDelivery;
 
