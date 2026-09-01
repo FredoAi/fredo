@@ -1,13 +1,14 @@
 /**
  * Tests for useDeliverySessions — replay-driven session derivation (P4.3).
  *
- * Mocks the useEventRows row subscription (Chat rows via rowsFromDeliveries —
- * the classifier semantics) and the FeatureStore IPC calls for
+ * Mocks the useEventRows row subscription with TYPED Chat rows (the RTDB
+ * row-store shape — P4.4 removed the v1 delivery fixtures this suite used to
+ * convert through rowsFromDeliveries) and the FeatureStore IPC calls for
  * loadPersistedSessions / deleteSessionFromStore.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import type { ChatRow, ContractDelivery } from '../../../../shared/classes/EventSubscription';
+import type { ChatRow } from '../../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../../lib/graph';
 import { deriveDisplayName } from '../../lib/sessionMeta';
 
@@ -33,9 +34,10 @@ vi.mock('../../lib/persistence', () => ({
   seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Spec #2788 P4.3: the hook reads the replayed Chat rows via useEventRows —
-// mock it per test with rows converted from the v1 chat-node delivery
-// fixtures (rowsFromDeliveries applies the classifier semantics).
+// Spec #2788 P4.4: the suite feeds TYPED Chat rows directly (the row-store
+// shape `useEventRows('Chat', {}, { replay: true })` returns) — no v1
+// delivery fixtures. `epoch` must BUMP across rerenders that add rows (the
+// hook's effects memoize on it).
 const mockUseEventRows = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../../shared/hooks/useEventRows', () => ({
@@ -43,50 +45,44 @@ vi.mock('../../../../shared/hooks/useEventRows', () => ({
 }));
 
 import { useDeliverySessions } from '../useSessionHistory';
-import { rowsFromDeliveries } from './fixtures/rowsFromDeliveries';
 
 /**
- * Seed the useEventRows mock with Chat rows converted from v1 chat-node
- * delivery fixtures (the classifier semantics). Deliveries without a
- * correlationId get their id — one row per fixture delivery. `epoch` must
- * BUMP across rerenders that add rows (the hook's effects memoize on it).
+ * Seed the useEventRows mock with typed Chat rows (the RTDB row-store shape).
  */
-function setChatRows(deliveries: ContractDelivery[], epoch = 1): void {
-  const normalized = deliveries.map((d) => ({
-    ...d,
-    key: { sessionId: d.key.sessionId, correlationId: d.key.correlationId ?? d.id },
-  }));
-  const { chatRows } = rowsFromDeliveries(normalized);
+function setChatRows(rows: ChatRow[], epoch = 1): void {
   mockUseEventRows.mockReturnValue({
-    rows: new Map(chatRows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+    rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
     epoch,
     error: null,
     ready: true,
   });
 }
 
-/**
- * #2748 ST-3 — a chat-node delivery carrying the adapter-injected
- * `userMessage` (2-level ECE payload nesting, matching extractDeliveryPayload).
- */
-function chatDelivery(
-  id: string,
+/** A typed ChatRow with the P4.4 test defaults (userMessage overridable). */
+function chatRow(
   sessionId: string,
-  timestamp: string,
-  userMessage?: string,
-): ContractDelivery {
+  correlationId: string,
+  updatedAt: string,
+  userMessage: string | null,
+): ChatRow {
   return {
-    id,
-    contractName: 'chat-node',
-    lifecycle: 'init',
-    key: { sessionId },
-    payload: {
-      payload: {
-        ...(userMessage !== undefined ? { userMessage } : {}),
-        agentReply: 'reply',
-      },
-    },
-    timestamp,
+    sessionId,
+    correlationId,
+    seq: 1,
+    startedAtNs: null,
+    endedAtNs: null,
+    updatedAt,
+    state: 'Response',
+    userMessage,
+    agentReply: 'reply',
+    promptTokens: null,
+    completionTokens: null,
+    cacheReadTokens: null,
+    costUsd: null,
+    model: null,
+    parentSessionId: null,
+    compositedChildSessionId: null,
+    rawJson: '{}',
   };
 }
 
@@ -463,7 +459,7 @@ describe('useDeliverySessions', () => {
       persistedSession({ sessionId: 'ses-deepseek-run' }),
     ]);
     setChatRows([
-      chatDelivery('d1', 'ses-deepseek-run', '2026-08-17T10:00:00.000Z',
+      chatRow('ses-deepseek-run', 'r1', '2026-08-17T10:00:00.000Z',
         'investigate the deepseek-v4-flash latency regression'),
     ]);
 
@@ -494,7 +490,7 @@ describe('useDeliverySessions', () => {
     // 60-char first user message — the display name is truncated at 40 incl. `…`.
     const longMessage = 'first message that is intentionally very long so the derived name gets truncated beyond the 40 character display budget';
     setChatRows([
-      chatDelivery('d1', 's-long', '2026-08-17T10:00:00.000Z', longMessage),
+      chatRow('s-long', 'r1', '2026-08-17T10:00:00.000Z', longMessage),
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -604,16 +600,9 @@ describe('useDeliverySessions', () => {
     mockLoadPersistedSessions.mockResolvedValue(persisted);
 
     // Simulate replayed/live rows still in the row store for session-a
-    const liveDelivery: ContractDelivery = {
-      id: 'delivery-1',
-      contractName: 'chat-node',
-      lifecycle: 'update',
-      key: { sessionId: 'session-a' },
-      payload: {},
-      timestamp: new Date(2500).toISOString(),
-    };
-
-    setChatRows([liveDelivery]);
+    setChatRows([
+      chatRow('session-a', 'r-live', new Date(2500).toISOString(), null),
+    ]);
 
     const { result } = renderHook(() => useDeliverySessions());
 
@@ -657,16 +646,9 @@ describe('useDeliverySessions', () => {
     expect(result.current.sessions).toHaveLength(0);
 
     // Simulate new rows arriving after deletion
-    const newDelivery: ContractDelivery = {
-      id: 'delivery-new',
-      contractName: 'chat-node',
-      lifecycle: 'init',
-      key: { sessionId: 'session-b' },
-      payload: {},
-      timestamp: new Date(3000).toISOString(),
-    };
-
-    setChatRows([newDelivery], 2);
+    setChatRows([
+      chatRow('session-b', 'r-new', new Date(3000).toISOString(), null),
+    ], 2);
 
     // Re-render to pick up the new deliveries — session must stay gone
     await act(async () => {
@@ -728,8 +710,8 @@ describe('useDeliverySessions', () => {
     // earlier-timestamp message arrives as a LATER row, so selection must
     // compare timestamps, not insertion order.
     setChatRows([
-      chatDelivery('d1', 'session-a', '2026-01-01T10:02:00.000Z', 'second message, later'),
-      chatDelivery('d2', 'session-a', '2026-01-01T10:00:00.000Z', 'first message, earliest'),
+      chatRow('session-a', 'r1', '2026-01-01T10:02:00.000Z', 'second message, later'),
+      chatRow('session-a', 'r2', '2026-01-01T10:00:00.000Z', 'first message, earliest'),
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -748,7 +730,7 @@ describe('useDeliverySessions', () => {
     mockLoadPersistedSessions.mockResolvedValue([]);
 
     setChatRows([
-      chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'hello from a live session'),
+      chatRow('session-live', 'r1', '2026-01-01T10:00:00.000Z', 'hello from a live session'),
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -775,7 +757,7 @@ describe('useDeliverySessions', () => {
     mockLoadPersistedSessions.mockResolvedValue([]);
 
     setChatRows([
-      chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'first live message'),
+      chatRow('session-live', 'r1', '2026-01-01T10:00:00.000Z', 'first live message'),
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -862,7 +844,7 @@ describe('useDeliverySessions', () => {
     ]);
 
     setChatRows([
-      chatDelivery('d1', 'session-a', '2026-01-01T10:00:00.000Z', 'first live message'),
+      chatRow('session-a', 'r1', '2026-01-01T10:00:00.000Z', 'first live message'),
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -901,9 +883,9 @@ describe('useDeliverySessions', () => {
     ]);
 
     setChatRows([
-      chatDelivery('d1', 'session-a', '2026-01-01T10:00:00.000Z', '   '),
-      chatDelivery('d2', 'session-a', '2026-01-01T10:01:00.000Z', ''),
-      chatDelivery('d3', 'session-a', '2026-01-01T10:02:00.000Z'), // userMessage absent
+      chatRow('session-a', 'r1', '2026-01-01T10:00:00.000Z', '   '),
+      chatRow('session-a', 'r2', '2026-01-01T10:01:00.000Z', ''),
+      chatRow('session-a', 'r3', '2026-01-01T10:02:00.000Z', null), // userMessage absent
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -974,7 +956,7 @@ describe('useDeliverySessions', () => {
     mockLoadPersistedSessions.mockResolvedValue([]);
 
     setChatRows([
-      chatDelivery('d1', 'session-live', '2026-01-01T10:00:00.000Z', 'derived from live'),
+      chatRow('session-live', 'r1', '2026-01-01T10:00:00.000Z', 'derived from live'),
     ]);
 
     const { result } = renderHook(() => useDeliverySessions());
@@ -1019,7 +1001,7 @@ describe('useDeliverySessions', () => {
     // A NEW live session starts delivering mid-lifetime (epoch bump — the
     // hook's follow effect keys on the row-store epoch).
     setChatRows([
-      chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'hello from the child run'),
+      chatRow('ses-live-new', 'r1', '2026-01-02T10:00:00.000Z', 'hello from the child run'),
     ], 2);
     rerender();
 
@@ -1055,7 +1037,7 @@ describe('useDeliverySessions', () => {
     // A new live session starts delivering — focus must NOT be stolen
     // (epoch bump).
     setChatRows([
-      chatDelivery('d1', 'ses-live-new', '2026-01-02T10:00:00.000Z', 'should not steal focus'),
+      chatRow('ses-live-new', 'r1', '2026-01-02T10:00:00.000Z', 'should not steal focus'),
     ], 2);
     rerender();
 
