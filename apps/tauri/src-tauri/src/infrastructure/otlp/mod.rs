@@ -5,7 +5,7 @@
 ///   • HTTP on 127.0.0.1:4318  — for OpenCode (OTLP/HTTP, otlp-http exporter type)
 ///
 /// Both servers receive OTLP signals (traces, metrics, logs), persist them raw
-/// on receipt, and emit EngineInput-driven deliveries via the ECE → EventBus.
+/// on receipt, and feed the RTDB ingest classifier (row pipeline).
 pub mod grpc;
 pub mod http;
 pub mod raw;

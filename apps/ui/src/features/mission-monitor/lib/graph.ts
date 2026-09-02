@@ -11,9 +11,10 @@
  * Capsule E builds the session sidebar.
  * Capsule F builds the detail panel.
  *
- * Spec #2788 P4.2: the graph is derived from typed RTDB rows
- * (`lib/rowDerivation.ts`) — the v1 delivery-shaping helpers that lived here
- * moved to `lib/deliveryCompat.ts` (sidebar-only, deleted in Phase 5).
+ * Spec #2788 P4.2/P5.1: the graph is derived from typed RTDB rows
+ * (`lib/rowDerivation.ts`) — the v1 delivery-shaping helpers were deleted
+ * with the v1 pipeline (the deprecated `ContractDelivery` type survives only
+ * as the historical test fixtures' input shape).
  */
 
 import type { MonitorNodeData } from '../types';

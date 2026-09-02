@@ -1,7 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Box, VStack, Popover } from '@chakra-ui/react';
 import { motion } from 'framer-motion';
-import { useStream } from '../../../shared/contexts/StreamContext';
+import {
+  useConnectionStatus,
+  subscribeToRowMutationLog,
+  getRowMutationLogVersion,
+} from '../../../shared/contexts/StreamContext';
 import { TOAST_DURATION } from '../../../shared/constants';
 
 const RECENT_ACTIVITY_WINDOW = TOAST_DURATION.SHORT; // 2 seconds
@@ -86,25 +90,26 @@ const LED: React.FC<{ state: LEDState; label: string; description: string }> = (
 };
 
 export const StreamStatus: React.FC = () => {
-  const { isConnected, deliveries } = useStream();
+  const { isConnected } = useConnectionStatus();
   const [lastActivityEpoch, setLastActivityEpoch] = useState(0);
 
-  // Track latest delivery timestamp — stable dependency, no array-length churn.
-  // Using deliveries (the primary data source from the ECE) avoids the
-  // backward-compat events array whose length changes on every delivery.
-  const latestTimestamp = useMemo(() => {
-    if (deliveries.length === 0) return null;
-    return deliveries[deliveries.length - 1].timestamp;
-  }, [deliveries.length, deliveries[deliveries.length - 1]?.timestamp]);
+  // Track latest RTDB row mutation — stable primitive dependency, no
+  // array-length churn. The row-mutation log version advances exactly when a
+  // row delivery mutates the store (P5.1: replaces the deleted v1 delivery
+  // queue as the activity signal).
+  const mutationVersion = useSyncExternalStore(
+    subscribeToRowMutationLog,
+    getRowMutationLogVersion,
+  );
 
-  // When a new delivery arrives, bump a monotonic epoch counter
+  // When a new row mutation arrives, bump a monotonic epoch counter
   // so the LED state derivation runs. Using an epoch counter instead of
-  // events.length avoids re-render cascades (Bug #523 cycle 1).
+  // array length avoids re-render cascades (Bug #523 cycle 1).
   useEffect(() => {
-    if (latestTimestamp) {
+    if (mutationVersion > 0) {
       setLastActivityEpoch((prev) => prev + 1);
     }
-  }, [latestTimestamp]);
+  }, [mutationVersion]);
 
   // Derive LED state from connection flag and last activity epoch.
   // Memoized — no setState inside effect, eliminating re-render loops.

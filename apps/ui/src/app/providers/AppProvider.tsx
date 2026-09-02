@@ -8,8 +8,7 @@ import React, {
 } from 'react';
 import { useStream, applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shared/contexts/StreamContext';
 import { isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
-import type { ContractDelivery } from '../../shared/classes/EventSubscription';
-import { MCP_BASE_URL, STEP_STATUSES } from '../../shared/constants';
+import { STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 
 export interface Step {
@@ -65,7 +64,7 @@ interface AppProviderProps {
 }
 
 export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) => {
-  const { addDelivery, setConnectionStatus } = useStream();
+  const { setConnectionStatus } = useStream();
 
   const [isEnabled, setIsEnabled] = useState(true);
   const [isOnTargetUrl, setIsOnTargetUrl] = useState(false);
@@ -91,16 +90,13 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   }, []);
 
   // Forward messages from the host's "fredo-stream-event" IPC channel into
-  // the two coexisting pipelines (Spec #2788 strangler):
-  //  1. RTDB RowDelivery envelopes → the module-scoped row store (P4.1):
-  //     BATCH envelopes ({"rowBatch": [...]}, F-33 fix W-1) are checked
-  //     FIRST and applied via the bulk path (one epoch bump per touched
-  //     partition; during a replay drain the bumps collapse to ONE settle
-  //     at the replayCompleteQueryId marker — round-3 F-33 fix, applied
-  //     BEFORE settling so the settle bump reflects final rows);
-  //     single RowDelivery envelopes keep the per-delivery path.
-  //  2. v1 ContractDelivery envelopes (ECE) → StreamContext.addDelivery —
-  //     UNTOUCHED; features still run on v1 contracts until P4.2/P4.3.
+  // the RTDB row pipeline (Spec #2788 — the ONLY delivery path since P5.1):
+  // BATCH envelopes ({"rowBatch": [...]}, F-33 fix W-1) are checked FIRST and
+  // applied via the bulk path (one epoch bump per touched partition; during a
+  // replay drain the bumps collapse to ONE settle at the replayCompleteQueryId
+  // marker — round-3 F-33 fix, applied BEFORE settling so the settle bump
+  // reflects final rows); single RowDelivery envelopes keep the per-delivery
+  // path. Anything else on the wire is not an RTDB envelope and is dropped.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
       // RTDB BATCH envelope — discriminate by the `rowBatch` field BEFORE the
@@ -118,33 +114,14 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
       }
 
       // RTDB row delivery — discriminate by field presence (queryId + kind
-      // in the insert/update/remove domain; ContractDelivery has none of these).
+      // in the insert/update/remove domain).
       if (isRowDelivery(msg)) {
         applyRowDelivery(msg);
         return;
       }
-
-      // ContractDelivery from the ECE — the v1 pipeline
-      if (msg && typeof msg === 'object' && 'contractName' in msg && 'lifecycle' in msg) {
-        const delivery = msg as unknown as ContractDelivery;
-
-        // Auto-navigate to stepper on Fredo_ui_stepper Init
-        if (delivery.contractName === 'Fredo_ui_stepper' && delivery.lifecycle === 'init') {
-          if (currentPageRef.current !== 'steps' && currentPageRef.current !== 'dev-mode') {
-            setCurrentPage('steps');
-          }
-        }
-
-        addDelivery(delivery);
-        return;
-      }
-
-      // NOTE: Raw FredoEvent objects are no longer delivered via IPC per REQ-14.
-      // The ECE silently drops unmatched events (REQ-9). Only ContractDelivery
-      // objects reach the frontend.
     });
     return unsubscribe;
-  }, [adapter, addDelivery]);
+  }, [adapter]);
 
   const addStep = (step: Step) => setSteps((prev) => [...prev, step]);
   const updateStep = (index: number, stepUpdate: Partial<Step>) =>

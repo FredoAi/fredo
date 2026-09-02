@@ -12,7 +12,6 @@ export type { ThemeContextType } from './app/providers/ThemeProvider';
 export { settingsService, serializeValue } from './features/settings';
 
 export { StreamProvider, useStream } from './shared/contexts/StreamContext';
-export type { StreamEvent, FredoEvent, FredoEventError, EventType, EventProvider, Transport } from './shared/contexts/StreamContext';
 
 export { CompanionProvider, useCompanion } from './shared/contexts/CompanionContext';
 export type { CompanionState, CompanionPosition } from './shared/contexts/CompanionContext';
@@ -36,7 +35,6 @@ export { Toaster } from './shared/components/ui/toaster';
 export { Router } from './app/routes/Router';
 
 // ── Feature components ────────────────────────────────────────────────────────
-export { AlertHandler } from './features/home';
 export { ThemeSelector } from './features/home/components/settings/ThemeSelector';
 export { AnimationSelector } from './features/home/components/settings/AnimationSelector';
 export { SettingsPanel } from './features/home/components/settings/SettingsPanel';
@@ -63,9 +61,4 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
-export type { EventFilter, GridItemConfig } from './shared/classes/types';
-export type { EventContractDeclaration, ContractDelivery } from './shared/classes/EventSubscription';
-export { registerEventContracts } from './shared/classes/EventSubscription';
-export { hydrateContractEvents } from './shared/lib/contractHydration';
-export type { HydrateContractEventsOptions } from './shared/lib/contractHydration';
-export { useDeliveryFilter, useLatestDeliveryFilter } from './shared/hooks/useDeliveryFilter';
+export type { GridItemConfig } from './shared/classes/types';

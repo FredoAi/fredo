@@ -1,35 +1,8 @@
 /**
  * Supporting types for FredoFeatureClass
- *
- * ── Backward Compat ────────────────────────────────────────────────────────
- * EventFilter is deprecated but kept exported so existing feature files
- * that import it continue to compile. New features should use
- * EventContractDeclaration and ContractDelivery from EventSubscription.ts
- * instead.
- *
- * ── ECE Types ─────────────────────────────────────────────────────────────
- * EventContractDeclaration and ContractDelivery are re-exported from
- * EventSubscription.ts for convenience.
  */
 
 import type { FredoFeatureClass } from './FredoFeatureClass';
-
-/**
- * Event filter configuration
- * Determines which events a feature should process
- *
- * @deprecated Use EventContractDeclaration + handleDelivery on
- * FredoFeatureClass instead. eventFilters is removed from
- * FredoFeatureClass — features migrating to the ECE should
- * declare eventContracts.
- */
-export interface EventFilter {
-  toolNames?: string[];
-  /** @deprecated Use lifecycle on ContractDelivery instead */
-  states?: string[];
-  /** @deprecated Use custom matching in handleDelivery instead */
-  custom?: (event: any) => boolean;
-}
 
 /**
  * Grid item configuration
@@ -48,6 +21,3 @@ export interface GridItem {
   id: string;
   feature: FredoFeatureClass;
 }
-
-// Re-export ECE types for convenience
-export type { EventContractDeclaration, ContractDelivery } from './EventSubscription';

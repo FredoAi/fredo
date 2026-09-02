@@ -1,148 +1,31 @@
 /**
- * Event Contract Engine — TypeScript Contract Types
+ * RTDB Row Types — TypeScript wire contracts (Spec #2788, P4.1)
  *
- * Replaces the old Spec #252 EventSubscription system with a contract-based
- * pipeline. The ECE (Rust backend) buffers raw FredoEvent objects, evaluates
- * completeWhen conditions, and delivers SubscriptionDelivery objects to the
- * frontend via the "fredo-stream-event" IPC channel.
+ * Mirrors the Rust RTDB row structs (`infrastructure/rtdb/rows.rs`, camelCase
+ * serde wire shape) and the delivery envelopes emitted by the backend flush
+ * loop on the "fredo-stream-event" IPC channel (the ONLY event channel — the
+ * v1 contract-engine pipeline was deleted in Spec #2788 P5.1).
  *
- * Features declare typed eventContracts on FredoFeatureClass. Non-feature
- * components use useDeliveryFilter to receive contract events.
- *
- * ── Backward Compatibility ─────────────────────────────────────────────────
- * Old types (LifecycleState, EventContract, ChatNodeContract,
- * FredoEventContract, SubscriptionDelivery<C>, EventSubscription) are kept
- * for features not yet migrated to eventContracts. New code should use
- * EventContractDeclaration and ContractDelivery.
- *
- * ── New Pipeline Types ─────────────────────────────────────────────────────
- * - EventContractDeclaration: Declares a feature's contract interest
- *   (mirrors Rust ContractDeclaration).
- * - ContractDelivery: Delivery envelope from the ECE (mirrors Rust
- *   SubscriptionDelivery). Full accumulated payload per REQ-13.
- * - registerEventContracts(): Registers contracts with ECE via Tauri IPC.
+ * Field names are STABLE — the backend projects patch keys straight from this
+ * serde shape, never re-keyed.
  */
 
-// ═══════════════════════════════════════════════════════════════════════════
-// OLD TYPES — kept for backward compat (pre-migration features)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** @deprecated Use ContractDelivery.lifecycle ("init"|"update"|"end") instead */
-export type LifecycleState = "Init" | "Update" | "End";
-
-/** @deprecated Base contract — all contracts extend this */
-export interface EventContract {
-  readonly name: string;
-}
-
-/** @deprecated ChatNode contract — assembled progressively from raw events */
-export interface ChatNodeContract extends EventContract {
-  readonly name: "chat-node";
-  userMessage: string;
-  agentThinking: string;
-  agentReply: string;
-  model?: string;
-  turnTools?: number;
-  turnFiles?: number;
-  turnInputTokens?: number;
-  turnOutputTokens?: number;
-  agent?: string;
-}
-
-/** @deprecated Union of all known event contracts (extend when adding new contracts) */
-export type FredoEventContract = ChatNodeContract;
-
 /**
- * @deprecated Use ContractDelivery instead.
- * Delivery envelope wrapping a contract with lifecycle metadata.
- */
-export interface SubscriptionDelivery<C extends EventContract = EventContract> {
-  contract: C;
-  lifecycle: LifecycleState;
-  correlationId: string;
-  timestamp: string;
-}
-
-/**
- * @deprecated Use eventContracts + handleDelivery on FredoFeatureClass instead.
- * EventSubscription — declares a feature's contract interest.
- */
-export interface EventSubscription<C extends EventContract = EventContract> {
-  readonly contractName: C["name"];
-  readonly mapping: Record<string, string>;
-  onDelivery: (delivery: SubscriptionDelivery<C>) => void;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// NEW TYPES — Event Contract Engine (ECE) Pipeline
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Contract declaration — mirrors Rust ContractDeclaration.
- * Features declare these in the `eventContracts` array.
- */
-export interface EventContractDeclaration {
-  contractName: string;
-  streamFields: string[];
-  deferredFields: string[];
-  key: string[];
-  completeWhen: string;
-  timeout: number;
-  providers?: string[];
-  transports?: string[];
-  eventTypes?: string[];
-  /**
-   * NEW (Spec #2723, req 5): payload-path exclusion rules. An event is SKIPPED
-   * for this contract (no buffer, no delivery) when ANY rule matches:
-   * extract_field(input.payload, path) equals `equals`. Mirrors the Spec #382
-   * transports/eventTypes filter architecture. Evaluated BEFORE key
-   * extraction/buffering in process_for_contract. Backward compatible —
-   * omitting this field means "no payload exclusions."
-   */
-  excludePayload?: Array<{ path: string; equals: string | boolean | number }>;
-  /**
-   * Spec #2768 (ST-3): persistent contracts are registered once at app
-   * bootstrap (Home.tsx registers every feature's contracts at mount) and are
-   * SKIPPED by unmount-time deregistration — the ECE keeps buffering and the
-   * delivery layer persists their deliveries via ContractEventStore while the
-   * feature is closed. Hydrate on mount via hydrateContractEvents() to replay
-   * what streamed while closed. Backward compatible — omitting means false
-   * (non-persistent, byte-identical behavior).
-   */
-  persistent?: boolean;
-}
-
-/**
- * Delivery envelope received from the Rust ECE via the "fredo-stream-event"
- * IPC channel. Mirrors Rust SubscriptionDelivery.
- *
- * Per REQ-13, `payload` is the full accumulated state — features never need
- * to merge partial results.
+ * @deprecated v1 ECE delivery envelope — the contract engine was deleted in
+ * Spec #2788 P5.1. RETAINED ONLY because the historical test fixtures
+ * (`mission-monitor/hooks/__tests__/fixtures/*`) still use it as their
+ * input shape before converting to RTDB rows. Never import from production
+ * code — the wire carries RowDelivery/RowDeliveryBatch only.
  */
 export interface ContractDelivery {
   id: string;
   contractName: string;
-  lifecycle: "init" | "update" | "end";
+  lifecycle: 'init' | 'update' | 'end';
   key: Record<string, string>;
   payload: Record<string, unknown>;
   timestamp: string;
   provider?: string;
   timedOut?: boolean;
-}
-
-/**
- * Interface that FredoFeatureClass must implement for eventContracts.
- * Replaces the old eventFilters + eventSubscriptions approach.
- */
-export interface EventContractConsumer {
-  /** Event contracts this feature declares. */
-  readonly eventContracts: EventContractDeclaration[];
-
-  /**
-   * Handle a ContractDelivery from the ECE.
-   * Called by the engine for every delivery matching this feature's contracts.
-   */
-  handleDelivery(delivery: ContractDelivery): void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -168,7 +51,7 @@ export interface RowKey {
   correlationId: string;
 }
 
-/** A completed chat turn (one per-turn ECE composite key). */
+/** A completed chat turn (one per-turn composite key). */
 export interface ChatRow {
   sessionId: string;
   correlationId: string;
@@ -197,7 +80,7 @@ export interface ChatRow {
   model: string | null;
   /** Parent session attribution join. */
   parentSessionId: string | null;
-  /** #523 ECE re-key stamp — original child session id on composited rows. */
+  /** #523 re-key stamp — original child session id on composited rows. */
   compositedChildSessionId: string | null;
   /** Escape hatch — the latest raw delivery payload as JSON. */
   rawJson: string;
@@ -309,10 +192,8 @@ export const AGENT_SESSION_ROW_FIELDS: readonly string[] = [
 export type RowChangeKind = 'insert' | 'update' | 'remove';
 
 /**
- * RTDB patch envelope — arrives on the existing "fredo-stream-event" IPC
- * channel DURING COEXISTENCE with the v1 `ContractDelivery` envelopes.
- * Discriminate by field presence via `isRowDelivery` (RowDelivery carries
- * `queryId` + `kind`; ContractDelivery carries `contractName` + `lifecycle`).
+ * RTDB patch envelope — arrives on the "fredo-stream-event" IPC channel,
+ * either as a single delivery or inside a batch envelope.
  */
 export interface RowDelivery {
   queryId: string;
@@ -334,8 +215,7 @@ const ROW_EVENT_TYPES: readonly string[] = ['Chat', 'ToolUse', 'AgentSession'];
  * RTDB BATCH envelope — the backend flush loop emits ONE "fredo-stream-event"
  * IPC event per drained flush chunk carrying up to RTDB_MAX_EMISSION_BATCH
  * (512) RowDelivery envelopes (Spec #2788 F-33 fix, W-1). The camelCase
- * `rowBatch` field discriminates it from single-delivery envelopes; v1
- * ContractDelivery consumers are unaffected.
+ * `rowBatch` field discriminates it from single-delivery envelopes.
  *
  * `replayCompleteQueryId` (round-3 F-33 fix) rides ONLY the terminal
  * emission of one query's replay drain — the final ≤512 chunk of the
@@ -376,8 +256,8 @@ export function isRowDeliveryBatch(msg: unknown): msg is RowDeliveryBatch {
 
 /**
  * Discriminate an incoming "fredo-stream-event" payload as an RTDB
- * RowDelivery (vs the v1 ContractDelivery). Single extraction path — no
- * heuristic fallbacks: the envelope MUST carry the full pinned field set.
+ * RowDelivery. Single extraction path — no heuristic fallbacks: the envelope
+ * MUST carry the full pinned field set.
  */
 export function isRowDelivery(msg: unknown): msg is RowDelivery {
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
@@ -398,25 +278,4 @@ export function isRowDelivery(msg: unknown): msg is RowDelivery {
  */
 export function rowKeyString(key: RowKey): string {
   return `${key.sessionId}\u0000${key.correlationId}`;
-}
-
-/**
- * Register feature contracts with the ECE via Tauri IPC.
- * Called at feature mount. Returns a function to deregister at unmount.
- *
- * The Rust ECE validates contracts (rejects timeout > 300000ms), stores
- * them in the active contract registry, and begins buffering matching events.
- */
-export async function registerEventContracts(
-  contracts: EventContractDeclaration[]
-): Promise<() => Promise<void>> {
-  const { TauriAdapter } = await import('../../app/adapters/TauriAdapter');
-  const adapter = new TauriAdapter();
-
-  await adapter.invoke('register_event_contracts', { contracts });
-
-  return async () => {
-    const names = contracts.map((c) => c.contractName);
-    await adapter.invoke('deregister_event_contracts', { contractNames: names });
-  };
 }

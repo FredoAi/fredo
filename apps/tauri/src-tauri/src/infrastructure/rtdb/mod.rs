@@ -1,3 +1,4 @@
+pub mod attrs;
 pub mod backfill;
 pub mod cache;
 pub mod commands;

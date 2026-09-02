@@ -1,8 +1,8 @@
 /**
  * Stepper Probe Feature — Spec #2768 ST-6 (AC6 generic-store proof), migrated
- * to the RTDB row store in Spec #2788 P4.3.
+ * to the RTDB row store in Spec #2788 P4.3; the v1 contract deleted in P5.1.
  *
- * A minimal registered probe feature. Its READ path is now the typed RTDB row
+ * A minimal registered probe feature. Its READ path is the typed RTDB row
  * store: `useEventRows('ToolUse', { toolName: 'Fredo_ui_stepper' },
  * { replay: true })` — the persisted snapshot restores as full-row inserts
  * (replay replaces the v1 `hydrateContractEvents()` hydration, which this
@@ -19,17 +19,18 @@
  * rows by a typed-column equality arg (SQL pushdown on the snapshot leg).
  * A representative emission:
  *
- *   fredo emit --event-type tool_use --tool-name Fredo_ui_stepper --state Init \
+ *   fredo emit --event-type tool_use --tool-name Fredo_ui_stepper \
  *     --payload '{"steps":[{"title":"Step A","status":"Waiting"}]}'
  *
- * ── Why the v1 ECE contract stays declared ──────────────────────────────────
- * The `Fredo_ui_stepper` contract below is KEPT until Phase 5: AppProvider
- * navigates to the stepper page on any `Fredo_ui_stepper` INIT delivery
- * (AppProvider.tsx:112) — a live v1 behavior this spec does not change. The
- * keying on `payload.steps` (a field ONLY stepper events carry) keeps that
- * path isolated from unrelated CLI tool_use events. The contract's delivery
- * stream is no longer the probe's read path — it feeds only the v1 ECE
- * consumers (AppProvider navigation) during coexistence.
+ * ── Auto-navigation (W5, P5.1) ───────────────────────────────────────────────
+ * The v1 behavior "navigate to the stepper page on the first
+ * `Fredo_ui_stepper` init delivery" (formerly AppProvider's ContractDelivery
+ * leg) is re-implemented on RTDB rows: when the probe's stepper rows first
+ * appear (empty → non-empty), the panel navigates to the steps page — unless
+ * the user is already there or in Dev Mode (the exact guard semantics the v1
+ * AppProvider leg enforced). Like the v1 leg, the trigger retrains until it
+ * fires: a blocked navigation (user on dev-mode) retries on the next row
+ * epoch advance. One-shot after it fires.
  *
  * ── Row-store note (P4.3) ────────────────────────────────────────────────────
  * The module-scoped row store is keyed per EVENT TYPE, not per query — the
@@ -43,18 +44,13 @@
  * and the row-store epoch (the QA-sanctioned probe shape) — nothing more.
  */
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, VStack } from '@chakra-ui/react';
 import { LuListOrdered } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
-import type { ContractDelivery } from '../../shared/classes/EventSubscription';
 import { useEventRows } from '../../shared/hooks/useEventRows';
-
-/** Contract name — the v1 ECE contract kept for AppProvider navigation (see header). */
-const STEPPER_CONTRACT = 'Fredo_ui_stepper';
+import { useExtension } from '../../app/providers/AppProvider';
 
 /** Tool name of the probe's row source — `fredo emit --tool-name` classifies
  *  into ToolUseRow.toolName (ingest.rs), so the row query filters on it. */
@@ -63,7 +59,8 @@ const STEPPER_TOOL_NAME = 'Fredo_ui_stepper';
 /**
  * The probe panel — subscribes the probe's ToolUse rows with replay (the
  * persisted snapshot restores as full-row inserts) and shows the replayed row
- * count alongside the row-store epoch.
+ * count alongside the row-store epoch. Carries the one-shot auto-navigation
+ * onto RTDB rows (see the header note).
  */
 const StepperProbePanel: React.FC = () => {
   const { rows, epoch, error, ready } = useEventRows(
@@ -71,6 +68,8 @@ const StepperProbePanel: React.FC = () => {
     { toolName: STEPPER_TOOL_NAME },
     { replay: true },
   );
+  const { currentPage, setCurrentPage } = useExtension();
+  const [navigated, setNavigated] = useState(false);
 
   // Client-side filter over the shared ToolUse partition (see the header
   // note) — epoch-keyed so the memo recomputes only on real row mutations
@@ -80,6 +79,19 @@ const StepperProbePanel: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, epoch],
   );
+
+  // W5 auto-navigation on RTDB rows — preserves the v1 AppProvider guard
+  // semantics exactly: fire when stepper rows exist AND the current page is
+  // neither `steps` nor `dev-mode`; a blocked navigation (dev-mode open)
+  // stays armed and retriggers on the next row epoch advance. One-shot.
+  useEffect(() => {
+    if (navigated) return;
+    if (stepperRows.length === 0) return;
+    if (currentPage === 'steps' || currentPage === 'dev-mode') return;
+    setCurrentPage('steps');
+    setNavigated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epoch, stepperRows.length, currentPage, navigated]);
 
   return (
     <Box
@@ -141,51 +153,6 @@ export class StepperProbeFeature extends FredoFeatureClass {
   // Dev/test harness panel — must stay openable from the launcher so QA can
   // verify replay against real persisted rows (AC6 test consumer).
   readonly showable = true;
-  // @deprecated — kept for base class compatibility
-  readonly eventFilters: EventFilter[] = [];
-
-  /**
-   * The ST-6 probe contract (AC6) — KEPT for the v1 ECE consumers during
-   * coexistence (AppProvider navigates on its init deliveries; the delivery
-   * layer persists it while the probe is closed). The probe's READ path is
-   * the RTDB row subscription above; this contract no longer feeds the panel.
-   */
-  readonly eventContracts = [
-    {
-      contractName: STEPPER_CONTRACT,
-      // 2-level paths only. The delivery payload keys are the literal field
-      // paths ("state", "payload.steps") — `payload.steps` enables the
-      // `exists payload.steps` completeWhen (the accumulated payload carries
-      // the literal key) and keeps the delivery payload slim.
-      streamFields: ['state', 'payload.steps'],
-      deferredFields: [],
-      // `payload.steps` exists ONLY on stepper events — a missing key field
-      // skips the contract for the event (REQ-10), which isolates the contract
-      // from unrelated CLI tool_use events without a toolName filter.
-      // `sessionId` scopes the buffer per session and projects into the
-      // store's session_id column (session-scoped hydration).
-      key: ['sessionId', 'payload.steps'],
-      // Stepper events always carry `steps` — the first (Init) event completes
-      // immediately, emitting init + end deliveries that both get persisted.
-      completeWhen: 'exists payload.steps',
-      timeout: 300000,
-      providers: ['internal'],
-      transports: ['hook'],
-      eventTypes: ['tool_use'],
-      // ST-6 (AC6): persisted by the delivery layer while the probe is closed.
-      persistent: true,
-    },
-  ];
-
-  // @deprecated — kept for base class compatibility; the probe reads its rows
-  // via the useEventRows() subscription, not handleDelivery.
-  processEvent(_event: FredoEvent): void {}
-
-  handleDelivery(_delivery: ContractDelivery): void {
-    // Read path is the useEventRows() RTDB subscription — replay inserts and
-    // live patches share one path. This no-op remains because the contract is
-    // still registered (AppProvider consumes its init deliveries).
-  }
 
   render() {
     return <StepperProbePanel />;

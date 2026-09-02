@@ -1,262 +1,35 @@
 /**
- * Stream Event Context - React Context + useReducer
+ * Stream Context — connection status + the RTDB row store (Spec #2788 P4.1).
  *
- * Manages the contract delivery queue from the ECE (Rust backend) via
- * Tauri IPC. The ECE buffers raw FredoEvent objects, evaluates
- * completeWhen conditions, and delivers ContractDelivery objects.
- *
- * ── New Pipeline ──────────────────────────────────────────────────────────
- * The primary data is `deliveries: ContractDelivery[]`. Components that
- * extend FredoFeatureClass receive deliveries through `handleDelivery`.
- * Non-feature components use useDeliveryFilter or useStepperEvents.
- *
- * ── Backward Compatibility ────────────────────────────────────────────────
- * `events: FredoEvent[]` and all legacy selectors (getEventsByTool, etc.)
- * are kept for features not yet migrated. New components should use
- * deliveries.
+ * The v1 delivery queue (`deliveries`/`ADD_DELIVERY`/`deliveryToFredoEvent`),
+ * the legacy raw-event array, and the ECE selector hooks were deleted in
+ * Spec #2788 P5.1 — RTDB row deliveries are the ONLY thing that crosses IPC,
+ * routed by AppProvider straight into the module-scoped row store below.
+ * The context itself now carries only the connection flag; the row store is
+ * module-scoped and consumed via `useEventRows`.
  */
 
-import React, { createContext, useContext, useReducer, useMemo, useCallback, useEffect, useSyncExternalStore } from 'react';
-import { EVENT_TTL_MS, DELIVERY_TTL_MS, CLEANUP_INTERVALS } from '../constants';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useSyncExternalStore } from 'react';
 import type {
-  ContractDelivery,
   RowDelivery,
   RowEventType,
+  RowChangeKind,
   RtdbRow,
 } from '../classes/EventSubscription';
 import { rowKeyString } from '../classes/EventSubscription';
 
 /**
- * Stream event structure (from backend)
- */
-// Note: Rust serializes EventSource enum with rename_all = "camelCase"
-export type EventSource = 'hook' | 'otlpGrpc' | 'otlpHttp';
-export type OtlpSignal  = 'Span' | 'Metric' | 'Log';
-
-export interface OtlpPayload {
-  signal: OtlpSignal;
-  attributes: Record<string, any>;
-}
-
-/**
- * FredoEvent type exports — per REQ-1.13, REQ-1.14, REQ-1.16
- * Kept for backward compat with features not yet migrated to the ECE.
- */
-export type EventType = 'tool_use' | 'agent_session' | 'chat' | 'infrastructure' | 'ui' | 'custom';
-export type EventProvider = 'open_code' | 'claude_code' | 'internal';
-export type Transport = 'hook' | 'otlp_grpc' | 'otlp_http' | 'web_socket' | 'http_post' | 'internal';
-
-export interface FredoEventError {
-  message: string;
-  code?: string;
-  details?: Record<string, unknown>;
-}
-
-export interface FredoEvent {
-  id: string;
-  eventType: EventType;
-  state: 'Init' | 'Update' | 'Response' | 'Error';
-  provider: EventProvider;
-  transport: Transport;
-  sessionId: string;
-  correlationId?: string;
-  toolName?: string;
-  payload: Record<string, unknown> | null;
-  error?: FredoEventError | null;
-  metadata?: Record<string, unknown> | null;
-  timestamp: string;
-}
-
-/**
- * @deprecated Use FredoEvent instead. StreamEvent is kept for backward compatibility
- * with legacy sessions in localStorage. New code should use FredoEvent.
- */
-export interface StreamEvent {
-  toolName: string;
-  sessionId: string;
-  state: 'Init' | 'Update' | 'Response' | 'Error';
-  input?: any;
-  response?: any;
-  data?: any;
-  timestamp: string;
-  eventId?: string;
-  correlationId?: string;
-  error?: {
-    message: string;
-    code?: string;
-    stack?: string;
-    details?: any;
-  };
-  /** Discriminates where the event originated. Absent on legacy events = Hook. */
-  source?: EventSource;
-  /** Present only for OTLP-sourced events. */
-  otlp?: OtlpPayload;
-}
-
-/**
- * Convert a ContractDelivery to a backward-compat FredoEvent.
- * Maps contractName → toolName, lifecycle → state, etc.
- */
-function deliveryToFredoEvent(delivery: ContractDelivery): FredoEvent {
-  const stateMap: Record<string, FredoEvent['state']> = {
-    init: 'Init',
-    update: 'Update',
-    end: 'Response',
-  };
-  return {
-    id: delivery.id,
-    eventType: 'custom',
-    state: stateMap[delivery.lifecycle] || 'Update',
-    provider: (delivery.provider as EventProvider) || 'internal',
-    transport: 'internal',
-    sessionId: delivery.key?.sessionId || 'ece',
-    correlationId: delivery.key?.correlationId,
-    toolName: delivery.contractName,
-    payload: delivery.payload as Record<string, unknown> | null,
-    error: null,
-    metadata: null,
-    timestamp: delivery.timestamp,
-  };
-}
-
-/**
  * Stream state interface
  */
 interface StreamState {
-  /** @deprecated Use deliveries instead. Kept for backward compat. */
-  events: FredoEvent[];
-  /** Primary delivery queue from the ECE */
-  deliveries: ContractDelivery[];
   isConnected: boolean;
 }
-
-/**
- * Stream actions
- */
-type StreamAction =
-  | { type: 'ADD_EVENT'; payload: FredoEvent }
-  | { type: 'ADD_DELIVERY'; payload: ContractDelivery }
-  | { type: 'CLEAR_EVENTS' }
-  | { type: 'CLEAR_PROCESSED_EVENTS'; payload: { eventKeys: string[] } }
-  | { type: 'CLEANUP_EXPIRED_EVENTS'; payload: { ttlMs: number } }
-  | { type: 'SET_CONNECTION_STATUS'; payload: boolean };
 
 /**
  * Stream context value
  */
 interface StreamContextValue extends StreamState {
-  /** @deprecated Use addDelivery instead */
-  addEvent: (event: FredoEvent) => void;
-  /** Add a contract delivery from the ECE */
-  addDelivery: (delivery: ContractDelivery) => void;
-  clearEvents: () => void;
-  clearProcessedEvents: (eventKeys: string[]) => void;
-  cleanupExpiredEvents: () => void;
   setConnectionStatus: (connected: boolean) => void;
-  /** @deprecated Use deliveries and filter by contractName instead */
-  getEventsByTool: (toolName: string) => FredoEvent[];
-  /** @deprecated Use deliveries and filter by contractName instead */
-  getLatestEventByTool: (toolName: string) => FredoEvent | undefined;
-  /** @deprecated Use deliveries and filter by lifecycle instead */
-  getEventsByState: (state: FredoEvent['state']) => FredoEvent[];
-  /** @deprecated Use deliveries and filter by key fields instead */
-  getEventsByCorrelation: (correlationId: string) => FredoEvent[];
-  /** Get deliveries for a specific contract name */
-  getDeliveriesByContract: (contractName: string) => ContractDelivery[];
-}
-
-/**
- * Initial state
- */
-const initialState: StreamState = {
-  events: [],
-  deliveries: [],
-  isConnected: false,
-};
-
-/**
- * Reducer function
- */
-function streamReducer(state: StreamState, action: StreamAction): StreamState {
-  switch (action.type) {
-    case 'ADD_EVENT': {
-      // Deduplicate by id to guard against duplicate IPC events
-      const incoming = action.payload;
-      if (incoming.id && state.events.some((e) => e.id === incoming.id)) {
-        return state;
-      }
-
-      const newEvents = [...state.events, incoming];
-      
-      // Remove events older than TTL (60 seconds)
-      const now = Date.now();
-      const filteredEvents = newEvents.filter((e) => {
-        const eventTime = new Date(e.timestamp).getTime();
-        const age = now - eventTime;
-        return age < EVENT_TTL_MS;
-      });
-      
-      return { ...state, events: filteredEvents };
-    }
-
-    case 'ADD_DELIVERY': {
-      const delivery = action.payload;
-      // Deduplicate by id
-      if (delivery.id && state.deliveries.some((d) => d.id === delivery.id)) {
-        return state;
-      }
-
-      let newDeliveries = [...state.deliveries, delivery];
-
-      // Cap deliveries at 5000, evict oldest entries when exceeded (REQ-1)
-      if (newDeliveries.length > 5000) {
-        newDeliveries = newDeliveries.slice(newDeliveries.length - 5000);
-      }
-
-      // Also add a backward-compat FredoEvent derived from the delivery
-      const fredoEvent = deliveryToFredoEvent(delivery);
-      const newEvents = [...state.events, fredoEvent];
-
-      return { ...state, deliveries: newDeliveries, events: newEvents };
-    }
-
-    case 'CLEAR_EVENTS':
-      return { ...state, events: [], deliveries: [] };
-
-    case 'CLEAR_PROCESSED_EVENTS': {
-      const keysToRemove = new Set(action.payload.eventKeys);
-      const filteredEvents = state.events.filter((event) => {
-        return !keysToRemove.has(event.id!);
-      });
-      
-      return { ...state, events: filteredEvents };
-    }
-
-    case 'CLEANUP_EXPIRED_EVENTS': {
-      const now = Date.now();
-      const ttlMs = action.payload.ttlMs;
-      const filteredEvents = state.events.filter((e) => {
-        const eventTime = new Date(e.timestamp).getTime();
-        const age = now - eventTime;
-        return age < ttlMs;
-      });
-      
-      // Also remove deliveries older than DELIVERY_TTL_MS (REQ-2)
-      const filteredDeliveries = state.deliveries.filter((d) => {
-        const deliveryTime = new Date(d.timestamp).getTime();
-        const age = now - deliveryTime;
-        return age < DELIVERY_TTL_MS;
-      });
-      
-      return { ...state, events: filteredEvents, deliveries: filteredDeliveries };
-    }
-
-    case 'SET_CONNECTION_STATUS':
-      return { ...state, isConnected: action.payload };
-
-    default:
-      return state;
-  }
 }
 
 /**
@@ -268,95 +41,19 @@ const StreamContext = createContext<StreamContextValue | undefined>(undefined);
  * Provider component
  */
 export function StreamProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(streamReducer, initialState);
-
-  // Actions
-  /** @deprecated Use addDelivery instead */
-  const addEvent = useCallback((event: FredoEvent) => {
-    dispatch({ type: 'ADD_EVENT', payload: event });
-  }, []);
-
-  const addDelivery = useCallback((delivery: ContractDelivery) => {
-    dispatch({ type: 'ADD_DELIVERY', payload: delivery });
-  }, []);
-
-  const clearEvents = useCallback(() => {
-    dispatch({ type: 'CLEAR_EVENTS' });
-  }, []);
-
-  const clearProcessedEvents = useCallback((eventKeys: string[]) => {
-    dispatch({ type: 'CLEAR_PROCESSED_EVENTS', payload: { eventKeys } });
-  }, []);
-
-  const cleanupExpiredEvents = useCallback(() => {
-    dispatch({ type: 'CLEANUP_EXPIRED_EVENTS', payload: { ttlMs: EVENT_TTL_MS } });
-  }, []);
+  const [state, setState] = useState<StreamState>({ isConnected: false });
 
   const setConnectionStatus = useCallback((connected: boolean) => {
-    dispatch({ type: 'SET_CONNECTION_STATUS', payload: connected });
+    setState({ isConnected: connected });
   }, []);
-
-  // Selectors (memoized to prevent re-renders)
-  const getEventsByTool = useCallback((toolName: string) => {
-    return state.events.filter((event) => event.toolName === toolName);
-  }, [state.events]);
-
-  const getLatestEventByTool = useCallback((toolName: string) => {
-    const events = state.events.filter((event) => event.toolName === toolName);
-    return events[events.length - 1];
-  }, [state.events]);
-
-  const getEventsByState = useCallback((stateFilter: StreamEvent['state']) => {
-    return state.events.filter((event) => event.state === stateFilter);
-  }, [state.events]);
-
-  const getEventsByCorrelation = useCallback((correlationId: string) => {
-    return state.events.filter((event) => event.correlationId === correlationId);
-  }, [state.events]);
-
-  const getDeliveriesByContract = useCallback((contractName: string) => {
-    return state.deliveries.filter((d) => d.contractName === contractName);
-  }, [state.deliveries]);
-
-  // Auto-cleanup timer
-  useEffect(() => {
-    const interval = setInterval(() => {
-      cleanupExpiredEvents();
-    }, CLEANUP_INTERVALS.EVENTS);
-
-    return () => clearInterval(interval);
-  }, [cleanupExpiredEvents]);
 
   // Memoize context value
   const value = useMemo<StreamContextValue>(
     () => ({
       ...state,
-      addEvent,
-      addDelivery,
-      clearEvents,
-      clearProcessedEvents,
-      cleanupExpiredEvents,
       setConnectionStatus,
-      getEventsByTool,
-      getLatestEventByTool,
-      getEventsByState,
-      getEventsByCorrelation,
-      getDeliveriesByContract,
     }),
-    [
-      state,
-      addEvent,
-      addDelivery,
-      clearEvents,
-      clearProcessedEvents,
-      cleanupExpiredEvents,
-      setConnectionStatus,
-      getEventsByTool,
-      getLatestEventByTool,
-      getEventsByState,
-      getEventsByCorrelation,
-      getDeliveriesByContract,
-    ]
+    [state, setConnectionStatus]
   );
 
   return <StreamContext.Provider value={value}>{children}</StreamContext.Provider>;
@@ -373,33 +70,6 @@ export function useStream() {
   return context;
 }
 
-/**
- * Convenience hooks for specific use cases
- */
-
-/**
- * Get all stepper deliveries from the ECE contract pipeline.
- * Uses the contract delivery queue instead of raw FredoEvent events.
- */
-export function useStepperEvents() {
-  const { deliveries } = useStream();
-  return useMemo(
-    () => deliveries.filter((d) => d.contractName === 'Fredo_ui_stepper'),
-    [deliveries]
-  );
-}
-
-/**
- * Get the latest stepper delivery from the ECE contract pipeline.
- */
-export function useLatestStepperEvent() {
-  const { deliveries } = useStream();
-  return useMemo(() => {
-    const stepperDeliveries = deliveries.filter((d) => d.contractName === 'Fredo_ui_stepper');
-    return stepperDeliveries[stepperDeliveries.length - 1];
-  }, [deliveries]);
-}
-
 export function useConnectionStatus() {
   const { isConnected } = useStream();
   return useMemo(
@@ -413,8 +83,8 @@ export function useConnectionStatus() {
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Module-scoped row store fed by RowDelivery envelopes routed from
-// AppProvider (the v1 ContractDelivery pipeline above stays untouched —
-// strangler coexistence). Semantics (pinned by P4.1):
+// AppProvider (the v1 ContractDelivery pipeline was deleted in P5.1 — this
+// is the ONLY delivery path). Semantics (pinned by P4.1):
 //
 // - `insert` = full-row set; spread-merge into an existing row so init-time
 //   fields are never wiped; sets the per-key seq baseline.
@@ -423,8 +93,8 @@ export function useConnectionStatus() {
 //   burst robustness).
 // - `remove` = delete key (only ever originates from backend retention
 //   eviction); removing an absent key is a no-op.
-// - NO cap/TTL eviction of live rows — the 5000-cap/TTL below governs the v1
-//   delivery LIST only. Replay replaces hydration by re-inserting rows.
+// - NO cap/TTL eviction of live rows. Replay replaces hydration by
+//   re-inserting rows.
 //
 // The store is module-scoped (not React state) per the AGENTS.md persistence
 // rule: feature mounts/unmounts must not wipe live rows. `epoch` is a
@@ -457,6 +127,84 @@ function bumpRowEpoch(partition: RowPartition): void {
   }
 }
 
+// ── Row-mutation log (P5.1) ──────────────────────────────────────────────────
+//
+// A small bounded feed of applied row mutations for the debug surfaces that
+// previously consumed the deleted v1 delivery queue (Dev Mode's live stream
+// viewer, StreamStatus activity LED). Module-scoped per the AGENTS.md
+// persistence rule; capped with oldest-first eviction (bounded state, NFR-2).
+
+/** One applied row mutation, in arrival order. */
+export interface RowMutation {
+  /** Stable identity — `${eventType}:${sessionId}/${correlationId}#${seq}#${kind}`. */
+  id: string;
+  eventType: RowEventType;
+  kind: RowChangeKind;
+  sessionId: string;
+  correlationId: string;
+  seq: number;
+  /** The merged row after this mutation; `null` on `remove`. */
+  row: RtdbRow | null;
+  /** RFC3339 emission timestamp of the delivery. */
+  timestamp: string;
+}
+
+const rowMutationLog: RowMutation[] = [];
+const ROW_MUTATION_LOG_CAP = 512;
+let rowMutationLogVersion = 0;
+
+function recordRowMutation(
+  eventType: RowEventType,
+  delivery: RowDelivery,
+  row: RtdbRow | null,
+): void {
+  const mutation: RowMutation = {
+    id: `${eventType}:${delivery.key.sessionId}/${delivery.key.correlationId}#${delivery.seq}#${delivery.kind}`,
+    eventType,
+    kind: delivery.kind,
+    sessionId: delivery.key.sessionId,
+    correlationId: delivery.key.correlationId,
+    seq: delivery.seq,
+    row,
+    timestamp: delivery.timestamp,
+  };
+  rowMutationLog.push(mutation);
+  if (rowMutationLog.length > ROW_MUTATION_LOG_CAP) {
+    rowMutationLog.splice(0, rowMutationLog.length - ROW_MUTATION_LOG_CAP);
+  }
+  rowMutationLogVersion += 1;
+}
+
+/** Snapshot of the recent row mutations (oldest-first, capped at 512). */
+export function getRowMutations(): readonly RowMutation[] {
+  return rowMutationLog;
+}
+
+/** Clear the mutation log (the debug viewer's Clear action). */
+export function clearRowMutations(): void {
+  rowMutationLog.length = 0;
+  rowMutationLogVersion += 1;
+}
+
+/**
+ * Monotonic version of the mutation log — advances on every applied mutation
+ * (and on clear). Subscribe via `subscribeToRowMutationLog` with
+ * `useSyncExternalStore`; the version is the snapshot primitive.
+ */
+export function getRowMutationLogVersion(): number {
+  return rowMutationLogVersion;
+}
+
+/** Subscribe to row-mutation log changes (any row type). */
+export function subscribeToRowMutationLog(listener: () => void): () => void {
+  const unsubs = (Object.keys(rowPartitions) as RowEventType[]).map((eventType) =>
+    subscribeToRowEpoch(eventType, listener),
+  );
+  return () => {
+    for (const unsub of unsubs) unsub();
+  };
+}
+
 // ── Replay-drain registry (round-3 F-33 fix) ────────────────────────────────
 //
 // The backend replay leg is a spawned background drain: the snapshot arrives
@@ -480,7 +228,7 @@ const replayDirtyPartitions = new Set<RowEventType>();
  * settling `beginReplayDrain` still observes completion. The consuming hook
  * settles with its own eventType (queryIds are unique per registration, so
  * a buffered marker is only ever consumed by its own subscription). Capped
- * with oldest-first eviction (same pattern as the ECE relationship registry).
+ * with oldest-first eviction.
  */
 const settledUnclaimedMarkers = new Set<string>();
 const MAX_SETTLED_UNCLAIMED = 256;
@@ -585,15 +333,16 @@ function shallowRowEqual(a: RtdbRow, b: RtdbRow): boolean {
 }
 
 /**
- * Apply one RowDelivery envelope WITHOUT touching the epoch. Returns true if
- * the store mutated. Shared by `applyRowDelivery` (single) and
- * `applyRowDeliveries` (bulk) so both paths carry IDENTICAL insert/seq/remove
- * semantics (F-33 fix, W-2 — the bulk path must never diverge from the
- * pinned single-delivery behavior). Malformed envelopes are ignored.
+ * Apply one RowDelivery envelope WITHOUT touching the epoch or the mutation
+ * log. Returns the merged row when the store mutated (null on remove/no-op).
+ * Shared by `applyRowDelivery` (single) and `applyRowDeliveries` (bulk) so
+ * both paths carry IDENTICAL insert/seq/remove semantics (F-33 fix, W-2 —
+ * the bulk path must never diverge from the pinned single-delivery
+ * behavior). Malformed envelopes are ignored.
  */
-function applyRowDeliveryInner(delivery: RowDelivery): boolean {
+function applyRowDeliveryInner(delivery: RowDelivery): RtdbRow | 'removed' | null {
   const partition = rowPartitionFor(delivery.eventType);
-  if (!partition) return false;
+  if (!partition) return null;
   const key = rowKeyString(delivery.key);
   const patch = (delivery.patch ?? {}) as Partial<RtdbRow>;
 
@@ -601,18 +350,19 @@ function applyRowDeliveryInner(delivery: RowDelivery): boolean {
     if (partition.rows.has(key)) {
       partition.rows.delete(key);
       partition.seqs.delete(key);
-      return true;
+      return 'removed';
     }
-    return false;
+    return null;
   }
 
   if (delivery.kind === 'insert') {
     const prev = partition.rows.get(key);
     if (!prev) {
       // First sight of this key — the patch IS the row (full row on insert).
-      partition.rows.set(key, { ...patch } as RtdbRow);
+      const row = { ...patch } as RtdbRow;
+      partition.rows.set(key, row);
       partition.seqs.set(key, delivery.seq);
-      return true;
+      return row;
     }
     // Key exists — spread-merge so init-time fields are never wiped.
     const merged = { ...prev, ...patch } as RtdbRow;
@@ -620,30 +370,31 @@ function applyRowDeliveryInner(delivery: RowDelivery): boolean {
     partition.seqs.set(key, delivery.seq);
     if (!shallowRowEqual(prev, merged)) {
       partition.rows.set(key, merged);
-      return true;
+      return merged;
     }
-    return false;
+    return null;
   }
 
   // update — drop patches stale relative to the last applied seq for this key.
   const lastSeq = partition.seqs.get(key);
   if (lastSeq !== undefined && delivery.seq < lastSeq) {
-    return false;
+    return null;
   }
   const prev = partition.rows.get(key);
   if (!prev) {
     // Update-before-insert (burst reordering): adopt the patch as the row.
-    partition.rows.set(key, { ...patch } as RtdbRow);
+    const row = { ...patch } as RtdbRow;
+    partition.rows.set(key, row);
     partition.seqs.set(key, delivery.seq);
-    return true;
+    return row;
   }
   const merged = { ...prev, ...patch } as RtdbRow;
   partition.seqs.set(key, delivery.seq);
   if (!shallowRowEqual(prev, merged)) {
     partition.rows.set(key, merged);
-    return true;
+    return merged;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -656,7 +407,9 @@ function applyRowDeliveryInner(delivery: RowDelivery): boolean {
 export function applyRowDelivery(delivery: RowDelivery): void {
   const partition = rowPartitionFor(delivery.eventType);
   if (!partition) return;
-  if (applyRowDeliveryInner(delivery)) {
+  const result = applyRowDeliveryInner(delivery);
+  if (result !== null) {
+    recordRowMutation(delivery.eventType, delivery, result === 'removed' ? null : result);
     if (hasPendingDrain(delivery.eventType)) {
       replayDirtyPartitions.add(delivery.eventType);
     } else {
@@ -683,7 +436,9 @@ export function applyRowDeliveries(deliveries: RowDelivery[]): void {
   for (const delivery of deliveries) {
     const partition = rowPartitionFor(delivery.eventType);
     if (!partition) continue;
-    if (applyRowDeliveryInner(delivery)) {
+    const result = applyRowDeliveryInner(delivery);
+    if (result !== null) {
+      recordRowMutation(delivery.eventType, delivery, result === 'removed' ? null : result);
       touched.add(delivery.eventType);
     }
   }
@@ -732,4 +487,10 @@ export function resetRowStoreForTests(): void {
   replayDrains.clear();
   replayDirtyPartitions.clear();
   settledUnclaimedMarkers.clear();
+  rowMutationLog.length = 0;
+  rowMutationLogVersion += 1;
 }
+
+// Re-export for the debug consumers (a mutation log entry is a typed view of
+// one delivery's effect on the store).
+export type { RowDelivery };

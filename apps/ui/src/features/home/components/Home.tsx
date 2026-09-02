@@ -1,11 +1,9 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { Box } from '@chakra-ui/react';
 import { WindowSystemProvider, WindowManager, useWindowActions } from '@maomaolabs/core';
-import { AlertHandler } from './AlertHandler';
-import { StreamStatus } from './StreamStatus';
-import { SideStepper } from './SideStepper';
 import { DesktopToolbar } from './settings/DesktopToolbar';
 import { DesktopBackground } from './DesktopBackground';
+import { StreamStatus } from './StreamStatus';
 import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
@@ -14,65 +12,32 @@ import { setupFeature } from '../../setup';
 import '../../allFeatures';
 import { getFeatures } from '../../featureRegistry';
 import { settingsService } from '../../settings';
-import { useStream } from '../../../shared/contexts/StreamContext';
 import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
-import { registerEventContracts } from '../../../shared/classes/EventSubscription';
 
 // Features self-register via allFeatures.ts — no manual list needed.
 const ALL_FEATURES = getFeatures();
 const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
 
-// Module-scoped throttling state for REQ-7: per-feature last render timestamps.
-// Must be module-scoped (not useRef) to survive React mount/unmount cycles.
-const lastRenderTime = new Map<string, number>();
-const UPDATE_THROTTLE_MS = 200;
-
-// Module-scoped deregistration function for REQ-8: stored from registerEventContracts().
-let deregisterEventContracts: (() => Promise<void>) | null = null;
-
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
 
 const HomeDesktop: React.FC = () => {
   const { openWindow, closeWindow, updateWindow } = useWindowActions();
-  const { deliveries } = useStream();
   const { showMessage } = useCompanion();
 
-  // Register all feature eventContracts with the Rust ContractEngine on mount
-  // Store the returned deregistration function for cleanup on unmount (REQ-8).
+  // Pre-register each feature's open callback at mount (#2758 round-22 C2):
+  // previously registerOpenCallback() ran only inside openFeatureWindow(), so
+  // `openSelf()` was null-noop for any feature never manually opened this
+  // session. Registering eagerly is idempotent: openFeatureWindow()
+  // re-registers on every open, replacing this callback with an equivalent.
   React.useEffect(() => {
-    // #2758 round-22 C2: pre-register the open callback for EVERY feature at
-    // mount. Previously registerOpenCallback() ran only inside
-    // openFeatureWindow(), so `openSelf()` was null-noop (`_requestOpen` =
-    // null, FredoFeatureClass.ts:159,195) for any feature never manually
-    // opened this session — a mission starting while Mission Monitor had never
-    // been opened could not surface its window even with widened delivery
-    // routing below, and the feature's own one-shot guard would then block all
-    // future attempts. Registering eagerly is idempotent: openFeatureWindow()
-    // re-registers on every open, replacing this callback with an equivalent.
     ALL_FEATURES.forEach((feature) => {
       feature.registerOpenCallback(() => {
         openFeatureWindowRef.current(feature.id, feature);
       });
     });
-
-    const allContracts = ALL_FEATURES.flatMap(f => f.eventContracts ?? []);
-    if (allContracts.length > 0) {
-      registerEventContracts(allContracts).then(fn => {
-        deregisterEventContracts = fn;
-      });
-    }
-    return () => {
-      if (deregisterEventContracts) {
-        deregisterEventContracts();
-        deregisterEventContracts = null;
-      }
-    };
   }, []);
-
-  // Event delivery to features is now handled by the ECE contract pipeline
-  // instead of manual eventFilters matching.
 
   const handleKonamiCode = useCallback(() => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
@@ -161,56 +126,6 @@ const HomeDesktop: React.FC = () => {
   // Keep ref in sync so transition callbacks always call the latest version
   openFeatureWindowRef.current = openFeatureWindow;
 
-  // ── Route deliveries to features via handleDelivery (#2758 round-22 C2) ───
-  // Every SubscriptionDelivery is evaluated against ALL registered features'
-  // declared contracts — including features whose window is NOT currently
-  // open — so a feature can react to live deliveries while closed (Mission
-  // Monitor self-opens on its first chat-node init delivery). Previously this
-  // effect iterated openFeaturesRef only, making unopened-feature handleDelivery
-  // bodies dead code (Fix Plan #2758 round 22, F2 item 4).
-  //
-  // Side-effect audit before widening (Fix Plan requirement): ONLY
-  // MissionMonitorFeature declares non-empty eventContracts — every other
-  // feature keeps the base-class default `[]` and is skipped by the guard
-  // below, so widening cannot reach their handlers. MM's handleDelivery is
-  // idempotent across repeated calls (private `_selfOpened` one-shot guards
-  // openSelf; MissionMonitorFeature.tsx:112-120), and forceRerender is a no-op
-  // until Home registers the rerender callback at open time
-  // (FredoFeatureClass.ts:146,164-166) — closed features therefore mutate
-  // internal state only.
-  // Throttled per REQ-7: call feature.handleDelivery(delivery) for EVERY matched
-  // delivery (always process the event), but only call updateWindow() at most once per
-  // 200ms per OPEN feature window to coalesce multiple deliveries into a single
-  // render — closed features have no window component to update.
-  useEffect(() => {
-    const now = Date.now();
-    deliveries.forEach((delivery) => {
-      ALL_FEATURES.forEach((feature) => {
-        if (!feature.eventContracts?.length) return;
-
-        const hasMatchingContract = feature.eventContracts.some(
-          (c) => c.contractName === delivery.contractName
-        );
-
-        if (!hasMatchingContract) return;
-
-        // Always process the delivery — feature internal state updates
-        // regardless of window-open state.
-        feature.handleDelivery(delivery);
-
-        // Throttle the render: only call updateWindow for an OPEN window and
-        // if 200ms have passed since the last render of that feature.
-        if (openFeaturesRef.current.has(feature.id)) {
-          const lastTime = lastRenderTime.get(feature.id) ?? 0;
-          if (now - lastTime >= UPDATE_THROTTLE_MS) {
-            lastRenderTime.set(feature.id, now);
-            updateWindow(feature.id, { component: feature.render() as React.ReactNode });
-          }
-        }
-      });
-    });
-  }, [deliveries, updateWindow]);
-
   return (
     <Box position="absolute" inset="0" zIndex={0} overflow="hidden">
       <DesktopBackground onKonamiCode={handleKonamiCode} />
@@ -233,16 +148,9 @@ export const Home: React.FC = () => {
       overflow="hidden"
       position="relative"
     >
-      {/* Global overlays — must sit above everything including windows */}
-      <AlertHandler />
-
-      {/* Row: SideStepper (left) + Desktop (right).
-          SideStepper is a real flex sibling — when it appears the desktop shrinks;
-          when it's gone the desktop takes full width. No overlapping. */}
+      {/* Row: Desktop (full width). The v1 SideStepper sidebar was deleted with
+          the v1 event pipeline (Spec #2788 P5.1). */}
       <Box flex="1" display="flex" flexDirection="row" overflow="hidden" minHeight="0">
-        {/* SideStepper takes its own 56px column; tooltip uses position:fixed → viewport */}
-        <SideStepper />
-
         {/* Desktop: transform scopes position:fixed windows to this box */}
         <Box flex="1" position="relative" overflow="hidden" style={{ transform: 'translateZ(0)' }}>
           <WindowSystemProvider systemStyle={windowStyle as any}>

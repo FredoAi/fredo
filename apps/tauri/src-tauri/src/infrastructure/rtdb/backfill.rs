@@ -49,8 +49,8 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Map, Value};
 use tauri::Manager;
 
-use crate::infrastructure::comm::adapters::otlp::{
-    GenericOtlpAdapter, ATTR_CONVERSATION_ID, CC_ATTR_SESSION_ID, OP_CHAT_CANON, OP_SESSION,
+use crate::infrastructure::rtdb::attrs::{
+    resolve_op_name, ATTR_CONVERSATION_ID, CC_ATTR_SESSION_ID, OP_CHAT_CANON, OP_SESSION,
 };
 use crate::infrastructure::comm::event::Transport;
 use crate::infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
@@ -137,7 +137,7 @@ pub fn backfill_from_telemetry(
         // Summary-only classification through the SHARED resolver — the
         // classifier re-resolves identically when fed the reconstructed
         // span; no extract rule is duplicated here.
-        match GenericOtlpAdapter::resolve_op_name(&span_name, &attrs) {
+        match resolve_op_name(&span_name, &attrs) {
             Some(op) => {
                 if op == OP_SESSION {
                     summary.session_spans += 1;

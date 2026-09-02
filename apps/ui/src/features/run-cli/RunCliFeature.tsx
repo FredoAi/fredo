@@ -1,6 +1,5 @@
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
+import { FredoFeatureClass } from '../../shared/classes';
 import { RunCliSettings } from './components/RunCliSettings';
 import { RunCliLauncher } from './components/RunCliLauncher';
 import { LuTerminal } from 'react-icons/lu';
@@ -13,9 +12,6 @@ export class RunCliFeature extends FredoFeatureClass {
   readonly isMultiWindow = false;
   readonly showable = true;
   readonly hasSettings = true;
-  readonly eventFilters: EventFilter[] = [];
-
-  processEvent(_event: FredoEvent): void {}
 
   /**
    * Toolbar desktop-item entry: the maomaolabs Toolbar opens this in a brief

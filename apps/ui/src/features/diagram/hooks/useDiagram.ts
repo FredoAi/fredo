@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Node, Edge } from 'reactflow';
 import type { K8sNodeData } from '../components/K8sNode';
 import { resolveCollisions } from '../utils/resolveCollisions';
 import { API_BASE_URL } from '../../../shared/constants';
-import { useStream } from '../../../shared/contexts/StreamContext';
 
 const API_DIAGRAM_BASE = `${API_BASE_URL}/api/v1/infrastructure-diagram`;
 const SNAPSHOT_URL = `${API_DIAGRAM_BASE}/snapshot`;
@@ -257,9 +256,7 @@ export const useDiagram = () => {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { events } = useStream();
-  const processedStreamIds = useRef<Set<string>>(new Set());
-  
+
   // Fetch initial snapshot
   const fetchSnapshot = useCallback(async () => {
     try {
@@ -370,34 +367,6 @@ export const useDiagram = () => {
     window.addEventListener('diagram-reconnect', handleReconnect);
     return () => window.removeEventListener('diagram-reconnect', handleReconnect);
   }, []);
-
-  // Consume infrastructure_stream events emitted by the Tauri k8s service
-  useEffect(() => {
-    events.forEach((event) => {
-      if (event.toolName === 'infrastructure_stream') {
-        if (event.state === 'Error') {
-          const errorMsg = (event.payload as Record<string, unknown>)?.message ?? 'Unknown error from k8s service';
-          setError(String(errorMsg));
-          setLoading(false);
-        } else if (
-          event.state === 'Response' &&
-          event.payload &&
-          event.id &&
-          !processedStreamIds.current.has(event.id)
-        ) {
-          processedStreamIds.current.add(event.id);
-          const data = event.payload as unknown as InfrastructureGraph;
-          if (data.nodes && Array.isArray(data.nodes)) {
-            const { nodes: n, edges: e } = parseInfrastructureGraphToReactFlow(data);
-            setNodes(n);
-            setEdges(e);
-            setLoading(false);
-            setError(null);
-          }
-        }
-      }
-    });
-  }, [events]);
 
   return {
     nodes,

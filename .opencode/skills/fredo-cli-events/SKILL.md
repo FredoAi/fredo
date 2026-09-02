@@ -1,25 +1,26 @@
 ---
 name: fredo-cli-events
-description: CLI-based mock event injection for Fredo e2e testing. Load when the QA needs to trigger specific UI states by sending FredoEvents through the IPC socket.
+description: CLI-based mock event injection for Fredo e2e testing. Load when the QA needs to trigger specific UI states by sending events through the IPC socket.
 ---
 
 # Fredo E2E — Mock Event Injection
 
 ## How It Works
 
-`fredo emit` → IPC socket (`\\.\pipe\fredo-ipc` on Windows) → EventBus → `fredo-stream-event` → React frontend
+`fredo emit` → IPC socket (`\\.\pipe\fredo-ipc` on Windows) → `CliCommand::EmitEvent` → `InternalAdapter::enrich` → **RTDB ingest classifier** (`rtdb/ingest.rs`) → canonical rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) → subscriptions → `fredo-stream-event` → React frontend (Spec #2788 — the RTDB row pipeline is the ONLY delivery path).
 
-Same path real events take. Only works when the dev:tauri instance is running and the `fredo` binary is built.
+Same row path real OTLP spans take. Only works when the dev:tauri instance is running and the `fredo` binary is built.
 
-**⚠️ CRITICAL — OTLP Adapter Bypass:** `fredo emit` injects events directly into the EventBus, bypassing the OTLP gRPC/HTTP receivers and the `OpenCodeAdapter::transform()` method entirely. This means FredoEvents created by `fredo emit` have **mock payloads** (`{state: "Init"}` with minimal content) — they lack the adapter-injected fields (`userMessage`, `agentReply`, `promptTokens`, `turnInputTokens`, `turnOutputTokens`, etc.) that real OTLP spans carry.
+**⚠️ `--file` / `--payload` carry the event BODY (payload) only.** A whole-event JSON (with `eventType`/`state`/`sessionId` keys) passed to `--file` does NOT error — it silently nests as the event's payload and classifies into an extraction-empty row under the default session (`tauri-local`). There is no whole-event injection mode. When in doubt, verify the emitted rows via the telemetry-query skill (recipe below).
+
+**⚠️ CRITICAL — mock-vs-real payload shapes:** `fredo emit` injects the event body straight into the row classifier, bypassing the OTLP receivers entirely. Mock payloads follow the conventions below; real OTLP spans carry the plugin's `gen_ai.*` attributes and classify richer rows (model, cost, span timing). Mock tool rows carry no span timing, so the time-window tool→chat association does NOT attach them — use real drives when testing association-dependent UI.
 
 **DO NOT use `fredo emit` for these scenarios:**
-- Validating OTLP transport filters (`transports: ['otlp_grpc', 'otlp_http']`) in ECE contracts
-- Verifying Mission Monitor renders nodes from OTLP-derived events
-- Testing OTLP span attribute extraction (adapter payload transformation)
-- End-to-end OTLP plugin validation (Spec #601, #407, etc.)
+- Verifying Mission Monitor's graph derivation from real OTLP-derived rows (span timing, cost, model, per-turn token deltas)
+- Testing span attribute extraction (the `rtdb/attrs.rs` extract rules against real plugin shapes)
+- End-to-end OTLP transport validation (gRPC/HTTP legs, cross-transport dedupe)
 
-**For real OTLP pipeline verification, drive a live opencode session through Fredo's Run CLI feature instead** (maomaolabs toolbar → Run CLI; see the "Feature usage: Run CLI" section of the feature's `smoke.md` for the full method — `write_pty_input` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is ONLY appropriate for Hook-transport features and IPC-socket event testing.
+**For real pipeline verification, drive a live opencode session through Fredo's Run CLI feature instead** (maomaolabs toolbar → Run CLI; see the "Feature usage: Run CLI" section of the feature's `smoke.md` for the full method — `write_pty_input` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is appropriate for row-classification testing, Mission Monitor row rendering from canonical mock shapes, and IPC-socket testing.
 
 ## Finding the Binary
 
@@ -34,12 +35,12 @@ Sanity check: `& $fredoBin --version` should print version info.
 ## Using `fredo emit` Directly
 
 Call `fredo emit` directly with explicit flags (see the CLI reference below). Follow these conventions:
-- **State** casing: lowercase (`init`, `update`, `response`, `error`)
-- **Provider** format: hyphenated (`open-code`, `claude-code`, `internal`)
-- **Event type** names use underscores (`tool_use`, `agent_session`, `chat`) — pass them as-is to `--event-type` (e.g. `--event-type tool_use` per the reference below)
-- Payload files: strip BOM and validate JSON before passing
+- **State** values: snake_case (`init`, `update`, `response`, `error`) — the default is `init`, so a bare `fredo emit` WITHOUT `--state` succeeds (nit c fix)
+- **Event type** values: snake_case (`tool_use`, `agent_session`, `chat`, `infrastructure`, `ui`, `custom`) — accepted as-is by `--event-type` (nit b fix)
+- **Provider** values: snake_case (`open_code`, `claude_code`, `internal`)
+- Payload files: strip BOM and validate JSON before passing; the file is the event BODY only (see the caveat above)
 
-Usage: `& $fredoBin emit --event-type tool_use --state init --tool-name Bash --provider open-code --session-id e2e-test-1`
+Usage: `& $fredoBin emit --event-type tool_use --state init --tool-name Bash --provider open_code --session-id e2e-test-1`
 
 ## CLI Reference
 
@@ -50,69 +51,41 @@ Usage: `& $fredoBin emit --event-type tool_use --state init --tool-name Bash --p
   --tool-name <string> \
   --session-id <string> \
   --correlation-id <string> \
-  --provider <open-code|claude-code|internal> \
-  --payload '<json string>'
+  --provider <open_code|claude_code|internal> \
+  --payload '<json string>' \
+  --file <path-to-payload-json or ->
 ```
 
-Defaults: `--state init`, `--session-id tauri-local`, `--provider internal`
+Defaults: `--state init`, `--session-id tauri-local`, `--provider internal`. `--file -` reads the payload from stdin.
 
 ---
 
 ## Event Types and Their UI Effects
 
+All effects now come from classified RTDB rows (the v1 delivery streams no longer exist):
+
 | Event Type | State | What it triggers in the UI |
 |------------|-------|---------------------------|
-| `tool_use` | `Init` | Opens a feature window for that tool if one exists |
-| `tool_use` | `Response` | Updates window content / counters increment |
-| `tool_use` | `Error` | Shows error state in the feature window |
-| `chat` | `Init` | Adds a chat message node to Mission Monitor |
-| `agent_session` | `Init` | Creates a new agent session in Mission Monitor |
-| `agent_session` | `Response` | Completes a session / updates status |
-| `infrastructure` | `Init` | Triggers Diagram feature updates |
-| `ui` | `Init` | Triggers UI-level custom events |
+| `chat` | `init` | Chat row upsert → Mission Monitor renders a chat node (USER section; userMessage extracted per the classifier's priority chain) |
+| `chat` | `response` | Chat row patch → RESPONSE section + token figures (from `payload.info.turnInputTokens`/`turnOutputTokens` or the classifier's canonical projections) |
+| `tool_use` | `init`/`update` | Tool row upsert → TOOLS sections / tool nodes in Mission Monitor |
+| `tool_use` | `response` | Tool row completion (success/error outcome) |
+| `tool_use` (`tool-name Fredo_ui_stepper`) | any | Stepper-probe rows: the Stepper Probe panel's row count + epoch advance; auto-navigation to the steps page fires when the panel is open (W5) |
+| `agent_session` | `init` | Session row upsert → Mission Monitor session identity |
+| `agent_session` | `response` | Session aggregate patch (total_tokens / total_messages / total_cost_usd) |
+| `infrastructure` / `ui` / `custom` | any | Classified only through the CLI mock shapes — no dedicated UI consumer today |
+
+→ Verify via Mission Monitor DOM captures or the row stores (`chat_rows`/`tool_use_rows`/`agent_session_rows` in fredo.db, read-only via the telemetry-query skill).
 
 ---
 
-## OpenCode Plugin Event Forwarding Matrix
+## OpenCode Plugin → OTLP Spans (real path)
 
-**CRITICAL: Not all opencode events reach Fredo's adapter.** The plugin at `apps/opencode-plugin/src/index.ts` controls which events are forwarded. When designing bug fixes or features that depend on specific opencode events, verify the plugin actually forwards them.
-
-### Hook Architecture
-
-The opencode plugin uses two mechanisms to forward events to `fredo open-code-plugin`:
-
-1. **Catch-all `event` hook** (line 41): Forwards ANY opencode event via `event.type` discriminator. This covers most session lifecycle, permission, file, and command events.
-2. **Dedicated hook registrations** (lines 46-69): Specific hooks for `tool.execute.before`, `tool.execute.after`, `chat.message`, and `experimental.compaction.autocontinue`. These are needed because those hooks have different signatures (input/output args) than the catch-all `event` hook.
-
-### Event Forwarding Table
-
-| OpenCode Event | Hook Type | Forwarded? | Event Type in IPC | Notes |
-|---------------|-----------|------------|-------------------|-------|
-| `chat.message` | Dedicated (`chat.message`) | ✅ Yes | `chat.message` | User prompt at `output.message.parts[0].text` (adapter-normalized payload); the raw plugin event nests it as `input.output.message.parts[0].text` |
-| `session.created` | Catch-all `event` | ✅ Yes | `session.created` | Session metadata + agent info |
-| `session.updated` | Catch-all `event` | ✅ Yes | `session.updated` | Carries final response + token counts for deepseek |
-| `session.deleted` | Catch-all `event` | ✅ Yes | `session.deleted` | Session cleanup |
-| `session.idle` | Catch-all `event` | ✅ Yes | `session.idle` | Agent idle notification |
-| **`session.status`** | Catch-all `event` | **⚠️ UNKNOWN** | `session.status` | Delta/text streaming events. **Bug #593: QA found ZERO session.status events in telemetry for deepseek agent sessions.** May not fire for all models/providers, or may not be forwarded by the catch-all hook. |
-| `PreToolUse` | Dedicated (`tool.execute.before`) | ✅ Yes | `PreToolUse` | Tool metadata before execution |
-| `PostToolUse` | Dedicated (`tool.execute.after`) | ✅ Yes | `PostToolUse` | Tool response after execution (includes `task` tool for @-subagent) |
-| `permission.asked` | Catch-all `event` | ✅ Yes | `permission.asked` | Permission requests |
-| `permission.replied` | Catch-all `event` | ✅ Yes | `permission.replied` | Permission responses |
-| `file.edited` | Catch-all `event` | ✅ Yes | `file.edited` | File modification events |
-| `command.executed` | Catch-all `event` | ✅ Yes | `command.executed` | Shell command execution |
-| `message.part.updated` | Catch-all `event` | ⚠️ Varies | `message.part.updated` | Streaming delta events. Deepseek uses these instead of `chat.message` for streaming (Bug #586). |
-| `message.updated` | Catch-all `event` | ⚠️ Varies | `message.updated` | Message updates with metadata |
-| `experimental.compaction.autocontinue` | Dedicated | ✅ Yes | `experimental.compaction.autocontinue` | Session compaction events |
-
-### Known Gaps (Bug #593)
-
-1. **`session.status` delta events:** For deepseek agents, the QA telemetry query found **zero** `session.status` spans. This means text accumulation via delta chunk concatenation CANNOT work with the current plugin — the events never reach the adapter. Any fix that depends on `session.status` events will silently fail unless the plugin is updated to forward them (or the adapter uses `session.updated` for final response instead).
-
-2. **Model-specific event differences:** Deepseek uses `message.part.updated` with a `delta` field for streaming text, NOT `chat.message` with `output.message.parts[0].text`. Bug #586 was triggered by this mismatch. Always verify which events your target model/provider actually emits by querying the telemetry database.
+**CRITICAL: real rows come from spans, not Hook events.** The plugin at `apps/opencode-plugin/src/index.ts` exports OTLP traces to `127.0.0.1:4317`. Every span is persisted raw to `telemetry_spans` on receipt AND classified into RTDB rows by the ingest classifier.
 
 ### Verification Recipe
 
-To check which events are ACTUALLY being forwarded by the plugin for a given agent session, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns `fredo.db` path resolution, enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT call `sqlite3 fredo.db` directly:
+To check which spans a given agent session actually produced, load the **`telemetry-query`** skill and use its sanctioned wrapper. It owns `fredo.db` path resolution, enforces read-only guardrails, and uses the `telemetry_spans.session_id` column — do NOT call `sqlite3 fredo.db` directly:
 
 ```powershell
 # 1. Find the session ID from Mission Monitor or query telemetry
@@ -122,68 +95,62 @@ powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 `
   -Format md
 ```
 
-**Red flag:** If an event type your fix depends on has `count = 0`, the plugin is NOT forwarding it. Do NOT design a fix around that event type — either update the plugin or use a different event source.
+**Red flag:** If a span type your fix depends on has `count = 0`, the plugin is NOT emitting it. Do NOT design a fix around that event type — either update the plugin or use a different source.
 
 ---
 
 ## Mock Event Recipes
 
-### Recipe 1: Trigger a feature window to open
+Each recipe smoke-verified live against the RTDB row path (Spec #2788 P6.1). All payloads are event BODY only (`--file`/`--payload` never carry a whole event).
+
+### Recipe 1: Chat turn with user message (Mission Monitor)
 
 ```
-& $fredoBin emit --event-type tool_use --state init --tool-name run-cli --provider open-code --session-id e2e-test-1
+& $fredoBin emit --event-type chat --state init --provider open_code --session-id e2e-chat-1 --correlation-id e2e-chat-1_1 --payload '{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"e2e-test: hello from mock event\"}]}}'
 ```
 
-→ Verify: `tauri_webview_dom_snapshot(type="accessibility")` contains a window with the feature name.
+→ Verify: Mission Monitor shows a chat node for session `e2e-chat-1` with the `── USER ──` section carrying the emitted text. (The classifier's mock-shape extraction reads `message.content[].text`; real spans use the `gen_ai.input.messages`/`gen_ai.output.messages` registry keys.)
 
-### Recipe 2: Send a chat message (Mission Monitor)
-
-```
-& $fredoBin emit --event-type chat --state init --tool-name assistant --provider open-code --session-id e2e-session-1 --correlation-id e2e-corr-1 --payload '{\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"e2e-test: hello from mock event\"}]}}'
-```
-
-→ Verify: `tauri_webview_find_element(strategy="text", selector="e2e-test: hello")` finds the message.
-
-### Recipe 3: Trigger an error display
-
-```
-& $fredoBin emit --event-type tool_use --state error --tool-name terminal --provider open-code --session-id e2e-session-1 --payload "{\"error\":{\"message\":\"e2e-test: intentional error for testing\"}}"
-```
-
-→ Verify: error element visible in accessibility tree with role "alert" or text containing "error".
-
-### Recipe 4: Increment counters (multiple events)
+### Recipe 2: Tool execution lifecycle
 
 ```
 $cid = $(New-Guid)
-& $fredoBin emit --event-type tool_use --state init --tool-name read_file --provider open-code --correlation-id $cid --session-id e2e-counters
-& $fredoBin emit --event-type tool_use --state response --tool-name read_file --provider open-code --correlation-id $cid --session-id e2e-counters
+& $fredoBin emit --event-type tool_use --state init --tool-name read_file --provider open_code --correlation-id $cid --session-id e2e-tools-1
+& $fredoBin emit --event-type tool_use --state response --tool-name read_file --provider open_code --correlation-id $cid --session-id e2e-tools-1
 ```
 
-→ Verify: `tauri_webview_execute_js` reads counter state and value increased by 1.
+→ Verify: tool row for the composite key with `tool_success`/state outcome; Mission Monitor renders it (note: mock tool rows carry no span timing, so time-window association does NOT attach them to a chat node — the mock-vs-real rule).
 
-### Recipe 5: Agent session lifecycle
-
-```
-& $fredoBin emit --event-type agent_session --state init --tool-name opencode --provider open-code --session-id e2e-lifecycle-1
-& $fredoBin emit --event-type agent_session --state response --tool-name opencode --provider open-code --session-id e2e-lifecycle-1
-```
-
-→ Verify: Mission Monitor shows session with correct lifecycle state.
-
-### Recipe 6: Infrastructure stream (Diagram)
+### Recipe 3: Agent session lifecycle
 
 ```
-& $fredoBin emit --event-type infrastructure --state init --tool-name kubectl_get --provider internal --session-id e2e-diag --payload "{\"resource\":\"pods\",\"namespace\":\"default\",\"items\":[{\"name\":\"nginx-pod\",\"status\":\"Running\"}]}"
+& $fredoBin emit --event-type agent_session --state init --tool-name opencode --provider open_code --session-id e2e-lifecycle-1
+& $fredoBin emit --event-type agent_session --state response --tool-name opencode --provider open_code --session-id e2e-lifecycle-1 --payload '{\"total_tokens\":1234,\"total_messages\":3,\"total_cost_usd\":0.01}'
 ```
 
-→ Verify: Diagram feature shows the node.
+→ Verify: Mission Monitor session row with aggregate figures from the payload.
+
+### Recipe 4: Stepper probe rows (row-subscription probe)
+
+```
+& $fredoBin emit --event-type tool_use --tool-name Fredo_ui_stepper --state init --session-id e2e-stepper-1 --payload '{\"steps\":[{\"title\":\"Step A\",\"status\":\"Waiting\"}]}'
+```
+
+→ Verify: with the Stepper Probe panel open, its Replayed-rows counter increments and the row-store epoch advances; auto-navigation to the steps page fires when the current page is neither `steps` nor `dev-mode` (W5 migration).
+
+### Recipe 5: Snake_case CLI parsing regression
+
+```
+& $fredoBin emit --event-type tool_use --session-id e2e-parse-1
+```
+
+→ Verify: command succeeds (default `--state init` parses; nit b/c fix). Row appears in `tool_use_rows` under session `e2e-parse-1`.
 
 ---
 
 ## Test Isolation — Unique Session IDs
 
-**Problem:** The dev:tauri instance runs OTLP receivers, internal adapters, and any connected agents simultaneously. Real events stream into Mission Monitor alongside test events. This pollutes the DOM snapshot — you can't tell which events are yours.
+**Problem:** The dev:tauri instance runs OTLP receivers, the row classifier, and any connected agents simultaneously. Real spans stream into the row store alongside test events. This pollutes the DOM snapshot — you can't tell which events are yours.
 
 **Solution:** Use a unique, random session ID for every test run, and compare baseline vs result DOM snapshots:
 
@@ -200,8 +167,6 @@ Every `fredo emit` call in the test run uses `--session-id $e2eSessionId`. This 
 4. Take result DOM snapshot
 5. Search result snapshot for `$e2eSessionId` — only test events match
 
-This way, the 6 real sessions with 7610-18082 events are just background noise. You only verify changes from your unique session ID.
-
 ---
 
 ## Test Pattern
@@ -210,10 +175,10 @@ For each AC that needs mock events:
 
 1. Take a **baseline DOM snapshot** before emitting
 2. **Emit the event** via `fredo emit`
-3. **Wait 2 seconds** for React to process (events are async)
+3. **Wait 2 seconds** for React to process (rows are async)
 4. Take a **result DOM snapshot**
 5. **Compare** — the AC describes what should have changed between baseline and result
 6. If the change hasn't happened after 2s, wait 3 more seconds and retry once
 7. If still unchanged → FAIL with "event emitted but no UI change detected"
 
-**Important**: Generate a random unique `--session-id` per test run to isolate from real events (OTLP, plugins, internal adapters). Use `New-Guid` for uniqueness: `$e2eSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)`. Use a unique `--correlation-id` for Init/Response pairs. Compare baseline vs result DOM snapshots — only changes from the unique session ID indicate success.
+**Important**: Generate a random unique `--session-id` per test run to isolate from real events (OTLP, plugins). Use `New-Guid` for uniqueness: `$e2eSessionId = "e2e-" + (New-Guid).ToString().Substring(0, 8)`. Use a unique `--correlation-id` per turn key. Compare baseline vs result DOM snapshots — only changes from the unique session ID indicate success.

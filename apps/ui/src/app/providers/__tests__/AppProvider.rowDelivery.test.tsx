@@ -1,10 +1,11 @@
 /**
- * AppProvider RowDelivery routing tests — Spec #2788 P4.1.
+ * AppProvider RowDelivery routing tests — Spec #2788 P4.1 (P5.1: RTDB only).
  *
- * Verifies the strangler coexistence contract on the shared
- * "fredo-stream-event" channel:
- *  - RowDelivery envelopes → routed to the RTDB row store (NOT the v1 queue).
- *  - ContractDelivery envelopes → v1 StreamContext.addDelivery — UNTOUCHED.
+ * Verifies the routing contract on the shared "fredo-stream-event" channel
+ * (the v1 ContractDelivery leg was deleted in P5.1 — RTDB row deliveries are
+ * the ONLY event path):
+ *  - RowDelivery envelopes → routed to the RTDB row store.
+ *  - Batch envelopes → the bulk path (one epoch bump per touched partition).
  *  - Unrecognized payloads → ignored (pre-existing behavior).
  */
 
@@ -15,7 +16,6 @@ import React from 'react';
 import { AppProvider } from '../AppProvider';
 import {
   StreamProvider,
-  useStream,
   beginReplayDrain,
   cancelReplayDrain,
   resetRowStoreForTests,
@@ -24,7 +24,7 @@ import {
 } from '../../../shared/contexts/StreamContext';
 import { rowKeyString } from '../../../shared/classes/EventSubscription';
 import type { HostAdapter } from '../../adapters/HostAdapter';
-import type { ContractDelivery, RowDelivery } from '../../../shared/classes/EventSubscription';
+import type { RowDelivery } from '../../../shared/classes/EventSubscription';
 
 function makeAdapter(): { adapter: HostAdapter; dispatch: (msg: Record<string, unknown>) => void } {
   let handler: ((msg: Record<string, unknown>) => void) | undefined;
@@ -65,35 +65,19 @@ const ROW_DELIVERY: RowDelivery = {
   timestamp: '2026-09-01T00:00:00+00:00',
 };
 
-const CONTRACT_DELIVERY: ContractDelivery = {
-  id: 'd-1',
-  contractName: 'Fredo_ui_stepper',
-  lifecycle: 'init',
-  key: { sessionId: 'ses_v1' },
-  payload: { some: 'data' },
-  timestamp: '2026-09-01T00:00:01+00:00',
-};
+const NullProbe = () => null;
 
-/** Reads both pipelines so assertions can observe delivery routing. */
-let probe: { v1Deliveries: number };
-function Probe(): null {
-  const { deliveries } = useStream();
-  probe.v1Deliveries = deliveries.length;
-  return null;
-}
-
-describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
+describe('AppProvider — RowDelivery routing', () => {
   beforeEach(() => {
     resetRowStoreForTests();
-    probe = { v1Deliveries: 0 };
   });
 
-  it('routes RowDelivery envelopes to the row store, NOT the v1 delivery queue', () => {
+  it('routes RowDelivery envelopes to the row store', () => {
     const { adapter, dispatch } = makeAdapter();
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -105,56 +89,14 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     const key = rowKeyString(ROW_DELIVERY.key);
     expect(getRowMap('Chat').get(key)?.userMessage).toBe('hello from rtdb');
     expect(getRowEpoch('Chat')).toBe(1);
-    // v1 pipeline untouched by row deliveries.
-    expect(probe.v1Deliveries).toBe(0);
   });
 
-  it('routes ContractDelivery envelopes to the v1 addDelivery path — untouched', () => {
+  it('ignores unrecognized payloads (no routing)', () => {
     const { adapter, dispatch } = makeAdapter();
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
-        </AppProvider>
-      </StreamProvider>,
-    );
-
-    act(() => {
-      dispatch(CONTRACT_DELIVERY as unknown as Record<string, unknown>);
-    });
-
-    expect(probe.v1Deliveries).toBe(1);
-    // Row store untouched by v1 deliveries.
-    expect(getRowEpoch('Chat')).toBe(0);
-    expect(getRowMap('Chat').size).toBe(0);
-  });
-
-  it('routes both envelope kinds independently during coexistence', () => {
-    const { adapter, dispatch } = makeAdapter();
-    render(
-      <StreamProvider>
-        <AppProvider adapter={adapter}>
-          <Probe />
-        </AppProvider>
-      </StreamProvider>,
-    );
-
-    act(() => {
-      dispatch(CONTRACT_DELIVERY as unknown as Record<string, unknown>);
-      dispatch(ROW_DELIVERY as unknown as Record<string, unknown>);
-    });
-
-    expect(probe.v1Deliveries).toBe(1);
-    expect(getRowMap('Chat').size).toBe(1);
-    expect(getRowEpoch('Chat')).toBe(1);
-  });
-
-  it('ignores unrecognized payloads (no routing either way)', () => {
-    const { adapter, dispatch } = makeAdapter();
-    render(
-      <StreamProvider>
-        <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -164,7 +106,6 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
       dispatch(null);
     });
 
-    expect(probe.v1Deliveries).toBe(0);
     expect(getRowEpoch('Chat')).toBe(0);
   });
 
@@ -173,7 +114,7 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -184,7 +125,6 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     });
 
     expect(getRowEpoch('Chat')).toBe(0);
-    expect(probe.v1Deliveries).toBe(0);
   });
 
   // ── Batch envelopes (Spec #2788 F-33 fix, W-2) ──────────────────────────
@@ -194,7 +134,7 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -213,7 +153,6 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
 
     expect(getRowMap('Chat').size).toBe(3, 'every batch element applied');
     expect(getRowEpoch('Chat')).toBe(1, 'one batch → ONE epoch bump (not per delivery)');
-    expect(probe.v1Deliveries).toBe(0);
   });
 
   it('still routes single RowDelivery envelopes alongside batches (backward compatible)', () => {
@@ -221,7 +160,7 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -240,7 +179,7 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -258,12 +197,12 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     expect(getRowEpoch('Chat')).toBe(0);
   });
 
-  it('routes batch, single, and v1 contract envelopes independently during coexistence', () => {
+  it('routes batch and single envelopes independently — duplicate keys dedupe by row key', () => {
     const { adapter, dispatch } = makeAdapter();
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -271,12 +210,10 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     act(() => {
       dispatch({ rowBatch: [ROW_DELIVERY] } as unknown as Record<string, unknown>);
       dispatch(ROW_DELIVERY as unknown as Record<string, unknown>);
-      dispatch(CONTRACT_DELIVERY as unknown as Record<string, unknown>);
     });
 
     expect(getRowMap('Chat').size).toBe(1, 'same key from batch + single dedupes by row key');
     expect(getRowEpoch('Chat')).toBe(1, 'the identical re-delivered insert is a content no-op — no extra bump');
-    expect(probe.v1Deliveries).toBe(1, 'v1 pipeline untouched');
   });
 
   // ── Replay-completion marker (round-3 F-33 fix) ─────────────────────────
@@ -286,7 +223,7 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );
@@ -316,7 +253,7 @@ describe('AppProvider — RowDelivery vs ContractDelivery routing', () => {
     render(
       <StreamProvider>
         <AppProvider adapter={adapter}>
-          <Probe />
+          <NullProbe />
         </AppProvider>
       </StreamProvider>,
     );

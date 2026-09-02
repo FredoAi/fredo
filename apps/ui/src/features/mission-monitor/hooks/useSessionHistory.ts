@@ -9,15 +9,15 @@ import type { ChatRow } from '../../../shared/classes/EventSubscription';
 //
 // The session list derives from the typed RTDB Chat rows via
 // `useEventRows('Chat', {}, { replay: true })`. The v1 machinery this
-// replaces (and that Phase 5 deletes with the rest of the ECE path):
-// - `contract_events_hydrate` + `shared/lib/contractHydration.ts` — replay
+// replaces (deleted with the rest of the v1 pipeline in P5.1):
+// - the v1 mount-time hydration IPC command and its shared helper — replay
 //   delivers the persisted snapshot as full-row `insert` envelopes (R-2a),
 //   routed by the backend BEFORE `subscribe_events` resolves, so there is no
 //   separate mount-time fetch.
-// - the module-scoped `hydratedDeliveryIds` set — replay inserts dedupe by
+// - the module-scoped hydrated-id set — replay inserts dedupe by
 //   ROW KEY in the row store (one row per (sessionId, correlationId), spread-
-//   merge, seq-guarded), so hydrated rows can never double-add.
-// - `useStream()` deliveries — the row store has no TTL eviction and no
+//   merge, seq-guarded), so replayed rows can never double-add.
+// - the v1 delivery queue — the row store has no TTL eviction and no
 //   5000-cap, so a session's rows are visible for the panel's whole lifetime
 //   and restored by replay on remount (the v1 TTL-shrink vanish bug class is
 //   structurally gone).

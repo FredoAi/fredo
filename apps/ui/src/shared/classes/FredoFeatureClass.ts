@@ -7,22 +7,19 @@
  * Features that extend this class:
  * - Diagram (Infrastructure Diagram)
  * - QueryViewer (multiple instances for query results)
- * 
+ *
  * Features that DO NOT extend this class:
- * - SideStepper (fixed position sidebar)
  * - StreamStatus (fixed position status indicator)
  * - Dashboard (fallback when grid is empty)
  * - Settings (modal/panel components)
- * 
- * ## Event Contract Engine
- * 
- * Features now declare `eventContracts` instead of `eventFilters` or
- * `eventSubscriptions`. The ECE (Rust backend) buffers raw events and
- * delivers assembled `ContractDelivery` objects to the frontend.
- * 
- * Each feature's `eventContracts` array declares which contracts it
- * is interested in. The `handleDelivery` method is called for each
- * delivery matching the feature's contracts.
+ *
+ * ## Live data
+ *
+ * Features read live agent activity through the RTDB row store —
+ * `useEventRows(eventType, args, options)` subscribes typed rows
+ * (`ChatRow`/`ToolUseRow`/`AgentSessionRow`) with replay + live patches.
+ * The v1 per-feature contract-delivery machinery was deleted in Spec #2788
+ * P5.1.
  * 
  * ## Sending Responses to MCP
  * 
@@ -50,7 +47,6 @@
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 import type { GridItemConfig } from './types';
-import type { EventContractDeclaration, ContractDelivery } from './EventSubscription';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -70,23 +66,7 @@ export abstract class FredoFeatureClass<TProps = {}> {
    * Icon shown in the grid (when minimized)
    */
   abstract readonly icon: IconType;
-  
-  /**
-   * Event contracts — which contracts this feature subscribes to.
-   * Empty array = no event processing.
-   * Replaces the old `eventFilters` and `eventSubscriptions` properties.
-   */
-  readonly eventContracts: EventContractDeclaration[] = [];
 
-  /**
-   * Handle a contract delivery from the ECE.
-   * Called for every delivery matching this feature's contracts.
-   * Default: no-op — override to process deliveries.
-   */
-  handleDelivery(_delivery: ContractDelivery): void {
-    // Default no-op
-  }
-  
   /**
    * Render the feature component
    * @param props - Optional props to pass to the component
@@ -153,7 +133,8 @@ export abstract class FredoFeatureClass<TProps = {}> {
 
   /**
    * Callback to request opening this feature's window.
-   * Registered by Home.tsx. Call `this.openSelf()` from handleDelivery.
+   * Registered by Home.tsx. Call `this.openSelf()` from row-driven one-shot
+   * effects (e.g. the stepper probe's auto-navigation).
    * No-op if the feature is already open (callback is only called once).
    */
   private _requestOpen: (() => void) | null = null;
@@ -188,7 +169,7 @@ export abstract class FredoFeatureClass<TProps = {}> {
   }
 
   /**
-   * Request this feature's window to be opened. Call from handleDelivery().
+   * Request this feature's window to be opened.
    * Safe to call multiple times — only opens the window once.
    */
   protected openSelf(): void {

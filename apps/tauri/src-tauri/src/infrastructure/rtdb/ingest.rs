@@ -1,17 +1,17 @@
 //! IngestClassifier — the RTDB write-path classifier (Spec #2788, P3.1,
 //! REQs R-1e/R-1f/R-4a/R-4b/R-4d).
 //!
-//! Owns the correlation-state maps the v1 `GenericOtlpAdapter` keeps for the
-//! ECE delivery pipeline, re-homed to the row pipeline: each incoming span is
-//! classified into zero or more canonical `RowUpsert`s fed to
-//! [`Rtdb::ingest_row_upsert`] (merge rules → durable seq → subscriptions →
-//! flush → IPC). This is an ADDITIVE parallel run — the v1
-//! adapter→engine→EventBus path is untouched and a v1-only consumer still
-//! observes byte-identical deliveries.
+//! Owns the correlation-state maps the deleted v1 v1-delivery adapter kept
+//! for its pipeline, re-homed to the row
+//! pipeline: each incoming span is classified into zero or more canonical
+//! `RowUpsert`s fed to [`Rtdb::ingest_row_upsert`] (merge rules → durable seq
+//! → subscriptions → flush → IPC). The v1 adapter→engine→EventBus path no
+//! longer exists — this classifier is the ONLY write path into the row store.
 //!
 //! ## Ported state (copy-preserve — same caps, same eviction, same logic)
 //!
-//! - The 9 correlation maps of `GenericOtlpAdapter` (`adapters/otlp.rs:164-199`):
+//! - The 9 correlation maps of the deleted v1 OTLP adapter
+//!   (relocated pure helpers now live in `rtdb/attrs.rs`):
 //!   `trace_to_session`, `session_to_correlation`, `span_to_correlation` (ST9
 //!   #2688 double-advance guard), `session_to_parent`, `session_turn_counter`
 //!   (REQ-639), `pending_task_instructions` (#633), `parent_prompts`
@@ -69,12 +69,13 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::infrastructure::comm::adapters::otlp::{
-    GenericOtlpAdapter, TurnTokenDerivation, ATTR_AGENT_NAME, ATTR_CONVERSATION_ID,
-    ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS, ATTR_USAGE_CACHE_READ_INPUT_TOKENS,
-    ATTR_USAGE_INPUT_TOKENS, ATTR_USAGE_OUTPUT_TOKENS, CC_ATTR_PROMPT_FLAT, CC_ATTR_SESSION_ID,
-    CC_ATTR_SESSION_PARENT_ID, CC_ATTR_TOOL_INPUT, MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION,
-    OP_TOOL_PREFIX,
+use crate::infrastructure::rtdb::attrs::{
+    extract_messages_text, is_subagent_span, otlp_attrs_to_map, otlp_attrs_to_payload,
+    req_11_event_state_from_span, resolve_op_name, TurnTokenDerivation, ATTR_AGENT_NAME,
+    ATTR_CONVERSATION_ID, ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS,
+    ATTR_USAGE_CACHE_READ_INPUT_TOKENS, ATTR_USAGE_INPUT_TOKENS, ATTR_USAGE_OUTPUT_TOKENS,
+    CC_ATTR_PROMPT_FLAT, CC_ATTR_SESSION_ID, CC_ATTR_SESSION_PARENT_ID, CC_ATTR_TOOL_INPUT,
+    MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION, OP_TOOL_PREFIX,
 };
 use crate::infrastructure::comm::adapters::parent_prompt_cache;
 use crate::infrastructure::comm::event::{EventState, EventType, FredoEvent, Transport};
@@ -172,10 +173,9 @@ impl IngestClassifier {
     }
 
     /// Classify a raw OTLP export (standard `resourceSpans` envelope or flat
-    /// JSON — the SAME input shape `GenericOtlpAdapter::transform` takes) into
-    /// row upserts. Returns the number of row mutations ingested. P3.2's
-    /// backfill MUST reuse THIS entry point (reconstructed span JSON) so the
-    /// extract rules stay identical to the live path.
+    /// JSON) into row upserts. Returns the number of row mutations ingested.
+    /// P3.2's backfill MUST reuse THIS entry point (reconstructed span JSON)
+    /// so the extract rules stay identical to the live path.
     pub fn ingest_otlp(&self, transport: Transport, raw: &Value) -> usize {
         tracing::debug!(
             target: "fredo::rtdb::ingest",
@@ -186,7 +186,7 @@ impl IngestClassifier {
 
         if let Some(resource_spans) = raw.get("resourceSpans").and_then(|v| v.as_array()) {
             for rs in resource_spans {
-                let res_attrs = GenericOtlpAdapter::otlp_attrs_to_map(
+                let res_attrs = otlp_attrs_to_map(
                     rs.get("resource").and_then(|r| r.get("attributes")),
                 );
                 let scope_spans = rs
@@ -260,7 +260,7 @@ impl IngestClassifier {
         copied
     }
 
-    // ── Per-span classification (ported from GenericOtlpAdapter::process_span) ─
+    // ── Per-span classification (ported from the deleted v1 OTLP adapter) ────
 
     fn process_span_rows(
         &self,
@@ -269,11 +269,11 @@ impl IngestClassifier {
         res_attrs: &serde_json::Map<String, Value>,
         check_links: bool,
     ) -> usize {
-        let span_attrs = GenericOtlpAdapter::otlp_attrs_to_map(span.get("attributes"));
+        let span_attrs = otlp_attrs_to_map(span.get("attributes"));
 
         // Resolve canonical op name. Unrecognised spans are dropped (logged) —
         // same classification as the v1 adapter (R6).
-        let Some(op_name) = GenericOtlpAdapter::resolve_op_name(span_name, &span_attrs) else {
+        let Some(op_name) = resolve_op_name(span_name, &span_attrs) else {
             tracing::debug!(
                 target: "fredo::rtdb::ingest",
                 span_name = %span_name,
@@ -340,7 +340,7 @@ impl IngestClassifier {
         let event_state = if op_name == OP_SESSION {
             EventState::Init
         } else {
-            GenericOtlpAdapter::req_11_event_state_from_span(span)
+            req_11_event_state_from_span(span)
         };
 
         // REQ-3 / REQ-639 / ST9: correlationId bridging + per-turn counters
@@ -358,7 +358,7 @@ impl IngestClassifier {
             if let Some(links) = span.get("links").and_then(|l| l.as_array()) {
                 for link in links {
                     let link_attrs =
-                        GenericOtlpAdapter::otlp_attrs_to_map(link.get("attributes"));
+                        otlp_attrs_to_map(link.get("attributes"));
                     if let Some(pid) = link_attrs
                         .get(LINK_ATTR_PARENT_SESSION_ID)
                         .and_then(|v| v.as_str())
@@ -387,7 +387,7 @@ impl IngestClassifier {
             }
         }
 
-        let is_subagent = GenericOtlpAdapter::is_subagent_span(&merged);
+        let is_subagent = is_subagent_span(&merged);
         let internal_agent = is_internal_tool_execution_agent(&merged);
 
         // Spec #2762/#2768: the child's parent session id, resolved the SAME
@@ -452,7 +452,7 @@ impl IngestClassifier {
             if let Some(prompt) = merged
                 .get(ATTR_INPUT_MESSAGES)
                 .and_then(|v| v.as_str())
-                .and_then(|s| GenericOtlpAdapter::extract_messages_text(s, "user"))
+                .and_then(|s| extract_messages_text(s, "user"))
                 .or_else(|| {
                     merged
                         .get(CC_ATTR_PROMPT_FLAT)
@@ -477,7 +477,7 @@ impl IngestClassifier {
         // Row fields are then read from the projector's canonical fields
         // (`userMessage`/`promptTokens`/`agent`/… — the exact priority chains
         // v1 applies) and the preserved verbatim flat attrs.
-        let mut payload = GenericOtlpAdapter::otlp_attrs_to_payload(merged, derived);
+        let mut payload = otlp_attrs_to_payload(merged, derived);
         self.inject_instruction_if_needed(is_subagent, &session_id, &mut payload);
         let raw_json = payload.to_string();
         let empty_map = serde_json::Map::new();
@@ -568,7 +568,8 @@ impl IngestClassifier {
 
     // ── Correlation resolution (ported verbatim from adapters/otlp.rs) ────────
 
-    /// ST9 (#2688) port — see `GenericOtlpAdapter::resolve_span_correlation_id`.
+    /// ST9 (#2688) port — one correlation id per span (see
+    /// `rtdb/attrs.rs` for the retained shared extract helpers).
     fn resolve_span_correlation_id(
         &self,
         session_id: &str,
@@ -614,7 +615,8 @@ impl IngestClassifier {
     }
 
     /// REQ-3 / REQ-639 port — see
-    /// `GenericOtlpAdapter::resolve_correlation_id`.
+    /// REQ-3/REQ-609 correlation bridging port (session-keyed, one row per
+    /// session; Hook-bridged sessions reuse the Hook correlation id).
     fn resolve_correlation_id(&self, session_id: &str, event_state: EventState) -> String {
         let stored = self
             .session_to_correlation
@@ -656,7 +658,7 @@ impl IngestClassifier {
     }
 
     /// REQ-639 port — see
-    /// `GenericOtlpAdapter::generate_per_turn_correlation_id`.
+    /// REQ-639 per-turn correlation id port (`{session_id}_{turn}`).
     fn generate_per_turn_correlation_id(&self, session_id: &str) -> String {
         let counter = self
             .session_turn_counter
@@ -690,8 +692,8 @@ impl IngestClassifier {
         new_cid
     }
 
-    /// #2711/#2723/#2734 port — see `GenericOtlpAdapter::derive_turn_tokens`
-    /// (classifier-owned baselines, identical clamp/reset/bounded semantics).
+    /// #2711/#2723/#2734 port — per-turn token deltas against the classifier-
+    /// owned cumulative baselines (identical clamp/reset/bounded semantics).
     fn derive_turn_tokens(
         &self,
         session_id: &str,
@@ -1932,32 +1934,6 @@ mod tests {
                 .is_some(),
             "the child row itself is still ingested"
         );
-    }
-
-    // ── Dual-feed coexistence: rows keyed at the SAME composite keys as v1 ────
-
-    #[test]
-    fn row_keys_match_the_v1_adapter_composite_keys() {
-        let adapter = GenericOtlpAdapter::new();
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-        let raw = envelope(vec![chat_span("ses_dual", "sp-1", true, vec![])]);
-
-        // The v1 adapter consumes the SAME export (grpc.rs order)...
-        let inputs = adapter
-            .transform(Transport::OtlpGrpc, raw.clone())
-            .expect("transform");
-        assert!(!inputs.is_empty());
-        let adapter_corr = inputs[0].correlation_id.clone().expect("correlation id");
-        // ...and the classifier classifies it independently — the row MUST
-        // land at the same composite key the v1 ECE buffer uses.
-        classifier.ingest_otlp(Transport::OtlpGrpc, &raw);
-
-        let row = rtdb
-            .cache()
-            .get_chat("ses_dual", &adapter_corr)
-            .expect("read")
-            .expect("row keyed at the SAME composite key as the v1 ECE buffer");
-        assert_eq!(row.state, RowState::Response);
     }
 
     // ── IPC/CLI mock path (ingest_event) ─────────────────────────────────────

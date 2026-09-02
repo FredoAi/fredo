@@ -7,9 +7,8 @@
 ///
 /// Both protobuf and JSON OTLP payloads are handled. Trace exports are
 /// persisted raw on receipt (`raw.rs` → `telemetry_spans`, Spec #2449 R1) and
-/// their OTLP projection is normalized into `EngineInput`s by the
-/// provider-agnostic `GenericOtlpAdapter`, delivered via the ECE → EventBus
-/// (R3). Metrics and logs are persisted to `telemetry_metrics` / `telemetry_logs`
+/// classified into RTDB rows by the ingest classifier (Spec #2788 P3.1).
+/// Metrics and logs are persisted to `telemetry_metrics` / `telemetry_logs`
 /// (Spec #2449 R2), matching the gRPC receiver.
 use axum::{
     body::Bytes,
@@ -28,10 +27,6 @@ use opentelemetry_proto::tonic::collector::{
     trace::v1::ExportTraceServiceRequest,
 };
 
-use crate::infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
-use crate::infrastructure::comm::bus::EventBus;
-use crate::infrastructure::comm::contract::engine::ContractEngine;
-use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
 use crate::infrastructure::rtdb::ingest::IngestClassifierState;
 use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
@@ -99,41 +94,22 @@ async fn handle_traces(
 ) -> StatusCode {
     let app = &state.app;
     if is_protobuf(&headers) {
-        // Protobuf OTLP — decode, persist raw, then deliver via GenericOtlpAdapter.
+        // Protobuf OTLP — decode, persist raw, then classify into RTDB rows.
         match ExportTraceServiceRequest::decode(body) {
             Ok(req) => {
-                // R1: raw span ingestion on receipt, BEFORE delivery. Persisted
-                // transport keeps today's name (`otlp_grpc` — HTTP-protobuf
-                // traces are delivered tagged OtlpGrpc, the pre-existing quirk).
+                // R1: raw span ingestion on receipt, BEFORE row classification.
+                // Persisted transport keeps today's name (`otlp_grpc` —
+                // HTTP-protobuf traces are delivered tagged OtlpGrpc, the
+                // pre-existing quirk).
                 persist_raw_spans(app, &req, "otlp_grpc");
 
                 let json_value = serde_json::json!({
                     "resourceSpans": req.resource_spans
                 });
-                // R3/R12: provider-agnostic GenericOtlpAdapter emits EngineInput.
-                // Preserve the pre-existing quirk: HTTP-protobuf traces are
-                // tagged Transport::OtlpGrpc (Mission Monitor's `chat-node`
-                // filter matches `'otlp_grpc'`).
-                let adapter = app.state::<std::sync::Arc<GenericOtlpAdapter>>();
-                match adapter.transform(Transport::OtlpGrpc, json_value.clone()) {
-                    Ok(inputs) => {
-                        let engine = app.state::<std::sync::Arc<ContractEngine>>();
-                        let bus = app.state::<EventBus>();
-                        for input in inputs {
-                            let deliveries = engine.req_2_3_process(input);
-                            for delivery in deliveries {
-                                bus.emit_delivery(delivery);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
-                    }
-                }
-
-                // Spec #2788 P3.1: ADDITIVE parallel-run row ingestion (v1
-                // path above untouched) — same export, same classifier entry
-                // point as the gRPC receiver.
+                // Spec #2788 P3.1: row ingestion — same export, same
+                // classifier entry point as the gRPC receiver. Preserve the
+                // pre-existing quirk: HTTP-protobuf traces are tagged
+                // Transport::OtlpGrpc.
                 let classifier = app.state::<IngestClassifierState>();
                 let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-protobuf export classified into RTDB rows");
@@ -147,7 +123,7 @@ async fn handle_traces(
             Ok(val) => {
                 // R1: persist raw spans from the standard resourceSpans envelope
                 // (camelCase OTLP JSON) when present. The OpenCode flat format
-                // (no envelope) skips raw persistence — delivery still runs.
+                // (no envelope) skips raw persistence — classification still runs.
                 if let Ok(req) = serde_json::from_value::<ExportTraceServiceRequest>(val.clone()) {
                     persist_raw_spans(app, &req, "otlp_http");
                 } else {
@@ -155,26 +131,7 @@ async fn handle_traces(
                 }
 
                 // R3: HTTP-JSON traces are tagged Transport::OtlpHttp.
-                let adapter = app.state::<std::sync::Arc<GenericOtlpAdapter>>();
                 let transport = Transport::OtlpHttp;
-                match adapter.transform(transport, val.clone()) {
-                    Ok(inputs) => {
-                        let engine = app.state::<std::sync::Arc<ContractEngine>>();
-                        let bus = app.state::<EventBus>();
-                        for input in inputs {
-                            let deliveries = engine.req_2_3_process(input);
-                            for delivery in deliveries {
-                                bus.emit_delivery(delivery);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
-                    }
-                }
-
-                // Spec #2788 P3.1: ADDITIVE parallel-run row ingestion (v1
-                // path above untouched).
                 let classifier = app.state::<IngestClassifierState>();
                 let rows = classifier.ingest_otlp(transport, &val);
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-JSON export classified into RTDB rows");
@@ -386,71 +343,6 @@ mod tests {
         assert_eq!(spans[0].span_id, "aabbccddeeff0011");
         assert_eq!(spans[0].session_id, "sess-json-1");
         assert_eq!(spans[0].transport.as_deref(), Some("otlp_http"));
-    }
-
-    // ── R3: EngineInput flows through the ECE into SubscriptionDelivery ──────
-
-    #[test]
-    fn http_json_projection_flows_through_ece_as_subscription_delivery() {
-        // Mirrors the AC3 static leg (otlp.rs): a GenericOtlpAdapter projection
-        // for an HTTP-JSON trace must flow through the ECE as SubscriptionDelivery.
-        use crate::infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
-        use crate::infrastructure::comm::contract::engine::ContractEngine;
-        use crate::infrastructure::comm::contract::types::ContractDeclaration;
-        use crate::infrastructure::comm::contract::EventContractEngine;
-
-        let adapter = GenericOtlpAdapter::new();
-        let raw = serde_json::json!({
-            "resourceSpans": [{
-                "resource": { "attributes": [] },
-                "scopeSpans": [{
-                    "spans": [{
-                        "name": "my.llm",
-                        "traceId": "trace-http-ece",
-                        "endTimeUnixNano": "1000000",
-                        "attributes": [
-                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
-                            { "key": "gen_ai.conversation.id", "value": { "stringValue": "sess-http-ece" } },
-                            { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"HTTP reply\"}]}]" } }
-                        ]
-                    }]
-                }]
-            }]
-        });
-
-        let inputs = adapter.transform(Transport::OtlpHttp, raw).expect("transform should not error");
-        assert_eq!(inputs.len(), 2, "completed chat span dual-emits Init + Response");
-
-        let engine = ContractEngine::new();
-        let contract = ContractDeclaration {
-            contract_name: "chat-node".to_string(),
-            stream_fields: vec!["payload".to_string(), "state".to_string()],
-            deferred_fields: vec![],
-            key: vec!["sessionId".to_string(), "correlationId".to_string()],
-            complete_when: "state === 'Response'".to_string(),
-            timeout: 300000,
-            providers: None,
-            transports: Some(vec!["otlp_http".to_string()]),
-            event_types: Some(vec!["chat".to_string()]),
-            persistent: false,
-            exclude_payload: None,
-        };
-        engine.req_1_register(vec![contract]).expect("contract should register");
-
-        let mut deliveries = Vec::new();
-        for input in inputs {
-            deliveries.extend(engine.req_2_3_process(input));
-        }
-        assert!(!deliveries.is_empty(), "ECE must emit deliveries for the chat-node contract");
-        assert!(deliveries.iter().any(|d| d.contract_name == "chat-node"));
-        // The end delivery carries the agent reply.
-        assert!(deliveries.iter().any(|d| {
-            d.payload
-                .get("payload")
-                .and_then(|p| p.get("agentReply"))
-                .and_then(|v| v.as_str())
-                == Some("HTTP reply")
-        }));
     }
 
     // ── R2: HTTP metrics/logs decode + persist (conversion helpers) ──────────

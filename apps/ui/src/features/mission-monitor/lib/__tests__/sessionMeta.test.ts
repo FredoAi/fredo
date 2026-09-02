@@ -1,20 +1,21 @@
 /**
  * Tests for the ST-1 session-metadata pure functions (#2748):
- * `deriveSessionName`, `deriveDisplayName`, `computeSubagentTokenTotals`.
+ * `deriveDisplayName`, `computeSubagentTokenTotals`.
  *
- * Covers R-1.1 (first-message derivation + truncation + whitespace
- * normalization), R-1.2 (no-chat-message fallback), R-2.3 (custom-name
- * precedence), and R-3.1 (SUBAGENTS last-wins aggregation, build/plan
- * exclusion, breakdown-vs-aggregate rule, zero-guarding).
+ * Covers R-2.3 (custom-name precedence) and R-3.1 (SUBAGENTS last-wins
+ * aggregation, build/plan exclusion, breakdown-vs-aggregate rule,
+ * zero-guarding). The v1 delivery-input `deriveSessionName` was deleted with
+ * the v1 pipeline (P4.3/P5.1) — the hook derives names from Chat rows via
+ * `formatDerivedName`.
  */
 import { describe, it, expect } from 'vitest';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import {
-  deriveSessionName,
   deriveDisplayName,
   computeSubagentTokenTotals,
   computeSubagentCostTotals,
   INTERNAL_TOOL_EXECUTION_AGENTS,
+  formatDerivedName,
   type SessionNameFields,
 } from '../sessionMeta';
 import { rowsFromDeliveries } from '../../hooks/__tests__/fixtures/rowsFromDeliveries';
@@ -50,21 +51,6 @@ function makeDelivery(
   };
 }
 
-/** Chat-node delivery carrying an optional adapter-injected `userMessage`. */
-function chatDelivery(
-  sessionId: string,
-  correlationId: string,
-  timestamp: string,
-  userMessage?: string,
-): ContractDelivery {
-  return makeDelivery('chat-node', sessionId, correlationId, 'init', timestamp, {
-    ...(userMessage !== undefined ? { userMessage } : {}),
-    agentReply: 'reply',
-    promptTokens: 100,
-    completionTokens: 50,
-  });
-}
-
 /** Tool-use-lifecycle delivery for a `task` span with child-completion fields. */
 function taskDelivery(
   sessionId: string,
@@ -83,63 +69,29 @@ function taskDelivery(
 const SESSION = 'sess-1';
 const OTHER_SESSION = 'sess-2';
 
-// ── deriveSessionName — AC1 / R-1.1 + R-1.2 ──────────────────────────────────
+// ── formatDerivedName — the display-form truncation pipeline (R-1.1) ─────────
 
-describe('deriveSessionName', () => {
-  it('returns undefined for no deliveries', () => {
-    expect(deriveSessionName([], SESSION)).toBeUndefined();
-  });
-
-  it('returns the EARLIEST non-empty userMessage in a multi-message session', () => {
-    const deliveries = [
-      chatDelivery(SESSION, 'c1', T2, 'second message, later'),
-      chatDelivery(SESSION, 'c2', T0, 'first message, earliest'),
-      chatDelivery(SESSION, 'c3', T1, 'middle message'),
-    ];
-    expect(deriveSessionName(deliveries, SESSION)).toBe('first message, earliest');
-  });
-
-  it('ignores deliveries of OTHER sessions', () => {
-    const deliveries = [
-      chatDelivery(OTHER_SESSION, 'c1', T0, 'another session'),
-      chatDelivery(SESSION, 'c2', T1, 'this session'),
-    ];
-    expect(deriveSessionName(deliveries, SESSION)).toBe('this session');
-  });
-
-  it('skips deliveries whose userMessage is empty or whitespace-only', () => {
-    const deliveries = [
-      chatDelivery(SESSION, 'c1', T0, '   '),
-      chatDelivery(SESSION, 'c2', T1, ''),
-      chatDelivery(SESSION, 'c3', T2, 'real text'),
-    ];
-    expect(deriveSessionName(deliveries, SESSION)).toBe('real text');
-  });
-
-  it('returns undefined when NO chat delivery carries non-empty user text (R-1.2 fallback)', () => {
-    const deliveries = [
-      chatDelivery(SESSION, 'c1', T0, ''),
-      chatDelivery(SESSION, 'c2', T1), // userMessage absent entirely
-    ];
-    expect(deriveSessionName(deliveries, SESSION)).toBeUndefined();
+describe('formatDerivedName', () => {
+  it('returns undefined for empty/whitespace-only input', () => {
+    expect(formatDerivedName('')).toBeUndefined();
+    expect(formatDerivedName('   ')).toBeUndefined();
   });
 
   it('collapses whitespace and newlines to a single line, trimming ends', () => {
-    const deliveries = [
-      chatDelivery(SESSION, 'c1', T0, '  first\tline\n\nsecond  line\r\n  third  '),
-    ];
-    expect(deriveSessionName(deliveries, SESSION)).toBe('first line second line third');
+    expect(formatDerivedName('  first\tline\n\nsecond  line\r\n  third  ')).toBe(
+      'first line second line third',
+    );
   });
 
   it('truncation boundary — a name of EXACTLY 40 chars is returned untruncated', () => {
     const exactly40 = 'x'.repeat(40);
-    expect(deriveSessionName([chatDelivery(SESSION, 'c1', T0, exactly40)], SESSION)).toBe(exactly40);
-    expect(deriveSessionName([chatDelivery(SESSION, 'c1', T0, exactly40)], SESSION)!.length).toBe(40);
+    expect(formatDerivedName(exactly40)).toBe(exactly40);
+    expect(formatDerivedName(exactly40)!.length).toBe(40);
   });
 
   it('truncation boundary — 41+ chars keeps 39 code units + ellipsis = 40 total (ellipsis counted)', () => {
     const over = 'y'.repeat(41);
-    const result = deriveSessionName([chatDelivery(SESSION, 'c1', T0, over)], SESSION)!;
+    const result = formatDerivedName(over)!;
     expect(result).toBe('y'.repeat(39) + '…');
     expect(result.length).toBe(40);
   });
@@ -152,7 +104,7 @@ describe('deriveSessionName', () => {
     // INCLUDING the ellipsis is preserved.
     const emoji = '😀';
     const over = 'z'.repeat(38) + emoji + 'q'; // 38 + 2 + 1 = 41 code units
-    const result = deriveSessionName([chatDelivery(SESSION, 'c1', T0, over)], SESSION)!;
+    const result = formatDerivedName(over)!;
     expect(result).toBe('z'.repeat(38) + '…');
     expect(result).not.toMatch(/[\uD800-\uDFFF]/); // no lone surrogate remains
     expect(result.length).toBe(39);
@@ -160,7 +112,7 @@ describe('deriveSessionName', () => {
 
   it('truncation applies AFTER whitespace normalization', () => {
     const spaced = 'a   ' + 'b'.repeat(50); // whitespace run + 50 code units
-    const result = deriveSessionName([chatDelivery(SESSION, 'c1', T0, spaced)], SESSION)!;
+    const result = formatDerivedName(spaced)!;
     // Normalized first: 'a' + ' ' + 'b'*50 (52 code units), then hard-truncated
     // to 39 code units + '…' = 40 total.
     expect(result).toBe('a ' + 'b'.repeat(37) + '…');

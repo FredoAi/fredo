@@ -16,7 +16,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { LuMinimize2, LuMaximize2, LuDownload } from 'react-icons/lu';
-import type { FredoEvent } from '../../../shared/contexts/StreamContext';
+import type { DevModeStreamEvent } from '../hooks/useDevModeStream';
 import {
   TOOL_CATEGORY,
   CATEGORY_RGB,
@@ -104,7 +104,7 @@ interface ThreeCtx {
 interface ManifoldEvent {
   toolName: string;
   sessionId: string;
-  state: 'Init' | 'Update' | 'Response' | 'Error';
+  state: 'Init' | 'Update' | 'Response' | 'Error' | 'Timeout';
   timestamp: string;
   source?: 'hook' | 'otlpGrpc' | 'otlpHttp';
   payload: Record<string, unknown> | null;
@@ -112,14 +112,13 @@ interface ManifoldEvent {
   id: string;
 }
 
-function toManifoldEvent(ev: FredoEvent): ManifoldEvent {
-  const meta = ev.metadata && typeof ev.metadata === 'object' ? ev.metadata as any : null;
+function toManifoldEvent(ev: DevModeStreamEvent): ManifoldEvent {
   return {
     toolName: ev.toolName || 'unknown',
     sessionId: ev.sessionId,
     state: ev.state,
     timestamp: ev.timestamp,
-    source: ev.transport === 'otlp_grpc' ? 'otlpGrpc' : ev.transport === 'otlp_http' ? 'otlpHttp' : 'hook',
+    source: 'hook',
     payload: ev.payload,
     correlationId: ev.correlationId,
     id: ev.id,
@@ -365,7 +364,7 @@ function buildFingerprints(
 
 // ── Download ──────────────────────────────────────────────────────────────────
 
-function downloadEvents(events: FredoEvent[]): void {
+function downloadEvents(events: DevModeStreamEvent[]): void {
   const lines = events.map((ev) =>
     JSON.stringify({
       toolName:      ev.toolName,
@@ -375,8 +374,6 @@ function downloadEvents(events: FredoEvent[]): void {
       timestamp:     ev.timestamp,
       id:            ev.id             ?? null,
       correlationId: ev.correlationId   ?? null,
-      error:         ev.error           ?? null,
-      metadata:      ev.metadata        ?? null,
     }),
   );
   const blob = new Blob([lines.join('\n')], { type: 'application/x-ndjson' });
@@ -407,7 +404,7 @@ const LegendDot: React.FC<{ color: string }> = ({ color }) => (
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface Props {
-  events: FredoEvent[];
+  events: DevModeStreamEvent[];
 }
 
 export const SpatiotemporalManifold: React.FC<Props> = ({ events }) => {

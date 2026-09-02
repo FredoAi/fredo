@@ -2,7 +2,7 @@
 //!
 //! Owns the `chat_rows` / `tool_use_rows` / `agent_session_rows` tables in the
 //! SAME `fredo.db` as `AppStore`, `FeatureStore`, `SpanStore`, and
-//! `ContractEventStore` (SpanStore pattern: own `Mutex<Connection>`, WAL,
+//! (SpanStore pattern: own `Mutex<Connection>`, WAL,
 //! schema via `ensure_schema()`). `telemetry_spans` is NEVER touched — the
 //! RTDB is a read-only consumer of the telemetry pipeline, never a writer.
 //!
@@ -244,7 +244,7 @@ fn agent_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSess
 /// SQLite-backed authoritative store for RTDB rows.
 ///
 /// Uses the same `fredo.db` as `AppStore` / `SpanStore` /
-/// `ContractEventStore`, with its own `Mutex<Connection>` for thread-safe
+/// `FeatureStore`, with its own `Mutex<Connection>` for thread-safe
 /// access. Owns the three `*_rows` tables — it never touches
 /// `telemetry_spans` or any other store's tables.
 pub struct RtdbStore {

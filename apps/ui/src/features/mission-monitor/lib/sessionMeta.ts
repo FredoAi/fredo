@@ -7,25 +7,11 @@
  * store access — so they are trivially unit-testable and reusable across
  * surfaces.
  *
- * Spec #2788 P4.2 data sources:
- * - AC1 name: the adapter-injected top-level `userMessage` on v1 chat-node
- *   deliveries — the SIDEBAR path (useSessionHistory) still consumes the v1
- *   delivery stream until its P4.3 migration, so `deriveSessionName` keeps
- *   its delivery input (helpers from `lib/deliveryCompat.ts`).
- * - AC3 SUBAGENTS: typed ToolUse rows (`useEventRows('ToolUse')`) — the
- *   parent session's `task` dispatches. The row's typed columns carry the
- *   span fields (`toolName`, `toolInputJson`); the `rawJson` escape hatch
- *   carries the plugin's child-completion long-tail (`childTokens`,
- *   per-family breakdown — `apps/opencode-plugin/src/util.ts:53-61` emits
- *   `child_total_tokens`/…; the ingest projector preserves the camelCase
- *   keys verbatim).
+ * Spec #2788 P4.3/P5.1: the sidebar derives from typed RTDB rows — the v1
+ * delivery-input `deriveSessionName` was deleted with the v1 pipeline; the
+ * hook derives names from the Chat rows' `userMessage` via `formatDerivedName`.
  */
-import type { ContractDelivery, ToolUseRow } from '../../../shared/classes/EventSubscription';
-import {
-  isChatNodeDelivery,
-  extractDeliveryPayload,
-  deliverySessionId,
-} from './deliveryCompat';
+import type { ToolUseRow } from '../../../shared/classes/EventSubscription';
 import { rawPayload } from './rowDerivation';
 import { normalizeTokenCount, normalizeCost } from './graph';
 
@@ -83,55 +69,14 @@ function truncateName(name: string): string {
 }
 
 /**
- * AC1 (R-1.1) — derive a session's display name from its deliveries.
- *
- * The session's FIRST (earliest-timestamp) chat-node delivery carrying a
- * non-empty `userMessage` — whitespace-normalized to a single line and
- * truncated to 40 characters including the trailing `…` when truncated.
- *
- * (SIDEBAR path — the delivery input goes away with the P4.3 session-list
- * migration; the graph path derives from typed rows.)
- *
- * @returns the normalized + truncated name, or `undefined` when the session
- *   has no chat-node delivery carrying non-empty user text (the R-1.2
- *   timestamp-label fallback).
- */
-export function deriveSessionName(
-  deliveries: ContractDelivery[],
-  sessionId: string,
-): string | undefined {
-  let earliest: string | undefined;
-  let earliestTs = Number.POSITIVE_INFINITY;
-
-  for (const d of deliveries) {
-    if (!isChatNodeDelivery(d)) continue;
-    if (deliverySessionId(d) !== sessionId) continue;
-
-    const p = extractDeliveryPayload(d);
-    const raw = p['userMessage'];
-    if (typeof raw !== 'string' || raw.trim() === '') continue;
-
-    const ts = Date.parse(d.timestamp);
-    if (Number.isNaN(ts) || ts >= earliestTs) continue;
-
-    earliestTs = ts;
-    earliest = raw;
-  }
-
-  if (earliest === undefined) return undefined;
-  return formatDerivedName(earliest);
-}
-
-/**
  * #2748 ST-3 — normalize + truncate a raw user message into its display form.
  *
  * The single shared definition of the display-side normalization pipeline
- * (`normalizeWhitespace` → `truncateName`). `deriveSessionName` formats the
- * earliest message it selects with it; the session-list hook calls it directly
- * so it can resolve every session's derived name in ONE O(N) pass over
- * deliveries (NFR-1) instead of re-scanning per session. It also normalizes
- * ST-2's persisted `derived_name` (stored raw — ST-2's status note: display
- * truncation is the hook's job) into the same display form.
+ * (`normalizeWhitespace` → `truncateName`). The session-list hook calls it
+ * directly so it can resolve every session's derived name in ONE O(N) pass
+ * over the Chat rows (NFR-1). It also normalizes ST-2's persisted
+ * `derived_name` (stored raw — ST-2's status note: display truncation is the
+ * hook's job) into the same display form.
  *
  * Whitespace-only input normalizes to `''` → `undefined` (the R-1.2 label
  * fallback — never an empty display name).

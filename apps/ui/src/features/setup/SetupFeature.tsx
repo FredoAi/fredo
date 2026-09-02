@@ -1,6 +1,5 @@
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
+import { FredoFeatureClass } from '../../shared/classes';
 import { SetupWizard } from './components/SetupWizard';
 import { LuSettings2 } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
@@ -11,9 +10,6 @@ export class SetupFeature extends FredoFeatureClass {
   readonly icon: IconType = LuSettings2;
   readonly showable = false;
   readonly hasSettings = false;
-  readonly eventFilters: EventFilter[] = [];
-
-  processEvent(_event: FredoEvent): void {}
 
   render() {
     return <SetupWizard onClose={() => this.onCloseRequested?.()} />;

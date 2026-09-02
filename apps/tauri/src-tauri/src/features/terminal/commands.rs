@@ -5,9 +5,6 @@ use portable_pty::{native_pty_system, PtySize};
 use uuid::Uuid;
 
 use crate::features::terminal::state::RunCliState;
-use crate::infrastructure::comm::{
-    EventBus, EventProvider, EventState, EventType, FredoEvent, Transport,
-};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -219,17 +216,6 @@ pub async fn open_run_cli(
         return Ok(());
     }
 
-    let bus = app.state::<EventBus>();
-    bus.emit(FredoEvent::builder()
-        .event_type(EventType::ToolUse)
-        .state(EventState::Init)
-        .provider(EventProvider::Internal)
-        .transport(Transport::Hook)
-        .tool_name("run_cli")
-        .correlation_id(&correlation_id)
-        .payload(serde_json::json!({ "binary": bin, "cwd": cwd }))
-        .build());
-
     let pty_system = native_pty_system();
     let pair = match pty_system
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
@@ -343,16 +329,7 @@ pub async fn open_run_cli(
                 let line = line_buf[..pos].trim_end_matches('\r').to_string();
                 line_buf = line_buf[pos + 1..].to_string();
                 if !line.is_empty() {
-                    let bus = app_clone.state::<EventBus>();
-                    bus.emit(FredoEvent::builder()
-                        .event_type(EventType::ToolUse)
-                        .state(EventState::Update)
-                        .provider(EventProvider::Internal)
-                        .transport(Transport::Hook)
-                        .tool_name("run_cli")
-                        .correlation_id(correlation_id.clone())
-                        .payload(serde_json::json!({ "data": line }))
-                        .build());
+                    tracing::debug!(target: "fredo::terminal", line = %line, "pty line");
                 }
             }
         }
@@ -365,15 +342,6 @@ pub async fn open_run_cli(
             guard.correlation_id.as_deref() == Some(correlation_id.as_str())
         };
 
-        let bus = app_clone.state::<EventBus>();
-        bus.emit(FredoEvent::builder()
-            .event_type(EventType::ToolUse)
-            .state(EventState::Response)
-            .provider(EventProvider::Internal)
-            .transport(Transport::Hook)
-            .tool_name("run_cli")
-            .correlation_id(correlation_id)
-            .build());
         if let Err(e) = app_clone.emit_to("run-cli-terminal", "run-cli-exited", ()) {
             tracing::error!(target: "fredo::terminal", error = %e, "emit run-cli-exited failed");
         }

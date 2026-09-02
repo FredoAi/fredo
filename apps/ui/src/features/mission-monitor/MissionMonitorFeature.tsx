@@ -13,18 +13,11 @@ export class MissionMonitorFeature extends FredoFeatureClass {
   readonly showable = true;
 
   /**
-   * Spec #2788 P4.2: the three persistent v1 ECE contracts (chat-node,
-   * tool-use-lifecycle, subagent-tool-activity) are REMOVED — the feature's
-   * graph derivation now runs entirely on typed RTDB rows via
-   * `useEventRows('Chat' | 'ToolUse', { replay: true })`
-   * (MissionMonitorPanel → useDeliveryGraph → lib/rowDerivation.ts). The
-   * declarations are inherited empty from FredoFeatureClass, so the feature
-   * contributes nothing to the ECE registration and no v1 deliveries are
-   * double-delivered into the row-driven graph.
-   *
-   * `handleDelivery` is likewise no longer overridden — with no contracts
-   * registered, no v1 deliveries route to this feature class (the base-class
-   * no-op applies). See the P4.2 report for the row-wiring diagram.
+   * Spec #2788 P4.2/P5.1: fully on typed RTDB rows — the feature derives its
+   * graph via `useEventRows('Chat' | 'ToolUse', { replay: true })`
+   * (MissionMonitorPanel → useDeliveryGraph → lib/rowDerivation.ts). The v1
+   * ECE contract machinery was deleted in P5.1; the feature class carries no
+   * v1 surface at all.
    */
 
   render(): ReactElement {

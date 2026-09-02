@@ -3,15 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::infrastructure::comm::event::{EventProvider, EventState, EventType, FredoEvent, Transport};
 
-/// Emit a FredoEvent into the running application.
+/// Emit a FredoEvent into the running application (classified into RTDB rows).
 #[derive(Parser, Debug)]
 pub struct EmitArgs {
-    /// Event type: tool_use, agent_session, chat, infrastructure, ui, custom
+    /// Event type (snake_case): tool_use, agent_session, chat, infrastructure, ui, custom
     #[arg(long, value_enum)]
     pub event_type: CliEventType,
 
-    /// Event state: Init, Update, Response, Error
-    #[arg(long, value_enum, default_value = "Init")]
+    /// Event state (snake_case): init (default), update, response, error
+    #[arg(long, value_enum, default_value = "init")]
     pub state: CliEventState,
 
     /// Tool name (required for tool_use events)
@@ -26,7 +26,7 @@ pub struct EmitArgs {
     #[arg(long)]
     pub correlation_id: Option<String>,
 
-    /// Event provider: open_code, claude_code, internal
+    /// Event provider (snake_case): open_code, claude_code, internal
     #[arg(long, value_enum, default_value = "internal")]
     pub provider: CliEventProvider,
 
@@ -34,13 +34,14 @@ pub struct EmitArgs {
     #[arg(long)]
     pub payload: Option<String>,
 
-    /// Read event JSON from file (use - for stdin)
+    /// Read event payload JSON from file (use - for stdin)
     #[arg(long)]
     pub file: Option<String>,
 }
 
-#[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
 pub enum CliEventType {
     ToolUse,
     AgentSession,
@@ -50,8 +51,9 @@ pub enum CliEventType {
     Custom,
 }
 
-#[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+#[value(rename_all = "snake_case")]
 pub enum CliEventState {
     Init,
     Update,
@@ -61,6 +63,7 @@ pub enum CliEventState {
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
 pub enum CliEventProvider {
     OpenCode,
     ClaudeCode,
@@ -264,6 +267,63 @@ mod tests {
             };
             let event = build_fredo_event_from_args(args).unwrap();
             assert_eq!(event.state, expected, "EventState::{:?} should map correctly", expected);
+        }
+    }
+
+    #[test]
+    fn emit_args_state_defaults_to_init_when_omitted() {
+        // Nit (c), Fix Plan round 4: `fredo emit` WITHOUT --state used to fail
+        // its own value parser (the clap default "Init" did not match the
+        // kebab/snake possible value). The default must parse and map to
+        // EventState::Init.
+            let args: EmitArgs = clap::Parser::try_parse_from([
+            "emit",
+            "--event-type",
+            "tool_use",
+            "--session-id",
+            "default-state",
+        ])
+        .expect("--event-type tool_use must parse (nit b: snake_case value rename)");
+
+        assert_eq!(args.state, CliEventState::Init);
+        assert_eq!(args.event_type, CliEventType::ToolUse);
+
+        let event = build_fredo_event_from_args(args).unwrap();
+        assert_eq!(event.state, EventState::Init);
+    }
+
+    #[test]
+    fn emit_args_accepts_snake_case_event_types_and_states() {
+        // Nit (b), Fix Plan round 4: SKILL.md documents snake_case values
+        // (tool_use, agent_session, chat) — clap's ValueEnum must accept them.
+        for (raw, expected_type) in [
+            ("tool_use", CliEventType::ToolUse),
+            ("agent_session", CliEventType::AgentSession),
+            ("chat", CliEventType::Chat),
+            ("infrastructure", CliEventType::Infrastructure),
+            ("ui", CliEventType::Ui),
+            ("custom", CliEventType::Custom),
+        ] {
+            let args: EmitArgs = clap::Parser::try_parse_from(["emit", "--event-type", raw])
+                .unwrap_or_else(|e| panic!("--event-type {raw} must parse: {e}"));
+            assert_eq!(args.event_type, expected_type);
+        }
+
+        for (raw, expected_state) in [
+            ("init", CliEventState::Init),
+            ("update", CliEventState::Update),
+            ("response", CliEventState::Response),
+            ("error", CliEventState::Error),
+        ] {
+        let args: EmitArgs = clap::Parser::try_parse_from([
+                "emit",
+                "--event-type",
+                "chat",
+                "--state",
+                raw,
+            ])
+            .unwrap_or_else(|e| panic!("--state {raw} must parse: {e}"));
+            assert_eq!(args.state, expected_state);
         }
     }
 }
