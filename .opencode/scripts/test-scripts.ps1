@@ -2153,6 +2153,59 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   }
 }
 
+# Development Summary round stamp (#2788 audit fix): the summary documents the fix
+# round whose testing entry is being CREATED — stamp = testing-entry count + 1.
+# A fresh issue (0 entries) stamps round 1; two fabricated testing entries stamp
+# round 3 (the observed defect stamped them one low: 2/3/4 for rounds 3/4/5).
+Test-Script "Development Summary stamps the next testing round (count + 1)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  # Edge 1: fresh issue, zero testing entries → round 1.
+  $url = Mock-IssueCreate "temp: dev-summary stamp r1" "stamp scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/dev-summary.md", "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Development Summary \(round 1\)") { throw "fresh issue should stamp round 1, got: $outStr" }
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+  # Edge 2: two fabricated testing entries (rounds 1-2 done) → round 3.
+  $url2 = Mock-IssueCreate "temp: dev-summary stamp r3" "stamp scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url2" }
+  $urlStr2 = if ($url2 -is [array]) { $url2 -join "" } else { "$url2" }
+  $m2 = [regex]::Match($urlStr2, "issues/(\d+)")
+  if (-not $m2.Success) { throw "Could not parse issue number from: $urlStr2" }
+  $issueNum2 = [int]$m2.Groups[1].Value
+  try {
+    $log = ".opencode/state/issues/$issueNum2.jsonl"
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum2).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum2).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    $dir2 = ".opencode/tmp/$issueNum2"
+    New-Item -ItemType Directory -Path $dir2 -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir2/dev-summary.md", "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
+    $out2 = & rust-script $ps --issue $issueNum2 --agent self-improver --action post-comments 2>&1
+    $outStr2 = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr2" }
+    if ($outStr2 -notmatch "COMMENTED: Development Summary \(round 3\)") { throw "two testing entries should stamp round 3, got: $outStr2" }
+    return "dev-summary stamp: fresh issue → round 1; two testing entries → round 3"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum2" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum2
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # block/unblock positive + missing --reason rejected
 Test-Script "block/unblock positive + missing reason" {
   $url = Mock-IssueCreate "temp: block unblock" "block scratch" ""

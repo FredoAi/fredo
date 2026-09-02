@@ -32,6 +32,24 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ## Known Failure Modes
 
+### G-091: on_the_go_improvement
+- **activation_date:** 2026-09-02
+- **observed:** #2788 round 5
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Stale CI-claim fix: the playbook said GitHub CI was deactivated (merge guard on merge-state alone) but validate.yml is LIVE (repo public) and rust-validate runs cargo check/test --locked + clippy -D warnings — a 4-lint clippy failure reached merge-time on #2788 round 5 because no dev receipt ever ran clippy. Playbook now requires the full local CI-parity set (CONTRIBUTING.md flags) in dev receipts. Harness untouched.
+- **home:** references.md (G-091)
+- **effectiveness:** Pending
+
+### G-090: on_the_go_improvement
+- **activation_date:** 2026-09-02
+- **observed:** #2788 round 5
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Machine fix (state machine, SI domain). The Development Summary round stamp was one low on every rework round — the draft flushes at the implementation to testing transition BEFORE the destination testing phase.started append, so the stamp named the round that just ended instead of the round whose work the summary documents (observed on #2788 where the round 3, 4 and 5 summaries posted as rounds 2, 3 and 4). Development Summary now stamps the testing-entry count plus one (a fresh issue still stamps round 1) while Tests Runs and SI Summary keep the raw count because they document the round that is ending. Documented in the same pass at the stamp site and in retry_state. New harness test covers the fresh-issue and rework edges. Full harness green (95 passed).
+- **home:** references.md (G-090)
+- **effectiveness:** Pending
+
+
+
 
 
 
