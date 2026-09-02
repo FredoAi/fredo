@@ -106,6 +106,8 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
   markSessionDeleted: vi.fn(),
   isSessionDeleted: vi.fn(() => false),
+  // Spec #2788 P4.3: tombstone seeding — awaited inside useDeliverySessions' mount load
+  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
   // ST11: real implementations — pure watermark helpers used by the panel.
   createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
   nextUnseenDeliveries: (deliveries, state) => {
@@ -120,6 +122,20 @@ vi.mock('../../lib/persistence', () => ({
 }));
 
 // Mock StreamContext — no live deliveries (the graph is driven via the mocked hook).
+
+// P4.2: the panel subscribes typed rows via useEventRows — empty fixtures here
+// (the auto-center tests drive nodes through the mocked useDeliveryGraph; the
+// session metrics are not asserted in this suite).
+vi.mock('@/shared/hooks/useEventRows', () => ({
+  useEventRows: (_eventType: 'Chat' | 'ToolUse') => ({
+    rows: new Map(),
+    epoch: 1,
+    error: null,
+    // P4.3: the replay snapshot phase is settled — the loaded gate opens
+    ready: true,
+  }),
+}));
+
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useStream: vi.fn(() => ({
     deliveries: [],

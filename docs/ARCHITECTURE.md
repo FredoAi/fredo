@@ -9,7 +9,7 @@ Agents integrate through two paths:
 1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`:4317`) using the OpenTelemetry SDK
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools
 
-OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no span dropped, Spec #2449) and then normalized by a provider-agnostic adapter into `EngineInput` values that the **Event Contract Engine (ECE)** turns into `ContractDelivery` objects for the frontend. The React UI reacts in real time — no polling.
+OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no span dropped, Spec #2449) and then classified by the **RTDB ingest classifier** into typed SQLite rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries over the `"fredo-stream-event"` IPC channel (Spec #2788 — the RTDB is the ONLY delivery path; the v1 contract-engine pipeline was deleted in P5.1). The React UI reacts in real time — no polling.
 
 ---
 
@@ -19,52 +19,42 @@ OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no 
 
 Both the Rust backend and the React UI are organized around **autonomous feature modules**. Each feature owns its entire vertical slice — models, business logic, state, and presentation. No feature reaches into another feature's internals. Shared platform services (communication layer, storage, IPC, OTLP) live in `infrastructure/` (Rust) or `shared/` (TypeScript) and are consumed by features, never owned by them.
 
-### Reactive UI — Streams, Not Polls
+### Reactive UI — Rows, Not Polls
 
-The UI does not call the backend to ask for data. Instead, it **listens to a stream of typed events** and reacts. Every feature declares which events it cares about via `eventContracts: EventContractDeclaration[]`, registered at mount with `registerEventContracts()`. When a matching `ContractDelivery` arrives, the feature's `handleDelivery()` method re-renders with the new data.
+The UI does not call the backend to ask for data. Instead, it **subscribes to a typed row query** via `useEventRows(eventType, args, options)` and reacts. The backend registers the subscription, drains the persisted snapshot as full-row `insert` envelopes (the replay leg, terminated by a per-query `replayCompleteQueryId` settle marker), and streams live patches (`insert`/`update`/`remove`) as they land. Features derive their display state from the module-scoped row store — Spec #2788 P4.1.
 
 ### Agent Alignment
 
-Fredo accepts events from two sources. Hook/CLI input is unified into the canonical `FredoEvent` wire format (converted to `EngineInput` at the ECE boundary); OTLP input is normalized **directly into `EngineInput`** by the provider-agnostic adapter — no standalone `FredoEvent` in the OTLP delivery path (Spec #2449):
+Fredo accepts events from two sources. Hook/CLI input is unified into the canonical `FredoEvent` wire format (the `fredo emit` CLI contract and classifier input); OTLP input flows straight into the raw-span store and the row classifier. Both converge on the same RTDB row store:
 
 | Source | Mechanism | Transport |
 |--------|-----------|-----------|
 | OpenCode OTLP plugin | `fredo-opencode-plugin` exports OTLP directly to `127.0.0.1:4317` | `OtlpGrpc` |
 | OTLP gRPC | `127.0.0.1:4317` (OpenCode spans) | `OtlpGrpc` |
 | OTLP HTTP | `127.0.0.1:4318` (OpenCode spans) | `OtlpHttp` |
+| `fredo emit` CLI | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter` enrich → row classifier | `Hook` |
 
 ---
 
 ## Communication Layer (`infrastructure/comm/`)
 
-The `comm` module is the backbone of the event pipeline.
+The `comm` module holds the canonical wire types and the single IPC emitter. Since Spec #2788 P5.1 it is deliberately small — the v1 contract engine (ECE), the OpenCode/Hook adapter, and the OTLP→ECE adapter were deleted; the RTDB row pipeline (`infrastructure/rtdb/`) is the only delivery path.
 
 ### Core Types
 
-- **`FredoEvent`** — the CLI/Hook wire format: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. Constructed only by non-OTLP paths (CLI `EmitEvent`, `InternalAdapter`, Hook adapter); converted to `EngineInput` at the ECE boundary via `From<FredoEvent> for EngineInput`.
-- **`EngineInput`** — the ECE's input contract (`infrastructure/comm/contract/input.rs`, Spec #2449): `state`, `provider`, `transport`, `eventType`, `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata` (camelCase serde, same enums as `FredoEvent`; `id`/`timestamp` dropped — never consumed by the engine). The OTLP delivery path constructs `EngineInput` directly — no standalone `FredoEvent`.
-- **`EventBus`** — emits `SubscriptionDelivery` on the `"fredo-stream-event"` Tauri IPC channel to the webview. Registered as Tauri state in `lib.rs`.
-- **`CommAdapter`** trait — adapters transform raw input into `Vec<EngineInput>` (OTLP) or `Vec<FredoEvent>` (Hook); the ECE consumes everything as `EngineInput`.
+- **`FredoEvent`** — the `fredo emit` CLI wire format and classifier input: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. **Demoted, not deleted** (P5.1): FredoEvent no longer crosses IPC to the webview.
+- **`EventBus`** — emits RTDB `RowDeliveryBatch` envelopes on the `"fredo-stream-event"` Tauri IPC channel via `emit_row_delivery_batch` (the ONLY sanctioned RTDB emission path). Registered as Tauri state in `lib.rs`.
+- **`CommAdapter`** trait — retained and implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
-### Adapters & Connectors
-
-**Adapters** are per-transport-class. **Connectors** are per-transport within an adapter. Since Spec #2449 the OTLP path is **provider-agnostic** — any agent provider flows through the same adapter.
+### Adapters
 
 ```
 infrastructure/comm/adapters/
-├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) → FredoEvent
-├── otlp.rs        — GenericOtlpAdapter: provider-agnostic OTLP → EngineInput (Spec #2449)
-├── internal.rs    — InternalAdapter: enriches raw events with server-side defaults
+├── internal.rs            — InternalAdapter: enriches CLI events with server-side defaults
+├── parent_prompt_cache.rs — bounded parent-prompt cache helpers (shared with the row classifier)
 ```
 
-- `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/PostToolUseFailure/... plugin hooks into FredoEvents (the Hook connector; the OTLP connector moved out to `otlp.rs` in Spec #2449)
-- `GenericOtlpAdapter::transform(Transport::OtlpGrpc|OtlpHttp, payload)` — provider-agnostic OTLP → `EngineInput` (Spec #2449), ported from `OpenCodeAdapter`'s OTLP connector:
-  - **Classification** — driven by `gen_ai.operation.name` registry values (`run_agent` → agent_session, `chat` → chat, `execute_tool` → tool_use) with generic span-name heuristics — **no `fredo.*` naming dependency** — so opencode, Copilot CLI, and Claude Code all flow through one adapter.
-  - **Session correlation** — stores `session_id` in `session_to_correlation` map (Spec #612) so `correlation_id === session_id` for pure-OTLP sessions, preventing the frontend's `correlationId !== sessionId` subagent check from misclassifying them.
-  - **Spec #633 + #615 parent-child detection** — primary path via **OTel span links** (REQ-6): scans each span's `links` array for a link with `parent.session_id` attribute. When found, populates `session_to_parent` map for order-independent resolution regardless of OTLP batch arrival order — no cross-batch deferred delivery state needed. The removed `parent_prompts` and `pending_child_injections` adapter state maps (REQ-8) are replaced by this span-link-based approach. Falls back to `session.parent_id` span attribute (REQ-9, Spec #615) when span links are absent (backward compatible with older plugin versions).
-  - **EventState from timing** — `endTimeUnixNano` present → `EventState::Response` (span complete), absent → `EventState::Init` (span in progress). Completed session spans stay `Init` (REQ-609) and a synthetic `Init` EngineInput precedes the `Response` one for completed chat/tool spans, preserving init-then-end delivery (Spec #2449 R9).
-  - **gen_ai.* extraction** — the Spec #633 Redesign v2 + Spec #1499 attribute families (`gen_ai.input.messages`, `gen_ai.output.messages` (JSON-string message arrays, parsed by the adapter), `gen_ai.usage.*`, `gen_ai.response.model`, `gen_ai.tool.name`/`gen_ai.tool.call.*`, `gen_ai.agent.name`) with flat Claude Code fallbacks secondary, all under the OTel GenAI semantic-convention registry's **current** names.
-- New agent providers do NOT need a new adapter file — `GenericOtlpAdapter` is provider-agnostic; new transports still get a new `Transport` variant in `event.rs`
+The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registry constants, `resolve_op_name`, `otlp_attrs_to_map`, `otlp_attrs_to_payload`, `extract_messages_text`, `req_11_event_state_from_span`, `is_subagent_span`, `TurnTokenDerivation`) were **relocated verbatim to `infrastructure/rtdb/attrs.rs`** — one shared extract-rule implementation for the live classifier and the canonical backfill (NFR-6).
 
 ---
 
@@ -74,123 +64,88 @@ infrastructure/comm/adapters/
 ┌─────────────────────────────────────────────────────────┐
 │                    Event Sources                         │
 │                                                          │
-│  Agent Plugin ──→ IPC Socket ──→ CliCommand dispatch     │
 │  OTLP gRPC    ──→ :4317 ──→ protobuf parse              │
 │  OTLP HTTP    ──→ :4318 ──→ JSON/protobuf parse         │
 │  fredo emit   ──→ IPC Socket ──→ CliCommand dispatch     │
 └───────────────┬──────────────────────────┬──────────────┘
                 │                          │
                 ▼                          ▼
-   Raw ingestion on receipt      Adapter.transform(transport, payload)
-   (otlp/ingest.rs →             │  Hook:  FredoEvent ──From──▶
-   telemetry_spans/metrics/      │  OTLP:  GenericOtlpAdapter
-   logs; zero dropped,           │         → EngineInput
-   independent of delivery)      │
-                                  ▼
-                          Vec<EngineInput>
-                                  │
-                       ContractEngine.req_2_3_process()
-                                  │
-                          Vec<SubscriptionDelivery>
-                                  │
-                        EventBus.emit_delivery(batch)
-                                  │
-              app_handle.emit("fredo-stream-event", SubscriptionDelivery)
-                                  │
-                                  ▼
-                       Webview — TauriAdapter.onMessage()
-                                  │
-                 detect contractName+lifecycle → addDelivery()
-                                  │
-                        AppProvider → StreamContext.addDelivery()
-                                  │
-                        useReducer dispatch → React re-render
-                                  │
-                  Feature component (matched via eventContracts)
-                                  │
-                          feature.handleDelivery(delivery)
-                                  │
-                          renders updated data
+   Raw ingestion on receipt      RTDB ingest classifier
+   (otlp/raw.rs →                (rtdb/ingest.rs — shared
+   telemetry_spans/metrics/      helpers in rtdb/attrs.rs;
+   logs; zero dropped,           correlation maps + relationship
+   independent of delivery)      registry re-keying)
+                │                          │
+                │                          ▼
+                │                  Vec<RowUpsert> → Rtdb
+                │                  (merge rules → durable seq
+                │                   → subscriptions)
+                │                          │
+                │              FlushLoop (~5 ms cadence)
+                │                          │
+                │        EventBus.emit_row_delivery_batch()
+                │                          │
+                │    app_handle.emit("fredo-stream-event", RowDeliveryBatch)
+                │                          │
+                ▼                          ▼
+                        Webview — TauriAdapter.onMessage()
+                                   │
+                        AppProvider (isRowDeliveryBatch /
+                        isRowDelivery discrimination)
+                                   │
+                  StreamContext row store (module-scoped,
+                  spread-merge + seq guards + epoch bumps)
+                                   │
+                        useEventRows(eventType, args)
+                                   │
+                           feature UI re-render
 ```
 
-When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler → `ContractEngine.req_2_3_process()` → same reactive path.
+When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler; the resulting rows flow back through the same subscription path.
 
-Raw `FredoEvent` never crosses IPC — only `SubscriptionDelivery` does. The `ContractEngine` buffers events by composite key, evaluates `completeWhen` conditions, and delivers assembled payloads via Init → Update → End lifecycle. When `completeWhen` fires on the first matching event for a composite key, both `init` and `end` deliveries are emitted in order — the engine guarantees init-before-end regardless of when `completeWhen` fires (fixed spec #369).
+Only `RowDelivery`/`RowDeliveryBatch` envelopes cross IPC — raw `FredoEvent` never does (it is the CLI wire format only). The **ingest classifier** (`rtdb/ingest.rs`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `rtdb/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
 
-Since Spec #2449, the OTLP delivery path constructs `EngineInput` directly (no standalone `FredoEvent`); Hook/CLI `FredoEvent`s are converted at the ECE boundary via `From<FredoEvent> for EngineInput`. Raw telemetry persistence is decoupled from delivery: the receivers write every signal to `telemetry_*` on receipt, before and independent of any delivery processing — a span-store failure logs and continues, and never fails the export response or the delivery path (R11).
+### Replay + Live Boundary (P2.3, F-33 fix)
 
-### ECE Compositing — Cross-Session Parent-Child Merging (Spec #523, amended by Spec #2768)
+`subscribe_events` is an async command: it registers the live subscriptions FIRST, returns immediately, and hands the snapshot SELECT to `tauri::async_runtime::spawn_blocking` — the replay leg is a background drain (NFR-1). The drain's final ≤512-row chunk of each query carries the per-query `replayCompleteQueryId` settle marker (an empty terminal envelope when nothing remained pending); `useEventRows.ready` resolves on the marker, never on subscribe resolution alone. Batches are chunked at `RTDB_MAX_EMISSION_BATCH = 512` rows per IPC envelope. `flushMs: 0` bypasses coalescing and emits one envelope per patch (AC1-c timing).
 
-The ECE (Event Contract Engine) handles parent-child session merging generically via a **relationship registry**, enabling subagent aggregation without adapter-level sessionId rewriting.
+### Known limitation (E-2788-r3-1)
 
-#### Relationship Registration — self-carried property first (Spec #2768), metadata fallback (legacy)
+With Mission Monitor open on a very large corpus (~42k rows), sustained live agent traffic re-triggers per-batch derivations in the renderer and can intermittently saturate the webview (DOM/console probes time out during bursts; quick evals slip through). The main thread and backend stay healthy throughout, and the coalescing guarantees one envelope per drained chunk. Drains typically recover, but at least one ≥13-minute non-recovering webview wedge was observed under an actively-streaming agent during round-4 verification (E-2788-r4) — this is webview-side row application under dense live traffic, documented as a known limitation for a possible post-spec follow-up.
 
-Since Spec #2768, the PRIMARY registration path is the event's own self-carried routing property: the adapter resolves each child span's `session.parent_id` attribute and stamps the typed `parent_session_id` on EVERY `EngineInput` of a child session (plus the payload-level `parentSessionId` projection). The ECE registers the child→parent relationship from that typed field alone — attribution no longer depends on catching a separate parent-side event (the timing-race failure mode of the pre-#2768 design).
+### Parent-Child Compositing — Cross-Session Merging (Specs #523/#2768, row-native in #2788)
 
-The legacy paths remain as FALLBACK for sessions lacking the property (old sessions, suppressed emission): adapter-detected relationship metadata — e.g. PostToolUse `task` events with `tool_response.metadata.sessionId` + `parentSessionId`, Hook `session.updated` parentID — attached as `metadata.relationship` on the `EngineInput` (OTLP) or the `FredoEvent` (Hook), plus the adapter's persisted session→parent registry:
+Parent-child session merging happens in the **ingest classifier's relationship registry** (row pipeline), not in any adapter. Registration sources (ported from the ECE, `rtdb/ingest.rs`): the OTel span-link `parent.session_id` attribute (primary) and the `session.parent_id` attribute (fallback), with the internal `build`/`plan` tool-execution-agent exclusion (AGENTS.md #509 rule) applied at registration.
 
-```json
-{
-  "metadata": {
-    "relationship": {
-      "type": "parent-child",
-      "parentSessionId": "<parent>",
-      "childSessionId": "<child>"
-    }
-  }
-}
-```
+- **`child_to_parent` / `parent_to_children`** maps (capped at 10,000 entries, oldest-first eviction) mirror the deleted ECE registry.
+- When a child→parent relationship registers, the child's EXISTING rows are COPIED under the parent key (session_id = parent, correlation_id = the child's own per-turn id) carrying the `parent_session_id` + `composited_child_session_id` stamps; every LATER child row also gets a parent-keyed copy while the relationship is registered. **`kind: remove` is ONLY ever emitted for retention eviction — a re-key NEVER removes rows.**
 
-Adapters **never rewrite sessionIds** — they preserve real sessionIds and annotate with relationship metadata. This makes subagent merging adapter-agnostic for future providers (Copilot, Claude Code, etc.).
+**Join rule (Spec #2768 round 2; revised #2770 round 6, restated for rows):** consumers that join child activity must NEVER key by the re-keyed composite key — keying by the composite key orphans every child tool call (the round-1 `⚠ N unattributed` chip defect). **Ownership derivation:** a row can be re-keyed MORE THAN ONCE (multi-hop delegation chains), so ownership of a task dispatch derives PRIMARILY from the correlationId's session prefix (`<sessionId>_<counter>` — every real OTLP corrId carries it), using `compositedChildSessionId` ONLY as the guarded fallback for non-prefixed (legacy/mock) corrIds. The classifier preserves the FIRST `compositedChildSessionId` stamp across re-keys (first-wins — the event's true owner).
 
-#### Relationship Registry
+---
 
-`EngineInner` holds two maps (`infrastructure/comm/contract/engine.rs`):
-- **`child_to_parent: HashMap<String, String>`** — child→parent session ID mappings (capped at 10,000 entries, oldest-first eviction)
-- **`parent_to_children: HashMap<String, Vec<String>>`** — reverse lookup for cleanup
+## RTDB Row Store (Spec #2788)
 
-When `do_process()` detects a child→parent relationship — from the self-carried typed `parent_session_id` (Spec #2768, primary) or `metadata.relationship.type === "parent-child"` (legacy fallback) — it calls `register_relationship(parent, child)` BEFORE iterating contracts. This ensures the mapping exists before any child events are processed (forward compositing).
+SQLite-authoritative typed rows behind an LRU cache — the production event pipeline.
 
-#### Cross-Session Compositing
+### Row types + queries
 
-In `process_for_contract()`, if an event's `sessionId` is a registered child, the ECE substitutes the parent's `sessionId` in the composite key before buffer lookup. Child events are buffered under the parent session's key space, while preserving the child's `correlationId`. The frontend continues to detect subagents via `deliveryCorrelationId(d) !== deliverySessionId(d)`.
+Three canonical tables in `fredo.db` — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`.
 
-**Frontend join rule (Spec #2768 round 2, `4a9361e`; revised #2770 round 6):** on EVERY composited delivery the ECE injects the ORIGINAL child session id as `compositedChildSessionId` at the OUTER delivery payload top level (`delivery.payload['compositedChildSessionId']` — not inside the inner payload object) — on init/update stream payloads, on end full payloads, and on the re-key end+init pair alike. Consumers that join child activity (e.g. Mission Monitor's `upsertSubagentActivity`) must NEVER key by the re-keyed composite key — keying by the composite key orphans every child tool call (the round-1 `⚠ N unattributed` chip defect) and starves SubagentNodes of their embedded tools.
+The orphaned `contract_events` table (a pre-#2788 v1 data artifact) stays in `fredo.db` — it has zero code references and destructive data cleanup is out of scope; it is left in place.
 
-**Ownership derivation (#2770 round 6 — multi-hop re-key):** a delivery can be re-keyed MORE THAN ONCE (a depth-3 chain re-keys the L2's buffer into L1's, then L1's into the root's), and pre-fix ECE versions re-stamped `compositedChildSessionId` at each hop — the same correlationId then exists under TWO different stamps, and stamp-based bucketing lets two consumers contest one entry (the L3-creating dispatch flipped parentage every fixpoint pass, burned the pass cap, and wiped the node's tools). The contract is now two-sided: (1) the ECE PRESERVES the inner `compositedChildSessionId` across re-keys (the first stamp — the event's true owner — wins; the buffer record is cleared on reset, engine.rs); (2) the frontend derives a task dispatch's owning session PRIMARILY from the correlationId's session prefix (`<sessionId>_<counter>` — every real OTLP corrId carries it), using `compositedChildSessionId ?? key.sessionId` ONLY as the guarded fallback for non-prefixed (legacy/mock) corrIds. Stamp-based keying alone is not robust to historical mis-stamped rows already persisted in both stores.
+### Retained machinery (do NOT remove)
 
-> **Spec #2723 (Mission Monitor subagent exclusion):** the ECE compositing machinery above REMAINS for other consumers, but Mission Monitor now declares `excludePayload: [{ path: 'is_subagent', equals: true }, { path: 'agent.type', equals: 'subagent' }]` on its `chat-node` contract, and the adapter injects those markers into EVERY span-derived payload of a subagent session (session-level detection — span attrs OR `session.parent_id` differing from its own session OR the persisted session→parent registry). Subagent events are therefore dropped at the engine pre-buffer for Mission Monitor — zero child-derived deliveries reach IPC/StreamContext/persistence. This is an intentional reversal of Spec #523's SubagentNode rendering (in scope by PO decision); SubagentNode remains registered but unreachable.
+- **`kind: remove` retention-eviction deliveries** (R-2d) — the ONLY remove producer: retention prune routes removals to matching subscribers.
+- **`rtdb.backfill.completed` marker** (`rtdb/backfill.rs`) — one-shot canonical backfill of pre-cutover history from `telemetry_spans` (strictly READ-ONLY) through the SAME classifier; idempotent re-merges skip the write.
+- **`ready` + `replayCompleteQueryId` settle** (`useEventRows.ts`, `EventSubscription.ts`, `StreamContext.tsx`) — the deterministic replay-settle contract.
+- **Drain registry + background replay drain** (`rtdb/commands.rs`) — register-before-snapshot, no gap, no lost update.
+- **Retention knobs** (`rtdb/cache.rs`) — AppStore KV keys (`rtdb.retention_days` / `rtdb.max_rows`), startup prune + writer-task re-prune.
+- **`emit_row_delivery_batch`** (`comm/bus.rs`) — the ONLY sanctioned RTDB emission path.
 
-When a relationship is registered AFTER child events already have buffers (late-relationship), existing child buffers are re-keyed to the parent sessionId and **"init" lifecycle deliveries** are emitted with `compositedChildSessionId` in the delivery payload. The frontend's Mission Monitor (`useMissionMonitor.ts`) creates graph nodes (SubagentNode) ONLY on `lifecycle: "init"` deliveries — `"update"` deliveries are for metadata-only modifications to existing nodes. Bug #523 cycle 3: the initial implementation emitted `"update"` for re-keyed deliveries, causing SubagentNodes to never be created. The fix (commit 5c03926) changed it to `"init"`. **When designing ECE lifecycle behavior, always verify what lifecycle the frontend consumer expects — the consumer contract (init = create, update = modify) is the source of truth, not the ECE designer's assumption.** The test `late_relationship_rekeys_existing_buffers` originally asserted `"update"` — it codified the same lifecycle misunderstanding. The test now asserts `"init"`. On a MULTI-HOP re-key (depth ≥ 3), the re-key emits must PRESERVE an event's existing `compositedChildSessionId` (first-wins) instead of re-stamping it with each intermediate buffer owner — see the ownership-derivation rule above (#2770 round 6).
+### Bounded state (NFR-2)
 
-> **#593 deactivation (resolved in #615):** SubagentNode creation was deactivated in commit 85518f8 — all non-chat node code paths returned early. Spec #615 re-enabled subagent node creation with two detection paths: (1) **ECE composited** — `deliveryCorrelationId(d) !== deliverySessionId(d)` detecting parent-key composited deliveries, and (2) **OTLP non-composited** — payload fields `is_subagent === true` or `agent.type === 'subagent'` for pure-OTLP sessions where the ECE did not composite. The ECE relationship registry and compositing mechanism required no backend changes for re-activation.
-
-#### Why ECE Compositing Instead of Adapter Rewriting
-
-Spec #509 attempted adapter-level sessionId rewriting but failed because PostToolUse `task` events fire AFTER `session.created` — the timing gap made rewriting impossible (the sessionId is already set when the rewrite information arrives). ECE compositing works because it composites at the **delivery level**, not the event level — it doesn't need to see events before they exist. This is a recurring Fredo design principle: when timing gaps exist, solve data transformations at the delivery/compositing layer (ECE), not the event-level layer (adapter).
-
-### Per-Contract Event Persistence & Hydration (Spec #2768)
-
-The ECE delivers contract-matched events at-most-once to whoever is listening — a feature that is closed (or not yet mounted) while events stream has no record of them. Spec #2768 closes that window with a backend per-contract delivery store plus pull-based hydration.
-
-#### What is kept
-
-- **`ContractEventStore`** (`infrastructure/comm/contract/store.rs`) — own `Mutex<Connection>` to `fredo.db` (WAL, SpanStore pattern) owning the `contract_events` table: every `SubscriptionDelivery` of a **persistent** contract is persisted (delivery id, contract name, composite key JSON, sessionId projection, lifecycle, payload JSON, provider, timestamp, persisted-at, timed-out). `delivery_id` is UNIQUE with `INSERT OR IGNORE`, so re-emitted deliveries dedupe. The store never touches `telemetry_spans` or FeatureStore tables.
-- **`persistent` contract flag** (`ContractDeclaration.persistent` + the TS mirror on `EventContractDeclaration`): persistent contracts are registered once at app bootstrap (Home.tsx registers every feature's contracts at mount) and are **SKIPPED by unmount-time deregistration** (`ContractEngine::do_deregister`), so the ECE keeps buffering — and the delivery layer keeps persisting — their events while the feature is closed. Non-persistent contracts behave byte-identically to before the spec: no rows, unchanged deregistration.
-- **Non-blocking pipeline (R8):** persistence is enqueued inside `EventBus.emit_delivery` (the single choke point covering all process call-sites, the 5s sweep, and deregister ends) via a non-blocking `try_send` on a bounded (4096) channel drained by a dedicated writer task (`tauri::async_runtime::spawn`) that batches inserts across ~100 ms flush windows. A full queue **sheds persistence work — never live deliveries** (shed count is logged). There is zero synchronous storage on the emit path.
-
-#### How long / how much (retention policy)
-
-| Knob (AppStore key) | Default | Meaning |
-|---------------------|---------|---------|
-| `contracts.retention_days` | `7` | Rows older than this many days (by `persisted_at`) are pruned |
-| `contracts.max_rows` | `100000` | Global row cap — the OLDEST rows (lowest `seq`) are pruned first |
-
-Both knobs are ordinary AppStore settings (settable via `save_setting`). Pruning runs **at app startup** and **every 60 minutes** inside the writer task, re-reading the knob values each cycle and deleting in 1000-row batches (`PRAGMA incremental_vacuum` after each batch, mirroring `SpanStore::delete_expired`). The exactly-at-cap boundary keeps the newest rows — no off-by-one drop of the most recent event.
-
-#### Hydration (pull-only)
-
-`contract_events_hydrate(contractNames, sessionId?)` returns the persisted, already-lifecycled `SubscriptionDelivery` records for the given contracts (optionally scoped to one session) ordered by `seq` ASC — the original emission order, under their **original delivery ids**. Hydration is PULL-only: hydrated rows are never re-emitted on the `"fredo-stream-event"` channel and are NOT re-processed by the ECE. The shared frontend helper `hydrateContractEvents()` (`apps/ui/src/shared/lib/contractHydration.ts`) fetches the rows and injects them via `StreamContext.addDelivery` in seq order — original ids make re-adding a delivery the feature already received live a no-op (StreamContext id-dedupe), so reopening a feature never duplicates nodes. Any feature opts in with one call; the store knows nothing about individual features (generic mechanism, AC6). AC6 is proven in-repo by the `stepper-probe` feature (`apps/ui/src/features/stepper-probe/`) — a registered probe feature declaring a second, non-Mission-Monitor contract `Fredo_ui_stepper` with `persistent: true` (providers `internal`, transport `hook`, event type `tool_use`, composite key `sessionId` + `payload.steps`, completeWhen `exists payload.steps`) that hydrates through the same shared helper on mount and reads the rows via the existing `useStepperEvents()` hook.
+Classifier correlation/relationship maps capped at 10,000 entries (oldest-first eviction, `MAP_CAPACITY`); emission batches chunked at `RTDB_MAX_EMISSION_BATCH = 512`; the FE row-mutation debug log capped at 512 entries with oldest-first eviction.
 
 ---
 
@@ -227,21 +182,28 @@ src-tauri/src/
 |       +-- mod.rs              — TelemetryFeature (DesktopCapable)
 |       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
 +-- infrastructure/
-    +-- comm/                   — Communication layer
-    |   +-- mod.rs              — re-exports: FredoEvent, EngineInput, EventBus, CommAdapter
-    |   +-- event.rs            — FredoEvent (wire format), EventType, EventProvider, Transport, EventState
-    |   +-- contract/
-    |   |   +-- input.rs        — EngineInput (ECE input contract; From<FredoEvent> shim)
-    |   |   +-- engine.rs       — ContractEngine.req_2_3_process(EngineInput)
-    |   |   +-- field.rs        — extract_field (generic over Serialize)
-    |   |   +-- store.rs        — ContractEventStore + ContractEventWriter (per-contract delivery persistence, Spec #2768)
-    |   +-- bus.rs              — EventBus (emits on "fredo-stream-event"; persists persistent-contract deliveries)
+    +-- comm/                   — Canonical wire types + the single IPC emitter
+    |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
+    |   +-- event.rs            — FredoEvent (CLI wire format), EventType, EventProvider, Transport, EventState
+    |   +-- bus.rs              — EventBus (emit_row_delivery_batch — the ONLY RTDB emission path)
     |   +-- adapter.rs          — CommAdapter trait
     |   +-- adapters/
     |       +-- mod.rs
-    |       +-- opencode.rs     — OpenCodeAdapter (Hook connector → FredoEvent)
-    |       +-- otlp.rs         — GenericOtlpAdapter (provider-agnostic OTLP → EngineInput)
-    |       +-- internal.rs     — InternalAdapter (server-side defaults)
+    |       +-- internal.rs     — InternalAdapter (fredo emit enrichment)
+    |       +-- parent_prompt_cache.rs — bounded parent-prompt cache helpers
+    +-- rtdb/                   — RTDB row store (Spec #2788) — the production event pipeline
+    |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
+    |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables
+    |   +-- merge.rs            — KeepFirst / LastNonZero / LastWins merge rules
+    |   +-- store.rs            — RtdbStore (SQLite; never touches telemetry_spans)
+    |   +-- cache.rs            — LRU row cache + write-behind queue + retention knobs
+    |   +-- project.rs          — RowDelivery / RowDeliveryBatch projection
+    |   +-- query/              — the RTDB query language (parse + schema validation)
+    |   +-- subscriptions.rs    — SubscriptionRegistry
+    |   +-- flush.rs            — FlushLoop (coalescing windows, 512-row chunking, replay settle markers)
+    |   +-- commands.rs         — Rtdb orchestrator + subscribe_events/unsubscribe_events
+    |   +-- ingest.rs           — IngestClassifier (spans/events → row upserts; relationship registry)
+    |   +-- backfill.rs         — canonical backfill from telemetry_spans (read-only)
     +-- storage/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
     |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
@@ -293,14 +255,14 @@ The `FeatureStore` (spec #339, `infrastructure/storage/feature_store.rs`) provid
 
 The FeatureStore opens its own connection (WAL mode) to the same `fredo.db` file used by `AppStore`. No cross-store data sharing is required.
 
-**Idempotency**: `feature_store_insert` uses `INSERT OR IGNORE` (spec #369). Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. This guarantees delivery-level idempotency when the ECE re-delivers events.
+**Idempotency**: `feature_store_insert` uses `INSERT OR IGNORE` (spec #369). Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. Delivery-level idempotency in the row pipeline is guaranteed by the RTDB durable per-key `seq` (`rtdb/store.rs` `next_seq`, seeded from MAX(seq) in storage — store.rs:628) plus the merge rules (`rtdb/merge.rs`) that drop stale patches — no adapter re-delivers events.
 
 ### Infrastructure vs Features
 
 | Layer | Contains | Does NOT contain |
 |-------|----------|-----------------|
 | `features/` | Models, service logic, state, Tauri command handlers | Shared platform code |
-| `infrastructure/` | FredoEvent (wire), EngineInput (ECE input), EventBus, CommAdapter, AppStore, FeatureStore, IPC socket, CLI parser, OTLP receivers | Business logic |
+| `infrastructure/` | FredoEvent (CLI wire), EventBus, CommAdapter, RTDB row store + ingest classifier, AppStore, FeatureStore, IPC socket, CLI parser, OTLP receivers | Business logic |
 
 ---
 
@@ -311,22 +273,22 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 ### gRPC Receiver (`:4317`)
 - Implements `TraceService`, `MetricsService`, `LogsService` via `tonic`
 - Receives OTLP protobuf from OpenCode
-- **Raw ingestion on receipt** (Spec #2449): every span/metric/log in each export is persisted via `otlp/ingest.rs` → `SpanStore::insert_raw_spans`, before and independent of delivery — no span dropped (R1/R2). Delivery runs the provider-agnostic `GenericOtlpAdapter` (`comm/adapters/otlp.rs`) producing `EngineInput` for the ECE (R3). Metrics and logs were previously dropped on the HTTP leg — now persisted on both legs.
+- **Raw ingestion on receipt** (Spec #2449): every span/metric/log in each export is persisted via `otlp/raw.rs` → `SpanStore::insert_raw_spans`, before and independent of row classification — no span dropped (R1/R2). Row classification runs the RTDB ingest classifier (`rtdb/ingest.rs`) on the same export. Metrics and logs are persisted to `telemetry_metrics`/`telemetry_logs` on both legs.
 
 ### HTTP Receiver (`:4318`)
 - Axum server handling `POST /v1/traces`, `/v1/metrics`, `/v1/logs`
 - Accepts both protobuf (`application/x-protobuf`) and JSON (`application/json`)
-- Includes `/health` and `/v1/test` diagnostic endpoints
+- Includes `/health` diagnostic endpoint
 - Same raw-ingestion-on-receipt behavior as the gRPC leg
 
 ### Trace→Session Correlation
-The `GenericOtlpAdapter` (Spec #2449, ported from `OpenCodeAdapter`'s OTLP connector) maintains several `HashMap<String, String>` maps for trace→session correlation and parent-child relationship tracking, processed during OTLP span transformation:
+The RTDB ingest classifier (`rtdb/ingest.rs`) maintains the correlation maps (ported from the deleted v1 adapter, same caps and eviction semantics) and processes them during OTLP span classification:
 
 - **`trace_to_session`**: Built from `gen_ai.conversation.id` and `session.id` span attributes during span processing
 - **`session_to_parent`**: Built from OTel span links (`parent.session_id` link attribute, Spec #633 REQ-6) as the primary path, with fallback to `session.parent_id` span attributes for backward compatibility (Spec #615, Spec #633 REQ-9). Supports order-independent parent-child detection regardless of OTLP batch arrival order.
-- **`session_to_correlation`**: Maps session IDs to correlation IDs to ensure `correlation_id === session_id` for pure-OTLP sessions (Spec #612)
+- **`session_to_correlation`**: Maps session IDs to correlation IDs so `correlation_id === session_id` for pure-OTLP sessions (Spec #612), with the per-turn counter (REQ-639) and the ST9 span→correlation reuse guard
 
-`chat` child spans are cached and their content is attached to parent nodes in the Mission Monitor.
+`chat` child-span content lands in the canonical chat rows; the Mission Monitor derives its graph from them.
 
 ---
 
@@ -475,11 +437,12 @@ apps/ui/src/
 |   +-- theming/                    — Theme customization
 |   +-- model-storage/              — Model file management
 +-- shared/
-    +-- contexts/StreamContext.tsx  — useReducer event bus; FredoEvent store
+    +-- contexts/StreamContext.tsx  — connection status + the module-scoped RTDB row store
+    +-- hooks/useEventRows.ts       — the typed row-subscription hook (replay + live patches)
     +-- classes/
     |   +-- FredoFeatureClass.ts    — abstract base class for grid features
-    |   +-- EventSubscription.ts    — typed subscription types (EventContract, SubscriptionDelivery)
-    |   +-- types.ts                — EventFilter, GridItemConfig
+    |   +-- EventSubscription.ts    — RTDB row wire types (RowDelivery / RowDeliveryBatch)
+    |   +-- types.ts                — GridItemConfig
     +-- utils/adapterBridge.ts      — non-React singleton for feature → invoke()
     +-- components/
         +-- companion/
@@ -491,17 +454,17 @@ apps/ui/src/
 
 ### Active UI Features
 
-| Feature | showable | contracts | Description |
-|---------|----------|---------------|-------------|
-| home | ✓ | — | Navigation grid, alert handling, FredoCompanion |
-| diagram | ✓ | infrastructure_stream | Infrastructure visualization (ReactFlow) |
-| run-cli | ✓ | [] | xterm.js terminal (PTY output from Rust) |
+| Feature | showable | Data source | Description |
+|---------|----------|-------------|-------------|
+| home | ✓ | — | Navigation grid, FredoCompanion |
+| diagram | ✓ | — | Infrastructure visualization (ReactFlow; REST snapshot) |
+| run-cli | ✓ | — | xterm.js terminal (PTY output from Rust) |
 | query-viewer | ✓ | (dynamic) | SQL query result display (multi-instance) |
-| my-workitems | ✓ | azdo_create_work_item | Azure DevOps work items |
+| my-workitems | ✓ | — | Azure DevOps work items |
 | settings | ✓ | — | App settings + model selection |
 | setup | ✗ | — | OTel configuration, CLI detection |
-| mission-monitor | ✓ | chat-node (ECE contract) | Delivery-driven agent activity graph (ReactFlow; height-aware chat chain, subagent events excluded, recursive per-subagent delegation tree with per-subagent tool ownership) |
-| dev-mode | ✗ | — | Dev tools, OTLP event inspector |
+| mission-monitor | ✓ | RTDB Chat/ToolUse rows | Row-driven agent activity graph (ReactFlow; height-aware chat chain, recursive per-subagent delegation tree with per-subagent tool ownership) |
+| dev-mode | ✗ | RTDB row-mutation log | Dev tools + live row-mutation inspector |
 | browser-preview | ✓ | — | Web page preview panel |
 | docs-viewer | ✓ | — | Documentation viewer |
 | github-viewer | ✓ | — | GitHub repository browser |
@@ -521,10 +484,6 @@ abstract class FredoFeatureClass<TProps = {}> {
   abstract readonly icon: IconType;
   abstract render(props?: TProps): ReactElement;
 
-  // Event Contract Engine (post-Spec #311)
-  readonly eventContracts: EventContractDeclaration[] = [];
-  handleDelivery(_delivery: ContractDelivery): void {}  // default no-op
-
   // Optional
   readonly gridConfig: GridItemConfig;   // { closable, maximizable }
   readonly showable: boolean = true;
@@ -538,21 +497,18 @@ abstract class FredoFeatureClass<TProps = {}> {
 }
 ```
 
-### Feature Contracts
+### Row Subscriptions (Spec #2788)
 
-Features declare what events they need through the **Event Contract Engine (ECE)** — a GraphQL-inspired query system:
+Features read live agent activity through the **RTDB row store** — a GraphQL-inspired typed query system over the canonical rows:
 
-- **`eventContracts`** — `EventContractDeclaration[]` on `FredoFeatureClass`. Declares streamFields, deferredFields, composite key, completeWhen condition, timeout, and optional filtering fields (`providers`, `transports`, `eventTypes`). Registered with the Rust ECE engine via `registerEventContracts()` IPC call.
-- **`handleDelivery(delivery: ContractDelivery)`** — called for every `SubscriptionDelivery` matching the feature's registered contracts. Delivers via Init → Update → End lifecycle.
-- **ECE filtering**: Contracts can declare `providers`, `transports`, `eventTypes`, and `excludePayload` to filter events at the ContractEngine level (Specs #311, #382, #2723). Only events matching ALL declared filters reach the feature. Filtering by `transports` (snake_case: `hook`, `otlp_grpc`, `otlp_http`) prevents duplicate nodes from dual-transport events (Hook + OTLP). Filtering by `eventTypes` (snake_case: `chat`, `tool_use`, `agent_session`) excludes streaming delta events from node-creation contracts. Filtering by `excludePayload` (Spec #2723) skips an event entirely (no buffer, no delivery) when ANY rule matches — `extract_field(payload, path) equals value` — evaluated in `process_for_contract` BEFORE key extraction/buffering, with a guard so re-keyed child buffers never bypass an active exclusion. Backward-compatible — omitting a filter matches all.
-- **Legacy `eventFilters`** (removed from migrating features in Spec #311) — previously used for simple toolName/state/custom matchers. Kept only in non-migrating features (setup, run-cli, query-viewer, model-storage).
-- **Legacy `eventSubscriptions`** (Spec #252) — typed subscriptions removed in Spec #311. Replaced by ECE contracts.
+- **`useEventRows(eventType, args, options)`** (`shared/hooks/useEventRows.ts`) — subscribes one typed row query (`'Chat' | 'ToolUse' | 'AgentSession'` root, typed-column args with SQL pushdown). Returns `rows` (the partition map), a monotonic `epoch` (advances only on real mutations — memo/effect off the primitive, never on map identity), `ready` (resolves on the backend's per-query `replayCompleteQueryId` settle marker, never on subscribe resolution alone), and `error`. `options.replay: true` restores the persisted snapshot as full-row inserts before live patches flow.
+- **Merge semantics** (module-scoped store, `StreamContext.tsx`): `insert` = full-row set with spread-merge so init-time fields are never wiped; `update` = `{ ...row, ...patch }` with seq-guarded stale-patch drops; `remove` = delete key (only ever retention eviction). No TTL, no cap on live rows — replay replaces hydration.
+- **Consumer-side filtering**: the backend filters per-query by the declared args, but the partition map is shared per event type — arg-scoped consumers filter their own rows client-side (epoch-keyed memo), the documented extraction pattern (`stepper-probe`).
+- **Row subscriptions** — features consume typed RTDB rows via `useEventRows` (the only feature-facing data contract; the v1 contract machinery was deleted in Spec #2788 P5.1).
 
-### StreamContext — the Event Bus
+### StreamContext — connection status + the row store
 
-`StreamContext` is a `useReducer`-based store holding all `ContractDelivery` records. **Append-only during a session** (with TTL-based expiry). Deliveries are **never mutated** after insertion — the UI derives display state from the delivery log. Raw `FredoEvent` objects no longer cross IPC to the frontend — only `SubscriptionDelivery` does.
-
-**Performance bounds (Spec #498, #509):** `deliveries[]` is capped at **5,000 entries** — oldest evicted when cap exceeded (REQ-1). Deliveries older than **5 minutes (300s)** are removed during the cleanup sweep every 10 seconds (REQ-2). OpenCodeAdapter child→parent session map capped at **10,000 entries** with oldest-first eviction; agent-name filter excludes internal tool-execution sessions (build, plan) (Spec #509 REQ-1, Bug #509 cycle 2). `childToParentSession` Map and `processedMappingIds` Set removed (Spec #509 REQ-11 — session merge now handled at adapter level).
+`StreamContext` carries only the Tauri IPC connection flag; the RTDB row store is module-scoped (survives feature mount/unmount cycles per the AGENTS.md persistence rule). Row deliveries routed by AppProvider are applied with the semantics above; a bounded (512-entry) row-mutation log feeds the debug surfaces (Dev Mode's live stream viewer, StreamStatus's activity LED).
 
 ### FredoEvent Shape
 
@@ -609,57 +565,52 @@ The animated companion sprite on the Home panel:
 
 ## Mission Monitor
 
-The delivery-driven agent activity graph (ReactFlow). Post-Spec #318, Mission Monitor consumes `ContractDelivery` objects exclusively from `StreamContext.deliveries` — no `FredoEvent`, no `localStorage`, no `buildGraphFromEvents()`.
+The row-driven agent activity graph (ReactFlow). Since Spec #2788 P4.2/P5.1, Mission Monitor derives its entire graph from typed RTDB rows — no v1 deliveries exist anywhere.
 
-- **Data source**: `StreamContext.deliveries` (append-only `ContractDelivery[]`) via the `chat-node` ECE contract — `streamFields: ['payload', 'state']`, `transports: ['otlp_grpc']` (as of Spec #615, Mission Monitor subscribes to OTLP gRPC exclusively — Hook and OTLP HTTP transports removed to prevent duplicate nodes from dual-transport events), `eventTypes: ['chat']` (Spec #2688 — `agent_session` removed so session spans can never create chat-node buffers or phantom nodes), `excludePayload: [{ path: 'is_subagent', equals: true }, { path: 'agent.type', equals: 'subagent' }]` (Spec #2723 — subagent chat/tool events dropped at the engine pre-buffer, so no child-derived delivery reaches IPC/StreamContext/persistence), composite key `(sessionId, correlationId)`, `completeWhen: "state === 'Response'"`. The `tool-use-lifecycle` contract is active again since Spec #2745 to carry the parent's `task`-tool delivery (with ECE relationship metadata) that drives the SubagentNode — the subagent's OWN chat/tool events stay excluded by the `chat-node` contract's `excludePayload`.
-- **Graph builder**: `useDeliveryGraph()` — derives ReactFlow nodes/edges from ALL `ContractDelivery` payloads (cross-session, not filtered by sessionId) so the selected session's chat chain is complete. Live deliveries from StreamContext are merged with SQLite-restored deliveries (deduped by delivery.id; restored appended after live for correct incremental cursor processing). Lifecycle mapping: `init` creates nodes, `update` modifies metadata, `end` sets final status (`complete`/`error`). Output is then scoped to the selected session. Since Spec #2745, `associateToolCalls` splits `task` dispatches out of the tool-association path into a `subagentNodes` state (keyed by task correlationId, gated by the `build`/`plan` internal-agent exclusion) — the SubagentNode is the dispatch's sole representation. **Embedded chat tools (Spec #2764)**: resolved non-task tool calls attach to the anchor chat node's payload (`AgentNodePayload.tools`, deterministically `byStartTimeThenCorrId`-ordered, payload reference replaced only on content change) instead of creating a companion node; the standalone ToolsNode class — node builder state, emission branch, signature branches, `e-tools-*` edges, tools-column layout geometry, `ToolsNodePayload`, and the DetailPanel tools-summary view — was deleted with no stub. **Transitional-turn suppression (Spec #2750)**: completed chat nodes with an empty `agentReply` (a transitional tool-call turn — the LLM ended with `finish_reason: tool-calls`) are suppressed at EMISSION (builder state kept intact, NFR-5) and the chat chain, SubagentNode edges, and companion-column layout re-anchor to the nearest visible chat node; an anchorless first-turn dispatch re-anchors to the NEXT visible node so its SubagentNode always emits. `agentThinking` is never rendered as the RESPONSE body (loading dots/`—` instead).
-- **Node types**: Agent (Chat) and SubagentNode (Spec #2745 — revived, driven from the parent's `task` delivery + relationship metadata, NOT from subagent chat/tool events which stay `excludePayload`-dropped). The standalone ToolsNode was removed by Spec #2764: `ToolsNode.tsx` deleted, `tools` removed from `GraphNodeType`/`GraphEdgeType`, `ToolsNodePayload` gone, `NODE_TYPES.toolsNode` registration removed, ChatNode's tools-only `source-right` handle removed — chat tool calls now render inside the chat node as an embedded `── TOOLS (N) ──` accordion (SubagentNode's #2762 pattern: `nowheel` box, uncontrolled Accordion, shared `ToolCallAccordionItem` extracted to its own module), hidden entirely when the chat has no tool calls (Spec #2766: the embedded section renders in the subagent-consistent reading order USER → (THINKING) → TOOLS → RESPONSE — the conditional TOOLS block moved before RESPONSE, with the divider riding the conditional so a no-tool chat renders no orphaned divider — mirroring SubagentNode's instructions → tools → output). The dead ToolNode/FileNode machinery was deleted in Spec #2745: `ToolNode.tsx`, `FileNode.tsx`, `BaseMonitorNode.tsx` removed, `toolNodes`/`fileNodes` state and builder branches gone, `tool`/`file` `GraphNodeType` variants + payload interfaces removed, `GRAPH_NODE_BORDER_COLORS` tool/file entries removed.
+- **Data source**: `useEventRows('Chat', {}, { replay: true })` + `useEventRows('ToolUse', ...)` — the module-scoped row store (replay restores the full persisted snapshot as full-row inserts, settled by the per-query `replayCompleteQueryId` marker; live patches continue on the same path). `ready` (settle-gated) parks the sidebar's loading state until the snapshot drain completes.
+- **Graph builder**: `useMissionMonitor()` → `lib/rowDerivation.ts` — derives ReactFlow nodes/edges from ALL typed chat/tool rows (cross-session, not filtered by sessionId) so the selected session's chat chain is complete. `insert` creates nodes, `update` merges metadata (spread-merge; init-time data survives), `end`-state rows set final status. Since Spec #2745, `task` dispatches split out of the tool-association path into SubagentNode state (keyed by task correlationId, gated by the `build`/`plan` internal-agent exclusion) — the SubagentNode is the dispatch's sole representation. **Embedded chat tools (Spec #2764)**: resolved non-task tool calls attach to the anchor chat node's payload (`AgentNodePayload.tools`, deterministically `byStartTimeThenCorrId`-ordered, payload reference replaced only on content change) instead of creating a companion node; the standalone ToolsNode class was deleted with no stub. **Transitional-turn suppression (Spec #2750)**: completed chat nodes with an empty `agentReply` (a transitional tool-call turn) are suppressed at EMISSION (builder state kept intact, NFR-5) and the chat chain, SubagentNode edges, and companion-column layout re-anchor to the nearest visible chat node. `agentThinking` is never rendered as the RESPONSE body (loading dots/`—` instead).
+- **Node types**: Agent (Chat) and SubagentNode (Spec #2745 — revived, driven from the parent's `task` row + the classifier's parent-child compositing stamps, NOT from subagent chat rows). The standalone ToolsNode was removed by Spec #2764: `ToolsNode.tsx` deleted, `tools` removed from `GraphNodeType`/`GraphEdgeType`, `ToolsNodePayload` gone, `NODE_TYPES.toolsNode` registration removed, ChatNode's tools-only `source-right` handle removed — chat tool calls now render inside the chat node as an embedded `── TOOLS (N) ──` accordion (SubagentNode's #2762 pattern: `nowheel` box, uncontrolled Accordion, shared `ToolCallAccordionItem` extracted to its own module), hidden entirely when the chat has no tool calls (Spec #2766: the embedded section renders in the subagent-consistent reading order USER → (THINKING) → TOOLS → RESPONSE — the conditional TOOLS block moved before RESPONSE, with the divider riding the conditional so a no-tool chat renders no orphaned divider — mirroring SubagentNode's instructions → tools → output). The dead ToolNode/FileNode machinery was deleted in Spec #2745: `ToolNode.tsx`, `FileNode.tsx`, `BaseMonitorNode.tsx` removed, `toolNodes`/`fileNodes` state and builder branches gone, `tool`/`file` `GraphNodeType` variants + payload interfaces removed, `GRAPH_NODE_BORDER_COLORS` tool/file entries removed.
 - **Tool call details (Spec #2764)**: double-clicking ANY part of an embedded tool accordion item — collapsed trigger OR expanded info content — opens the scoped tool-call detail view (`DetailOpenTarget { kind: 'tool-call' }` → `ToolCallDetailView`: Status/Duration/Input/Output) via `stopPropagation` on the whole `Accordion.Item`, so ReactFlow's `onNodeDoubleClick` never selects/navigates the parent chat node. Single-click still toggles only the item's expansion. Missing call details degrade to safe absent-states (`—` Input/Output rows, "No call details were captured for this tool call." hint, Unknown-tool header fallback). The same shared-component fix applies identically to subagent-embedded tools.
-- **Recursive delegation tree (Spec #2762)**: tool ownership and nesting extend to every depth of the delegation chain. Tools a subagent invoked attach to THAT subagent's own embedded tools section (never the root chat node) — the child session's tool spans are owned by the subagent, and when parent and subagent invoke the same tool name each occurrence renders under its own invoker. Nesting is recursive: a subagent's own `task` dispatches render sub-subagent SubagentNodes, producing readable multi-level chains (chat → subagent → sub-subagent). The OTLP adapter propagates the `parentSessionId` relationship for child-session tool spans so the `build`/`plan` internal-agent exclusion and per-subagent ownership hold at every depth (internal tool-execution sessions never render as SubagentNodes; only real `task` children do). The Chain layout extends its companion-column arithmetic to nested levels (`layout.ts`), and the SQLite persistence layer restores full nested trees across app restart.
-- **SubagentNode payload extraction** (Spec #2745 ST-4/ST-5): the node displays subagent identity from the `task` delivery payload + ECE relationship metadata — canonical keys projected by the OTLP adapter from the plugin's child-completion flat attrs on the parent task span: `childSessionId` (`child_session_id`), `childAgent` (`child_agent`), `childTokens` (`child_total_tokens`), `childCost` (`child_total_cost_usd`), `childMessages` (`child_total_messages`), plus the per-family token breakdown `childInputTokens`/`childCacheReadTokens`/`childReasoningTokens`/`childOutputTokens`. The five-way Token Usage row (INPUT/CACHE/REASONING/OUTPUT/TOTAL) mirrors the chat-node display; TOTAL = sum of the four families when the breakdown is present, else falls back to aggregate `childTokens`. Instruction/output text extraction follows the lifecycle-aware priorities (instruction preserved from INIT across UPDATE/END merges).
+- **Recursive delegation tree (Spec #2762)**: tool ownership and nesting extend to every depth of the delegation chain. Tools a subagent invoked attach to THAT subagent's own embedded tools section (never the root chat node) — the child session's tool spans are owned by the subagent, and when parent and subagent invoke the same tool name each occurrence renders under its own invoker. Nesting is recursive: a subagent's own `task` dispatches render sub-subagent SubagentNodes, producing readable multi-level chains (chat → subagent → sub-subagent). The ingest classifier's relationship registry (`rtdb/ingest.rs:134-150`) propagates the parent-session relationship for child-session rows (span-link `parent.session_id` attribute primary, `session.parent_id` fallback — the Parent-Child Compositing section above), with the `build`/`plan` internal-agent exclusion applied at registration (pinned by the classifier test at `ingest.rs:1911-1919`), so per-subagent ownership holds at every depth (internal tool-execution sessions never render as SubagentNodes; only real `task` children do). The Chain layout extends its companion-column arithmetic to nested levels (`layout.ts`), and the SQLite persistence layer restores full nested trees across app restart.
+- **SubagentNode payload extraction** (Spec #2745 ST-4/ST-5): the node displays subagent identity from the parent `task` row's canonical payload keys — projected by the ingest classifier's attr extractors (`rtdb/attrs.rs:533-564`) from the plugin's child-completion flat span attrs (`child_session_id` / `child_agent` / `child_total_tokens` / `child_total_cost_usd` / `child_total_messages`) onto `childSessionId` / `childAgent` / `childTokens` / `childCost` / `childMessages`, plus the per-family token breakdown `childInputTokens`/`childCacheReadTokens`/`childReasoningTokens`/`childOutputTokens`. The five-way Token Usage row (INPUT/CACHE/REASONING/OUTPUT/TOTAL) mirrors the chat-node display; TOTAL = sum of the four families when the breakdown is present, else falls back to aggregate `childTokens`. Instruction/output text extraction follows the lifecycle-aware priorities (instruction preserved from INIT across UPDATE/END merges).
 - **Edge types**: a `calls` edge connects each SubagentNode to its parent ChatNode (`EDGE_STYLES.calls`). The SubagentNode companion column renders RIGHT of the chat chain (Spec #2766 mirrored Spec #2745's original LEFT-side grammar into the slot Spec #2764 freed when the standalone tools column was removed: `SUBAGENT_CHAIN_X = +564`, lanes step further rightward per nesting level; the edge/handle contract flipped in lockstep — parent `source-right` → child `target-left`, ChatNode's dead `source-left` handle removed). No Tool→File `reads`/`writes` edges — the non-chat tool/file node classes were removed in Spec #2745.
-- **Detail Panel**: Slide-in panel on node click, shows type/ID/token counts/timestamps/duration plus an Estimated Cost row for node targets (Spec #2750 — the panel's cost row reads the same `payload.costUsd` as the node's own cost row, byte-identical `$X.XXXX` formatting, absent-state `—` preserved; SubagentNodes already carry their per-node cost under Child Usage). No node-level status badge or Status row renders for node targets since Spec #2750 (the per-tool success/error outcome indicators inside a tool call remain). Hides on background click or Escape. Since Spec #2723, Start/End are read from telemetry-derived payload fields (`startTime`/`endTime`, RFC3339 UTC injected by the adapter from the span's `startTimeUnixNano`/`endTimeUnixNano`) with delivery-timestamp fallback for spans lacking an end — displayed via `toLocaleTimeString()` (display format unchanged).
-- **Session token bar** (Spec #2717, moved to top by Spec #2723; header strip removed by Spec #2748): a compact flex strip at the TOP of the Mission Monitor main view — the **first (top) row of the panel**, above the canvas (never an overlay, `flex-shrink: 0` sibling) — shows the **selected session's** token usage as six figures — `In:`/`Ca:`/`Re:`/`Ou:` parent-only, plus `SUBAGENTS` (Σ of the session's subagent token totals from the parent's `task`-span child fields, last-wins per composite key, `build`/`plan` internal agents excluded, per-family-breakdown-else-aggregate per the SubagentNode rule) and `TOTAL` = parent five-way + SUBAGENTS (full labels in every `aria-label`) — right-aligned. Cache = `cacheReadTokens` only, cache write carried but never summed. Hidden when no session is selected. The five parent categories render on every chat node as a compact single-line right-aligned row (display-only k-format like `1.2k`/`85k`, full comma values in aria-labels) and in the DetailPanel (five-way labeled rows, unchanged). Session totals are derived from `mergedDeliveries` via `computeSessionTokenTotals()` (per-composite-key last-wins dedupe — Σ per-node == session figure by construction; composited child-session deliveries excluded) plus the SUBAGENTS figure via `computeSubagentTokenTotals()` (`lib/sessionMeta.ts`). **ESTIMATED COST (Spec #2750)** is subagent-inclusive: the bar's single combined figure = parent Σ `cost_usd` (last-wins chat keys, composited-child-excluded) + Σ `childCost` over qualifying task keys (`computeSubagentCostTotals`, same task-keyed last-wins + build/plan-excluded rules as the SUBAGENTS tokens — the two subagent figures share the collection pass and cannot drift); no-subagent sessions sum `+0` so the figure is byte-unchanged; per-node cost rows are never re-based; the `title`/`aria-label` reads `Estimated cost (parent + subagents)`. Since Spec #2734, `computeSessionTokenTotals()` also runs a **warn-only reconciliation guard**: Σ per-node `cacheReadTokens` is compared against the last chat delivery's preserved raw cumulative `gen_ai.usage.cache_read.input_tokens` flat attribute — a mismatch logs a `console.warn` (diagnostic only, never a silent correction — the adapter owns correctness) and the guard stays silent when the invariant holds or the session read no cache.
+- **Detail Panel**: Slide-in panel on node click, shows type/ID/token counts/timestamps/duration plus an Estimated Cost row for node targets (Spec #2750 — the panel's cost row reads the same `payload.costUsd` as the node's own cost row, byte-identical `$X.XXXX` formatting, absent-state `—` preserved; SubagentNodes already carry their per-node cost under Child Usage). No node-level status badge or Status row renders for node targets since Spec #2750 (the per-tool success/error outcome indicators inside a tool call remain). Hides on background click or Escape. Since Spec #2723, Start/End derive from the row's span-timing fields (`startedAtNs`/`endedAtNs` — epoch-ns parsed by the classifier from the span's `startTimeUnixNano`/`endTimeUnixNano`, `rtdb/ingest.rs:1112-1130`); the graph builder converts them to RFC3339 `payload.startTime`/`payload.endTime` (`rowDerivation.ts:203-208`) with the delivery-timestamp fallback for spans lacking an end (`rowDerivation.ts:236`) — displayed via `toLocaleTimeString()` (display format unchanged).
+- **Session token bar** (Spec #2717, moved to top by Spec #2723; header strip removed by Spec #2748): a compact flex strip at the TOP of the Mission Monitor main view — the **first (top) row of the panel**, above the canvas (never an overlay, `flex-shrink: 0` sibling) — shows the **selected session's** token usage as six figures — `In:`/`Ca:`/`Re:`/`Ou:` parent-only, plus `SUBAGENTS` (Σ of the session's subagent token totals from the parent's `task`-span child fields, last-wins per composite key, `build`/`plan` internal agents excluded, per-family-breakdown-else-aggregate per the SubagentNode rule) and `TOTAL` = parent five-way + SUBAGENTS (full labels in every `aria-label`) — right-aligned. Cache = `cacheReadTokens` only, cache write carried but never summed. Hidden when no session is selected. The five parent categories render on every chat node as a compact single-line right-aligned row (display-only k-format like `1.2k`/`85k`, full comma values in aria-labels) and in the DetailPanel (five-way labeled rows, unchanged). Session totals are derived from the session's chat rows via `computeSessionTokenTotals()` (per-composite-key last-wins dedupe — Σ per-node == session figure by construction; composited child-session rows excluded) plus the SUBAGENTS figure via `computeSubagentTokenTotals()` (`lib/sessionMeta.ts`). **ESTIMATED COST (Spec #2750)** is subagent-inclusive: the bar's single combined figure = parent Σ `cost_usd` (last-wins chat keys, composited-child-excluded) + Σ `childCost` over qualifying task keys (`computeSubagentCostTotals`, same task-keyed last-wins + build/plan-excluded rules as the SUBAGENTS tokens — the two subagent figures share the collection pass and cannot drift); no-subagent sessions sum `+0` so the figure is byte-unchanged; per-node cost rows are never re-based; the `title`/`aria-label` reads `Estimated cost (parent + subagents)`. Since Spec #2734, `computeSessionTokenTotals()` also runs a **warn-only reconciliation guard**: Σ per-node `cacheReadTokens` is compared against the last chat row's preserved raw cumulative `gen_ai.usage.cache_read.input_tokens` flat attribute (rawJson long-tail) — a mismatch logs a `console.warn` (diagnostic only, never a silent correction — the classifier owns correctness) and the guard stays silent when the invariant holds or the session read no cache.
 - **Node layout (Spec #2723)**: chat chain positions are height-aware — `y = prev.y + (prev.height ?? 320) + 28` (measured ReactFlow heights, `CHAIN_GAP = 28`, `DEFAULT_NODE_HEIGHT = 320`), replacing the fixed 260px spacing that structurally guaranteed collisions with variable-height content nodes. Height changes reflow the chain incrementally (O(N) chain-only, signature-gated; no full-graph re-layout per delivery); d3 force remains only for non-agent residue with rectangular de-overlap as belt-and-suspenders. Chain stays vertical, oldest-at-top.
 - **Layout (Spec #2760 — Force removed, Chain is the ONLY layout)**: Mission Monitor renders exactly one layout — the deterministic Chain layout described above. The floating `LayoutModeToggle` segmented control (`data-testid="mm-layout-toggle"`), the `LayoutMode` type + `LAYOUT_MODE_KEY` persisted setting (`Fredo_mm_layout_mode`), the `CanvasProps.layoutMode` threading, the hook's `layoutMode`/`viewportBounds` options, and the entire live d3-force simulation engine (`buildForceSimulation`/`createLiveForceSimulation`, the #2756 anchor layer `computeExchangeAnchors` + the `FORCE_*`/`ANCHOR_*`/`VIEWPORT_BOUNDS` constants) were all deleted. A stale stored `Fredo_mm_layout_mode` value (`'force'`, or corrupt variants) is INERT by construction: the feature performs ZERO reads and ZERO writes of the key (the panel's `usePersistedSetting` consumer was the only reader), so every session — fresh open, close/reopen, or app restart — renders Chain with no crash, no blank graph, and no error surface. No preference UI, no write-back normalization, and no replacement badge/label exist (removal, not redesign). `computeForceLayout` + the `d3-force` dependency RETAIN their frozen Chain-residue role (non-agent residue positions in the Chain branch). The prior-art chain-parity goldens (`layout.chain-parity.test.ts`) pass UNMODIFIED — Chain remained byte-identical through the Force era (#2752/#2754/#2756/#2758) and its removal.
 - **Force layout history (removed by Spec #2760)**: a physics-simulated Force layout existed through Specs #2752 (introduced) → #2754 (hybrid) → #2756 (Bostock disjoint rework) → #2758 (structural disjoint rework), with Chain mode byte-identical throughout (formula-derived parity tests against the closed-form chain constants, not pixel fixtures). Both Force reworks were rejected by the human reviewer on visual outcome, so the mode was removed entirely rather than reworked a third time — see the Layout bullet above for what survives.
-- **Live-session selection follow (Spec #2758)**: when a NEW session id first appears in live deliveries while the panel is open, selection follows it automatically unless the user has explicitly picked a session this lifetime (first render seeds known ids so mount-time/parked traffic never steals focus; explicit picks burn follow-pending ids; programmatic follow does not flip the user-picked flag). Combined with the delivery-routing repair — the Home-level routing effect now evaluates contract matches across ALL registered features (open callbacks pre-registered at mount), so a feature's self-open contract fires even when its window has never been opened this lifetime.
-- **Session History**: Derived from SQLite-persisted deliveries merged with live StreamContext data (spec #339). Persisted sessions are deduplicated by `sessionId` (last entry wins for metadata) before merging with live data to prevent duplicate sidebar entries from dual-transport persistence. Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter matches the display Name OR the sessionId (Spec #2750 — case-insensitive substring over `customName ?? derivedName ?? label`, the exact string the row renders; a single filter pass keeps the exactly-once dual-match edge; the search input UI itself is unchanged), caps at 50 sessions / 500 events per session. **Session naming (Spec #2748)**: each row shows a Name line — the session's FIRST non-empty `userMessage` (adapter-injected on chat-node deliveries), whitespace-normalized and truncated to ~40 chars, else the timestamp label fallback — with the session's start date-time below; no `N deliveries` line is rendered. A hover/`:focus-within`-revealed edit button opens an inline rename field (keyboard-operable: Tab-reachable, Enter saves, Escape cancels, blur commits, focus returns); a saved custom name persists to the new `session_names` FeatureStore table (featureId `mission-monitor`, `session_id` PK, `custom_name` authoritative over `derived_name`, atomic `featureStoreUpdate`, never delete+insert) and wins over the derived name across panel close/reopen and app restart until renamed or the session is deleted. **Node status chrome (Spec #2748)**: Agent/Subagent/Tools nodes render plain neutral theme-token styling — no status text/badges, no status-driven borders, glow, handles, or minimap coloring (MiniMap `nodeColor` returns a single neutral token; canvas chrome tokenized; the top header strip `Mission Monitor · <date> · <sessionId>` is removed). Mission Monitor is a fixed dark surface — no light/dark theme toggle exists (PO-confirmed).
+- **Live-session selection follow (Spec #2758)**: when a NEW session id first appears in the live row store while the panel is open, selection follows it automatically unless the user has explicitly picked a session this lifetime (first render seeds known ids so mount-time/parked traffic never steals focus; explicit picks burn follow-pending ids; programmatic follow does not flip the user-picked flag).
+- **Session History**: Derived from the replayed RTDB Chat rows merged with the persisted FeatureStore snapshot (spec #339; names + retention fallback — the rows are authoritative for every session they hold). The persisted snapshot is deduplicated by `sessionId` (last entry wins for metadata) before merging. Auto-collapsing sidebar (icon-only on mouse leave after 300ms delay), session search/filter matches the display Name OR the sessionId (Spec #2750 — case-insensitive substring over `customName ?? derivedName ?? label`, the exact string the row renders; a single filter pass keeps the exactly-once dual-match edge; the search input UI itself is unchanged), caps at 50 persisted sessions. **Session naming (Spec #2748)**: each row shows a Name line — the session's FIRST (earliest-timestamp) non-empty chat-row `userMessage`, whitespace-normalized and truncated to ~40 chars, else the timestamp label fallback — with the session's start date-time below. A hover/`:focus-within`-revealed edit button opens an inline rename field (keyboard-operable: Tab-reachable, Enter saves, Escape cancels, blur commits, focus returns); a saved custom name persists to the `session_names` FeatureStore table (featureId `mission-monitor`, `session_id` PK, `custom_name` authoritative over `derived_name`, atomic `featureStoreUpdate`, never delete+insert) and wins over the derived name across panel close/reopen and app restart until renamed or the session is deleted. **Deletion tombstones (Spec #2788 P4.3)**: deleting a session records a durable `deleted_sessions` tombstone so RTDB replay can never resurrect it after an app restart (the guard extends to discovered child keys). **Node status chrome (Spec #2748)**: Agent/Subagent nodes render plain neutral theme-token styling — no status text/badges, no status-driven borders, glow, handles, or minimap coloring (MiniMap `nodeColor` returns a single neutral token; canvas chrome tokenized; the top header strip `Mission Monitor · <date> · <sessionId>` is removed). Mission Monitor is a fixed dark surface — no light/dark theme toggle exists (PO-confirmed).
 
 ---
 
 ## Performance Guardrails (Spec #498)
 
-All seven subsystems now have bounded growth — preventing the progressive degradation (sluggish → UI freeze) observed after 2-4+ hours of use.
+All subsystems have bounded growth — preventing the progressive degradation (sluggish → UI freeze) observed after 2-4+ hours of use.
 
 | Subsystem | Bound | Mechanism |
 |-----------|-------|-----------|
-| StreamContext `deliveries[]` | 5,000 entries | Hard cap + oldest eviction on ADD_DELIVERY |
-| StreamContext delivery TTL | 300s (5 min) | Cleanup sweep every 10s removes expired deliveries |
-| ECE relationship registry `child_to_parent` | 10,000 entries | Oldest-first eviction (pop + insert) — `parent_to_children` cleaned on buffer removal (Spec #523) |
-| OpenCodeAdapter `child_to_parent` field | REMOVED | Spec #523 — session merge handled by ECE compositing; adapter emits relationship metadata |
-| `childToParentSession` Map | REMOVED | Spec #509 — session merge handled at adapter level (now superseded by Spec #523 ECE) |
-| `processedMappingIds` Set | REMOVED | Spec #509 — session merge handled at adapter level (now superseded by Spec #523 ECE) |
-| Mission Monitor graph rebuild | O(N_new) per delivery | Incremental node/edge updates (was O(N_total)) |
-| Home.tsx `updateWindow()` | 1 call per 200ms per feature | Per-feature throttle coalescing; `handleDelivery()` still called for every event |
-| Home.tsx ECE deregistration | On unmount | Stored deregistration function from `registerEventContracts()` called in cleanup |
-| ECE completed buffers | 5 min TTL | Sweep removes buffers marked `completed` older than 5 min |
-| OpenCodeAdapter `HashMap`s | 10,000 entries each | LRU eviction on `trace_to_session`, `session_to_correlation`, `tool_call_id`, `session_to_parent` (Spec #615) |
+| RTDB classifier correlation maps (9) | 10,000 entries each | Oldest-first eviction (`MAP_CAPACITY`, `rtdb/ingest.rs`) |
+| RTDB relationship registry `child_to_parent`/`parent_to_children` | 10,000 entries | Oldest-first eviction (Spec #523) |
+| RTDB emission batch | 512 rows | `RTDB_MAX_EMISSION_BATCH` chunking (`rtdb/flush.rs`) |
+| RTDB replay drain | Background (`spawn_blocking`) | Never blocks the main thread (F-33) |
+| FE row-mutation debug log | 512 entries | Oldest-first eviction (`StreamContext.tsx`) |
+| FE replay-drain marker buffer | 256 markers | Oldest-first eviction (`StreamContext.tsx`) |
+| Mission Monitor graph rebuild | O(N_new) per batch | Incremental node/edge updates (was O(N_total)) |
+| Mission Monitor persisted sessions | 50 sessions | Oldest pruned (`persistence.ts`) |
 | SpanCollector `session_span_stack` | Cleaned on completion | `span_id` popped on Response/Error lifecycle |
 | RunCliState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
 
 **Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
-- `infrastructure/comm/contract/engine.rs:416-449` — ECE sweep completed buffer cleanup
-- `infrastructure/comm/contract/engine.rs:649-710` — ECE relationship registry (child_to_parent + parent_to_children) with 10K cap + eviction + re-keying (Spec #523)
-- `infrastructure/comm/adapters/opencode.rs:56-86` — Adapter `HashMap` field declarations (`trace_to_session`, `session_to_correlation`, `tool_call_id`, `session_to_parent`) — 10K cap + eviction at each write site within the file
-- `infrastructure/telemetry/mod.rs:272-319` — Span stack pop on completion
+- `infrastructure/rtdb/ingest.rs` — correlation + relationship map caps with oldest-first eviction at every write site
+- `infrastructure/rtdb/cache.rs` — LRU row cache + bounded write-behind queue
+- `infrastructure/telemetry/mod.rs` — Span stack pop on completion
 - `features/terminal/state.rs` — Output buffer cap
 
 **Frontend bounds** are in `apps/ui/src/`:
-- `shared/contexts/StreamContext.tsx:196-233` — Delivery cap + TTL expiry
+- `shared/contexts/StreamContext.tsx` — bounded row-mutation log + replay-drain registry
 - `features/mission-monitor/lib/graph.ts` — Map/Set caps
-- `features/mission-monitor/hooks/useMissionMonitor.ts:995-1229` — Incremental graph updates
-- `features/home/components/Home.tsx:132-148` — Throttled `updateWindow()` + deregistration cleanup
+- `features/mission-monitor/hooks/useMissionMonitor.ts` — Incremental graph updates
 
 ---
 
@@ -668,38 +619,14 @@ All seven subsystems now have bounded growth — preventing the progressive degr
 | Integration | How it works |
 |-------------|-------------|
 | **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
-| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and normalizes the delivery path via the `GenericOtlpAdapter` (Spec #2449), which classifies spans by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`) with generic heuristics and determines EventState from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
+| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and classifies spans into RTDB rows via the ingest classifier (`rtdb/ingest.rs`), which resolves the canonical op by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`, helpers in `rtdb/attrs.rs`) with generic heuristics and derives row state from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
+| **`fredo emit` CLI** | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich` → RTDB row classifier. Payload-shape conventions in `.opencode/skills/fredo-cli-events/SKILL.md`. |
 | **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
 | **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
 
-### OpenCodeAdapter Event-to-State Mapping
+### Classifier Row-State Mapping
 
-The Hook connector (`infrastructure/comm/adapters/opencode.rs`) maps raw Hook events to `FredoEvent` records with specific `EventType` and `EventState` values. These states are consumed by the ECE to determine delivery lifecycle (Init → Update → End). **The adapter's `EventState` assignment for each event type MUST align with the ECE contract's `completeWhen` condition.** (Since Spec #2449 the OTLP leg's EventState mapping lives in the provider-agnostic `GenericOtlpAdapter` — `infrastructure/comm/adapters/otlp.rs` — which emits `EngineInput`; the alignment rule applies identically, Bug #586.)
-
-Key mappings (as of Bug #586 fix):
-
-| Hook event_type | EventType | EventState | Sub-role check | Notes |
-|----------------|-----------|------------|---------------|-------|
-| `UserPromptSubmit` | Chat | Init | — | Starts a turn |
-| `chat.message` (user) | Chat | Init | `output.message.role === "user"` | User message starts turn; does NOT trigger `completeWhen` |
-| `chat.message` (assistant) | Chat | Response | `output.message.role === "assistant"` | Assistant response ends turn; triggers `completeWhen` |
-| `message.updated` / `message.part.updated` / `message.part.delta` | Chat | Update | — | Streaming deltas during response |
-| `SessionStart` / `session.created` | AgentSession | Init | — | Agent session start |
-| `session.updated` (no output) | AgentSession | Update | — | Intermediate session update (e.g., during agent thinking phase); does not trigger `completeWhen` |
-| `session.updated` (with output) | AgentSession | Response | `properties.output` is non-empty | Agent output complete; triggers `completeWhen` to deliver accumulated response to frontend. See `normalize_agent_payload` for extraction paths. |
-| `SessionEnd` / `session.deleted` / `session.next.*.ended` | AgentSession | Response | — | Session end; triggers `completeWhen` |
-| `PreToolUse` | ToolUse | Init | — | Tool execution start |
-| `PostToolUse` | ToolUse | Response | — | Tool execution end; carries parent-child relationship metadata |
-
-**Critical rule:** Multi-role events (like `chat.message`) MUST NOT use a single `EventState` for all roles. If a `chat.message` with `role: "user"` were mapped to `EventState::Response`, the ECE `chat-node` contract's `completeWhen: "state === 'Response'"` would fire BEFORE the agent's streaming response — and all subsequent Update deliveries would be silently discarded (Bug #586).
-
-**Adapter payload normalization** (`normalize_agent_payload()`, line 1266) injects typed fields (`userMessage`, `agentReply`, `agentThinking`, `promptTokens`, `completionTokens`) alongside the raw event. The OTLP adapter additionally injects canonical top-level `reasoningTokens` / `cacheReadTokens` / `cacheWriteTokens` from the `gen_ai.usage.*` registry keys (Spec #2717) so the frontend reads one canonical path (contract-trust rule — no multi-path fallbacks). Since Spec #2723: (1) **per-turn cache-read delta derivation** — `cacheReadTokens` is derived per turn when the SDK reports session-cumulative `gen_ai.usage.cache_read.input_tokens` (mirroring the existing `promptTokens` delta derivation), so no chat node's cache figure is contaminated by another node's cumulative total; since Spec #2734 the derivation is decoupled from `gen_ai.usage.input_tokens` presence (a cache-bearing span with missing/zero input tokens still derives and persists the cache baseline) and the raw session-cumulative fallback was removed — `cacheReadTokens` is injected ONLY as the derived per-turn delta and stays absent (renders 0) when no delta is derivable; (2) **subagent-session marker propagation** — for spans of a subagent session (span attrs OR `session.parent_id` differing from its own session OR the persisted session→parent registry), the payload is injected with `is_subagent: true` + `agent.type: "subagent"` so a contract's `excludePayload` rules can match; and (3) **telemetry-derived times** — `startTime`/`endTime` (RFC3339 UTC) are injected from the span's `startTimeUnixNano`/`endTimeUnixNano` (streaming spans carry `startTime` only). Different event types have different payload nesting: `chat.message` has `output.message.parts[0].text` at the top level; `session.updated` nests `output` under `properties` (i.e., `properties.output.message.parts[0].text`). Extraction code MUST test against BOTH event types — a path that works for one may silently return empty for the other. Add `tracing::debug!` logging with raw event keys to surface extraction failures at runtime.
-
-**Guards (PR #600):** Empty scalar strings (`""`) for `userMessage`, `agentReply`, and `agentThinking` are NEVER inserted into the payload object. Without this guard, a `session.updated` event that resolves `userMessage` to `""` would inject the empty string into the payload, and the ECE's deep-merge (JSON object merge) would replace the Init-time `userMessage` from `chat.message` (user) with an empty string. The guard follows the existing `if let Some(a)` pattern used for `agent`/`model` fields — only non-empty strings are inserted.
-
-**Multi-part output handling (`find_text_part()`, PR #598):** DeepSeek and other reasoning models produce multi-part outputs where the `parts` array contains BOTH `type="thinking"` (reasoning) AND `type="text"` (actual response) entries. `find_text_part()` iterates the parts array to find the first `type="text"` part (with fallback for models that don't set part type). Never use `arr.first()` when extracting text from multi-part outputs — it blindly picks `parts[0]` which is the thinking/reasoning text for these models.
-
-**Role guards (PR #597):** `userMessage` extraction from `properties.output` checks `role === "user"` before extracting — `session.updated` events carry agent output that would otherwise overwrite the user's prompt with agent response text. `properties.info.title` is NOT used as a `userMessage` fallback — session titles are not user messages.
+The ingest classifier derives each row's `state` from span timing (helpers relocated to `rtdb/attrs.rs`): `endTimeUnixNano` present → `Response`, absent → `Init`; session (`run_agent`) spans always stay `Init` (REQ-609). Token deltas (`promptTokens`, `cacheReadTokens`) are per-turn DELTAS against the classifier's session-cumulative baselines (Specs #2711/#2723/#2734 semantics, ported verbatim into `rtdb/ingest.rs::derive_turn_tokens` — clamped ≥ 0 with baseline reset on compaction/out-of-order; `cacheReadTokens` is injected ONLY as the derived per-turn delta, never the raw cumulative). Subagent-session markers (`is_subagent`, `agent.type`) are preserved in the row payload; the payload projector (`otlp_attrs_to_payload`) injects the canonical fields (`userMessage`, `agentReply`, `promptTokens`, `completionTokens`, `reasoningTokens`, `childSessionId`/`childTokens`/… ) so the frontend reads one canonical path (contract-trust rule — no multi-path fallbacks). The plugin emits `is_subagent`/`agent.type` on the parent's task span and child-completion flat attrs (`child_session_id`, `child_total_tokens`, …) — the projector maps them onto camelCase keys.
 
 ---
 
@@ -746,7 +673,7 @@ CLI client (fredo emit ...)
   → dispatch_command()
       └── EmitEvent → dispatch_emit_event()
             → InternalAdapter::enrich(event)  (stamp defaults)
-            → EventBus::emit(enriched)
+            → IngestClassifierState::ingest_event(&enriched)  (RTDB rows)
 ```
 
 ---
@@ -770,15 +697,14 @@ Defined in `capabilities/default.json`:
 
 ---
 
-## Tauri Commands (36 total)
+## Tauri Commands
 
 All commands registered in `generate_handler![]` in `lib.rs`:
 
 | Command | Feature | Description |
 |---------|---------|-------------|
-| `register_event_contracts` | comm/contract | Register ECE event contracts from the frontend; records `persistent: true` contracts for delivery persistence |
-| `deregister_event_contracts` | comm/contract | Deregister ECE event contracts on feature unmount (persistent contracts are skipped — Spec #2768) |
-| `contract_events_hydrate` | comm/contract | Return persisted contract deliveries (seq ASC, original ids) for hydration — PULL-only (Spec #2768) |
+| `subscribe_events` | rtdb | Register RTDB row queries (async; registers live subs, returns queryIds, drains the snapshot in the background — F-33) |
+| `unsubscribe_events` | rtdb | Unregister queries; discards pending deliveries (no post-unsubscribe emission) |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
 | `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
@@ -820,11 +746,12 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 2. Read `llm_model` setting, resolve model paths
 3. Spawn `LlmEngine` loading in `spawn_blocking` task
 4. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
-5. Initialize `ContractEventStore` (`contract_events` schema), set retention defaults, run the startup prune (Spec #2768), manage the `ContractEventWriter` + `EventBus`, and spawn the contract-event writer task
-6. Start IPC socket server (`tokio::spawn`)
-7. Start OTLP receivers (gRPC :4317 + HTTP :4318, each in `tokio::spawn`)
-8. Register all Tauri command handlers via `generate_handler![]`
-9. Launch Tauri webview window
+5. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
+6. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
+7. Start IPC socket server (`tauri::async_runtime::spawn`)
+8. Start OTLP receivers (gRPC :4317 + HTTP :4318)
+9. Register all Tauri command handlers via `generate_handler![]`
+10. Launch Tauri webview window
 
 ---
 
@@ -836,7 +763,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `apps/vscode-extension` | VS Code webview host | `apps/tauri` |
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Not yet reimplemented |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` feature |
-| `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP-based `OpenCodeAdapter` |
+| `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP-based ingest classifier (`rtdb/`) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub features | Consolidated into Mission Monitor |
 
 ---

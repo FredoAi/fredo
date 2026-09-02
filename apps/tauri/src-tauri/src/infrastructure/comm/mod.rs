@@ -1,8 +1,10 @@
-//! Communication Layer — the backbone of the Fredo event pipeline.
+//! Communication Layer — the canonical `FredoEvent` wire type and the
+//! `EventBus` that emits RTDB row batches to the Tauri webview.
 //!
-//! Defines the canonical `FredoEvent` type, the `EventBus` that emits events
-//! to the Tauri webview, the `CommAdapter` trait for agent providers, and
-//! adapter implementations (OpenCodeAdapter, InternalAdapter).
+//! Spec #2788 P5.1 (AC6): the v1 event pipeline (contract engine / ECE, the
+//! OpenCode + OTLP v1 adapters, raw/legacy EventBus emission) is deleted —
+//! RTDB row deliveries are the ONLY thing that crosses IPC. `FredoEvent`
+//! survives as the `fredo emit` CLI wire format and classifier input.
 //!
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
@@ -10,21 +12,15 @@ pub mod adapters;
 pub mod event;
 pub mod bus;
 pub mod adapter;
-pub mod contract;
 
 pub use event::{FredoEvent, FredoEventError, EventType, EventProvider, Transport, EventState};
 pub use bus::EventBus;
 pub use adapter::CommAdapter;
 pub use adapters::internal::InternalAdapter;
-pub use adapters::opencode::OpenCodeAdapter;
-
-// ECE: Event Contract Engine (Spec #303)
-pub use contract::{ContractEngine, EventContractEngine, SubscriptionDelivery, ContractDeclaration};
 
 #[cfg(test)]
 mod tests {
     mod event_tests;
-    mod bus_tests;
     mod adapter_tests;
     mod ipc_tests;
 }

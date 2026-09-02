@@ -1,13 +1,15 @@
 /**
- * #2770 round 6 — ST-2: REAL-corpus replay verification (R-4/R-6/R-7).
+ * #2770 round 6 — ST-2: REAL-corpus replay verification (R-4/R-6/R-7) —
+ * now on the P4.2 typed-row path.
  *
  * Replays the version-controlled fixture `fixtures/realCorpus.ts` — the REAL
  * persisted deliveries for session ses_fa968f834ffef93m4ywSDDB5HG (the
  * "Retest deep nested after restart" run, 2026-08-31 07:15Z), exported
  * verbatim from %APPDATA%\com.fredo.app\fredo.db table
  * `feature_mission_monitor_events` (root-keyed rows + the child-BFS rows) —
- * through `useDeliveryGraph`, and asserts the depth-3 SubagentNode presents
- * correctly from the REAL double-stamped re-key corpus:
+ * converted to typed rows (`fixtures/rowsFromDeliveries`, the classifier
+ * semantics), and asserts the depth-3 SubagentNode presents correctly from
+ * the REAL double-stamped re-key corpus:
  *
  * - R-4: exactly ONE depth-3 node, parented by the L2 node's corrId, stamped
  *   depth=3/sessionMaxDepth=3, with its own child tool calls attached and its
@@ -21,9 +23,7 @@
  *   burning fixpoint would never settle; asserted via stable node payloads).
  *
  * The fixture is FROZEN — do not regenerate from a different run (that would
- * invalidate these assertions). This is the round's decisive verifier: the
- * depth-3 node must present from the real corpus, never from synthetic
- * fixtures (REQ-L3-3: fixture-only L3 evidence FAILS).
+ * invalidate these assertions).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
@@ -47,6 +47,7 @@ import {
   REAL_CORPUS_L3_CORR_ID,
   REAL_CORPUS_L3_SESSION_ID,
 } from './fixtures/realCorpus';
+import { rowSource } from './rowSourceHelper';
 
 describe('#2770 round 6 ST-2 — real-corpus replay (ses_fa968f83…)', () => {
   beforeEach(() => {
@@ -79,7 +80,7 @@ describe('#2770 round 6 ST-2 — real-corpus replay (ses_fa968f83…)', () => {
 
   it('R-4: the real corpus presents exactly ONE depth-3 SubagentNode with the compact anatomy inputs, L2 parent edge, and its own tools', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: REAL_CORPUS_DELIVERIES, sessionId: REAL_CORPUS_ROOT_SESSION_ID }),
+      useDeliveryGraph({ rows: rowSource(REAL_CORPUS_DELIVERIES), sessionId: REAL_CORPUS_ROOT_SESSION_ID }),
     );
 
     await waitFor(() => {
@@ -130,7 +131,7 @@ describe('#2770 round 6 ST-2 — real-corpus replay (ses_fa968f83…)', () => {
 
   it('R-2/R-3: replay is idempotent — one node per nested session, no duplicates, fixpoint settles', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: REAL_CORPUS_DELIVERIES, sessionId: REAL_CORPUS_ROOT_SESSION_ID }),
+      useDeliveryGraph({ rows: rowSource(REAL_CORPUS_DELIVERIES), sessionId: REAL_CORPUS_ROOT_SESSION_ID }),
     );
 
     await waitFor(() => {

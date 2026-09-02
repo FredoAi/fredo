@@ -11,10 +11,9 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useWindowActions } from '@maomaolabs/core';
-import { useStream } from '../../../shared/contexts/StreamContext';
-import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
+import { useEventRows } from '../../../shared/hooks/useEventRows';
 import { tint } from '../../../shared/utils/colorTint';
-import { useDeliveryGraph } from '../hooks/useMissionMonitor';
+import { useDeliveryGraph, type RowGraphSources } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
@@ -26,9 +25,8 @@ import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
-import { deliverySessionId } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
-import { initMmTables, persistDelivery, loadPersistedDeliveries, loadPersistedChildDeliveries, createDeliveryWatermark, nextUnseenDeliveries, type DeliveryWatermarkState } from '../lib/persistence';
+import { initMmTables } from '../lib/persistence';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -163,7 +161,8 @@ const NoSessionSelected: React.FC = () => (
 
 interface CanvasProps {
   sessionId: string;
-  deliveries: ReturnType<typeof useStream>['deliveries'];
+  /** #2788 P4.2: the typed-row source (subscribed once at the panel level). */
+  rows: RowGraphSources;
   onFocusTarget: (target: DetailOpenTarget | null) => void;
   /** #2762 ST-3 (D-6): lifted orphan count — the builder is the authority on
    *  which child-session calls never resolved a parent SubagentNode; the panel
@@ -172,9 +171,15 @@ interface CanvasProps {
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, deliveries, onFocusTarget, onUnattributedCount,
+  sessionId, rows, onFocusTarget, onUnattributedCount,
 }) => {
-  const { nodes, edges, onNodesChange, onEdgesChange, unattributedCount } = useDeliveryGraph({ deliveries, sessionId });
+  // #2788 P4.2: the graph's data source — typed RTDB rows with replay (the
+  // persisted snapshot restores as full-row inserts; replay replaces the v1
+  // hydration path for the graph). Shared module-scoped row store.
+  const { nodes, edges, onNodesChange, onEdgesChange, unattributedCount } = useDeliveryGraph({
+    sessionId,
+    rows,
+  });
 
   // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
   // (ref-guarded — same-value pushes are skipped, so no render loop).
@@ -640,7 +645,15 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 // ── Outer panel ───────────────────────────────────────────────────────────────
 
 export const MissionMonitorPanel: React.FC = () => {
-  const { deliveries } = useStream();
+  // ── #2788 P4.3: the typed-row source for EVERYTHING in the panel ──────────
+  // Graph + session metrics + session list all read the shared module-scoped
+  // row store via `useEventRows(..., { replay: true })` — the persisted
+  // snapshot restores as full-row inserts and live patches continue on the
+  // same path (one rendering path for restored + live, UI/UX parity
+  // constraint 3). `useDeliverySessions` holds its own Chat subscription for
+  // its `ready` gate; duplicate envelopes dedupe by row key (idempotent).
+  const chatRows = useEventRows('Chat', {}, { replay: true });
+  const toolUseRows = useEventRows('ToolUse', {}, { replay: true });
   const {
     sessions,
     filteredSessions,
@@ -649,7 +662,6 @@ export const MissionMonitorPanel: React.FC = () => {
     followSession,
     deleteSession,
     renameSession,
-    refreshSessions,
     searchFilter,
     setSearchFilter,
     userPickedRef,
@@ -681,86 +693,27 @@ export const MissionMonitorPanel: React.FC = () => {
   const [unattributedCount, setUnattributedCount] = useState(0);
   const handleUnattributedCount = useCallback((count: number) => setUnattributedCount(count), []);
 
-  // ── Persistence restore state ──────────────────────────────────────────────
-  const [restoredDeliveries, setRestoredDeliveries] = useState<ContractDelivery[]>([]);
-
   // Initialize SQLite tables on mount
   useEffect(() => {
     initMmTables();
   }, []);
 
-  // Persist new deliveries to SQLite (serialized to eliminate concurrent races).
-  // ST11: shrink-safe watermark — the StreamContext deliveries array is TTL-shrunk
-  // from the front (DELIVERY_TTL_MS=300s, 60s sweep). A bare count cursor would go
-  // stale below a shrink and silently strand deliveries appended afterwards
-  // (round-6 signature: 2 rows persisted out of 5 chat spans). The watermark
-  // (count cursor + delivery-id Set) resets on shrink and re-derives the delta
-  // idempotently, so persistence can never skip a delivery that is in the array.
-  const persistedWatermarkRef = useRef<DeliveryWatermarkState>(createDeliveryWatermark());
-
-  useEffect(() => {
-    const newDeliveries = nextUnseenDeliveries(deliveries, persistedWatermarkRef.current);
-    if (newDeliveries.length === 0) return;
-    // Serialize persistence calls to eliminate concurrent race conditions.
-    // After the batch lands in SQLite, refresh the session snapshot so a session
-    // that started LIVE during the panel's lifetime (and was only visible via the
-    // live-only path) enters `persistedSessions` — otherwise StreamContext's TTL
-    // eviction of its deliveries (DELIVERY_TTL_MS=300s) makes it vanish from the
-    // sidebar until a remount re-reads SQLite.
-    (async () => {
-      for (const d of newDeliveries) {
-        await persistDelivery(d);
-      }
-      await refreshSessions();
-    })();
-  }, [deliveries.length, refreshSessions]);
-
-  // ── Persistence restore: load persisted deliveries when session changes ──
-  useEffect(() => {
-    // Clear previous session's restored deliveries immediately
-    setRestoredDeliveries([]);
-
-    if (!selectedSessionId) return;
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const loaded = await loadPersistedDeliveries(selectedSessionId);
-        // #2762 ST-5 (R-9): load the nested CHILD-session deliveries for this
-        // root (breadth-first over the persisted `childSessionId` links, any
-        // depth) so the delegation tree survives close/reopen. Child rows
-        // never create sidebar session rows (ST-5 guard) and deleted child
-        // keys are filtered by the non-resurrection guard.
-        const childLoaded = await loadPersistedChildDeliveries(selectedSessionId, loaded);
-        if (!cancelled) {
-          setRestoredDeliveries([...loaded, ...childLoaded]);
-        }
-      } catch (err) {
-        console.warn('[MM] Failed to load persisted deliveries:', err);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [selectedSessionId]);
-
   // ── Auto-follow new sessions (#2758 round-22 C1) ──────────────────────────
   // Belt-and-suspenders layer over the hook's authoritative follow effect.
-  // Previously this guard was equally one-shot ("only-if-null"): a panel
-  // mounted with any existing session never re-targeted a newly started live
-  // session, leaving its nodes suppressed by the Phase-3 emission filter. Now
-  // a NEWLY SEEN sessionId in deliveries is FOLLOWED even when another session
-  // is already auto-selected — but NEVER over an explicit user pick (row click
-  // flips userPickedRef). First pass seeds the known set: everything observable
-  // at mount predates this panel instance and must not steal focus. Uses
-  // followSession (NOT selectSession) so userPickedRef stays false; membership
-  // of the target in `sessions` excludes deleted sessions (REQ-3).
+  // A NEWLY SEEN sessionId in the Chat row store is FOLLOWED even when another
+  // session is already auto-selected — but NEVER over an explicit user pick
+  // (row click flips userPickedRef). First pass seeds the known set:
+  // everything observable at mount predates this panel instance and must not
+  // steal focus. Uses followSession (NOT selectSession) so userPickedRef stays
+  // false; membership of the target in `sessions` excludes deleted sessions
+  // (REQ-3). Keyed on the row-store EPOCH — never on map identity/size (the
+  // #523-cycle-1 no-loop rule).
   const knownSessionIdsRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (knownSessionIdsRef.current === null) {
       const seed = new Set<string>();
-      for (const d of deliveries) {
-        const sid = deliverySessionId(d);
+      for (const row of chatRows.rows.values()) {
+        const sid = row.sessionId;
         if (sid) seed.add(sid);
       }
       knownSessionIdsRef.current = seed;
@@ -769,8 +722,10 @@ export const MissionMonitorPanel: React.FC = () => {
 
     const known = knownSessionIdsRef.current;
     let newestNewSid: string | null = null;
-    for (const d of deliveries) {
-      const sid = deliverySessionId(d);
+    // Map iteration order is row-key insertion order = arrival order — the
+    // LAST newly seen sessionId wins when several appear in one batch.
+    for (const row of chatRows.rows.values()) {
+      const sid = row.sessionId;
       if (sid && !known.has(sid)) {
         newestNewSid = sid;
       }
@@ -790,62 +745,52 @@ export const MissionMonitorPanel: React.FC = () => {
       followSession(newestNewSid);
     }
     // Deliberately NOT adding non-followed new sids to the known set: until the
-    // derived list catches up they retry on the next deliveries batch —
+    // derived list catches up they retry on the next epoch bump —
     // mirrors the hook's self-healing policy.
-  }, [deliveries, sessions, followSession, userPickedRef]);
-
-  // ── Merge restored deliveries with live deliveries (dedup by ID) ────────
-  // REQ-6: Filter restored deliveries against live deliveries by delivery.id
-  // so no duplicate nodes appear. Append restored after live so the
-  // incremental graph builder's index-based cursor (lastSessionProcessedRef
-  // in useMissionMonitor.ts tracks a count) treats them correctly — restored
-  // deliveries must come after live deliveries to preserve append-only ordering.
-  const mergedDeliveries = useMemo(() => {
-    if (restoredDeliveries.length === 0) return deliveries;
-
-    const liveIds = new Set(deliveries.map(d => d.id));
-    const uniqueRestored = restoredDeliveries.filter(d => !liveIds.has(d.id));
-
-    return [...deliveries, ...uniqueRestored];
-  }, [deliveries, restoredDeliveries]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatRows.epoch, sessions, followSession, userPickedRef]);
 
   // ── Session metrics (Spec #2717 R-1, #2723 R-1, #2743 ST-3 / AC-12) ───────
-  // Top-strip figures derived from the same deliveries the graph builder
-  // consumes, with the same last-wins-per-composite-key rule (R-3.2), so
-  // Σ per-node == session figure by construction. `computeSessionMetrics`
-  // extends the token totals with the session's ESTIMATED COST (Σ per-turn
-  // cost_usd) and TOTAL MESSAGES (distinct chat keys) under the identical
-  // last-wins / composited-child-exclusion rules (ST-1 session-totals
-  // decision). O(N) over mergedDeliveries, memoized on the two deps — no
-  // polling, no new IPC. Empty sessionId (no selection) yields all-zero
-  // totals; the bar is hidden separately when no session is selected.
+  // Top-strip figures derived from the same TYPED ROWS the graph builder
+  // consumes (P4.2), with the row store's one-row-per-key semantics replacing
+  // the v1 last-wins-per-composite-key dedupe (R-3.2), so Σ per-node ==
+  // session figure by construction. `computeSessionMetrics` extends the token
+  // totals with the session's ESTIMATED COST (Σ per-row costUsd) and TOTAL
+  // MESSAGES (distinct chat keys) under the identical
+  // composited-child-exclusion rule (the `compositedChildSessionId` column).
+  // Memoized on the monotonic row-store epochs — never on map identity/size
+  // (the #523-cycle-1 no-loop rule). Empty sessionId (no selection) yields
+  // all-zero totals; the bar is hidden separately when no session is selected.
   // #2748 ST-6 (AC3 / R-3.1 compute): the SUBAGENTS figure is computed HERE —
-  // ST-1 `computeSubagentTokenTotals` (last-wins per composite key over the
-  // session's `task` spans, build/plan excluded) — and passed to the bar as
-  // `subagentTokens`; `totalTokens` stays the parent five-way (ST-5's
-  // component sums the two for the TOTAL headline — never pre-sum here).
+  // `computeSubagentTokenTotals` (over the session's own `task` rows,
+  // build/plan excluded) — and passed to the bar as `subagentTokens`;
+  // `totalTokens` stays the parent five-way (ST-5's component sums the two
+  // for the TOTAL headline — never pre-sum here).
   // #2750 ST-1 (AC1): the ESTIMATED COST becomes parent + subagent spend —
-  // `computeSubagentCostTotals` (mirror of the token share: last-wins task
-  // spans, build/plan excluded, Σ normalizeCost(childCost)) is added to
-  // `totalCostUsd` at the prop site below. Combined HERE in the panel — the
-  // SessionTokenBar contract stays a single combined `estimatedCost` figure
-  // (UI/UX: ONE figure, `$X.XXXX`; the parenthetical in its title/aria-label
-  // documents the inclusion). No-subagent sessions sum `+ 0` and render
-  // byte-unchanged (AC1-2).
+  // `computeSubagentCostTotals` (Σ normalizeCost(childCost) over task rows,
+  // build/plan excluded) is added to `totalCostUsd` at the prop site below.
+  // Combined HERE in the panel — the SessionTokenBar contract stays a single
+  // combined `estimatedCost` figure (UI/UX: ONE figure, `$X.XXXX`; the
+  // parenthetical in its title/aria-label documents the inclusion).
+  // No-subagent sessions sum `+ 0` and render byte-unchanged (AC1-2).
+  // #2788 P4.3: the row sources were subscribed at the top of the component —
+  // `useEventRows('Chat' | 'ToolUse', { replay: true })` over the shared
+  // module-scoped row store. The memo re-derives on the monotonic epochs.
+  const rowSources = useMemo(
+    () => ({ chat: chatRows, toolUse: toolUseRows }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatRows.epoch, toolUseRows.epoch, chatRows.error, toolUseRows.error],
+  );
   const sessionMetrics = useMemo(
     () => {
-      const parent = computeSessionMetrics(mergedDeliveries, selectedSessionId ?? '');
-      const subagentTokens = computeSubagentTokenTotals(mergedDeliveries, selectedSessionId ?? '');
-      const subagentCost = computeSubagentCostTotals(mergedDeliveries, selectedSessionId ?? '');
+      const chatRowList = [...rowSources.chat.rows.values()];
+      const toolRowList = [...rowSources.toolUse.rows.values()];
+      const parent = computeSessionMetrics(chatRowList, selectedSessionId ?? '');
+      const subagentTokens = computeSubagentTokenTotals(toolRowList, selectedSessionId ?? '');
+      const subagentCost = computeSubagentCostTotals(toolRowList, selectedSessionId ?? '');
       // #2750 round-6 (AC1): the ESTIMATED COST combine is computed HERE as one
       // deterministic memoized value (`parent.totalCostUsd + subagentCost`) —
-      // byte-exact `$X.XXXX` via the SessionTokenBar formatter. Round-5 tester
-      // arithmetic (parent `0.0001225168` + child `0.0020461224` = `$0.0022`)
-      // was incomplete: the session's REAL parent cost is the sum over ALL
-      // last-wins chat keys (both `fredo.llm` spans — the dispatch turn
-      // `0.0001225168` AND the reply turn `0.0000982352`), so the true total is
-      // `0.000220752 + 0.0020461224 = 0.0022668744` → `$0.0023`. The bar's
-      // `$0.0023` is byte-exact.
+      // byte-exact `$X.XXXX` via the SessionTokenBar formatter.
       return {
         ...parent,
         subagentTokens,
@@ -853,7 +798,8 @@ export const MissionMonitorPanel: React.FC = () => {
         estimatedCost: parent.totalCostUsd + subagentCost,
       };
     },
-    [mergedDeliveries, selectedSessionId],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rowSources, selectedSessionId],
   );
 
   const handleDeleteSession = useCallback((id: string) => {
@@ -950,7 +896,7 @@ export const MissionMonitorPanel: React.FC = () => {
             <ReactFlowProvider>
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
-                deliveries={mergedDeliveries}
+                rows={rowSources}
                 onFocusTarget={handleFocusTarget}
                 onUnattributedCount={handleUnattributedCount}
               />

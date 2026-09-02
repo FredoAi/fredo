@@ -1,7 +1,5 @@
 import React from 'react';
 import { FredoFeatureClass } from '../../shared/classes';
-import type { EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
 import { LuFilePlus } from 'react-icons/lu';
 import { UnifiedCreateWorkItemView } from './components/UnifiedCreateWorkItemView';
 import type { WorkItemPlatform } from './types';
@@ -13,9 +11,6 @@ export class CreateWorkItemFeature extends FredoFeatureClass {
   readonly name = 'Create Work Item';
   readonly icon = LuFilePlus;
   readonly showable = false;
-
-  // @deprecated — kept for base class compatibility; all event processing via eventContracts
-  readonly eventFilters: EventFilter[] = [];
 
   readonly gridConfig = { closable: true, maximizable: true };
 
@@ -40,47 +35,6 @@ export class CreateWorkItemFeature extends FredoFeatureClass {
 
   public registerTransitionCallback(callback: (workItemId: number) => void) {
     this.onTransitionToWorkItem = callback;
-  }
-
-  // @deprecated — kept for base class compatibility
-  processEvent(_event: FredoEvent): void {
-    // All event processing moved to handleDelivery
-  }
-
-  handleDelivery(delivery: { lifecycle: string; timestamp: string; payload: Record<string, unknown> }): void {
-    const dp = delivery.payload;
-    const toolName = dp.toolName as string | undefined;
-    const eventPayload = dp.payload as Record<string, unknown> | null;
-
-    if (!toolName || !eventPayload) return;
-
-    if (toolName === 'azdo_create_workitem') {
-      this.platform = 'azdo';
-      if (this.mode === 'success') return;
-
-      const { merge, assignedTo, ...fields } = eventPayload;
-      const nonEmpty = Object.fromEntries(
-        Object.entries(fields).filter(([, v]) => v !== null && v !== undefined && v !== '')
-      );
-      if (Object.keys(nonEmpty).length === 0) return;
-
-      this.azdoFormData = { ...this.azdoFormData, ...nonEmpty };
-      this.azdoUpdateCounter++;
-      console.log('[CreateWorkItemFeature] AzDo form updated:', Object.keys(this.azdoFormData));
-
-    } else if (toolName === 'jira_create_issue') {
-      this.platform = 'jira';
-      if (this.mode === 'success') return;
-
-      const nonEmpty = Object.fromEntries(
-        Object.entries(eventPayload).filter(([, v]) => v !== null && v !== undefined && v !== '')
-      );
-      if (Object.keys(nonEmpty).length === 0) return;
-
-      this.jiraFormData = { ...this.jiraFormData, ...nonEmpty };
-      this.jiraUpdateCounter++;
-      console.log('[CreateWorkItemFeature] Jira form updated:', Object.keys(this.jiraFormData));
-    }
   }
 
   render() {

@@ -65,7 +65,15 @@ function makeDelivery(
         ...payloadOverrides,
       },
     },
-    timestamp: new Date().toISOString(),
+    // DETERMINISTIC (P4.2): a wall-clock stamp here would make every fixture
+    // array content-unique per render, defeating the rowSource content cache
+    // and re-rendering the graph on every render (the #523-cycle-1 class).
+    // The constant is deliberately LATER than every fixture's span times —
+    // v1's per-delivery wall clock made tool-call deliveries arrive after
+    // their chat spans, and the time-window association (+ the row's
+    // updatedAt startTime fallback) preserves that ordering. No assertion
+    // consumes the default value itself.
+    timestamp: '2027-01-01T00:00:00.000Z',
   };
 }
 
@@ -99,6 +107,9 @@ function makeToolDelivery(
   };
 }
 
+
+import { rowSource } from './rowSourceHelper';
+
 describe('useDeliveryGraph', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -107,7 +118,7 @@ describe('useDeliveryGraph', () => {
 
   it('should return empty state for no deliveries', () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [], sessionId: null }),
+      useDeliveryGraph({ rows: rowSource([]), sessionId: null }),
     );
 
     expect(result.current.nodes).toEqual([]);
@@ -124,7 +135,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -171,7 +182,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -214,7 +225,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -263,7 +274,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -298,7 +309,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -328,7 +339,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -380,7 +391,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -437,7 +448,7 @@ describe('useDeliveryGraph', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: batch1 } },
     );
 
@@ -447,21 +458,24 @@ describe('useDeliveryGraph', () => {
       expect(((node!.data.payload as any).tools ?? []).length).toBe(1);
     });
 
-    const payloadBefore = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!.data.payload;
-
     rerender({ deliveries: batch2 });
     await waitFor(() => {
-      // Settle the second batch (the unrelated s2 delivery is processed — it
-      // does not count toward s1's eventCount).
-      expect(result.current.eventCount).toBe(4);
+      // Settle the second batch (the unrelated s2 chat row is derived — it
+      // does not count toward s1's eventCount: P4.2 eventCount = the selected
+      // session's chat ROWS, one per key).
+      expect(result.current.eventCount).toBe(1);
     });
 
     const nodeAfter = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
     const payloadAfter = nodeAfter.data.payload;
-    // SAME payload reference — the association did not churn the node
-    // (a fresh object every pass would re-render the node every batch).
-    expect(payloadAfter).toBe(payloadBefore);
     expect((payloadAfter as any).tools).toHaveLength(1);
+
+    // No-loop (P4.2): a rerender with the SAME row source (no epoch bump)
+    // must not churn the node — the effect early-returns on an unchanged
+    // builder state, so the payload REFERENCE is preserved.
+    rerender({ deliveries: batch2 });
+    const nodeAgain = result.current.nodes.find(n => n.id === 'agent-chat-corr-1')!;
+    expect(nodeAgain.data.payload).toBe(payloadAfter);
   });
 
   it('#2739 NFR-1/D-1: per-call tokens are zero-guarded; gen_ai.tool.name is the primary name path', async () => {
@@ -482,7 +496,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -521,7 +535,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -547,7 +561,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -581,7 +595,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -613,7 +627,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -656,7 +670,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -698,15 +712,16 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-s1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-s1' }),
     );
 
-    // The delivery is processed through the (subagent-less) agent path — wait
-    // for the effect to run so the exclusion assertion is post-processing.
+    // The stamped chat row is column-excluded in the row derivation (P4.2) —
+    // wait for the effect to run, then assert the EMPTY graph (stronger than
+    // the v1 hook-level exclusion: the exclusion now lives in the derivation).
     await waitFor(() => {
       expect(result.current.eventCount).toBe(1);
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
     });
+    expect(result.current.nodes).toHaveLength(0);
 
     // Zero subagent-derived entries/nodes/edges — AC5 exclusion holds.
     const saNodes = result.current.nodes.filter(n => n.id.startsWith('subagent-'));
@@ -725,11 +740,12 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'session-a' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'session-a' }),
     );
 
-    // session-a has 2 deliveries, session-b has 1
-    expect(result.current.eventCount).toBe(2);
+    // P4.2: eventCount = the selected session's chat rows (one per key — the
+    // tool row is a separate row store, session-b is out of scope).
+    expect(result.current.eventCount).toBe(1);
   });
 
   it('#2745 ST-4 / #2764 ST-1: a tool delivery with a `files` payload still embeds its call — the legacy file-node path is gone (AC-5)', async () => {
@@ -752,11 +768,12 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
-      expect(result.current.eventCount).toBe(2);
+      // P4.2: one chat row for s1 (the tool row lives in the tool store).
+      expect(result.current.eventCount).toBe(1);
       const agentNode = result.current.nodes.find(n => n.id === 'agent-chat-corr-1');
       expect(agentNode).toBeDefined();
       expect(((agentNode!.data.payload as any).tools ?? []).length).toBe(1);
@@ -803,11 +820,13 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
-      expect(result.current.eventCount).toBe(4);
+      // P4.2: eventCount = the session's chat ROWS (one per key — the tool
+      // row and the stamped child copy are separate rows, not chat rows).
+      expect(result.current.eventCount).toBe(2);
       // Agent node
       expect(result.current.nodes.filter(n => n.type === 'agentNode').length).toBeGreaterThanOrEqual(1);
     });
@@ -834,7 +853,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'node-sess-1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'node-sess-1' }),
     );
 
     // Wait for the agent node to be created
@@ -857,7 +876,7 @@ describe('useDeliveryGraph', () => {
 
   it('should NOT increment layoutVersion on non-dimension changes', () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([]), sessionId: 's1' }),
     );
 
     expect(result.current.layoutVersion).toBe(0);
@@ -878,7 +897,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'session-a' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'session-a' }),
     );
 
     expect(result.current.eventCount).toBe(1);
@@ -890,7 +909,7 @@ describe('useDeliveryGraph', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: null }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: null }),
     );
 
     expect(result.current.nodes).toEqual([]);
@@ -911,7 +930,7 @@ describe('ChatNode Label', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -932,7 +951,7 @@ describe('ChatNode Label', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -953,7 +972,7 @@ describe('ChatNode Label', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -971,7 +990,7 @@ describe('ChatNode Label', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -987,7 +1006,14 @@ describe('ChatNode Label', () => {
 // ── End Lifecycle Concatenation (AC-5) ───────────────────────────────
 
 describe('ChatNode Lifecycle Concatenation', () => {
-  it('AC-5: ChatNode agentReply concatenates across update and end lifecycle, preserving all text', async () => {
+  it('AC-5 (P4.2 rows): the row\'s agentReply is the last non-empty payload reply — the turn\'s FULL final text', async () => {
+    // Row-world semantics (P4.2): the row store collapses the turn's
+    // init/update/end payloads into ONE row whose agentReply is the LAST
+    // non-empty value (merge.rs LastNonZero). The v1 frontend chunk-
+    // concatenation is gone — the ingest projector carries the turn's
+    // COMPLETE reply on the Response span (G-011: init+end share the full
+    // payload; the realCorpus chat pairs pin that shape), so last-wins
+    // yields the full text without frontend accumulation.
     const deliveries: ContractDelivery[] = [
       // Init — creates the agent node
       makeDelivery('d1', 'init', 's1', 's1', {
@@ -1002,7 +1028,7 @@ describe('ChatNode Lifecycle Concatenation', () => {
         turnInputTokens: 10,
         turnOutputTokens: 5,
       }),
-      // Update — first response chunk
+      // Update — partial streaming text
       makeDelivery('d2', 'update', 's1', 's1', {
         agentReply: 'Sure, I can ',
         promptTokens: 10,
@@ -1012,20 +1038,20 @@ describe('ChatNode Lifecycle Concatenation', () => {
         turnInputTokens: 10,
         turnOutputTokens: 5,
       }),
-      // End — final response chunk
+      // End — the Response span carries the COMPLETE reply (G-011 shape)
       makeDelivery('d3', 'end', 's1', 's1', {
-        agentReply: 'help you with that!',
+        agentReply: 'Sure, I can help you with that!',
         promptTokens: 10,
         completionTokens: 5,
         // Legacy for backward compat
-        part: { text: 'help you with that!', reasoning: '' },
+        part: { text: 'Sure, I can help you with that!', reasoning: '' },
         turnInputTokens: 10,
         turnOutputTokens: 5,
       }),
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1066,7 +1092,7 @@ describe('ChatNode Lifecycle Concatenation', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1137,12 +1163,19 @@ describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-s5' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-s5' }),
     );
 
+    // P4.2: the composited stamp is now a TYPED chat-row column and the row
+    // derivation excludes stamped rows (engine-parity at the column level) —
+    // the ONLY row in this fixture is a child contribution, so the graph is
+    // empty (STRONGER than the v1 hook-level assertion: v1 rendered a generic
+    // agent node from the stamped delivery because the exclusion lived in the
+    // engine).
     await waitFor(() => {
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+      expect(result.current.eventCount).toBe(1);
     });
+    expect(result.current.nodes).toHaveLength(0);
 
     expectNoSubagentArtifacts(result);
   });
@@ -1186,14 +1219,15 @@ describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-s6' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-s6' }),
     );
 
-    // Settle on the processed event count (the delivery set is synchronous),
-    // then assert the completed text-less chat entry is suppressed from the
-    // canvas — ZERO nodes — and zero subagent artifacts.
+    // Settle on the processed row count (init+end of ONE key merge into ONE
+    // row — the row store's PK), then assert the completed text-less chat
+    // entry is suppressed from the canvas — ZERO nodes — and zero subagent
+    // artifacts.
     await waitFor(() => {
-      expect(result.current.eventCount).toBe(2);
+      expect(result.current.eventCount).toBe(1);
     });
     expect(result.current.nodes).toHaveLength(0);
 
@@ -1220,12 +1254,15 @@ describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-b1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-b1' }),
     );
 
+    // P4.2: the stamped row is column-excluded — the single-row fixture
+    // yields an EMPTY graph (no subagent artifacts, no agent node).
     await waitFor(() => {
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+      expect(result.current.eventCount).toBe(1);
     });
+    expect(result.current.nodes).toHaveLength(0);
 
     expectNoSubagentArtifacts(result);
   });
@@ -1263,12 +1300,15 @@ describe('Subagent exclusion (AC5 — Spec #523 reversal)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-b1b' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-b1b' }),
     );
 
+    // P4.2: both stamped deliveries merge into ONE excluded column row —
+    // empty graph.
     await waitFor(() => {
-      expect(result.current.nodes.length).toBeGreaterThanOrEqual(1);
+      expect(result.current.eventCount).toBe(1);
     });
+    expect(result.current.nodes).toHaveLength(0);
 
     expectNoSubagentArtifacts(result);
   });
@@ -1311,7 +1351,7 @@ describe('Subagent exclusion — cross-session (AC5)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-session-b3' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-session-b3' }),
     );
 
     await waitFor(() => {
@@ -1333,10 +1373,16 @@ describe('Subagent exclusion — cross-session (AC5)', () => {
   });
 });
 
-// ── #2688 ST11: shrink-safe incremental delivery consumption ───────────────
+// ── #2688 ST11 — row-world equivalent: full row set, no silent gap ──────────
+//
+// P4.2: the v1 TTL-shrink concern is STRUCTURALLY GONE — the graph reads the
+// module-scoped row store, which never TTL-shrinks or caps live rows (P4.1);
+// StreamContext's delivery-array shrink no longer feeds the graph. These tests
+// pin the surviving invariant: every row batch the source carries reaches the
+// graph — monotonic growth, no silent gaps.
 
-describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => {
-  it('no silent gap: all deliveries reach the graph after the input array is TTL-shrunk below the cursor', async () => {
+describe('ST11 — row-store completeness (no silent gap, P4.2)', () => {
+  it('all rows reach the graph as the row source grows monotonically', async () => {
     const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
     const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
     const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
@@ -1348,23 +1394,23 @@ describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => 
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: [d1, d2, d3] } },
     );
 
-    // (a) feed N=3 deliveries.
+    // (a) N=3 rows.
     await waitFor(() => {
       expect(result.current.nodes.length).toBeGreaterThanOrEqual(3);
     });
 
-    // (b) TTL shrink — oldest M=2 evicted from the front.
-    rerender({ deliveries: [d3] });
+    // (b) the row source grows in batches (live patches / replay inserts).
+    rerender({ deliveries: [d1, d2, d3, d4, d5] });
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThanOrEqual(5);
+    });
 
-    // (c) feed N+M=5 more — the array re-grows past the OLD cursor (3).
-    rerender({ deliveries: [d3, d4, d5, d6, d7, d8] });
-
-    // (d) all 8 deliveries that were fed (3 initial + 5 after the shrink)
-    // reach the graph — no silent gap.
+    // (c) full set — every row that ever landed is in the graph.
+    rerender({ deliveries: [d1, d2, d3, d4, d5, d6, d7, d8] });
     await waitFor(() => {
       expect(result.current.nodes.length).toBeGreaterThanOrEqual(8);
     });
@@ -1373,7 +1419,7 @@ describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => 
     }
   });
 
-  it('array re-grows past the old cursor after a shrink without stale-index skip', async () => {
+  it('batch boundaries never strand rows — every key in the source set emits its node', async () => {
     const d1 = makeDelivery('d1', 'init', 's1', 'corr-1', { userMessage: 'first' });
     const d2 = makeDelivery('d2', 'init', 's1', 'corr-2', { userMessage: 'second' });
     const d3 = makeDelivery('d3', 'init', 's1', 'corr-3', { userMessage: 'third' });
@@ -1385,7 +1431,7 @@ describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => 
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: [d1, d2, d3, d4] } },
     );
 
@@ -1394,18 +1440,14 @@ describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => 
       expect(result.current.nodes.length).toBeGreaterThanOrEqual(4);
     });
 
-    // Shrink — remove the 3 oldest (old cursor 4 > 1 → reset).
-    rerender({ deliveries: [d4] });
-
-    // Growth batch 1: len 3 is still BELOW the old cursor of 4 — d5, d6 must
-    // NOT be silently skipped.
-    rerender({ deliveries: [d4, d5, d6] });
+    // Growth batch 1.
+    rerender({ deliveries: [d1, d2, d3, d4, d5, d6] });
     await waitFor(() => {
       expect(result.current.nodes.length).toBeGreaterThanOrEqual(6);
     });
 
-    // Growth batch 2: len 5 now exceeds the old cursor — d7, d8 emitted too.
-    rerender({ deliveries: [d4, d5, d6, d7, d8] });
+    // Growth batch 2 — d7, d8 emitted too.
+    rerender({ deliveries: [d1, d2, d3, d4, d5, d6, d7, d8] });
     await waitFor(() => {
       expect(result.current.nodes.length).toBeGreaterThanOrEqual(8);
     });
@@ -1424,7 +1466,7 @@ describe('ST11 — shrink-safe incremental delivery consumption (#2688)', () => 
     const d2UpdateDup = makeDelivery('d2', 'update', 's1', 'corr-1', { agentReply: 'chunk' });
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [d1Init, d2Update, d2UpdateDup], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([d1Init, d2Update, d2UpdateDup]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1478,7 +1520,7 @@ describe('Subagent Graph Integration — AC5 exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-s7' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-s7' }),
     );
 
     await waitFor(() => {
@@ -1526,7 +1568,7 @@ describe('Subagent Graph Integration — AC5 exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 'parent-s8' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 'parent-s8' }),
     );
 
     await waitFor(() => {
@@ -1594,7 +1636,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1661,7 +1703,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1694,7 +1736,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1730,7 +1772,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1782,7 +1824,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1827,7 +1869,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1863,7 +1905,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1908,7 +1950,7 @@ describe('#2745 ST-4: SubagentNode data path + task-tool exclusion', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1939,7 +1981,7 @@ describe('chat chain (#2688 ST4)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1969,7 +2011,7 @@ describe('chat chain (#2688 ST4)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1986,7 +2028,7 @@ describe('chat chain (#2688 ST4)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2002,7 +2044,7 @@ describe('chat chain (#2688 ST4)', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: [d1] } },
     );
 
@@ -2043,7 +2085,7 @@ describe('chat chain (#2688 ST4)', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: [d1] } },
     );
 
@@ -2093,7 +2135,7 @@ describe('chat chain (#2688 ST4)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2119,7 +2161,7 @@ describe('chat chain (#2688 ST4)', () => {
     });
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2149,7 +2191,7 @@ describe('chat chain (#2688 ST4)', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: [initC1, endC1] } },
     );
 
@@ -2211,7 +2253,7 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2258,7 +2300,7 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2283,7 +2325,7 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2331,7 +2373,7 @@ describe('per-node per-turn token invariant (#2700 ST3)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2388,7 +2430,7 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2416,7 +2458,7 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2462,7 +2504,7 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2505,7 +2547,7 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2520,8 +2562,12 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
   });
 
   it('an update delivery carrying no new cache/reasoning keeps the node\'s own per-turn values', async () => {
-    // A delivery that carries no cache/reasoning figures (0/0) must not zero
-    // the node's per-turn values (the same last-wins rule as prompt/completion).
+    // P4.2 rows: the row's token families come from the typed columns
+    // (prompt/completion/cacheRead) + rawJson (reasoning/cacheWrite), merged
+    // under LastNonZero — a later payload that OMITS a family never zeroes
+    // the row's existing figure (merge.rs rule). The G-011 live shape carries
+    // the same families on init+end; the end here omits reasoning/cacheRead
+    // to pin the never-zeroed rule.
     const deliveries: ContractDelivery[] = [
       makeDelivery('i1', 'init', 's1', 'corr-1', {
         userMessage: 'turn-1',
@@ -2541,11 +2587,13 @@ describe('Spec #2717: five-way token payload + totalTokens arithmetic', () => {
         agentReply: 'reply-1',
         promptTokens: 100,
         completionTokens: 50,
+        reasoningTokens: 25,
+        cacheReadTokens: 200,
       }),
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2587,7 +2635,7 @@ describe('detail-panel timing from span-derived payload times (#2723 R-6)', () =
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2621,7 +2669,7 @@ describe('detail-panel timing from span-derived payload times (#2723 R-6)', () =
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2642,7 +2690,7 @@ describe('detail-panel timing from span-derived payload times (#2723 R-6)', () =
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2699,7 +2747,7 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2756,7 +2804,7 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2803,7 +2851,7 @@ describe('Spec #2723 ST-3: 3+ nodes keep per-turn cache deltas, no cross-node co
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2855,7 +2903,7 @@ describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
     }
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2896,7 +2944,7 @@ describe('Spec #2723 ST-4: many chat nodes never overlap (AC4)', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -2986,7 +3034,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3065,7 +3113,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3117,7 +3165,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: [d1, d2, d3, d4] } },
     );
 
@@ -3187,7 +3235,7 @@ describe('#2750 AC4: suppress transitional text-less chat turns + re-anchor', ()
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3294,7 +3342,8 @@ function makeSubagentActivityDelivery(
       },
       ...outerPayload,
     },
-    timestamp: new Date().toISOString(),
+    // DETERMINISTIC (P4.2) — see makeDelivery.
+    timestamp: '2027-01-01T00:00:00.000Z',
   };
 }
 
@@ -3360,7 +3409,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     const deliveries = [...root, ...childA()];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3395,7 +3444,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     });
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [...root, rootSpan], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...root, rootSpan]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3416,7 +3465,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     const deliveries = [...root, ...childA()];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3473,7 +3522,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3510,7 +3559,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3564,7 +3613,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     // The acyclic root still renders; the hook terminates (test completes —
@@ -3609,7 +3658,7 @@ describe('Spec #2762 — nested subagent activity', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: batch1 } },
     );
 
@@ -3663,7 +3712,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3713,7 +3762,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3756,7 +3805,7 @@ describe('Spec #2762 — nested subagent activity', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
-        useDeliveryGraph({ deliveries, sessionId }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId }),
       { initialProps: { deliveries, sessionId: 's1' } },
     );
 
@@ -3805,7 +3854,7 @@ describe('Spec #2762 — nested subagent activity', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
-        useDeliveryGraph({ deliveries, sessionId }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId }),
       { initialProps: { deliveries, sessionId: 's1' } },
     );
 
@@ -3859,7 +3908,7 @@ describe('Spec #2762 — nested subagent activity', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
-        useDeliveryGraph({ deliveries, sessionId }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId }),
       { initialProps: { deliveries: internalChain, sessionId: 's1' } },
     );
 
@@ -3890,7 +3939,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     const deliveries = [...root, ...childA()];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3928,7 +3977,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -3954,7 +4003,7 @@ describe('Spec #2762 — nested subagent activity', () => {
     // An orphan in s1 (no SubagentNode yet) so the count is non-zero.
     const { result, rerender } = renderHook(
       ({ deliveries, sessionId }: { deliveries: ContractDelivery[]; sessionId: string }) =>
-        useDeliveryGraph({ deliveries, sessionId }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId }),
       { initialProps: { deliveries: [root[0], root[1], ...childA()], sessionId: 's1' } },
     );
 
@@ -4015,19 +4064,22 @@ describe('Spec #2768 round 3 — composited child tool deliveries key by the CHI
   it('(a) a parent-composited child tool delivery attaches to the right SubagentNode — chip 0, no orphans', async () => {
     const { root } = makeNestedBase();
     // The child's Bash call arrives composited: keyed under the PARENT (s1),
-    // outer payload injects the child id (ses_child_1).
+    // outer payload injects the child id (ses_child_1). P4.2 ROW SHAPE: the
+    // child corrId is session-prefixed (every real OTLP corrId is
+    // `<sessionId>_<counter>`) — the prefix-owner rule replaces the v1
+    // outer-stamp bucketing (a tool row carries no stamp column).
     const compositedChild: ContractDelivery[] = [
-      makeCompositedChildDelivery('cc-a1', 'init', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      makeCompositedChildDelivery('cc-a1', 'init', 's1', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
         input: 'ls', startTime: '2026-08-21T10:00:20.000Z',
       }),
-      makeCompositedChildDelivery('cc-a2', 'end', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      makeCompositedChildDelivery('cc-a2', 'end', 's1', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
         input: 'ls', output: 'files',
         startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
       }),
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [...root, ...compositedChild], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...root, ...compositedChild]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4064,7 +4116,7 @@ describe('Spec #2768 round 3 — composited child tool deliveries key by the CHI
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [...root, ...childKeyed], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...root, ...childKeyed]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4083,23 +4135,26 @@ describe('Spec #2768 round 3 — composited child tool deliveries key by the CHI
       .toEqual(['subagent-task-1']);
   });
 
-  it('(c) mixed shapes in one rebuild (child-keyed init + composited end, same correlationId) do not double-count', async () => {
+  it('(c) mixed shapes in one rebuild (child-keyed + parent-composited copies, same correlationId) do not double-count', async () => {
     const { root } = makeNestedBase();
-    // The re-key replay shape: the SAME child call arrives child-keyed (early
-    // init, pre-registration) then composited (the re-key end+init pair). Both
-    // must collapse into ONE collector entry per correlationId.
+    // P4.2 ROW SHAPE: the same child corrId exists under TWO keys (the
+    // child-keyed original AND the parent-keyed re-key copy) — the backend
+    // mirrors every span event to both, so both copies carry the merged
+    // content. The derivation must collapse them into ONE collector entry
+    // (prefix-owner bucketing, original-beats-copy).
     const mixed: ContractDelivery[] = [
-      makeSubagentActivityDelivery('mx-a1', 'init', 'ses_child_1', 'sub-tool-1', 'Bash', {
-        input: 'ls', parentSessionId: 's1', startTime: '2026-08-21T10:00:20.000Z',
+      makeSubagentActivityDelivery('mx-a1', 'end', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
+        input: 'ls', output: 'files', parentSessionId: 's1',
+        startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
       }),
-      makeCompositedChildDelivery('mx-a2', 'end', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      makeCompositedChildDelivery('mx-a2', 'end', 's1', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
         input: 'ls', output: 'files',
         startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
       }),
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [...root, ...mixed], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...root, ...mixed]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4123,30 +4178,31 @@ describe('Spec #2768 round 3 — composited child tool deliveries key by the CHI
     const { root } = makeNestedBase();
     // Dispatch + all child calls composited: the child's Bash tool AND its own
     // `task` dispatch (which creates the nested SubagentNode for ses_child_2).
+    // P4.2 ROW SHAPE: child corrIds are session-prefixed.
     const TASK_ARGS_L2 = JSON.stringify({ subagent_type: 'general', prompt: 'level 2' });
     const compositedTree: ContractDelivery[] = [
-      makeCompositedChildDelivery('ft-a1', 'init', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      makeCompositedChildDelivery('ft-a1', 'init', 's1', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
         input: 'ls', startTime: '2026-08-21T10:00:20.000Z',
       }),
-      makeCompositedChildDelivery('ft-a2', 'end', 's1', 'ses_child_1', 'sub-tool-1', 'Bash', {
+      makeCompositedChildDelivery('ft-a2', 'end', 's1', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
         input: 'ls', output: 'files',
         startTime: '2026-08-21T10:00:20.000Z', endTime: '2026-08-21T10:00:21.000Z',
       }),
-      makeCompositedChildDelivery('ft-a3', 'init', 's1', 'ses_child_1', 'sub-task-1', 'task', {
+      makeCompositedChildDelivery('ft-a3', 'init', 's1', 'ses_child_1', 'ses_child_1_task1', 'task', {
         input: TASK_ARGS_L2, startTime: '2026-08-21T10:00:30.000Z',
       }),
-      makeCompositedChildDelivery('ft-a4', 'end', 's1', 'ses_child_1', 'sub-task-1', 'task', {
+      makeCompositedChildDelivery('ft-a4', 'end', 's1', 'ses_child_1', 'ses_child_1_task1', 'task', {
         input: TASK_ARGS_L2, output: 'level-2 done', childSessionId: 'ses_child_2',
         startTime: '2026-08-21T10:00:30.000Z', endTime: '2026-08-21T10:00:45.000Z',
       }),
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [...root, ...compositedTree], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...root, ...compositedTree]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'subagent-sub-task-1')).toBeDefined();
+      expect(result.current.nodes.find(n => n.id === 'subagent-ses_child_1_task1')).toBeDefined();
     });
 
     // Both SubagentNodes render (parent + nested), each with the right payload.
@@ -4157,7 +4213,7 @@ describe('Spec #2768 round 3 — composited child tool deliveries key by the CHI
     // subagent nodes — the only `subagent-` nodes are the owned ones.
     expect(result.current.unattributedCount).toBe(0);
     expect(result.current.nodes.filter(n => n.id.startsWith('subagent-')).map(n => n.id).sort())
-      .toEqual(['subagent-sub-task-1', 'subagent-task-1']);
+      .toEqual(['subagent-ses_child_1_task1', 'subagent-task-1']);
   });
 });
 
@@ -4208,7 +4264,7 @@ describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
 
   it('R-7 fallback reservation: an unmeasured subagent card reserves SUBAGENT_CARD_FALLBACK_HEIGHT — the next chat node lands below the card bottom', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeTwoTurnSubagentFixture(), sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(makeTwoTurnSubagentFixture()), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4231,7 +4287,7 @@ describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
 
   it('R-6/R-8 root-cause reflow: a measured tall subagent card pushes the next chat node below its bottom edge (epoch reflow)', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeTwoTurnSubagentFixture(), sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(makeTwoTurnSubagentFixture()), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4269,7 +4325,7 @@ describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
 
   it('R-8 no-op guard: an identical re-measure of a subagent card does NOT move the chain', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeTwoTurnSubagentFixture(), sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(makeTwoTurnSubagentFixture()), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4321,7 +4377,7 @@ describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: [...root, ...childA(), ...secondTurn], sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...root, ...childA(), ...secondTurn]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4358,14 +4414,14 @@ describe('Spec #2770 ST-3 — companion-extent chain pitch', () => {
     const deliveries = makeTwoTurnSubagentFixture();
 
     const { result: resultA } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
     await waitFor(() => {
       expect(resultA.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
     });
 
     const { result: resultB } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
     await waitFor(() => {
       expect(resultB.current.nodes.find(n => n.id === 'agent-corr-2')).toBeDefined();
@@ -4454,7 +4510,7 @@ describe('#2770 round 6 ST-1 — single-owner dispatch bucketing', () => {
 
   it('R-1/R-2/R-3: the double-stamped re-key copies collapse into ONE node owned by the prefix-owner session', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeDoubleStampedFixture(), sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(makeDoubleStampedFixture()), sessionId: 's1' }),
     );
 
     // Exactly ONE node for the contested corrId, parented by the L1 node.
@@ -4484,7 +4540,7 @@ describe('#2770 round 6 ST-1 — single-owner dispatch bucketing', () => {
 
   it('R-1: the L1 node\u2019s nestedCount counts its OWN dispatch once — no mis-bucketed inflation', async () => {
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries: makeDoubleStampedFixture(), sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(makeDoubleStampedFixture()), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -4507,40 +4563,49 @@ describe('#2770 round 6 ST-1 — single-owner dispatch bucketing', () => {
     expect((l1.data.payload as any).tools).toBeUndefined();
   });
 
-  it('R-1 guarded fallback: a non-prefixed corrId still buckets by the composited stamp (legacy/mock shapes)', async () => {
-    // Same fixture, but the L1-dispatch corrId carries NO session prefix and
-    // its copies carry the SAME (correct) stamp — the legacy/mock shape the
-    // guarded fallback (compositedChildSessionId ?? key.sessionId) owns. The
-    // stamp names the EMITTING session (L1, which dispatched L2), matching
-    // the round-5 composited-fixture semantics.
-    // (A non-prefixed corrId with CONTESTED stamps is unfixable at the
-    // frontend — no owner signal exists — and does not occur in real data:
-    // every real OTLP corrId is session-prefixed.)
-    const deliveries = makeDoubleStampedFixture().map((d) => {
-      if (d.key['correlationId'] !== 'ses_child_L1_1') return d;
-      return {
-        ...d,
-        key: { ...d.key, correlationId: 'legacy-task-9' },
-        payload: {
-          ...d.payload,
-          compositedChildSessionId: 'ses_child_L1',
-        },
-      };
-    });
+  it('R-1 (P4.2 rows): copies under MULTIPLE ancestor keys collapse into ONE prefix-owned entry — late re-key stamps never grow the orphan count', async () => {
+    // Row-world owner rule: a tool row carries NO composited-stamp column —
+    // the corrId's session PREFIX is the owner, whatever ancestor key a
+    // re-key copy rides under (multi-hop re-key cascades stamp copies under
+    // several ancestor keys; realCorpus pins the contested-stamp shape). The
+    // v1 `compositedChildSessionId ?? key.sessionId` fallback is gone: a
+    // non-prefixed corrId cannot occur on an OTLP-derived row (the classifier
+    // generates `<sessionId>_<counter>` per turn).
+    // This test re-keys the SAME L2 dispatch under BOTH ancestors (s1 and
+    // ses_child_L1) — the late-cascade shape — and pins: ONE node, one owner,
+    // and an unattributed count that does NOT grow from the copies.
+    const L2_TASK_ARGS = JSON.stringify({ subagent_type: 'general', prompt: 'level 2' });
+    const base = makeDoubleStampedFixture();
+    // Extra late-arrival copies of the L2 dispatch under the L1 key (the
+    // multi-hop cascade shape) — same corrId, different stamp.
+    const lateCopies: ContractDelivery[] = [
+      makeSubagentActivityDelivery('ds-late1', 'init', 'ses_child_L1', 'ses_child_L1_1', 'task', {
+        input: L2_TASK_ARGS, is_subagent: true, parentSessionId: 's1',
+        childSessionId: 'ses_child_L2', startTime: '2026-08-31T07:01:10.000Z',
+      }, { compositedChildSessionId: 'ses_child_L1' }),
+      makeSubagentActivityDelivery('ds-late2', 'end', 'ses_child_L1', 'ses_child_L1_1', 'task', {
+        input: L2_TASK_ARGS, is_subagent: true, parentSessionId: 's1',
+        childSessionId: 'ses_child_L2', output: 'level-2 done',
+        startTime: '2026-08-31T07:01:10.000Z', endTime: '2026-08-31T07:01:30.000Z',
+      }, { compositedChildSessionId: 'ses_child_L1' }),
+    ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource([...base, ...lateCopies]), sessionId: 's1' }),
     );
 
     await waitFor(() => {
-      expect(result.current.nodes.find(n => n.id === 'subagent-legacy-task-9')).toBeDefined();
+      expect(result.current.nodes.find(n => n.id === 'subagent-ses_child_L1_1')).toBeDefined();
     });
-    // The stamped copies bucket under the L1 (emitting) session — parented by
-    // the L1 node's corrId, depth 2.
-    const nested = result.current.nodes.find(n => n.id === 'subagent-legacy-task-9')!;
-    expect((nested.data.payload as any).parentCorrelationId).toBe('task-1');
-    expect((nested.data.payload as any).depth).toBe(2);
+
+    // Exactly ONE builder entry for the contested corrId across ALL keys.
+    expect(result.current.nodes.filter(n => n.id === 'subagent-ses_child_L1_1')).toHaveLength(1);
+    // The copies (under s1 AND ses_child_L1) orphan nothing — the chip stays
+    // hidden even though the late copies arrived under a foreign key.
     expect(result.current.unattributedCount).toBe(0);
+    // The L1 node's nestedCount stays 1 — no mis-bucketed inflation.
+    const l1 = result.current.nodes.find(n => n.id === 'subagent-task-1')!;
+    expect((l1.data.payload as any).nestedCount).toBe(1);
   });
 });
 

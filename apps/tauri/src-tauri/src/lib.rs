@@ -8,14 +8,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
-use infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
 use infrastructure::comm::bus::EventBus;
-use infrastructure::comm::contract::engine::ContractEngine;
-use infrastructure::comm::contract::store::{
-    run_writer_task, ContractEventStore, ContractEventWriter, DEFAULT_MAX_ROWS,
-    DEFAULT_RETENTION_DAYS, MAX_ROWS_KEY, RETENTION_DAYS_KEY,
+use infrastructure::rtdb::cache::{
+    prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
 };
-use infrastructure::comm::contract::EventContractEngine;
+use infrastructure::rtdb::commands::{Rtdb, RtdbState};
+use infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
+use infrastructure::rtdb::flush::{run_flush_task, FlushLoop};
+use infrastructure::rtdb::project::RowDelivery;
+use infrastructure::rtdb::store::{
+    RtdbStore, RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
+    RTDB_RETENTION_DAYS_KEY,
+};
+use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
@@ -178,78 +183,11 @@ pub fn run() {
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
 
-            // -- ContractEventStore (Spec #2768 ST-3) --------------------------
-            // Per-contract delivery persistence: own Mutex<Connection> to
-            // fredo.db (SpanStore pattern), `contract_events` table.
-            let contract_event_store = Arc::new(
-                ContractEventStore::open(data_dir.clone())
-                    .expect("Failed to open ContractEventStore"),
-            );
-            contract_event_store
-                .ensure_schema()
-                .expect("Failed to create contract_events schema");
-            app.manage(contract_event_store.clone());
-
-            // Set persistence retention defaults if not already configured.
-            {
-                let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get(RETENTION_DAYS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.set(RETENTION_DAYS_KEY, &DEFAULT_RETENTION_DAYS.to_string());
-                }
-                if store_ref.get(MAX_ROWS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.set(MAX_ROWS_KEY, &DEFAULT_MAX_ROWS.to_string());
-                }
-            }
-
-            // Retention prune on startup (mirrors the SpanStore REQ-9 flow).
-            {
-                let store_ref = app.state::<Arc<AppStore>>();
-                let retention_days: i64 = store_ref
-                    .get(RETENTION_DAYS_KEY)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(DEFAULT_RETENTION_DAYS);
-                let max_rows: i64 = store_ref
-                    .get(MAX_ROWS_KEY)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(DEFAULT_MAX_ROWS);
-                match contract_event_store.prune(retention_days, max_rows) {
-                    Ok(deleted) => {
-                        if deleted > 0 {
-                            tracing::info!(target: "fredo::comm", deleted, "contract_events startup prune");
-                        }
-                    }
-                    Err(e) => tracing::error!(target: "fredo::comm", error = %e, "contract_events startup prune error"),
-                }
-            }
-
-            // -- ContractEventWriter (Spec #2768 ST-3, R8) ---------------------
-            // Bounded non-blocking persistence queue drained by the writer task
-            // below. Overflow sheds persistence work — never live deliveries.
-            let (event_writer, contract_event_rx) = ContractEventWriter::new();
-            app.manage(event_writer.clone());
-
-            // -- EventBus (SubscriptionDelivery emitter for "fredo-stream-event") --
-            // Holds the persistence writer: emit_delivery is the single choke
-            // point enqueueing persistent-contract deliveries.
-            app.manage(EventBus::new(app.handle().clone(), event_writer.clone()));
-
-            // -- Event Contract Engine (Spec #303) ----------------------------
-            let engine = ContractEngine::new();
-            app.manage(engine.clone());
-
-            // -- GenericOtlpAdapter (provider-agnostic OTLP → EngineInput) --
-            // Spec #2449 S2/S4: the provider-agnostic OTLP adapter emits
-            // `EngineInput` (the ECE's input contract) instead of a standalone
-            // event object (R3/AC-3). The OTLP receivers resolve it from Tauri
-            // state. The superseded OTLP half of OpenCodeAdapter was removed in
-            // S4 — its managed singleton is no longer registered because no
-            // runtime path resolves `Arc<OpenCodeAdapter>` from state.
-            let generic_otlp_adapter = Arc::new(GenericOtlpAdapter::new());
-            app.manage(generic_otlp_adapter);
+            // -- EventBus (RTDB row-batch emitter for "fredo-stream-event") ----
+            // The ONLY sanctioned emission path to the webview: RTDB row
+            // batches via emit_row_delivery_batch (Spec #2788 P5.1 — the v1
+            // raw/legacy emission paths and the persistence writer are gone).
+            app.manage(EventBus::new(app.handle().clone()));
 
             // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
             // REQ-1: Create SpanStore with the telemetry_spans schema.
@@ -388,27 +326,89 @@ pub fn run() {
                 }
             });
 
-            // REQ-6: 5-second periodic sweep for timed-out contract instances
-            let sweep_bus = app.handle().clone();
+            // -- RTDB row store (Spec #2788 P1.2) ------------------------------
+            // SQLite-authoritative typed rows (chat_rows / tool_use_rows /
+            // agent_session_rows in fredo.db) behind an LRU row cache with a
+            // ~30 ms write-behind flush task. telemetry_spans is never touched.
+            let rtdb_store = Arc::new(
+                RtdbStore::open(data_dir.clone()).expect("Failed to open RtdbStore"),
+            );
+            rtdb_store
+                .ensure_schema()
+                .expect("Failed to create rtdb schema");
+            let (rtdb_cache, rtdb_rx) = RtdbCache::new(rtdb_store);
+            app.manage(rtdb_cache.clone());
+
+            // -- RTDB live pipeline (Spec #2788 P2.3) --------------------------
+            // Registry (P2.2) + flush loop + eviction routing, behind
+            // `Arc<Rtdb>` Tauri state. Emission goes through the EventBus's
+            // emit_row_delivery_batch (the ONLY sanctioned RTDB emission
+            // path) — ONE batch IPC envelope per drained window chunk
+            // (F-33 fix, W-1), never one IPC event per row.
+            let rtdb_registry = Arc::new(SubscriptionRegistry::new());
+            let rtdb_emit_handle = app.handle().clone();
+            let rtdb_flush = Arc::new(FlushLoop::new(Arc::new(
+                move |deliveries: &[RowDelivery], replay_complete_query_id: Option<&str>| {
+                    let bus = rtdb_emit_handle.state::<EventBus>();
+                    bus.emit_row_delivery_batch(deliveries, replay_complete_query_id);
+                },
+            )));
+            let rtdb: RtdbState = Arc::new(Rtdb::new(
+                Arc::clone(&rtdb_cache),
+                rtdb_registry,
+                Arc::clone(&rtdb_flush),
+            ));
+            // RTDB ingest classifier (Spec #2788 P3.1): owns the correlation
+            // maps (ported from the deleted v1 adapter + ECE relationship
+            // registry) and classifies spans/events into row upserts. The
+            // OTLP receivers + IPC dispatcher consume this state.
+            let classifier = IngestClassifierState::new(IngestClassifier::new(Arc::clone(&rtdb)));
+            app.manage(rtdb);
+            app.manage(classifier);
+
+            // Flush task: polls due coalescing windows (~5 ms cadence).
+            let rtdb_flush_task = Arc::clone(&rtdb_flush);
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(5));
-                loop {
-                    interval.tick().await;
-                    let bus = sweep_bus.state::<EventBus>();
-                    let eng = sweep_bus.state::<Arc<ContractEngine>>();
-                    let deliveries = eng.req_6_sweep();
-                    for delivery in deliveries {
-                        bus.emit_delivery(delivery);
-                    }
-                }
+                run_flush_task(rtdb_flush_task).await;
             });
 
-            // -- Spec #2768 (ST-3): contract-event persistence writer task -----
-            // Drains the bounded enqueue queue in ~100 ms batches and prunes
-            // contract_events on a 60-minute interval (knobs re-read each cycle).
-            let writer_task_handle = app.handle().clone();
+            // Set RTDB retention defaults if not already configured (AppStore
+            // KV keys — the binding config-first mechanism).
+            {
+                let store_ref = app.state::<Arc<AppStore>>();
+                if store_ref.get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref
+                        .set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
+                }
+                if store_ref.get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref.set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
+                }
+            }
+
+            // Retention prune on startup (mirrors the SpanStore/contract flow;
+            // the writer task re-prunes on a 60-minute interval). P2.3: the
+            // evicted keys route `kind: remove` deliveries through Rtdb.
+            prune_with_knobs(app.handle());
+
+            // RTDB write-behind task: drains the bounded queue in ~30 ms
+            // batches; overflow sheds the storage write, never in-memory state.
+            let rtdb_writer_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                run_writer_task(writer_task_handle, contract_event_rx).await;
+                run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx).await;
+            });
+
+            // RTDB canonical backfill (Spec #2788 P3.2, REQs R-2b/R-4c):
+            // re-derives canonical rows for PRE-CUTOVER history from
+            // telemetry_spans (strictly READ-ONLY) through the SAME ingest
+            // classifier — one shared extract-rule implementation keeps
+            // re-derivation byte-comparable with live derivation (NFR-6).
+            // Spawned: never blocks startup. Idempotent: content-identical
+            // re-merges skip the write (no seq inflation); a one-shot
+            // completion marker keeps later startups O(1).
+            let backfill_handle = app.handle().clone();
+            let backfill_dir = data_dir.clone();
+            tauri::async_runtime::spawn(async move {
+                infrastructure::rtdb::backfill::run_startup_backfill(&backfill_handle, &backfill_dir);
             });
 
             // -- IPC server (OpenCode plugin event path) -----------------------------
@@ -425,11 +425,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // REQ-1: Event Contract Engine IPC commands
-            infrastructure::comm::contract::commands::register_event_contracts,
-            infrastructure::comm::contract::commands::deregister_event_contracts,
-            // Spec #2768 (ST-4): per-contract event hydration (PULL-only)
-            infrastructure::comm::contract::commands::contract_events_hydrate,
+            // RTDB (Spec #2788 P2.3)
+            infrastructure::rtdb::commands::subscribe_events,
+            infrastructure::rtdb::commands::unsubscribe_events,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,

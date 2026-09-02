@@ -27,6 +27,8 @@ vi.mock('../../lib/persistence', () => ({
   loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
   markSessionDeleted: vi.fn(),
   isSessionDeleted: vi.fn(() => false),
+  // Spec #2788 P4.3: tombstone seeding — awaited inside useDeliverySessions' mount load
+  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
   // ST11: real implementations — pure watermark helpers used by the panel.
   createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
   nextUnseenDeliveries: (deliveries, state) => {
@@ -43,6 +45,28 @@ vi.mock('../../lib/persistence', () => ({
 let mockDeliveries: ContractDelivery[] = [];
 
 // Mock StreamContext — deliveries are swapped per test
+
+// P4.2: the panel derives its session metrics from typed rows via
+// useEventRows — mock it to project the SAME fixtures the StreamContext mock
+// serves (rowsFromDeliveries applies the classifier semantics; the epoch is
+// static because tests seed mockDeliveries before render).
+vi.mock('@/shared/hooks/useEventRows', async () => {
+  const { rowsFromDeliveries } = await import('../../hooks/__tests__/fixtures/rowsFromDeliveries');
+  return {
+    useEventRows: (eventType: 'Chat' | 'ToolUse') => {
+      const { chatRows, toolRows } = rowsFromDeliveries(mockDeliveries);
+      const rows = eventType === 'Chat' ? chatRows : toolRows;
+      return {
+        rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+        epoch: 1,
+        error: null,
+        // P4.3: the replay snapshot phase is settled — the loaded gate opens
+        ready: true,
+      };
+    },
+  };
+});
+
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useStream: vi.fn().mockImplementation(() => ({
     deliveries: mockDeliveries,

@@ -2,6 +2,7 @@ pub mod cli;
 pub mod comm;
 pub mod ipc;
 pub mod otlp;
+pub mod rtdb;
 pub mod storage;
 pub mod telemetry;
 

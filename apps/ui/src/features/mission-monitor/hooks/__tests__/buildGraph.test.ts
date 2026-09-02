@@ -82,6 +82,9 @@ function makeToolDelivery(
 
 // ── useDeliveryGraph Tests ──────────────────────────────────────────────────────
 
+
+import { rowSource } from './rowSourceHelper';
+
 describe('useDeliveryGraph', () => {
   it('should create agent nodes from init deliveries', () => {
     const deliveries: ContractDelivery[] = [
@@ -236,7 +239,7 @@ describe('Spec #2723 ST-3: 3+ node graph keeps per-turn cache deltas (no contami
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -283,7 +286,7 @@ describe('Spec #2723 ST-3: 3+ node graph keeps per-turn cache deltas (no contami
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -320,7 +323,7 @@ describe('Spec #2723 ST-4: many-node graph (AC4)', () => {
     }
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -374,7 +377,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -466,7 +469,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     // Wait until all node families have emitted (agent + subagent).
@@ -560,7 +563,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     // Exactly ONE SubagentNode per user-requested dispatch (AC4-2 / round-6):
@@ -636,7 +639,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     // s1's chat node renders.
@@ -729,7 +732,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: batch1 } },
     );
 
@@ -832,7 +835,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -897,7 +900,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       {
         initialProps: { deliveries: [tool, toolEnd] },
       },
@@ -988,7 +991,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: batch1 } },
     );
 
@@ -1081,7 +1084,7 @@ describe('#2750 AC4: transitional text-less turn suppression', () => {
 
     const { result, rerender } = renderHook(
       ({ deliveries }: { deliveries: ContractDelivery[] }) =>
-        useDeliveryGraph({ deliveries, sessionId: 's1' }),
+        useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
       { initialProps: { deliveries: batch1 } },
     );
 
@@ -1186,7 +1189,7 @@ describe('Spec #2762: nested tool lifecycle init → update → end', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {
@@ -1237,7 +1240,7 @@ describe('Spec #2762: nested tool lifecycle init → update → end', () => {
     ];
 
     const { result } = renderHook(() =>
-      useDeliveryGraph({ deliveries, sessionId: 's1' }),
+      useDeliveryGraph({ rows: rowSource(deliveries), sessionId: 's1' }),
     );
 
     await waitFor(() => {

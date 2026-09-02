@@ -6,8 +6,7 @@
  */
 
 import React from 'react';
-import { FredoFeatureClass, type EventFilter } from '../../shared/classes';
-import type { FredoEvent } from '../../shared/contexts/StreamContext';
+import { FredoFeatureClass } from '../../shared/classes';
 import { QueryViewer } from './components/QueryViewer';
 import { LuDatabase } from 'react-icons/lu';
 import type { IconType } from 'react-icons';
@@ -28,7 +27,6 @@ export class QueryViewerFeature extends FredoFeatureClass {
   readonly id: string;
   readonly name: string;
   readonly icon: IconType;
-  readonly eventFilters: EventFilter[] = [];
   readonly isMultiWindow = true;
   readonly showable = true;
 
@@ -41,8 +39,6 @@ export class QueryViewerFeature extends FredoFeatureClass {
     this.name = queryResult ? queryResult.toolName : 'Query Viewer';
     this.icon = LuDatabase;
   }
-
-  processEvent(_event: FredoEvent): void {}
 
   render() {
     if (!this.queryResult) {

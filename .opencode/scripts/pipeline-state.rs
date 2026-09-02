@@ -2319,10 +2319,12 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
 /// Post a single timeline-comment draft (writes `## <title>` + body, posts it,
 /// consumes the file). Retry-relevant timeline comments (Development Summary,
 /// Tests Runs, SI Summary) get a machine-stamped `(round N)` header — the round is
-/// derived from the event log (`retry_state`), never written by the drafting agent,
-/// so the GitHub timeline is unambiguously round-tagged and round-1/round-2 verdicts
-/// never collide. PO Backlog and Triage Plan are round-1-only artifacts and stay
-/// untagged.
+/// derived from the event log (`retry_state` / the testing-entry count), never
+/// written by the drafting agent, so the GitHub timeline is unambiguously
+/// round-tagged and round-1/round-2 verdicts never collide. The Development
+/// Summary stamps the round whose testing entry is being created (count + 1);
+/// Tests Runs and SI Summary stamp the round that is ending. PO Backlog and
+/// Triage Plan are round-1-only artifacts and stay untagged.
 fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
     const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs", "SI Summary"];
     // G-020 on the timeline path (audit fix): the `comment` action refuses a second
@@ -2339,8 +2341,25 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
         }
     }
     let header = if ROUND_TAGGED.contains(&title) {
-        let (round, _) = retry_state(issue);
-        format!("{} (round {})", title, round)
+        // Round-stamp derivation (#2788 audit fix): Tests Runs and SI Summary
+        // document the testing round that is ENDING — the raw count of testing
+        // `phase.started` entries at post time is correct for them. The
+        // Development Summary documents the fix round whose testing entry this
+        // transition is ABOUT to create (drafts flush BEFORE the destination
+        // `phase.started` append), so its stamp is count + 1 — otherwise every
+        // rework round's summary is stamped one low (observed #2788: the
+        // round-3/4/5 summaries posted as "(round 2)/(3)/(4)").
+        if title == "Development Summary" {
+            let dev_round = read_issue_events(issue)
+                .into_iter()
+                .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
+                .count() as u32
+                + 1;
+            format!("{} (round {})", title, dev_round)
+        } else {
+            let (round, _) = retry_state(issue);
+            format!("{} (round {})", title, round)
+        }
     } else {
         title.to_string()
     };
@@ -3657,7 +3676,9 @@ fn retry_state(issue: u32) -> (u32, String) {
     // Round = the number of times the issue has ENTERED testing (each `phase.started`
     // for `testing` = one test round). This advances on EVERY rework (tester-FAIL →
     // implementation → testing), not just audit.verdict failures, so a round-3 run's
-    // `## Tests Runs`/`## Development Summary` are stamped `(round 3)`, never "round 1".
+    // `## Tests Runs`/`## SI Summary` are stamped `(round 3)`, never "round 1";
+    // the `## Development Summary` is stamped the round whose testing entry is
+    // being created (count + 1 — see post_one_timeline_comment).
     // PO feedback (#2688): previous rounds showed "round 1" across many iterations.
     let round = read_issue_events(issue)
         .into_iter()

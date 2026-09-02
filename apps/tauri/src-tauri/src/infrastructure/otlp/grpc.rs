@@ -6,10 +6,9 @@
 ///   • LogsService    — receives log records / events
 ///
 /// Each trace export is persisted raw on receipt (`raw.rs` → `telemetry_spans`,
-/// Spec #2449 R1) and its OTLP projection is normalized into `EngineInput`s by
-/// the provider-agnostic `GenericOtlpAdapter`, delivered via the ECE → EventBus
-/// (R3). Metrics and logs are persisted to `telemetry_metrics` / `telemetry_logs`
-/// (Spec #1499, GA-5/6/7).
+/// Spec #2449 R1) and classified into RTDB rows by the ingest classifier
+/// (Spec #2788 P3.1). Metrics and logs are persisted to `telemetry_metrics` /
+/// `telemetry_logs` (Spec #1499, GA-5/6/7).
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager};
@@ -32,11 +31,8 @@ use opentelemetry_proto::tonic::collector::{
 use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1 as otlp_metrics;
 
-use crate::infrastructure::comm::adapters::otlp::GenericOtlpAdapter;
-use crate::infrastructure::comm::bus::EventBus;
-use crate::infrastructure::comm::contract::engine::ContractEngine;
-use crate::infrastructure::comm::contract::EventContractEngine;
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::rtdb::ingest::IngestClassifierState;
 use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, MetricType, SpanStoreMetricsExt};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::storage::span_store::SpanStore;
@@ -75,26 +71,15 @@ impl TraceService for OtlpTraceService {
             "resourceSpans": req.resource_spans
         });
         tracing::debug!(target: "fredo::otlp", json_size = %json_value.to_string().len(), "gRPC JSON serialized");
-        // R3/R12: provider-agnostic GenericOtlpAdapter emits EngineInput (the
-        // ECE's input contract) — no standalone event object in the OTLP path.
-        let adapter = self.0.state::<std::sync::Arc<GenericOtlpAdapter>>();
-        tracing::info!(target: "fredo::otlp", "calling adapter.transform");
-        match adapter.transform(Transport::OtlpGrpc, json_value) {
-            Ok(inputs) => {
-                tracing::info!(target: "fredo::otlp", input_count = %inputs.len(), "adapter transform success");
-                let engine = self.0.state::<std::sync::Arc<ContractEngine>>();
-                let bus = self.0.state::<EventBus>();
-                for input in inputs {
-                    let deliveries = engine.req_2_3_process(input);
-                    for delivery in deliveries {
-                        bus.emit_delivery(delivery);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(target: "fredo::otlp", error = %e, "adapter transform failed");
-            }
-        }
+
+        // Spec #2788 P3.1: row ingestion. The classifier derives RTDB rows
+        // from the export — unconditionally, never gated by subscriptions
+        // (R-4a). Log-and-continue: a classifier failure never affects the
+        // export response.
+        let classifier = self.0.state::<IngestClassifierState>();
+        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+        tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "gRPC export classified into RTDB rows");
+
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))

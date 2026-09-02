@@ -30,7 +30,7 @@ Durable, **reusable per-feature** test suites — created on the go, when needed
 ## File conventions
 
 - `- [ ]` checkbox per case, ID prefix `F-<n>` / `R-<n>` / `E-<n>` / `S-<n>`.
-- Each case states an **observable expected outcome** and any required test data (mock event injection, fixtures, env).
+- Each case states an **observable expected outcome** and any required test data. Mock injection goes through `fredo emit` (the `fredo-cli-events` skill): events classify into **RTDB rows** (`chat_rows` / `tool_use_rows` / `agent_session_rows`) and reach features via row subscriptions — Mission Monitor effects come from classified rows, not v1 delivery streams. `--file`/`--payload` carry the event BODY only; verify emitted rows via the telemetry-query skill when a DOM capture is inconclusive.
 - On pass, keep the checkbox and append evidence; on fail, leave `- [ ]` and mark `FAIL` with expected-vs-actual + repro.
 - Promoted exploratory probes move to `functional.md` as a new `F-` row (keep the origin note).
 - The QA Plan table in the Implementation Plan stays the plan; these files are the executable checklist the Tester works from.

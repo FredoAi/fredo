@@ -1,272 +1,243 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { ContractDelivery } from '../../../shared/classes/EventSubscription';
 import type { MissionMonitorSession } from '../lib/graph';
-import { isChatNodeDelivery, deliverySessionId, extractDeliveryPayload } from '../lib/graph';
-import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName } from '../lib/persistence';
+import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName, seedDeletedSessionIdsIntoModule } from '../lib/persistence';
 import { formatDerivedName, deriveDisplayName } from '../lib/sessionMeta';
-import { hydrateContractEvents } from '../../../shared/lib/contractHydration';
-import { useStream } from '../../../shared/contexts/StreamContext';
+import { useEventRows } from '../../../shared/hooks/useEventRows';
+import type { ChatRow } from '../../../shared/classes/EventSubscription';
 
-// ── Spec #2768 (ST-5): mount-time contract hydration ─────────────────────────
+// ── Spec #2788 (P4.3): replay replaces hydration ─────────────────────────────
 //
-// Mission Monitor hydrates its three persistent contracts from the backend
-// ContractEventStore on mount, so a panel opened after (or mid-) a session
-// renders the complete graph with no gap (AC2/AC3 — the panel may have been
-// closed while the events streamed). Rows replay via
-// `StreamContext.addDelivery` in seq order under their ORIGINAL delivery ids,
-// so they flow through the SAME paths as live deliveries (graph builder,
-// session list, frontend persistence) and StreamContext id-dedupe makes
-// re-adding a row the feature already holds a no-op (R9 — no duplicates).
+// The session list derives from the typed RTDB Chat rows via
+// `useEventRows('Chat', {}, { replay: true })`. The v1 machinery this
+// replaces (deleted with the rest of the v1 pipeline in P5.1):
+// - the v1 mount-time hydration IPC command and its shared helper — replay
+//   delivers the persisted snapshot as full-row `insert` envelopes (R-2a),
+//   routed by the backend BEFORE `subscribe_events` resolves, so there is no
+//   separate mount-time fetch.
+// - the module-scoped hydrated-id set — replay inserts dedupe by
+//   ROW KEY in the row store (one row per (sessionId, correlationId), spread-
+//   merge, seq-guarded), so replayed rows can never double-add.
+// - the v1 delivery queue — the row store has no TTL eviction and no
+//   5000-cap, so a session's rows are visible for the panel's whole lifetime
+//   and restored by replay on remount (the v1 TTL-shrink vanish bug class is
+//   structurally gone).
 //
-// MUST mirror the `contractName` values declared in
-// MissionMonitorFeature.eventContracts (kept as a literal list here — the
-// hydration wiring's own config — so the hook stays decoupled from the
-// feature-class module, which imports this hook transitively via the panel).
-const MM_HYDRATION_CONTRACTS = [
-  'chat-node',
-  'tool-use-lifecycle',
-  'subagent-tool-activity',
-];
-
-// Memoized-init guard (the `ensureMmTables` pattern, persistence.ts): the
-// hydration promise is memoized module-scoped so concurrent callers (React
-// StrictMode's double mount effect, a remount racing the first hydration)
-// share ONE in-flight fetch. The memo is cleared when the run settles so a
-// LATER mount re-hydrates — required for correctness: StreamContext TTL-shrinks
-// deliveries after 300s, so a panel reopened after a longer closed window must
-// re-fetch the closed-window rows from the backend store (AC3) or they would
-// be missing from both StreamContext and the frontend FeatureStore (which only
-// persists while mounted). The replay is a no-op for rows already held/stored:
-// id-dedupe in StreamContext + the persistDelivery replay guard.
-//
-// `hydratedDeliveryIds` is module-scoped (survives unmount — never a ref) so
-// the session list below can tell hydrated rows apart from live ones and skip
-// them for sessions the persisted snapshot already counts (no double count).
-// Bounded: cleared wholesale at 100k ids (the backend store's max_rows order).
-const hydratedDeliveryIds = new Set<string>();
-
-let hydrationInFlight: Promise<number> | null = null;
-
-function ensureMmContractHydration(addDelivery: (delivery: ContractDelivery) => void): Promise<number> {
-  if (!hydrationInFlight) {
-    hydrationInFlight = hydrateContractEvents(MM_HYDRATION_CONTRACTS, (delivery) => {
-      if (hydratedDeliveryIds.size > 100_000) hydratedDeliveryIds.clear();
-      hydratedDeliveryIds.add(delivery.id);
-      addDelivery(delivery);
-    })
-      .catch((err) => {
-        // Hydration must never wedge the session list's `loaded` gate — a
-        // cold/empty store or a backend hiccup resolves to 0 rows and the
-        // panel renders exactly as before ST-5.
-        console.warn('[MM] contract hydration failed:', err);
-        return 0;
-      })
-      .finally(() => {
-        hydrationInFlight = null;
-      });
-  }
-  return hydrationInFlight;
-}
-
+// Count semantics: the ROW STORE is authoritative for every session it holds
+// rows for (replay restores the FULL row history). The FeatureStore snapshot
+// contributes only the name prefs (customName/derivedName) and acts as a
+// fallback for sessions whose rows are retention-evicted (R-2d) — its
+// deliveryCount is never ADDED on top of a row count, so no double counting
+// is possible by construction.
 
 /**
- * useDeliverySessions — derives sessions from SQLite (on mount) merged with
- * live StreamContext deliveries.
- *
- * No longer takes a `deliveries` parameter — loads persisted sessions from
- * SQLite on mount via FeatureStore IPC.
+ * useDeliverySessions — derives sessions from the replayed Chat rows merged
+ * with the persisted FeatureStore snapshot (names + retention fallback).
  *
  * @returns sessions, filteredSessions, selectedSessionId, selectSession,
- *          deleteSession, searchFilter, setSearchFilter
+ *          followSession, deleteSession, renameSession, refreshSessions,
+ *          searchFilter, setSearchFilter, userPickedRef
  */
 export function useDeliverySessions() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [persistedSessions, setPersistedSessions] = useState<MissionMonitorSession[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [persistedLoadDone, setPersistedLoadDone] = useState(false);
   const userPickedRef = useRef(false);
 
-  // Track deleted session IDs to prevent resurrection via live StreamContext deliveries
+  // Track deleted session IDs to prevent resurrection via replayed/live rows
   const deletedSessionIdsRef = useRef<Set<string>>(new Set());
 
-  // Access StreamContext — live deliveries drive the session merge; `addDelivery`
-  // is the injector the mount-time hydration replays persisted rows through
-  // (Spec #2768 ST-5). Stable `useCallback` — the effect below runs once.
-  const { deliveries, addDelivery } = useStream();
+  // Replay subscription — the session list's live data source. Shares the
+  // module-scoped row store with the panel's own Chat subscription (duplicate
+  // envelopes dedupe by row key in the store — idempotent).
+  const chatRows = useEventRows('Chat', {}, { replay: true });
 
-  // Load persisted sessions from SQLite AND hydrate the backend contract store
-  // on mount. The session list's `loaded` gate (the UX ladder's spinner state —
-  // MissionMonitorPanel renders its spinner empty-state while `sessions` is
-  // empty) covers BOTH async loads: `loaded` flips only after hydration has
-  // settled, so persisted-history sessions can never flash a false "no data"
-  // state while their rows are still in flight (Spec #2768 ui-ux requirement).
-  // Hydration failure resolves to 0 rows (never rejects) — a cold/empty store
-  // is a graceful no-op.
+  // The `loaded` gate (the UX ladder's spinner state — MissionMonitorPanel
+  // renders its spinner empty-state while `sessions` is empty). It covers
+  // BOTH async loads, per the UI/UX parity constraint (no blank-screen flash):
+  // - the FeatureStore snapshot load below, and
+  // - the replay subscription's SNAPSHOT PHASE — round-3 F-33: the backend
+  //   replay leg is a spawned background drain (commands.rs registers the
+  //   live sub first, then hands the snapshot SELECT to
+  //   `tauri::async_runtime::spawn_blocking`), so `ready` stays FALSE while
+  //   the snapshot drains and resolves ONLY on the backend's
+  //   `replayCompleteQueryId` marker for this subscription (never on
+  //   subscribe resolution alone — that would park the gate on a half-drained
+  //   snapshot). The empty state before the settle is the same spinner.
+  // A FAILED subscription must never wedge the gate (v1 hydration-failure
+  // contract): `error !== null` opens it with the persisted data only — the
+  // failure itself surfaces loudly through useEventRows (R-3a).
+  const loaded = persistedLoadDone && (chatRows.ready || chatRows.error !== null);
+
+  // Load the persisted session snapshot (name prefs + retention fallback) AND
+  // seed the module-level deleted set from the durable tombstones — both
+  // before `loaded` flips, so a deleted session's replayed rows are filtered
+  // from the FIRST derived list (no deleted-session flash on mount).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const [loadedSessions] = await Promise.all([
           loadPersistedSessions(),
-          ensureMmContractHydration(addDelivery),
+          seedDeletedSessionIdsIntoModule(),
         ]);
         if (!cancelled) {
           setPersistedSessions(loadedSessions);
-          setLoaded(true);
+          setPersistedLoadDone(true);
         }
       } catch (err) {
         console.warn('[MM] mount load failed:', err);
         if (!cancelled) {
-          setLoaded(true);
+          setPersistedLoadDone(true);
         }
       }
     })();
     return () => { cancelled = true; };
-  }, [addDelivery]);
+  }, []);
 
-  // Refresh the persisted-session snapshot from SQLite. `persistedSessions` is
-  // loaded ONCE on mount; a session that starts LIVE during the panel's lifetime
-  // is persisted to SQLite by the panel's persistDelivery effect but never enters
-  // this state (the mount-time snapshot is stale). Such a session is only visible
-  // through the live-only path below — which reads StreamContext `deliveries`
-  // (TTL-shrunk after DELIVERY_TTL_MS=300s). Once its deliveries age out, the
-  // session vanishes from the list until a remount re-reads SQLite. The panel
-  // calls this after every persist batch so a freshly-persisted session lands in
-  // the snapshot and survives TTL eviction.
+  // Refresh the persisted-session snapshot from SQLite. Exposed for parity
+  // with the v1 hook API (and used by the tests); with the rows-authoritative
+  // merge the snapshot only feeds name prefs + the retention fallback.
   const refreshSessions = useCallback(async () => {
     try {
       const sessions = await loadPersistedSessions();
       setPersistedSessions(sessions);
-      setLoaded(true);
     } catch (err) {
       console.warn('[MM] refreshSessions failed:', err);
     }
   }, []);
 
-  // Merge persisted sessions with live delivery metadata
+  // Merge the persisted snapshot with the replayed row data. ONE O(N) pass
+  // over the row store per recompute (NFR-1 — never a per-session rescan);
+  // memoized on the monotonic row-store epoch, never on map identity or size
+  // (the #523-cycle-1 no-loop rule).
   const sessions = useMemo<MissionMonitorSession[]>(() => {
     if (!loaded) return [];
 
-    // REQ-1: Deduplicate persisted sessions by sessionId.
-    // Prevents duplicate sidebar entries when the same logical session was
-    // persisted via dual transports. Last entry wins for metadata.
+    // REQ-1: Deduplicate persisted sessions by sessionId (dual-transport rows).
+    // Last entry wins for metadata.
     const dedupedPersisted = new Map<string, MissionMonitorSession>();
     for (const s of persistedSessions) {
       dedupedPersisted.set(s.sessionId, s);
     }
     const uniquePersisted = Array.from(dedupedPersisted.values());
 
-    // Build a map of sessionId → live delivery count from StreamContext
-    const liveCounts = new Map<string, number>();
-    const liveTimestamps = new Map<string, string>();
-    const liveStartTimes = new Map<string, number>();
-    // #2748 ST-3 (AC1 R-1.1): earliest-timestamp non-empty `userMessage` per
-    // session, collected in this SAME single O(N) pass (NFR-1 — never a
-    // per-session rescan). Selection mirrors deriveSessionName; formatting is
-    // delegated to formatDerivedName (single definition of normalize+truncate).
-    const liveUserMessages = new Map<string, { ts: number; message: string }>();
+    // Single pass over the Chat rows, grouped by sessionId:
+    // - count   = rows for the session (one row per chat turn — the sidebar
+    //             figure; child-session turns arrive re-keyed under the parent
+    //             per the #523 compositing, so they count toward the root).
+    // - latest  = max updatedAt (RFC3339 string compare, append order-safe).
+    // - start   = min startedAtNs (span start), falling back to updatedAt.
+    // - #2748 ST-3 (AC1 R-1.1): earliest-timestamp non-empty userMessage per
+    //   session — selection mirrors deriveSessionName; formatting is
+    //   delegated to formatDerivedName (single definition of
+    //   normalize+truncate).
+    const rowCounts = new Map<string, number>();
+    const rowLatest = new Map<string, string>();
+    const rowStart = new Map<string, number>();
+    const rowUserMessages = new Map<string, { ts: number; message: string }>();
 
-    for (const d of deliveries) {
-      if (!isChatNodeDelivery(d)) continue;
-      const sid = deliverySessionId(d);
+    for (const row of chatRows.rows.values() as IterableIterator<ChatRow>) {
+      const sid = row.sessionId;
       if (!sid) continue;
 
-      // Spec #2768 (ST-5): hydrated rows replay under their ORIGINAL ids and
-      // stay in StreamContext until TTL eviction. For a session the persisted
-      // snapshot already carries, the snapshot's deliveryCount already counts
-      // those rows (persistDelivery stored them — live, at a previous mount,
-      // or from the hydration replay itself) — counting them again as "live"
-      // would double the sidebar figure. Hydrated rows for sessions NOT in
-      // the snapshot still count: that is how a backend-only session (streamed
-      // entirely while the panel was closed) surfaces until its rows land in
-      // the frontend store via the persist path.
-      if (hydratedDeliveryIds.has(d.id) && dedupedPersisted.has(sid)) continue;
+      rowCounts.set(sid, (rowCounts.get(sid) ?? 0) + 1);
 
-      liveCounts.set(sid, (liveCounts.get(sid) ?? 0) + 1);
-
-      const existingTs = liveTimestamps.get(sid);
-      if (!existingTs || d.timestamp > existingTs) {
-        liveTimestamps.set(sid, d.timestamp);
+      const existingTs = rowLatest.get(sid);
+      if (!existingTs || row.updatedAt > existingTs) {
+        rowLatest.set(sid, row.updatedAt);
       }
 
-      const tsTime = new Date(d.timestamp).getTime();
-      const existingStart = liveStartTimes.get(sid);
-      if (!existingStart || tsTime < existingStart) {
-        liveStartTimes.set(sid, tsTime);
+      const updatedAtMs = Date.parse(row.updatedAt);
+      const rowStartMs =
+        row.startedAtNs !== null && row.startedAtNs !== undefined
+          ? row.startedAtNs / 1e6
+          : updatedAtMs;
+      if (Number.isFinite(rowStartMs)) {
+        const existingStart = rowStart.get(sid);
+        if (!existingStart || rowStartMs < existingStart) {
+          rowStart.set(sid, rowStartMs);
+        }
       }
 
-      // #2748 ST-3 (AC1): earliest-timestamp non-empty userMessage. Array order
-      // is append order — compare timestamps, never array position.
-      const payload = extractDeliveryPayload(d);
-      const userMessage = typeof payload['userMessage'] === 'string' ? payload['userMessage'] : '';
-      if (userMessage.trim() === '' || Number.isNaN(tsTime)) continue;
-      const existingMsg = liveUserMessages.get(sid);
-      if (!existingMsg || tsTime < existingMsg.ts) {
-        liveUserMessages.set(sid, { ts: tsTime, message: userMessage });
+      const userMessage = typeof row.userMessage === 'string' ? row.userMessage : '';
+      if (userMessage.trim() === '' || !Number.isFinite(updatedAtMs)) continue;
+      const existingMsg = rowUserMessages.get(sid);
+      if (!existingMsg || updatedAtMs < existingMsg.ts) {
+        rowUserMessages.set(sid, { ts: updatedAtMs, message: userMessage });
       }
     }
 
-    // Merge persisted sessions with live data
+    // Merge persisted sessions with row data.
     const merged = uniquePersisted
       .map((s) => {
-        const liveCount = liveCounts.get(s.sessionId);
-        const liveTs = liveTimestamps.get(s.sessionId);
-        const liveStart = liveStartTimes.get(s.sessionId);
-        const liveMsg = liveUserMessages.get(s.sessionId);
-
+        const rowCount = rowCounts.get(s.sessionId);
+        if (rowCount === undefined) {
+          // No rows for this session (RTDB retention evicted them, or the
+          // session predates the replay window) — the persisted snapshot is
+          // the only source. Values unchanged (v1 fallback) except the
+          // derived-name normalization (display form — the hook's job).
+          const fallbackSession: MissionMonitorSession = { ...s };
+          const fallbackDerived =
+            s.derivedName ? formatDerivedName(s.derivedName) : undefined;
+          if (fallbackDerived !== undefined) fallbackSession.derivedName = fallbackDerived;
+          return fallbackSession;
+        }
+        // Rows authoritative — replay restores the FULL row history (no TTL,
+        // no cap), so the row count IS the session's chat-turn count. The
+        // persisted deliveryCount is never added on top (the replay-dedupe
+        // guarantee — no double counting by construction).
         const mergedSession: MissionMonitorSession = {
           ...s,
-          deliveryCount: liveCount !== undefined ? s.deliveryCount + liveCount : s.deliveryCount,
-          latestTimestamp: liveTs ?? s.latestTimestamp,
-          startTime: liveStart ?? s.startTime,
+          deliveryCount: rowCount,
+          latestTimestamp: rowLatest.get(s.sessionId) ?? s.latestTimestamp,
+          startTime: rowStart.get(s.sessionId) ?? s.startTime,
         };
 
         // #2748 ST-3 (AC1/AC2): resolve the session's derived name. The
-        // persisted value (ST-2's capture — the session's TRUE first message,
-        // TTL-proof) is authoritative; live derivation fills the gap for
-        // sessions whose name has not been captured yet (live-only sessions,
-        // or a session persisted before its first chat delivery). Both run
-        // through formatDerivedName so the drawer always receives the display
-        // form (ST-2 stores the raw first message — display-side truncation is
-        // the hook's job). Display precedence (customName ?? derivedName ??
+        // persisted value (capture-at-persist — the session's TRUE first
+        // message) is authoritative; row derivation fills the gap for
+        // sessions whose name was never captured (live-only sessions). Both
+        // run through formatDerivedName so the drawer always receives the
+        // display form. Display precedence (customName ?? derivedName ??
         // label) is resolved by deriveDisplayName at render time.
+        const rowMsg = rowUserMessages.get(s.sessionId);
         const derived =
           (s.derivedName ? formatDerivedName(s.derivedName) : undefined) ??
-          (liveMsg ? formatDerivedName(liveMsg.message) : undefined);
+          (rowMsg ? formatDerivedName(rowMsg.message) : undefined);
         if (derived !== undefined) mergedSession.derivedName = derived;
 
         return mergedSession;
       });
 
-    // Add sessions from live deliveries that aren't yet persisted
+    // Add sessions from rows that aren't in the persisted snapshot.
     const persistedIds = new Set(uniquePersisted.map((s) => s.sessionId));
 
-    for (const d of deliveries) {
-      if (!isChatNodeDelivery(d)) continue;
-      const sid = deliverySessionId(d);
-      if (!sid || persistedIds.has(sid)) continue;
+    for (const [sid, rowCount] of rowCounts) {
+      if (persistedIds.has(sid)) continue;
 
       persistedIds.add(sid);
-      const tsTime = new Date(d.timestamp).getTime();
-      const liveMsg = liveUserMessages.get(sid);
-      const liveOnlySession: MissionMonitorSession = {
+      const startMs = rowStart.get(sid) ?? Date.now();
+      const rowMsg = rowUserMessages.get(sid);
+      const rowOnlySession: MissionMonitorSession = {
         sessionId: sid,
-        label: new Date(tsTime).toLocaleString(),
-        startTime: tsTime,
-        latestTimestamp: d.timestamp,
-        deliveryCount: liveCounts.get(sid) ?? 1,
+        label: new Date(startMs).toLocaleString(),
+        startTime: startMs,
+        latestTimestamp: rowLatest.get(sid) ?? new Date(startMs).toISOString(),
+        deliveryCount: rowCount,
       };
-      // #2748 ST-3 (AC1): live-only sessions carry their derived name from the
+      // #2748 ST-3 (AC1): row-only sessions carry their derived name from the
       // single-pass collection — no per-row scan.
-      if (liveMsg) {
-        const derived = formatDerivedName(liveMsg.message);
-        if (derived !== undefined) liveOnlySession.derivedName = derived;
+      if (rowMsg) {
+        const derived = formatDerivedName(rowMsg.message);
+        if (derived !== undefined) rowOnlySession.derivedName = derived;
       }
-      merged.push(liveOnlySession);
+      merged.push(rowOnlySession);
     }
 
-    // Exclude deleted sessions from all merge paths (REQ-3: prevent resurrection)
-    // Check BOTH local ref (immediate UI feedback) and module-level set (cross-mount persistence)
+    // Exclude deleted sessions from all merge paths (REQ-3: prevent
+    // resurrection). Checks BOTH the local ref (immediate UI feedback) and
+    // the module-level set (cross-mount persistence, tombstone-seeded).
     const deleted = deletedSessionIdsRef.current;
     let filtered = merged.filter((s) => !deleted.has(s.sessionId) && !isSessionDeleted(s.sessionId));
 
@@ -274,7 +245,10 @@ export function useDeliverySessions() {
     return filtered.sort((a, b) => {
       return new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime();
     });
-  }, [persistedSessions, deliveries, loaded]);
+    // `chatRows.rows` is the stable module-scoped map (identity never changes)
+    // — the epoch is the real recompute signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistedSessions, chatRows.epoch, chatRows.rows, loaded]);
 
   // Reset selected session if it no longer exists
   useEffect(() => {
@@ -287,9 +261,9 @@ export function useDeliverySessions() {
   // Auto-select the newest session when no session is selected and user hasn't manually picked one.
   //
   // Uses startTime (session creation time) instead of sessions[0] from the sorted list,
-  // because sessions is sorted by latestTimestamp which gets overwritten by live delivery
-  // timestamps from StreamContext. An old session with recent live deliveries in StreamContext
-  // would sort before a newer-but-idle session, causing the wrong session to be auto-selected.
+  // because sessions is sorted by latestTimestamp which gets overwritten by the newest
+  // row update. An old session with recent live rows would sort before a newer-but-idle
+  // session, causing the wrong session to be auto-selected.
   useEffect(() => {
     if (userPickedRef.current === false && sessions.length > 0 && selectedSessionId === null) {
       const newest = sessions.reduce((a, b) => a.startTime > b.startTime ? a : b);
@@ -298,32 +272,24 @@ export function useDeliverySessions() {
   }, [sessions, selectedSessionId]);
 
   // ── Selection FOLLOWS the newly started live session (#2758 round-22 C1) ───
-  // Previously selection was claimed exactly once ("only-if-null" above plus
-  // the panel's equally one-shot follow guard): a panel mounted alongside any
-  // existing (older) session locked onto it, and a NEWLY STARTED live session
-  // never became selected. The builder intentionally processes ALL sessions,
-  // but the Phase-3 emission filter (useMissionMonitor.ts visibleAgentCorrs)
-  // admits only the SELECTED session — so every node for the live session was
-  // silently suppressed and the canvas stayed empty despite provable
-  // deliveries. Now a NEWLY SEEN chat-node sessionId arriving in live
-  // deliveries retargets the selection whenever the user has NOT explicitly
-  // picked one this lifetime (an explicit row click flips userPickedRef and
-  // permanently disables following — never steal focus).
+  // A NEWLY SEEN chat-row sessionId arriving in the row store retargets the
+  // selection whenever the user has NOT explicitly picked one this lifetime
+  // (an explicit row click flips userPickedRef and permanently disables
+  // following — never steal focus).
   //
-  // Known sessionIds live in a ref SEEDED ON THE FIRST PASS (the first render's
-  // deliveries snapshot): everything observable at mount predates this hook
+  // Known sessionIds live in a ref SEEDED ON THE FIRST PASS (the first
+  // render's row snapshot): everything observable at mount predates this hook
   // instance and must not steal the pre-existing auto-select. Within the
-  // lifetime the set only grows, so repeat deliveries for an already-seen
-  // session never re-trigger.
+  // lifetime the set only grows, so repeat rows for an already-seen session
+  // never re-trigger. Keyed on the row-store EPOCH (never on map size —
+  // AGENTS.md no-loop rule).
   const seenLiveSessionIdsRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (seenLiveSessionIdsRef.current === null) {
       // First pass (mount): SEED ONLY — never retarget on restored/parked traffic.
       const seed = new Set<string>();
-      for (const d of deliveries) {
-        if (!isChatNodeDelivery(d)) continue;
-        const sid = deliverySessionId(d);
-        if (sid) seed.add(sid);
+      for (const row of chatRows.rows.values()) {
+        if (row.sessionId) seed.add(row.sessionId);
       }
       seenLiveSessionIdsRef.current = seed;
       return;
@@ -331,12 +297,12 @@ export function useDeliverySessions() {
 
     const seen = seenLiveSessionIdsRef.current;
     let newestNewSid: string | null = null;
-    for (const d of deliveries) {
-      if (!isChatNodeDelivery(d)) continue;
-      const sid = deliverySessionId(d);
+    // Map iteration order is row-key insertion order = arrival order (replay
+    // delivers in seq order) — the LAST newly seen sessionId wins when
+    // several appear in one batch.
+    for (const row of chatRows.rows.values()) {
+      const sid = row.sessionId;
       if (sid && !seen.has(sid)) {
-        // Append order == chronological arrival order — the LAST newly seen
-        // sessionId wins when several appear in one batch.
         newestNewSid = sid;
       }
     }
@@ -352,8 +318,9 @@ export function useDeliverySessions() {
 
     // Only follow sessions that exist in the derived list — excludes deleted
     // (REQ-3 anti-resurrection) and any filtered-out session. If the derived
-    // list has not caught up yet (SQLite load still in flight), the sessionId
-    // stays unseen and retries on the next deliveries batch (self-healing).
+    // list has not caught up yet (snapshot load still in flight), the
+    // sessionId stays unseen and retries on the next epoch bump
+    // (self-healing).
     if (sessions.some((s) => s.sessionId === newestNewSid)) {
       seen.add(newestNewSid);
       // Programmatic follow must NOT flip userPickedRef (unlike selectSession)
@@ -361,24 +328,22 @@ export function useDeliverySessions() {
       // the user explicitly clicks a row.
       setSelectedSessionId(newestNewSid);
     }
-  }, [deliveries, sessions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatRows.epoch, sessions]);
 
   // Filtered sessions by search — #2750 ST-3 (AC3): the filter matches the
   // session's display Name (`deriveDisplayName` = customName ?? derivedName ??
-  // label, lib/sessionMeta.ts:153-155) IN ADDITION to the sessionId. A single
-  // `.filter` pass keeps the exactly-once edge (AC3-2) automatic — a query
-  // matching one session's Name and another's sessionId returns each matching
-  // session exactly once. Empty query → all sessions (unchanged).
+  // label) IN ADDITION to the sessionId. A single `.filter` pass keeps the
+  // exactly-once edge (AC3-2) automatic — a query matching one session's Name
+  // and another's sessionId returns each matching session exactly once. Empty
+  // query → all sessions (unchanged).
   //
   // #2750 AC3 round-2: the predicate queries EXACTLY the string the drawer row
-  // renders — the drawer derives the same `deriveDisplayName(session)`
-  // (SessionHistoryDrawer.tsx:289) from the same session object. Truncation
-  // reconciliation: `derivedName` is stored in its DISPLAY form (truncated to
-  // 40 chars incl. `…` by formatDerivedName at capture, lines 120-123 / 149-
-  // 150), so BOTH the row text and this filter see the truncated string — a
-  // user typing the visible truncated text matches, and text that only exists
-  // beyond the 40-char cut is not visible on the row either (documented
-  // behavior; pinned by useSessionHistory.test.ts truncation case).
+  // renders — the drawer derives the same `deriveDisplayName(session)` from
+  // the same session object. `derivedName` is stored in its DISPLAY form
+  // (truncated to 40 chars incl. `…` by formatDerivedName at capture), so
+  // BOTH the row text and this filter see the truncated string (documented
+  // behavior; pinned by the truncation test below).
   const filteredSessions = useMemo(() => {
     if (!searchFilter) return sessions;
     const lower = searchFilter.toLowerCase();
@@ -407,10 +372,12 @@ export function useDeliverySessions() {
   const deleteSession = useCallback(async (id: string) => {
     // Track deleted ID in BOTH local ref AND module-level set (REQ-3)
     // Local ref provides immediate UI feedback via re-render → useMemo re-run.
-    // Module-level set provides cross-mount persistence (survives dialog close/reopen).
+    // Module-level set provides cross-mount persistence (survives dialog
+    // close/reopen); the store's durable tombstone (P4.3) additionally
+    // survives an app restart against RTDB replay.
     deletedSessionIdsRef.current.add(id);
     markSessionDeleted(id);
-    // Remove from SQLite
+    // Remove from SQLite (also records the restart-durable tombstone)
     await deleteSessionFromStore(id);
     // Remove from local state immediately (REQ-7)
     setPersistedSessions((prev) => prev.filter((s) => s.sessionId !== id));
@@ -426,10 +393,10 @@ export function useDeliverySessions() {
    *
    * Persists via ST-2's `saveCustomName` (atomic featureStoreUpdate;
    * empty/whitespace clears the custom name), then updates local state so the
-   * drawer re-renders immediately with the new custom name. A live-only
-   * session (persisted mid-stream after the mount snapshot) is upserted into
-   * `persistedSessions` from the current merged view — otherwise the rename
-   * would not surface until a remount.
+   * drawer re-renders immediately with the new custom name. A row-only
+   * session (not in the mount snapshot) is upserted into `persistedSessions`
+   * from the current merged view — otherwise the rename would not surface
+   * until a remount.
    *
    * The session carries `customName` (authoritative) + `derivedName`; display
    * precedence (`customName ?? derivedName ?? label`) is resolved by
@@ -445,7 +412,7 @@ export function useDeliverySessions() {
       if (existing) {
         return prev.map((s) => (s.sessionId === id ? { ...s, customName } : s));
       }
-      // Live-only session — carry its merged view into the snapshot so the
+      // Row-only session — carry its merged view into the snapshot so the
       // memo re-renders the renamed row immediately (no-op if it vanished).
       const live = sessions.find((s) => s.sessionId === id);
       if (!live) return prev;

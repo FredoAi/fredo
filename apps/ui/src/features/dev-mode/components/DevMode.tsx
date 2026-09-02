@@ -5,43 +5,24 @@ import { motion, AnimatePresence } from 'framer-motion';
 // Chakra v3 + framer-motion wrapper
 const MotionBox = chakra(motion.div as any) as any;
 import {
-  LuWifi, LuWifiOff, LuTrash2, LuChevronDown, LuChevronRight, LuSearch, LuX, LuRadio,
+  LuWifi, LuWifiOff, LuTrash2, LuChevronDown, LuChevronRight, LuSearch, LuX,
 } from 'react-icons/lu';
 import { useDevModeStream } from '../hooks/useDevModeStream';
-import type { FredoEvent, EventSource } from '../../../shared/contexts/StreamContext';
+import type { DevModeStreamEvent, DevModeEventState } from '../hooks/useDevModeStream';
 import { tint } from '../../../shared/utils/colorTint';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 
-// ── Source badge colours ──────────────────────────────────────────────────────
-
-const SOURCE_LABELS: Record<EventSource, string> = {
-  hook:      'hook',
-  otlpGrpc:  'gRPC',
-  otlpHttp:  'HTTP',
-};
-
-const SOURCE_COLORS: Record<EventSource, string> = {
-  hook:      '#f59e0b',   // amber
-  otlpGrpc:  '#ff6347',  // tomato-orange
-  otlpHttp:  '#ff6347',  // tomato-orange
-};
-
-const SIGNAL_COLORS: Record<string, string> = {
-  Span:   '#3b82f6',
-  Metric: '#22c55e',
-  Log:    '#a855f7',
-};
-
 // ── State badge colours ───────────────────────────────────────────────────────
 
-const STATE_COLORS: Record<FredoEvent['state'], string> = {
+const STATE_COLORS: Record<DevModeEventState, string> = {
   Init: '#3b82f6',
   Update: '#f59e0b',
   Response: '#22c55e',
   Error: '#ef4444',
+  Timeout: '#6b7280',
 };
 
-// ── OTLP payload viewer ───────────────────────────────────────────────────────
+// ── OTLP payload viewer (retained for rawJson payload inspection) ─────────────
 
 /** Keys that carry human-readable LLM content — shown prominently. */
 const CONTENT_KEYS = [
@@ -135,39 +116,20 @@ const OtlpPayloadView: React.FC<{ attrs: Record<string, any> }> = ({ attrs }) =>
 // ── Single event row ──────────────────────────────────────────────────────────
 
 interface EventRowProps {
-  event: FredoEvent;
+  event: DevModeStreamEvent;
   index: number;
 }
 
 const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
   const [expanded, setExpanded] = useState(false);
 
-  // Map FredoEvent to display payload
-  // - OTLP events store attributes in metadata
-  // - Hook events use payload directly
-  // - Error events use error field
-  const displayPayload = event.metadata && typeof event.metadata === 'object'
-    ? (event.metadata as any).attributes ?? event.payload
-    : event.payload;
-  const payload = event.state === 'Error'
-    ? event.error
-    : displayPayload;
-
+  const payload = event.payload;
   const hasPayload = payload !== undefined && payload !== null;
 
-  // Map transport to source for display (transport is the FredoEvent equivalent)
-  const isOtlp = event.transport === 'otlp_grpc' || event.transport === 'otlp_http';
-  const eventMetadata = event.metadata && typeof event.metadata === 'object' ? event.metadata as any : null;
-  const sourceKey: EventSource = eventMetadata?.source ?? 'hook';
-
-  // For hook events, prefer event_type from the payload over toolName
-  const hookMeta = event.payload;
-  const hookEventType: string | undefined = (hookMeta as any)?.event_type;
-  const eventType = isOtlp
-    ? event.toolName
-    : hookEventType ?? event.toolName;
-  // Show toolName as a dim secondary label when event_type differs
-  const showTool = !isOtlp && hookEventType && hookEventType !== event.toolName;
+  // Render the structured viewer when the row payload carries the plugin's
+  // gen_ai.* long-tail (the rawJson projection), the plain JSON view otherwise.
+  const hasGenaiAttrs = hasPayload && META_KEYS.concat(CONTENT_KEYS).some((k) => k in (payload as object));
+  const showTool = event.toolName !== event.eventType;
 
   const timeLabel = new Date(event.timestamp).toLocaleTimeString('en-US', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
@@ -205,48 +167,13 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
           {timeLabel}
         </Text>
         <Text fontSize="12px" color="var(--text-primary)" fontWeight="600" flex="1" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
-          {eventType}
+          {event.toolName}
           {showTool && (
             <Text as="span" fontSize="10px" color="var(--text-secondary)" fontWeight="400" ml={1}>
-              ({event.toolName})
+              ({event.eventType})
             </Text>
           )}
         </Text>
-        {/* OTLP signal badge */}
-        {isOtlp && eventMetadata?.signal && (
-          <Badge
-            flexShrink={0}
-            fontSize="9px"
-            px={2}
-            py="1px"
-            borderRadius="full"
-            background={(SIGNAL_COLORS[eventMetadata.signal as string] ?? '#888') + '22'}
-            color={SIGNAL_COLORS[eventMetadata.signal as string] ?? '#888'}
-            border="1px solid"
-            borderColor={(SIGNAL_COLORS[eventMetadata.signal as string] ?? '#888') + '55'}
-            textTransform="uppercase"
-            letterSpacing="0.05em"
-          >
-            {eventMetadata.signal}
-          </Badge>
-        )}
-        {/* Source badge — only show if not the default hook */}
-        {sourceKey !== 'hook' && (
-          <Badge
-            flexShrink={0}
-            fontSize="9px"
-            px={2}
-            py="1px"
-            borderRadius="full"
-            background={SOURCE_COLORS[sourceKey] + '22'}
-            color={SOURCE_COLORS[sourceKey]}
-            border="1px solid"
-            borderColor={SOURCE_COLORS[sourceKey] + '55'}
-            letterSpacing="0.03em"
-          >
-            {SOURCE_LABELS[sourceKey]}
-          </Badge>
-        )}
         <Badge
           flexShrink={0}
           fontSize="9px"
@@ -274,7 +201,7 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
             overflow="hidden"
           >
             <Box px={3} pb={2} borderTop="1px solid" borderColor="var(--border-color)" background="var(--body-bg)">
-              {isOtlp && typeof payload === 'object' && payload !== null
+              {hasGenaiAttrs && typeof payload === 'object' && payload !== null
                 ? <OtlpPayloadView attrs={payload as Record<string, any>} />
                 : (
                   <Code display="block" whiteSpace="pre-wrap" wordBreak="break-all" fontSize="10px" color="var(--text-primary)" background="transparent" mt={2}>
@@ -291,20 +218,18 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-const ALL_STATES = ['Init', 'Update', 'Response', 'Error'] as const;
-const ALL_SOURCES: EventSource[] = ['hook', 'otlpGrpc', 'otlpHttp'];
+const ALL_STATES = ['Init', 'Update', 'Response', 'Error', 'Timeout'] as const;
 
 export const DevMode: React.FC = () => {
-  const { events, eventTypes, sources, isConnected, clearEvents } = useDevModeStream();
+  const { events, eventTypes, isConnected, clearEvents } = useDevModeStream();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // ── Filter state ────────────────────────────────────────────────────────────
   const [query, setQuery] = useState('');
-  const [activeStates, setActiveStates] = useState<Set<FredoEvent['state']>>(new Set(ALL_STATES));
+  const [activeStates, setActiveStates] = useState<Set<DevModeEventState>>(new Set(ALL_STATES));
   const [selectedEventType, setSelectedEventType] = useState<string | null>(null);
-  const [activeSource, setActiveSource] = useState<EventSource | null>(null);
 
-  const toggleState = (state: FredoEvent['state']) => {
+  const toggleState = (state: DevModeEventState) => {
     setActiveStates((prev) => {
       const next = new Set(prev);
       if (next.has(state)) {
@@ -322,23 +247,15 @@ export const DevMode: React.FC = () => {
     const q = query.trim().toLowerCase();
     return events.filter((e) => {
       if (!activeStates.has(e.state)) return false;
-      const isOtlp = e.transport === 'otlp_grpc' || e.transport === 'otlp_http';
-      const eventMetadata = e.metadata && typeof e.metadata === 'object' ? e.metadata as any : null;
-      const et = isOtlp
-        ? (eventMetadata?.signal ? `${eventMetadata.signal.toLowerCase()}:${e.toolName}` : e.toolName)
-        : ((e.payload) as any)?.event_type ?? e.toolName;
-      const evtSourceKey: EventSource = eventMetadata?.source ?? 'hook';
-      if (selectedEventType && et !== selectedEventType) return false;
-      if (activeSource && (evtSourceKey ?? 'hook') !== activeSource) return false;
+      if (selectedEventType && e.toolName !== selectedEventType) return false;
       if (!q) return true;
-      if (et?.toLowerCase().includes(q)) return true;
+      if (e.toolName.toLowerCase().includes(q)) return true;
       try {
-        const searchPayload = eventMetadata?.attributes ?? e.payload;
-        if (JSON.stringify(searchPayload).toLowerCase().includes(q)) return true;
+        if (JSON.stringify(e.payload).toLowerCase().includes(q)) return true;
       } catch { /* ignore */ }
       return false;
     });
-  }, [events, query, activeStates, selectedEventType, activeSource]);
+  }, [events, query, activeStates, selectedEventType]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -529,48 +446,6 @@ export const DevMode: React.FC = () => {
             })}
           </HStack>
         )}
-
-        {/* Source filter chips — only shown once >1 source detected */}
-        {sources.length > 1 && (
-          <HStack gap="4px" flexWrap="wrap" mt="4px">
-            <Text fontSize="9px" color="var(--text-secondary)" fontWeight="600" letterSpacing="0.05em" textTransform="uppercase" flexShrink={0}>
-              <LuRadio size={9} style={{ display: 'inline', marginRight: 3 }} />
-              Src
-            </Text>
-            <Box
-              as="button"
-              onClick={() => setActiveSource(null)}
-              px="7px" py="2px" borderRadius="full" fontSize="9px" fontWeight="600"
-              letterSpacing="0.05em" cursor="pointer" border="1px solid" transition="all 0.15s"
-              background={activeSource === null ? tint('var(--accent-primary)', 13) : 'transparent'}
-              color={activeSource === null ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-              borderColor={activeSource === null ? tint('var(--accent-primary)', 33) : 'var(--border-color)'}
-              style={{ userSelect: 'none' }}
-            >
-              All
-            </Box>
-            {ALL_SOURCES.filter((s) => sources.includes(s)).map((s) => {
-              const isActive = activeSource === s;
-              const color = SOURCE_COLORS[s];
-              return (
-                <Box
-                  key={s}
-                  as="button"
-                  onClick={() => setActiveSource((prev) => (prev === s ? null : s))}
-                  px="7px" py="2px" borderRadius="full" fontSize="9px" fontWeight="600"
-                  letterSpacing="0.05em" cursor="pointer" border="1px solid" transition="all 0.15s"
-                  background={isActive ? color + '22' : 'transparent'}
-                  color={isActive ? color : 'var(--text-secondary)'}
-                  borderColor={isActive ? color + '55' : 'var(--border-color)'}
-                  _hover={{ borderColor: color + '88', color }}
-                  style={{ userSelect: 'none' }}
-                >
-                  {SOURCE_LABELS[s]}
-                </Box>
-              );
-            })}
-          </HStack>
-        )}
       </Box>
 
       {/* 3-D Manifold */}
@@ -604,10 +479,10 @@ export const DevMode: React.FC = () => {
         {events.length === 0 ? (
           <VStack height="100%" align="center" justify="center" gap={2} color="var(--text-secondary)" pt={12}>
             <Text fontSize="13px">
-              {isConnected ? 'Waiting for events…' : 'Connecting to event stream…'}
+              {isConnected ? 'Waiting for row mutations…' : 'Connecting to event stream…'}
             </Text>
             <Text fontSize="11px" textAlign="center" maxWidth="220px">
-              Start an OpenCode session — Fredo will receive OTLP telemetry automatically.
+              Start an OpenCode session — classified RTDB rows appear here as they land.
             </Text>
           </VStack>
         ) : filteredEvents.length === 0 ? (

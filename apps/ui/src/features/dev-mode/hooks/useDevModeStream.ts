@@ -1,105 +1,140 @@
 /**
  * useDevModeStream
  *
- * Reads events from the shared StreamContext (populated via inject.ts → Fredo_STREAM_EVENT)
- * and accumulates them in local state without a TTL so nothing is pruned while debugging.
+ * Reads the RTDB row-mutation log from the module-scoped StreamContext row
+ * store (Spec #2788 P5.1 — the v1 raw-event queue this hook previously
+ * consumed was deleted with the rest of the v1 pipeline) and accumulates the
+ * entries in local state without a TTL so nothing is pruned while debugging.
  *
- * Previously connected to /api/v1/dev-mode/stream (a separate backend SSE endpoint that
- * shared no Redis instance with the local MCP server). That path is no longer used.
+ * Each row mutation is projected onto the debug-event display shape the Dev
+ * Mode panel has always rendered (toolName / state / payload), so the panel's
+ * viewer works unchanged — the "events" it shows are now row upserts/removals
+ * (the live data flow of the RTDB pipeline).
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useStream } from '../../../shared/contexts/StreamContext';
-import type { FredoEvent, EventSource } from '../../../shared/contexts/StreamContext';
+import { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react';
+import {
+  subscribeToRowMutationLog,
+  getRowMutationLogVersion,
+  getRowMutations,
+  clearRowMutations,
+  useConnectionStatus,
+  type RowMutation,
+} from '../../../shared/contexts/StreamContext';
+
+export type DevModeEventState = 'Init' | 'Update' | 'Response' | 'Error' | 'Timeout';
+
+/** Display projection of one row mutation for the Dev Mode event viewer. */
+export interface DevModeStreamEvent {
+  id: string;
+  /** Row event type — the debug label's event-class half. */
+  eventType: 'Chat' | 'ToolUse' | 'AgentSession';
+  state: DevModeEventState;
+  transport: 'hook';
+  sessionId: string;
+  correlationId: string;
+  /** Display label — row type + composite key. */
+  toolName: string;
+  /** The merged row after the mutation; `{"__removed__": true}` on remove. */
+  payload: Record<string, unknown> | null;
+  timestamp: string;
+}
 
 export interface DevModeStreamState {
-  events: FredoEvent[];
-  /** Unique event types (toolName or hook event_type) seen, ordered by first occurrence */
+  events: DevModeStreamEvent[];
+  /** Unique event types (row type · kind) seen, ordered by first occurrence. */
   eventTypes: string[];
-  /** Unique event sources seen (hook / otlpGrpc / otlpHttp) */
-  sources: EventSource[];
   isConnected: boolean;
   clearEvents: () => void;
 }
 
+const ROW_STATE_LABEL: Record<string, DevModeEventState> = {
+  Init: 'Init',
+  Update: 'Update',
+  Response: 'Response',
+  Error: 'Error',
+  Timeout: 'Timeout',
+};
+
+function toStreamEvent(m: RowMutation): DevModeStreamEvent {
+  return {
+    id: m.id,
+    eventType: m.eventType,
+    state: ROW_STATE_LABEL[m.row?.state ?? ''] ?? 'Update',
+    transport: 'hook',
+    sessionId: m.sessionId,
+    correlationId: m.correlationId,
+    toolName: `${m.eventType}:${m.kind}`,
+    payload: m.row !== null
+      ? (m.row as unknown as Record<string, unknown>)
+      : { __removed__: true },
+    timestamp: m.timestamp,
+  };
+}
+
 export function useDevModeStream(): DevModeStreamState {
-  const { events: streamEvents, isConnected, clearEvents: clearStreamEvents } = useStream();
+  const { isConnected } = useConnectionStatus();
 
-  // Unbounded local accumulator — not pruned by StreamContext's 60 s TTL
-  const [accumulated, setAccumulated] = useState<FredoEvent[]>([]);
+  // Bounded feed — observe the module-scoped mutation log via its monotonic
+  // version (advances on every applied mutation; no array-length churn).
+  // The version primitive is the recompute driver: the log array itself is
+  // mutated in place (stable identity), so depending on it would freeze the
+  // viewer at its mount-time snapshot (FM-34).
+  const version = useSyncExternalStore(subscribeToRowMutationLog, getRowMutationLogVersion);
 
-  // Tracks event keys already added so hot-reloads / double-fires don't duplicate
-  const seenKeysRef = useRef<Set<string>>(new Set());
+  // Unbounded local accumulator — not pruned by the log's 512 cap.
+  const [accumulated, setAccumulated] = useState<DevModeStreamEvent[]>([]);
 
-  // Only show events that arrived AFTER Dev Mode was opened this session.
-  // Prevents stale StreamContext events (< 60 s TTL) from re-populating the
-  // list every time the user closes and reopens the panel.
-  const mountTimeRef = useRef<number>(Date.now());
+  // Tracks mutation ids already added so hot-reloads / double-fires don't
+  // duplicate, and re- observation of a grown log stays incremental.
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  const seenCountRef = useRef(0);
 
   useEffect(() => {
-    const newEvents: FredoEvent[] = [];
-    for (const ev of streamEvents) {
-      const key = ev.id || `${ev.toolName}:${ev.state}:${ev.timestamp}`;
-      if (!seenKeysRef.current.has(key)) {
-        seenKeysRef.current.add(key);
-        // Only accumulate events that arrived after this Dev Mode session opened
-        const evTime = new Date(ev.timestamp).getTime();
-        if (evTime >= mountTimeRef.current) {
-          newEvents.push(ev);
-        }
+    // Read the log fresh inside the effect — the module-scoped array is
+    // mutated in place, so its contents are current whenever the version
+    // advances.
+    const mutations = getRowMutations();
+    // The log is append-only within a cap window; entries seen before are
+    // skipped by id. When the cap evicts old entries the indexes shift —
+    // the id set keeps the accumulator correct regardless.
+    const fresh: DevModeStreamEvent[] = [];
+    const start = Math.min(seenCountRef.current, mutations.length);
+    for (let i = start; i < mutations.length; i++) {
+      const m = mutations[i];
+      if (!seenIdsRef.current.has(m.id)) {
+        seenIdsRef.current.add(m.id);
+        fresh.push(toStreamEvent(m));
       }
     }
-    if (newEvents.length > 0) {
-      // Prepend so newest events appear at the top (matches original UI order)
-      setAccumulated((prev) => [...newEvents.reverse(), ...prev]);
+    seenCountRef.current = mutations.length;
+    if (fresh.length > 0) {
+      // Prepend so newest mutations appear at the top (matches the panel's
+      // original UI order).
+      setAccumulated((prev) => [...fresh.reverse(), ...prev]);
     }
-  }, [streamEvents]);
+  }, [version]);
 
-  // Derive unique event types from accumulated events
-  // For OTLP events: use toolName directly (set by mapping.rs to span/metric/log name)
-  // For hook events: extract event_type from agent_hook payload if available
+  // Derive unique event types from accumulated events.
   const eventTypes = useMemo(() => {
     const seen = new Set<string>();
     const result: string[] = [];
     for (const ev of accumulated) {
-      let label: string;
-      const isOtlp = ev.transport === 'otlp_grpc' || ev.transport === 'otlp_http';
-      const meta = ev.metadata && typeof ev.metadata === 'object' ? ev.metadata as any : null;
-      if (isOtlp) {
-        label = meta?.signal ? `${meta.signal.toLowerCase()}:${ev.toolName}` : (ev.toolName ?? 'unknown');
-      } else {
-        const hookMeta = ev.payload;
-        label = (hookMeta as any)?.event_type ?? ev.toolName ?? 'unknown';
+      if (!seen.has(ev.toolName)) {
+        seen.add(ev.toolName);
+        result.push(ev.toolName);
       }
-      if (!seen.has(label)) {
-        seen.add(label);
-        result.push(label);
-      }
-    }
-    return result;
-  }, [accumulated]);
-
-  // Derive unique sources seen
-  const sources = useMemo(() => {
-    const seen = new Set<EventSource>();
-    const result: EventSource[] = [];
-    for (const ev of accumulated) {
-      // Map transport to EventSource
-      const s: EventSource = ev.transport === 'otlp_grpc' ? 'otlpGrpc'
-        : ev.transport === 'otlp_http' ? 'otlpHttp'
-        : 'hook';
-      if (!seen.has(s)) { seen.add(s); result.push(s); }
     }
     return result;
   }, [accumulated]);
 
   const clearEvents = useCallback(() => {
     setAccumulated([]);
-    seenKeysRef.current.clear();
-    // Also flush the raw StreamContext queue so no stale events
-    // re-enter on the next render cycle
-    clearStreamEvents();
-  }, [clearStreamEvents]);
+    seenIdsRef.current.clear();
+    seenCountRef.current = 0;
+    // Also flush the module-scoped log so no pre-clear mutations re-enter.
+    clearRowMutations();
+  }, []);
 
-  return { events: accumulated, eventTypes, sources, isConnected, clearEvents };
+  return { events: accumulated, eventTypes, isConnected, clearEvents };
 }

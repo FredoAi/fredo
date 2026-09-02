@@ -10,8 +10,6 @@ use std::io;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::infrastructure::comm::contract::engine::{ContractEngine, EventContractEngine};
-
 /// The local socket path / named pipe name used by both the IPC server (app)
 /// and the CLI client.
 #[cfg(windows)]
@@ -132,11 +130,13 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
     }
 }
 
-/// Dispatch a `CliCommand::EmitEvent` by enriching the FredoEvent and emitting it
-/// via the EventBus registered in Tauri state.
+/// Dispatch a `CliCommand::EmitEvent` by enriching the FredoEvent and feeding
+/// it to the RTDB ingest classifier.
 ///
-/// Per REQ-1.9, the InternalAdapter stamps defaults on the event.
-/// Per REQ-1.17, the EventBus emits on the "fredo-stream-event" Tauri channel.
+/// Per REQ-1.9, the InternalAdapter stamps defaults on the event. The
+/// classifier maps the enriched event's payload fields onto RTDB rows
+/// (mock/CLI shapes per the fredo-cli-events skill conventions — real
+/// OTLP-derived rows remain the primary shape).
 fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, app: &AppHandle) -> CliResponse {
     // Use InternalAdapter to enrich the event with server-side defaults
     let adapter = crate::infrastructure::comm::InternalAdapter::new();
@@ -144,17 +144,12 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     let payload = &enriched.payload;
     tracing::debug!(target: "fredo::ipc", ?payload, ?enriched.event_type, "IPC emit");
 
-    // Route through ContractEngine, then emit deliveries.
-    // The ECE consumes EngineInput (Spec #2449 S1); the enriched FredoEvent
-    // converts via the From shim at the boundary (R4).
-    let engine = app.state::<std::sync::Arc<ContractEngine>>();
-    let bus = app.state::<crate::infrastructure::comm::EventBus>();
-    let deliveries = engine.req_2_3_process(
-        crate::infrastructure::comm::contract::EngineInput::from(enriched),
-    );
-    for delivery in deliveries {
-        bus.emit_delivery(delivery);
-    }
+    // Spec #2788 P3.1: the classifier maps the event's payload fields onto
+    // RTDB rows (mock/CLI shapes per the fredo-cli-events skill conventions —
+    // real OTLP-derived rows remain the primary shape).
+    let classifier = app.state::<crate::infrastructure::rtdb::ingest::IngestClassifierState>();
+    let rows = classifier.ingest_event(&enriched);
+    tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "IPC emit classified into RTDB rows");
 
     CliResponse::ok(serde_json::json!({ "queued": true }))
 }
