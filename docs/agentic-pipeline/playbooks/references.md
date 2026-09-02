@@ -31,6 +31,15 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-092: on_the_go_improvement
+- **activation_date:** 2026-09-02
+- **observed:** #2788 round 6
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Tool-discipline guardrail (4th stall this spec): the round-6 tester stalled in an unbounded webview-polling loop (malformed arg re-sent dozens of times, never sanity-checked) polling for a UI condition instead of the bounded wait tool — the human stopped the round. The 4-rule tool-discipline block is durable text: (1) poll a running webview only with the timeout-bounded wait tool, never a loop of repeated evaluate calls; (2) never repeat an identical tool call more than 3 times — after 3 unexpected results, record expected-vs-actual as FAIL/UNVERIFIED-with-named-blocker and move to the next leg (an honest FAIL advances the pipeline, a stall does not); (3) sanity-check tool arguments before sending (a malformed argument is a parameter mix-up, not a transient failure); (4) time-box the round — post the verdict with completed legs plus explicit FAIL/UNVERIFIED lines for incomplete ones. Retained guidance that worked this spec: pre-brief environment failures as surface-dont-spelunk with the sanctioned purge named, and pin codebase exemplar file:lines for every copy-existing-pattern decision.
+- **home:** docs/agentic-pipeline/playbooks/tester.md (Tool discipline — bounded polling only) + docs/agentic-pipeline/playbooks/developer.md (Tool discipline — bounded retries)
+- **effectiveness:** Confirmed (2026-09-02, #2788 round 6 re-dispatch) — the fresh tester session held all four rules (3 bounded waits max, no repeated identical calls, one honest named-blocker sub-leg instead of a loop) and completed the round with a verdict in a single session; the pre-dispatch block also contained a mandated stop condition. One in-spec application; watch on the next testing-heavy spec.
+
+
 
 ### G-091: on_the_go_improvement
 - **activation_date:** 2026-09-02
@@ -38,7 +47,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** Stale CI-claim fix: the playbook said GitHub CI was deactivated (merge guard on merge-state alone) but validate.yml is LIVE (repo public) and rust-validate runs cargo check/test --locked + clippy -D warnings — a 4-lint clippy failure reached merge-time on #2788 round 5 because no dev receipt ever ran clippy. Playbook now requires the full local CI-parity set (CONTRIBUTING.md flags) in dev receipts. Harness untouched.
 - **home:** references.md (G-091)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-02, #2788 round 6) — the round-6 developer receipts ran the full CI-parity set (check + test + clippy -D warnings) before push; rust-validate passed at the merge gate on the first post-fix CI run, closing the failure class that cost round 5.
 
 ### G-090: on_the_go_improvement
 - **activation_date:** 2026-09-02
@@ -46,7 +55,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** Machine fix (state machine, SI domain). The Development Summary round stamp was one low on every rework round — the draft flushes at the implementation to testing transition BEFORE the destination testing phase.started append, so the stamp named the round that just ended instead of the round whose work the summary documents (observed on #2788 where the round 3, 4 and 5 summaries posted as rounds 2, 3 and 4). Development Summary now stamps the testing-entry count plus one (a fresh issue still stamps round 1) while Tests Runs and SI Summary keep the raw count because they document the round that is ending. Documented in the same pass at the stamp site and in retry_state. New harness test covers the fresh-issue and rework edges. Full harness green (95 passed).
 - **home:** references.md (G-090)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-02, #2788 round 6) — the round-6 Development Summary and Tests Runs both machine-stamped round 6 correctly on the rework round (previously every retry round stamped one low).
 
 
 
