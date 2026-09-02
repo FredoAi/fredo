@@ -113,7 +113,7 @@ impl RowSnapshot<'_> {
             RowSnapshot::ToolUse(row) => serde_json::to_value(row),
             RowSnapshot::AgentSession(row) => serde_json::to_value(row),
         }
-        .unwrap_or_else(|_| serde_json::Value::Null)
+        .unwrap_or(serde_json::Value::Null)
     }
 }
 

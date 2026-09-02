@@ -363,6 +363,7 @@ fn is_empty_update(delivery: &RowDelivery) -> bool {
 ///   row's snapshot leg, and the live path already delivered (or has
 ///   pending) its full-row insert with a NEWER seq. A replay-side update
 ///   would carry the STALE snapshot values, so it is never forwarded.
+///
 /// Either interleaving leaves the client with the correct final state —
 /// proven by the concurrent-mutation tests below.
 fn replay_query_on(

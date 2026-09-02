@@ -178,7 +178,7 @@ impl SubscriptionRegistry {
             let patch = project_patch(snapshot, &subscription.spec.selection, kind, changed_fields);
             deliveries.push(RowDelivery {
                 query_id: subscription.query_id.clone(),
-                event_type: event_type.clone(),
+                event_type,
                 kind,
                 seq: snapshot.seq(),
                 key: key.clone(),
@@ -230,7 +230,7 @@ impl SubscriptionRegistry {
             if was_member {
                 deliveries.push(RowDelivery {
                     query_id: subscription.query_id.clone(),
-                    event_type: event_type.clone(),
+                    event_type,
                     kind: RowChangeKind::Remove,
                     seq,
                     key: key.clone(),
