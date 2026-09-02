@@ -125,10 +125,10 @@ $cid = $(New-Guid)
 
 ```
 & $fredoBin emit --event-type agent_session --state init --tool-name opencode --provider open_code --session-id e2e-lifecycle-1
-& $fredoBin emit --event-type agent_session --state response --tool-name opencode --provider open_code --session-id e2e-lifecycle-1 --payload '{\"total_tokens\":1234,\"total_messages\":3,\"total_cost_usd\":0.01}'
+& $fredoBin emit --event-type agent_session --state response --tool-name opencode --provider open_code --session-id e2e-lifecycle-1 --payload '{\"totalTokens\":1234,\"totalMessages\":3,\"totalCostUsd\":0.01,\"agent\":\"opencode\"}'
 ```
 
-→ Verify: Mission Monitor session row with aggregate figures from the payload.
+→ Verify: agent-session row with `total_tokens` / `total_messages` / `total_cost_usd` / `agent_name` populated (NOT NULL) from the camelCase payload keys — matching `session_patch_from_event` (`rtdb/ingest.rs:1458-1478`) and the classifier unit test (`ingest.rs:2018-2031`). Mission Monitor shows the session row with the aggregate figures.
 
 ### Recipe 4: Stepper probe rows (row-subscription probe)
 

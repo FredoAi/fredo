@@ -77,8 +77,10 @@ export function useDevModeStream(): DevModeStreamState {
 
   // Bounded feed — observe the module-scoped mutation log via its monotonic
   // version (advances on every applied mutation; no array-length churn).
-  useSyncExternalStore(subscribeToRowMutationLog, getRowMutationLogVersion);
-  const mutations = getRowMutations();
+  // The version primitive is the recompute driver: the log array itself is
+  // mutated in place (stable identity), so depending on it would freeze the
+  // viewer at its mount-time snapshot (FM-34).
+  const version = useSyncExternalStore(subscribeToRowMutationLog, getRowMutationLogVersion);
 
   // Unbounded local accumulator — not pruned by the log's 512 cap.
   const [accumulated, setAccumulated] = useState<DevModeStreamEvent[]>([]);
@@ -89,6 +91,10 @@ export function useDevModeStream(): DevModeStreamState {
   const seenCountRef = useRef(0);
 
   useEffect(() => {
+    // Read the log fresh inside the effect — the module-scoped array is
+    // mutated in place, so its contents are current whenever the version
+    // advances.
+    const mutations = getRowMutations();
     // The log is append-only within a cap window; entries seen before are
     // skipped by id. When the cap evicts old entries the indexes shift —
     // the id set keeps the accumulator correct regardless.
@@ -107,7 +113,7 @@ export function useDevModeStream(): DevModeStreamState {
       // original UI order).
       setAccumulated((prev) => [...fresh.reverse(), ...prev]);
     }
-  }, [mutations]);
+  }, [version]);
 
   // Derive unique event types from accumulated events.
   const eventTypes = useMemo(() => {
