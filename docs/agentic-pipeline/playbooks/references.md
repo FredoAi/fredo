@@ -68,7 +68,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** Docs/config-only specs must NOT gate verification on native builds: the Rust toolchain builds the vendored native inference dependency through CMake/Visual Studio discovery, which the developer sandbox's restricted shell cannot run, so a docs-only spec burned a round on build-environment diagnostics instead of spec work. Verification scope must match the diff surface - build hygiene applies to code changes only, and native-build legs belong only in plans whose diff touches code. Related lessons from the same run: settle git configuration questions with the origin-annotated config query command, never by reading config files (the effective value can come from a config origin invisible to file reads), and never glob, probe, or diagnose outside the repository in the sandbox.
 - **home:** references.md (G-089)
-- **effectiveness:** Confirmed (2026-08-31, #2773 rounds 1-2) — recorded mid-run and applied immediately: the QA plan was amended to docs-only validations (native-build legs removed, tester briefed to never run them) and the spec completed with zero further build-environment stalls.
+- **effectiveness:** Confirmed (2026-08-31, #2773 rounds 1-2) — recorded mid-run and applied immediately: the QA plan was amended to docs-only validations (native-build legs removed, tester briefed to never run them) and the spec completed with zero further build-environment stalls. Re-validated (2026-09-03, #2797): a GitHub-config-only spec kept verification `static` (no `cargo`/`pnpm` gate; offline harness + GitHub-REST assertions + product-tree-untouched check) and merged cleanly without a build-environment stall — G-089 held.
 
 ### G-080: on_the_go_improvement
 - **activation_date:** 2026-08-29
@@ -76,7 +76,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** Transition-side tests-commit silently swallowed per-feature failures (a missing QA-seeded suite vanished without a trace). The loop now surfaces a NOT-persisted note per failed feature so brief or QA gaps are visible at plan assembly instead of mid-testing round
 - **home:** references.md (G-080)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-03, #2797) — the same class recurred but with a different trigger: the QA Expert named `**Feature tests:** pipeline-hygiene` but authored NO suite files (the brief didn't instruct seeding), so the transition's `tests-commit` silently persisted 0 files and NO NOT-persisted note surfaced (the G-080 signal fires for a missing/vanished suite, not a declared-but-never-authored one). Caught by the SI's directory check at plan review; the suite was seeded and committed. The declared-but-unseeded gap is now its own guardrail (G-098).
 
 
 
@@ -145,7 +145,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a pending timeline draft without its author footer is refused at flush (or a draft is manually deleted when a transition would have consumed it), stalling the loop and risking a verdict missing from the record
 - **guardrail:** Every draft destined for the timeline (verdicts, summaries, plans) must end with its author footer line — the flush gate refuses unattributed drafts. Orchestrators never delete pending drafts under the issue's tmp folder: transitions own their consumption and posting (with machine round stamps); flush pending verdict drafts manually only when a transition guard requires the comment to already exist, and hold aside other pending drafts during a manual flush so each posts through its intended channel.
 - **home:** playbooks/self-improver.md (draft-flush discipline) + references.md (G-078)
-- **effectiveness:** Confirmed — re-validated in #2770 round 6 (2026-08-31): the developer's dev-summary draft lacked its footer and was refused at BOTH flush attempts (the testing re-entry transition and the tester's manual flush) — an unattributed draft never reached the timeline. Residual friction (the draft stays stranded until the author fixes it) is playbook guidance for the developer, not a gate gap. Re-validated (2026-09-02, #2795): the tester's `tests-runs.md` draft carried no author footer and the manual flush was refused by the anti-spoofing gate; the SI added the `*Authored by Tester*` footer and the flush posted the verdict cleanly — no verdict was lost, and the footer is the single gate that keeps attribution on the timeline.
+- **effectiveness:** Confirmed — re-validated in #2770 round 6 (2026-08-31): the developer's dev-summary draft lacked its footer and was refused at BOTH flush attempts (the testing re-entry transition and the tester's manual flush) — an unattributed draft never reached the timeline. Residual friction (the draft stays stranded until the author fixes it) is playbook guidance for the developer, not a gate gap. Re-validated (2026-09-02, #2795): the tester's `tests-runs.md` draft carried no author footer and the manual flush was refused by the anti-spoofing gate; the SI added the `*Authored by Tester*` footer and the flush posted the verdict cleanly — no verdict was lost, and the footer is the single gate that keeps attribution on the timeline. Re-validated (2026-09-03, #2797): the SI held the Architect's `fix-plan.md` aside during a manual `post-comments` verdict flush so it posted via the transition as `## Fix Plan (round 2)` rather than mis-rounding as round 1 — the round-stamped drafts each posted through their intended channel.
 
 ### G-079: fixture_session_zero_spans_incomplete_or_self_matched
 - **activation_date:** 2026-08-28
@@ -865,6 +865,31 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** the live-query guard rejects legitimate SQL because it flags forbidden keywords as substrings inside column/table names, forcing the tester off the sanctioned live-query path (and risking a "no evidence" false conclusion) precisely when a cross-check query needs a timestamp column.
 - **guardrail:** The read-only query guard in the telemetry-query/wait-telemetry scripts MUST token-match SQL keywords (word-boundary aware), never substring-match, so a column like `updated_at`/`inserted_at` (which embeds `update`/`insert` as a substring) is not flagged. If a live-cross-check query is rejected, the tester should recognise it as a guard false-positive and run the identical query against the sanctioned DB (or fix the guard) rather than abandoning the live evidence path — the live `telemetry_spans` gate must not be defeated by a keyword-guard false positive.
 - **home:** telemetry-query/wait-telemetry scripts (guard implementation) + references.md (this record)
+- **effectiveness:** Pending
+
+
+### G-097: github_rest_action_contract_not_verified_against_live_api
+- **activation_date:** 2026-09-03
+- **observed:** #2797 round 2 — three real GitHub-REST defects surfaced only by RUNNING the live hardening actions against the real repo, all from assuming the API contract from plan prose instead of the API: (1) the lock endpoint is `PUT .../issues/{n}/lock` (implementation used POST → 404 — a permissions failure would be 403, so the 404 was a method mismatch, mis-classified by the round-1 tester as `environment`); (2) the `lock_reason` enum value is `off-topic` (hyphenated), not `off_topic` (underscore → 422); (3) the interaction-limit `expiry` enum is `six_months`, not `6_months` (→ 422). Each propagated end-to-end into code, docs, the test suite, and the QA expectations.
+- **target_failure:** a GitHub-REST-action spec authored with unverified HTTP methods / enum spellings, caught only at live-run time (rounds burn on 404/422) — and the offline mock silently masks them because it mirrors whatever the plan assumed.
+- **guardrail:** For any spec that implements a GitHub-REST action, verify the exact HTTP method AND every enum value against the live GitHub REST API/docs (never the plan prose). The orchestrator should execute run-once repo actions (e.g. `hardening-lock-open-issues`, `interaction-limit`) ONCE against the target BEFORE the tester round, so API-contract defects (404/422) are fixed within the same implementation round instead of costing a tester FAIL. A lock failure returning 404 (not 403) is a method/route defect, not a permissions wedge — route the architect to fix the contract, not to grant permissions.
+- **home:** playbooks/software-architect.md (API-contract verification) + playbooks/self-improver.md (deployment-caught defect discipline) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-098: qa_brief_must_seed_durable_suite_files
+- **activation_date:** 2026-09-03
+- **observed:** #2797 planning — the QA Expert authored the `### QA Plan` + `**Feature tests:** pipeline-hygiene` line, but the dispatch brief did NOT instruct it to author the four durable suite files. The `planning → implementation` transition's auto `tests-commit` then had nothing to persist (no NOT-persisted note surfaced — the G-080 class silent swallow), and the suite was absent until the SI re-dispatched the QA Expert to seed it.
+- **target_failure:** a QA brief that declares a `**Feature tests:**` feature domain but does not author the four `.opencode/tests/<feature>/*.md` files, so `tests-commit` persists nothing and the durable regression coverage is missing.
+- **guardrail:** When a QA Expert brief names a `**Feature tests:**` domain, explicitly instruct it to author the four durable suite files (`functional.md`/`regression.md`/`exploratory.md`/`smoke.md`) in the same pass as the QA Plan — and if the folder already exists, EXTEND it (never regenerate — G-093/G-024). The SI should directory-check the declared suite folders when reviewing the plan; a mandated suite that is absent is a brief gap, not a silent `tests-commit` no-op.
+- **home:** playbooks/self-improver.md (planning cluster brief) + playbooks/qa-expert.md (seed step) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-099: audit_reads_config_static_plan_as_live
+- **activation_date:** 2026-09-03
+- **observed:** #2797 audit — the audit's `verification_status` reads the plan policy by line-anchoring `> **Verification policy: static**`; the posted QA section rendered `static.**` (a period before the closing bold), so it fell through to the `live` default. `verification_ok` then passed on `live_evidence` = a false-positive `telemetry_spans` scan of the plan text (the QA justification "no `telemetry_spans` exists for this config-only diff" matched the scanner).
+- **target_failure:** a config-only `static` plan is read as `live` by the audit (parsing the punctuation-rendered policy), and the verification gate passes on a false-positive telemetry-spans string rather than correctly gating on the PASS verdict.
+- **guardrail:** The audit's plan-policy parser should tolerate `static` with or without trailing punctuation/bold (`static**`, `static.**`, `static`) so a config-only `static` plan is read as static; the `live_evidence` telemetry-spans scan must not count the phrase in an explain-why-not sentence. Gate `verification_ok` on the policy correctly (static → PASS verdict; live → PASS + genuine telemetry evidence).
+- **home:** pipeline-state.rs (plan-policy parser + live-evidence scan — candidate hardening, in the SI's domain) + references.md (this record)
 - **effectiveness:** Pending
 
 
