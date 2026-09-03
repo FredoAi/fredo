@@ -366,6 +366,67 @@ describe('DetailPanel scoped tool-call view (#2743 ST-6 / AC-8)', () => {
     expect(screen.getByText('3.0s')).toBeDefined();
   });
 
+  // ── #2792 Sub-task 1: the captured failure reason ───────────────────────────
+  // AC1: a failed call with captured text shows the reason text (verbatim).
+  // AC3: a failed call with NO captured text shows the explicit absent-reason
+  //      placeholder ("No failure detail captured.") — it never reads succeeded
+  //      and never silently blanks.
+  // AC4: a non-failed call renders NO reason row (no regression to success).
+
+  it('#2792 AC1: a failed call with captured error text renders the Reason row with that text', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ error: 'network timeout ', success: false }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('network timeout')).toBeDefined();
+    // The absent-reason placeholder is NOT used.
+    expect(screen.queryByText('No failure detail captured.')).toBeNull();
+  });
+
+  it('#2792 AC3: a failed call with no captured error text renders the explicit absent-reason placeholder', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ error: undefined, success: false }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    // Still "Failed" (never reads as succeeded)…
+    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
+    // …with the explicit absent-reason placeholder (never silently blank).
+    expect(screen.getByText('No failure detail captured.')).toBeDefined();
+    expect(screen.getByText('Reason').closest('div')!.textContent).toContain('No failure detail captured.');
+  });
+
+  it('#2792 AC4: a succeeded call renders NO reason row', () => {
+    renderWithChakra(
+      <DetailPanel
+        target={{
+          kind: 'tool-call',
+          call: makeToolCallData({ error: undefined, success: true }),
+          sessionId: 's1',
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByText('Succeeded').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Reason')).toBeNull();
+    expect(screen.queryByText('No failure detail captured.')).toBeNull();
+  });
+
   it('an in-progress call (no end, no outcome) shows In progress and a — duration', () => {
     renderWithChakra(
       <DetailPanel
