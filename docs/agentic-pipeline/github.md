@@ -16,7 +16,25 @@ Each feature/epic produces **one feature (backlog) issue — the single source o
 
 The **feature** (backlog issue) is the **single source of truth** — it carries `ready-for-dev` during implementation, all `Status` comments, the `## Triage Plan` plan comment, and the tester's `## Tests Runs` verdict.
 
-> **Closed `temp:` issues are test-harness artifacts, not pipeline issues.** The validation harness `.opencode/scripts/test-scripts.ps1` creates scratch issues titled `temp: <test>` to exercise the state machine (transitions, comment gates, close/cancel, etc.), then closes them in each run's `finally` block. They accumulate with test runs and are closed + harmless. The pipeline itself never creates `temp:` issues.
+> **Closed `temp:` issues are test-harness artifacts, not pipeline issues.** The validation harness `.opencode/scripts/test-scripts.ps1` creates scratch issues titled `temp: <test>` to exercise the state machine (transitions, comment gates, close/cancel, etc.), then closes them in each run's `finally` block. They accumulate with test runs and are closed + harmless. The pipeline itself never creates `temp:` issues. **The public-repo hardening NEVER locks a `temp:` issue** (they must stay commentable + closable during a test run) — both `hardening-lock-open-issues` and the `create-issue` lock-on-create side-effect skip any title starting with `temp:`.
+
+---
+
+## Pipeline issue comment protection (public-repo hardening)
+
+`FredoAi/fredo` is now **PUBLIC**, so untrusted third-party issue comments are a prompt-injection / context-poisoning risk for the agentic pipeline, which reads issue comments as trusted context. The mitigation is **machine side-effects** (principle 9: mechanics are machine actions, never an agent playbook step) — three controls, all issued through the state machine's `run_gh` seam (`gh api`), never by an agent calling `gh`:
+
+| Control | Type | Mechanism | Re-apply |
+|---------|------|-----------|----------|
+| **Per-conversation lock** | durable | `PUT /repos/{owner}/{repo}/issues/{n}/lock` with `lock_reason: off-topic` — a locked issue is commentable only by users with write access | permanent (until unlocked); the one-shot `hardening-lock-open-issues` locks every currently-OPEN pipeline issue; `create-issue` locks a new issue at birth |
+| **Repo interaction limit** | **temporal** | `PUT /repos/{owner}/{repo}/interaction-limits` with `{ limit: "collaborators_only", expiry: "six_months" }` — a repo-wide belt-and-suspenders | **GitHub `expiry` enum max is `six_months`; must be re-applied** after the window lapses. The durable guard is the per-conversation lock-on-create — never mistake this for a permanent control (the literal `6_months` is rejected with HTTP 422) |
+| **Trusted-author comment filter** | durable (code) | the state machine reads comment `authorAssociation` and excludes non-write-role comments from every context/verdict read path; each exclusion emits a `guard.fired` metric event + a surfaced note (never silent) | permanent (in `pipeline-state.rs`) |
+
+**Lock reason:** `active_lock_reason` is one of GitHub's four enum values — the triage-chosen value is **`off-topic`** (least-misleading for "public commentary on a maintainer-controlled pipeline thread"; `too heated`/`spam` imply conflict/abuse, `resolved` misrepresents an in-flight issue). It is **informational metadata only** — it does not change who may comment; the lock itself does. GitHub's enum set uses a HYPHEN: `off-topic | too heated | resolved | spam` (the underscore variant `off_topic` is rejected with HTTP 422).
+
+**Trusted (write-capable) comment-author roles** the filter allows: `OWNER`, `MEMBER`, `COLLABORATOR`, PLUS the pipeline's own posting principal `BOT`/`MANNEQUIN` — the state machine posts `Status`/`Triage Plan`/`Tests Runs` as a bot/mannequin, so excluding those would break verdict parsing and AC3. **Flagged (untrusted)** roles (excluded from every read): `NONE`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`. Bots/dependabot that are NOT the pipeline's own principal are external and flagged.
+
+**Non-goals of the hardening:** does NOT disable GitHub Issues; does NOT redact/delete any comment body; does NOT close/cancel/unlabel an issue; does NOT use `contributors_only`/`existing_users` (both admit non-collaborators). The interaction limit is repo-wide and affects ALL issues (a collaborator on a non-pipeline issue is unaffected — only non-collaborators are stopped).
 
 ---
 
@@ -117,6 +135,9 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | Project Status sync (labels + Status) | every transition mirrors the phase onto the GitHub project Status field (Backlog → Planning → Coding → E2E → Reviewing → Done); `create-issue` adds the issue to the project; `done`/`canceled` set `Done` while the issue stays OPEN for manual close — best-effort, never fatal |
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
+| Hardening: lock all OPEN pipeline issues | `hardening-lock-open-issues` (Self-Improver) — enumerate OPEN pipeline issues (pipeline label) and `PUT .../issues/<n>/lock` with `lock_reason: off-topic`; skips `temp:` harness issues; one-shot |
+| Hardening: repo interaction limit | `interaction-limit` (Self-Improver) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "six_months" }`; temporal |
+| Hardening: lock-on-create | `create-issue` side-effect — a newly created non-`temp:` pipeline issue is locked immediately (best-effort) so it is comment-safe at birth |
 
 **The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
 

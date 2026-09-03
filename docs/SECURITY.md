@@ -114,6 +114,16 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 
 ---
 
+## Pipeline Comment Surface
+
+Fredo's automated agentic pipeline uses GitHub issues as its communication backbone and log. **Pipeline issues** (those tracked by pipeline labels such as `backlog`, `planning`, `ready-for-dev`, `testing`, `audit`, `cleanup`, `done`) are a **maintainer-controlled comment surface**: their conversations are **locked** (lock reason `off-topic`), so only users with write access (collaborator/member/owner) can comment. The pipeline state machine retains write access and keeps posting `Status`, `Triage Plan`, and `Tests Runs` comments on them.
+
+**Why this is a security control:** the pipeline reads issue comment text as trusted context. With `FredoAi/fredo` now public, an untrusted third-party comment on a pipeline issue is a **prompt-injection / context-poisoning** vector — it could inject instructions into the automated pipeline's trusted input. Locking pipeline issues confines that surface to write-capable authors, and the pipeline's comment reads additionally flag and **exclude** comments from non-write authors from agent context and verdict parsing.
+
+A repo-level interaction limit (`collaborators_only`) is set as a temporal belt-and-suspenders. It is **temporary by design** — GitHub caps interaction-limit expiry at six months, so it must be re-applied — and it is not a permanent control. The durable guard is per-conversation lock-on-create.
+
+**How to report a real issue:** report security vulnerabilities privately via the repository's Security tab (a private advisory) — see [Reporting Security Issues](#reporting-security-issues) below. For non-security bug reports and feature requests, open a regular GitHub issue. Public comments on a locked pipeline issue are not read by the pipeline.
+
 ## Reporting Security Issues
 
 Report security vulnerabilities privately via the GitHub repository's Security tab (private advisory). Do not open public issues for security-sensitive findings.
