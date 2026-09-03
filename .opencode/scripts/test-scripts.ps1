@@ -2734,8 +2734,9 @@ Test-Script "transition --to-phase done is refused" {
 # (now `-X PUT`); the mock `gh api` lock arm gates on PUT in lockstep, so a POST
 # regression falls through to the `unsupported path` bail and surfaces as a per-issue
 # failure. This test drives the one-shot pass against a NON-temp pipeline issue and
-# asserts the mock `GET issues/<n>` arm reports it `locked:true` with the off_topic
-# reason. (`temp:` harness issues are never locked and stay commentable.)
+# asserts the mock `GET issues/<n>` arm reports it `locked:true` with the off-topic
+# reason (GitHub's enum uses a HYPHEN; `off_topic` is rejected with HTTP 422).
+# (`temp:` harness issues are never locked and stay commentable.)
 Test-Script "Hardening PUT-locks an OPEN pipeline issue (lock-path regression)" {
   $url = Mock-IssueCreate "hardening-target" "lock-path scratch" "backlog"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -2751,10 +2752,10 @@ Test-Script "Hardening PUT-locks an OPEN pipeline issue (lock-path regression)" 
     if ($outStr -notmatch "LOCKED: #$issueNum") { throw "hardening should PUT-lock #$issueNum, got: $outStr" }
     if ($outStr -match "LOCK FAILED") { throw "hardening reported a per-issue lock failure, got: $outStr" }
     # The mock `GET issues/<n>` arm returns the record; assert it is locked with the
-    # triage-chosen reason (NFR-LOCKREASON-1: off_topic).
+    # triage-chosen reason (NFR-LOCKREASON-1: off-topic).
     $issue = Get-Content (Mock-StorePath "issues\$issueNum.json") -Raw | ConvertFrom-Json
     if ($issue.locked -ne $true) { throw "issue #$issueNum should be locked, got: $($issue.locked)" }
-    if ($issue.active_lock_reason -ne "off_topic") { throw "issue #$issueNum lock reason should be off_topic, got: $($issue.active_lock_reason)" }
+    if ($issue.active_lock_reason -ne "off-topic") { throw "issue #$issueNum lock reason should be off-topic, got: $($issue.active_lock_reason)" }
     return "hardening lock path: PUT-locked #$issueNum ($($issue.active_lock_reason))"
   } finally {
     Mock-Cleanup $issueNum

@@ -3,7 +3,7 @@ blank_issues_enabled: false
 # Pipeline issues (the issues the agentic pipeline tracks via labels such as
 # backlog, planning, ready-for-dev, testing, audit, cleanup, done) are a
 # maintainer-controlled comment surface. Their conversations are locked
-# (lock reason `off_topic`), so only users with write access
+# (lock reason `off-topic`), so only users with write access
 # (collaborator/member/owner) can comment; the pipeline state machine retains
 # write access and keeps posting Status / Triage Plan / Tests Runs comments.
 # This is intentional — it protects the automated pipeline from untrusted

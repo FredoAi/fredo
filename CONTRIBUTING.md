@@ -57,7 +57,7 @@ We review and prioritize contributions in this order:
 
 ## Pipeline Issues
 
-Some issues in this repository are **pipeline issues** — they are controlled and driven by Fredo's automated agentic pipeline (tracked by labels such as `backlog`, `planning`, `ready-for-dev`, `testing`, `audit`, `cleanup`, `done`). Their conversations are **locked** (lock reason `off_topic`), so only users with write access (collaborator/member/owner) can comment. The pipeline state machine retains write access and keeps posting `Status`, `Triage Plan`, and `Tests Runs` comments on them.
+Some issues in this repository are **pipeline issues** — they are controlled and driven by Fredo's automated agentic pipeline (tracked by labels such as `backlog`, `planning`, `ready-for-dev`, `testing`, `audit`, `cleanup`, `done`). Their conversations are **locked** (lock reason `off-topic`), so only users with write access (collaborator/member/owner) can comment. The pipeline state machine retains write access and keeps posting `Status`, `Triage Plan`, and `Tests Runs` comments on them.
 
 This is intentional. The pipeline reads issue comment text as trusted context, so an untrusted third-party comment is a prompt-injection / context-poisoning risk now that this repository is public. Comment-restricting pipeline issues keeps that surface maintainer-controlled while continuing to let the pipeline do its work.
 

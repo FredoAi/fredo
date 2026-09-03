@@ -746,15 +746,17 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
         }
     }
     // Per-conversation lock (ST-1/ST-2): PUT repos/<r>/issues/<n>/lock
-    // gh: gh api -X PUT repos/<r>/issues/<n>/lock -f lock_reason=off_topic
+    // gh: gh api -X PUT repos/<r>/issues/<n>/lock -f lock_reason=off-topic
     // The GitHub "Lock an issue" endpoint is PUT-only (DELETE unlocks); POST 404s.
+    // `lock_reason` is one of GitHub's enum values with a HYPHEN: off-topic, too
+    // heated, resolved, spam. `off_topic` (underscore) is rejected with HTTP 422.
     // Gates on PUT in LOCKSTEP with `lock_issue` — a mismatch falls through to the
     // `unsupported path` bail below and silently never exercises the corrected path.
     if let Some(prefix) = api.strip_prefix("issues/") {
         let parts: Vec<&str> = prefix.split('/').collect();
         if parts.len() == 2 && parts[1] == "lock" && method == "PUT" {
             let n = parts[0].parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh api: bad issue number `{}`", parts[0]))?;
-            let reason = form.get("lock_reason").cloned().unwrap_or_else(|| "off_topic".into());
+            let reason = form.get("lock_reason").cloned().unwrap_or_else(|| "off-topic".into());
             let mut issue = mock_read_issue(n);
             issue["locked"] = serde_json::json!(true);
             issue["active_lock_reason"] = serde_json::json!(reason);
@@ -996,19 +998,21 @@ const PIPELINE_ISSUE_LABELS: &[&str] = &[
 ];
 
 /// Lock an issue's conversation (durable per-conversation comment restriction).
-/// `lock_reason: off_topic` is the triage-chosen value — informational metadata
+/// `lock_reason: off-topic` is the triage-chosen value — informational metadata
 /// (it does NOT gate who may comment; the lock itself does). Reached through
-/// `gh api -X PUT repos/<repo>/issues/<n>/lock -f lock_reason=off_topic` via the
+/// `gh api -X PUT repos/<repo>/issues/<n>/lock -f lock_reason=off-topic` via the
 /// machine's `run_gh` seam (NFR-DETERMINISTIC-1 — never an agent playbook step).
 /// NOTE: the GitHub "Lock an issue" endpoint is a **PUT** (`DELETE` unlocks); POST
 /// returns HTTP 404 on this PUT-only path (a permissions failure is 403). Round-2
 /// defect: the round-1 code used `-X POST`, so `hardening-lock-open-issues` and
-/// lock-on-create both 404'd.
+/// lock-on-create both 404'd. `lock_reason` must be one of GitHub's enum values,
+/// which use a HYPHEN — `off-topic` (NOT `off_topic`, which GitHub rejects with
+/// HTTP 422).
 fn lock_issue(repo: &str, issue: u32) -> anyhow::Result<()> {
     let url = format!("repos/{}/issues/{}/lock", repo, issue);
     let args = vec![
         "-X".to_string(), "PUT".to_string(), url,
-        "-f".to_string(), "lock_reason=off_topic".to_string(),
+        "-f".to_string(), "lock_reason=off-topic".to_string(),
     ];
     gh_api_raw(&args)?;
     Ok(())
