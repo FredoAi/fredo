@@ -74,3 +74,44 @@
 - [ ] N-5 (NFR-2, no re-render loop): After each open/close of the detail view and each selection switch, read the webview JS console (`tauri_read_logs source="console"`).
   - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded` / re-render-loop symptom; recomputation is row-store epoch based (per #523) — no `.length`/newly-created object-ref `useEffect`/`useMemo` deps added.
   - Regression risk (#523): a `useEffect` depending on array `.length` or the target `call` object identity → FAIL.
+
+---
+
+# Mission Monitor — Functional Test Cases (Spec #2795 — Ghost sessions: remove the #2791 message, list real sessions only)
+
+> Durable functional suite (feature domain `mission-monitor`), extended from Spec #2791/#2792. One `- [ ]` case per AC (AC1–AC5); observable expected outcome per case.
+>
+> **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result) for the emission/observability ACs. A static-only PASS is a FALSE PASS.
+>
+> Fixture doctrine (G-073/G-076/G-080): drive via Fredo's Run CLI feature (free model, minimal session trees, unique marker in the FIRST prompt); assert DOM only on COMPLETED sessions whose telemetry agrees at the same instant; never run the `opencode` binary from a shell. Verify ghost sources against real telemetry before asserting them as fact (G-028/G-088). The #2791 ghost-EXPLANATORY-state expectations (F-2/F-3/F-4, R-1, E-2) are INVERTED by #2795 — the "No graph content for this session" message must NOT appear and a ghost session must NOT be listed.
+
+## Ghost-session follow-up (AC1 / AC2 / AC3 / AC4 / AC5)
+
+- [ ] F-12 (AC-1): Drive a ghost-class session (landed rows + zero graph nodes; confirm the exact ghost source via `telemetry_spans` — do NOT assume `build`/`plan`/transitional/composited as fact). Select it. DOM snapshot + screenshot + grep for the literal #2791 copy in the whole DOM and console.
+  - EXPECTED: the delivered UI NEVER renders "No graph content for this session" NOR any empty-diagram/explained placeholder; zero occurrences of the literal copy anywhere; never a silent blank canvas (whether or not the session is listed — it must NOT be listed per AC-2).
+  - Edge: (a) a deliberately non-qualifying session is never presented as an explained OR silent blank; (b) theme tokens only in any residual state.
+- [ ] F-13 (AC-2): After the drive, enumerate every sidebar session; for each, select it and snapshot the canvas. Cross-check `telemetry_spans` at the same instant (G-073.3).
+  - EXPECTED: sidebar lists ONLY sessions that render ≥1 node; every listed session's canvas renders ≥1 node (ChatNode / SubagentNode / `── TOOLS (N) ──`) once its rows have landed; a session with landed rows + zero nodes is NOT listed; no listed session presents a blank canvas once rows landed.
+  - Edge: (c) ghost among many listed — only real sessions listed; (d) subagent-only / composited-child / transitional rows as their OWN sidebar entry absent (verify against real telemetry); (e) a listed session whose rows are still streaming is exempt from the ≥1-node check across the landing window (covered by F-15).
+- [ ] F-14 (AC-3): At a fixed instant compute (a) the sessionIds in the sidebar and (b) the sessionIds for which the graph renders ≥1 node. Cross-check `telemetry_spans` at that instant; then code-inspect the qualification rule.
+  - EXPECTED: (a) == (b) when rows have landed; a listed session always renders ≥1 node, an unlisted-but-landed session renders zero nodes. Code inspection confirms list qualification and graph-node emission consume the SAME rule (one shared predicate/function).
+  - Edge: (f) same-instant drift; (g) a session whose rows are still streaming is a transient (F-15), not a disagreement; (h) retention-eviction boundary.
+- [ ] F-15 (AC-4): (a) Drive a normal session rendering ≥1 node — confirm it stays listed at all times (never dropped across selection/search/deletion of others). (b) Launch a fresh session; BEFORE its rows land confirm it still appears in the sidebar; then wait for rows to land and confirm the canvas renders ≥1 node.
+  - EXPECTED: a session rendering ≥1 node is NEVER dropped; a just-started session whose rows are still landing still appears and resolves to content once rows land — a legitimate transient (G-074), never a ghost, never a silent blank at the landed-rows stage, never dropped.
+  - Edge: (i) zero-rows → landed-rows → content stages stable with `telemetry_spans` at each instant; (j) switching selection mid-stream never drops a real session; (k) only a user-deleted session is not listed (anti-resurrection).
+- [ ] F-16 (AC-5, live drive — human's chain VERBATIM): Start a ROOT session, send as FIRST prompt exactly `hey can you call SI so can ask Architect for a joke, both should use print in powerbash`; expect the SI → Architect subagent chain, EACH printing via PowerShell; then interact a little with the session. Throughout, assert at NO point does a listed-but-nodeless (ghost) session appear, and NO real session is hidden. Cross-check `telemetry_spans` at the SAME instant as each observation.
+  - EXPECTED: root session renders ≥1 node (ChatNode + SubagentNode for the SI→Architect chain); sidebar NEVER lists a session rendering zero nodes at any observed instant; every real session (root + the genuine user @-subagent) is listed; `build`/`plan` internal tool-execution sessions don't surface as separate sessions or spurious SubagentNodes (Spec #509 filter retained).
+  - Edge: (l) interleave rapid sidebar toggles during streaming; (m) the SI→Architect `task` tool call composites under the parent root (first-wins) while internal sessions are excluded; (n) verify against real telemetry which sessionIds exist and which render nodes (G-028/G-088).
+
+## Non-functional #2795 (NFR-1 / NFR-2 / NFR-3 / NFR-4)
+
+- [ ] N-6 (NFR-1, list qualification): verify the shared qualification rule is a single map pass / memoized predicate — NO per-listed-session graph re-derive (O(n²) blocking); recomputes on the row-store epoch, never map identity/size.
+  - EXPECTED: list qualifies/renders within normal time across a high session-count; code inspection confirms ONE shared predicate (no re-deriving the graph per listed session).
+  - Regression risk: a fix that re-derives the graph per listed session violates NFR-1 → FAIL.
+- [ ] N-7 (NFR-2, no re-render loop): after each selection toggle across F-12..F-16, read the webview JS console (`tauri_read_logs source="console"`).
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; recomputation is epoch-based (per #523) — no `.length`/object-ref `useEffect`/`useMemo` deps added.
+  - Regression risk (#523): a `useEffect` depending on array `.length` or newly-created object refs → FAIL.
+- [ ] N-8 (NFR-3, contract-trust): verify the shared qualification rule consumes the projected single-path node/node-set derived from rows — NO `??` fallback chains / multi-path lookups / event-level rewrite / v1 hydration reintroduced.
+  - EXPECTED: code inspection confirms ONE qualification path shared by list + graph (no defensive fallback extraction).
+- [ ] N-9 (NFR-4, theme): visual check of any state left after deleting the explanatory state (spinner empty state, "Select a session" hint) across light/dark/user-accent.
+  - EXPECTED: theme tokens only; no hardcoded hex/rgba; no invalid `var(--token)NN` alpha-append (use `color-mix()`/`tint()`).
