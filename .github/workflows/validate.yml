@@ -4,7 +4,7 @@
 name: Validate
 on:
   pull_request:
-    branches: ['main']
+    branches: ['main', 'release/stable']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,8 +27,10 @@ jobs:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: chk
         with:
-          base: main
           # ui/rust filters UNION on a stack-touching PR; a workflow change re-validates both.
+          # `base` is intentionally omitted — on a pull_request event paths-filter
+          # defaults to the PR's base branch, which is correct for both main PRs and
+          # release/stable PRs (a hardcoded base: main would diff release PRs against main).
           filters: |
             ui:
               - 'apps/ui/**'

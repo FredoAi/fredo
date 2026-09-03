@@ -1,0 +1,58 @@
+# release.yml — the one-trigger Tauri release-build + publish workflow (R-4 / AC4).
+# Fires ONLY on an owner-approved merge/push into the protected `release/stable`
+# branch (never on `main` — AC5), plus an owner `workflow_dispatch` re-run fallback.
+# Builds the 4-leg platform matrix (macOS aarch64 + x86_64, Ubuntu x64, Windows x64)
+# via tauri-action and publishes the installers to a GitHub Release as a DRAFT so
+# the owner reviews them before they go public (the deliberately-reviewed gate).
+# Every `uses:` action is SHA-pinned (NFR-2 / repo convention).
+name: Release
+on:
+  push:
+    branches: ['release/stable']
+  workflow_dispatch: {}          # owner manual re-run fallback (optional)
+
+permissions:
+  contents: write                # GITHUB_TOKEN needs write to create/publish the Release
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: 'macos-latest',   args: '--target aarch64-apple-darwin' }
+          - { platform: 'macos-latest',   args: '--target x86_64-apple-darwin' }
+          - { platform: 'ubuntu-22.04',   args: '' }
+          - { platform: 'windows-latest', args: '' }
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: install Linux deps (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      # Resolved to the current `stable` ref commit SHA (dtolnay updates the ref on
+      # every stable Rust release); toolchain defaults to `stable` at this commit.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (resolved SHA)
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/tauri/src-tauri
+      - run: pnpm install --frozen-lockfile                  # full workspace (release.yml must build the CSS/plugin too)
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1 (resolved SHA)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/tauri/src-tauri                   # Tauri project is not at repo root (tauri-action README)
+          tagName: app-v__VERSION__                           # __VERSION__ ← tauri.conf.json version (0.1.0)
+          releaseName: 'Fredo v__VERSION__'
+          releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'
+          releaseDraft: true                                 # owner reviews + publishes the draft (deliberately-reviewed gate)
+          prerelease: false
+          args: ${{ matrix.args }}
