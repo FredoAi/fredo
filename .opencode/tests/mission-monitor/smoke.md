@@ -16,4 +16,4 @@
 
 ## Mission Monitor tool-detail quick path (Spec #2792)
 
-- [x] S-9 (PASS 2026-09-02 #2792): Select a session with a tool call and open a tool's detail view (from the chat node's or a subagent node's `── TOOLS (N) ──` list) — the panel renders Status / Duration / Input / Output (and, for a failed call, the reason row) without console errors or layout break. `tauri_read_logs(source="console")` clean. — Verified for both a chat-node tool and a subagent-node tool (fixtures FX2792F1/FX2792F2).
+- [ ] S-9 (open for #2792): Select a session with a tool call and open a tool's detail view (from the chat node's or a subagent node's `── TOOLS (N) ──` list) — the panel renders Status / Duration / Input / Output (and, for a failed call, the reason row) without console errors or layout break. `tauri_read_logs(source="console")` clean.
