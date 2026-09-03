@@ -12,11 +12,13 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { useWindowActions } from '@maomaolabs/core';
 import { useEventRows } from '../../../shared/hooks/useEventRows';
+import type { ChatRow, ToolUseRow } from '../../../shared/classes/EventSubscription';
 import { tint } from '../../../shared/utils/colorTint';
 import { useDeliveryGraph, type RowGraphSources } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
+import { deriveRowGraphState, deriveRenderableSessions } from '../lib/rowDerivation';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -24,7 +26,7 @@ import { DetailPanel } from './DetailPanel';
 import { ChatNode }          from './nodes/ChatNode';
 import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
-import { EMPTY_STATE_JOKES, GHOST_SESSION_COPY } from '../lib/graph';
+import { EMPTY_STATE_JOKES } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
 import { initMmTables } from '../lib/persistence';
 
@@ -157,53 +159,6 @@ const NoSessionSelected: React.FC = () => (
   </div>
 );
 
-// ── Ghost-session explanatory state (Spec #2791, G-074) ───────────────────────
-// A session whose telemetry rows have landed (chat/tool rows present) but whose
-// activity produced NO graph nodes is the G-074 ghost — it must NEVER render a
-// silent blank canvas (AC1/AC2). This state is rendered INSTEAD of <ReactFlow>
-// for the ghost; the legitimate pre-stream transient (NO landed rows yet) is
-// NOT this state and keeps the existing blank canvas, unchanged (AC3).
-// Theme tokens only (no hardcoded hex/rgba — the tint, heading, body and
-// surface all resolve through the theming feature via var()/tint()); no canvas
-// chrome (Background/Controls/MiniMap); a11y: semantic <h2> heading + a region
-// with an accessible name.
-const GhostSessionState: React.FC = () => (
-  <div
-    role="region"
-    aria-label={GHOST_SESSION_COPY.heading}
-    style={{
-      width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center', gap: 12,
-      background: 'var(--card-bg)',
-    }}
-  >
-    <div
-      aria-hidden="true"
-      style={{
-        width: 44, height: 44, borderRadius: '50%',
-        backgroundColor: tint('var(--accent-primary)', 20),
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
-    >
-      <span style={{ fontSize: 18, color: 'var(--accent-primary)' }}>◌</span>
-    </div>
-    <h2
-      style={{
-        margin: 0, fontSize: 14, fontWeight: 600,
-        color: 'var(--text-primary)', textAlign: 'center',
-      }}
-    >
-      {GHOST_SESSION_COPY.heading}
-    </h2>
-    <p style={{
-      maxWidth: 360, margin: 0, textAlign: 'center',
-      fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6,
-    }}>
-      {GHOST_SESSION_COPY.body}
-    </p>
-  </div>
-);
-
 // ── Inner canvas ──────────────────────────────────────────────────────────────
 
 interface CanvasProps {
@@ -223,27 +178,12 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   // #2788 P4.2: the graph's data source — typed RTDB rows with replay (the
   // persisted snapshot restores as full-row inserts; replay replaces the v1
   // hydration path for the graph). Shared module-scoped row store.
-  // G-074 (#2791): the hook also exposes `ready` (per-query replay-complete
-  // marker) and `hasLandedRows` (the selected session has landed rows) — the
-  // ghost-predicate inputs.
   const {
-    nodes, edges, onNodesChange, onEdgesChange, unattributedCount, ready, hasLandedRows,
+    nodes, edges, onNodesChange, onEdgesChange, unattributedCount,
   } = useDeliveryGraph({
     sessionId,
     rows,
   });
-
-  // ── G-074 ghost predicate (Spec #2791 AC1/AC2/AC3) ─────────────────────────
-  // The ghost signature: the session's replay has settled (`ready`), its
-  // telemetry rows have landed (`hasLandedRows`), YET the derived node set is
-  // empty. Rendering <ReactFlow> for this combination would produce a SILENT
-  // blank canvas — instead we surface the explicit explanatory state. When
-  // NOT a ghost — including the legitimate pre-stream transient
-  // (`nodes.length === 0 && !hasLandedRows`), which behaves exactly as today —
-  // the existing render path is untouched (AC3). `!!` coerces the hook-returned
-  // booleans defensively (a test stub that omits them short-circuits to false,
-  // never a spurious ghost).
-  const isGhost = !!ready && nodes.length === 0 && !!hasLandedRows;
 
   // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
   // (ref-guarded — same-value pushes are skipped, so no render loop).
@@ -635,11 +575,11 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
         ref={canvasContainerRef}
         style={{ width: '100%', height: '100%', position: 'relative' }}
       >
-        {/* G-074 (#2791): the ghost session renders the explicit explanatory
-            state INSTEAD of <ReactFlow> — never a silent blank canvas. */}
-        {isGhost ? (
-          <GhostSessionState />
-        ) : (
+        {/* The canvas ALWAYS renders <ReactFlow>. Spec #2795 (AC1) removed the
+            #2791 explanatory ghost state: a session that renders zero nodes is
+            simply not listed (the shared renderability rule in the sidebar), so
+            a blank canvas here is only ever the legitimate pre-stream/streaming
+            transient of a REAL session that fills in as its rows land (AC4). */}
         <ReactFlow
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -706,7 +646,6 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
             maskColor={tint('var(--body-bg)', 60)}
           />
         </ReactFlow>
-        )}
       </div>
     </NodeFocusProvider>
   );
@@ -721,9 +660,33 @@ export const MissionMonitorPanel: React.FC = () => {
   // snapshot restores as full-row inserts and live patches continue on the
   // same path (one rendering path for restored + live, UI/UX parity
   // constraint 3). `useDeliverySessions` holds its own Chat subscription for
-  // its `ready` gate; duplicate envelopes dedupe by row key (idempotent).
+  // its `ready` gate + row metadata; duplicate envelopes dedupe by row key
+  // (idempotent).
   const chatRows = useEventRows('Chat', {}, { replay: true });
   const toolUseRows = useEventRows('ToolUse', {}, { replay: true });
+
+  // ── Spec #2795: the ONE shared renderability rule (AC2/AC3/AC4) ───────────
+  // Derive the graph-builder state from BOTH row sources ONCE here (the same
+  // `deriveRowGraphState` the graph hook consumes), then derive the set of
+  // sessionIds the graph renders ≥1 node for. This single set drives BOTH the
+  // sidebar list inclusion (passed to `useDeliverySessions`) and (structurally,
+  // via the same helpers) the graph node emission — so the list and the canvas
+  // can never disagree. `builderState` is epoch-memoized over the live row
+  // store, so `renderableSessions` recomputes on every real row-store mutation —
+  // a just-started session appears the moment its first renderable row lands
+  // (AC4), never on a mount-time snapshot.
+  const builderState = useMemo(
+    () => deriveRowGraphState(
+      [...chatRows.rows.values()] as ChatRow[],
+      [...toolUseRows.rows.values()] as ToolUseRow[],
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatRows.epoch, toolUseRows.epoch],
+  );
+  const renderableSessions = useMemo(
+    () => deriveRenderableSessions(builderState),
+    [builderState],
+  );
   const {
     sessions,
     filteredSessions,
@@ -735,7 +698,7 @@ export const MissionMonitorPanel: React.FC = () => {
     searchFilter,
     setSearchFilter,
     userPickedRef,
-  } = useDeliverySessions();
+  } = useDeliverySessions({ renderableSessions });
 
   // ── #2748 FIX-3 (round-2 AC4 / R-4.1): the window/dialog identity remnant ──
   // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header

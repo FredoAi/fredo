@@ -13,7 +13,11 @@ import {
 } from '../lib/graph';
 import {
   deriveRowGraphState,
-  sessionHasAnyRow,
+  isTransitionalTurn,
+  buildVisibleAnchors,
+  resolveChildAnchor,
+  resolveCompanionEmission,
+  INTERNAL_TOOL_EXECUTION_AGENTS,
   type AgentNodeEntry,
   type GraphBuilderState,
   type SubagentNodeEntry,
@@ -66,15 +70,13 @@ const EDGE_STYLES: Record<GraphEdgeType, React.CSSProperties> = {
 // - Args ride in the row's `toolInputJson` (the ingest-projected
 //   gen_ai.tool.call.arguments JSON string); `toolOutputJson` =
 //   gen_ai.tool.call.result = the child's final output.
-
-/** #2745 R-4 (AC-4): internal opencode tool-execution agents. Their `task`
- *  dispatches are spawned internally to execute tool calls in sub-sessions and
- *  are NOT user-requested @-subagent dispatches — they create NO SubagentNode
- *  AND no embedded tool item (#2764: the former ToolsNode item). `build` is
- *  live-confirmed (ST-1 Phase-0); `plan` is plan-specified (unconfirmed until
- *  a run triggers it). Keyed on the SAME parsed name field the node displays
- *  (`subagent_type`). */
-export const INTERNAL_TOOL_EXECUTION_AGENTS = ['build', 'plan'];
+//
+// The #2745/#2750/#2762 pure emission + anchor helpers (`INTERNAL_TOOL_EXECUTION_AGENTS`,
+// `isTransitionalTurn`, `buildVisibleAnchors`, `resolveChildAnchor`,
+// `resolveCompanionEmission`) are defined ONCE in `../lib/rowDerivation.ts` (the
+// Spec #2795 shared renderability rule) and imported here — the graph's
+// emission gate and the session-list qualification predicate consume literally
+// ONE rule (AC3).
 
 /** Parse the task tool's arguments JSON (`toolInputJson` = the ingest-
  *  projected gen_ai.tool.call.arguments string). A parse failure or absent
@@ -88,33 +90,6 @@ function parseTaskArgs(input: string): Record<string, any> {
   } catch {
     return {};
   }
-}
-
-/**
- * #2750 AC4 (ST-5): a "transitional turn" — a chat-node entry that reached
- * completion (complete/compacted) with an EMPTY agentReply. These are the
- * parent session's own dispatch turns (the LLM turn ended on tool-calls): they
- * carry thinking text but no real response, so the graph must NOT emit a chat
- * node for them — the following reply turn (same user message) is the visible
- * node. In-progress/active text-less turns are NOT transitional: they render
- * with the loading indicator (AC4-3). NFR-5: suppression is EMISSION-only —
- * the entry stays in agentNodes/nodeOrder so a later reply can surface it.
- */
-function isTransitionalTurn(entry: {
-  status: GraphNodeStatus;
-  payload: { agentReply?: string };
-}): boolean {
-  // AC4 ST-5: a "transitional turn" reached completion with an EMPTY agentReply
-  // — the LLM turn ended on tool-calls, so the graph must NOT emit a chat node
-  // for it. `agentReply` is treated as empty when it is absent OR whitespace-
-  // only: opencode's dispatch turn emits a whitespace-only assistant message
-  // (`"\n\n"`) before the tool call, which the ingest pipeline injects verbatim —
-  // a real response is never pure whitespace, so trimming is safe (a text-less
-  // turn is by definition not a visible reply).
-  return (
-    (entry.status === 'complete' || entry.status === 'compacted') &&
-    !entry.payload.agentReply?.trim()
-  );
 }
 
 /**
@@ -137,161 +112,6 @@ function chronologicalAgentOrder(
     const tb = Number.isFinite(sb) ? sb : Number.POSITIVE_INFINITY;
     return ta - tb;
   });
-}
-
-/**
- * #2750 AC4 (ST-5): visible-anchor resolution — ONE O(N) pass over
- * `agentOrder` with Set/Map lookups (NFR-2). For every VISIBLE (selected-
- * session) chat node:
- * - `chainPredecessor[corrId]` = the nearest PRECEDING non-transitional
- *   visible agent ('' when none) — the chat-chain edge source for the node.
- * - `visibleNonTransitional` = the emitted (non-suppressed) agent corrIds.
- * Non-transitional entries are themselves the anchor their children
- * (SubagentNode edges + companion-column layout) attach to;
- * transitional entries' children attach to the same chain predecessor.
- *
- * #2750 round-6 (AC4-2): a suppressed transitional turn that is the session's
- * FIRST chat node has NO PRECEDING visible agent (chainPredecessor is '') —
- * e.g. the very common "Use a subagent to …" first message (round-5 fail
- * session `ses_fed7699aaffejpWUiOZM4y2eai`: dispatch turn `_2` is first). Its
- * children must STILL render exactly one SubagentNode per dispatch (NFR-5:
- * suppression is chat-node emission only, never the SubagentNode). The second
- * backward pass re-anchors such anchorless transitional turns to the NEXT
- * visible non-transitional node of the session (the reply turn that completes
- * the exchange), so the SubagentNode emission gate sees a rendered
- * anchor. Still ONE O(N) pass (backward) with Set lookups — NFR-2.
- */
-function buildVisibleAnchors(
-  agentOrder: string[],
-  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>,
-  visibleAgentCorrs: Set<string>,
-): { chainPredecessor: Map<string, string>; visibleNonTransitional: Set<string> } {
-  const chainPredecessor = new Map<string, string>();
-  const visibleNonTransitional = new Set<string>();
-  let lastVisible: string | null = null;
-  for (const corrId of agentOrder) {
-    if (!visibleAgentCorrs.has(corrId)) continue;
-    const entry = agentNodes.get(corrId);
-    if (!entry) continue;
-    chainPredecessor.set(corrId, lastVisible ?? '');
-    if (isTransitionalTurn(entry)) continue;
-    visibleNonTransitional.add(corrId);
-    lastVisible = corrId;
-  }
-
-  // Backward pass: transitional (suppressed dispatch) turns re-anchor to the
-  // NEXT visible non-transitional node of the session — the reply turn that
-  // completes the exchange. `nextVisible` tracks the nearest FOLLOWING emitted
-  // agent while walking backward; only non-transitional (visible) agents update
-  // it. Non-selected-session corrIds are skipped (the visibleAgentCorrs guard)
-  // — `nextVisible` always refers to the selected session.
-  //
-  // The SAME-EXCHANGE rule (the user-facing fix for the misplaced SubagentNode):
-  // the ingest pipeline copies the user message into BOTH the
-  // dispatch-turn span and its reply-turn span, so a transitional turn whose
-  // following visible node carries the SAME userMessage IS that dispatch's
-  // reply — its children MUST anchor to it (the visible node of the exchange),
-  // never to an unrelated preceding chat node. This generalizes the round-6
-  // anchorless rule: an anchorless turn has no preceding visible node at all,
-  // and a turn WITH a preceding visible node still re-anchors to its own reply
-  // when the reply follows (the round-5 "nearest-preceding" behavior only
-  // survives when no same-exchange reply exists ahead).
-  let nextVisible: string | null = null;
-  for (let i = agentOrder.length - 1; i >= 0; i--) {
-    const corrId = agentOrder[i];
-    if (!visibleAgentCorrs.has(corrId)) continue;
-    const entry = agentNodes.get(corrId);
-    if (!entry) continue;
-    if (isTransitionalTurn(entry)) {
-      // The following visible node is this dispatch's reply turn when it
-      // shares the same (non-empty) userMessage — re-anchor to it.
-      const nextEntry = nextVisible ? agentNodes.get(nextVisible) : undefined;
-      const sameExchangeReply = !!(
-        nextEntry &&
-        nextEntry.payload.userMessage &&
-        entry.payload.userMessage &&
-        nextEntry.payload.userMessage === entry.payload.userMessage
-      );
-      if (sameExchangeReply) {
-        chainPredecessor.set(corrId, nextVisible!);
-      } else if (!chainPredecessor.get(corrId) && nextVisible) {
-        // Round-6 anchorless case: no preceding visible node — re-anchor to
-        // the next visible node regardless.
-        chainPredecessor.set(corrId, nextVisible);
-      }
-      continue;
-    }
-    nextVisible = corrId;
-  }
-
-  return { chainPredecessor, visibleNonTransitional };
-}
-
-/**
- * #2750 AC4 (ST-5): the visible node a parent's children (SubagentNode /
- * layout + companion columns, #2764: also embedded tools) attach to — the
- * parent itself when it is a non-transitional visible chat node, else its
- * chain predecessor. ''
- * means "no anchor" (the parent is a suppressed transitional turn with no
- * preceding visible node — the child is not emitted).
- */
-function resolveChildAnchor(
-  parentCorrId: string,
-  chainPredecessor: Map<string, string>,
-  visibleNonTransitional: Set<string>,
-): string {
-  if (visibleNonTransitional.has(parentCorrId)) return parentCorrId;
-  return chainPredecessor.get(parentCorrId) ?? '';
-}
-
-/**
- * UX (flash fix): companion-node (SubagentNode) emission + anchor
- * resolution. A live tool row often lands BEFORE its dispatch turn
- * (the tool span ends before the dispatch chat span closes) and before the
- * dispatch's same-exchange reply — so on early row batches the time-window
- * parent resolution and the anchor resolution are both PROVISIONAL, and the
- * node would appear attached to an EARLIER unrelated chat node (the "first
- * Chatnode"), then JUMP to the reply when it renders. The node is emitted only
- * when its anchor is FINAL:
- *  - the parent is a visible non-transitional chat node (anchor = the parent), OR
- *  - the anchor is the parent's SAME-EXCHANGE reply (both carry the same
- *    non-empty userMessage — the reply turn that completes the suppressed
- *    dispatch turn).
- * It is PROVISIONAL (node HELD) when the parent is a suppressed transitional
- * turn and the anchor is merely a preceding visible node (the reply has not
- * arrived yet) — the node would re-anchor when the reply renders.
- * `allowAnchorlessBelt` is true ONLY for the SubagentNode path: when there is NO
- * visible anchor at all (anchorless — every turn so far suppressed) but the
- * parent chat node exists in the selected session, the dispatch is still emitted
- * so a user-requested subagent is never dropped (round-6 NFR-5 belt-and-
- * suspenders); with no visible node there is nothing for it to flash against.
- */
-function resolveCompanionEmission(
-  parentCorrId: string,
-  allowAnchorlessBelt: boolean,
-  chainPredecessor: Map<string, string>,
-  visibleNonTransitional: Set<string>,
-  agentNodes: Map<string, { payload: AgentNodePayload; status: GraphNodeStatus }>,
-): { emit: boolean; anchorCorrId: string } {
-  const anchorCorrId = resolveChildAnchor(parentCorrId, chainPredecessor, visibleNonTransitional);
-  // Parent is a visible non-transitional chat node → anchor = the parent (final).
-  if (visibleNonTransitional.has(parentCorrId)) return { emit: true, anchorCorrId };
-  if (anchorCorrId) {
-    // Parent is transitional/suppressed → the anchor is final ONLY when it is
-    // the parent's own same-exchange reply (both share a non-empty userMessage).
-    const parentEntry = agentNodes.get(parentCorrId);
-    const anchorEntry = agentNodes.get(anchorCorrId);
-    const isSameExchangeReply = !!(
-      parentEntry && anchorEntry &&
-      parentEntry.payload.userMessage &&
-      anchorEntry.payload.userMessage &&
-      anchorEntry.payload.userMessage === parentEntry.payload.userMessage
-    );
-    return { emit: isSameExchangeReply, anchorCorrId };
-  }
-  // Anchorless: no visible anchor at all → round-6 belt-and-suspenders (subagent
-  // only). Tools never emit anchorless.
-  return { emit: allowAnchorlessBelt, anchorCorrId };
 }
 
 // ── Node/edge factories ──────────────────────────────────────────────────────
@@ -1126,27 +946,6 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
     [chatEpoch, toolEpoch],
   );
 
-  // G-074 boundary (#2791): the landed-rows signal — has the SELECTED session
-  // any telemetry rows at all (chat OR tool use)? The ghost predicate
-  // (`ready && nodes.length === 0 && hasLandedRows`) needs it, and it is
-  // derived from the SAME row store the graph consumes. Memoized on the
-  // monotonic per-eventType epochs (never map identity/size — the
-  // #523-cycle-1 no-loop rule); `sessionId` is a primitive, so it is a safe,
-  // necessary dep that recomputes the signal on session switch.
-  const hasLandedRows = useMemo(
-    () => sessionHasAnyRow(
-      [...rows.chat.rows.values()] as ChatRow[],
-      [...rows.toolUse.rows.values()] as ToolUseRow[],
-      sessionId ?? '',
-    ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatEpoch, toolEpoch, sessionId],
-  );
-  // The per-query replay-complete marker (both row sources) — the ghost
-  // state is only concluded AFTER the snapshot drain settles, so a session
-  // whose rows are STILL streaming is never prematurely flagged (AC3 stable).
-  const ready = rows.chat.ready && rows.toolUse.ready;
-
   // Reset per-session graph state when the session changes.
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -1775,12 +1574,6 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
     onNodesChange,
     onEdgesChange,
     layoutVersion: 0,
-    // G-074 boundary (#2791): the selected session has landed telemetry rows
-    // (chat OR tool use). Combined with `ready` + `nodes.length === 0` it
-    // forms the ghost predicate — a session recorded telemetry but produced
-    // no graph nodes.
-    ready,
-    hasLandedRows,
     // Selected-session row count — the chat rows keyed under the session
     // (the graph's primary data). The v1 figure counted raw deliveries
     // (duplicated across contracts); the row store's PK guarantees one row

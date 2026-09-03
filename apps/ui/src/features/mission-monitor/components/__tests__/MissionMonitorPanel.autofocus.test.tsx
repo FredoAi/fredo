@@ -123,12 +123,40 @@ vi.mock('../../lib/persistence', () => ({
 
 // Mock StreamContext — no live deliveries (the graph is driven via the mocked hook).
 
-// P4.2: the panel subscribes typed rows via useEventRows — empty fixtures here
-// (the auto-center tests drive nodes through the mocked useDeliveryGraph; the
-// session metrics are not asserted in this suite).
+// P4.2: the panel subscribes typed rows via useEventRows. Spec #2795 (AC2): a
+// session is LISTED only if it renders ≥1 node, so every fixture session gets a
+// real, non-transitional Chat row (completed + non-empty agentReply) — otherwise
+// it is a ghost and never listed/auto-selected, and the canvas never mounts.
+// `userMessage` stays null so the drawer shows the persisted `label` (the
+// session-switch test clicks rows by their label text). `mockAutofocusChatRows`
+// is module-mutable so per-test override can add a second renderable session.
+const makeAutofocusChatRow = (sessionId: string, correlationId: string, startedAtMs: number) => ({
+  sessionId,
+  correlationId,
+  seq: 1,
+  startedAtNs: startedAtMs * 1e6,
+  endedAtNs: (startedAtMs + 1000) * 1e6,
+  updatedAt: new Date(startedAtMs + 1000).toISOString(),
+  state: 'Response',
+  userMessage: null,
+  agentReply: 'world',
+  promptTokens: null,
+  completionTokens: null,
+  cacheReadTokens: null,
+  costUsd: null,
+  model: null,
+  parentSessionId: null,
+  compositedChildSessionId: null,
+  rawJson: '{}',
+});
+
+let mockAutofocusChatRows: Array<ReturnType<typeof makeAutofocusChatRow>> = [];
+
 vi.mock('@/shared/hooks/useEventRows', () => ({
-  useEventRows: (_eventType: 'Chat' | 'ToolUse') => ({
-    rows: new Map(),
+  useEventRows: (eventType: 'Chat' | 'ToolUse') => ({
+    rows: eventType === 'Chat'
+      ? new Map(mockAutofocusChatRows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const))
+      : new Map(),
     epoch: 1,
     error: null,
     // P4.3: the replay snapshot phase is settled — the loaded gate opens
@@ -198,6 +226,11 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     mockNodes = [];
+    // Deterministic single-session default: one renderable Chat row for 's1'
+    // (Spec #2795 AC2 — a session is listed only if it renders ≥1 node).
+    mockAutofocusChatRows = [
+      makeAutofocusChatRow('s1', 'autofocus-1', Date.parse('2026-01-01T00:00:00.000Z')),
+    ];
     // Deterministic single-session default (clearAllMocks keeps the factory's
     // mockResolvedValue implementation — reset it here so per-test overrides
     // never leak across tests).
@@ -458,11 +491,17 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
   });
 
   it('fits the view exactly once per explicit session switch (AC-13)', async () => {
-    // Two persisted sessions: s1 is newer (auto-selected), s2 is older.
+    // Two persisted sessions: s1 is newer (auto-selected), s2 is older. BOTH
+    // must be listed (Spec #2795 AC2 — renderable via a chat row), so the store
+    // serves a renderable row for each; s1's row is newer so it auto-selects.
     vi.mocked(loadPersistedSessions).mockResolvedValue([
       { sessionId: 's1', label: 'Session 1', startTime: 2, latestTimestamp: '2026-01-02T00:00:00.000Z', deliveryCount: 0 },
       { sessionId: 's2', label: 'Session 2', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
     ]);
+    mockAutofocusChatRows = [
+      makeAutofocusChatRow('s1', 'autofocus-1', Date.parse('2026-01-02T00:00:00.000Z')),
+      makeAutofocusChatRow('s2', 'autofocus-2', Date.parse('2026-01-01T00:00:00.000Z')),
+    ];
     mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
 
     const { rerender } = renderWithChakra(<MissionMonitorPanel />);

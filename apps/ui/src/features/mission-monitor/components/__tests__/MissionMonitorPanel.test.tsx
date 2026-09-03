@@ -146,6 +146,10 @@ function makeChatDelivery(
   tokens: { prompt?: number; cacheRead?: number; reasoning?: number; completion?: number },
 ): ContractDelivery {
   const inner: Record<string, unknown> = {};
+  // Spec #2795 (AC2): a session is LISTED only if it renders ≥1 node, so the
+  // fixture turn must be a real, non-transitional reply (a completed turn with
+  // an EMPTY agentReply is transitional/suppressed → ghost → not listed).
+  inner.agentReply = 'assistant reply';
   if (tokens.prompt !== undefined) inner.promptTokens = tokens.prompt;
   if (tokens.cacheRead !== undefined) inner.cacheReadTokens = tokens.cacheRead;
   if (tokens.reasoning !== undefined) inner.reasoningTokens = tokens.reasoning;
