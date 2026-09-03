@@ -2727,6 +2727,41 @@ Test-Script "transition --to-phase done is refused" {
   }
 }
 
+# ST-1 lock-path regression guard (#2797 round 2): GitHub's "Lock an issue" endpoint
+# is PUT-only (POST returns HTTP 404 on this path — the round-1 defect; a permissions
+# failure is 403, so 404 = wrong method, not an env/token issue). The one-shot
+# `hardening-lock-open-issues` and lock-on-create both route through `lock_issue`
+# (now `-X PUT`); the mock `gh api` lock arm gates on PUT in lockstep, so a POST
+# regression falls through to the `unsupported path` bail and surfaces as a per-issue
+# failure. This test drives the one-shot pass against a NON-temp pipeline issue and
+# asserts the mock `GET issues/<n>` arm reports it `locked:true` with the off_topic
+# reason. (`temp:` harness issues are never locked and stay commentable.)
+Test-Script "Hardening PUT-locks an OPEN pipeline issue (lock-path regression)" {
+  $url = Mock-IssueCreate "hardening-target" "lock-path scratch" "backlog"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # The one-shot hardening pass (self-improver) enumerates OPEN pipeline issues and
+    # PUT-locks the non-temp candidate (this action is repo-level: no --issue needed).
+    $out = & rust-script $ps --agent self-improver --action hardening-lock-open-issues 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "LOCKED: #$issueNum") { throw "hardening should PUT-lock #$issueNum, got: $outStr" }
+    if ($outStr -match "LOCK FAILED") { throw "hardening reported a per-issue lock failure, got: $outStr" }
+    # The mock `GET issues/<n>` arm returns the record; assert it is locked with the
+    # triage-chosen reason (NFR-LOCKREASON-1: off_topic).
+    $issue = Get-Content (Mock-StorePath "issues\$issueNum.json") -Raw | ConvertFrom-Json
+    if ($issue.locked -ne $true) { throw "issue #$issueNum should be locked, got: $($issue.locked)" }
+    if ($issue.active_lock_reason -ne "off_topic") { throw "issue #$issueNum lock reason should be off_topic, got: $($issue.active_lock_reason)" }
+    return "hardening lock path: PUT-locked #$issueNum ($($issue.active_lock_reason))"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
