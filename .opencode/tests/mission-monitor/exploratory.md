@@ -24,3 +24,18 @@
 - [ ] E-9 (OPEN): Live streaming — open the detail view for a tool still in-progress, let it complete as a failure that gains a reason — does the reason row appear without a re-render loop or a flash of a stale/blank state?
 - [ ] E-10 (OPEN, confirmed finding promotes to functional): Theme/accent override — does the reason row and placeholder re-tint with the user accent (no hardcoded hex) across light/dark? A fixed non-token color is a defect (NFR-1).
 - [ ] E-11 (OPEN): Open the detail view from a `build`/`plan` internal tool-execution context — is it correctly NOT surfaced as a subagent node, and does the reason still render on the parent's tool list if applicable (subagent filter regression, Spec #509)?
+
+---
+
+# Mission Monitor — Exploratory Probes (Spec #2795 — Ghost sessions follow-up)
+
+> Unscripted edge/failure probes for the real-sessions-only surface. A CONFIRMED finding promotes to `functional.md` as a new `F-` case (keep the origin note).
+
+## Probes to run beyond the script
+
+- [ ] E-12 (OPEN): Rapidly toggle selection between a real session and a ghost-class session during the streaming window — does any window render a silent blank canvas or a stale/wrong-session graph? Confirm the selected session via DOM before capture (G-035); cross-check `telemetry_spans` at the same instant.
+- [ ] E-13 (OPEN): Live streaming — select a freshly launched session, let rows land while observing: does the sidebar qualify it at the moment rows land (no ghost window), and does the canvas resolve to ≥1 node without a silent-blank at the landed-rows stage?
+- [ ] E-14 (OPEN): High session-count list (many real + several row-landed-zero-node sessions) — does the sidebar list ONLY real sessions without lag/block (single shared predicate, NFR-1)? Does list qualification match graph emission at every instant (AC-3)?
+- [ ] E-15 (OPEN): Composited / multi-hop (delegation depth ≥ 3) session — does the re-keyed/composited session appear as its OWN zero-node sidebar entry (which must NOT happen), or only composite under the parent? Requires a real drive / real-corpus replay (G-088); verify against real telemetry before declaring a ghost source.
+- [ ] E-16 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` is a defect that invalidates the leg's evidence (NFR-2). `tauri_read_logs source="console"` clean after every interaction.
+- [ ] E-17 (OPEN, confirmed finding promotes to functional): The deleted #2791 explanatory state's a11y — after removal does selecting a non-qualifying session (if reachable) leave a clean announce region / no broken `role="region"` with a stale "No graph content for this session" heading?
