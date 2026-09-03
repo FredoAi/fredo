@@ -124,6 +124,17 @@ A repo-level interaction limit (`collaborators_only`) is set as a temporal belt-
 
 **How to report a real issue:** report security vulnerabilities privately via the repository's Security tab (a private advisory) — see [Reporting Security Issues](#reporting-security-issues) below. For non-security bug reports and feature requests, open a regular GitHub issue. Public comments on a locked pipeline issue are not read by the pipeline.
 
+---
+
+## Release Approval Gate (Spec #2803)
+
+Fredo ships installable builds from a dedicated protected release branch (`release/stable`), so a user only ever downloads a deliberately reviewed, versioned release. The release gate is a security control (NFR-1) and is **non-bypassable**:
+
+- Any PR into `release/stable` requires the owner's explicit approval (`@pktron` via `require_code_owner_review` + `required_approving_review_count ≥ 1`). An unapproved PR is blocked even when all CI checks are green.
+- Direct pushes to `release/stable` are forbidden, and the repository ruleset is configured with an **empty bypass list** — so no one, including repo admins, can bypass the protection.
+- `release.yml` (`.github/workflows/release.yml`) triggers on a push to `release/stable`, builds the platform artifacts, and publishes them to a **draft** GitHub Release (`releaseDraft: true`) so the owner reviews and publishes them. The release workflow never triggers on `main` and is never a required check on `main`.
+- The release approval gate and the full owner-manual cut procedure are documented in [`docs/release-process.md`](release-process.md). The `release/stable` branch protection and ruleset are repo-admin **settings** that the owner applies (they are not a checked-in file).
+
 ## Reporting Security Issues
 
 Report security vulnerabilities privately via the GitHub repository's Security tab (private advisory). Do not open public issues for security-sensitive findings.
