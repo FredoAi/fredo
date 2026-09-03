@@ -4,7 +4,7 @@ import type { MonitorNodeData } from '../types';
 import { STATUS_COLORS } from '../types';
 import { formatTokenCount, normalizeCost, normalizeTokenCount } from '../lib/graph';
 import type { GraphNodeStatus, AgentNodePayload, SubagentNodePayload, ToolCallSummary, DetailOpenTarget } from '../lib/graph';
-import { GRAPH_STATUS_COLORS, formatToolDuration, getToolCallOutcome } from '../lib/graph';
+import { GRAPH_STATUS_COLORS, formatToolDuration, getToolCallOutcome, hasErrorText } from '../lib/graph';
 import { usePersistedSetting } from '../../../shared/hooks/usePersistedSetting';
 import { tint } from '../../../shared/utils/colorTint';
 import { serializeValue } from '../../settings';
@@ -507,6 +507,24 @@ const ToolCallDetailView: React.FC<{ call: ToolCallSummary }> = ({ call }) => {
       <DetailRow label="Duration" value={duration} mono />
       <DetailRow label="Input" value={call.input || '—'} mono />
       <DetailRow label="Output" value={call.output || '—'} mono />
+      {/* #2792 Sub-task 1 (AC1/AC3/AC4): the captured failure reason.
+          Gate is the OUTCOME, never error-text presence: a `success === false`
+          call with no text still renders the "Failed" status (above) plus an
+          explicit absent-reason placeholder — it never reads as succeeded and
+          never silently blanks. A non-failed call renders no reason row, so
+          the success case is untouched. Consumes ONLY the projected
+          `call.error` single path (contract-trust — no fallback extraction,
+          no multi-path parsing). Theming (NFR): reason text = var(--status-error)
+          (the same red as the "Failed" pill); label + placeholder = fg.muted
+          (var(--text-secondary)) — subdued-absent, NOT error-red. */}
+      {getToolCallOutcome(call) === 'error' && (
+        <DetailRow
+          label="Reason"
+          value={hasErrorText(call) ? call.error : 'No failure detail captured.'}
+          mono
+          color={hasErrorText(call) ? 'var(--status-error)' : 'var(--text-secondary)'}
+        />
+      )}
       {/* #2764 AC4: when BOTH input and output are empty, one secondary hint
           line — the panel reads as data-absent, never as broken. */}
       {!call.input && !call.output && (
