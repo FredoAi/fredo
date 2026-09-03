@@ -773,7 +773,9 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
         }
     }
     // Repo interaction limit (ST-3): PUT repos/<r>/interaction-limits
-    // gh: gh api -X PUT repos/<r>/interaction-limits -f limit=collaborators_only -f expiry=6_months
+    // gh: gh api -X PUT repos/<r>/interaction-limits -f limit=collaborators_only -f expiry=six_months
+    // GitHub's `expiry` enum is one_day/three_days/one_week/one_month/six_months;
+    // `6_months` is rejected with HTTP 422.
     if api.starts_with("interaction-limits") {
         if method == "PUT" {
             let limit = form.get("limit").cloned().unwrap_or_default();
@@ -1019,14 +1021,16 @@ fn lock_issue(repo: &str, issue: u32) -> anyhow::Result<()> {
 }
 
 /// Set the repo interaction limit to `collaborators_only` for the configured window.
-/// This is a TEMPORAL belt-and-suspenders (GitHub `expiry` max `6_months`, must be
-/// re-applied) — the durable guard is per-conversation lock-on-create (ST-2).
+/// This is a TEMPORAL belt-and-suspenders (GitHub `expiry` enum max is `six_months`,
+/// must be re-applied) — the durable guard is per-conversation lock-on-create (ST-2).
+/// NOTE: GitHub's `expiry` enum is `[one_day, three_days, one_week, one_month,
+/// six_months]` — the literal `6_months` is rejected with HTTP 422 (round-2 defect).
 fn set_repo_interaction_limit(repo: &str) -> anyhow::Result<()> {
     let url = format!("repos/{}/interaction-limits", repo);
     let args = vec![
         "-X".to_string(), "PUT".to_string(), url,
         "-f".to_string(), "limit=collaborators_only".to_string(),
-        "-f".to_string(), "expiry=6_months".to_string(),
+        "-f".to_string(), "expiry=six_months".to_string(),
     ];
     gh_api_raw(&args)?;
     Ok(())
@@ -3601,9 +3605,9 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             }
             let repo = gh_repo()?;
             set_repo_interaction_limit(&repo)?;
-            println!("INTERACTION LIMIT SET: collaborators_only (6_months) on {}", repo);
+            println!("INTERACTION LIMIT SET: collaborators_only (six_months) on {}", repo);
             append_event(req_issue(a).unwrap_or(0), "interaction-limit", &a.actor, "unknown", "success",
-                &format!("repo interaction limit set to collaborators_only (6_months) on {}", repo))?;
+                &format!("repo interaction limit set to collaborators_only (six_months) on {}", repo))?;
         }
         other => anyhow::bail!("unknown action: {}", other),
     }

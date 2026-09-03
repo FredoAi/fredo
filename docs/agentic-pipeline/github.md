@@ -27,7 +27,7 @@ The **feature** (backlog issue) is the **single source of truth** — it carries
 | Control | Type | Mechanism | Re-apply |
 |---------|------|-----------|----------|
 | **Per-conversation lock** | durable | `PUT /repos/{owner}/{repo}/issues/{n}/lock` with `lock_reason: off-topic` — a locked issue is commentable only by users with write access | permanent (until unlocked); the one-shot `hardening-lock-open-issues` locks every currently-OPEN pipeline issue; `create-issue` locks a new issue at birth |
-| **Repo interaction limit** | **temporal** | `PUT /repos/{owner}/{repo}/interaction-limits` with `{ limit: "collaborators_only", expiry: "6_months" }` — a repo-wide belt-and-suspenders | **GitHub `expiry` max is `6_months`; must be re-applied** after the window lapses. The durable guard is the per-conversation lock-on-create — never mistake this for a permanent control |
+| **Repo interaction limit** | **temporal** | `PUT /repos/{owner}/{repo}/interaction-limits` with `{ limit: "collaborators_only", expiry: "six_months" }` — a repo-wide belt-and-suspenders | **GitHub `expiry` enum max is `six_months`; must be re-applied** after the window lapses. The durable guard is the per-conversation lock-on-create — never mistake this for a permanent control (the literal `6_months` is rejected with HTTP 422) |
 | **Trusted-author comment filter** | durable (code) | the state machine reads comment `authorAssociation` and excludes non-write-role comments from every context/verdict read path; each exclusion emits a `guard.fired` metric event + a surfaced note (never silent) | permanent (in `pipeline-state.rs`) |
 
 **Lock reason:** `active_lock_reason` is one of GitHub's four enum values — the triage-chosen value is **`off-topic`** (least-misleading for "public commentary on a maintainer-controlled pipeline thread"; `too heated`/`spam` imply conflict/abuse, `resolved` misrepresents an in-flight issue). It is **informational metadata only** — it does not change who may comment; the lock itself does. GitHub's enum set uses a HYPHEN: `off-topic | too heated | resolved | spam` (the underscore variant `off_topic` is rejected with HTTP 422).
@@ -136,7 +136,7 @@ Because the state machine is the **single writer**, mechanical label/project boo
 | SLA escalation on `blocked` | surfaced via the `health` report's **overdue-blocker list** (issues blocked past the default 4h SLA) — not a `blockedDuration` metric |
 | Worktree lifecycle | `create-worktree` / `remove-worktree` (developer); `prune` removes orphaned worktrees; `spec/*` branches are never pruned |
 | Hardening: lock all OPEN pipeline issues | `hardening-lock-open-issues` (Self-Improver) — enumerate OPEN pipeline issues (pipeline label) and `PUT .../issues/<n>/lock` with `lock_reason: off-topic`; skips `temp:` harness issues; one-shot |
-| Hardening: repo interaction limit | `interaction-limit` (Self-Improver) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "6_months" }`; temporal |
+| Hardening: repo interaction limit | `interaction-limit` (Self-Improver) — `PUT .../interaction-limits` `{ limit: "collaborators_only", expiry: "six_months" }`; temporal |
 | Hardening: lock-on-create | `create-issue` side-effect — a newly created non-`temp:` pipeline issue is locked immediately (best-effort) so it is comment-safe at birth |
 
 **The two deliberate exceptions to single-writer — the developer pushes to the spec integration branch, and the self-improver pushes product docs to `main`.**
