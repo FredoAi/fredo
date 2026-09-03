@@ -790,6 +790,46 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
             return Ok(serde_json::to_string(&v)?);
         }
     }
+    // Pull requests (ST-2 close-dependabot-prs):
+    //   GET   repos/<r>/pulls?state=open&per_page=100  -> list open PRs (author filter is
+    //                                                     applied client-side by the action)
+    //   PATCH repos/<r>/pulls/<n> -f state=closed       -> close one PR (state enum open|closed)
+    // Gates on GET for the list and PATCH for the close in LOCKSTEP with the action's
+    // `close_pr` helper so a method regression falls through to the bail below.
+    if api == "pulls" || api.starts_with("pulls?") {
+        if method != "GET" {
+            anyhow::bail!("mock gh api: pulls list requires GET, got `{}`", method);
+        }
+        let query = api.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let state_filter: String = query.split('&').find_map(|kv| kv.strip_prefix("state=")).unwrap_or("open").to_string();
+        let mut out = Vec::new();
+        let dir = mock_file(&["prs"]);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let file = e.path();
+                let Some(name) = file.file_stem().and_then(|s| s.to_str()) else { continue; };
+                let Ok(n) = name.parse::<u32>() else { continue; };
+                let pr = mock_read_pr(n);
+                let pr_state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                let state_ok = if state_filter == "merged" { pr_state == "MERGED" } else { pr_state == "OPEN" };
+                if !state_ok { continue; }
+                out.push(pr);
+            }
+        }
+        return Ok(serde_json::to_string(&out)?);
+    }
+    if let Some(n_str) = api.strip_prefix("pulls/") {
+        if method != "PATCH" {
+            anyhow::bail!("mock gh api: pulls/<n> close requires PATCH, got `{}`", method);
+        }
+        let n = n_str.parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh api: bad PR number `{}`", n_str))?;
+        let state = form.get("state").cloned().unwrap_or_default();
+        let mut pr = mock_read_pr(n);
+        let new_state = if state == "closed" { "CLOSED" } else { "OPEN" };
+        pr["state"] = serde_json::json!(new_state);
+        mock_write_pr(n, &pr)?;
+        return Ok(serde_json::to_string(&pr)?);
+    }
     anyhow::bail!("mock gh api: unsupported path `{}`", url)
 }
 
@@ -1031,6 +1071,24 @@ fn set_repo_interaction_limit(repo: &str) -> anyhow::Result<()> {
         "-X".to_string(), "PUT".to_string(), url,
         "-f".to_string(), "limit=collaborators_only".to_string(),
         "-f".to_string(), "expiry=six_months".to_string(),
+    ];
+    gh_api_raw(&args)?;
+    Ok(())
+}
+
+/// Close one pull request via the GitHub REST API (G-097-verified contract):
+/// `PATCH /repos/{owner}/{repo}/pulls/{pull_number}` with `{"state":"closed"}`.
+/// `state` enum is `open|closed` — GH closes an OPEN PR; `merged` is NOT a valid
+/// PATCH value (it returns 422). Returns the GitHub response body on success.
+/// Failure classification (G-097): 404 = wrong method/route defect, 422 = bad enum
+/// value — both are CONTRACT defects (the code is wrong), NOT an environment wedge.
+/// `gh_api_raw` surfaces 404/422 as an `Err`, so callers distinguish them from a
+/// 403 permissions wedge by inspecting the error text.
+fn close_pr(repo: &str, pull: u32) -> anyhow::Result<()> {
+    let url = format!("repos/{}/pulls/{}", repo, pull);
+    let args = vec![
+        "-X".to_string(), "PATCH".to_string(), url,
+        "-f".to_string(), "state=closed".to_string(),
     ];
     gh_api_raw(&args)?;
     Ok(())
@@ -3609,6 +3667,67 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(req_issue(a).unwrap_or(0), "interaction-limit", &a.actor, "unknown", "success",
                 &format!("repo interaction limit set to collaborators_only (six_months) on {}", repo))?;
         }
+        "close-dependabot-prs" => {
+            // ST-2 one-shot (AC1/R-1, G-097): close every currently-OPEN pull request
+            // authored by the Dependabot bot (`app/dependabot`) so version-update
+            // noise exits the pipeline. NON-GOALS: no merge/branch edits; do NOT
+            // close human-authored PRs (author filter is the whole safety guarantee);
+            // do NOT disable issues or touch Dependabot **security** updates (a
+            // separate repo Security setting). Single-writer: the close write rides
+            // the state machine, never an agent `gh`.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                let _ = append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action));
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let repo = gh_repo()?;
+            // Enumerate open PRs; only Dependabot-bot-authored ones are closed. The
+            // raw REST `/pulls` list reports the bot as `user.login = "dependabot[bot]"`
+            // (the GraphQL `author` projection, used by `gh pr list --json author`,
+            // normalizes it to `app/dependabot`). Match BOTH forms so the live-REST
+            // filter (the real contract, verified 2026-09-03 — G-097) never skips
+            // dependabot PRs while still never matching a human PR.
+            let json = gh_api_raw(&[format!("repos/{}/pulls?state=open&per_page=100", repo)])?;
+            let parsed: serde_json::Value = serde_json::from_str(&json)?;
+            let mut closed = 0u32;
+            let mut skipped = 0u32;
+            let mut failed = 0u32;
+            if let Some(arr) = parsed.as_array() {
+                for item in arr {
+                    let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    if number == 0 { skipped += 1; continue; }
+                    let author = item.get("user").and_then(|u| u.get("login")).and_then(|v| v.as_str()).unwrap_or("");
+                    // ONLY the Dependabot bot's version-update PRs are closed; a
+                    // human PR is never matched (author is the safety invariant).
+                    let is_dependabot = author == "dependabot[bot]" || author == "app/dependabot";
+                    if !is_dependabot { skipped += 1; continue; }
+                    // Per-PR resilience: one close failure must not abort the whole
+                    // pass. A 404 = wrong method/route, 422 = bad enum — both are
+                    // CONTRACT defects (G-097) and MUST abort (not be classed as an
+                    // environment wedge); a 403 is a permissions wedge (environment).
+                    match close_pr(&repo, number) {
+                        Ok(()) => {
+                            closed += 1;
+                            println!("CLOSED: #{} (app/dependabot)", number);
+                        }
+                        Err(e) => {
+                            let es = e.to_string();
+                            if es.contains("404") {
+                                anyhow::bail!("close-dependabot-prs: contract defect (G-097) — 404 wrong method/route on #{}: {}", number, es);
+                            }
+                            if es.contains("422") {
+                                anyhow::bail!("close-dependabot-prs: contract defect (G-097) — 422 bad enum on #{}: {}", number, es);
+                            }
+                            failed += 1;
+                            println!("CLOSE FAILED: #{} — {}", number, e);
+                        }
+                    }
+                }
+            }
+            println!("DEPENDABOT PRS: closed {} open dependabot PR(s); skipped {} non-dependabot/unknown PR(s); failed {}", closed, skipped, failed);
+            append_event(req_issue(a).unwrap_or(0), "close-dependabot-prs", &a.actor, "unknown", "success",
+                &format!("closed {}, skipped {}, failed {}", closed, skipped, failed))?;
+        }
         other => anyhow::bail!("unknown action: {}", other),
     }
     Ok(())
@@ -3644,6 +3763,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "record-improvement" => actor == "self-improver",
         "hardening-lock-open-issues" => actor == "self-improver",
         "interaction-limit" => actor == "self-improver",
+        "close-dependabot-prs" => actor == "self-improver",
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }

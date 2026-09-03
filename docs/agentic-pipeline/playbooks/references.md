@@ -31,6 +31,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-100: on_the_go_improvement
+- **activation_date:** 2026-09-03
+- **observed:** #2798 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** close-dependabot-prs author filter matched GraphQL-normalized app/dependabot but raw REST pull login is dependabot bot per G-097 contract mismatch caught by run-once-before-tester
+- **home:** references.md (G-100)
+- **effectiveness:** Pending
+
 ### G-092: on_the_go_improvement
 - **activation_date:** 2026-09-02
 - **observed:** #2788 round 6
