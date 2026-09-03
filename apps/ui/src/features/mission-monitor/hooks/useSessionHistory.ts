@@ -33,11 +33,30 @@ import type { ChatRow } from '../../../shared/classes/EventSubscription';
  * useDeliverySessions — derives sessions from the replayed Chat rows merged
  * with the persisted FeatureStore snapshot (names + retention fallback).
  *
+ * Spec #2795 (REQ-2/REQ-3): list qualification is driven by the single shared
+ * renderability predicate (`deriveRenderableSessions`, computed at the panel
+ * level from BOTH row sources and passed in as `renderableSessions`). The hook
+ * itself keeps its Chat subscription ONLY for the row metadata it already
+ * derives (display name, start time, delivery count) — it never adds a second
+ * subscription to qualify. A session is LISTED iff it renders ≥1 graph node
+ * (AC2/AC3); the divergent `rowCounts`-based "any chat row" inclusion pass is
+ * removed.
+ *
+ * When `renderableSessions` is NOT supplied (no caller option — the test suite
+ * calls the hook bare), it falls back to the pre-#2795 inclusion set
+ * (every session with a Chat row OR present in the persisted snapshot) so the
+ * metadata derivation tests remain unchanged. The production panel always
+ * supplies the shared set, so the shipped UI reads ONE rule.
+ *
+ * @param options.renderableSessions  The shared renderability set (panel-computed).
  * @returns sessions, filteredSessions, selectedSessionId, selectSession,
  *          followSession, deleteSession, renameSession, refreshSessions,
  *          searchFilter, setSearchFilter, userPickedRef
  */
-export function useDeliverySessions() {
+export function useDeliverySessions(options?: {
+  renderableSessions?: Set<string>;
+}) {
+  const renderableInput = options?.renderableSessions;
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [persistedSessions, setPersistedSessions] = useState<MissionMonitorSession[]>([]);
@@ -168,8 +187,23 @@ export function useDeliverySessions() {
       }
     }
 
-    // Merge persisted sessions with row data.
+    // ── Spec #2795: list qualification gate (AC2/AC3) ──
+    // The panel supplies the shared renderability set (derived from BOTH row
+    // sources via deriveRenderableSessions). When supplied, a session is listed
+    // ONLY if it renders ≥1 node. Without it (bare test callers) the inclusion
+    // set falls back to pre-#2795 behavior — every session with a Chat row OR
+    // in the persisted snapshot is listed — so the metadata derivation tests
+    // stay unchanged. The production panel always passes the shared set.
+    const effectiveRenderable =
+      renderableInput ??
+      new Set<string>([
+        ...rowCounts.keys(),
+        ...uniquePersisted.map((s) => s.sessionId),
+      ]);
+
+    // Merge persisted sessions with row data, gated on the renderable set.
     const merged = uniquePersisted
+      .filter((s) => effectiveRenderable.has(s.sessionId))
       .map((s) => {
         const rowCount = rowCounts.get(s.sessionId);
         if (rowCount === undefined) {
@@ -177,6 +211,9 @@ export function useDeliverySessions() {
           // session predates the replay window) — the persisted snapshot is
           // the only source. Values unchanged (v1 fallback) except the
           // derived-name normalization (display form — the hook's job).
+          // Spec #2795: in the production path this session is NOT renderable
+          // (it owns no graph node) so the filter already dropped it; this
+          // branch only serves the bare-caller fallback above.
           const fallbackSession: MissionMonitorSession = { ...s };
           const fallbackDerived =
             s.derivedName ? formatDerivedName(s.derivedName) : undefined;
@@ -210,11 +247,18 @@ export function useDeliverySessions() {
         return mergedSession;
       });
 
-    // Add sessions from rows that aren't in the persisted snapshot.
+    // Add sessions from rows that aren't in the persisted snapshot, gated on
+    // the renderable set (a row-only ghost is no longer listed).
     const persistedIds = new Set(uniquePersisted.map((s) => s.sessionId));
 
-    for (const [sid, rowCount] of rowCounts) {
+    for (const sid of effectiveRenderable) {
       if (persistedIds.has(sid)) continue;
+
+      const rowCount = rowCounts.get(sid);
+      // A renderable session always owns at least one chat node (its parent
+      // agent row) — a session with no chat rows has nothing to derive, so it
+      // is skipped (it also cannot be renderable without a chat row).
+      if (rowCount === undefined) continue;
 
       persistedIds.add(sid);
       const startMs = rowStart.get(sid) ?? Date.now();
@@ -246,9 +290,10 @@ export function useDeliverySessions() {
       return new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime();
     });
     // `chatRows.rows` is the stable module-scoped map (identity never changes)
-    // — the epoch is the real recompute signal.
+    // — the epoch is the real recompute signal. `renderableInput` (the shared
+    // set reference) recomputes the list live on the row-store epoch too.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [persistedSessions, chatRows.epoch, chatRows.rows, loaded]);
+  }, [persistedSessions, chatRows.epoch, chatRows.rows, loaded, renderableInput]);
 
   // Reset selected session if it no longer exists
   useEffect(() => {

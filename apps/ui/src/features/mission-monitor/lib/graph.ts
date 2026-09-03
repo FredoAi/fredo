@@ -381,20 +381,6 @@ export const EMPTY_STATE_JOKES = [
   "The AI promised to refactor my codebase. It replaced every function with a comment that says '// TODO: implement' — truly, an artist.",
 ] as const;
 
-// ── Ghost-session explanatory state (Spec #2791, G-074) ───────────────────────
-// A session whose telemetry rows have landed but whose activity produced no
-// graph nodes must NOT render a silent blank canvas — it resolves to this
-// explicit plain-language explanatory state (AC1/AC2). Plain language, no
-// telemetry jargon; the copy is a single shared source so the canvas and any
-// future surface (Sub-task 2 session-list de-emphasis) never drift.
-export const GHOST_SESSION_COPY = {
-  heading: 'No graph content for this session',
-  body:
-    'This session recorded telemetry, but its activity produced no graph to display. ' +
-    'Its turns were mostly transitional or internal tool work. ' +
-    'Select another session from the list to view a graph.',
-} as const;
-
 // -- Status colors ------------------------------------------------------------
 
 export const GRAPH_STATUS_COLORS: Record<GraphNodeStatus, string> = {

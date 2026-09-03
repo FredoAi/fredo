@@ -25,7 +25,8 @@ import {
   ownerSessionIdFromCorrId,
   toolSummaryFromToolRow,
   nsToIso,
-  sessionHasAnyRow,
+  deriveRenderableSessions,
+  sessionEmitsNodes,
 } from '../rowDerivation';
 
 let seq = 0;
@@ -314,26 +315,82 @@ describe('chat chain + ordering', () => {
   });
 });
 
-describe('sessionHasAnyRow (G-074 ghost boundary, Spec #2791)', () => {
-  it('is true when the session has a chat row, a tool row, or both', () => {
-    expect(sessionHasAnyRow([chatRow({ sessionId: 's1' })], [], 's1')).toBe(true);
-    expect(sessionHasAnyRow([], [toolRow({ sessionId: 's1' })], 's1')).toBe(true);
-    expect(sessionHasAnyRow([chatRow({ sessionId: 's1' })], [toolRow({ sessionId: 's1' })], 's1')).toBe(true);
+describe('deriveRenderableSessions / sessionEmitsNodes (Spec #2795 — shared renderability rule)', () => {
+  it('a subagent-child session is NOT renderable — its chat rows are excluded from the node set', () => {
+    // A child session whose chat rows all carry the #523 subagent stamps.
+    const childChat = [
+      chatRow({ sessionId: 'child', correlationId: 'child-1', parentSessionId: 'root' }),
+      chatRow({ sessionId: 'child', correlationId: 'child-2', parentSessionId: 'root' }),
+    ];
+    const rootChat = chatRow({ sessionId: 'root', correlationId: 'root-1' });
+    const state = deriveRowGraphState([...childChat, rootChat], []);
+    expect([...state.agentNodes.keys()]).toEqual(['root-1']); // child rows excluded
+    expect(sessionEmitsNodes(state, 'child')).toBe(false);
+    expect(sessionEmitsNodes(state, 'root')).toBe(true);
+    expect(deriveRenderableSessions(state).has('child')).toBe(false);
   });
 
-  it('is false when the session has NO rows in either source', () => {
-    expect(sessionHasAnyRow([], [], 's1')).toBe(false);
+  it('a transitional-only session is NOT renderable — every chat turn suppressed', () => {
+    // Two completed, empty-reply dispatch turns (the "use a subagent" pattern)
+    // — isTransitionalTurn suppresses both from the node set.
+    const t1 = chatRow({ correlationId: 't1', state: 'Response', agentReply: null, userMessage: 'use a subagent' });
+    const t2 = chatRow({ correlationId: 't2', state: 'Response', agentReply: '', userMessage: 'use a subagent' });
+    const state = deriveRowGraphState([t1, t2], []);
+    expect(sessionEmitsNodes(state, 's1')).toBe(false);
   });
 
-  it('scopes to the selected session (does not match other sessions\u2019 rows)', () => {
-    const chat = [chatRow({ sessionId: 's1' }), chatRow({ sessionId: 's2' })];
-    const tools = [toolRow({ sessionId: 's2' })];
-    expect(sessionHasAnyRow(chat, tools, 's1')).toBe(true); // s1 has a chat row
-    expect(sessionHasAnyRow(chat, tools, 's3')).toBe(false); // s3 has none
-    expect(sessionHasAnyRow([chatRow({ sessionId: 's1' })], tools, 's2')).toBe(true); // s2 has a tool row
+  it('a just-started non-subagent (in-progress) row IS renderable', () => {
+    // An in-progress Init/Update turn with no reply yet — NOT transitional.
+    const live = chatRow({ correlationId: 'live-1', state: 'Update', agentReply: null });
+    const state = deriveRowGraphState([live], []);
+    expect(sessionEmitsNodes(state, 's1')).toBe(true);
+    expect(deriveRenderableSessions(state).has('s1')).toBe(true);
   });
 
-  it('is false for an empty/no selection (nothing can be a ghost)', () => {
-    expect(sessionHasAnyRow([chatRow()], [], '')).toBe(false);
+  it('a user-requested @-subagent dispatch IS renderable (belt — anchorless parent)', () => {
+    // A parent session with one transitional dispatch turn plus a `task` tool
+    // row (its own call — a non-subagent row). The dispatch resolves into the
+    // session's own task dispatches; the round-6 belt emits its SubagentNode
+    // even though the dispatch turn is text-less/suppressed.
+    const dispatch = chatRow({ correlationId: 'dispatch-1', state: 'Response', agentReply: null, userMessage: 'call the architect' });
+    const task = toolRow({
+      sessionId: 's1',
+      correlationId: 'task-1',
+      toolName: 'task',
+      toolInputJson: JSON.stringify({ subagent_type: 'architect', prompt: 'tell a joke' }),
+      toolOutputJson: 'ok',
+    });
+    const state = deriveRowGraphState([dispatch], [task]);
+    expect(state.toolCallsBySession.get('s1')?.get('task-1')?.toolName).toBe('task');
+    expect(sessionEmitsNodes(state, 's1')).toBe(true);
+    expect(deriveRenderableSessions(state).has('s1')).toBe(true);
+  });
+
+  it('an internal (build/plan) tool-execution dispatch is NOT renderable on its own', () => {
+    // A session that owns ONLY an internal `build` dispatch — no user-requested
+    // @-subagent — and a suppressed (transitional) chat turn: it renders no node.
+    const dispatch = chatRow({ correlationId: 'dispatch-1', state: 'Response', agentReply: null, userMessage: 'build it' });
+    const build = toolRow({
+      sessionId: 's1',
+      correlationId: 'build-1',
+      toolName: 'task',
+      toolInputJson: JSON.stringify({ subagent_type: 'build', prompt: 'compile' }),
+      toolOutputJson: 'ok',
+    });
+    const state = deriveRowGraphState([dispatch], [build]);
+    expect(sessionEmitsNodes(state, 's1')).toBe(false);
+  });
+
+  it('a real session that renders nodes is NEVER dropped from the renderable set', () => {
+    // A normal completed exchange + a subsequent turn.
+    const a = chatRow({ correlationId: 'a1', sessionId: 's1', state: 'Response', agentReply: 'hello there' });
+    const b = chatRow({ correlationId: 'a2', sessionId: 's1', state: 'Response', agentReply: 'and again' });
+    const state = deriveRowGraphState([a, b], []);
+    expect(sessionEmitsNodes(state, 's1')).toBe(true);
+    // An unrelated session present in the store but with no renderable rows is excluded.
+    const ghost = chatRow({ correlationId: 'ghost-1', sessionId: 'ghost', parentSessionId: 's1' });
+    const state2 = deriveRowGraphState([a, b, ghost], []);
+    expect(deriveRenderableSessions(state2).has('ghost')).toBe(false);
+    expect(deriveRenderableSessions(state2).has('s1')).toBe(true);
   });
 });
