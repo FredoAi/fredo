@@ -31,6 +31,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-102: measurement_acs_blocked_by_sandbox_denied_actions_verbs
+- **activation_date:** 2026-09-03
+- **observed:** #2801 round 1 — the two timing-measurement ACs (AC1 median PR wall-clock, AC4 warm-cache re-run) of a config-only CI spec were UNVERIFIED because the sandbox denies `gh api` (Actions REST per-job `started_at`/`completed_at`, step-log cache-hit lines) and `gh run rerun` (warm re-run trigger) to the tester AND the SI. The QA Plan spelled test cases whose evidence depends on exactly these denied verbs, so the ACs could never be evidenced in-sandbox.
+- **target_failure:** a CI/measurement AC's verification depends on GitHub Actions REST or re-run verbs the sandbox denies, producing an unverifiable AC that is mis-classified as a product defect or is silently asserted clean.
+- **guardrail:** (1) When authoring a QA Plan for a config/CI/performance spec whose ACs measure wall-clock/cache timing, specify the evidence path against the ALLOWED tool surface (a `gh pr checks` job-duration projection) and state up front which timing verbs (`gh api`, `gh run rerun`) are out-of-reach — do NOT write test cases whose verdict depends on a denied verb. (2) If a measurement AC cannot be evidenced in-sandbox, keep the row UNVERIFIED-with-named-blocker (G-053) and route it to the PO as a documented-partial decision; an honest PASS is substantiated ONLY when the PO explicitly accepts the partial (G-033 carve-out: a PO-accepted partial row is not FAIL) — never assert a measured speedup the available run contradicts. (3) A single cold full-matrix run may be SLOWER than baseline (new cache-restore + path-filter overhead, cold cache); record the honest aggregate and do not claim the AC's "faster" outcome from it — the real lever is the verified path-skip mechanism, not a measured median.
+- **home:** playbooks/tester.md (Test case authoring — evidence-path matches the allowed tool surface) + playbooks/self-improver.md (loop review — PO-accepted-partial verdict discipline) + references.md (G-102)
+- **effectiveness:** Pending
+
 ### G-101: on_the_go_improvement
 - **activation_date:** 2026-09-03
 - **observed:** #2798 round 1
