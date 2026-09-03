@@ -24,13 +24,13 @@
 
 ## Must NOT change (regression invariants) — Spec #2792
 
-- [x] R-7 (PASS 2026-09-02 #2792): Tool-outcome classification (`getToolCallOutcome`, graph.ts:123-128) is unchanged — a failed call is still `error` when `call.error` is a non-empty string OR `success === false`; a success/`in-progress` call is never re-classified to `error` merely because a reason row now renders. No change to tool-outcome classification. — Commit 17ad0eb diff confirms `getToolCallOutcome` untouched.
-- [x] R-8 (PASS 2026-09-02 #2792): Graph-node colors/edges, chat-node/subagent-node layout, and session-list/graph derivation are unchanged — adding a reason row to the scoped tool-call detail view must NOT alter the graph canvas, node set, or edges. — F2 session rendered ChatNode + SubagentNode + calls edge normally.
-- [x] R-9 (PASS 2026-09-02 #2792): Upstream error capture is unchanged — `tool.error` → `ToolUseRow.toolError` remains the single source (EventSubscription.ts:103, classifier); no change to ingest/classification/storage. — Real OTLP spans classified `toolError` exactly (AR-1/AR-2).
-- [x] R-10 (PASS 2026-09-02 #2792): A succeeded tool call still shows NO error/reason row (no regression to the success case — REQ-4). — AR-4.
-- [x] R-11 (PASS 2026-09-02 #2792): Contract-trust preserved — the detail view consumes the projected `ToolCallSummary.error` single path (rowDerivation.ts:276); NO `??` fallback chains / multi-path lookups / output-derived reason (REQ-5). — CT-1.
-- [x] R-12 (PASS 2026-09-02 #2792): No new re-render loop — epoch-based recomputation; no `Maximum update depth exceeded` with `.length`/object-ref `useEffect` deps (NFR-2). — N-5.
-- [x] R-13 (PARTIAL 2026-09-02 #2792): Subagent `build`/`plan` internal tool-execution sessions remain excluded from the graph; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves (from Spec #509/#523 — unchanged by #2792). — User-requested subagent (agent `explore`) surfaced as a SubagentNode; the F2 primary (`agent.name=build`, `agent.type=primary`, is_subagent=0) produced no spurious node. The `build`/`plan` internal child-session exclusion was not separately driven this round (E-11 partial).
+- [ ] R-7 (PASS gate): Tool-outcome classification (`getToolCallOutcome`, graph.ts:123-128) is unchanged — a failed call is still `error` when `call.error` is a non-empty string OR `success === false`; a success/`in-progress` call is never re-classified to `error` merely because a reason row now renders. No change to tool-outcome classification.
+- [ ] R-8 (PASS gate): Graph-node colors/edges, chat-node/subagent-node layout, and session-list/graph derivation are unchanged — adding a reason row to the scoped tool-call detail view must NOT alter the graph canvas, node set, or edges.
+- [ ] R-9 (PASS gate): Upstream error capture is unchanged — `tool.error` → `ToolUseRow.toolError` remains the single source (EventSubscription.ts:103, classifier); no change to ingest/classification/storage.
+- [ ] R-10 (PASS gate): A succeeded tool call still shows NO error/reason row (no regression to the success case — REQ-4).
+- [ ] R-11 (PASS gate): Contract-trust preserved — the detail view consumes the projected `ToolCallSummary.error` single path (rowDerivation.ts:276); NO `??` fallback chains / multi-path lookups / output-derived reason (REQ-5).
+- [ ] R-12 (PASS gate): No new re-render loop — epoch-based recomputation; no `Maximum update depth exceeded` with `.length`/object-ref `useEffect` deps (NFR-2).
+- [ ] R-13 (PASS gate): Subagent `build`/`plan` internal tool-execution sessions remain excluded from the graph; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves (from Spec #509/#523 — unchanged by #2792).
 
 ## Overlapping prior-feature suites
 
