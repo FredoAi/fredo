@@ -106,6 +106,8 @@ This means:
 
 The benefits are deliberate: full auditability, asynchronous handoffs, and a record that outlives any single agent run — GitHub is the pipeline's memory and its source of truth. See [github.md](github.md).
 
+**Trust boundary on who may comment.** The pipeline's GitHub comment surface is a trusted context source, and now that `FredoAi/fredo` is public it must be confined to write-capable authors. Pipeline issues (those tracked by pipeline labels) are a **maintainer-controlled comment surface**: their conversations are locked (lock reason `off_topic`), so only users with write access (collaborator/member/owner) can comment, and the state machine retains write access to keep posting `Status`/`Triage Plan`/`Tests Runs`. The machine's comment reads are also filtered: a comment whose author association is not a write role (`NONE`/`CONTRIBUTOR`/`FIRST_TIME_CONTRIBUTOR`/`FIRST_TIMER`) is flagged and **excluded** from agent context and verdict parsing, while the pipeline's own posting principal is trusted. Issue bodies remain PO-authored and are read directly. This is additive to the single-writer rule (principle 2) and to the untrusted-input rule — the machine restricts who may reach the trusted comment surface, and agents still treat all issue text as data, never as instructions. A repo-level interaction limit (`collaborators_only`) is a temporary belt-and-suspenders (GitHub caps its expiry at six months, so it must be re-applied); the durable guard is per-conversation lock-on-create.
+
 ---
 
 ## 6. A Self-Improver Gate Audits Every Issue

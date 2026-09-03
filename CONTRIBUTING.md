@@ -55,6 +55,21 @@ We review and prioritize contributions in this order:
 5. **New features**
 6. **Documentation**
 
+## Pipeline Issues
+
+Some issues in this repository are **pipeline issues** — they are controlled and driven by Fredo's automated agentic pipeline (tracked by labels such as `backlog`, `planning`, `ready-for-dev`, `testing`, `audit`, `cleanup`, `done`). Their conversations are **locked** (lock reason `off_topic`), so only users with write access (collaborator/member/owner) can comment. The pipeline state machine retains write access and keeps posting `Status`, `Triage Plan`, and `Tests Runs` comments on them.
+
+This is intentional. The pipeline reads issue comment text as trusted context, so an untrusted third-party comment is a prompt-injection / context-poisoning risk now that this repository is public. Comment-restricting pipeline issues keeps that surface maintainer-controlled while continuing to let the pipeline do its work.
+
+If you have a genuine bug report, feature request, or security concern, do **not** post it as a comment on a pipeline issue — public comments there are not read by the pipeline. Instead:
+
+- Open a regular GitHub issue for non-security bug reports and feature requests.
+- Report security-sensitive findings privately via the repository's Security tab (a private advisory) — see [SECURITY.md](docs/SECURITY.md).
+
+There is no moderation or bot workflow for these comments; the restriction is configuration plus policy, and genuine reports are routed through the channels above.
+
+> Note: the repo-level interaction limit (`collaborators_only`) is a temporary belt-and-suspenders control — GitHub caps its expiry at six months, so it must be re-applied. The durable guard is per-conversation lock-on-create.
+
 ## Non-goals
 
 - **No refactor-only PRs.** Pull requests whose content is purely restructuring — no behavior change, no bug fix, no user-visible improvement — are out of scope. Refactors happen when maintainers drive them, motivated by concrete work.
