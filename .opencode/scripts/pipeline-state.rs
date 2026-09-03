@@ -16,11 +16,11 @@
 // Contract: docs/agentic-pipeline/state-machine.md
 // Invocation: documented in the `pipeline-state` skill (loaded at agent wake).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use base64::Engine as _;
@@ -471,9 +471,14 @@ fn mock_gh_issue(args: &[&str]) -> anyhow::Result<String> {
             let n = args.get(2).and_then(|a| a.parse::<u32>().ok()).ok_or_else(|| anyhow::anyhow!("mock gh issue comment: no issue number"))?;
             let body_file = args.windows(2).find(|w| w[0] == "--body-file").and_then(|w| w.get(1)).copied();
             let body = body_file.map(|f| mock_read(&PathBuf::from(f)).unwrap_or_default()).unwrap_or_default();
+            // The pipeline's posting principal is a write-access role (`OWNER` in the
+            // mock — the real machine runs as the maintainer / bot-mannequin). Each
+            // comment carries its `authorAssociation` so the trusted-author filter
+            // (ST-4) can distinguish the pipeline's own comments from external ones.
+            let author = env::var("FREDO_MOCK_COMMENT_AUTHOR").unwrap_or_else(|_| "OWNER".into());
             let mut issue = mock_read_issue(n);
             let mut comments = issue.get("comments").cloned().unwrap_or_else(|| serde_json::json!([]));
-            comments.as_array_mut().map(|a| a.push(serde_json::json!({ "body": body })));
+            comments.as_array_mut().map(|a| a.push(serde_json::json!({ "body": body, "authorAssociation": author })));
             issue["comments"] = comments;
             mock_write_issue(n, &issue)?;
             Ok(String::new())
@@ -523,10 +528,15 @@ fn mock_gh_issue(args: &[&str]) -> anyhow::Result<String> {
         "list" => {
             // gh issue list --state open --label blocked --json number
             // gh issue list --state open --search "Parent: Implementation Plan #N" --json number
+            // gh issue list --state open --json number,labels,title   (hardening enumeration, ST-1)
             let state = args.windows(2).find(|w| w[0] == "--state").and_then(|w| w.get(1)).copied().unwrap_or("");
             let label = args.windows(2).find(|w| w[0] == "--label").and_then(|w| w.get(1)).copied();
             let search = args.windows(2).find(|w| w[0] == "--search").and_then(|w| w.get(1)).copied();
-            let mut nums = Vec::new();
+            let json_fields: Vec<String> = args.windows(2).find(|w| w[0] == "--json")
+                .and_then(|w| w.get(1))
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
+            let mut items: Vec<serde_json::Value> = Vec::new();
             let dir = mock_file(&["issues"]);
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for e in entries.flatten() {
@@ -543,14 +553,30 @@ fn mock_gh_issue(args: &[&str]) -> anyhow::Result<String> {
                         haystack.contains(q)
                     }).unwrap_or(true);
                     if state == "open" && is_open && has_label && matches_search {
-                        nums.push(serde_json::json!({ "number": n }));
+                        let full = serde_json::json!({
+                            "number": n,
+                            "title": issue.get("title").cloned().unwrap_or_else(|| serde_json::json!("")),
+                            "labels": issue.get("labels").cloned().unwrap_or_else(|| serde_json::json!([])),
+                            "body": issue.get("body").cloned().unwrap_or_else(|| serde_json::json!("")),
+                        });
+                        items.push(full);
                     }
                 }
             }
             if args.iter().any(|a| *a == "--json") {
-                Ok(serde_json::to_string(&serde_json::json!(nums))?)
+                // Project each item onto the requested `--json` fields (default: number).
+                let frame: Vec<serde_json::Value> = items.iter().map(|it| {
+                    let mut out = serde_json::json!({});
+                    for f in &json_fields {
+                        if let Some(v) = it.get(f.as_str()) {
+                            out[f.as_str()] = v.clone();
+                        }
+                    }
+                    out
+                }).collect();
+                Ok(serde_json::to_string(&serde_json::json!(frame))?)
             } else {
-                Ok(nums.iter().map(|n| n["number"].as_u64().unwrap_or(0).to_string()).collect::<Vec<_>>().join("\n"))
+                Ok(items.iter().map(|n| n["number"].as_u64().unwrap_or(0).to_string()).collect::<Vec<_>>().join("\n"))
             }
         }
         _ => anyhow::bail!("mock gh issue: unsupported op `{}`", op),
@@ -700,6 +726,61 @@ fn mock_gh_api(args: &[&str]) -> anyhow::Result<String> {
         if method == "DELETE" {
             mock_ref_delete(branch)?;
             return Ok(String::new());
+        }
+    }
+    // `-F`/`-f key=value` form fields (used by the lock + interaction-limit calls).
+    let mut form = HashMap::new();
+    {
+        let mut i = 0;
+        while i < rest.len() {
+            if rest[i] == "-f" || rest[i] == "-F" {
+                if let Some(kv) = rest.get(i + 1) {
+                    if let Some((k, v)) = kv.split_once('=') {
+                        form.insert(k.to_string(), v.to_string());
+                    }
+                }
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    // Per-conversation lock (ST-1/ST-2): POST repos/<r>/issues/<n>/lock
+    // gh: gh api -X POST repos/<r>/issues/<n>/lock -f lock_reason=off_topic
+    if let Some(prefix) = api.strip_prefix("issues/") {
+        let parts: Vec<&str> = prefix.split('/').collect();
+        if parts.len() == 2 && parts[1] == "lock" && method == "POST" {
+            let n = parts[0].parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh api: bad issue number `{}`", parts[0]))?;
+            let reason = form.get("lock_reason").cloned().unwrap_or_else(|| "off_topic".into());
+            let mut issue = mock_read_issue(n);
+            issue["locked"] = serde_json::json!(true);
+            issue["active_lock_reason"] = serde_json::json!(reason);
+            mock_write_issue(n, &issue)?;
+            return Ok(serde_json::json!({ "locked": true, "active_lock_reason": reason }).to_string());
+        }
+        // Read lock state (ST-1/AC verification): GET repos/<r>/issues/<n>
+        if parts.len() == 1 && method == "GET" {
+            let n = parts[0].parse::<u32>().map_err(|_| anyhow::anyhow!("mock gh api: bad issue number `{}`", parts[0]))?;
+            let issue = if mock_issue_exists(n) { mock_read_issue(n) } else {
+                serde_json::json!({ "number": n, "title": "", "body": "", "state": "OPEN", "labels": [], "comments": [], "locked": false, "active_lock_reason": serde_json::Value::Null })
+            };
+            return Ok(serde_json::to_string(&issue)?);
+        }
+    }
+    // Repo interaction limit (ST-3): PUT repos/<r>/interaction-limits
+    // gh: gh api -X PUT repos/<r>/interaction-limits -f limit=collaborators_only -f expiry=6_months
+    if api.starts_with("interaction-limits") {
+        if method == "PUT" {
+            let limit = form.get("limit").cloned().unwrap_or_default();
+            let expiry = form.get("expiry").cloned().unwrap_or_default();
+            mock_write(&mock_file(&["interaction-limit.json"]), &serde_json::json!({ "limit": limit, "expiry": expiry }).to_string())?;
+            return Ok(serde_json::json!({ "limit": limit, "expiry": expiry }).to_string());
+        }
+        if method == "GET" {
+            let v = mock_read(&mock_file(&["interaction-limit.json"]))
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .unwrap_or_else(|| serde_json::json!({ "limit": "", "expiry": "" }));
+            return Ok(serde_json::to_string(&v)?);
         }
     }
     anyhow::bail!("mock gh api: unsupported path `{}`", url)
@@ -903,6 +984,43 @@ fn gh_api_raw_opt(args: &[String]) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// Pipeline-enumeration label set. An issue the state machine tracks carries one of
+/// these phase labels; `temp:` harness issues (which also may carry a label) are
+/// excluded by title, never by this set.
+const PIPELINE_ISSUE_LABELS: &[&str] = &[
+    "backlog", "planning", "ready-for-dev", "in-progress-dev", "ready-for-test",
+    "testing", "audit", "cleanup", "done",
+];
+
+/// Lock an issue's conversation (durable per-conversation comment restriction).
+/// `lock_reason: off_topic` is the triage-chosen value — informational metadata
+/// (it does NOT gate who may comment; the lock itself does). Reached through
+/// `gh api -X POST repos/<repo>/issues/<n>/lock -f lock_reason=off_topic` via the
+/// machine's `run_gh` seam (NFR-DETERMINISTIC-1 — never an agent playbook step).
+fn lock_issue(repo: &str, issue: u32) -> anyhow::Result<()> {
+    let url = format!("repos/{}/issues/{}/lock", repo, issue);
+    let args = vec![
+        "-X".to_string(), "POST".to_string(), url,
+        "-f".to_string(), "lock_reason=off_topic".to_string(),
+    ];
+    gh_api_raw(&args)?;
+    Ok(())
+}
+
+/// Set the repo interaction limit to `collaborators_only` for the configured window.
+/// This is a TEMPORAL belt-and-suspenders (GitHub `expiry` max `6_months`, must be
+/// re-applied) — the durable guard is per-conversation lock-on-create (ST-2).
+fn set_repo_interaction_limit(repo: &str) -> anyhow::Result<()> {
+    let url = format!("repos/{}/interaction-limits", repo);
+    let args = vec![
+        "-X".to_string(), "PUT".to_string(), url,
+        "-f".to_string(), "limit=collaborators_only".to_string(),
+        "-f".to_string(), "expiry=6_months".to_string(),
+    ];
+    gh_api_raw(&args)?;
+    Ok(())
+}
+
 /// Parse the parent spec number from an issue body's `Parent: Implementation Plan #N`
 /// line (dev sub-issues and tester issues all carry it).
 fn parent_spec(issue: u32) -> anyhow::Result<u32> {
@@ -1093,21 +1211,91 @@ fn get_issue(issue: u32) -> anyhow::Result<Option<GhIssue>> {
     Ok(serde_json::from_str(&json).ok())
 }
 
+/// Trusted (write-capable) comment-author roles. The pipeline's own posting
+/// principal appears as `OWNER`/`MEMBER`/`COLLABORATOR` (the maintainer token) or
+/// `BOT`/`MANNEQUIN` (a GitHub App / org integration) — all trusted. Untrusted
+/// roles (`NONE`/`CONTRIBUTOR`/`FIRST_TIME_CONTRIBUTOR`/`FIRST_TIMER`) are
+/// excluded from every context/verdict read path (AC5 / REQ-05).
+const TRUSTED_COMMENT_ROLES: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR", "BOT", "MANNEQUIN"];
+
+fn is_trusted_comment_author(assoc: &str) -> bool {
+    TRUSTED_COMMENT_ROLES.contains(&assoc)
+}
+
+/// Comment-author flagging dedupe. The trusted-author filter surfaces a `guard.fired`
+/// event + printed note per UNIQUE flagged comment body per issue so a single
+/// flagged comment (read from several verdict/context paths in one invocation)
+/// is not recorded repeatedly.
+static FLAGGED_COMMENTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn flagged_comments_set() -> &'static Mutex<HashSet<String>> {
+    FLAGGED_COMMENTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// The trusted-author comment funnel (ST-4 / AC5): returns comment BODIES for
+/// every read path (audit/cleanup gates, orchestration snapshot) but ONLY those
+/// authored by a write-capable role. Untrusted comments are excluded AND surfaced
+/// via `flag_untrusted_comments` so no comment is silently fed to agent context.
 fn get_issue_comments(issue: u32) -> Vec<String> {
+    let (comments, flagged) = issue_comments_partitioned(issue);
+    flag_untrusted_comments(issue, &flagged);
+    comments
+        .iter()
+        .filter_map(|c| c.get("body").and_then(|b| b.as_str()).map(String::from))
+        .collect()
+}
+
+/// Fetch the issue's comments carrying `authorAssociation` and partition them into
+/// (trusted, flagged). Trusted = the pipeline's write-capable roles; flagged =
+/// any comment whose author is not a write role. The flagged set is surfaced and
+/// recorded via `flag_untrusted_comments` so an untrusted comment is NEVER silently
+/// treated as agent context (AC5 / REQ-05).
+///
+/// NOTE: `gh issue view`'s `--json` accepted fields do NOT include `authorAssociation`
+/// at the issue level. With `--comments`, each comment object in the `comments`
+/// array already carries `authorAssociation` (GitHub's comment shape), so we request
+/// `--json comments` and read the field per comment. Requesting
+/// `--json comments,authorAssociation` would fail real gh with "unknown field".
+fn issue_comments_partitioned(issue: u32) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     let json = run_gh(&[
         "issue", "view", &issue.to_string(), "--comments", "--json", "comments",
     ])
     .unwrap_or_else(|_| "{\"comments\":[]}".to_string());
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
-    parsed
-        .get("comments")
-        .and_then(|c| c.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|c| c.get("body").and_then(|b| b.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut trusted = Vec::new();
+    let mut flagged = Vec::new();
+    if let Some(arr) = parsed.get("comments").and_then(|c| c.as_array()) {
+        for c in arr {
+            let assoc = c.get("authorAssociation").and_then(|a| a.as_str()).unwrap_or("");
+            // Fail-closed: an absent/unknown authorAssociation is treated as untrusted.
+            if is_trusted_comment_author(assoc) {
+                trusted.push(c.clone());
+            } else {
+                flagged.push(c.clone());
+            }
+        }
+    }
+    (trusted, flagged)
+}
+
+/// Record + surface a flagged untrusted comment (AC5). Emits a `guard.fired` metric
+/// event and prints a surfaced note for each unique flagged comment, so the
+/// exclusion from agent context is never silent. The machine's own posting
+/// principal is trusted, so a legit pipeline comment is never flagged here.
+fn flag_untrusted_comments(issue: u32, flagged: &[serde_json::Value]) {
+    let mut seen = flagged_comments_set().lock().unwrap_or_else(|p| p.into_inner());
+    for c in flagged {
+        let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        let assoc = c.get("authorAssociation").and_then(|a| a.as_str()).unwrap_or("NONE");
+        let key = format!("{}:{}", issue, body);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let _ = append_event(issue, "guard.fired", "pipeline-state", "unknown", "blocked",
+            &format!("untrusted comment author ({}) excluded from agent context", assoc));
+        let snippet: String = body.chars().take(80).collect();
+        println!("GUARD.FIRED: #{} comment by {} excluded from agent context (author not write-capable): {}", issue, assoc, snippet);
+    }
 }
 
 /// Guard for `create-worktree`: the sub-issue must be actionable
@@ -1730,22 +1918,22 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32
     let mut issues: Vec<u32> = vec![issue];
     if let Some(p) = plan { issues.push(p); }
     for id in issues {
-        let json = run_gh(&["issue", "view", &id.to_string(), "--comments", "--json", "comments"]).unwrap_or_default();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
-            if let Some(arr) = v.get("comments").and_then(|c| c.as_array()) {
-                for c in arr {
-                    let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
-                    let t = body.trim_start();
-                    if t.starts_with("## Tests Runs") {
-                        // `## Tests Runs (round N)` → round N; anything else → 1.
-                        let round = t.lines().next().and_then(|h| {
-                            h.split("round").nth(1)
-                                .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
-                        }).unwrap_or(1);
-                        let ts = c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                        items.push((ts, body.to_string(), round));
-                    }
-                }
+        // Trusted-author filter (ST-4 / AC5): only write-capable authors can be a
+        // `## Tests Runs` verdict or the latest evidence — an untrusted comment is
+        // excluded (and flagged) so it never becomes trusted input.
+        let (comments, flagged) = issue_comments_partitioned(id);
+        flag_untrusted_comments(id, &flagged);
+        for c in comments {
+            let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+            let t = body.trim_start();
+            if t.starts_with("## Tests Runs") {
+                // `## Tests Runs (round N)` → round N; anything else → 1.
+                let round = t.lines().next().and_then(|h| {
+                    h.split("round").nth(1)
+                        .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                }).unwrap_or(1);
+                let ts = c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                items.push((ts, body.to_string(), round));
             }
         }
     }
@@ -1838,22 +2026,21 @@ fn serving_record(issue: u32) -> Option<(String, String)> {
 /// verdict-carrying comment per round (a second one is a duplicate — observed on
 /// #2707 and #2717, where the tester posted two full verdicts plus per-AC posts).
 fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
-    let json = run_gh(&["issue", "view", &issue.to_string(), "--comments", "--json", "comments"]).unwrap_or_default();
+    // Trusted-author filter (ST-4 / AC5): an untrusted `## Tests Runs` comment must
+    // never count toward the G-020 dedup guard as if it were a real verdict.
+    let (comments, flagged) = issue_comments_partitioned(issue);
+    flag_untrusted_comments(issue, &flagged);
     let mut count = 0usize;
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
-        if let Some(arr) = v.get("comments").and_then(|c| c.as_array()) {
-            for c in arr {
-                let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
-                let t = body.trim_start();
-                if t.starts_with("## Tests Runs") && has_verdict_line(body) {
-                    // `## Tests Runs (round N)` → round N; anything else → 1.
-                    let r = t.lines().next().and_then(|h| {
-                        h.split("round").nth(1)
-                            .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
-                    }).unwrap_or(1);
-                    if r == round { count += 1; }
-                }
-            }
+    for c in comments {
+        let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        let t = body.trim_start();
+        if t.starts_with("## Tests Runs") && has_verdict_line(body) {
+            // `## Tests Runs (round N)` → round N; anything else → 1.
+            let r = t.lines().next().and_then(|h| {
+                h.split("round").nth(1)
+                    .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+            }).unwrap_or(1);
+            if r == round { count += 1; }
         }
     }
     count
@@ -2433,6 +2620,24 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 .and_then(|seg| seg.parse::<u32>().ok());
             match new_issue {
                 Some(n) => {
+                    // ST-2 lock-on-create (AC4 / REQ-04): a newly created pipeline issue is
+                    // comment-safe at birth without a manual follow-up. NON-GOALS:
+                    //   - do NOT lock `temp:` harness issues (they need comment + close
+                    //     during a test run — the validation harness creates them) —
+                    //   - the lock is best-effort (a failure is surfaced, never fatal to
+                    //     creation; the one-shot `hardening-lock-open-issues` action is the
+                    //     reconciling path).
+                    // Reuses the issue number already parsed from the create URL.
+                    if !title.trim_start().to_ascii_lowercase().starts_with("temp:") {
+                        match lock_issue(&gh_repo()?, n) {
+                            Ok(()) => println!("LOCKED ON CREATE: #{}", n),
+                            Err(e) => {
+                                let _ = append_event(n, "guard.fired", &a.actor, "unknown", "blocked",
+                                    &format!("lock-on-create failed for #{}: {}", n, e));
+                                println!("WARNING: lock-on-create failed for #{}: {}", n, e);
+                            }
+                        }
+                    }
                     // Record the start phase from the issue type's label so
                     // sub-issues (implementation) and tester issues (testing) get
                     // correct phase anchors instead of a blanket "backlog".
@@ -3324,6 +3529,59 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // Anti-tamper gate: the record is append-only and must never be rewritten.
             verify_integrity(a.json)?;
         }
+        "hardening-lock-open-issues" => {
+            // ST-1 one-shot hardening (AC1/AC2, REQ-01/REQ-02): lock every currently-
+            // OPEN pipeline issue the state machine tracks so no untrusted comment can
+            // land while the PR is PUBLIC. NON-GOALS: no close/cancel/unlabel; do NOT
+            // touch `temp:` harness issues; do NOT disable Issues; do NOT redact bodies.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                let _ = append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action));
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let repo = gh_repo()?;
+            let json = run_gh(&["issue", "list", "--state", "open", "--json", "number,labels,title"])?;
+            let parsed: serde_json::Value = serde_json::from_str(&json)?;
+            let mut locked = 0u32;
+            let mut skipped = 0u32;
+            if let Some(arr) = parsed.as_array() {
+                for item in arr {
+                    let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    if number == 0 { skipped += 1; continue; }
+                    let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    // The validation harness creates scratch issues titled `temp: <test>`,
+                    // which must stay commentable (they need comment + close during a run).
+                    if title.trim_start().to_ascii_lowercase().starts_with("temp:") { skipped += 1; continue; }
+                    let is_pipeline = item.get("labels").and_then(|l| l.as_array())
+                        .map(|a| a.iter().filter_map(|x| x["name"].as_str()).any(|n| PIPELINE_ISSUE_LABELS.contains(&n)))
+                        .unwrap_or(false);
+                    if !is_pipeline { skipped += 1; continue; }
+                    lock_issue(&repo, number)?;
+                    locked += 1;
+                    println!("LOCKED: #{} ({})", number, title);
+                }
+            }
+            println!("HARDENING: locked {} open pipeline issue(s); skipped {} non-pipeline/temp issue(s)", locked, skipped);
+            append_event(req_issue(a).unwrap_or(0), "hardening.lock-open-issues", &a.actor, "unknown", "success",
+                &format!("locked {} open pipeline issue(s); skipped {} non-pipeline/temp", locked, skipped))?;
+        }
+        "interaction-limit" => {
+            // ST-3 temporal belt-and-suspenders (AC2/AC4, REQ-02/REQ-04): set the repo
+            // interaction limit to `collaborators_only` for the configured window.
+            // NON-GOALS: interaction limits are TEMPORARY by design — do NOT present
+            // this as permanent; do NOT disable Issues; do NOT use `contributors_only`
+            // /`existing_users` (both admit non-collaborators).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                let _ = append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action));
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let repo = gh_repo()?;
+            set_repo_interaction_limit(&repo)?;
+            println!("INTERACTION LIMIT SET: collaborators_only (6_months) on {}", repo);
+            append_event(req_issue(a).unwrap_or(0), "interaction-limit", &a.actor, "unknown", "success",
+                &format!("repo interaction limit set to collaborators_only (6_months) on {}", repo))?;
+        }
         other => anyhow::bail!("unknown action: {}", other),
     }
     Ok(())
@@ -3357,6 +3615,8 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
         "post-comments" => matches!(actor, "self-improver" | "tester"),
         "record-improvement" => actor == "self-improver",
+        "hardening-lock-open-issues" => actor == "self-improver",
+        "interaction-limit" => actor == "self-improver",
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
