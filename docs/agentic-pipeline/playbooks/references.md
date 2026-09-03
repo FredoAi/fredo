@@ -31,6 +31,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+### G-101: on_the_go_improvement
+- **activation_date:** 2026-09-03
+- **observed:** #2798 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** G-099 hardened live: policy parser now tolerates the rendered static policy with trailing punctuation bold and prose, and the live-telemetry evidence scan excludes an explain-why-not mention of telemetry_spans so a config-only static plan is not misread as live
+- **home:** references.md (G-101)
+- **effectiveness:** Pending
+
 ### G-100: on_the_go_improvement
 - **activation_date:** 2026-09-03
 - **observed:** #2798 round 1
@@ -882,7 +890,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** a GitHub-REST-action spec authored with unverified HTTP methods / enum spellings, caught only at live-run time (rounds burn on 404/422) — and the offline mock silently masks them because it mirrors whatever the plan assumed.
 - **guardrail:** For any spec that implements a GitHub-REST action, verify the exact HTTP method AND every enum value against the live GitHub REST API/docs (never the plan prose). The orchestrator should execute run-once repo actions (e.g. `hardening-lock-open-issues`, `interaction-limit`) ONCE against the target BEFORE the tester round, so API-contract defects (404/422) are fixed within the same implementation round instead of costing a tester FAIL. A lock failure returning 404 (not 403) is a method/route defect, not a permissions wedge — route the architect to fix the contract, not to grant permissions.
 - **home:** playbooks/software-architect.md (API-contract verification) + playbooks/self-improver.md (deployment-caught defect discipline) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-03, #2798 implementation round 1) — re-observed on #2798: the `close-dependabot-prs` action's author filter used the GraphQL-normalized `app/dependabot`, but the raw REST `/pulls` list reports `user.login = dependabot[bot]`, so the live filter skipped all 13 PRs. Caught by the SI running the action once before the tester round (exactly the G-097 discipline); fixed the filter to match both forms + corrected the harness mock to seed the real REST value. The offline mock had mirrored the plan's assumed value, masking the defect until live-run — confirming the "run the action against the target before the tester round" rule is what surfaces contract defects.
 
 ### G-098: qa_brief_must_seed_durable_suite_files
 - **activation_date:** 2026-09-03
@@ -894,11 +902,11 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 
 ### G-099: audit_reads_config_static_plan_as_live
 - **activation_date:** 2026-09-03
-- **observed:** #2797 audit — the audit's `verification_status` reads the plan policy by line-anchoring `> **Verification policy: static**`; the posted QA section rendered `static.**` (a period before the closing bold), so it fell through to the `live` default. `verification_ok` then passed on `live_evidence` = a false-positive `telemetry_spans` scan of the plan text (the QA justification "no `telemetry_spans` exists for this config-only diff" matched the scanner).
+- **observed:** #2797 audit and #2798 audit — the audit's `verification_status` reads the plan policy by line-anchoring `> **Verification policy: static**`; the posted QA section rendered `static** — <prose>` (a bold close followed by prose on the same line), so it fell through to the `live` default. `verification_ok` then passed on `live_evidence` = a false-positive `telemetry_spans` scan of the explain-why-not justification ("No `telemetry_spans` surface exists for this config-only diff"). #2798 logged `verification_policy: live` + `live_telemetry_evidence: true` for a config-only static plan.
 - **target_failure:** a config-only `static` plan is read as `live` by the audit (parsing the punctuation-rendered policy), and the verification gate passes on a false-positive telemetry-spans string rather than correctly gating on the PASS verdict.
-- **guardrail:** The audit's plan-policy parser should tolerate `static` with or without trailing punctuation/bold (`static**`, `static.**`, `static`) so a config-only `static` plan is read as static; the `live_evidence` telemetry-spans scan must not count the phrase in an explain-why-not sentence. Gate `verification_ok` on the policy correctly (static → PASS verdict; live → PASS + genuine telemetry evidence).
-- **home:** pipeline-state.rs (plan-policy parser + live-evidence scan — candidate hardening, in the SI's domain) + references.md (this record)
-- **effectiveness:** Pending
+- **guardrail:** The audit's plan-policy parser should tolerate `static` with or without trailing punctuation/bold/prose (`static**`, `static.**`, `static** — ...`, `static`) so a config-only `static` plan is read as static; the `live_evidence` telemetry-spans scan must not count the phrase in a negating/explain-why-not sentence. Gate `verification_ok` on the policy correctly (static → PASS verdict; live → PASS + genuine telemetry evidence). Hardened in #2798: the parser trims trailing `*`/`.`/`)`/`]` from the declared value token, and `live_evidence` is line-scoped with a `line_is_telemetry_negation` guard (harness 97/97).
+- **home:** pipeline-state.rs (plan-policy parser + live-evidence scan — hardened in the SI's domain) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-03, #2798 audit) — re-observed on #2798 (a config-only static plan read as `live`), hardened the parser + live-evidence scan in pipeline-state.rs, harness 97/97; the #2798 audit now reports the correct `static` policy.
 
 
 ---

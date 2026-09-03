@@ -2119,6 +2119,26 @@ fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
     count
 }
 
+/// A line that mentions `telemetry_spans` but in a NEGATING / explain-why-not
+/// context is static-only evidence, not a live query result (G-099 #2798). The
+/// canonical config-only justification is "No `telemetry_spans` surface exists" —
+/// it must not count as live-telemetry evidence, which would let a static plan's
+/// evidence be misread as live and defeat the fail-closed live policy.
+fn line_is_telemetry_negation(line_lower: &str) -> bool {
+    const NEGATION_MARKERS: [&str; 9] = [
+        "no `telemetry_spans`",
+        "no telemetry_spans",
+        "not `telemetry_spans`",
+        "not telemetry_spans",
+        "without telemetry_spans",
+        "no telemetry",
+        "not telemetry",
+        "no such telemetry",
+        "telemetry_spans does not",
+    ];
+    NEGATION_MARKERS.iter().any(|m| line_lower.contains(m))
+}
+
 fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     let plan = find_impl_plan(issue);
     // The LATEST evidence comment across the feature + plan issues (timestamped),
@@ -2173,14 +2193,25 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
                 Some(rest) => {
                     let first = rest.trim().trim_matches('*').trim();
                     let value = first.split(|c: char| c.is_whitespace() || c == '-' || c == '—' || c == '(')
-                        .next().unwrap_or("");
+                        .next().unwrap_or("")
+                        .trim_matches(|c| c == '*' || c == '.' || c == ')' || c == ']')
+                        .trim();
                     value == "static"
                 }
                 None => false,
             }
         });
     let policy = if policy_static { "static".to_string() } else { "live".to_string() };
-    let live_evidence = latest.contains("telemetry_spans");
+    // Genuine live-telemetry evidence: a `telemetry_spans` reference that is a real
+    // observable query/result, NOT an explain-why-not mention (e.g. "No `<telemetry_spans>`
+    // surface exists" — a config-only plan's QA justification, G-099 #2798). A
+    // negating line (no/not/without/absent ... telemetry_spans) is a static-only
+    // evidence sentence, not a live query result. Line-scoped so a negative mention
+    // on one line does not suppress a genuine query on another.
+    let live_evidence = latest.lines().any(|l| {
+        let t = l.to_lowercase();
+        t.contains("telemetry_spans") && !line_is_telemetry_negation(&t)
+    });
     let ok = has_evidence && round_ok && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
         "no tester Evidence / Tests Runs comment found on the feature issue".to_string()
