@@ -36,3 +36,24 @@
 
 - Priority prior mission-monitor regression legs (chat node rendering, embedded `── TOOLS (N) ──` section, subagent nodes, tool-call accordion/detail views from Spec #2739/#2743/#2764, session list derivation) — inherited and extended by this spec.
 - This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-7..F-11 and N-4..N-5.
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2795 — Ghost sessions follow-up)
+
+> The "must not change" baseline for this spec + links to overlapping prior suites. Run on every testing phase that touches the mission-monitor surface.
+
+## Must NOT change (regression invariants) — Spec #2795
+
+- [ ] R-14 (AC-1, INVERTED from #2791): The #2791 explanatory ghost state is REMOVED — "No graph content for this session" is NEVER rendered, and no empty-diagram placeholder replaces it. (Supersedes + inverts the #2791 positive R-1/F-2/F-3/F-4/E-2 which asserted the explanatory state.)
+- [ ] R-15 (AC-2/AC-3, shared truth): A normal session (landed rows + rendered nodes) still renders its graph with the pre-fix node layout/colors/edges; session-list qualification and graph-node emission share ONE rule — no listed session renders zero nodes once its rows have landed, and no unlisted-but-landed session renders ≥1 node.
+- [ ] R-16 (AC-3): Telemetry ingestion, storage, and tool-outcome classification are unchanged; the RTDB row path (`useEventRows`) is the only row source; no v1 hydration / fallback extraction reintroduced.
+- [ ] R-17 (AC-4, transient + no-hidden): A just-started session whose rows are still landing still appears and resolves to content (legitimate transient preserved, G-074); a session rendering ≥1 node is NEVER dropped; only a user-deleted session is not listed (anti-resurrection, REQ-3).
+- [ ] R-18 (#523 compositing): row-level compositing is respected — the relationship registry's first-wins stamp persists, a re-key never removes rows (only retention eviction emits `kind: remove`), and child-session rows composite under the parent key carrying `parentSessionId` + `compositedChildSessionId`.
+- [ ] R-19 (Spec #509): subagent `build`/`plan` internal tool-execution sessions are still excluded from the graph AND from the sidebar; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves.
+- [ ] R-20 (NFR-2): No new re-render loops — epoch-based recomputation; no `Maximum update depth exceeded` with `.length`/object-ref `useEffect`/`useMemo` deps.
+
+## Overlapping prior-feature suites (Spec #2795)
+
+- #2791 ghost-explanatory-state legs (F-2/F-3/F-4, R-1, E-2) are INVERTED — run the AC-1 negative (no explanatory message, ghost not listed) for #2795.
+- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-12..F-16 and N-6..N-9.
