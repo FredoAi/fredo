@@ -2765,14 +2765,17 @@ Test-Script "Hardening PUT-locks an OPEN pipeline issue (lock-path regression)" 
 
 # close-dependabot-prs (ST-2, #2798): the one-shot action enumerates OPEN PRs via the
 # pulls list API and PATCH-closes ONLY the Dependabot-bot-authored ones (author filter
-# `app/dependabot` is the whole "never close a human PR" safety invariant). This test
-# seeds a Dependabot PR and a human PR in the mock store, drives the action, and
-# asserts the Dependabot PR is CLOSED while the human PR is untouched. The mock
-# `gh api` pulls arms must serve both the list query (GET pulls?state=open...) and the
-# close (PATCH pulls/<n> -f state=closed) — a method regression (e.g. -X POST, or a
-# `merged` enum) falls through to the `unsupported path` bail and surfaces as FAIL.
+# is the whole "never close a human PR" safety invariant). This test seeds a Dependabot
+# PR and a human PR in the mock store, drives the action, and asserts the Dependabot PR
+# is CLOSED while the human PR is untouched. The mock `gh api` pulls arms must serve
+# both the list query (GET pulls?state=open...) and the close (PATCH pulls/<n> -f
+# state=closed) — a method regression (e.g. -X POST, or a `merged` enum) falls through
+# to the `unsupported path` bail and surfaces as FAIL.
 # G-097: the close is PATCH (not POST, which 404s on this path); state enum is
-# `closed` (NOT `merged`, which 422s).
+# `closed` (NOT `merged`, which 422s). The author login is the RAW REST value
+# `dependabot[bot]` (verified 2026-09-03 against live /pulls — the GraphQL `author`
+# projection used by `gh pr list --json author` normalizes it to `app/dependabot`;
+# the action matches BOTH so the live filter never skips dependabot PRs).
 Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs open" {
   $prsDir = Mock-StorePath "prs"
   # Clear any PRs a prior test left (each test owns the prs dir for determinism).
@@ -2780,7 +2783,7 @@ Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs ope
   New-Item -ItemType Directory -Path $prsDir -Force | Out-Null
   $depNum = 2775
   $humanNum = 2888
-  # Dependabot-bot PR (OPEN, authored by app/dependabot) — must be closed.
+  # Dependabot-bot PR (OPEN, authored by dependabot[bot] — the raw REST login) — must be closed.
   $dep = @{
     number = $depNum
     head = "dependabot/npm/foo-1.0.0"
@@ -2788,7 +2791,7 @@ Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs ope
     title = "Bump foo"
     body = ""
     state = "OPEN"
-    user = @{ login = "app/dependabot" }
+    user = @{ login = "dependabot[bot]" }
   } | ConvertTo-Json -Depth 8
   [System.IO.File]::WriteAllText((Join-Path $prsDir "$depNum.json"), $dep, [System.Text.UTF8Encoding]::new($false))
   # Human-authored PR (OPEN, authored by a maintainer) — must NOT be closed.
@@ -2806,17 +2809,17 @@ Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs ope
     # The one-shot repo action (self-improver; repo-level, no --issue needed).
     $out = & rust-script $ps --agent self-improver --action close-dependabot-prs 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($LASTEXITCODE -ne 0) { throw "close-dependabot-prs should exit 0, got exit $LASTEXITCODE: $outStr" }
+    if ($LASTEXITCODE -ne 0) { throw "close-dependabot-prs should exit 0, got exit ${LASTEXITCODE}: $outStr" }
     if ($outStr -notmatch "CLOSED: #$depNum") { throw "Dependabot PR #$depNum should be closed, got: $outStr" }
     if ($outStr -match "CLOSED: #$humanNum") { throw "human PR #$humanNum must NOT be closed, got: $outStr" }
-    if ($outStr -notmatch "DEPENDABOT PRS: closed 1, skipped 1") { throw "Expected 'closed 1, skipped 1', got: $outStr" }
+    if ($outStr -notmatch "closed 1 open dependabot PR\(s\); skipped 1 non-dependabot/unknown PR\(s\); failed 0") { throw "Expected 'closed 1, skipped 1, failed 0' aggregate, got: $outStr" }
     if ($outStr -match "CLOSE FAILED") { throw "a close reported a per-PR failure, got: $outStr" }
     # Assert the store: the Dependabot PR is CLOSED; the human PR is still OPEN.
     $depAfter = Get-Content (Join-Path $prsDir "$depNum.json") -Raw | ConvertFrom-Json
     if ($depAfter.state -ne "CLOSED") { throw "Dependabot PR #$depNum should be CLOSED, got: $($depAfter.state)" }
     $humanAfter = Get-Content (Join-Path $prsDir "$humanNum.json") -Raw | ConvertFrom-Json
     if ($humanAfter.state -ne "OPEN") { throw "human PR #$humanNum should stay OPEN, got: $($humanAfter.state)" }
-    return "close-dependabot-prs: closed #$depNum (app/dependabot), left #$humanNum open"
+    return "close-dependabot-prs: closed #$depNum (dependabot[bot]), left #$humanNum open"
   } finally {
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0

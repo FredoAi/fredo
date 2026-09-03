@@ -3681,7 +3681,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
             let repo = gh_repo()?;
-            // Enumerate open PRs; only `app/dependabot`-authored ones are closed.
+            // Enumerate open PRs; only Dependabot-bot-authored ones are closed. The
+            // raw REST `/pulls` list reports the bot as `user.login = "dependabot[bot]"`
+            // (the GraphQL `author` projection, used by `gh pr list --json author`,
+            // normalizes it to `app/dependabot`). Match BOTH forms so the live-REST
+            // filter (the real contract, verified 2026-09-03 — G-097) never skips
+            // dependabot PRs while still never matching a human PR.
             let json = gh_api_raw(&[format!("repos/{}/pulls?state=open&per_page=100", repo)])?;
             let parsed: serde_json::Value = serde_json::from_str(&json)?;
             let mut closed = 0u32;
@@ -3694,7 +3699,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     let author = item.get("user").and_then(|u| u.get("login")).and_then(|v| v.as_str()).unwrap_or("");
                     // ONLY the Dependabot bot's version-update PRs are closed; a
                     // human PR is never matched (author is the safety invariant).
-                    if author != "app/dependabot" { skipped += 1; continue; }
+                    let is_dependabot = author == "dependabot[bot]" || author == "app/dependabot";
+                    if !is_dependabot { skipped += 1; continue; }
                     // Per-PR resilience: one close failure must not abort the whole
                     // pass. A 404 = wrong method/route, 422 = bad enum — both are
                     // CONTRACT defects (G-097) and MUST abort (not be classed as an
