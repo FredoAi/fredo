@@ -13,6 +13,7 @@ import {
 } from '../lib/graph';
 import {
   deriveRowGraphState,
+  sessionHasAnyRow,
   type AgentNodeEntry,
   type GraphBuilderState,
   type SubagentNodeEntry,
@@ -1125,6 +1126,27 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
     [chatEpoch, toolEpoch],
   );
 
+  // G-074 boundary (#2791): the landed-rows signal — has the SELECTED session
+  // any telemetry rows at all (chat OR tool use)? The ghost predicate
+  // (`ready && nodes.length === 0 && hasLandedRows`) needs it, and it is
+  // derived from the SAME row store the graph consumes. Memoized on the
+  // monotonic per-eventType epochs (never map identity/size — the
+  // #523-cycle-1 no-loop rule); `sessionId` is a primitive, so it is a safe,
+  // necessary dep that recomputes the signal on session switch.
+  const hasLandedRows = useMemo(
+    () => sessionHasAnyRow(
+      [...rows.chat.rows.values()] as ChatRow[],
+      [...rows.toolUse.rows.values()] as ToolUseRow[],
+      sessionId ?? '',
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatEpoch, toolEpoch, sessionId],
+  );
+  // The per-query replay-complete marker (both row sources) — the ghost
+  // state is only concluded AFTER the snapshot drain settles, so a session
+  // whose rows are STILL streaming is never prematurely flagged (AC3 stable).
+  const ready = rows.chat.ready && rows.toolUse.ready;
+
   // Reset per-session graph state when the session changes.
   useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
@@ -1753,6 +1775,12 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
     onNodesChange,
     onEdgesChange,
     layoutVersion: 0,
+    // G-074 boundary (#2791): the selected session has landed telemetry rows
+    // (chat OR tool use). Combined with `ready` + `nodes.length === 0` it
+    // forms the ghost predicate — a session recorded telemetry but produced
+    // no graph nodes.
+    ready,
+    hasLandedRows,
     // Selected-session row count — the chat rows keyed under the session
     // (the graph's primary data). The v1 figure counted raw deliveries
     // (duplicated across contracts); the row store's PK guarantees one row

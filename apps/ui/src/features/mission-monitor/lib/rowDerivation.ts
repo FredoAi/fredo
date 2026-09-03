@@ -141,6 +141,27 @@ export function rawPayload(row: { rawJson: string }): Record<string, any> {
 }
 
 /**
+ * G-074 boundary (#2791): does the selected session have ANY landed rows in
+ * the RTDB row store (chat or tool use)? The ghost signature is "landed rows +
+ * zero rendered graph nodes" — this pure predicate is the single, shared
+ * definition of "the session recorded telemetry". Distinguishes the ghost
+ * (rows landed, nothing to graph) from the legitimate pre-stream transient
+ * (no rows landed yet, so `false` — the blank canvas stays the transient).
+ * An empty/no selection resolves to `false` (nothing can be a ghost).
+ */
+export function sessionHasAnyRow(
+  chatRows: ChatRow[],
+  toolRows: ToolUseRow[],
+  sessionId: string,
+): boolean {
+  if (!sessionId) return false;
+  return (
+    chatRows.some((r) => r.sessionId === sessionId) ||
+    toolRows.some((r) => r.sessionId === sessionId)
+  );
+}
+
+/**
  * Row-state → GraphNodeStatus. The row store has no lifecycle envelope — the
  * `state` column IS the lifecycle (R-1d):
  * Init → in-progress; Update → active; Response → complete; Timeout →
