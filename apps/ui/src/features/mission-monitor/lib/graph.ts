@@ -128,6 +128,20 @@ export function getToolCallOutcome(call: ToolCallSummary): 'error' | 'in-progres
 }
 
 /**
+ * #2792 (Sub-task 1): does a tool call carry a captured failure-reason string?
+ *
+ * Pure predicate on the projected SINGLE path — `call.error` (projected by
+ * `toolSummaryFromToolRow` from `ToolUseRow.toolError`) is the only source of
+ * truth. A missing, non-string, or empty/whitespace-only value reads as absent
+ * so a failed call with no captured text renders the explicit absent-reason
+ * placeholder — it never reads as succeeded and never silently blanks. No
+ * fallback extraction, no multi-path parsing (contract-trust rule).
+ */
+export function hasErrorText(call: ToolCallSummary): call is ToolCallSummary & { error: string } {
+  return typeof call.error === 'string' && call.error.length > 0;
+}
+
+/**
  * Compact token count for single-line node display (Spec #2723 R-2 / AC2).
  *
  * Display-only abbreviation used by the ChatNode compact token row so the five
