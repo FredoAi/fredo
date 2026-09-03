@@ -25,6 +25,7 @@ import {
   ownerSessionIdFromCorrId,
   toolSummaryFromToolRow,
   nsToIso,
+  sessionHasAnyRow,
 } from '../rowDerivation';
 
 let seq = 0;
@@ -310,5 +311,29 @@ describe('chat chain + ordering', () => {
     expect(state.lastAgentBySession.get('s2')).toBe('mid');
     // 'late' chains to 'early' (its session's nearest preceding row).
     expect(state.agentNodes.get('late')?.prevCorrId).toBe('early');
+  });
+});
+
+describe('sessionHasAnyRow (G-074 ghost boundary, Spec #2791)', () => {
+  it('is true when the session has a chat row, a tool row, or both', () => {
+    expect(sessionHasAnyRow([chatRow({ sessionId: 's1' })], [], 's1')).toBe(true);
+    expect(sessionHasAnyRow([], [toolRow({ sessionId: 's1' })], 's1')).toBe(true);
+    expect(sessionHasAnyRow([chatRow({ sessionId: 's1' })], [toolRow({ sessionId: 's1' })], 's1')).toBe(true);
+  });
+
+  it('is false when the session has NO rows in either source', () => {
+    expect(sessionHasAnyRow([], [], 's1')).toBe(false);
+  });
+
+  it('scopes to the selected session (does not match other sessions\u2019 rows)', () => {
+    const chat = [chatRow({ sessionId: 's1' }), chatRow({ sessionId: 's2' })];
+    const tools = [toolRow({ sessionId: 's2' })];
+    expect(sessionHasAnyRow(chat, tools, 's1')).toBe(true); // s1 has a chat row
+    expect(sessionHasAnyRow(chat, tools, 's3')).toBe(false); // s3 has none
+    expect(sessionHasAnyRow([chatRow({ sessionId: 's1' })], tools, 's2')).toBe(true); // s2 has a tool row
+  });
+
+  it('is false for an empty/no selection (nothing can be a ghost)', () => {
+    expect(sessionHasAnyRow([chatRow()], [], '')).toBe(false);
   });
 });
