@@ -1,1 +1,5 @@
+# All paths are owned by the single maintainer (owner). When a repository ruleset
+# on `release/stable` enables "require code owner review", any PR into the release
+# branch that touches shipped code demands @pktron's approval (AC1/AC2).
+# CODEOWNERS is path-based; branch scoping is enforced by the ruleset, not here.
 * @pktron
