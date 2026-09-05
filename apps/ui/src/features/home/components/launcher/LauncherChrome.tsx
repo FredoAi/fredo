@@ -157,6 +157,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
         pointerEvents="auto"
         cursor={onToggle ? 'pointer' : 'default'}
         role="button"
+        tabIndex={0}
         aria-label="Fredo launcher"
         aria-expanded={open ?? false}
         onClick={onToggle}
