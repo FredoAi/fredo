@@ -20,3 +20,21 @@
 
 ## Overlapping prior suites
 - (none yet — first suite for the launcher surface)
+
+## #2819 extension — idle/engaged launcher baseline (must-not-change)
+
+> Issue #2819 (desktop launcher matches `desktop-light.png`; engaged state revealed by
+> focus/query). These invariants MUST hold after the idle/engaged rework — any FAIL is a
+> regression. Run alongside R-1..R-6.
+
+## R-7 — Command-bar grid filter + keyboard nav unchanged
+
+- [ ] R-7: The engaged grid behavior (where the spec does not redesign it) is unchanged: query filter (`filteredEntries`), keyboard nav (↑↓/←→ clamp, no wrap), Enter/Space open, tile `aria-label`s = `SHOWABLE_FEATURES` names, empty-grid no-op (`entryCount === 0` hides nav hints), and the grid reflects the live feature registry (never a hardcoded list).
+
+## R-8 — Own-kernel window contract + z-order unchanged
+
+- [ ] R-8: Opening a tile still routes through the own-kernel full-lifecycle opener (not a raw `openWindow`); the z-order (window stack above the desktop, below the HUD) and the ST-6 `WindowManager` fix are intact; re-open de-dupes (`openWindows` stays 1). Reference #2808 regression R-3/R-4.
+
+## R-9 — Theming token-native across the newly added chrome
+
+- [ ] R-9: No hardcoded hex/`rgba(`/`rgb(` in any NEW side-tick / dot-grid / rounded-frame component + the existing launcher files; no `var(--x)NN` alpha-append; hover/tint via `tint('var(--accent-primary)', N)`; Chakra v3 API only (never `NativeSelect`). Reference F-6 (#2808) + desktop-shell R-8.
