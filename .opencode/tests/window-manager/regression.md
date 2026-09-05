@@ -68,3 +68,18 @@
 - **R-8 (graceful degradation) — PASS.** `aero`/`bogus_style_xyz`/absent all reload clean with no console error; single brand chrome renders; Settings exposes no window-style variant.
 - **R-9 (test suite mock stays green) — PASS.** `pnpm --filter @fredo/ui test:run` 693/693 passing (per dev summaries); mocks re-pointed to own `useWindowActions`.
 - **R-10 (no re-render loop / no console errors) — PASS.** No `Maximum update depth`/`Uncaught` observed during the round-2 lifecycle drive.
+
+## Test run (round 3) — chrome/tile resolved to theme CSS vars (AC3 fix)
+
+> Live-driven via `pnpm dev:tauri` (spec/2807 @ d74a0563; served root confirmed by dev-env Status). Round-3 fix (commit `d74a056`): `WindowChrome.tsx` header/tile reference the theme CSS vars directly. Regression-swept after the AC3 live-render re-test.
+
+- **R-1 (AC2 — feature windows still open from the toolbar) — PASS.** Clicking the Mission Monitor launcher opens the window through the own kernel (brand chrome renders); the toolbar open path is unaffected by the chrome edit.
+- **R-2 (AC2 — three out-of-slice callers) — PARTIAL.** Callers remain re-pointed to the own `useWindowActions` (static); Mission Monitor panel renders through the own kernel (title neutralization to "Sessions" on fresh mount). Run CLI / companion caller windows not individually driven this round (they only mount inside a feature window — out of the chrome-edit surface).
+- **R-3 (AC2 — z-order/focus unchanged) — PASS.** Opening a 2nd window (Query Viewer) brings it to top (accent border), the 1st window drops to unfocused (neutral tint); minimize/restore and maximize/restore preserve state (maximized→restored returns to the exact prior float 480×320 @ 48,48).
+- **R-4 (AC3/AC4 — no cross-feature import) — PASS.** Own kernel under `shared/window-system/`; `@maomaolabs/core` only as the retained `Toolbar` dock (DesktopToolbar.tsx:3, Issue 2/4).
+- **R-5 (Chakra v3) — PASS.** `disabled`/`variant="ghost"`/`bg`/`borderColor`/`_hover`; no `isDisabled`/`colorScheme`; close uses `variant="ghost"` + `tint()` hover.
+- **R-6 (theming contract — no hardcoded hex/rgba) — PASS (the round-2 PARTIAL is now FULL).** Static grep clean (0 hardcoded hex/rgba, 0 alpha-append, 0 `bg.subtle`/`bg.muted`/`border.subtle` code-prop usages). **Live render now re-tints correctly in BOTH presets:** header `bg="var(--header-bg)"` computes rgb(42,42,42) classic / rgb(17,17,17) turbo; icon tile `bg="var(--card-hover-bg)"` computes rgb(58,58,58) classic / rgba(168,85,186,0.2) turbo; title `fg.default` readable (classic ≈8.9:1, turbo ≈17:1) on the dark header — no light-on-light.
+- **R-7 (lifecycle — no double-instance / no focus steal) — PASS (re-confirm).** One window per feature id; the open-path re-focuses/no-ops; close succeeds from any z-order; no focus steal.
+- **R-8 (graceful degradation) — PASS (re-confirm).** `Fredo_window_style` grep = 0 matches → nothing reads the key (reader deleted ST-4); a legacy value degrades to the single brand chrome with no crash (round-2 evidence: aero/bogus/absent all clean).
+- **R-9 (test suite mock stays green) — PASS.** Per dev summary: `pnpm --filter @fredo/ui test:run` 693/693; mocks re-pointed to own `useWindowActions` (unchanged this round).
+- **R-10 (no re-render loop / no console errors) — PASS.** No `Maximum update depth`/`Uncaught` during the round-3 lifecycle drive; console clean (only pre-existing `motion() is deprecated` warn + one transient React Flow "parent container width/height" warn, benign).
