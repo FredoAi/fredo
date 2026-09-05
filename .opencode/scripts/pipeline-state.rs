@@ -244,6 +244,48 @@ fn run_cmd(bin: &str, args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Robust worktree removal. Plain `git worktree remove` refuses a worktree that
+/// still carries gitignored build artifacts (`node_modules`/`dist` created by
+/// pnpm install/build) with "Directory not empty" on Windows, and pnpm leaves
+/// junction/symlink remnants in `node_modules` that `git clean -fdX` cannot
+/// remove — so a single pre-clean + remove leaks a deregistered physical dir on
+/// every pnpm-building developer worktree (G-018, #2808: all 4 devs). This retries
+/// the pre-clean + remove, then sweeps the gitignored leftover debris directly and
+/// retries. Tracked work is already committed+pushed, so sweeping a deregistered
+/// worktree's physical dir is safe. Returns Ok when the worktree is gone.
+fn remove_worktree_robust(path: &str) -> anyhow::Result<()> {
+    // First pass: pre-clean ignored files (best-effort) then the plain remove.
+    let _ = run_cmd("git", &["clean", "-fdX", path]);
+    match run_cmd("git", &["worktree", "remove", path]) {
+        Ok(_) => return Ok(()),
+        Err(_) => {
+            // Second pass: the pre-clean did not clear the debris (pnpm junction
+            // remnants). Sweep the gitignored build-artifact dirs directly, then
+            // retry the remove once.
+            for artifact in ["node_modules", "dist", "target"] {
+                let _ = std::fs::remove_dir_all(std::path::Path::new(path).join(artifact));
+            }
+            match run_cmd("git", &["worktree", "remove", path]) {
+                Ok(_) => return Ok(()),
+                Err(_) => {
+                    // The worktree is deregistered but a physical dir remains
+                    // (git could not reap it). SWEEP the whole leftover dir — it
+                    // is gitignored scratch, and if tracked work existed the
+                    // dirty-refusal guard would already have blocked us. Best-effort
+                    // (a failure here is surfaced by the caller as the real reason).
+                    if std::path::Path::new(path).exists() {
+                        std::fs::remove_dir_all(path)?;
+                    }
+                    if std::path::Path::new(path).exists() {
+                        anyhow::bail!("worktree dir not fully swept: {}", path);
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
 // ── Mock GitHub (FREDO_MOCK_GH=1) ────────────────────────────────────────────
 //
 // The validation harness runs the state machine against a local mock repo instead
@@ -3250,15 +3292,32 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             };
             // Build artifacts (node_modules/dist — gitignored, created by pnpm
             // install/build in the worktree) make plain `git worktree remove` fail
-            // with "Directory not empty" on Windows (observed on #2688/#633/#2700).
-            // Pre-clean ONLY ignored files with `git clean -fdX` — tracked files
-            // and uncommitted changes survive, so the dirty-refusal guard below
-            // still protects uncommitted work. Best-effort: if the clean itself
-            // fails, the remove attempt below reports the real error.
-            let _ = run_cmd("git", &["clean", "-fdX", &path]);
-            run_cmd("git", &["worktree", "remove", &path])?;
-            println!("WORKTREE REMOVED: {}", path);
-            append_event(issue, "remove-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("removed worktree {}", path))?;
+            // with "Directory not empty" on Windows (observed on #2688/#633/#2700
+            // and every #2808 developer worktree). Pre-clean ONLY ignored files
+            // with `git clean -fdX` — tracked files and uncommitted changes
+            // survive, so the dirty-refusal guard below still protects uncommitted
+            // work. But pnpm leaves junction/symlink remnants in `node_modules`
+            // that `git clean -fdX` CANNOT remove, so a single pre-clean + remove
+            // still fails and leaks a deregistered physical dir on every pnpm-
+            // building developer worktree (G-018, re-observed 2026-09-05).
+            // Hardened: retry the pre-clean+remove, and on a second failure sweep
+            // the gitignored leftover debris directly (the deregistered worktree
+            // is scratch — tracked work is already committed+pushed, so removing
+            // the physical dir is safe), then `git worktree remove` again. This
+            // makes the recurring per-developer friction a one-shot no-op instead
+            // of a hand-cleaned error the dev must work around.
+            match remove_worktree_robust(&path) {
+                Ok(()) => {
+                    println!("WORKTREE REMOVED: {}", path);
+                    append_event(issue, "remove-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("removed worktree {}", path))?;
+                }
+                Err(e) => {
+                    // Survived the dirty-refusal guard but the physical dir could
+                    // not be swept — surface the precise reason (do not swallow).
+                    append_event(issue, "remove-worktree", &a.actor, phase_of(a)?.as_str(), "failed", &format!("remove-worktree failed: {}", e))?;
+                    anyhow::bail!("remove-worktree failed: {}", e);
+                }
+            }
         }
         "generate-work" => {
             // Deprecated: sub-issues and the consolidated tester issue were removed

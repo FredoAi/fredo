@@ -31,6 +31,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 
 ## Known Failure Modes
+
 ### G-102: measurement_acs_blocked_by_sandbox_denied_actions_verbs
 - **activation_date:** 2026-09-03
 - **observed:** #2801 round 1 — the two timing-measurement ACs (AC1 median PR wall-clock, AC4 warm-cache re-run) of a config-only CI spec were UNVERIFIED because the sandbox denies `gh api` (Actions REST per-job `started_at`/`completed_at`, step-log cache-hit lines) and `gh run rerun` (warm re-run trigger) to the tester AND the SI. The QA Plan spelled test cases whose evidence depends on exactly these denied verbs, so the ACs could never be evidenced in-sandbox.
@@ -354,7 +355,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a theming acceptance criterion names a theme mode (light/dark) the product does not expose; rather than looping implementation/testing rounds to "verify" a nonexistent surface, the missing mode should be resolved as a PO scope decision.
 - **guardrail:** When a theming AC requires a mode (light/dark toggle) that the product does not actually expose, do NOT silently loop rounds or substitute the observable — verify the theming feature's real mode surface once (exact UI path), then route the discrepancy to the human as a PO scope decision (amended AC or dropped leg), record the amendment on the issue, and re-verify against the amended criterion. Theme-token-only styling stays valid regardless of how many modes ship.
 - **home:** playbooks/self-improver.md (audit/loop guidance — add missing-mode PO-scope routing) + references.md (G-050)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (re-validated 2026-09-05, #2808 — AC3 + AC5 "light" legs were documented-partial because the product ships only `turbo`/`classic` dark themes + a user accent, no real light theme; the tester correctly marked them PO-scope (G-050) and did NOT loop rounds, and the dark-theme legs passed. No round burned on an unsatisfiable light surface.)
 
 ### G-051: opencode_launch_never_diagnosed_via_binary_spelunking
 - **activation_date:** 2026-08-17
@@ -509,7 +510,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** the remove-worktree action cannot delete a worktree that ran pnpm install/build.
 - **guardrail:** remove-worktree pre-cleans ignored files (`git clean -fdX`) before `git worktree remove`; tracked changes and uncommitted work survive, so the dirty-refusal guard is intact. When the pre-clean still fails on gitignored debris (`node_modules`/`dist`), clean with a `node -e` fs.rmSync one-liner (node is allowlisted; no semicolons) and confirm the worktree directory is gone — a subsequent "not a working tree" retry is expected because the metadata was already unregistered.
 - **home:** pipeline-state.rs `remove-worktree` action (+ harness test in test-scripts.ps1) + developer playbook/worktree hygiene
-- **effectiveness:** **Partial** (updated 2026-08-12, #2707 — and re-observed #2807, 2026-09-05: every one of the 4+ developers on #2807 hit the identical "Directory not empty" `remove-worktree` wall after a `pnpm install`/build in their detached worktree, each workaround-ing with a `node -e` fs.rmSync one-liner and reporting the action ERROR even though the worktree was eventually removed). The pre-clean still loses on Windows when pnpm leaves junction/symlink remnants in `node_modules`, so the action fails once ("Directory not empty") and the success event is not recorded even though the worktree is eventually removed/unregistered. Follow-up (SI script domain — PRIORITY): make the pre-clean failure loud instead of swallowed (`let _ =`), or retry `git worktree remove`, or sweep the gitignored `node_modules`/`dist` (pre-clean `git clean -fdX`) before `git worktree remove`; the recurring per-developer friction is a real per-round cost.
+- **effectiveness:** **Resolved** (updated 2026-09-05, #2808 — re-observed on ALL 4 developer worktrees + the fix round: `remove-worktree` failed with "Directory not empty" after every `pnpm install`/build because pnpm leaves junction/symlink remnants in `node_modules` that `git clean -fdX` cannot remove. **Hardened in `pipeline-state.rs`:** the `remove-worktree` action now uses a robust helper that (1) pre-cleans ignored files then `git worktree remove`, (2) on failure sweeps the gitignored `node_modules`/`dist`/`target` and retries, and (3) on a second failure sweeps the whole leftover deregistered worktree dir and reports `WORKTREE REMOVED` — the recurring per-developer friction is now a one-shot no-op instead of a hand-cleaned error. Validated: test-scripts.ps1 97/97. Guardrail effectively resolved — the future recurring case should be a no-op rather than a per-round hand-clean.)
 
 ### G-019: granular_edit_deny_overrides_allow
 - **activation_date:** 2026-08-11
@@ -670,7 +671,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** an unrelated PR's branch carries another spec's content onto main, so main receives spec work before its audit and the spec-PR merge no longer reflects the true delivery.
 - **guardrail:** NEVER fork a feature/pipeline branch from a `spec/*` branch — always from `main` (spec branches carry unmerged spec content; a squash of such a branch leaks that content to main). The SI should verify a spec PR's merge diff contains only that spec's expected files before recording the merge as the delivery.
 - **home:** playbooks/self-improver.md step 6/9 (branch hygiene — "always work from main") + pipeline-state.rs merge-guard hardening candidate (G-035)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (re-validated 2026-09-05, #2808 — the spec PR merge diff after `testing → audit` was verified to contain ONLY the expected launcher files (5 components, Home.tsx + index.ts wiring, DesktopToolbar.tsx deletion, the WindowManager z-order fix, and the evidence screenshots); no cross-spec leakage. The merged diff matched the spec exactly.)
 
 ### G-036: mergeable_state_transient_unknown_after_push
 - **activation_date:** 2026-08-14
