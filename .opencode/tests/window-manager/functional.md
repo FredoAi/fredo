@@ -171,3 +171,30 @@
 - **AC1 PASS, AC4 PASS** — own engine imported (no `@maomaolabs/core` in `Home.tsx`); `WINDOW_STYLES`/`WindowStyleSelector`/`Fredo_window_style` fully removed, single brand chrome renders, legacy values degrade cleanly.
 - **Deferred (per plan, NOT a FAIL):** global window keyboard bindings (`CmdOrCtrl+W/M/Shift+M`, `Ctrl+Tab`, `Alt+Space`) are deferred — window ops driven by chrome controls + pointer gestures.
 - **Tooling note:** the synthetic pointer harness cannot reliably trigger CSS `:hover` / React `onPointerDown` in the WebView2 automation environment (same class as round-2's synthetic-click limitation). The min/max control hover tint is verified var-based via the generated hover CSS rule (`.css-n2lk79:is(:hover,[data-hover])` → `background: var(--card-hover-bg)`) + root `--card-hover-bg` resolution; focus/z-order is verified via the z-order-on-open observable (borderColor) rather than a synthetic header click. Neither is a product defect.
+
+## #2821 extension — app drawer on minimize (bug 6 / AC6) + lifecycle regression
+
+> Issue #2821 — the launcher-surface defect correction. These cases cover the app-drawer
+> defect (bug 6 / AC6) and the window-lifecycle no-regression guard (REQ-7 / R7). Map 1:1 to
+> `.opencode/tmp/2821/triage.md` `## QA Expert` (REQ-6, REQ-7 / R6, R7). The launcher-surface
+> bugs 1/2/4/5 (Main fidelity, avatar, dual LEDs, persistent search) live in the `launcher` suite.
+
+## F-16 (REQ-6/AC6) — App drawer appears on minimize, lists all open apps
+
+- [ ] F-16: Minimize / float a feature window; verify an app drawer (bottom-docked tray, `role="region"`, `aria-label="Open applications"`) appears listing every open app (including minimized/floating) with Restore / Focus / Close actions. Compare against `bugs/desktop-main.png` (no drawer) — must NOT match. The trigger is **minimize-driven** (a window with `isMinimized===true`), independent of the search-driven `| APPS` grid.
+  - **Edge:** empty (no open apps) → consistent empty state or consistently hidden; one app → single entry; many apps → ALL open apps listed, correct ordering (last-focused on top), no clipping (scroll if > ~6). Re-open after all closed; close/reopen repeatedly without stale entries.
+
+## F-17 (REQ-6/AC6) — Drawer restore / focus / close actions
+
+- [ ] F-17: From the drawer, close → removes the window (and entry); restore → re-displays the SAME window at saved geometry + raises to focus (`focusWindow(id,{minimize:false})`); focus → raises to front. Each action targets the correct window; no wrong-window actions, no stale drawer entries after rapid interleave.
+  - **Edge:** interleave minimize/restore/close rapidly; verify no duplicate frames and zero console errors.
+
+## F-18 (REQ-6/AC6, a11y) — Drawer keyboard + accessible names
+
+- [ ] F-18: Drawer is keyboard-operable (arrow keys between entries, Tab into actions, ESC closes); each app entry and each action has an accessible name; focus moves into the drawer on open and returns to the launcher on close. Screen reader announces each app + action.
+  - **Edge:** per the target hints (`↑↓ NAVIGATE`, `←→ SELECT`, `ESC CLOSE`). No cross-feature imports — entries read app identity via `FredoFeatureClass` metadata, never another feature's module.
+
+## F-19 (REQ-7/R7) — Window lifecycle no-regression + build gates
+
+- [ ] F-19: Full lifecycle open/close/minimize/restore/focus behaves exactly as before (no crash, no lost state, correct grouping/focus); the two bottom LEDs (AC4) and the drawer (AC6) co-exist without draw-order occlusion; tokens→CSS-var→`tint()` flow intact (no raw hex/rgba introduced); `pnpm --filter @fredo/ui build` green; Rust `cargo check` zero warnings; `test:run` green.
+  - **Edge:** rapid cycles, multiple windows, narrow window. Token-hygiene scan over changed files rejects hardcoded colors and invalid `var(--x)NN` alpha-appends. Any build/test warning or failure ⇒ FAIL gate.
