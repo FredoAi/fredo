@@ -55,3 +55,16 @@
 - **R-8 (graceful degradation) — PASS (no-crash) / chrome render UNVERIFIED.** `aero`/`bogus_style_xyz`/absent all reload clean with no console error; Settings exposes no window-style variant.
 - **R-9 (test suite mock stays green) — PASS.** `pnpm --filter @fredo/ui test:run` reported 693/693 passing (per dev summaries); mocks re-pointed to own `useWindowActions`.
 - **R-10 (no re-render loop / no console errors) — PASS (observed).** No `Maximum update depth`/`Uncaught` in console.
+
+## Test run (round 2)
+
+- **R-1 (AC2 — feature windows still open from the toolbar) — PASS.** Clicking the Mission Monitor launcher opens the window through the own kernel (round-2 `onClickCapture` → `openFeatureWindow` → own `openWindow`); the window renders with the own brand chrome and is reachable/interactive. The toolbar open path no longer dispatches to the unmounted `@maomaolabs/core` store.
+- **R-2 (AC2 — three out-of-slice callers) — PARTIAL.** Callers remain re-pointed to the own `useWindowActions` (static). Mission Monitor panel renders through the own kernel (title neutralization to "Sessions" applies on fresh mount); Run CLI launcher window-close path not individually driven this round (the caller window only mounts inside a feature window).
+- **R-3 (AC2 — z-order/focus unchanged) — PASS.** Focus brings a window to top (accent border + `tint()` halo), receding window drops to unfocused (neutral border); minimize/restore and maximize/restore preserve state; a maximized→restored window returns to its prior float geometry (480×320 @ 48,48).
+- **R-4 (AC3/AC4 — no cross-feature import) — PASS.** Own kernel under `shared/window-system/`; no `from 'features/` import; `@maomaolabs/core` only as the retained `Toolbar` dock (Issue 2/4).
+- **R-5 (Chakra v3) — PASS.** `disabled`/`variant="ghost"`/`bg`/`borderColor`/`_hover`; no `isDisabled`/`colorScheme`; close uses `variant="ghost"` + `tint()` hover.
+- **R-6 (theming contract — no hardcoded hex/rgba) — PARTIAL.** Static grep clean (0 hardcoded hex/rgba in chrome code). **BUT live render reveals the header/icon-tile do NOT re-tint** — `bg.subtle`/`bg.muted` resolve to Chakra defaults (#fafafa/#f4f4f5), not `var(--header-bg)`/`var(--card-hover-bg)`, so the title is light-on-light (invisible) in both theme presets. This is the AC3 failure (see functional F-13).
+- **R-7 (lifecycle — no double-instance / no focus steal) — PASS.** Rapid double-open yields one window; update-while-minimized does NOT steal focus or restore (window stayed `display:none`, content updated 3→4 rows); close succeeds from any z-order.
+- **R-8 (graceful degradation) — PASS.** `aero`/`bogus_style_xyz`/absent all reload clean with no console error; single brand chrome renders; Settings exposes no window-style variant.
+- **R-9 (test suite mock stays green) — PASS.** `pnpm --filter @fredo/ui test:run` 693/693 passing (per dev summaries); mocks re-pointed to own `useWindowActions`.
+- **R-10 (no re-render loop / no console errors) — PASS.** No `Maximum update depth`/`Uncaught` observed during the round-2 lifecycle drive.
