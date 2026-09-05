@@ -5,6 +5,7 @@ import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
 import { StreamStatus } from './StreamStatus';
+import { AppDrawer } from '../../../shared/window-system/AppDrawer';
 import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
@@ -185,6 +186,7 @@ export const Home: React.FC = () => {
                 <WindowManager />
                 <HomeDesktop registerOpenFeature={registerOpenFeature} />
                 <StreamStatus />
+                <AppDrawer />
                 <FloatingSettingsButton features={ALL_FEATURES} />
               </Box>
               <LauncherShell
