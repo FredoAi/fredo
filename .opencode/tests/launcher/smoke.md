@@ -14,3 +14,6 @@
   - **PASS.** `button[aria-label="Settings"]` opened the settings dialog (`chakra-dialog__content`) with nav sections: Companion, Appearance, Fredo Setup, Telemetry + FEATURES (My Work Items, Infrastructure Diagram, Model Storage, Run CLI). The Appearance section (BASE THEME Turbo/Classic, ACCENT COLORS, BACKGROUNDS, TEXT, STATUS, FONTS, ANIMATION STYLE) is visible — theme switching works.
 - [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2808/e2e/smoke.jpeg")` succeeds
   - **PASS.** Screenshots captured continuously (`.opencode/tmp/2808/e2e/*.jpeg`) — `tauri_webview_screenshot` succeeds.
+
+## #2819 extension — idle launcher surface smoke
+- [ ] S-6: Idle launcher surface renders — on a fresh launch the avatar + `>` command bar are visible in the IDLE state (`surfaceOpen:true, engaged:false` — no notch click), plus the LEFT side-tick ruler, RIGHT dot-grid, and thin rounded frame; `#fredo-launcher-grid` is ABSENT. Focusing the command bar reveals the grid + hints (engaged); ESC returns to idle focusing the command bar.
