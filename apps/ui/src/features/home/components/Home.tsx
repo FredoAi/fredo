@@ -3,7 +3,7 @@ import { Box } from '@chakra-ui/react';
 import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
 import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
-import { DesktopToolbar } from './settings/DesktopToolbar';
+import { LauncherShell } from './launcher/LauncherShell';
 import { DesktopBackground } from './DesktopBackground';
 import { StreamStatus } from './StreamStatus';
 import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
@@ -129,7 +129,7 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   }, [openWindow, closeWindow, updateWindow]);
 
   // Keep the ref in sync so transition callbacks always call the latest version, and
-  // register the opener with the Home-level ref so the sibling DesktopToolbar (which
+  // register the opener with the Home-level ref so the sibling LauncherShell (which
   // renders outside HomeDesktop, inside the provider) can route launcher clicks through
   // the own kernel's full-lifecycle openFeatureWindow. openFeatureWindow is a stable
   // useCallback and registerOpenFeature is a stable useCallback, so this runs once.
@@ -148,7 +148,7 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
 // ── Top-level Home component ──────────────────────────────────────────────────
 
 export const Home: React.FC = () => {
-  // Stable ref to the own-kernel openFeatureWindow so the sibling DesktopToolbar (which
+  // Stable ref to the own-kernel openFeatureWindow so the sibling LauncherShell (which
   // renders outside HomeDesktop, inside the provider) can route a launcher click through
   // the own kernel's full-lifecycle opener. The initial no-op default means any click
   // before HomeDesktop's registration effect runs is a harmless no-op.
@@ -182,7 +182,7 @@ export const Home: React.FC = () => {
                 <StreamStatus />
                 <FloatingSettingsButton features={ALL_FEATURES} />
               </Box>
-              <DesktopToolbar
+              <LauncherShell
                 showableFeatures={SHOWABLE_FEATURES}
                 onOpenFeature={(id, feature) => openFeatureRef.current(id, feature)}
               />
