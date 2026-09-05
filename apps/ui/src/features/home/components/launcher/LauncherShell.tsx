@@ -5,7 +5,6 @@ import { Box, useBreakpointValue } from '@chakra-ui/react';
 import { useWindows } from '../../../../shared/window-system/useWindows';
 // Live stream/connection flag — mirrors StreamStatus.tsx (ONLINE dot).
 import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
-import { tint } from '../../../../shared/utils/colorTint';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
 
 import { LauncherChrome } from './LauncherChrome';
@@ -17,13 +16,27 @@ import { PixelButler } from './PixelButler';
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1).
  *
  * Replaces the third-party `Toolbar` (`DesktopToolbar.tsx`). This is a
- * full-screen launchpad overlay (Start/Launchpad): the FREDO notch trigger +
- * online clock are always visible (closed state); opening via the notch reveals
- * the pixel-butler avatar, `>` search-or-command bar, the `| APPS` feature grid
- * and the keyboard nav hints. Opening a feature collapses the shell so the
- * freshly opened window is visible; ESC closes and restores focus to the notch.
+ * full-screen launchpad overlay (Start/Launchpad). It uses a 3-state model
+ * (#2819, replacing the old single `open` boolean that was closed by default):
  *
- * The host owns the shared state (open/closed, query, selected tile index) and
+ *   - Collapsed  (`open=false`): bare chrome only — FREDO notch + online clock
+ *     + decorative desktop frame / side-ticks / dot-grid; NO avatar/bar/grid.
+ *   - Idle       (`open=true, engaged=false`): chrome + pixel-butler avatar +
+ *     `>` search-or-command bar; NO app grid, NO keyboard hints. This is the
+ *     default at launch (fixes the blank-desktop first impression).
+ *   - Engaged    (`open=true, engaged=true`): idle surface + the `| APPS` grid
+ *     and the keyboard-nav hints (revealed when the command bar is focused or a
+ *     query is present).
+ *
+ * `open` is the surface-visible gate (TRUE by default at launch). `engaged`
+ * (grid + hints) is managed as explicit state: reached when the command bar is
+ * focused or a query is typed; returned to idle on ESC, on focus leaving the
+ * launcher surface with an empty query (a `:focus-within` guard on the launcher
+ * root, NOT a raw input `onBlur`), and on query-free blur-to-outside. ESC
+ * returns to idle (surface stays) — it no longer closes the shell; the shell
+ * collapses to bare chrome only on window-open or the `—` minimize control.
+ *
+ * The host owns the shared state (open/engaged, query, selected tile index) and
  * the keyboard-nav orchestration (↑↓ / ←→ / Enter / Space / Esc). It reads the
  * live own-kernel window list via `useWindows()` (used to collapse the shell
  * when a feature window opens through any path) and dispatches every tile open
@@ -55,12 +68,20 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
 
-  const [open, setOpen] = useState(false);
+  // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
+  // fresh launch shows the avatar + command bar instead of a blank desktop.
+  const [open, setOpen] = useState(true);
+  // Grid + keyboard-hints sub-state: reached when the command bar is focused or a
+  // query is present; returns to idle on ESC / focus-leaving-the-surface (empty query).
+  const [engaged, setEngaged] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const prevWindowCountRef = useRef(currentWindows.length);
+  // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
+  // command bar) so the grid stays hidden while the surface returns to idle.
+  const skipNextFocusEngageRef = useRef(false);
 
   // Command-bar query filters the grid by tile name (type-ahead highlight).
   const filteredEntries = useMemo(() => {
@@ -89,37 +110,65 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (currentWindows.length > prev) setOpen(false);
   }, [currentWindows]);
 
-  // On open, focus the command bar (the grid-navigation anchor).
+  // Any path that collapses the surface (window open, `—` minimize, notch
+  // toggle-off) resets `engaged` so re-opening via the notch always lands idle.
   useEffect(() => {
-    if (!open) return;
-    const input = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
-    input?.focus();
+    if (!open) setEngaged(false);
   }, [open]);
 
-  // Keep the keyboard-selected tile scrolled into view within the grid's scroll region.
+  // Keep the keyboard-selected tile scrolled into view within the grid's scroll
+  // region — only meaningful while the grid is revealed (engaged).
   useEffect(() => {
-    if (!open) return;
+    if (!engaged) return;
     const container = overlayRef.current;
     if (!container) return;
     const cells = container.querySelectorAll<HTMLElement>('[role="grid"] [role="gridcell"]');
     cells[safeSelectedIndex]?.scrollIntoView({ block: 'nearest' });
-  }, [open, safeSelectedIndex]);
+  }, [engaged, safeSelectedIndex]);
 
-  const closeLauncher = useCallback((refocusNotch: boolean) => {
+  const toggleOpen = useCallback(() => {
+    // Pure surface visibility toggle (#2819). Opening via the notch restores the
+    // IDLE surface (engaged reset by the `[open]` effect when collapsed), never
+    // the engaged grid. Closing via the notch leaves focus on the notch, which
+    // already holds it — no restore needed.
+    setOpen((o) => !o);
+  }, []);
+
+  // Reached-engaged: the command bar received real focus. Programmatic focus
+  // (the post-ESC refocus) is suppressed so the grid stays hidden while idle.
+  const handleBarFocus = useCallback(() => {
+    if (skipNextFocusEngageRef.current) {
+      skipNextFocusEngageRef.current = false;
+      return;
+    }
+    setEngaged(true);
+  }, []);
+
+  // Leaves-engaged (`:focus-within` guard on the launcher root): collapse to
+  // idle ONLY when focus leaves the launcher surface AND the query is empty. A
+  // focus hop INTO a grid tile stays inside the surface, so it does not collapse
+  // before the tile `onSelect` runs (the tile-click race). A non-empty query
+  // keeps the grid engaged so ESC is the only exit.
+  const handleSurfaceBlur = useCallback(
+    (e: React.FocusEvent<HTMLElement>) => {
+      if (query.trim() !== '') return;
+      const root = overlayRef.current;
+      const next = e.relatedTarget as Node | null;
+      if (root && (!next || !root.contains(next))) {
+        setEngaged(false);
+      }
+    },
+    [query],
+  );
+
+  // `—` minimize control: collapse the launcher to bare chrome (notch + clock +
+  // decorative frame) and land focus on the FREDO notch trigger.
+  const handleMinimize = useCallback(() => {
     setOpen(false);
-    if (!refocusNotch) return;
-    // Restore focus to the FREDO notch trigger on close (Esc / toggle-off).
+    setQuery('');
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
     });
-  }, []);
-
-  const toggleOpen = useCallback(() => {
-    // Pure toggle. Focus handling is split: opening focuses the command bar (the
-    // `open` effect), and closing via Escape restores focus to the notch
-    // (`closeLauncher(true)`). Clicking the notch to close leaves focus on the
-    // notch, which already holds it — no restore needed.
-    setOpen((o) => !o);
   }, []);
 
   const openSelected = useCallback(() => {
@@ -143,13 +192,26 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     setQuery(q);
     // A fresh filter restarts selection at the first tile.
     setSelectedIndex(0);
+    // A present query reveals the grid (engaged) even without surface focus.
+    if (q.trim() !== '') setEngaged(true);
   }, []);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        closeLauncher(true);
+        // #2819: ESC returns to IDLE (grid + hints hide), the surface stays.
+        setEngaged(false);
+        // Restore focus to the command-bar searchbox (idle affordance) WITHOUT
+        // re-engaging — the programmatic refocus is suppressed so the grid stays
+        // hidden until the user actually focuses/types again.
+        window.requestAnimationFrame(() => {
+          const input = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
+          if (input && document.activeElement !== input) {
+            skipNextFocusEngageRef.current = true;
+            input.focus();
+          }
+        });
         return;
       }
 
@@ -189,18 +251,23 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           break;
       }
     },
-    [closeLauncher, columns, entryCount, openSelected],
+    [columns, entryCount, openSelected],
   );
 
   return (
     <>
-      {/* Chrome is always visible: FREDO notch trigger + online clock (closed state
-          = notch + clock only). It sits ABOVE the open overlay (zIndex 1200 vs 1100)
-          and is pointerEvents:none except the notch, so the overlay stays interactive. */}
+      {/* Chrome is always visible: FREDO notch trigger + online clock + the
+          decorative desktop frame / side-ticks / dot-grid (collapsed state = bare
+          chrome). It sits ABOVE the open overlay (zIndex 1200 vs 1100) and is
+          pointerEvents:none except the notch, so the overlay stays interactive.
+          `engaged` + `selectedIndex` drive the engaged-only hint row + the
+          dot-grid accent scroll-thumb. */}
       <LauncherChrome
         entryCount={entryCount}
         isOnline={isConnected}
         open={open}
+        engaged={engaged}
+        selectedIndex={safeSelectedIndex}
         onToggle={toggleOpen}
       />
 
@@ -212,8 +279,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           position="fixed"
           inset="0"
           zIndex={1100}
-          bg={tint('var(--body-bg)', 55)}
+          bg="var(--card-bg)"
           onKeyDown={handleKeyDown}
+          onBlur={handleSurfaceBlur}
         >
           <Box
             display="flex"
@@ -239,14 +307,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             <LauncherCommandBar
               query={query}
               onQueryChange={handleQueryChange}
-              gridOpen={open}
+              gridOpen={engaged}
               ariaActivedescendant={activeTileId}
+              onFocus={handleBarFocus}
+              onBlur={handleSurfaceBlur}
+              onMinimize={handleMinimize}
             />
-            <LauncherAppGrid
-              entries={filteredEntries}
-              selectedIndex={safeSelectedIndex}
-              onSelect={handleSelect}
-            />
+            {engaged && (
+              <LauncherAppGrid
+                entries={filteredEntries}
+                selectedIndex={safeSelectedIndex}
+                onSelect={handleSelect}
+              />
+            )}
           </Box>
         </Box>
       )}

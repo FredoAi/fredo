@@ -1,25 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from '@chakra-ui/react';
+import { tint } from '../../../../shared/utils/colorTint';
 
 /**
  * Launcher chrome frame — the fixed chrome around the launcher grid.
  *
- * Renders (matching desktop.png / AC3):
+ * Renders (matching desktop-light.png / AC3):
+ *  - the thin rounded desktop frame (inset ~12px, `border.default`);
+ *  - the left side-tick ruler (a faint column of long/short measuring ticks);
+ *  - the right dot-grid with a `+` marker, plus an engaged-only teal accent
+ *    scroll-thumb aligned to the selected tile (the compare image's marker);
  *  - the FREDO header notch (top-center) — tab-shaped banner + downward
  *    trapezoid tab (geometry via clip-path, NOT color), acting as the launcher
  *    trigger (role="button" / aria-label="Fredo launcher" / aria-expanded);
  *  - the online clock (top-right) — HH:MM + ONLINE • on a 60s interval timer
  *    (never a per-render `Date`);
- *  - the keyboard-hints row (bottom) — ↑↓ NAVIGATE · ←→ SELECT · ESC CLOSE,
- *    decorative labels whose behavior the host (ST-1) implements.
+ *  - the keyboard-hints row (bottom, engaged-only) — ↑↓ NAVIGATE · ←→ SELECT ·
+ *    ESC CLOSE, decorative labels whose behavior the host (ST-1) implements.
  *
  * Token-native (AC5): every color is a theme CSS var, a semantic token, or a
  * `tint()` color-mix — no hardcoded hex/rgba, no `var(--x)NN` alpha-append.
  * The key glyphs (↑↓ / ←→ / ESC) are `currentColor` monoweight SVGs.
  *
- * The open/close state and the connection flag are HOST-owned: ST-1 passes
- * `isOnline` (live connection flag) and, when it has the open state, `open` +
- * `onToggle`. When `onToggle` is omitted the notch renders as a controlled
+ * The open/engaged state, the connection flag and the selected tile are
+ * HOST-owned: ST-1 passes `isOnline` (live connection flag), `engaged` (grid +
+ * hints revealed → drives the notch aria-expanded, the hint row and the
+ * dot-grid accent thumb), `selectedIndex` (thumb position) and `onToggle` (the
+ * notch trigger). When `onToggle` is omitted the notch renders as a controlled
  * visual (per spec). `entryCount` gates the navigational hints so an empty
  * feature set (AC4) never shows nav hints for tiles that do not exist.
  */
@@ -29,8 +36,12 @@ export interface LauncherChromeProps {
   entryCount: number;
   /** Live stream/connection flag from the host — drives the ONLINE label + dot state. */
   isOnline: boolean;
-  /** Host-owned open state → notch aria-expanded + hints visibility (optional). */
+  /** Host-owned open state → notch aria-expanded (surface visibility). */
   open?: boolean;
+  /** Host-owned engaged state (#2819) — grid + hints revealed; drives the hint row + the dot-grid accent thumb. */
+  engaged?: boolean;
+  /** Host-owned selected tile index — positions the engaged dot-grid accent scroll-thumb. */
+  selectedIndex?: number;
   /** Host-owned toggle callback → notch click (optional; notch is a controlled visual when omitted). */
   onToggle?: () => void;
 }
@@ -120,10 +131,40 @@ const Hint: React.FC<{ label: string; glyph: React.ReactNode }> = ({ label, glyp
   </Box>
 );
 
+// Decorative desktop chrome (#2819). Aesthetic: faint "measuring ruler" long/short
+// ticks on the left edge and a sparse dot-grid + `+` on the right edge. All are
+// token/tint-native (a faint text-primary color-mix via `tint()`), aria-hidden,
+// pointerEvents:none, and non-informational (decorative → exempt from 3:1).
+
+/** Alternating long/short side-tick widths (px) for the left "measuring ruler". */
+const SIDE_TICK_WIDTHS = Array.from({ length: 28 }, (_, i) => (i % 2 === 0 ? 10 : 6));
+
+/** Dot count for the right dot-grid matrix (a 4-col × 14-row sparse grid). */
+const DOT_CELL_COUNT = 56;
+const DOT_GRID_COLUMNS = 4;
+const DOT_GRID_GAP = 5;
+
+// Engaged accent thumb geometry (match the compare image's teal scroll marker).
+const TRACK_HEIGHT = 120;
+const THUMB_HEIGHT = 16;
+
+/** Thin `+` marker above the right dot-grid (decorative, currentColor -> var(--text-secondary)). */
+const PlusGlyph: React.FC = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+    <path
+      d="M7 1 V13 M1 7 H13"
+      stroke="currentColor"
+      strokeWidth="1.1"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
 export const LauncherChrome: React.FC<LauncherChromeProps> = ({
   entryCount,
   isOnline,
-  open,
+  engaged = false,
+  selectedIndex = 0,
   onToggle,
 }) => {
   // Live-updating clock — recompute on a 60s interval, NOT per-render `Date`.
@@ -134,11 +175,101 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
   }, []);
   const time = formatTime(now);
 
-  const showNavHints = entryCount > 0 && open !== false;
+  // Keyboard-hints row + the dot-grid accent thumb reveal ONLY in the engaged state.
+  const showNavHints = entryCount > 0 && engaged;
   const onlineLabel = isOnline ? 'ONLINE' : 'OFFLINE';
+  // Proportional thumb position within the accent track (aligns to the selected tile).
+  const thumbTop =
+    entryCount > 1
+      ? (selectedIndex / (entryCount - 1)) * (TRACK_HEIGHT - THUMB_HEIGHT)
+      : 0;
 
   return (
     <Box position="fixed" inset="0" pointerEvents="none" zIndex={1200} aria-hidden={false}>
+      {/* Thin rounded desktop frame — decorative, behind the notch (the notch's
+          trapezoid tab deliberately pokes through the top edge). */}
+      <Box
+        position="absolute"
+        inset="12px"
+        border="1px solid"
+        borderColor="var(--border-color)"
+        borderRadius="24px"
+        aria-hidden="true"
+      />
+
+      {/* Left side-tick ruler — a faint column of long/short measuring ticks. */}
+      <Box
+        position="absolute"
+        left="7rem"
+        top="50%"
+        transform="translateY(-50%)"
+        display="flex"
+        flexDirection="column"
+        gap="4px"
+        aria-hidden="true"
+      >
+        {SIDE_TICK_WIDTHS.map((w, i) => (
+          <Box
+            key={i}
+            width={`${w}px`}
+            height="2px"
+            borderRadius="1px"
+            bg={tint('var(--text-primary)', 12)}
+          />
+        ))}
+      </Box>
+
+      {/* Right dot-grid + `+` marker — sparse faint dots (decorative). */}
+      <Box
+        position="absolute"
+        right="7rem"
+        top="50%"
+        transform="translateY(-50%)"
+        display="flex"
+        flexDirection="column"
+        alignItems="center"
+        gap="8px"
+        aria-hidden="true"
+      >
+        <Box color="var(--text-secondary)">
+          <PlusGlyph />
+        </Box>
+        <Box
+          display="grid"
+          gridTemplateColumns={`repeat(${DOT_GRID_COLUMNS}, 3px)`}
+          gap={`${DOT_GRID_GAP}px`}
+        >
+          {Array.from({ length: DOT_CELL_COUNT }, (_, i) => (
+            <Box key={i} width="3px" height="3px" borderRadius="50%" bg={tint('var(--text-primary)', 14)} />
+          ))}
+        </Box>
+      </Box>
+
+      {/* Engaged-only accent scroll-thumb on the right dot-grid (teal marker). */}
+      {engaged && entryCount > 0 && (
+        <Box
+          position="absolute"
+          right="calc(7rem + 28px)"
+          top="50%"
+          transform="translateY(-50%)"
+          width="3px"
+          height={`${TRACK_HEIGHT}px`}
+          borderRadius="999px"
+          bg={tint('var(--accent-primary)', 22)}
+          aria-hidden="true"
+        >
+          <Box
+            position="absolute"
+            left="0"
+            top={`${thumbTop}px`}
+            width="3px"
+            height={`${THUMB_HEIGHT}px`}
+            borderRadius="999px"
+            bg="var(--accent-primary)"
+          />
+        </Box>
+      )}
+
       {/* FREDO header notch — top-center tab-shaped banner + downward trapezoid tab */}
       <Box
         position="absolute"
@@ -159,7 +290,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
         role="button"
         tabIndex={0}
         aria-label="Fredo launcher"
-        aria-expanded={open ?? false}
+        aria-expanded={engaged}
         onClick={onToggle}
       >
         <Text
