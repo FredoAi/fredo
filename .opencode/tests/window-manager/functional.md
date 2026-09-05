@@ -84,3 +84,19 @@
 - [ ] N-6 (no re-render loop): After every window interaction, read the webview JS console.
   - EXPECTED: no `Maximum update depth exceeded` / re-render-loop symptom; window-store updates are epoch-based (advance only on real mutation), never driven by array `.length` or newly-created object refs in a `useEffect`/`useMemo` dependency.
   - Regression risk (#523): an effect depending on array `.length` or object identity is a FAIL.
+
+## Test run (round 1) — Verdict: **AC2 FAIL**
+
+> Live-driven via `pnpm dev:tauri` (spec/2807 @ 77fc9e5; served root confirmed by dev-env Status). Each step DOM-snapshotted + screenshotted; console read after each.
+
+- **F-1 (AC1) — PASS.** `Home.tsx:3-5` imports `WindowSystemProvider`/`WindowManager`/`useWindowActions` from `../../../shared/window-system/*` (own code). Grep `@maomaolabs/core` over `Home.tsx` + `shared/window-system/`: only a benign comment in `windowTypes.ts:4` ("drop-in model mirrors the third-party …") — no import. (n/a — source grep; not visually observable.)
+- **F-2 (AC1) — PASS.** `useWindowActions`/`useWindows` exported from `apps/ui/src/index.ts`; implements `openWindow`/`closeWindow`/`updateWindow`/`focusWindow`; window model in `windowTypes.ts`.
+- **F-3 (AC2) — FAIL.** Clicking the toolbar Mission Monitor button (`button[aria-label="Mission Monitor"]`, rect 881,958 32x32) opened NO window. `find_element(".fredo-window__surface")`=0, `.window-container`=0, `.chakra-dialog__content`=0; screenshots `01-mm-open.png`/`02-current-state.png` show only the Fredo desktop. Query Viewer opened no window either. **Root cause:** `DesktopToolbar.tsx:2` still renders `@maomaolabs/core`'s `Toolbar`, whose item-`onClick` calls maomaolabs' OWN module-scoped `openWindow` (dist `index.es.js:44,516-529`); maomaolabs' `WindowManager`/window host is no longer mounted (Home mounts only our own `WindowManager`), so the window opens in an unrendered store → nothing appears. ST-5 re-pointed only `useWindows` (read), not the open path.
+- **F-4..F-11 (AC2) — UNVERIFIED (blocked by F-3).** No window exists to drive update-twice/minimize/maximize/focus/close; no console errors observed (`Error:`/`Uncaught`/`Maximum update depth` all zero).
+- **F-12 (AC3) — PASS (static).** Grep over `WindowChrome.tsx`/`WindowFrame.tsx`/`chrome.css`/`WindowManager.tsx`/`windowStore.ts`: zero `#[0-9a-fA-F]{6}`, zero `rgba(`/`hsla(`, zero `var(--x)NN` alpha-append; only `#2807`/`#431` comment refs match. `tint()` used for close-hover (`WindowChrome.tsx:235`), focus halo+shadow (`WindowFrame.tsx:209-212`), grip hover (`WindowFrame.tsx:267`); surfaces use `bg.surface`/`border.default`/`accent.default`/`fg.*`/`bg.subtle`.
+- **F-13 (AC3, live light+dark render) — UNVERIFIED (blocked by F-3).** The chrome never renders (no window opens), so it could not be rendered in either theme.
+- **F-14 (AC4) — PASS.** Grep `WINDOW_STYLES`/`WindowStyleSelector`/`WindowStyleContext`/`useWindowStyle`/`WindowStyleProvider`/`WindowStyleId` over `apps/ui/src` = 0 matches. `pnpm --filter @fredo/ui build` green (2570 modules, no TS errors).
+- **F-15 (AC4, graceful degradation) — PASS (no-crash), single-chrome render UNVERIFIED.** Pre-seeded `Fredo_window_style="aero"` → reload boots clean, console empty (`04-ac4-aero-reload.png`); `="bogus_style_xyz"` → clean (`05-ac4-bogus-reload.png`); absent key → clean (initial boot). Settings + Appearance expose NO "Window Style" selector (`03-settings-click.png` + a11y snapshot). "SINGLE brand chrome renders" is UNVERIFIED (blocked by F-3 — no window opens).
+- **N-1..N-6 — N-2/N-3/N-5 PASS (no cross-feature import; Chakra v3 only; build green).** N-1/N-6 static PASS (grep clean, no console errors); N-4 (a11y semantics/live) UNVERIFIED (blocked by F-3).
+
+**Telemetry live evidence:** `telemetry_spans` = 3608 spans (newest 2026-09-05T07:10:11); `chat_rows`=3167, `tool_use_rows`=4065, `agent_session_rows`=169 — the classifier/row pipeline flows while the engine is swapped.
