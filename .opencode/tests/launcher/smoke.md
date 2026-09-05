@@ -2,7 +2,7 @@
 
 > Standardized boilerplate (from `.opencode/tests/README.md`) adapted to the launcher
 > surface. Runs on a running Fredo desktop app with the spec branch.
-> **Serving checkout:** `spec/2808 @ 28ef8b1c`. Round 1.
+> **Serving checkout:** `spec/2808 @ bd30b07b`. Round 2.
 
 - [x] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>`
   - **PASS.** `body.theme-turbo` → `div#root` non-empty (WindowManager, DesktopBackground, LauncherChrome, etc.).
