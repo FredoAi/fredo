@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Text, HStack, VStack, IconButton, chakra } from '@chakra-ui/react';
 import { LuRotateCcw } from 'react-icons/lu';
 import { useTheme } from '../../../app/providers/ThemeProvider';
+import { themePresets } from '../../../app/types/theme';
 import type { ThemeOverrides } from '../../../app/types/theme';
 import { ThemeSelector } from '../../home/components/settings/ThemeSelector';
 import { AnimationSelector } from '../../home/components/settings/AnimationSelector';
@@ -73,6 +74,30 @@ const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     {children as React.ReactNode}
   </Text>
 );
+
+/**
+ * ThemePresetSelector — a `chakra.select` over the 18 curated `themePresets` plus a
+ * "Default / None" option that clears the preset (returns to the stock base theme).
+ * Wired to `setPreset`/`selectedPreset` from `useTheme()`. Token/vars only (AC3/AC5).
+ */
+const ThemePresetSelector: React.FC = () => {
+  const { selectedPreset, setPreset } = useTheme();
+  return (
+    <chakra.select
+      {...selectStyles}
+      value={selectedPreset}
+      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPreset(e.target.value)}
+      aria-label="Theme presets"
+    >
+      <option value="">Default / None</option>
+      {themePresets.map((preset) => (
+        <option key={preset.id} value={preset.id}>
+          {preset.name}
+        </option>
+      ))}
+    </chakra.select>
+  );
+};
 
 type ColorKey =
   | 'accentPrimary' | 'accentSecondary' | 'borderColor'
@@ -178,7 +203,7 @@ const ColorRow: React.FC<ColorRowProps> = ({ label, value, hasOverride, onChange
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export const ThemingSettings: React.FC = () => {
-  const { theme, overrides, setOverride, resetOverrides } = useTheme();
+  const { theme, overrides, setOverride, selectedPreset, setPreset, resetTheme } = useTheme();
 
   const colorValue = (key: ColorKey): string =>
     overrides[key] ?? toHex(theme.colors[THEME_COLOR_MAP[key]]);
@@ -221,6 +246,12 @@ export const ThemingSettings: React.FC = () => {
   return (
     <Box p={6}>
       <VStack gap={6} align="stretch">
+
+        {/* ── Theme Presets ───────────────────────────── */}
+        <Box>
+          <SectionLabel>Theme Presets</SectionLabel>
+          <ThemePresetSelector />
+        </Box>
 
         {/* ── Base Theme ─────────────────────────────── */}
         <Box>
@@ -304,7 +335,7 @@ export const ThemingSettings: React.FC = () => {
         </Box>
 
         {/* ── Reset ──────────────────────────────────── */}
-        {hasAnyOverride && (
+        {(hasAnyOverride || selectedPreset !== '') && (
           <Box pt={2} borderTop="1px solid" borderColor="var(--border-color)">
             <chakra.button
               w="full"
@@ -318,7 +349,7 @@ export const ThemingSettings: React.FC = () => {
               fontSize="sm"
               cursor="pointer"
               transition="all 0.2s"
-              onClick={resetOverrides}
+              onClick={resetTheme}
               _hover={{ borderColor: 'var(--status-error)', color: 'var(--status-error)' }}
             >
               Reset to theme defaults

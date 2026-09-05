@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, type ReactNode } from 'react';
 import type { ThemeMode, Theme, ThemeOverrides } from '../types/theme';
-import { themes } from '../types/theme';
+import { themes, themePresets } from '../types/theme';
 import { usePersistedSetting } from '../../shared/hooks/usePersistedSetting';
 
 export interface ThemeContextType {
@@ -14,6 +14,12 @@ export interface ThemeContextType {
   setOverride: (key: keyof ThemeOverrides, value: string) => void;
   /** Remove all overrides, reverting to the base theme values. */
   resetOverrides: () => void;
+  /** Currently selected preset id, or '' for none. */
+  selectedPreset: string;
+  /** Apply a preset (its token values sit below per-token overrides). '' clears it. */
+  setPreset: (presetId: string) => void;
+  /** Clear the selected preset AND all per-token overrides → stock base theme. */
+  resetTheme: () => void;
 }
 
 /**
@@ -43,12 +49,19 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     JSON.stringify,
     (raw) => { try { return JSON.parse(raw); } catch { return {}; } },
   );
+  // #2811 — Curated preset applied as a MIDDLE layer between the base theme and
+  // per-token overrides. Persisted under its own key; '' = none (stock base).
+  const [selectedPreset, setSelectedPreset] = usePersistedSetting<string>('Fredo_theme_preset', '');
 
   // #2758 — Clamp the persisted mode to a literal that exists in `themes`.
   // A stale/unexpected 'Fredo_theme' storage value would otherwise flow into
   // `themes[currentTheme]` → undefined, crashing every consumer that reads
   // `theme.colors`. Validated once here; all downstream reads use this.
   const activeTheme: ThemeMode = themes[currentTheme] ? currentTheme : 'classic';
+
+  // A stale/unmatched preset id simply resolves to null → base theme (no crash),
+  // mirroring the #2758 clamp behavior for the preset layer.
+  const activePreset = themePresets.find((p) => p.id === selectedPreset) ?? null;
 
   // Apply CSS variables whenever theme or overrides change
   useEffect(() => {
@@ -92,6 +105,45 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     document.body.style.fontFamily = theme.colors.fontFamily;
     document.body.className = `theme-${activeTheme}`;
 
+    // --- Preset (middle layer: base < preset < override) ---
+    // #2811 — a curated preset's token values sit between the base theme and the
+    // per-token override pass, so an individual override still wins over a preset
+    // (override ?? preset ?? base). The special side-effects (body bg/text/font,
+    // header→footer) mirror the override pass' behavior exactly so a light/dark
+    // palette renders correctly. If a preset leaves a token out it falls through
+    // to the base theme, so a preset never leaves a bare/undefined CSS var.
+    if (activePreset) {
+      const p = activePreset.colors;
+      if (p.accentPrimary) root.style.setProperty('--accent-primary', p.accentPrimary);
+      if (p.accentSecondary) root.style.setProperty('--accent-secondary', p.accentSecondary);
+      if (p.borderColor) root.style.setProperty('--border-color', p.borderColor);
+      if (p.bodyBg) {
+        root.style.setProperty('--body-bg', p.bodyBg);
+        document.body.style.background = p.bodyBg;
+      }
+      if (p.cardBg) root.style.setProperty('--card-bg', p.cardBg);
+      if (p.headerBg) {
+        root.style.setProperty('--header-bg', p.headerBg);
+        root.style.setProperty('--footer-bg', p.headerBg);
+      }
+      if (p.textPrimary) {
+        root.style.setProperty('--text-primary', p.textPrimary);
+        document.body.style.color = p.textPrimary;
+      }
+      if (p.textSecondary) root.style.setProperty('--text-secondary', p.textSecondary);
+      if (p.statusSuccess) root.style.setProperty('--status-success', p.statusSuccess);
+      if (p.statusWarning) root.style.setProperty('--status-warning', p.statusWarning);
+      if (p.statusError) root.style.setProperty('--status-error', p.statusError);
+      if (p.statusInfo) root.style.setProperty('--status-info', p.statusInfo);
+      if (p.fontPrimary) root.style.setProperty('--font-primary', p.fontPrimary);
+      if (p.fontSecondary) root.style.setProperty('--font-secondary', p.fontSecondary);
+      if (p.fontBase) {
+        root.style.setProperty('--font-base', p.fontBase);
+        root.style.setProperty('--font-family', p.fontBase);
+        document.body.style.fontFamily = p.fontBase;
+      }
+    }
+
     // --- Overrides (applied as a second pass) ---
     if (overrides.accentPrimary) root.style.setProperty('--accent-primary', overrides.accentPrimary);
     if (overrides.accentSecondary) root.style.setProperty('--accent-secondary', overrides.accentSecondary);
@@ -121,7 +173,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       root.style.setProperty('--font-family', overrides.fontBase);
       document.body.style.fontFamily = overrides.fontBase;
     }
-  }, [activeTheme, overrides]);
+  }, [activeTheme, overrides, activePreset]);
 
   const setTheme = (theme: ThemeMode) => {
     setThemeStorage(theme);
@@ -141,6 +193,15 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     setOverridesStorage({});
   };
 
+  const setPreset = (presetId: string) => {
+    setSelectedPreset(presetId);
+  };
+
+  const resetTheme = () => {
+    setSelectedPreset('');
+    setOverridesStorage({});
+  };
+
   return (
     <ThemeContext.Provider
       value={{
@@ -151,6 +212,9 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         overrides,
         setOverride,
         resetOverrides,
+        selectedPreset,
+        setPreset,
+        resetTheme,
       }}
     >
       {children}
