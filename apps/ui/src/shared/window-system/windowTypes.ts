@@ -1,7 +1,7 @@
 /**
  * Own window-kernel type surface (Spec #2807 ST-1).
  *
- * The drop-in model mirrors the third-party `@maomaolabs/core` window-engine
+ * The drop-in model mirrors the third-party window-engine
  * call-surface so feature callers need only an import swap. `OpenWindowParams`
  * is what a consumer passes to `openWindow`; `WindowEntry` is what the store
  * holds and what `useWindows()` returns (all control flags resolved to

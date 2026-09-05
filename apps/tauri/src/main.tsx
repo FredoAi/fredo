@@ -1,6 +1,4 @@
 import React from 'react';
-import '@maomaolabs/core/style.css';
-import '@fredo/ui/styles';
 import { createRoot } from 'react-dom/client';
 import { ReactFlowProvider } from 'reactflow';
 import {
