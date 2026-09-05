@@ -10,7 +10,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { useWindowActions } from '@maomaolabs/core';
+import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { useEventRows } from '../../../shared/hooks/useEventRows';
 import type { ChatRow, ToolUseRow } from '../../../shared/classes/EventSubscription';
 import { tint } from '../../../shared/utils/colorTint';

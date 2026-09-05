@@ -1,7 +1,7 @@
 import React, { useLayoutEffect, useState } from 'react';
 import { Box, Text } from '@chakra-ui/react';
 import { LuTriangleAlert } from 'react-icons/lu';
-import { useWindowActions } from '@maomaolabs/core';
+import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { settingsService } from '../../../features/settings';
 
