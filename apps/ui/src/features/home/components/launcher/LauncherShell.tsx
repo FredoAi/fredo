@@ -6,6 +6,7 @@ import { useWindows } from '../../../../shared/window-system/useWindows';
 // Live stream/connection flag — mirrors StreamStatus.tsx (ONLINE dot).
 import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
+import { tint } from '../../../../shared/utils/colorTint';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
@@ -13,35 +14,34 @@ import { LauncherCommandBar } from './LauncherCommandBar';
 import { PixelButler } from './PixelButler';
 
 /**
- * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1).
+ * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
+ * ST-5 structural hoist).
  *
- * Replaces the third-party `Toolbar` (`DesktopToolbar.tsx`). This is a
- * full-screen launchpad overlay (Start/Launchpad). It uses a 3-state model
- * (#2819, replacing the old single `open` boolean that was closed by default):
+ * Replaces the third-party `Toolbar` (`DesktopToolbar.tsx`). This is the
+ * full-screen desktop surface. It uses a 2-state reveal model (#2819):
  *
- *   - Collapsed  (`open=false`): bare chrome only — FREDO notch + online clock
- *     + decorative desktop frame / side-ticks / dot-grid; NO avatar/bar/grid.
- *   - Idle       (`open=true, engaged=false`): chrome + pixel-butler avatar +
- *     `>` search-or-command bar; NO app grid, NO keyboard hints. This is the
+ *   - Resting Main (`engaged=false`): chrome + pixel-butler avatar + `>`
+ *     search-or-command bar; NO app grid, NO keyboard hints. This is the
  *     default at launch (fixes the blank-desktop first impression).
- *   - Engaged    (`open=true, engaged=true`): idle surface + the `| APPS` grid
- *     and the keyboard-nav hints (revealed when the command bar is focused or a
- *     query is present).
+ *   - Engaged    (`engaged=true`): resting surface + the `| APPS` grid and the
+ *     keyboard-nav hints (revealed when the command bar is focused or a query
+ *     is present).
  *
- * `open` is the surface-visible gate (TRUE by default at launch). `engaged`
- * (grid + hints) is managed as explicit state: reached when the command bar is
- * focused or a query is typed; returned to idle on ESC, on focus leaving the
- * launcher surface with an empty query (a `:focus-within` guard on the launcher
- * root, NOT a raw input `onBlur`), and on query-free blur-to-outside. ESC
- * returns to idle (surface stays) — it no longer closes the shell; the shell
- * collapses to bare chrome only on window-open or the `—` minimize control.
+ * AC5 (persistent search/command, Spec #2821 ST-5): the resting Main surface
+ * is HOISTED to the shell ROOT and is ALWAYS mounted — it is never gated by an
+ * `open` boolean, so closing a feature window never unmounts the search bar
+ * (`bugs/launcher-disappears.png` is the fail state). Instead of collapsing on
+ * window-open, the whole surface is placed BELOW the window stack (a maximized
+ * feature window legitimately covers it — `Home.tsx:91`), and is simply
+ * re-revealed when no non-minimized window covers it. The idle/engaged
+ * grid-reveal model, keyboard-nav, and the `—` MINIMIZE control are preserved.
  *
- * The host owns the shared state (open/engaged, query, selected tile index) and
- * the keyboard-nav orchestration (↑↓ / ←→ / Enter / Space / Esc). It reads the
- * live own-kernel window list via `useWindows()` (used to collapse the shell
- * when a feature window opens through any path) and dispatches every tile open
- * through `onOpenFeature` → Home's full-lifecycle opener (never raw
- * `openWindow`), preserving feature close-on-unmount / self-open / rerender
+ * The host owns the shared state (engaged, query, selected tile index) and the
+ * keyboard-nav orchestration (↑↓ / ←→ / Enter / Space / Esc). It reads the
+ * live own-kernel window list via `useWindows()` (used both to re-z the surface
+ * behind maximized windows and to sink the grid when one opens) and dispatches
+ * every tile open through `onOpenFeature` → Home's full-lifecycle opener (never
+ * raw `openWindow`), preserving feature close-on-unmount / self-open / rerender
  * wiring (Home.tsx:77-129).
  *
  * The grid's empty guard (AC4) + the command-bar filter means arrows/Enter/
@@ -64,13 +64,30 @@ const clampIndex = (value: number, len: number): number =>
 const SEARCHBOX_SELECTOR = 'input[role="searchbox"]';
 const NOTCH_SELECTOR = '[role="button"][aria-label="Fredo launcher"]';
 
+/** Surface stacking: resting Main above the (transparent) window stack when it
+ *  is not covered; dropped BELOW it once a maximized feature window covers the
+ *  desktop (AC5 — a maximized window legitimately covers the surface). */
+const SURFACE_Z_VISIBLE = 1100;
+const SURFACE_Z_COVERED = 0;
+
+/** Subtle dot/tick grid texture (Asset 1.7) — faint border-color color-mix
+ *  lines, token-native, behind every window (the overlay is z-gated below the
+ *  window stack when covered). */
+const DESKTOP_TEXTURE_CSS = {
+  backgroundColor: 'var(--card-bg)',
+  backgroundImage: [
+    `linear-gradient(to right, ${tint('var(--border-color)', 12)} 1px, transparent 1px)`,
+    `linear-gradient(to bottom, ${tint('var(--border-color)', 12)} 1px, transparent 1px)`,
+  ].join(', '),
+  backgroundSize: '28px 28px',
+};
+
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
-  const [open, setOpen] = useState(true);
   // Grid + keyboard-hints sub-state: reached when the command bar is focused or a
   // query is present; returns to idle on ESC / focus-leaving-the-surface (empty query).
   const [engaged, setEngaged] = useState(false);
@@ -82,6 +99,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
   // command bar) so the grid stays hidden while the surface returns to idle.
   const skipNextFocusEngageRef = useRef(false);
+
+  // A window covers the surface when it is shown (not minimized). Windows open
+  // maximized (`Home.tsx:91`), so any open window covers the resting Main.
+  const coveredByWindow = currentWindows.some((w) => !w.isMinimized);
+  const surfaceZ = coveredByWindow ? SURFACE_Z_COVERED : SURFACE_Z_VISIBLE;
 
   // Command-bar query filters the grid by tile name (type-ahead highlight).
   const filteredEntries = useMemo(() => {
@@ -100,21 +122,24 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const safeSelectedIndex = entryCount === 0 ? 0 : Math.min(selectedIndex, entryCount - 1);
   const activeTileId = entryCount > 0 ? `fredo-launcher-tile-${safeSelectedIndex}` : undefined;
 
-  // Collapse the shell whenever a feature window opens through ANY path (launcher
-  // tile, self-open, Konami, setup wizard) so the freshly opened window is not
-  // obscured by the full-screen launchpad overlay. useSyncExternalStore returns a
-  // stable array reference per mutation, so this effect runs only on real changes.
+  // AC5: when a feature window opens through ANY path (launcher tile, self-open,
+  // Konami, setup wizard), sink the ENGAGED grid so the freshly opened window is
+  // not obscured — but DO NOT unmount the resting surface. The surface is always
+  // mounted at the shell root and is simply re-z'd below the window stack
+  // (`surfaceZ`), so the search/command access never disappears on window close.
   useEffect(() => {
     const prev = prevWindowCountRef.current;
     prevWindowCountRef.current = currentWindows.length;
-    if (currentWindows.length > prev) setOpen(false);
+    if (currentWindows.length > prev) {
+      setEngaged(false);
+      // Move focus out of the (now window-covered) launcher surface so keystrokes
+      // are routed to the freshly opened window rather than the hidden search
+      // input behind it (AC5 — the surface stays mounted, but is below the window).
+      if (overlayRef.current?.contains(document.activeElement)) {
+        (document.activeElement as HTMLElement | null)?.blur();
+      }
+    }
   }, [currentWindows]);
-
-  // Any path that collapses the surface (window open, `—` minimize, notch
-  // toggle-off) resets `engaged` so re-opening via the notch always lands idle.
-  useEffect(() => {
-    if (!open) setEngaged(false);
-  }, [open]);
 
   // Keep the keyboard-selected tile scrolled into view within the grid's scroll
   // region — only meaningful while the grid is revealed (engaged).
@@ -126,12 +151,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     cells[safeSelectedIndex]?.scrollIntoView({ block: 'nearest' });
   }, [engaged, safeSelectedIndex]);
 
+  // FREDO notch trigger: toggles the grid reveal (idle <-> engaged). The surface
+  // itself stays mounted (AC5) — the notch never collapses the search bar.
   const toggleOpen = useCallback(() => {
-    // Pure surface visibility toggle (#2819). Opening via the notch restores the
-    // IDLE surface (engaged reset by the `[open]` effect when collapsed), never
-    // the engaged grid. Closing via the notch leaves focus on the notch, which
-    // already holds it — no restore needed.
-    setOpen((o) => !o);
+    setEngaged((e) => !e);
   }, []);
 
   // Reached-engaged: the command bar received real focus. Programmatic focus
@@ -161,10 +184,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [query],
   );
 
-  // `—` minimize control: collapse the launcher to bare chrome (notch + clock +
-  // decorative frame) and land focus on the FREDO notch trigger.
+  // `—` MINIMIZE control: collapse the ENGAGED grid back to the resting Main
+  // (keep the search bar — AC5) and land focus on the FREDO notch trigger.
   const handleMinimize = useCallback(() => {
-    setOpen(false);
+    setEngaged(false);
     setQuery('');
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
@@ -174,7 +197,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const openSelected = useCallback(() => {
     const feature = filteredEntries[safeSelectedIndex];
     if (!feature) return;
-    setOpen(false);
+    setEngaged(false);
     onOpenFeature(feature.id, feature);
   }, [filteredEntries, safeSelectedIndex, onOpenFeature]);
 
@@ -182,7 +205,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     (index: number) => {
       const feature = filteredEntries[index];
       if (!feature) return;
-      setOpen(false);
+      setEngaged(false);
       onOpenFeature(feature.id, feature);
     },
     [filteredEntries, onOpenFeature],
@@ -257,74 +280,76 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   return (
     <>
       {/* Chrome is always visible: FREDO notch trigger + online clock + the
-          decorative desktop frame / side-ticks / dot-grid (collapsed state = bare
-          chrome). It sits ABOVE the open overlay (zIndex 1200 vs 1100) and is
-          pointerEvents:none except the notch, so the overlay stays interactive.
-          `engaged` + `selectedIndex` drive the engaged-only hint row + the
-          dot-grid accent scroll-thumb. */}
+          decorative desktop frame / side-ticks / dot-grid. It sits ABOVE the
+          open surface (zIndex 1200 vs 1100) and is pointerEvents:none except
+          the notch, so the surface stays interactive. `engaged` +
+          `selectedIndex` drive the engaged-only hint row + the dot-grid accent
+          scroll-thumb. */}
       <LauncherChrome
         entryCount={entryCount}
         isOnline={isConnected}
-        open={open}
         engaged={engaged}
         selectedIndex={safeSelectedIndex}
         onToggle={toggleOpen}
       />
 
-      {open && (
+      {/* Resting Main surface (AC5 structural hoist): ALWAYS mounted at the shell
+          root so the search/command access NEVER disappears. When a feature
+          window covers the desktop (`coveredByWindow`), the whole surface is
+          z'd BELOW the window stack so a maximized window is not obscured —
+          closing/minimizing the window re-reveals it (it was never unmounted). */}
+      <Box
+        ref={overlayRef}
+        role="dialog"
+        aria-label="Fredo launcher"
+        position="fixed"
+        inset="0"
+        zIndex={surfaceZ}
+        onKeyDown={handleKeyDown}
+        onBlur={handleSurfaceBlur}
+        css={DESKTOP_TEXTURE_CSS}
+      >
         <Box
-          ref={overlayRef}
-          role="dialog"
-          aria-label="Fredo launcher"
-          position="fixed"
-          inset="0"
-          zIndex={1100}
-          bg="var(--card-bg)"
-          onKeyDown={handleKeyDown}
-          onBlur={handleSurfaceBlur}
+          display="flex"
+          flexDirection="column"
+          alignItems="center"
+          justifyContent="flex-start"
+          gap={6}
+          height="100%"
+          width="100%"
+          maxWidth="960px"
+          marginX="auto"
+          paddingTop="34vh"
+          paddingX={8}
+          paddingBottom={10}
+          overflowY="auto"
+          css={{
+            '&::-webkit-scrollbar': { width: '8px', height: '8px' },
+            '&::-webkit-scrollbar-thumb': { background: 'var(--card-hover-bg)', borderRadius: '8px' },
+            '&::-webkit-scrollbar-track': { background: 'transparent' },
+          }}
         >
-          <Box
-            display="flex"
-            flexDirection="column"
-            alignItems="center"
-            justifyContent="flex-start"
-            gap={6}
-            height="100%"
-            width="100%"
-            maxWidth="960px"
-            marginX="auto"
-            paddingTop="34vh"
-            paddingX={8}
-            paddingBottom={10}
-            overflowY="auto"
-            css={{
-              '&::-webkit-scrollbar': { width: '8px', height: '8px' },
-              '&::-webkit-scrollbar-thumb': { background: 'var(--card-hover-bg)', borderRadius: '8px' },
-              '&::-webkit-scrollbar-track': { background: 'transparent' },
-            }}
-          >
-            <Box mb="4">
-              <PixelButler visible />
-            </Box>
-            <LauncherCommandBar
-              query={query}
-              onQueryChange={handleQueryChange}
-              gridOpen={engaged}
-              ariaActivedescendant={activeTileId}
-              onFocus={handleBarFocus}
-              onBlur={handleSurfaceBlur}
-              onMinimize={handleMinimize}
-            />
-            {engaged && (
-              <LauncherAppGrid
-                entries={filteredEntries}
-                selectedIndex={safeSelectedIndex}
-                onSelect={handleSelect}
-              />
-            )}
+          <Box mb="4">
+            <PixelButler visible />
           </Box>
+          <LauncherCommandBar
+            query={query}
+            onQueryChange={handleQueryChange}
+            gridOpen={engaged}
+            ariaActivedescendant={activeTileId}
+            onFocus={handleBarFocus}
+            onBlur={handleSurfaceBlur}
+            onMinimize={handleMinimize}
+          />
+          {engaged && (
+            <LauncherAppGrid
+              entries={filteredEntries}
+              selectedIndex={safeSelectedIndex}
+              onSelect={handleSelect}
+            />
+          )}
         </Box>
-      )}
+      </Box>
     </>
   );
 };

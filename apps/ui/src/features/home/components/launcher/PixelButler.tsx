@@ -3,8 +3,8 @@ import React from 'react';
 /**
  * Pixel-butler avatar (base form) — the FREDO brand mascot.
  *
- * Renders the avatar-guide.png base NEUTRAL butler: a 21x21 pixel grid (round
- * head, two vertical-bar eyes, bow-tie torso) at the L (32x32) size variant.
+ * Renders the avatar-guide.png base NEUTRAL butler: a 21x21 pixel grid (hollow
+ * round head, two vertical-bar eyes, bow-tie torso + arm nubs + two legs).
  *
  * Token-native (AC5): the SVG carries NO color of its own. Every pixel uses
  * `fill="currentColor"` and the root SVG sets `color="var(--accent-primary)"`,
@@ -32,31 +32,34 @@ export interface PixelButlerProps {
 }
 
 // 21x21 pixel matrix (top → bottom, left → right): '#' = filled, '.' = empty.
-// Base NEUTRAL butler: round head (rows 1-12), two vertical-bar eyes (unfilled
-// cells at cols 8-9 & 13-14, rows 6-9 → the background shows through as the
-// eye), neck + bow-tie + tapering body (rows 13-19), two legs (rows 20-21).
+// Base NEUTRAL butler (authoritative avatar-guide.png "BASE FORM" — transcribed
+// cell-for-cell, symmetric about col 11): HOLLOW round head outline (rows 2-15)
+// with TWO FILLED vertical-bar eyes (rows 8-13, cols 8-9 & 13-14) + a body
+// (rows 17-20): small arm nubs (cols 5 & 17), a collar/vest, and two legs
+// (cols 8-9 & 13-14). The interior of the head is transparent ('.'), so the
+// accent forms only the outline + eyes + body — never the old solid blob.
 const BASE_FORM = [
+  '.....................',
   '......#########......',
+  '....##.........##....',
+  '...##...........##...',
+  '..##.............##..',
+  '..#...............#..',
+  '.#.................#.',
+  '.#.....##...##.....#.',
+  '.#.....##...##.....#.',
+  '.#.....##...##.....#.',
+  '.#.....##...##.....#.',
+  '.#.....##...##.....#.',
+  '.#.....##...##.....#.',
+  '.#.................#.',
+  '......#########......',
+  '.....................',
+  '....#..#######..#....',
   '.....###########.....',
-  '....#############....',
-  '....#############....',
-  '....#############....',
-  '....###..###..###....',
-  '....###..###..###....',
-  '....###..###..###....',
-  '....###..###..###....',
-  '....#############....',
-  '.....###########.....',
-  '......#########......',
-  '.........####........',
-  '....#############....',
-  '......#########......',
-  '....#############....',
-  '.....###########.....',
-  '......#########......',
-  '.......#######.......',
-  '.......###..###......',
-  '.......###..###......',
+  '.......##...##.......',
+  '.......##...##.......',
+  '.....................',
 ];
 
 export const PixelButler: React.FC<PixelButlerProps> = ({ visible }) => {
