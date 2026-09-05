@@ -704,13 +704,15 @@ export const MissionMonitorPanel: React.FC = () => {
   // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header
   // strip, but the feature window's chrome identity survived: `Home.tsx` opens
   // every feature window with `openWindow({ title: feature.name })`, and
-  // @maomaolabs/core's WindowManager renders that title as BOTH the visible
-  // window-header label AND the `role="dialog"` container's `aria-label`
-  // (dist/index.es.js:969-970) — so the a11y tree still exposed `dialog
-  // Mission Monitor` (tester round-1 FAIL, AC4). The AC4 letter requires NO
-  // `Mission Monitor` text anywhere in the panel's a11y tree. Neutralize the
-  // window title to the drawer-consistent "Sessions" (the drawer's "Sessions"
-  // header is the only remaining self-identification per the UI/UX spec).
+  // the own window kernel renders that title as BOTH the visible window-header
+  // label (the WindowChrome title, WindowFrame.tsx:233) AND the `role="group"`
+  // container's `aria-label` (WindowFrame.tsx:218) — so the a11y tree still
+  // exposed `Mission Monitor` as the window's self-identification (the
+  // third-party frame exposed it as `dialog Mission Monitor`; tester round-1
+  // FAIL, AC4). The AC4 letter requires NO `Mission Monitor` text anywhere in
+  // the panel's a11y tree. Neutralize the window title to the
+  // drawer-consistent "Sessions" (the drawer's "Sessions" header is the only
+  // remaining self-identification per the UI/UX spec).
   const { updateWindow } = useWindowActions();
   useLayoutEffect(() => {
     updateWindow('mission-monitor', { title: 'Sessions' });
