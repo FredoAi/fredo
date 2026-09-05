@@ -1,13 +1,16 @@
 /**
  * Fredo launcher command bar (Spec #2808 ST-3).
  *
- * The `>` search-or-command input (desktop.png): a centered, ~560px max-width
- * native-capable Chakra text input with an accent `>` chevron prefix and a
- * muted monoweight magnifier suffix. This is a CONTROLLED component — the host
- * owns the query string and the grid filtering; this component renders the
- * query and reports changes up via `onQueryChange`. It is a launcher grid
- * filter, NOT a global command dispatcher (per the ST-3 non-goals), and it is
- * drawn with a native-capable Chakra `Input` (never `NativeSelect`).
+ * The `>` search-or-command input (desktop-light.png): a centered, ~560px
+ * max-width native-capable Chakra text input with an accent `>` chevron prefix
+ * and a `—` MINIMIZE control at the right edge (a vertical divider + a short
+ * dash whose click collapses the launcher to bare chrome via `onMinimize`).
+ * This is a CONTROLLED component — the host owns the query string and the grid
+ * filtering; this component renders the query and reports changes up via
+ * `onQueryChange`. It is a launcher grid filter, NOT a global command
+ * dispatcher (per the ST-3 non-goals), and it is drawn with a native-capable
+ * Chakra `Input` (never `NativeSelect`). `onFocus`/`onBlur` report the
+ * reached/left-engaged signals to the host (#2819).
  *
  * Token-native contract (AC5): every color is a theme CSS var referenced
  * directly (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`),
@@ -28,6 +31,12 @@ export interface LauncherCommandBarProps {
   gridOpen?: boolean;
   /** Active grid tile id during grid roving-tabindex focus — drives `aria-activedescendant`. */
   ariaActivedescendant?: string;
+  /** Reached-engaged signal: the input received focus (#2819 — host reveals the grid). */
+  onFocus?: () => void;
+  /** Leaves-engaged signal: the input lost focus (#2819 — the host guards focus-within). */
+  onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
+  /** The `—` minimize control was clicked (#2819 — host collapses the shell to bare chrome). */
+  onMinimize?: () => void;
 }
 
 /** Accent `>` chevron prefix (monoweight, currentColor). */
@@ -45,21 +54,10 @@ function ChevronGlyph() {
   );
 }
 
-/** Muted monoweight magnifier suffix (currentColor). */
-function MagnifierGlyph() {
+/** Wireframe `—` MINIMIZE dash (a short horizontal bar, muted `currentColor`). */
+function MinusGlyph() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <circle cx="6" cy="6" r="4.25" stroke="currentColor" strokeWidth="1.3" />
-      <line
-        x1="9.4"
-        y1="9.4"
-        x2="12.2"
-        y2="12.2"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-      />
-    </svg>
+    <Box as="span" width="12px" height="1.5px" borderRadius="1px" bg="currentColor" aria-hidden="true" />
   );
 }
 
@@ -68,6 +66,9 @@ export function LauncherCommandBar({
   onQueryChange,
   gridOpen = false,
   ariaActivedescendant,
+  onFocus,
+  onBlur,
+  onMinimize,
 }: LauncherCommandBarProps) {
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => onQueryChange(e.target.value);
 
@@ -82,8 +83,26 @@ export function LauncherCommandBar({
           </Box>
         }
         endElement={
-          <Box as="span" color="fg.muted" display="flex" alignItems="center" aria-hidden="true">
-            <MagnifierGlyph />
+          <Box
+            as="button"
+            aria-label="Minimize launcher"
+            onClick={onMinimize}
+            onMouseDown={(e) => e.preventDefault()}
+            display="flex"
+            alignItems="center"
+            height="100%"
+            pl="10px"
+            ml="10px"
+            borderLeft="1px solid"
+            borderLeftColor="var(--border-color)"
+            color="var(--text-secondary)"
+            cursor={onMinimize ? 'pointer' : 'default'}
+            _hover={onMinimize ? { color: 'accent.default' } : undefined}
+            css={{
+              '&:focus-visible': { outline: '2px solid var(--accent-primary)', outlineOffset: '2px' },
+            }}
+          >
+            <MinusGlyph />
           </Box>
         }
       >
@@ -96,6 +115,8 @@ export function LauncherCommandBar({
           placeholder="search or command"
           value={query}
           onChange={handleChange}
+          onFocus={onFocus}
+          onBlur={onBlur}
           bg="var(--card-bg)"
           border="1px solid"
           borderColor="var(--border-color)"
@@ -115,7 +136,8 @@ export function LauncherCommandBar({
           _focusVisible={{
             borderColor: 'var(--accent-primary)',
             boxShadow: 'none',
-            outline: 'none',
+            outline: '2px solid var(--accent-primary)',
+            outlineOffset: '2px',
           }}
         />
       </InputGroup>

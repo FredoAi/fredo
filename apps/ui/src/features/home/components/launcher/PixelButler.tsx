@@ -64,8 +64,8 @@ export const PixelButler: React.FC<PixelButlerProps> = ({ visible }) => {
 
   return (
     <svg
-      width={32}
-      height={32}
+      width={48}
+      height={48}
       viewBox="0 0 21 21"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
