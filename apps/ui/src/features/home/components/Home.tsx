@@ -1,6 +1,8 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { Box } from '@chakra-ui/react';
-import { WindowSystemProvider, WindowManager, useWindowActions } from '@maomaolabs/core';
+import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
+import { WindowManager } from '../../../shared/window-system/WindowManager';
+import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { DesktopToolbar } from './settings/DesktopToolbar';
 import { DesktopBackground } from './DesktopBackground';
 import { StreamStatus } from './StreamStatus';
@@ -12,7 +14,6 @@ import { setupFeature } from '../../setup';
 import '../../allFeatures';
 import { getFeatures } from '../../featureRegistry';
 import { settingsService } from '../../settings';
-import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
@@ -136,8 +137,6 @@ const HomeDesktop: React.FC = () => {
 // ── Top-level Home component ──────────────────────────────────────────────────
 
 export const Home: React.FC = () => {
-  const { windowStyle } = useWindowStyle();
-
   return (
     <Box
       width="100%"
@@ -153,7 +152,7 @@ export const Home: React.FC = () => {
       <Box flex="1" display="flex" flexDirection="row" overflow="hidden" minHeight="0">
         {/* Desktop: transform scopes position:fixed windows to this box */}
         <Box flex="1" position="relative" overflow="hidden" style={{ transform: 'translateZ(0)' }}>
-          <WindowSystemProvider systemStyle={windowStyle as any}>
+          <WindowSystemProvider>
             <Box display="flex" flexDirection="column" height="100%">
               <Box flex="1" position="relative" overflow="hidden">
                 <WindowManager />
