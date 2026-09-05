@@ -150,15 +150,6 @@ importers:
       ghostty-web:
         specifier: ^0.4.0
         version: 0.4.0
-      gsap:
-        specifier: ^3.14.2
-        version: 3.14.2
-      ogl:
-        specifier: ^1.0.11
-        version: 1.0.11
-      postprocessing:
-        specifier: ^6.38.1
-        version: 6.39.0(three@0.182.0)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -2480,9 +2471,6 @@ packages:
     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
     engines: {node: '>= 0.4'}
 
-  gsap@3.14.2:
-    resolution: {integrity: sha512-P8/mMxVLU7o4+55+1TCnQrPmgjPKnwkzkXOK1asnR9Jg2lna4tEY5qBJjMmAaOBDDZWtlRjBXjLa0w53G/uBLA==}
-
   happy-dom@20.10.2:
     resolution: {integrity: sha512-5p9Sxis3eowDJKqx90QCsgbNA02XXqJ59NOHvD4V6cxp+rP4d/xOyVx7uY3hS8hiUbY1VeiFH8lbJ81AyuDVLQ==}
     engines: {node: '>=20.0.0'}
@@ -2728,9 +2716,6 @@ packages:
     resolution: {integrity: sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==}
     engines: {node: '>= 0.4'}
 
-  ogl@1.0.11:
-    resolution: {integrity: sha512-kUpC154AFfxi16pmZUK4jk3J+8zxwTWGPo03EoYA8QPbzikHoaC82n6pNTbd+oEaJonaE8aPWBlX7ad9zrqLsA==}
-
   on-finished@2.4.1:
     resolution: {integrity: sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==}
     engines: {node: '>= 0.8'}
@@ -2791,11 +2776,6 @@ packages:
   postcss@8.5.8:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
     engines: {node: ^10 || ^12 || >=14}
-
-  postprocessing@6.39.0:
-    resolution: {integrity: sha512-/G6JY8hs426lcto/pBZlnFSkyEo1fHsh4gy7FPJtq1SaSUOzJgDW6f6f1K/+aMOYzK/eQEefyOb3++jPPIUeDA==}
-    peerDependencies:
-      three: '>= 0.168.0 < 0.184.0'
 
   pretty-format@27.5.1:
     resolution: {integrity: sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ==}
@@ -5932,8 +5912,6 @@ snapshots:
 
   gopd@1.2.0: {}
 
-  gsap@3.14.2: {}
-
   happy-dom@20.10.2:
     dependencies:
       '@types/node': 24.12.0
@@ -6165,8 +6143,6 @@ snapshots:
 
   object-inspect@1.13.4: {}
 
-  ogl@1.0.11: {}
-
   on-finished@2.4.1:
     dependencies:
       ee-first: 1.1.1
@@ -6217,10 +6193,6 @@ snapshots:
       nanoid: 3.3.11
       picocolors: 1.1.1
       source-map-js: 1.2.1
-
-  postprocessing@6.39.0(three@0.182.0):
-    dependencies:
-      three: 0.182.0
 
   pretty-format@27.5.1:
     dependencies:

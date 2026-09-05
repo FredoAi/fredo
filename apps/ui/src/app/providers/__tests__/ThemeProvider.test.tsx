@@ -45,6 +45,22 @@ describe('ThemeProvider invalid persisted theme fallback', () => {
     expect(result.current.theme).toBeDefined();
     expect(result.current.theme).toBe(themes.classic);
   });
+
+  it('locks the base to classic even when a stale persisted Fredo_theme value (turbo) is present — AC5', async () => {
+    const getMock = settingsService.get as ReturnType<typeof vi.fn>;
+    // Simulate a leftover persisted 'turbo' base-theme value from before the
+    // base-theme selector was removed (#2817). The provider no longer reads
+    // 'Fredo_theme', so it must never surface the stale value.
+    getMock.mockResolvedValue('turbo');
+
+    const { result } = renderHook(() => useTheme(), { wrapper: ThemeProvider });
+    await waitFor(() => expect(getMock).toHaveBeenCalled());
+    await act(async () => {});
+
+    expect(result.current.currentTheme).toBe('classic');
+    expect(result.current.theme).toBe(themes.classic);
+    expect(result.current.theme).toBeDefined();
+  });
 });
 
 describe('ThemeProvider preset layer (#2811)', () => {

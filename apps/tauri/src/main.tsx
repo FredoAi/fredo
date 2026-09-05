@@ -8,7 +8,6 @@ import {
   ThemeProvider,
   Provider,
   Toaster,
-  AnimationProvider,
   TauriAdapter,
   CompanionProvider,
   FredoCompanion,
@@ -30,19 +29,17 @@ createRoot(rootElement).render(
   <React.StrictMode>
     <Provider>
       <ThemeProvider>
-        <AnimationProvider>
-          <StreamProvider>
-            <AppProvider adapter={adapter}>
-              <CompanionProvider>
-                <ReactFlowProvider>
-                  <Router />
-                  <Toaster />
-                </ReactFlowProvider>
-                <FredoCompanion />
-              </CompanionProvider>
-            </AppProvider>
-          </StreamProvider>
-        </AnimationProvider>
+        <StreamProvider>
+          <AppProvider adapter={adapter}>
+            <CompanionProvider>
+              <ReactFlowProvider>
+                <Router />
+                <Toaster />
+              </ReactFlowProvider>
+              <FredoCompanion />
+            </CompanionProvider>
+          </AppProvider>
+        </StreamProvider>
       </ThemeProvider>
     </Provider>
   </React.StrictMode>,

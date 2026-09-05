@@ -6,8 +6,6 @@ import { usePersistedSetting } from '../../shared/hooks/usePersistedSetting';
 export interface ThemeContextType {
   currentTheme: ThemeMode;
   theme: Theme;
-  setTheme: (theme: ThemeMode) => void;
-  availableThemes: Theme[];
   /** Active per-key overrides (on top of the base theme) */
   overrides: ThemeOverrides;
   /** Set or clear a single override. Pass an empty string to remove the key. */
@@ -42,7 +40,13 @@ interface ThemeProviderProps {
  * Applies base theme CSS variables, then user overrides as a second pass.
  */
 export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
-  const [currentTheme, setThemeStorage] = usePersistedSetting<ThemeMode>('Fredo_theme', 'classic');
+  // #2817 — The base theme is LOCKED to the single stock `classic` base. The
+  // persisted 'Fredo_theme' read is dropped entirely so a stale persisted value
+  // (e.g. 'turbo' from before the base-theme selector was removed) is NEVER read,
+  // keeping the shell stable. The theme-preset + per-token override layers
+  // (`override ?? preset ?? base`) still apply on top of this locked base.
+  const activeTheme: ThemeMode = 'classic';
+
   const [overrides, setOverridesStorage] = usePersistedSetting<ThemeOverrides>(
     'Fredo_theme_overrides',
     {},
@@ -52,12 +56,6 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   // #2811 — Curated preset applied as a MIDDLE layer between the base theme and
   // per-token overrides. Persisted under its own key; '' = none (stock base).
   const [selectedPreset, setSelectedPreset] = usePersistedSetting<string>('Fredo_theme_preset', '');
-
-  // #2758 — Clamp the persisted mode to a literal that exists in `themes`.
-  // A stale/unexpected 'Fredo_theme' storage value would otherwise flow into
-  // `themes[currentTheme]` → undefined, crashing every consumer that reads
-  // `theme.colors`. Validated once here; all downstream reads use this.
-  const activeTheme: ThemeMode = themes[currentTheme] ? currentTheme : 'classic';
 
   // A stale/unmatched preset id simply resolves to null → base theme (no crash),
   // mirroring the #2758 clamp behavior for the preset layer.
@@ -175,10 +173,6 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     }
   }, [activeTheme, overrides, activePreset]);
 
-  const setTheme = (theme: ThemeMode) => {
-    setThemeStorage(theme);
-  };
-
   const setOverride = (key: keyof ThemeOverrides, value: string) => {
     const next = { ...overrides };
     if (!value) {
@@ -207,8 +201,6 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       value={{
         currentTheme: activeTheme,
         theme: themes[activeTheme],
-        setTheme,
-        availableThemes: Object.values(themes),
         overrides,
         setOverride,
         resetOverrides,
