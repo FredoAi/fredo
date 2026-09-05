@@ -42,3 +42,16 @@
 - `.opencode/tests/mission-monitor/` — Mission Monitor is an out-of-slice caller (R-2) and its widget/tool-detail surfaces must not regress; its engine mock is re-pointed in this slice (R-9).
 - `.opencode/tests/run-cli/` — Run CLI launcher is an out-of-slice caller (R-2); its window-open/close behavior must not regress.
 - Settings / theming surfaces — the legacy `WindowStyleSelector` is removed from the settings dialog and the theming settings (R-8/AC4); the theming feature (theme/animation presets) keeps working — only the window-style sub-setting is removed.
+
+## Test run (round 1)
+
+- **R-1 (AC2 — feature windows still open from the toolbar) — FAIL.** Clicking a toolbar launcher opens no window (see functional F-3). The toolbar `@maomaolabs/core` `Toolbar` routes the click to maomaolabs' own store, whose host is unmounted.
+- **R-2 (AC2 — three out-of-slice callers) — UNVERIFIED (blocked by R-1).** No caller window can be opened to verify render/behavior. (Static: callers re-pointed to the own `useWindowActions`.
+- **R-3 (AC2 — z-order/focus unchanged) — UNVERIFIED (blocked by R-1).** No window to drive focus/z-order.
+- **R-4 (AC3/AC4 — no cross-feature import) — PASS.** Own kernel under `shared/window-system/`; grep `from '.*features/` over the kernel = 0 matches; only the dock `Toolbar` (Issue 2/4) + `main.tsx` CSS import remain from `@maomaolabs/core`.
+- **R-5 (Chakra v3 only) — PASS.** `WindowChrome.tsx`/`WindowFrame.tsx` use `disabled`/`variant="ghost"`/`bg`/`borderColor`/`_hover`; no `isDisabled`/`colorScheme`. Close uses `variant="ghost"` + `tint()` hover, not `outline colorPalette="red"`.
+- **R-6 (theming contract — no hardcoded hex/rgba) — PASS (static).** Grep clean (see functional F-12); live light+dark render UNVERIFIED (blocked by R-1).
+- **R-7 (lifecycle — no double-instance / no focus steal) — UNVERIFIED (blocked by R-1).** No window to open/duplicate; no console error observed.
+- **R-8 (graceful degradation) — PASS (no-crash) / chrome render UNVERIFIED.** `aero`/`bogus_style_xyz`/absent all reload clean with no console error; Settings exposes no window-style variant.
+- **R-9 (test suite mock stays green) — PASS.** `pnpm --filter @fredo/ui test:run` reported 693/693 passing (per dev summaries); mocks re-pointed to own `useWindowActions`.
+- **R-10 (no re-render loop / no console errors) — PASS (observed).** No `Maximum update depth`/`Uncaught` in console.
