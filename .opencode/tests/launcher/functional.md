@@ -41,3 +41,34 @@
 ## F-6 — Theming token-native (AC5)
 - [x] F-6: Grep the launcher chrome + styles for hardcoded hex/`rgba(`/`rgb(`. **Expected:** zero hardcoded color literals (documented exemptions allowed); colors via `var(--...)` theme tokens; hover via `tint('var(--accent-primary)', N)`; light + dark both render acceptably; no alpha-append onto `var()`.
   - **PASS (dark — both shipped themes).** Source grep over `launcher/` for `#[0-9a-fA-F]{3,8}\b` / `rgba?\(` → ZERO hardcoded color literals (the 3 regex matches were the issue-number refs `#2808`/`#2807` in comments, not colors). All colors are theme var refs (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`, `var(--header-bg)`, `var(--card-hover-bg)`, `var(--text-primary)`, `var(--text-secondary)`, `var(--body-bg)`) or Chakra semantic tokens (`accent.default`, `fg.default`, `fg.muted`). Hover uses `tint('var(--accent-primary)', 14)`, selected `tint('var(--accent-primary)', 22)`, overlay dim `tint('var(--body-bg)', 55)` (shared `tint()` helper). Pixel-butler avatar uses `fill="currentColor"` + `color="var(--accent-primary)"` (NO hex). No `var(--x)NN` alpha-append anywhere. Live re-theme verified: switching `turbo`→`classic` re-colored the avatar + selected-tile border from `#ae53ba` to `rgb(147,51,234)` (token-native). **Documented-partial (PO-scope, G-050):** the "light" state is not shipped (both base themes are dark), so the light/dark leg is dropped/PO-amended.
+
+## #2819 extension — idle/engaged launcher match (desktop-light.png)
+
+> Issue #2819: the launcher's idle surface becomes an always-visible desktop (notch +
+> persistent avatar + `>` command bar + side ticks + dot-grid + rounded frame), and the
+> app grid is revealed by focusing the command bar OR when a query is present (the
+> ENGAGED state) rather than only by a notch-click. Map 1:1 to `.opencode/tmp/2819/triage.md`
+> `## QA Expert` (REQ-1..REQ-5). **NOTE:** prior F-1..F-6 exercised the notch-click-open
+> launchpad; the #2819 idle render is asserted by desktop-shell F-6/F-7, the engaged
+> reveal by these launcher cases.
+
+## F-7 (REQ-2/AC2) — Focus reveals grid + hints (no notch click)
+
+- [ ] F-7: Focusing the `input[role="searchbox"]` (click or Tab) reveals `#fredo-launcher-grid` with the `SHOWABLE_FEATURES` tile set BELOW the bar + the keyboard-hints row (↑↓ NAVIGATE · ←→ SELECT · ESC CLOSE). `tauri_webview_dom_snapshot(type="structure")` shows the grid + hints while the bar is focused.
+  - **Edge:** click-focus and Tab-focus both reveal; the prior notch-click open path (if retained) still yields the engaged grid.
+  - **Edge (blur/no-query):** blur to a target OUTSIDE the launcher surface (a `:focus-within` guard on the launcher root) with an EMPTY query → return to idle (resolved **Discussion QA-1**); a focus hop INTO a grid tile stays engaged (no tile-click race — do NOT use a raw input `onBlur` that collapses before the tile `onSelect` runs).
+
+## F-8 (REQ-2/AC2) — Query reveals grid + hints; empty-match empty state
+
+- [ ] F-8: With a query present, the grid + hints are revealed; typing filters `filteredEntries`; a query matching no feature (`zzzz`) shows `role="status"` "No apps available" with NO keyboard hints. Clearing the query hides the grid back to idle.
+  - **Edge:** type-ahead highlight on a matched tile; arrows move selection; empty-grid keyboard nav + Enter are no-ops.
+
+## F-9 (REQ-2/AC2) — ESC idles; tile opens the window
+
+- [ ] F-9a: Pressing `ESC` hides the grid + hints (`engaged=false`) while the surface STAYS (`open` stays `true`) — returning the desktop to the IDLE chrome (notch + avatar + bar + ticks + dot-grid + clock + rounded frame only), restoring focus to the COMMAND-BAR searchbox, NOT the notch (the idle affordance — DIFFERS from the #2808 ST-7 pattern which restored focus to the notch on a shell close).
+- [ ] F-9b: Selecting a tile (click or Enter) opens the feature window via the own-kernel opener (`Home.tsx:82 openFeatureWindow`); the window surface + header appear, it is focused/maximized, and the launcher COLLAPSES to BARE CHROME (`open=false`: avatar + bar + grid hidden; notch + clock + frame + ticks + dot-grid remain) so the window is not occluded (Architect frozen contract, triage line 388). After window-close, the notch toggle re-shows the idle surface.
+  - **Edge:** re-open same tile (no duplicate); open a 2nd window (z-order, topmost surface); empty-grid Enter is a no-op.
+
+## F-10 (REQ-3/AC3) — Visual fidelity gate (side-by-side vs desktop-light.png)
+
+- [ ] F-10: Side-by-side screenshot comparison of the idle light render against `desktop-light.png`, attached to evidence, with every deviation called out (element present/absent, position, size, color, accent, font). **Asset path (Read, never glob):** `.opencode/` is a dot-prefixed dir — `glob`/ripgrep silently skip it; the Tester MUST `Read .opencode/wireframes/desktop-light.png` by EXPLICIT absolute path (resolved Discussion QA-2). The engaged-dark compare is `.opencode/wireframes/desktop-light-dark-theme-compare.png`. Hint labels must match the wireframe char-for-char (`↑↓ NAVIGATE` / `←→ SELECT` / `ESC CLOSE` — retain the LeftRight glyph, do NOT use the brief's `↵ SELECT`). If a tester checkout/CI lacks the assets (git-tracking unverified), mark FAIL (PO-amended deferral) — do NOT silently drop the gate.
