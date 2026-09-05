@@ -7,7 +7,13 @@ A desktop platform for working with AI coding agents, built with Tauri v2 (Rust 
 
 <!-- TODO(human): add real screenshots post-launch -->
 
-*_Screenshots coming soon._*
+> *Screenshots coming soon.*
+>
+> **A personal project.** Fredo started as a personal tool I use to learn and experiment with AI —
+> building and tinkering with it is the point. It's not a commercial product and there's no SLA or
+> dedicated support. It may be rough around the edges, and the internals/APIs can change without
+> notice. If it's useful to you, great — contributions are welcome, but expectations are modest and
+> the maintainer works on it in spare time.
 
 ## Features
 
@@ -20,13 +26,16 @@ A desktop platform for working with AI coding agents, built with Tauri v2 (Rust 
 
 ## Install for Users
 
-Fredo currently installs from source. Prebuilt installers are coming (the release pipeline is planned) — for now, build it yourself:
+Fredo ships a **Windows-only** installer through a deliberately owner-gated release pipeline (see
+[release-process.md](docs/release-process.md)). Releases are cut manually and every artifact must pass
+the full CI gate plus the maintainer's approval before it's published — nothing is released
+automatically. For now the easiest path for all platforms is to build from source:
 
 ### Prerequisites
 
 - [Rust toolchain ≥ 1.75](https://rustup.rs/)
 - [Tauri CLI v2](https://v2.tauri.app/reference/cli/): `cargo install tauri-cli --version "^2"`
-- Node.js ≥ 18, pnpm ≥ 8
+- Node.js ≥ 20, pnpm ≥ 8
 
 ### Build from source
 

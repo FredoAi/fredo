@@ -4,7 +4,7 @@
 
 ### For New Developers
 1. **[Setup Guide](SETUP.md)** — Prerequisites, install, dev commands, model download, OTLP config
-2. **[Architecture Overview](ARCHITECTURE.md)** — Communication layer, adapters, FredoEvent system, IPC protocol, OTLP, LLM, mission monitor, companion
+2. **[Architecture Overview](ARCHITECTURE.md)** — Communication layer, RTDB row pipeline, event flow, IPC protocol, OTLP receivers, LLM, mission monitor, companion
 3. **[CLI Guide](CLI_GUIDE.md)** — All `fredo` CLI commands
 
 ### For System Architects
@@ -17,7 +17,7 @@
 
 | Document | Purpose |
 |----------|---------|
-| [Architecture](ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, Rust module map, IPC protocol, OTLP receivers, Tauri commands, feature modules, agent integrations, startup sequence |
+| [Architecture](ARCHITECTURE.md) | Communication layer, RTDB row store + ingest classifier, Rust module map, IPC protocol, OTLP receivers, Tauri commands, feature modules, agent integrations, startup sequence |
 | [agentic-pipeline](agentic-pipeline/README.md) | Agentic SDD pipeline: agent catalog, phases, artifacts, scripts, skills, metrics — the full development workflow from intake to improvement |
 | [Setup Guide](SETUP.md) | Prerequisites, install, dev commands, model download, OTLP configuration |
 | [CLI Guide](CLI_GUIDE.md) | All `fredo` CLI subcommands with examples |

@@ -3,18 +3,25 @@
 ## General
 
 ### What is Fredo?
-Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single cross-platform desktop app. Agents send telemetry to local OTLP receivers, which persist raw spans/metrics/logs on receipt and normalize the OTLP projection into `EngineInput` values that the Event Contract Engine (ECE) turns into `ContractDelivery` objects consumed by declarative frontend features. Hook/CLI input flows through the canonical `FredoEvent` wire format, converted to `EngineInput` at the ECE boundary (Spec #2449). It also includes OTLP telemetry receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
+
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical SQLite rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
+
+### Is this a commercial product?
+
+No. Fredo is a personal project the maintainer uses to learn and experiment with AI. There is no SLA, no dedicated support, and the internals/APIs can change without notice. It is openly licensed and contributions are welcome, but expectations are modest.
 
 ### Who is Fredo for?
-Infrastructure engineers and AI practitioners who want a single desktop app that surfaces real-time cluster state, observability data, and work items while AI agents are running operations in the background.
+
+Developers and AI practitioners who want a single desktop app that surfaces real-time agent activity — chat, tool calls, and nested subagent delegation — while AI agents are running work in the background. It is built to be tinkered with, not to be a supported enterprise product.
 
 ### How does Fredo relate to AI agents?
-Fredo integrates with agents through two paths:
 
-1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) via the OpenTelemetry SDK, replacing the previous CLI-based event forwarding
-2. **OTLP telemetry** — agents send spans to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP)
+Agents integrate through two paths:
 
-Both paths flow through adapters into the ECE: the Hook/CLI path builds `FredoEvent` (converted to `EngineInput` at the ECE boundary), and the OTLP path is normalized directly into `EngineInput` by the provider-agnostic `GenericOtlpAdapter` — no standalone `FredoEvent` in the OTLP delivery path (Spec #2449).
+1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) using the OpenTelemetry SDK.
+2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools.
+
+Raw telemetry is persisted on receipt and then classified by the **RTDB ingest classifier** into canonical SQLite rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries. The `fredo` CLI can also inject CLI events through the same classifier path.
 
 ---
 
@@ -33,8 +40,9 @@ pnpm --filter @fredo/ui dev
 See `docs/SETUP.md` for full prerequisites.
 
 ### What are the prerequisites?
+
 - Rust toolchain (1.75+) with `rustup`
-- Node.js 18+ and pnpm 8+
+- Node.js 20+ and pnpm 8+
 - Tauri CLI v2 (`cargo install tauri-cli`)
 - Windows: WebView2 (bundled with Windows 10+)
 - macOS: Xcode Command Line Tools
@@ -42,11 +50,11 @@ See `docs/SETUP.md` for full prerequisites.
 ### How do I add a new UI feature?
 
 1. Create `apps/ui/src/features/<name>/`
-2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `name`, `icon`, `showable`, `eventContracts`, `handleDelivery()`, and `render()`
+2. Add `<Name>Feature.tsx` extending `FredoFeatureClass` — set `id`, `name`, `icon`, `showable`, and `render()`
 3. Add `index.ts` that calls `registerFeature(new <Name>Feature())`
 4. The feature is auto-discovered by `allFeatures.ts` via `import.meta.glob` — no manual import needed
 
-The feature appears in the navigation grid if `showable = true`. Set `eventContracts` to an array of `EventContractDeclaration` objects that declare which events the feature subscribes to. The Rust ECE engine buffers matching events and delivers `ContractDelivery` objects via the `handleDelivery` method. Contracts must be registered via `registerEventContracts()` at mount — they are NOT auto-registered. **ECE `streamFields` must use 2-level paths** (e.g. `['payload', 'state']`); 3-level paths silently strip sub-fields in the ContractEngine.
+The feature appears in the navigation grid if `showable = true`. To consume live agent activity, subscribe to the RTDB row store with `useEventRows(eventType, args, options)` inside `render()` — see the docs below.
 
 ### How do I add a new Rust feature?
 
@@ -57,19 +65,19 @@ The feature appears in the navigation grid if `showable = true`. Set `eventContr
 
 ### How do I test the event flow end-to-end in dev mode?
 
-Use the `fredo emit` CLI command to inject synthetic events through the real pipeline (IPC socket → InternalAdapter → ContractEngine → SubscriptionDelivery):
+Use the `fredo emit` CLI command to inject synthetic events through the real pipeline (IPC socket → InternalAdapter → RTDB ingest classifier → row deliveries):
 
 ```bash
 fredo emit --event-type chat --state init --provider open-code --session-id e2e-test --correlation-id e2e-1 --file ./payload.json
 ```
 
-Events flow through the same pipeline as real events and surface in the UI via `ContractDelivery`. For full recipes (payload shapes, event types, transports), see `.opencode/skills/fredo-cli-events/SKILL.md`.
+Events flow through the same pipeline as real events and surface in the UI as row deliveries. For full recipes (payload shapes, event types, transports), see `.opencode/skills/fredo-cli-events/SKILL.md`.
 
 > ⚠️ **CLI arg casing**: state must be lowercase (`init`, not `Init`) and provider must be hyphenated (`open-code`, not `open_code`). Wrong casing silently fails.
 
 ### Why does the UI not have a REST API client?
 
-By design. The UI is reactive — it reads events from `StreamContext`. When a user action needs to invoke a backend operation (e.g. clicking "Start Diagram"), it calls `adapterBridge.invoke(command, args)`, which goes through the `HostAdapter` to the Rust backend as a Tauri IPC command. The result comes back as a `FredoEvent`, not as a function return value.
+By design. The UI is reactive — it subscribes to row deliveries via `useEventRows` and reacts, it never polls. When a user action needs to invoke a backend operation (e.g. clicking "Start Diagram"), it calls `adapterBridge.invoke(command, args)`, which goes through the `HostAdapter` to the Rust backend as a Tauri IPC command.
 
 ---
 
@@ -92,36 +100,42 @@ export OPENCODE_OTLP_PROTOCOL=grpc
 
 Or use the Setup Wizard in Fredo's UI to configure automatically.
 
-OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`) and processed by the provider-agnostic `GenericOtlpAdapter` (`infrastructure/comm/adapters/otlp.rs`), which maps span data (`gen_ai.operation.name` etc.) into `EngineInput` values for the ECE (Spec #2449). Every raw span is also persisted on receipt to `telemetry_spans` — no span is dropped.
+OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`), persisted raw on receipt, and classified into canonical rows by the RTDB ingest classifier (`infrastructure/rtdb/ingest.rs`) — the row pipeline is the only delivery path.
 
 ### What OTLP data does Fredo ingest?
-- **Spans**: Persisted raw on receipt (`telemetry_spans`) AND normalized into deliveries for the Mission Monitor — zero dropped (Spec #2449)
-- **Metrics** (external OTLP): Persisted on receipt to `telemetry_metrics` on both the gRPC and HTTP legs (previously dropped on HTTP)
-- **Logs** (external OTLP): Persisted on receipt to `telemetry_logs` on both the gRPC and HTTP legs (previously dropped on HTTP)
 
-Fredo also collects its own internal metrics and structured logs from the Rust backend via the `tracing` crate ecosystem (Specs #407, #408). All `info!`, `warn!`, `error!`, `debug!`, and `trace!` macros in the Rust backend are captured by a `LogBridgeLayer` and persisted to the `telemetry_logs` table in `fredo.db`. Internal metrics (span count, events received, active sessions, span duration) are collected by `MetricCollector` and persisted to `telemetry_metrics`. Log level and enable/disable are configurable in Settings → Telemetry.
+- **Spans**: Persisted raw on receipt (`telemetry_spans`) AND classified into rows for the Mission Monitor — zero dropped.
+- **Metrics** (external OTLP): Persisted on receipt to `telemetry_metrics` on both the gRPC and HTTP legs.
+- **Logs** (external OTLP): Persisted on receipt to `telemetry_logs` on both the gRPC and HTTP legs.
+
+Fredo also collects its own internal metrics and structured logs from the Rust backend via the `tracing` crate ecosystem. All `info!`, `warn!`, `error!`, `debug!`, and `trace!` macros in the Rust backend are captured by a `LogBridgeLayer` and persisted to the `telemetry_logs` table. Internal metrics (span count, events received, active sessions, span duration) are collected by `MetricCollector` and persisted to `telemetry_metrics`. Log level and enable/disable are configurable in Settings → Telemetry.
 
 ### Why are my chat spans not showing up individually?
-`chat` child spans are cached and their content is attached to the parent `invoke_agent` node. This prevents the graph from being flooded with individual chat events. The full chat content is visible in the FocusWindow for the parent node.
+
+`chat` child spans are cached and their content is attached to the parent `invoke_agent` row. This prevents the graph from being flooded with individual chat events. The full chat content is visible in the Mission Monitor's chat node / detail panel for the parent.
 
 ---
 
 ## LLM
 
 ### What models does Fredo support?
+
 - **Gemma 4 E2B** (`gemma-4-e2b`) — full vision support via mmproj projector
 - **MiniCPM-V 4.6** (`minicpm-v-4-6`) — text-only (vision projector unsupported in current llama.cpp version)
 
 ### How do I switch models?
+
 Open Settings in the UI → Model Selector → choose a model. The change takes effect on next app launch.
 
 ### Where do I put model files?
+
 Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`. For example:
 ```
 apps/tauri/src-tauri/models/gemma-e2b-it/gemma-e2b-it-q4_k_m.gguf
 ```
 
 ### Does Fredo run llama.cpp as a subprocess?
+
 No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings. No child processes, no HTTP/SSE round-trips.
 
 ---
@@ -129,46 +143,79 @@ No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings.
 ## Architecture
 
 ### What is the Communication Layer?
-The `comm` module (`infrastructure/comm/`) is the backbone of the event pipeline. It defines:
 
-- **`FredoEvent`** — the CLI/Hook wire format (id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp). Serialized as camelCase to match frontend conventions. Converted to `EngineInput` at the ECE boundary via `From<FredoEvent> for EngineInput`.
-- **`EngineInput`** — the ECE input contract (`infrastructure/comm/contract/input.rs`): state, provider, transport, eventType, sessionId, correlationId, toolName, payload, error, metadata (camelCase, same enums as `FredoEvent`). The OTLP delivery path constructs these directly — no standalone `FredoEvent` (Spec #2449).
-- **`EventBus`** — emits `SubscriptionDelivery` on the `"fredo-stream-event"` Tauri IPC channel to the webview.
-- **`CommAdapter`** trait — adapters transform raw input into `EngineInput` (OTLP) or `FredoEvent` (Hook); the ECE consumes everything as `EngineInput`.
+The `comm` module (`infrastructure/comm/`) holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small:
 
-### What are Adapters and Connectors?
-**Adapters** are per-transport-class. **Connectors** are per-transport within an adapter (Hook, OTLP gRPC, OTLP HTTP). Since Spec #2449 the OTLP adapter is **provider-agnostic** — any agent provider (opencode, Copilot CLI, Claude Code) flows through the same adapter.
+- **`FredoEvent`** — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
+- **`EventBus`** — emits RTDB `RowDeliveryBatch` envelopes on the `"fredo-stream-event"` Tauri IPC channel via `emit_row_delivery_batch`.
+- **`CommAdapter`** trait — implemented by `InternalAdapter` (the `fredo emit` enrichment).
+
+Only `RowDelivery`/`RowDeliveryBatch` envelopes cross IPC; raw `FredoEvent` never does.
+
+### What is the RTDB row pipeline?
+
+The production event pipeline (`infrastructure/rtdb/`):
+
+- **`ingest.rs`** — the IngestClassifier maps every OTLP span / CLI event onto canonical row upserts unconditionally (this is what makes replay work). Owns the correlation maps and the parent-child relationship registry.
+- **`attrs.rs`** — the single shared implementation of the GenAI-attribute extract helpers used by both the live classifier and the canonical backfill.
+- **`store.rs` / `cache.rs`** — SQLite-authoritative rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) behind an LRU cache + write-behind queue.
+- **`flush.rs`** — coalescing windows, batch chunking, and per-query replay-complete settle markers.
+- **`query/`** — the GraphQL-inspired typed query language, e.g. `chat(sessionId = "s1") { userMessage }`.
+
+### What is the Event Flow?
 
 ```
-infrastructure/comm/adapters/
-├── opencode.rs    — OpenCodeAdapter: Hook connector (plugin events) → FredoEvent
-├── otlp.rs        — GenericOtlpAdapter: provider-agnostic OTLP → EngineInput (Spec #2449)
-├── internal.rs    — InternalAdapter: enriches raw events with server-side defaults
-```
+Agent (OTLP) → OTLP receivers (raw persist on receipt) → IngestClassifier → RowUpserts
+             → Rtdb (merge → durable seq → subscriptions) → FlushLoop → EventBus
+             → Tauri IPC "fredo-stream-event" (RowDeliveryBatch) → TauriAdapter
+             → AppProvider → StreamContext row store → useEventRows(eventType, args) → features
 
-- `OpenCodeAdapter::transform(Transport::Hook, payload)` — maps PreToolUse/PostToolUse/... plugin hooks into `FredoEvent`
-- `GenericOtlpAdapter::transform(Transport::OtlpGrpc|OtlpHttp, payload)` — provider-agnostic: maps any provider's OTLP spans into `EngineInput` (classified by `gen_ai.operation.name`; no `fredo.*` naming dependency)
-- New agent providers do NOT need a new adapter file (the OTLP adapter is provider-agnostic); new transports get a new `Transport` variant
+fredo emit → named pipe → CliCommand::EmitEvent → InternalAdapter → classifier → same rows
+```
 
 ### What is `FredoFeatureClass`?
-The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, and `render()` method. Features subscribe to the event pipeline through the **Event Contract Engine (ECE)**: set `eventContracts` (array of `EventContractDeclaration` objects) and implement `handleDelivery(delivery: ContractDelivery)`. Contracts are registered with the Rust ECE engine via `registerEventContracts()` at mount. Legacy `eventFilters` and `eventSubscriptions` are kept only for non-migrating features (setup, run-cli, query-viewer, model-storage). Optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, `gridConfig`, lifecycle hooks `onMount()`/`onUnmount()`.
+
+The TypeScript abstract base class every grid-based UI feature extends. It declares the feature's `id`, `name`, `icon`, `showable` flag, and `render()` method. Features read live agent activity by subscribing to the RTDB row store with `useEventRows(eventType, args, options)`. Optional properties: `isMultiWindow`, `hasSettings`/`renderSettings()`, `gridConfig`, lifecycle hooks `onMount()`/`onUnmount()`.
 
 ### What is `featureRegistry`?
+
 A global `Map<string, FredoFeatureClass>` populated at app startup via side-effect imports in `allFeatures.ts`. It mirrors Rust's `AppRuntime` — the explicit list of everything the app knows about.
 
 ### What is `StreamContext`?
-A React `useReducer`-based store that holds all `ContractDelivery` records received in the current session. It is the single source of truth for all feature data. Deliveries are deduplicated by composite key (e.g. `sessionId + correlationId`). Features never mutate deliveries — they derive display state by reading the append-only delivery log. Raw `FredoEvent` objects never cross IPC to the frontend — only `SubscriptionDelivery` (wrapping `ContractDelivery`) does.
+
+StreamContext carries the Tauri IPC connection flag plus the module-scoped RTDB row store. It is the single source of truth for feature data. Row deliveries are applied with these semantics:
+
+- **`insert`** — full-row set with spread-merge so init-time fields survive
+- **`update`** — `{ ...row, ...patch }` with seq-guarded stale-patch drops
+- **`remove`** — delete key (only ever retention eviction)
+
+The row store is module-scoped, so it survives feature mount/unmount cycles. Features never poll the backend — they derive display state off the row-store `epoch`. Raw `FredoEvent` never crosses IPC to the frontend.
+
+### What is `useEventRows`?
+
+The typed row-subscription hook: `useEventRows(eventType, args, options)` subscribes one typed RTDB query (`'Chat' | 'ToolUse' | 'AgentSession'` root, typed-column args). It returns:
+
+- **`rows`** — the typed partition map
+- **`epoch`** — a monotonic counter that advances only on real mutations
+- **`ready`** — resolves on the backend's per-query replay-complete settle marker, never on subscribe resolution alone
+- **`error`**
+
+`options.replay: true` restores the persisted snapshot as full-row inserts before live patches flow.
 
 ### What is the `HostAdapter`?
+
 An interface that abstracts the transport between the UI and its host environment. `TauriAdapter` uses `@tauri-apps/api`; `DevAdapter` uses an in-memory emitter. No feature code ever imports `@tauri-apps/api` directly — only `TauriAdapter.ts` is allowed to.
 
 ### What does `correlationId` do?
-It ties an `Init` event (agent called a tool) to its `Response` event (tool finished). Features use it to show progress indicators or before/after diffs without needing shared mutable state.
+
+It ties related rows together within a session (e.g. an `Init` event that started a tool call to its `Response`). Feature ownership of a task dispatch derives from the correlationId's session prefix.
 
 ### What is the FredoCompanion?
+
 An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the in-process LLM engine for all interactions.
 
 ### How does the Tic-Tac-Toe AI work?
+
 The companion takes a screenshot of the board via `capture_screen_region`, sends it to the LLM with a vision prompt ("reply with single digit 0-8"), and parses the first digit from the response. Falls back to the first empty cell on error.
 
 ---
@@ -181,10 +228,12 @@ The companion takes a screenshot of the board via `capture_screen_region`, sends
 pnpm build:tauri
 ```
 
-Produces `.msi` (Windows), `.dmg` (macOS), and `.AppImage` (Linux) in `apps/tauri/src-tauri/target/release/bundle/`.
+Local development builds produce installers for the host OS. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
 
 ### How is the `fredo` CLI installed?
-The NSIS installer (`nsis/installer-hooks.nsh`) adds the `fredo` binary directory to the system `PATH` on Windows. On macOS/Linux, the bundled binary is symlinked to `/usr/local/bin/fredo` during install.
+
+The Windows NSIS installer (`nsis/installer-hooks.nsh`) adds the `fredo` binary directory to the system `PATH`. The release pipeline ships the Windows installer to a draft GitHub Release.
 
 ### What does `fredo` do when no desktop app is running?
+
 CLI mode prints a connection-refused error and exits non-zero. The IPC socket only exists while the GUI is running.

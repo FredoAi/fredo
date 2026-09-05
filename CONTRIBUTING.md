@@ -36,6 +36,32 @@ cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warn
 
 All of these must pass with zero errors and zero warnings before a PR can be merged.
 
+## Contribution Workflow
+
+Fredo does **not** accept direct pushes to the upstream repository. All code changes arrive as a **pull request from your fork into `main`**, and every PR must be **approved by the maintainer** before it merges.
+
+`main` is branch-protected with a ruleset that:
+- requires a pull request (no direct pushes, including by admins — empty bypass list),
+- requires **one code-owner approval** (`* @pktron` via `.github/CODEOWNERS`),
+- requires the `validate` gate to pass.
+
+These are repo-admin settings the owner applies to `main`; a contributor has no write access to the repo.
+
+1. **Fork** `FredoAi/fredo` and clone your fork.
+2. Create a topic branch off `main` in your fork (e.g. `fix/foo`, `feat/bar`).
+3. Make your change; run the full CI-parity command set above locally.
+4. Open a PR from your fork's branch into this repo's `main`.
+5. Keep it small and focused; include evidence in the PR description.
+6. The maintainer reviews and approves; the PR merges through the protected branch.
+
+## Discussions
+
+Bug reports, feature requests, and questions live in **GitHub Discussions**, not GitHub Issues (public issues are reserved for the maintainer's automated pipeline). When you start a discussion, choose the category and use its template:
+
+- **Ideas** — feature requests and new ideas.
+- **Q&A** — usage, setup, architecture, or contributing questions.
+- **General** — other topics, including bug reports.
+
 ## Pull Request Checklist
 
 - [ ] The CI-parity command set above passes locally
@@ -63,7 +89,7 @@ This is intentional. The pipeline reads issue comment text as trusted context, s
 
 If you have a genuine bug report, feature request, or security concern, do **not** post it as a comment on a pipeline issue — public comments there are not read by the pipeline. Instead:
 
-- Open a regular GitHub issue for non-security bug reports and feature requests.
+- Post bug reports, feature requests, and questions in **GitHub Discussions** (see [Discussions](#discussions)).
 - Report security-sensitive findings privately via the repository's Security tab (a private advisory) — see [SECURITY.md](docs/SECURITY.md).
 
 There is no moderation or bot workflow for these comments; the restriction is configuration plus policy, and genuine reports are routed through the channels above.
@@ -73,7 +99,7 @@ There is no moderation or bot workflow for these comments; the restriction is co
 ## Non-goals
 
 - **No refactor-only PRs.** Pull requests whose content is purely restructuring — no behavior change, no bug fix, no user-visible improvement — are out of scope. Refactors happen when maintainers drive them, motivated by concrete work.
-- **Fredo's core is closed.** Third-party integrations (new agent providers, new transports, companion tools) ship as standalone plugin repositories, not as changes to Fredo's core. If your integration needs a new extension point, open an issue describing the integration first.
+- **Fredo's core is closed.** Third-party integrations (new agent providers, new transports, companion tools) ship as standalone plugin repositories, not as changes to Fredo's core. If your integration needs a new extension point, open a Discussion describing the integration first.
 - **The CHANGELOG is maintainers-only.** Do not modify `CHANGELOG.md` in a pull request; maintainers curate it at release time.
 
 ## AI-Assisted Contributions

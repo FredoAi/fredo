@@ -634,12 +634,12 @@ mod tests {
     fn derive_status_error_carries_work_dir() {
         let s = RunCliState {
             launch_error: Some("Failed to spawn opencode: bad cwd".into()),
-            work_dir: Some(r"C:\Code\fredo".into()),
+            work_dir: Some(r"C:\fredo".into()),
             ..RunCliState::new()
         };
         let status = derive_run_cli_status(&s);
         assert_eq!(status.status, RunCliStatusKind::Error);
-        assert_eq!(status.work_dir.as_deref(), Some(r"C:\Code\fredo"));
+        assert_eq!(status.work_dir.as_deref(), Some(r"C:\fredo"));
     }
 
     #[test]
@@ -648,26 +648,26 @@ mod tests {
         // correlation_id — "exited" must be distinguishable from "starting".
         let s = RunCliState {
             correlation_id: Some("test-correlation".into()),
-            work_dir: Some("C:\\Code\\fredo".into()),
+            work_dir: Some("C:\\fredo".into()),
             ..RunCliState::new()
         };
         let status = derive_run_cli_status(&s);
         assert_eq!(status.status, RunCliStatusKind::Exited);
         assert!(status.error.is_none());
-        assert_eq!(status.work_dir.as_deref(), Some("C:\\Code\\fredo"));
+        assert_eq!(status.work_dir.as_deref(), Some("C:\\fredo"));
     }
 
     #[test]
     fn run_cli_status_serializes_camel_case_with_lowercase_status() {
         let s = RunCliState {
             launch_error: Some("boom".into()),
-            work_dir: Some("C:\\Code\\fredo".into()),
+            work_dir: Some("C:\\fredo".into()),
             ..RunCliState::new()
         };
         let json = serde_json::to_value(derive_run_cli_status(&s)).unwrap();
         assert_eq!(json["status"], serde_json::json!("error"));
         assert_eq!(json["error"], serde_json::json!("boom"));
-        assert_eq!(json["workDir"], serde_json::json!("C:\\Code\\fredo"));
+        assert_eq!(json["workDir"], serde_json::json!("C:\\fredo"));
     }
 
     // ── FIX-2: validate_cwd rejects nonexistent/invalid working dirs ───────

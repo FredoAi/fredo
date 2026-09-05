@@ -6,7 +6,7 @@
 |------|---------|---------|
 | Rust toolchain | ≥ 1.75 | [rustup.rs](https://rustup.rs/) |
 | Tauri CLI v2 | latest | `cargo install tauri-cli --version "^2"` |
-| Node.js | ≥ 18 | [nodejs.org](https://nodejs.org/) |
+| Node.js | ≥ 20 | [nodejs.org](https://nodejs.org/) |
 | pnpm | ≥ 8 | `npm i -g pnpm` |
 
 ### Windows additional dependencies
@@ -141,7 +141,7 @@ window.__devAdapter.emit({
 pnpm build:tauri
 ```
 
-Artifacts are placed in `apps/tauri/src-tauri/target/release/bundle/`:
+A local build produces an installer for your current OS in `apps/tauri/src-tauri/target/release/bundle/`:
 
 | OS | Format | Location |
 |----|--------|----------|
@@ -149,6 +149,11 @@ Artifacts are placed in `apps/tauri/src-tauri/target/release/bundle/`:
 | macOS | `.dmg` | `bundle/dmg/` |
 | Linux | `.AppImage` | `bundle/appimage/` |
 | Linux | `.deb` | `bundle/deb/` |
+
+> **Released installers are Windows-only.** The officially shipped installer (the NSIS `.exe`) is
+> built by the owner-gated `release/stable` pipeline and published to a **draft** GitHub Release that
+> the maintainer must review before it's public — see [release-process.md](release-process.md).
+> Local `pnpm build:tauri` is for development and works on any host OS.
 
 ## After Installation
 

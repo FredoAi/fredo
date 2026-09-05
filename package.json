@@ -9,8 +9,6 @@
     "dev:tauri:release": "pnpm --filter @fredo/tauri dev:release",
     "build:tauri": "pnpm --filter @fredo/tauri build",
     "dev:ui": "pnpm --filter @fredo/ui dev",
-    "dev:tools": "pnpm --filter @fredo/tools-mcp dev",
-    "dev:app": "concurrently --names \"tools,ui\" --prefix-colors \"cyan,magenta\" \"pnpm --filter @fredo/tools-mcp dev:web\" \"pnpm --filter @fredo/ui dev\"",
     "build": "pnpm --recursive build",
     "typecheck": "pnpm --recursive typecheck",
     "test": "pnpm --recursive test",
@@ -25,9 +23,9 @@
     "pnpm-workspace"
   ],
   "author": "Fredo Team",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=20.0.0",
     "pnpm": ">=8.0.0"
   },
   "devDependencies": {

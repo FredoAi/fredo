@@ -11,7 +11,7 @@ The `fredo` binary is installed alongside the desktop app and added to your syst
 
 ### `fredo emit`
 
-Injects a synthetic `FredoEvent` into the running app via the IPC socket. Used for e2e testing and debugging. Events flow through the same pipeline as real events: InternalAdapter → `From<FredoEvent>` shim → ContractEngine → SubscriptionDelivery → frontend.
+Injects a synthetic `FredoEvent` into the running app via the IPC socket. Used for e2e testing and debugging. Events flow through the same pipeline as real events: InternalAdapter → RTDB ingest classifier → canonical row upserts → `RowDeliveryBatch` on `fredo-stream-event` → frontend.
 
 ```bash
 fredo emit --event-type <type> --state <state> --provider <provider> --session-id <id> [--tool-name <name>] [--correlation-id <id>] [--file <path>]

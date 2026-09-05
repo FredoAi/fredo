@@ -1,21 +1,28 @@
 blank_issues_enabled: false
 
-# Pipeline issues (the issues the agentic pipeline tracks via labels such as
-# backlog, planning, ready-for-dev, testing, audit, cleanup, done) are a
-# maintainer-controlled comment surface. Their conversations are locked
-# (lock reason `off-topic`), so only users with write access
-# (collaborator/member/owner) can comment; the pipeline state machine retains
-# write access and keeps posting Status / Triage Plan / Tests Runs comments.
-# This is intentional — it protects the automated pipeline from untrusted
-# third-party input (prompt-injection / context-poisoning) now that the repo
-# is public.
+# Fredo uses GitHub Discussions for bug reports, feature requests, and questions —
+# not GitHub Issues. Issues are reserved for the maintainer's automated agentic
+# pipeline (tracked via labels such as backlog, planning, ready-for-dev, testing,
+# audit, cleanup, done). Those pipeline issues are a maintainer-controlled comment
+# surface: their conversations are locked (lock reason `off-topic`), so only users
+# with write access (collaborator/member/owner) can comment. This is intentional —
+# it protects the automated pipeline from untrusted third-party input
+# (prompt-injection / context-poisoning) now that the repo is public.
 
 contact_links:
+  - name: Bug report — GitHub Discussions
+    url: https://github.com/FredoAi/fredo/discussions/new?category=General
+    about: >-
+      File bug reports as a Discussion (General category). Public issues are
+      reserved for the pipeline and are comment-restricted.
+  - name: Feature request / idea — GitHub Discussions
+    url: https://github.com/FredoAi/fredo/discussions/new?category=Ideas
+    about: Request a feature or propose an idea in Discussions (Ideas category).
+  - name: Ask a question — GitHub Discussions
+    url: https://github.com/FredoAi/fredo/discussions/new?category=Q%26A
+    about: General usage, setup, architecture, or contributing questions.
   - name: Report a security vulnerability
     url: https://github.com/FredoAi/fredo/security/advisories/new
     about: >-
       Report security-sensitive findings privately (a private advisory), not as a
-      public issue or as a comment on a pipeline issue. Pipeline issues are
-      comment-restricted to users with write access (collaborator/member/owner);
-      public comments on them are not read by the pipeline. For non-security bug
-      reports and feature requests, open a regular GitHub issue.
+      public discussion or comment on a pipeline issue.
