@@ -26,3 +26,14 @@
 - **S-6 FAIL** — clicking the toolbar Mission Monitor / Query Viewer entries opens NO window (0 `.fredo-window__surface`, 0 `.window-container`); toolbar open path routes to `@maomaolabs/core`'s own store (dist `index.es.js:44`), whose window host is unmounted. Root cause: `DesktopToolbar.tsx:2` uses `@maomaolabs/core` `Toolbar`; ST-5 re-pointed `useWindows` only.
 - **S-7 UNVERIFIED (blocked by S-6)** — no window chrome controls to reach/close.
 - **S-8 UNVERIFIED (blocked by S-6)** — no window to re-open.
+
+## Test run (round 2)
+
+- **S-1 PASS** — `dom_snapshot(structure)` non-empty `<body>`.
+- **S-2 PASS** — console read: no `Error:`/`Uncaught`/`Maximum update depth`; only a `motion() is deprecated` warn + a transient React Flow layout warn.
+- **S-3 PASS** — desktop work area renders; with a window open the window surface `role="group"` + chrome header + controls are reachable.
+- **S-4 PASS** — settings dialog (gear) opens with sections (Companion/Appearance/Fredo Setup/Telemetry/Features); Appearance exposes NO window-style variant selector.
+- **S-5 PASS** — screenshots saved under `.opencode/tmp/2807/e2e/` (00..07).
+- **S-6 PASS (round-2 fix)** — clicking the toolbar `button[aria-label="Mission Monitor"]` opens the window framed in the Fredo brand chrome (own engine); DOM shows `.fredo-window__surface` + header + controls; screenshot `01-mm-open.png`. The `onClickCapture` wrapper routes the launcher click to the own kernel's `openFeatureWindow`.
+- **S-7 PASS** — the window chrome controls (Minimize / Restore / Close) are rendered and reachable; clicking Close removes the window and the open-window list (idempotent, no crash); console clean.
+- **S-8 PASS** — re-opening the same feature window after closing opens cleanly (no stale frame, no duplicate, no focus trap); re-open + update twice works end-to-end (session list grew 1→2→3 with identical surface class = no remount).
