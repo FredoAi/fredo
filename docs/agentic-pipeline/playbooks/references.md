@@ -559,7 +559,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** planner sections ship contradicting cross-cutting decisions (persistence medium, storage keys, clamps), forcing SI reconciliation and risking a self-contradictory Implementation Plan.
 - **guardrail:** Cross-cutting mechanism decisions are the Architect's binding contract, declared in `## Discussion` as soon as they are made; UI/UX and QA design against the declared contract; the SI scans all planner sections for contradicting mechanisms before assembling the plan and realigns them in the same pass (recorded in `## Discussion`).
 - **home:** playbooks/software-architect.md Verification + playbooks/self-improver.md Guardrails (added 2026-08-12)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (re-validated 2026-09-05, #2811 — the Architect declared a binding preset persistence contract (new `Fredo_theme_preset` middle layer, precedence override >> preset >> base) while the UI/UX designed a batch `setOverride` over the existing path and a reset-to-`light-default` target; the SI realigned the UI-UX + QA sections to the Architect's contract in the same pass (recorded in `## Discussion`), and the plan reached implementation internally consistent with no conflict burned at build/test. G-050 disambiguation (no real light/dark toggle; per-palette legibility) also applied without a loop.)
 
 ### G-024: glob_misses_dot_directories
 - **activation_date:** 2026-08-12
