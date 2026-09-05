@@ -73,3 +73,36 @@
 
 - [x] F-10: Side-by-side screenshot comparison of the idle light render against `desktop-light.png`, attached to evidence, with every deviation called out (element present/absent, position, size, color, accent, font). **Asset path (Read, never glob):** `.opencode/` is a dot-prefixed dir — `glob`/ripgrep silently skip it; the Tester MUST `Read .opencode/wireframes/desktop-light.png` by EXPLICIT absolute path (resolved Discussion QA-2). The engaged-dark compare is `.opencode/wireframes/desktop-light-dark-theme-compare.png`. Hint labels must match the wireframe char-for-char (`↑↓ NAVIGATE` / `←→ SELECT` / `ESC CLOSE` — retain the LeftRight glyph, do NOT use the brief's `↵ SELECT`). If a tester checkout/CI lacks the assets (git-tracking unverified), mark FAIL (PO-amended deferral) — do NOT silently drop the gate.
   - **FAIL (#2819 round 1 — mirrors desktop-shell F-12).** Unmapped idle-light deviations: vertical placement (avatar/bar at ~8%/12% H vs wireframe ~37%/50% H), avatar size (32×32 vs wireframe ~119px / spec ~48px), avatar→bar gap (24px vs ~40px). Glyph checkpoint PASSES (LeftRight arrows). Engaged composition matches (authorized Fredo tile set).
+
+## #2821 extension — launcher-surface defect correction (Main fidelity, avatar, dual LEDs, persistent search)
+
+> Issue #2821 — six human-review defects against the design captures on the shipped launcher.
+> These cases cover the launcher-surface defects (bugs 1, 2, 4, 5). The app-drawer defect
+> (bug 6) + window-lifecycle regression live in the `window-manager` suite. Map 1:1 to
+> `.opencode/tmp/2821/triage.md` `## QA Expert` (REQ-1..REQ-5 / R1..R5).
+
+## F-11 (REQ-1/AC1) — Main visual fidelity gate (side-by-side, fail-closed)
+
+- [ ] F-11: Capture the served Main (light theme) at 100% OS scale; side-by-side + blended overlay / pixel-diff against `.opencode/wireframes/desktop-light.png` and the target `.opencode/wireframes/desktop-light-dark-theme-compare.png`. **Expected:** ZERO unresolved deviations across geometry, spacing, alignment, typography, color, and every control. The two bottom status LEDs are the AC4-mandated REQUIRED additive deviation (list, don't fail); every OTHER deviation must resolve or be dismissed with evidence. A single unresolved deviation ⇒ FAIL.
+  - **Edge:** capture BOTH light and dark separately; a provably environment-caused deviation (OS scale, font raster) is recorded as RESOLVED with evidence. Evidence must be from the running `spec/2821` build, never a stale main capture (verification policy is `live`).
+
+## F-12 (REQ-2/AC2) — Avatar matches the 21×21 guide
+
+- [ ] F-12: Grid-overlay the rendered avatar against `.opencode/wireframes/avatar-guide.png` (21×21 base form, 8px pixel). **Expected:** circular brimmed head (rows ~2–14), two vertical rectangular eyes (rows ~8–13, cols ~9–10 & ~13–14), bowtie/body + arm nubs + two-notch vest + two legs (rows ~14–21). The `avatar-current.png` blob (filled solid head, hollow eye-slots, no separate bowtie/legs) must NO LONGER reproduce.
+  - **Edge:** verify in both light and dark themes; the form must not scale/clip at other avatar display sizes; no hardcoded color — avatar stays `fill="currentColor"` + `var(--accent-primary)`.
+
+## F-13 (REQ-3/AC3) — Mission Monitor + feature windows follow the active theme/preset
+
+- [ ] F-13: Open Mission Monitor under an active theme/preset; verify no unstyled dark chrome and no hardcoded hex/rgba — colors flow tokens→CSS-var→`tint()`. Cycle the theme/preset live; all open windows re-theme. Compare against `.opencode/wireframes/bugs/mission-monitor-style.png` (the fail state) — must NOT match.
+  - **Edge:** run with Mission Monitor + at least one other window open simultaneously; apply a custom accent (if offered) and confirm `tint()` re-colors. Token-hygiene scan rejects `#[0-9a-fA-F]{3,6}`, `rgba(`, `rgb(`, and invalid `var(--x)NN` alpha-appends in changed files.
+
+## F-14 (REQ-4a/REQ-4b/AC4) — Exactly TWO status LEDs at the BOTTOM, none overlapping the clock
+
+- [ ] F-14a: Verify exactly TWO distinct status LED nodes at the BOTTOM of the launcher surface (online + activity), visible, separated, un-clipped.
+- [ ] F-14b: Verify NO status LED overlaps the clock / ONLINE readout at top-right. Compare against `.opencode/wireframes/bugs/led-overlay.png` (the single overlapping LED) — must NOT match. Check at reduced/narrow window sizes and against the app drawer open (z-index draw-order).
+  - **Edge:** the `LauncherChrome` ONLINE dot at top-right is the labeled readout cluster and STAYS; the two bottom LEDs are the unlabeled live status indicators. Resize concurrently with the drawer open; LEDs stay at bottom, clear of the clock.
+
+## F-15 (REQ-5/AC5) — Persistent search/command access across window open/close
+
+- [ ] F-15: Open a feature window, then close it; verify the search/command bar REMAINS visible. Run ≥3 consecutive open→close cycles; also across minimize/restore. Compare against `.opencode/wireframes/bugs/launcher-disappears.png` (search gone) — must NOT match.
+  - **Edge:** "always visible" means present in the resting Main surface and re-revealed on close/minimize — NOT rendered above a maximized feature window (windows open maximized, `Home.tsx:92`). Test with multiple windows open/closed at once; verify the launcher never unmounts.
