@@ -615,7 +615,7 @@ Guardrail records - persisted by the Self-Improver at every audit (retro-analysi
 - **target_failure:** the SI's pre-tester main-sync merge lands on a stale local `spec/<N>` ref (missing the developer's pushed commits and/or newer `origin/main` commits), producing a wrong-base merge commit that cannot be pushed and stalls the testing handoff.
 - **guardrail:** Before the pre-tester main-sync (G-026), ALWAYS reset the local `spec/<N>` branch ref to `origin/spec/<N>` first (`git checkout -B spec/<N> origin/spec/<N>`), then merge the fetched `origin/main` tip SHA and push `HEAD:spec/<N>`. Never merge `origin/main` into the local spec ref directly after a fork — the local ref lags the remote whenever the branch was created before the developer pushed (G-031's create-worktree stale-ref hazard applies to the SI's own merge-sync step too).
 - **home:** playbooks/self-improver.md step 9 (pre-tester sync, added 2026-08-13) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Pending — **applied cleanly 2026-09-05, #2809:** the pre-tester main-sync reset the local `spec/2809` to `origin/spec/2809`, merged the fetched `origin/main` tip SHA (`af176a5`), and pushed `HEAD:spec/2809` non-stalled; the spec PR opened and merged normally. Still Pending (needs ≥2 post-activation specs for Confirmed).
 
 ### G-010: reactflow_edge_selector_dom_attribute
 - **activation_date:** 2026-08-10
