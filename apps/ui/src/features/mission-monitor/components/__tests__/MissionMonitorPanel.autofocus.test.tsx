@@ -19,6 +19,18 @@ import { loadPersistedSessions } from '../../lib/persistence';
 // minZoom={0.3} clamped every fit to scale(0.3), leaving ~6/66 nodes visible).
 import { DEFAULT_NODE_HEIGHT, CHAIN_GAP } from '../../lib/layout';
 
+// Mock the own window-kernel hooks (Spec #2807 ST-5): the panel consumes
+// useWindowActions only to neutralize the window title; the window system
+// itself is out of scope here. Mirrors the MissionMonitorPanel.test.tsx mock.
+vi.mock('@/shared/window-system/useWindowActions', () => ({
+  useWindowActions: () => ({
+    openWindow: vi.fn(),
+    closeWindow: vi.fn(),
+    focusWindow: vi.fn(),
+    updateWindow: vi.fn(),
+  }),
+}));
+
 // #2700 ST2 — mirror the panel's constants so assertions pin the intended
 // behavior (geometric center + debounce window + animation duration).
 // #2743 AC-6: the fallback chat-node size scaled with the ~1.5× wider nodes

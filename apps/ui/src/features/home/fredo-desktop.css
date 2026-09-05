@@ -1,82 +1,17 @@
-/* Fredo custom window theme for @maomaolabs/core
- *
- * Maps All Fredo CSS variables to maomaolabs window element classes.
- * Activated via: <WindowSystemProvider systemStyle="Fredo">
- *
- * Target selectors from @maomaolabs/core docs:
- *   .window-container      Root window wrapper
- *   .window-header         Title bar (drag area)
- *   .window-title          Title text container
- *   .window-icon           Icon inside the title bar
- *   .window-controls       Button group (minimize / maximize / close)
- *   .terminal-btn          Generic control button
- *   .window-scrollbar      Scrollable content area
- *   .window-resize-handle  Bottom-right resize grip
+/*
+ * Fredo Desktop — legacy @maomaolabs/core window-chrome shim (ST-3).
+
+ * The own window-kernel (Spec #2807) now renders the desktop window frames
+ * with our own token-native chrome components under
+ * `apps/ui/src/shared/window-system/` (WindowFrame.tsx / WindowChrome.tsx /
+ * chrome.css). The `[data-system-style="Fredo"]` rules that targeted the
+ * third-party `.window-container` / `.window-header` / `.window-controls`
+ * selector surface below are obsolete — those selectors no longer exist in the
+ * window-engine path (ST-2 re-points Home.tsx to the own kernel) — and have
+ * been removed.
+
+ * The launcher dock/toolbar is NOT redesigned in this spec (Issue 2): it is
+ * still styled by `@maomaolabs/core/style.css` until that slice lands, and is
+ * out of ST-3's scope. Keep this file so the `@fredo/ui/styles` alias and the
+ * `apps/ui/src/main.tsx` import stay valid; it is intentionally empty of rules.
  */
-
-[data-system-style="Fredo"] .window-container {
-  background: var(--card-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  box-shadow: var(--node-box-shadow);
-  font-family: var(--font-family);
-  color: var(--text-primary);
-}
-
-[data-system-style="Fredo"] .window-header {
-  background: var(--header-bg);
-  color: var(--text-primary);
-  font-family: var(--font-family);
-  border-bottom: 1px solid var(--border-color);
-  border-radius: 8px 8px 0 0;
-}
-
-[data-system-style="Fredo"] .window-title {
-  font-family: var(--font-family);
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-[data-system-style="Fredo"] .window-icon {
-  color: var(--accent-primary);
-}
-
-[data-system-style="Fredo"] .window-controls {
-  gap: 4px;
-}
-
-[data-system-style="Fredo"] .terminal-btn {
-  border-radius: 4px;
-  transition: opacity 0.15s, transform 0.1s;
-}
-
-[data-system-style="Fredo"] .terminal-btn:hover {
-  opacity: 0.8;
-  transform: scale(1.1);
-}
-
-[data-system-style="Fredo"] [data-action="close"] {
-  background: var(--status-error) !important;
-  color: white;
-}
-
-[data-system-style="Fredo"] [data-action="maximize"] {
-  background: var(--accent-primary) !important;
-  color: white;
-}
-
-[data-system-style="Fredo"] [data-action="minimize"] {
-  background: var(--status-warning) !important;
-  color: white;
-}
-
-[data-system-style="Fredo"] .window-scrollbar {
-  background: var(--card-bg);
-}
-
-[data-system-style="Fredo"] .window-resize-handle {
-  border-color: var(--border-color);
-  opacity: 0.5;
-}
-

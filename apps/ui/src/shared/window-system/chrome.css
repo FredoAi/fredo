@@ -1,0 +1,64 @@
+/*
+ * Fredo brand window chrome (Spec #2807 ST-3) — own-window-kernel chrome.
+ *
+ * This stylesheet carries ONLY non-color layout/pointer concerns that are not
+ * expressible as Chakra props (directional resize-grip cursors, the grab /
+ * grabbing drag affordance, and the geometry hint applied during a
+ * drag/resize gesture). Every surface COLOR comes from theme semantic tokens
+ * through Chakra props (`bg.surface`, `border.default`, `accent.default`,
+ * `tint()` from `shared/utils/colorTint.ts`) per the AC3 token contract — no
+ * hex/rgba and no `var(--x)NN` alpha-append ever appear here.
+ */
+
+/* Surface geometry hint: transform is compositor-friendly during a gesture. */
+.fredo-window__surface {
+  will-change: auto;
+}
+
+.fredo-window__surface--gesture {
+  will-change: transform;
+}
+
+/* Header drag affordance. */
+.fredo-window__header {
+  cursor: grab;
+  user-select: none;
+}
+
+/* While a drag is in progress the whole surface advertises grabbing. */
+.fredo-window__surface--gesture .fredo-window__header {
+  cursor: grabbing;
+}
+
+/*
+ * Resize grips — absolute, invisible hit strips on the frame edges/corners.
+ * They only render when the window is floating (not maximized) and show a
+ * colour-mix tint from Chakra `_hover`; the CSS here contributes only the
+ * directional cursor. Grip hit areas are inset inside the frame so they do
+ * not overlap the header control cluster (which is inset by the header
+ * padding) and remain usable under `overflow: hidden` rounded-corner clip.
+ */
+.fredo-window__grip--n {
+  cursor: ns-resize;
+}
+.fredo-window__grip--s {
+  cursor: ns-resize;
+}
+.fredo-window__grip--e {
+  cursor: ew-resize;
+}
+.fredo-window__grip--w {
+  cursor: ew-resize;
+}
+.fredo-window__grip--ne {
+  cursor: nesw-resize;
+}
+.fredo-window__grip--sw {
+  cursor: nesw-resize;
+}
+.fredo-window__grip--nw {
+  cursor: nwse-resize;
+}
+.fredo-window__grip--se {
+  cursor: nwse-resize;
+}

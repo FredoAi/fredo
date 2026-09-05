@@ -3,7 +3,6 @@ import { Box, Tabs, Text, VStack, HStack } from '@chakra-ui/react';
 import { LuPalette, LuBrain, LuActivity } from 'react-icons/lu';
 import { ThemeSelector } from './ThemeSelector';
 import { AnimationSelector } from './AnimationSelector';
-import { WindowStyleSelector } from './WindowStyleSelector';
 import { ModelSelector } from './ModelSelector';
 import { TelemetrySettings } from './TelemetrySettings';
 
@@ -101,13 +100,6 @@ export const SettingsPanel: React.FC = () => {
                 Animation Style
               </Text>
               <AnimationSelector />
-            </Box>
-
-            <Box>
-              <Text fontSize="xs" fontWeight="700" color="var(--text-secondary)" letterSpacing="wider" textTransform="uppercase" mb={2}>
-                Window Style
-              </Text>
-              <WindowStyleSelector />
             </Box>
           </VStack>
         </Tabs.Content>

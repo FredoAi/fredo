@@ -1,5 +1,7 @@
 import React, { useMemo, useEffect, useRef } from 'react';
-import { Toolbar, useWindows } from '@maomaolabs/core';
+import { Box } from '@chakra-ui/react';
+import { Toolbar } from '@maomaolabs/core';
+import { useWindows } from '../../../../shared/window-system/useWindows';
 import FredoLogoUrl from '../../../../assets/fredo-logo-icon.png';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
@@ -41,12 +43,38 @@ export type ShowableFeatureEntry = FredoFeatureClass;
 
 interface DesktopToolbarProps {
   showableFeatures: ShowableFeatureEntry[];
+  onOpenFeature: (id: string, feature: FredoFeatureClass) => void;
 }
 
-export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures }) => {
+export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { state: companionState } = useCompanion();
   const observerRef = useRef<MutationObserver | null>(null);
+
+  // Route a captured launcher click to the own kernel's full-lifecycle opener. The
+  // third-party Toolbar renders each launcher item as a <button aria-label={title}>
+  // where title === feature.name (DesktopToolbar.tsx:79), so a name→feature map lets
+  // us match the clicked button to its showable feature. The dock visuals are unchanged;
+  // we only intercept the click at the capture phase, suppressing the third-party
+  // @maomaolabs/core openWindow write (whose store is no longer mounted).
+  const featureByName = useMemo(() => {
+    const map = new Map<string, FredoFeatureClass>();
+    showableFeatures.forEach((feature) => map.set(feature.name, feature));
+    return map;
+  }, [showableFeatures]);
+
+  const handleLauncherOpen = (event: React.MouseEvent) => {
+    const btn = (event.target as HTMLElement).closest('button');
+    const label = btn?.getAttribute('aria-label');
+    const feature = label ? featureByName.get(label) : undefined;
+    if (feature) {
+      event.preventDefault();
+      event.stopPropagation();
+      onOpenFeature(feature.id, feature);
+    }
+    // Non-feature buttons (the paw Open/Close Menu toggle, window-close controls)
+    // bubble normally — their aria-label is not a showable feature name.
+  };
 
   // Inject the overlay image into the maomaolabs launcher button
   useEffect(() => {
@@ -103,7 +131,9 @@ export const DesktopToolbar: React.FC<DesktopToolbarProps> = ({ showableFeatures
           font-size: 0 !important;
         }
       `}</style>
-      <Toolbar toolbarItems={toolbarItems as any} showLogo={true} />
+      <Box onClickCapture={handleLauncherOpen}>
+        <Toolbar toolbarItems={toolbarItems as any} showLogo={true} />
+      </Box>
     </>
   );
 };

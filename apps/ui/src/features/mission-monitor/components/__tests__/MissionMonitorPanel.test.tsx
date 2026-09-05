@@ -199,9 +199,9 @@ const windowActionsState = vi.hoisted(() => ({
   updateWindow: vi.fn(),
 }));
 
-// Mock @maomaolabs/core — the panel consumes useWindowActions only to
-// neutralize the window title; the window system itself is out of scope here.
-vi.mock('@maomaolabs/core', () => ({
+// Mock the own window-kernel hooks — the panel consumes useWindowActions only
+// to neutralize the window title; the window system itself is out of scope here.
+vi.mock('@/shared/window-system/useWindowActions', () => ({
   useWindowActions: () => ({
     openWindow: vi.fn(),
     closeWindow: vi.fn(),

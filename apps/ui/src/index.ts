@@ -1,9 +1,7 @@
 // ── Providers & hooks ────────────────────────────────────────────────────────
 export { AppProvider, useExtension } from './app/providers/AppProvider';
 export type { Step } from './app/providers/AppProvider';
-export { WindowStyleProvider, useWindowStyle, WINDOW_STYLES } from './shared/contexts/WindowStyleContext';
 export { AnimationProvider, useAnimation } from './shared/contexts/AnimationContext';
-export type { WindowStyleId } from './shared/contexts/WindowStyleContext';
 
 export { ThemeProvider, useTheme, ThemeContext } from './app/providers/ThemeProvider';
 export type { ThemeContextType } from './app/providers/ThemeProvider';
@@ -31,6 +29,22 @@ export { themes } from './app/types/theme';
 export { Provider } from './shared/components/ui/provider';
 export { Toaster } from './shared/components/ui/toaster';
 
+// ── Shared window system (own kernel, Spec #2807 ST-1) ───────────────────────
+export { WindowSystemProvider } from './shared/window-system/WindowSystemProvider';
+export { WindowManager } from './shared/window-system/WindowManager';
+export { useWindowActions } from './shared/window-system/useWindowActions';
+export { useWindows } from './shared/window-system/useWindows';
+export {
+  registerWindowCloseCallback,
+  unregisterWindowCloseCallback,
+} from './shared/window-system/windowStore';
+export type { WindowSystemProviderProps } from './shared/window-system/WindowSystemProvider';
+export type {
+  OpenWindowParams,
+  WindowEntry,
+  WindowActions,
+} from './shared/window-system/windowTypes';
+
 // ── App shell components ──────────────────────────────────────────────────────
 export { Router } from './app/routes/Router';
 
@@ -38,7 +52,6 @@ export { Router } from './app/routes/Router';
 export { ThemeSelector } from './features/home/components/settings/ThemeSelector';
 export { AnimationSelector } from './features/home/components/settings/AnimationSelector';
 export { SettingsPanel } from './features/home/components/settings/SettingsPanel';
-export { WindowStyleSelector } from './features/home/components/settings/WindowStyleSelector';
 
 // ── Session utilities (used by BrowserShell in browser-extension) ─────────────
 export {
