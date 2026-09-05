@@ -8,10 +8,20 @@
  * forbidden, so this lives in `shared/window-system/` and reads only theme
  * semantic tokens + the shared `tint()` helper.
  *
- * Token-native contract (AC3): every color is a Chakra semantic token
- * (`bg.subtle`, `border.subtle`, `fg.default`, `fg.muted`, `accent.default`,
- * `bg.muted`, `bg.canvas`) or a `tint()` color-mix hover. There is NO
- * hardcoded hex/rgba and NO `var(--x)NN` alpha-append anywhere in this file.
+ * Token-native contract (AC3): every color is a theme CSS var referenced
+ * DIRECTLY (`var(--header-bg)`, `var(--card-hover-bg)`, `var(--border-color)`),
+ * a Chakra semantic token (`fg.default`, `fg.muted`, `accent.default`,
+ * `bg.canvas`), or a `tint()` color-mix hover. There is NO hardcoded hex/rgba
+ * and NO `var(--x)NN` alpha-append anywhere in this file.
+ *
+ * NOTE (round-3 fix, AC3): the header bar and icon tile reference the theme
+ * vars directly rather than the `bg.subtle` / `bg.muted` semantic tokens.
+ * Those two keys are Chakra v3 `defaultConfig` built-ins that carry their own
+ * conditional (`_light`/`_dark`) definition, so a bare `{ value: 'var(..)' }`
+ * redefinition in `system.ts` does NOT inline the var mapping — on a dark
+ * header the tokens rendered light-on-light (the AC3 failure). Referencing the
+ * vars directly (the app-wide established pattern) is the correct, token-native
+ * fix.
  *
  * Known-pitfall applied: the close control uses `variant="ghost"` with an
  * explicit `tint()` hover bg (NOT `variant="outline" colorPalette="red"`) —
@@ -142,9 +152,9 @@ export function WindowChrome(props: WindowChromeProps) {
       gap="2"
       h="40px"
       px="2"
-      bg="bg.subtle"
+      bg="var(--header-bg)"
       borderBottom="1px solid"
-      borderBottomColor="border.subtle"
+      borderBottomColor="var(--border-color)"
       fontFamily="var(--font-primary)"
       onPointerDown={onHeaderPointerDown}
       onDoubleClick={onHeaderDoubleClick}
@@ -179,9 +189,9 @@ export function WindowChrome(props: WindowChromeProps) {
         h="24px"
         flexShrink="0"
         borderRadius="4px"
-        bg="bg.muted"
+        bg="var(--card-hover-bg)"
         border="1px solid"
-        borderColor="border.subtle"
+        borderColor="var(--border-color)"
         color="fg.default"
         fontSize="16px"
       >
@@ -209,7 +219,7 @@ export function WindowChrome(props: WindowChromeProps) {
           <ChromeControl
             aria-label={`Minimize ${title}`}
             disabled={!canMinimize}
-            hoverBg="bg.muted"
+            hoverBg="var(--card-hover-bg)"
             onPointerDown={stopPointer}
             onClick={onMinimize}
           >
@@ -221,7 +231,7 @@ export function WindowChrome(props: WindowChromeProps) {
             aria-label={isMaximized ? `Restore ${title}` : `Maximize ${title}`}
             aria-expanded={isMaximized}
             disabled={!canMaximize}
-            hoverBg="bg.muted"
+            hoverBg="var(--card-hover-bg)"
             onPointerDown={stopPointer}
             onClick={onMaximize}
           >
