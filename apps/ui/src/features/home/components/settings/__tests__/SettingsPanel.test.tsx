@@ -5,8 +5,9 @@
  *
  * Component tests for SettingsPanel.
  *
- * REQ-COMP-4: SettingsPanel renders "Theming" and "AI Model" tabs, tab switching
- * works, and child components mount inside tab content.
+ * #2817 — the decorative base-theme / animation controls were removed from the
+ * legacy SettingsPanel tab, so the panel now exposes only the AI Model + Telemetry
+ * tabs. The removed controls must render nowhere.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -16,38 +17,24 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { SettingsPanel } from '../SettingsPanel';
 
 // Mock child components so they render as simple indicators
-vi.mock('../ThemeSelector', () => ({
-  ThemeSelector: () => <div data-testid="theme-selector">ThemeSelector</div>,
-}));
-
-vi.mock('../AnimationSelector', () => ({
-  AnimationSelector: () => (
-    <div data-testid="animation-selector">AnimationSelector</div>
-  ),
-}));
-
 vi.mock('../ModelSelector', () => ({
   ModelSelector: () => <div data-testid="model-selector">ModelSelector</div>,
 }));
 
 describe('SettingsPanel', () => {
-  it('renders "Theming" and "AI Model" tab triggers', () => {
+  it('renders "AI Model" and "Telemetry" tab triggers', () => {
     renderWithChakra(<SettingsPanel />);
 
-    expect(screen.getByText('Theming')).toBeDefined();
     expect(screen.getByText('AI Model')).toBeDefined();
+    expect(screen.getByText('Telemetry')).toBeDefined();
   });
 
-  it('renders theming child components by default', async () => {
+  it('renders no base-theme or animation controls (#2817 removal)', () => {
     renderWithChakra(<SettingsPanel />);
 
-    // Theming tab is default — children should render
-    // Note: Chakra v3 Tabs.Root renders ALL panels in the DOM (hidden via display:none)
-    // so each child component may appear in multiple tab content panels. Use getAllByTestId.
-    await waitFor(() => {
-      expect(screen.getAllByTestId('theme-selector').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByTestId('animation-selector').length).toBeGreaterThanOrEqual(1);
-    });
+    // The removed base-theme and animation controls render nowhere.
+    expect(screen.queryAllByTestId('theme-selector').length).toBe(0);
+    expect(screen.queryAllByTestId('animation-selector').length).toBe(0);
   });
 
   it('switches to AI Model tab and renders ModelSelector', async () => {

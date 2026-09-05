@@ -4,8 +4,6 @@ import { LuRotateCcw } from 'react-icons/lu';
 import { useTheme } from '../../../app/providers/ThemeProvider';
 import { themePresets } from '../../../app/types/theme';
 import type { ThemeOverrides } from '../../../app/types/theme';
-import { ThemeSelector } from '../../home/components/settings/ThemeSelector';
-import { AnimationSelector } from '../../home/components/settings/AnimationSelector';
 
 // ── Fonts available (all loaded via Google Fonts in index.html) ───────────────
 const FONT_OPTIONS = [
@@ -253,12 +251,6 @@ export const ThemingSettings: React.FC = () => {
           <ThemePresetSelector />
         </Box>
 
-        {/* ── Base Theme ─────────────────────────────── */}
-        <Box>
-          <SectionLabel>Base Theme</SectionLabel>
-          <ThemeSelector />
-        </Box>
-
         {/* ── Accent Colors ──────────────────────────── */}
         <Box>
           <SectionLabel>Accent Colors</SectionLabel>
@@ -326,12 +318,6 @@ export const ThemingSettings: React.FC = () => {
               </Box>
             ))}
           </VStack>
-        </Box>
-
-        {/* ── Animation ──────────────────────────────── */}
-        <Box>
-          <SectionLabel>Animation Style</SectionLabel>
-          <AnimationSelector />
         </Box>
 
         {/* ── Reset ──────────────────────────────────── */}

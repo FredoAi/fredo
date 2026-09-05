@@ -1,8 +1,6 @@
 import React from 'react';
 import { Box, Tabs, Text, VStack, HStack } from '@chakra-ui/react';
-import { LuPalette, LuBrain, LuActivity } from 'react-icons/lu';
-import { ThemeSelector } from './ThemeSelector';
-import { AnimationSelector } from './AnimationSelector';
+import { LuBrain, LuActivity } from 'react-icons/lu';
 import { ModelSelector } from './ModelSelector';
 import { TelemetrySettings } from './TelemetrySettings';
 
@@ -15,7 +13,7 @@ export const SettingsPanel: React.FC = () => {
       borderColor="var(--border-color)"
       overflow="hidden"
     >
-      <Tabs.Root defaultValue="theming" colorPalette="purple" variant="subtle">
+      <Tabs.Root defaultValue="ai" colorPalette="purple" variant="subtle">
         <Tabs.List
           background="var(--header-bg)"
           borderBottom="1px solid"
@@ -24,26 +22,6 @@ export const SettingsPanel: React.FC = () => {
           pt={2}
           gap={1}
         >
-          <Tabs.Trigger
-            value="theming"
-            fontSize="sm"
-            fontWeight="600"
-            color="var(--text-secondary)"
-            px={4}
-            py={2}
-            borderRadius="md"
-            _selected={{
-              color: 'var(--accent-primary)',
-              background: 'rgba(147, 51, 234, 0.12)',
-            }}
-            _hover={{ color: 'var(--text-primary)' }}
-          >
-            <HStack gap={1}>
-              <LuPalette size={14} />
-              <span>Theming</span>
-            </HStack>
-          </Tabs.Trigger>
-
           <Tabs.Trigger
             value="ai"
             fontSize="sm"
@@ -84,25 +62,6 @@ export const SettingsPanel: React.FC = () => {
             </HStack>
           </Tabs.Trigger>
         </Tabs.List>
-
-        {/* Theming tab */}
-        <Tabs.Content value="theming">
-          <VStack gap={5} align="stretch" p={5}>
-            <Box>
-              <Text fontSize="xs" fontWeight="700" color="var(--text-secondary)" letterSpacing="wider" textTransform="uppercase" mb={2}>
-                Theme
-              </Text>
-              <ThemeSelector />
-            </Box>
-
-            <Box>
-              <Text fontSize="xs" fontWeight="700" color="var(--text-secondary)" letterSpacing="wider" textTransform="uppercase" mb={2}>
-                Animation Style
-              </Text>
-              <AnimationSelector />
-            </Box>
-          </VStack>
-        </Tabs.Content>
 
         {/* AI Model tab */}
         <Tabs.Content value="ai">

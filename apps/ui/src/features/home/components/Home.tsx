@@ -4,7 +4,6 @@ import { WindowSystemProvider } from '../../../shared/window-system/WindowSystem
 import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
-import { DesktopBackground } from './DesktopBackground';
 import { StreamStatus } from './StreamStatus';
 import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
 import { myWorkItemsFeature } from '../../my-workitems';
@@ -15,6 +14,7 @@ import '../../allFeatures';
 import { getFeatures } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
+import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
 // Features self-register via allFeatures.ts — no manual list needed.
@@ -48,6 +48,11 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
     showMessage('Dev Mode Enabled 🐛', 4000);
   }, [showMessage]);
+
+  // Re-home the konami → dev-mode easter egg. The hook attaches a document-level
+  // keydown listener (position-independent), so it keeps working after the
+  // decorative full-screen animated background was removed (#2817).
+  useKonamiCode(handleKonamiCode);
 
   // Greet the user once on mount
   useEffect(() => {
@@ -138,11 +143,11 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
     registerOpenFeature(openFeatureWindow);
   }, [openFeatureWindow, registerOpenFeature]);
 
-  return (
-    <Box position="absolute" inset="0" zIndex={0} overflow="hidden">
-      <DesktopBackground onKonamiCode={handleKonamiCode} />
-    </Box>
-  );
+  // The decorative full-screen animated background (#2817) is gone — the clean
+  // shell chrome (FREDO notch, avatar, search bar, side ticks, clock) is rendered
+  // by the sibling LauncherShell. HomeDesktop keeps only its orchestration hooks
+  // (feature registration + konami), so it renders nothing.
+  return null;
 };
 
 // ── Top-level Home component ──────────────────────────────────────────────────
