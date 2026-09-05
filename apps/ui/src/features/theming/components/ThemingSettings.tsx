@@ -5,7 +5,6 @@ import { useTheme } from '../../../app/providers/ThemeProvider';
 import type { ThemeOverrides } from '../../../app/types/theme';
 import { ThemeSelector } from '../../home/components/settings/ThemeSelector';
 import { AnimationSelector } from '../../home/components/settings/AnimationSelector';
-import { WindowStyleSelector } from '../../home/components/settings/WindowStyleSelector';
 
 // ── Fonts available (all loaded via Google Fonts in index.html) ───────────────
 const FONT_OPTIONS = [
@@ -302,12 +301,6 @@ export const ThemingSettings: React.FC = () => {
         <Box>
           <SectionLabel>Animation Style</SectionLabel>
           <AnimationSelector />
-        </Box>
-
-        {/* ── Window Style ───────────────────────────── */}
-        <Box>
-          <SectionLabel>Window Style</SectionLabel>
-          <WindowStyleSelector />
         </Box>
 
         {/* ── Reset ──────────────────────────────────── */}

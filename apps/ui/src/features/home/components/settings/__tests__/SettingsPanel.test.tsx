@@ -26,12 +26,6 @@ vi.mock('../AnimationSelector', () => ({
   ),
 }));
 
-vi.mock('../WindowStyleSelector', () => ({
-  WindowStyleSelector: () => (
-    <div data-testid="window-style-selector">WindowStyleSelector</div>
-  ),
-}));
-
 vi.mock('../ModelSelector', () => ({
   ModelSelector: () => <div data-testid="model-selector">ModelSelector</div>,
 }));
@@ -53,7 +47,6 @@ describe('SettingsPanel', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId('theme-selector').length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByTestId('animation-selector').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByTestId('window-style-selector').length).toBeGreaterThanOrEqual(1);
     });
   });
 

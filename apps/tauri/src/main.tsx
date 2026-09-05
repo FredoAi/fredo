@@ -10,7 +10,6 @@ import {
   ThemeProvider,
   Provider,
   Toaster,
-  WindowStyleProvider,
   AnimationProvider,
   TauriAdapter,
   CompanionProvider,
@@ -33,21 +32,19 @@ createRoot(rootElement).render(
   <React.StrictMode>
     <Provider>
       <ThemeProvider>
-        <WindowStyleProvider>
-          <AnimationProvider>
-            <StreamProvider>
-              <AppProvider adapter={adapter}>
-                <CompanionProvider>
-                  <ReactFlowProvider>
-                    <Router />
-                    <Toaster />
-                  </ReactFlowProvider>
-                  <FredoCompanion />
-                </CompanionProvider>
-              </AppProvider>
-            </StreamProvider>
-          </AnimationProvider>
-        </WindowStyleProvider>
+        <AnimationProvider>
+          <StreamProvider>
+            <AppProvider adapter={adapter}>
+              <CompanionProvider>
+                <ReactFlowProvider>
+                  <Router />
+                  <Toaster />
+                </ReactFlowProvider>
+                <FredoCompanion />
+              </CompanionProvider>
+            </AppProvider>
+          </StreamProvider>
+        </AnimationProvider>
       </ThemeProvider>
     </Provider>
   </React.StrictMode>,

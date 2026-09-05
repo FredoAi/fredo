@@ -10,7 +10,6 @@ import { Toaster } from './shared/components/ui/toaster';
 import { StreamProvider } from './shared/contexts/StreamContext';
 import { AppProvider } from './app/providers/AppProvider';
 import { ThemeProvider } from './app/providers/ThemeProvider';
-import { WindowStyleProvider } from './shared/contexts/WindowStyleContext';
 import { AnimationProvider } from './shared/contexts/AnimationContext';
 import { CompanionProvider } from './shared/contexts/CompanionContext';
 import { FredoCompanion } from './shared/components/companion';
@@ -32,8 +31,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <Provider>
       <ThemeProvider>
-        <WindowStyleProvider>
-          <AnimationProvider>
+        <AnimationProvider>
           <StreamProvider>
             <AppProvider adapter={adapter}>
               <CompanionProvider>
@@ -45,8 +43,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               </CompanionProvider>
             </AppProvider>
           </StreamProvider>
-          </AnimationProvider>
-        </WindowStyleProvider>
+        </AnimationProvider>
       </ThemeProvider>
     </Provider>
   </React.StrictMode>,

@@ -1,9 +1,7 @@
 // ── Providers & hooks ────────────────────────────────────────────────────────
 export { AppProvider, useExtension } from './app/providers/AppProvider';
 export type { Step } from './app/providers/AppProvider';
-export { WindowStyleProvider, useWindowStyle, WINDOW_STYLES } from './shared/contexts/WindowStyleContext';
 export { AnimationProvider, useAnimation } from './shared/contexts/AnimationContext';
-export type { WindowStyleId } from './shared/contexts/WindowStyleContext';
 
 export { ThemeProvider, useTheme, ThemeContext } from './app/providers/ThemeProvider';
 export type { ThemeContextType } from './app/providers/ThemeProvider';
@@ -54,7 +52,6 @@ export { Router } from './app/routes/Router';
 export { ThemeSelector } from './features/home/components/settings/ThemeSelector';
 export { AnimationSelector } from './features/home/components/settings/AnimationSelector';
 export { SettingsPanel } from './features/home/components/settings/SettingsPanel';
-export { WindowStyleSelector } from './features/home/components/settings/WindowStyleSelector';
 
 // ── Session utilities (used by BrowserShell in browser-extension) ─────────────
 export {
