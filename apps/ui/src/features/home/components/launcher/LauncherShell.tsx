@@ -293,7 +293,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             width="100%"
             maxWidth="960px"
             marginX="auto"
-            paddingTop={16}
+            paddingTop="34vh"
             paddingX={8}
             paddingBottom={10}
             overflowY="auto"
@@ -303,7 +303,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               '&::-webkit-scrollbar-track': { background: 'transparent' },
             }}
           >
-            <PixelButler visible />
+            <Box mb="4">
+              <PixelButler visible />
+            </Box>
             <LauncherCommandBar
               query={query}
               onQueryChange={handleQueryChange}
