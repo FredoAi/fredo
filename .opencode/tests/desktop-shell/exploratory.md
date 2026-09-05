@@ -28,3 +28,36 @@
 
 - [x] E-5: Probe an idle launch (no agent activity, stale/empty persisted storage) → clean chrome, no residual animation, no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - CONFIRMED (round 1): reload with stale + malformed storage → `bodyClass:theme-classic`, `canvasCount:0`; `tauri_read_logs(source=console)` → no `Error:`/`Uncaught`/`Maximum update depth exceeded` (only a non-error framer-motion `motion() is deprecated` WARN — pre-existing). Promoted to F-5c.
+
+## #2819 extension — desktop-light launcher idle/engaged probes
+
+> Add findings here for issue #2819; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note).
+
+## E-6 — Idle↔engaged round-trip stability
+
+- [ ] E-6: Probe rapid idle→focus→type→blur→ESC→focus cycles. Check the grid toggles cleanly (no two grids, no duplicate hint rows, no leftover query in the bar after ESC), no console error, no re-render loop.
+
+## E-7 — Re-theme while engaged
+
+- [ ] E-7: Probe switching theme preset (e.g. `tokyo-night` ↔ `light-default`) while the launcher is ENGAGED (grid + hints visible). Do all surfaces (grid tiles, hints, avatar, ticks, dot-grid, rounded frame) re-tint token-native with no flicker and no hardcoded color? Any surface left on a stale color is a finding.
+
+## E-8 — Tile-open with a window already open
+
+- [ ] E-8: Probe opening a tile while another feature window is already open (and the launcher then collapsed to idle). Check z-order/focus: the newly opened window is on top and focused; the desktop did not flash to a blank state. Then reopen the launcher and open a 2nd window — stack both.
+
+## E-9 — Query-to-zero engaged state + keyboard
+
+- [ ] E-9: Probe typing a non-matching query (`zzzz`) while engaged — does the grid show the empty state (`role="status"`) with NO keyboard hints; are arrows/Enter no-ops; does clearing restore the grid + hints without a crash?
+
+## E-10 — First-launch / Setup-wizard interplay
+
+- [ ] E-10: Probe a first launch where the Setup wizard auto-opens (`Home.tsx:67-74`) while the idle chrome (notch + avatar + bar + ticks + dot-grid + rounded frame) is rendered beneath. Does the idle chrome render correctly under the wizard, and does dismissing it return to a correct idle (not a blank surface)?
+
+## E-11 — `—` minimize control + bare-chrome state
+
+- [ ] E-11: Probe the `—` minimize control in the idle command bar (triage Discussion QA-7 / UI/UX-1). Does clicking it collapse the surface to BARE CHROME (`open=false`: notch + clock + frame + ticks + dot-grid, no avatar/bar), and does re-engaging (notch toggle or focus) restore the idle surface correctly? Is there any stuck state, console error, or focus issue? Record the actual behavior against the resolved PO decision (collapse-to-bare-chrome vs ESC-alias vs decorative no-op).
+
+## E-12 — ESC vs shell-close (redesigned semantics)
+
+- [ ] E-12: Probe ESC throughout the #2819 redesign — the surface must STAY (idle), NOT close to bare chrome. Confirm ESC never sets `open=false` (bare chrome is reached only via tile-open / `—`-minimize), and that focus always lands on the command bar after ESC. Any ESC that collapses the whole surface is a regression against the Architect's binding contract (triage line 388).
