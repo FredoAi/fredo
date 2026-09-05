@@ -12,3 +12,11 @@
   - S-3: notch + ONLINE clock render; launcher-open reveals avatar + "Search or command" searchbox + grid; `canvasCount:0`, no title card. NOTE: the wireframe's decorative "side ticks" are NOT implemented in code (pre-existing divergence, not a #2817 change) — see F-1 finding.
   - S-4: settings dialog opens → Appearance section = Theme Presets + Accent/Backgrounds/Text/Status/Fonts + Reset, NO "Animation Style" / "Base Theme" control.
   - S-5: screenshots saved (req1-launch, req1-launcher-open, req1-light, req3-appearance, req5d-dev-mode).
+
+## #2819 extension — desktop-light launcher idle smoke
+
+> Issue #2819: the desktop-light idle/engaged launcher match. Re-run S-1..S-5 plus the
+> new idle-chrome + engaged-grid quick paths.
+
+- [ ] S-6: Idle chrome renders — on a fresh launch, the FREDO notch, PERSISTENT pixel-butler avatar, `>` search-or-command bar, LEFT side-tick ruler, RIGHT dot-grid, online clock, and thin rounded frame are present; `#fredo-launcher-grid` is ABSENT.
+- [ ] S-7: Engage → idle quick path — focusing the command bar reveals the grid + keyboard hints; pressing ESC hides them and restores the idle chrome (no console error, focus back on the notch).
