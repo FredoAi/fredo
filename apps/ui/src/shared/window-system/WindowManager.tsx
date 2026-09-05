@@ -22,7 +22,7 @@ export function WindowManager() {
   const ordered = [...windows].sort((a, b) => a.zIndex - b.zIndex);
 
   return (
-    <Box position="absolute" inset="0" overflow="hidden" bg="bg.canvas">
+    <Box position="absolute" inset="0" overflow="hidden" zIndex={1} bg="transparent">
       {ordered.map((win, idx) => (
         <WindowFrame key={win.id} window={win} stackIndex={idx} />
       ))}

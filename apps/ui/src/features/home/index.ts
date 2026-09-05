@@ -4,4 +4,4 @@ export { ThemeSelector } from './components/settings/ThemeSelector';
 export { AnimationSelector } from './components/settings/AnimationSelector';
 export { ProfileSettingsModal } from './components/ProfileSettingsModal';
 export { ProfileSettingsComponent } from './components/ProfileSettingsComponent';
-export { DesktopToolbar } from './components/settings/DesktopToolbar';
+export { LauncherShell } from './components/launcher/LauncherShell';
