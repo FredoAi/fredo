@@ -28,3 +28,29 @@
 
 - [x] R-5: Theming surface (`ThemingSettings` — presets, per-token overrides, reset) and legacy SettingsPanel (`AI Model`, `Telemetry` tabs) render correctly after the removal. (The now-empty `Theming` tab is dropped; the remaining tabs persist.)
   - Evidence: Appearance section renders Theme Presets + Accent/Backgrounds/Text/Status/Fonts + Reset (screenshot req3-appearance); `SettingsPanel.tsx` renders only "AI Model" + "Telemetry" tabs (Theming tab dropped); `SettingsPanel.test.tsx` (green) asserts the removed controls render nowhere and the AI Model + Telemetry tabs persist.
+
+## #2819 extension — desktop-light launcher baseline (must-not-change)
+
+> Issue #2819 (desktop launcher matches `desktop-light.png`). These invariants MUST hold
+> after the idle/engaged launcher work — any FAIL is a regression. Run alongside the
+> #2817 R-1..R-5 baseline.
+
+## R-6 — Window lifecycle unchanged
+
+- [ ] R-6: The own-kernel window-manager contract (#2807) is unchanged: `openWindow` params shape, spawn semantics (`windowStore.ts:68-91`), spread-merge `updateWindow`, idempotent/re-entrancy-guarded `closeWindow`, and the z-order (window stack above the desktop, below the HUD/`StreamStatus`). Opening/closing/launching features behaves; no orphan windows, no occlusion of the freshly opened window by the launcher surface.
+
+## R-7 — Appearance presets (#2811) unchanged
+
+- [ ] R-7: The theme-preset + per-token override layers (`override ?? preset ?? base`) still apply over the locked base; applying a preset re-tints surfaces; a per-token override re-tints; "Reset to theme defaults" restores the base. No theme-cycling / blank / half-render. Preset switching while idle AND while engaged both work.
+
+## R-8 — Token contract intact across the new chrome
+
+- [ ] R-8: No hardcoded hex/`rgba(`/`rgb(` in the changed launcher files (grep gate over `LauncherShell`/`LauncherChrome`/`LauncherCommandBar`/`LauncherAppGrid`/`PixelButler` + any NEW side-tick / dot-grid / rounded-frame component) — zero; no `var(--x)NN` alpha-append (the #2770 round-5 invalid-CSS rule, `colorTint.ts:4-14`); hover/tint via `tint('var(--accent-primary)', N)`; Chakra v3 API only. This re-verifies the AGENTS.md token-first rule across the newly added decorative chrome. (The wireframe's teal `#00d1d1` is the `light-default` preset's token DATA, not a component literal — the grep gate is over component color usage, not preset token definitions.)
+
+## R-9 — Build + test green
+
+- [ ] R-9: `pnpm --filter @fredo/ui build` → zero TypeScript errors; `pnpm --filter @fredo/ui test:run` → green (existing theming/launcher/`SettingsPanel` tests do not regress).
+
+## R-10 — Overlapping launcher surface
+
+- [ ] R-10: The launcher command-bar/grid behavior (`#2808`) is unchanged WHERE the spec does not redesign it: query filter (`filteredEntries`), keyboard nav (↑↓/←→ clamp, no wrap), Enter/Space open, empty-grid no-op (`entryCount === 0`), notch `aria-expanded`, `useWindows()` collapse-on-open, and the #2808 window z-order fix (window above the desktop, below the HUD). **NOTE (redesigned by #2819, NOT an unchanged baseline):** ESC no longer closes the shell / restores focus to the notch (ST-7) — it returns to IDLE and focuses the command bar; the surface is no longer notch-gated (idle = `open=true, engaged=false`). Reference `.opencode/tests/launcher/regression.md` R-1..R-6 + the #2819 launcher extension.
