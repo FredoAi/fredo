@@ -4,7 +4,8 @@ import React from 'react';
  * Pixel-butler avatar (base form) — the FREDO brand mascot.
  *
  * Renders the avatar-guide.png base NEUTRAL butler: a 21x21 pixel grid (hollow
- * round head, two vertical-bar eyes, bow-tie torso + arm nubs + two legs).
+ * round head, two vertical-bar eyes, a small horizontal mouth, bow-tie torso +
+ * arm nubs + two legs).
  *
  * Token-native (AC4/AC5): the SVG carries NO color of its own. Every pixel uses
  * `fill="currentColor"` and the root SVG sets `color="var(--accent-primary)"`,
@@ -44,14 +45,13 @@ const DISPLAY_SIZE = 48;
 // 21x21 pixel matrix (top → bottom, left → right): '#' = filled, '.' = empty.
 // Base NEUTRAL butler (authoritative avatar-guide.png "BASE FORM" — transcribed
 // cell-for-cell, symmetric about col 11, single accent fill): a large HOLLOW
-// round-dome head OUTLINE (rows 1-15, interior TRANSPARENT — never a solid
-// fill) with TWO vertical-bar eyes (rows 10-12, cols 8-9 & 13-14) and a compact
-// chunky body (rows 17-20): arm nubs (cols 5 & 17), a torso, and two short legs
-// (cols 8-9 & 13-14). The guide base form carries NO separate mouth — the only
-// horizontal bar is the head's chin/neck arc (row 15) — so the eye/mouth region
-// between the eyes and the chin is left transparent. Every figure element (head
-// outline, eyes, body) is the SAME accent fill — there is no second light-contrast
-// fill and no two-fill SVG; the head interior stays transparent.
+// round-dome head OUTLINE (interior TRANSPARENT — never a solid fill) with TWO
+// vertical-bar eyes (array rows 9-11, cols 8-9 & 13-14) and a small horizontal
+// MOUTH bar centered below the eyes (array row 13, cols 9-11), then a compact
+// chunky body (array rows 16-19): arm nubs (cols 5 & 17), a torso, and two short
+// legs (cols 8-9 & 13-14). Every figure element (head outline, eyes, mouth,
+// body) is the SAME accent fill — there is no second light-contrast fill and no
+// two-fill SVG; the head interior stays transparent.
 const BASE_FORM = [
   '.....................',
   '......#########......',
@@ -66,7 +66,7 @@ const BASE_FORM = [
   '.#.....##...##.....#.',
   '.#.....##...##.....#.',
   '.#.................#.',
-  '.#.................#.',
+  '.#.......###.......#.',
   '......#########......',
   '.....................',
   '....#..#######..#....',
