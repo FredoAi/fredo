@@ -1,0 +1,20 @@
+# desktop-chrome — Functional
+
+Durable per-feature suite for the desktop-chrome / window-chrome z-order surface
+(FREDO logo band, clock + ONLINE readout, bottom LED pair from #2821, and the
+webview window min/max/close controls). Seeded from issue #2825.
+
+> Stacking model under test (file:line): LauncherChrome desktop chrome `zIndex:1200`,
+> `position:fixed; inset:0; pointer-events:none` (LauncherChrome.tsx:220); StreamStatus
+> bottom LED pair `zIndex:1210; pointer-events:none` (StreamStatus.tsx:134-138); window
+> controls are webview-rendered Chakra `IconButton`s (WindowChrome.tsx:103-126) in the
+> window stack (z=1). Both desktop-chrome layers are `pointer-events:none` passive
+> indicators → guardrail **G-106** applies: use the pointer-events-toggle probe (method a),
+> pixel/colour sample (method b), or computed-z-index comparison (method c), NOT a bare
+> `elementFromPoint`.
+
+- [ ] F-1 (AC1): FREDO logo band does NOT render on top of feature windows. Open ≥1 feature window; screenshot the window's top-center region and pixel/colour sample it — the window header shows its own `--header-bg`/content, NOT the FREDO notch silhouette. Compare to `C:\Code\fredo\.opencode\wireframes\bugs\fredo-logo-ontop.png` (fixed = no band over window). Also computed stacking: the window frame's stacking position is ABOVE `LauncherChrome`. Edge: multiple windows, maximized, small window under the notch, light + dark themes.
+- [ ] F-2 (AC2): clock + LED indicators never overlay window min/max/close. Position a feature window so its titlebar top-right control cluster sits under the clock/ONLINE readout; screenshot compare to `C:\Code\fredo\.opencode\wireframes\bugs\windows-buttons-time-overlap.png` (fixed = controls unoccluded). G-106 method a: set the `LauncherChrome` readout `style.pointerEvents='auto'`, `elementFromPoint` at each control center returns the WINDOW CONTROL (`[aria-label="Close …"]` / `[aria-label="Minimize …"]` / `[aria-label="Maximize …"]` / `[aria-label="Restore …"]`), NOT the readout; restore `pointerEvents`. Edge: maximized, window dragged under the clock, #2821 bottom pair (bottom-center, not top-right), multiple windows, light + dark themes.
+- [ ] F-3 (AC3): window chrome always above desktop chrome. G-106 method c: within the same nearest stacking-context ancestor, `getComputedStyle(windowFrame).zIndex` > `getComputedStyle(launcherChrome).zIndex` (1200) AND > `getComputedStyle(streamStatus).zIndex` (1210); no desktop-chrome layer paints over the titlebar buttons. Plus screenshot of the unoccluded titlebar. Edge: multiple windows (focused vs background), maximized, window crossing under the notch + clock, light + dark themes, no feature window open (desktop only).
+- [ ] F-4 (AC4): no #2821 dual-bottom-LED regression. Two 8px status dots at bottom-center (~24px above bottom edge, ~16px apart), `pointer-events:none`, `role="status"` + `aria-live="polite"`; LED-1 connection color (`--accent-primary` / `--status-error`), LED-2 activity color (`--status-info` / `--card-hover-bg`). DOM assert both dots at bottom-center (NOT top-right); screenshot compare. Inject a live row mutation (`fredo emit`) to drive LED-2 active — the activity dot pulses (suppressed under `prefers-reduced-motion`). Edge: connected vs disconnected, streaming vs idle, reduced-motion on, multiple windows, maximized, light + dark themes.
+- [ ] F-5 (AC5): window controls remain clickable — no invisible desktop-chrome layer intercepts the pointer. G-106 method a: (a) set the desktop-chrome overlay `pointerEvents='auto'` → `elementFromPoint` at a control center returns the OVERLAY (confirm the overlay is the top visual layer there in the build); restore `pointerEvents`. (b) Then a REAL click (`webview_interact` on `[aria-label="Close …"]` / `[aria-label="Minimize …"]` / `[aria-label="Maximize …"]`) dispatches to its handler (window closes / minimizes / maximizes-restores). Edge: pointer near the titlebar corners (resize-grip corners not covered), maximized, multiple windows focused/unfocused, window partially under the notch, light + dark themes.
