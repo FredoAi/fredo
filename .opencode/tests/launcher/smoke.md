@@ -25,3 +25,8 @@
 ## #2824 extension — ESC keycap engaged-hint smoke
 
 - [ ] S-8: Engaged launcher shows the close-hint row — focus the command bar / enter a query (non-empty feature set) so the hint row renders; `tauri_webview_dom_snapshot(type="structure")` shows the `ESC` badge + `CLOSE` hint text; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`.
+
+## #2827 extension — PixelButler avatar smoke
+
+- [x] S-9: The launcher renders the avatar — the pixel-butler SVG (`svg[aria-hidden="true"][viewBox="0 0 21 21"]`, 91 `<rect>` cells) appears in the running app sourced from the accent token (`color="var(--accent-primary)"` + `fill="currentColor"` → resolved `rgb(0,209,209)`), and `tauri_webview_screenshot` succeeds.
+  - **PASS (live, spec/2827 @ 0620b736).** The avatar SVG renders in the launcher with 91 rect cells; `getComputedStyle` `color: rgb(0, 209, 209)`; screenshot `avatar-ac1-render.png` captured; DOM snapshot structure; console clean.
