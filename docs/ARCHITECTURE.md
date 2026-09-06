@@ -508,7 +508,7 @@ Features read live agent activity through the **RTDB row store** — a GraphQL-i
 
 ### StreamContext — connection status + the row store
 
-`StreamContext` carries only the Tauri IPC connection flag; the RTDB row store is module-scoped (survives feature mount/unmount cycles per the AGENTS.md persistence rule). Row deliveries routed by AppProvider are applied with the semantics above; a bounded (512-entry) row-mutation log feeds the debug surfaces (Dev Mode's live stream viewer, StreamStatus's activity LED).
+`StreamContext` carries only the Tauri IPC connection flag; the RTDB row store is module-scoped (survives feature mount/unmount cycles per the AGENTS.md persistence rule). Row deliveries routed by AppProvider are applied with the semantics above; a bounded (512-entry) row-mutation log feeds the debug surfaces (Dev Mode's live stream viewer). The former `StreamStatus` bottom-center activity LED was removed in the #2830 consolidation — desktop connection status is now a single top-right status LED in `LauncherChrome` (`home/components/launcher/LauncherChrome.tsx`), which reads the connection flag via the `isOnline` host prop.
 
 ### FredoEvent Shape
 
