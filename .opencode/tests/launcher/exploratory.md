@@ -75,7 +75,7 @@
 
 ## E-16 — Re-theme while the ESC hint is visible
 
-- [ ] E-16: Switch a base theme (turbo↔classic) while the engaged launcher shows `ESC CLOSE` — does the keycap badge + `CLOSE` label re-tint token-native (no hardcoded color, no stale token, no flicker)? Any element stuck on a stale color/text token is a finding.
+- [ ] E-16: Switch theme surface (a light preset ↔ the dark base via the themed preset selector) while the engaged launcher shows `ESC CLOSE` — does the keycap badge + `CLOSE` label re-tint token-native (no hardcoded color, no stale token, no flicker)? Any element stuck on a stale color/text token is a finding.
 
 ## E-17 — Narrow-viewport / small window spacing
 
