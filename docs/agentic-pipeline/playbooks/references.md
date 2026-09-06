@@ -19,6 +19,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **Build** - `cargo build` from `apps/tauri/src-tauri/`; `pnpm --filter @fredo/ui build` for the UI library; `pnpm dev:ui` for the Vite dev server (port 5174).
 - **Dev server** - `pnpm dev:tauri` runs the Tauri dev app; the MCP bridge binds `127.0.0.1:9223`; OTLP receivers bind `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP).
 - **Telemetry DB** - `fredo.db`; query via `.opencode/skills/telemetry-query/telemetry-query.ps1` (sqlite3 CLI). Inspect `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`.
+- **Chakra v3 numeric spacing props are SPACE TOKENS, not raw px** - `px={7}`/`py={3}`/`p={3}` on a Chakra `Box` resolve against the theme `space` scale (`space.7`=28px, `space.3`=12px), NOT 7px/3px. To use raw pixels pass a unit string: `p="3px 7px"`, `px="7px"`, `py="3px"` (#2824 round-1 FAIL: a badge sized with `px={7}`/`py={3}` rendered 75×35 px instead of the ~34×17 target; fixed with `p="3px 7px"`). UI/UX + Architect design specs must state padding/sizing as unit strings, and the Developer must verify the rendered `getBoundingClientRect` against the target.
 
 ---
 
@@ -30,6 +31,15 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ---
 ## Known Failure Modes
+### G-108: pure_rendering_feature_blocked_by_telemetry_only_live_gate
+- **activation_date:** 2026-09-06
+- **observed:** #2824 round 2
+- **target_failure:** a `testing → audit` transition is refused for a presentational-only feature (no telemetry/emission surface) because the live-evidence gate token-matches only the telemetry-spans table, while the documented policy (tester + qa-expert playbooks) accepts live evidence as "telemetry OR DOM/screenshot receipts" for a live-verified UI feature.
+- **guardrail:** Hardened the testing-exit live-evidence gate: a live-rendered webview receipt now also satisfies live evidence — recognized by an `upload-evidence` raw URL under the evidence directory on the spec branch, a live webview tool receipt (DOM snapshot / screenshot), or a live rendered-geometry measurement (`getBoundingClientRect`). These are receipts only a tester who actually drove the running webview can produce, so a bare screenshot filename or local scratch path still does NOT count (it is already refused by the unviewable-evidence guard). Validated: test-scripts.ps1 97/97.
+- **home:** references.md (G-108)
+- **effectiveness:** Confirmed (2026-09-06, #2824 round 2) — the gate refused the transition for the pure-rendering launcher keycap spec; after the hardening the same PASS verdict (rendered-webview evidence) cleared the gate and the spec merged.
+
+
 
 
 
@@ -58,7 +68,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a planner/developer/tester that must load a reference image (design wireframe, mockup, avatar/canvas guide, or a defect "current wrong-state" capture) concludes the asset "doesn't exist" from a glob "no files found", producing a false missing-asset diagnosis, a silently dropped visual-fidelity/acceptance gate, or a spurious FAIL on an image that is actually present under a dot-directory.
 - **guardrail:** Reference-image / desktop-wireframe discovery MUST never use `glob` to prove (or disprove) existence. Agents load a reference image by `Read <explicit absolute path>` or confirm it via a directory listing (`Test-Path` / `Get-ChildItem`); a glob "no files found" only means "not indexed" (dot-directories are excluded by the Glob tool), never "does not exist". When an agent reports it "can't find" a referenced image, the SI treats that as a G-024/G-105 false negative (NOT a missing file) and requires it to Read/Test-Path the exact declared path first. To make this enforceable rather than merely noted: every dispatch brief (architect/developer/tester) that consumes reference images MUST list the explicit absolute paths and state the no-glob rule; and the SI's planning/convergence pass directory-lists every declared reference-image path in the plan and flags any planner that reports a referenced image as absent.
 - **home:** playbooks/self-improver.md Guardrails (line — reference-image discovery + dispatch-brief rule) + references.md (this record)
-- **effectiveness:** **Confirmed** (2026-09-05, #2821) — verified at dispatch: the reference images were located via a directory listing after the Glob-style blind spot would otherwise have reported them absent; the explicit-path dispatch brief prevented any "image not found" false negative from reaching planning or the tester.
+- **effectiveness:** **Confirmed** (2026-09-05, #2821) — verified at dispatch: the reference images were located via a directory listing after the Glob-style blind spot would otherwise have reported them absent; the explicit-path dispatch brief prevented any "image not found" false negative from reaching planning or the tester. Re-validated (2026-09-06, #2824): the reference wireframe (`esc-close`, `.opencode/wireframes/bugs/`) was Read by explicit absolute path in every phase (planners, tester) and the tester's round-2 verdict read it by explicit path; no "image not found" false negative reached planning or the audit. The no-glob dispatch-brief rule held.
 
 ### G-104: tests_runs_prose_image_ref_trips_renderability_guard
 - **activation_date:** 2026-09-05
@@ -66,7 +76,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a tester verdict draft is refused at flush because a prose mention of a reference asset (wireframe/compare image) by `.png` filename trips the evidence-renderability guard, stalling the loop with a false "unviewable evidence" block.
 - **guardrail:** The `## Tests Runs` evidence-renderability guard (#2756) is a per-LINE heuristic: a line with `.png`/`.jpg`/`.jpeg` and NO `https://` is refused. When it can't distinguish a prose asset-name mention from a dead image link, the tester must (a) never write a reference asset's `.png` filename in a prose line that carries no accompanying `https://` (name it without the extension), and (b) keep every ACTUAL evidence screenshot in a Screenshot cell as an `upload-evidence` `https://` raw URL. The SI should not delete the draft and re-write it silently — fix the prose mention so the verdict posts through its intended channel (the transition / manual `post-comments` flush).
 - **home:** playbooks/tester.md (verdict draft — evidence-renderability guard) + playbooks/self-improver.md (draft-flush discipline G-078) + references.md (G-104)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-06, #2824 round 2) — re-fired at the `post-comments` flush for the same reason: the tester's `tests-runs.md` prose line mentioned the reference wireframe by `.png` (and the markdown Screenshot-cell LINK LABELS were bare filenames `[ac1-engaged-dark.png]`), so the guard refused on lines carrying `.png` without `https://` on the SAME line. Applied the documented fix: dropped the `.png` extension in prose, and made the link LABELS descriptive (the `https://` URL stays in the target, only the label changed). The verdict then posted through its intended channel. Lesson: in `tests-runs.md`, a `.png` token may appear ONLY on a line that also carries an `https://` URL; keep link labels descriptive, never a bare filename.
 
 ### G-103: removal_slice_reference_set_under_enumerated
 - **activation_date:** 2026-09-05
@@ -399,7 +409,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** a theming acceptance criterion names a theme mode (light/dark) the product does not expose; rather than looping implementation/testing rounds to "verify" a nonexistent surface, the missing mode should be resolved as a PO scope decision.
 - **guardrail:** When a theming AC requires a mode (light/dark toggle) that the product does not actually expose, do NOT silently loop rounds or substitute the observable — verify the theming feature's real mode surface once (exact UI path), then route the discrepancy to the human as a PO scope decision (amended AC or dropped leg), record the amendment on the issue, and re-verify against the amended criterion. Theme-token-only styling stays valid regardless of how many modes ship.
 - **home:** playbooks/self-improver.md (audit/loop guidance — add missing-mode PO-scope routing) + references.md (G-050)
-- **effectiveness:** Confirmed (re-validated 2026-09-05, #2808 — AC3 + AC5 "light" legs were documented-partial because the product ships only `turbo`/`classic` dark themes + a user accent, no real light theme; the tester correctly marked them PO-scope (G-050) and did NOT loop rounds, and the dark-theme legs passed. No round burned on an unsatisfiable light surface.)
+- **effectiveness:** Confirmed (re-validated 2026-09-05, #2808 — AC3 + AC5 "light" legs were documented-partial because the product ships only `turbo`/`classic` dark themes + a user accent, no real light theme; the tester correctly marked them PO-scope (G-050) and did NOT loop rounds, and the dark-theme legs passed. No round burned on an unsatisfiable light surface.) Re-validated with a CAVEAT (2026-09-06, #2824): do NOT assume a "no light theme" claim without checking the theme PRESET layer. #2824's planners asserted "the product ships only dark base themes, no light/dark toggle, defer the light leg" — but the 18 curated `themePresets` (incl. `light-default`, `solarized`, `arctic`, `sunset`, `paper`) DO ship reachable light surfaces via the shipped `ThemePresetSelector`. So the light+dark AC WAS verifiable (a light preset + the dark base), and deferring it would have silently dropped a valid AC observable. G-050's guardrail is correct for a genuinely-unnamed mode, but the "does the product expose it?" pre-check must inspect the preset layer, not just the base theme records (and note `turbo` is NOT a preset — the base is locked to `classic` since #2817).
 
 ### G-051: opencode_launch_never_diagnosed_via_binary_spelunking
 - **activation_date:** 2026-08-17

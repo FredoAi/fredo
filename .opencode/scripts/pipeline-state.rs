@@ -2252,7 +2252,23 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     // on one line does not suppress a genuine query on another.
     let live_evidence = latest.lines().any(|l| {
         let t = l.to_lowercase();
-        t.contains("telemetry_spans") && !line_is_telemetry_negation(&t)
+        if t.contains("telemetry_spans") {
+            return !line_is_telemetry_negation(&t);
+        }
+        // G-108 (#2824): a pure-rendering feature (no telemetry/emission surface)
+        // produces live evidence as a rendered-webview receipt, not a
+        // `telemetry_spans` query. The documented policy (tester playbook +
+        // qa-expert playbook) accepts "telemetry_spans OR DOM/screenshot receipts"
+        // for a live-verified UI feature. Recognize ONLY a receipt that a tester who
+        // actually drove the running webview can produce: an `upload-evidence` raw
+        // URL committed to `.opencode/evidence/<issue>/` on `spec/<N>`, a live
+        // `tauri_webview_*` tool receipt (DOM snapshot / screenshot), or a live
+        // rendered-geometry measurement (`getBoundingClientRect`). Never a bare
+        // screenshot filename or a local scratch path — those are unviewable dead
+        // strings (refused earlier by the upload-evidence guard) and do NOT count.
+        t.contains(".opencode/evidence/")
+            || t.contains("tauri_webview_")
+            || t.contains("getboundingclientrect")
     });
     let ok = has_evidence && round_ok && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
