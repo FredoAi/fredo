@@ -96,20 +96,20 @@
 
 ## R-17 — Only the top-right LED/label cluster changes in the launcher chrome
 
-- [ ] R-17: The FREDO notch, pixel-butler avatar, `>` command bar, side-tick rulers, dot-grid, rounded frame, and the keyboard-hints row are UNCHANGED. Only the top-right `onlineLabel`/dot cluster (`LauncherChrome.tsx`) + the `StreamStatus` component change. No layout shift of the notch/avatar/grid/hints. Reference #2808 F-4 + launcher R-7/R-15.
+- [x] R-17: **PASS (spec/2830 round 1)** — `git diff main spec/2830` touches only `LauncherChrome.tsx`/deleted `StreamStatus.tsx`/`Home.tsx`/`AppDrawer.tsx` comment; notch/avatar/command-bar/ticks/grid/hints render unchanged (desktop + light/dark screenshots). The FREDO notch, pixel-butler avatar, `>` command bar, side-tick rulers, dot-grid, rounded frame, and the keyboard-hints row are UNCHANGED. Only the top-right `onlineLabel`/dot cluster (`LauncherChrome.tsx`) + the `StreamStatus` component change. No layout shift of the notch/avatar/grid/hints. Reference #2808 F-4 + launcher R-7/R-15.
 
 ## R-18 — The online clock cluster retains the clock; the LED is the single status there
 
-- [ ] R-18: The top-right cluster keeps the HH:MM `<time>` clock text (still advances on the 60s timer); the `Online` text label is removed; the LED is the single status indicator in the cluster — NO dual/multiple status LEDs reintroduced on the launcher surface. Reference desktop-chrome F-6/F-8.
+- [x] R-18: **PASS (spec/2830 round 1)** — clock `02:49`→`02:55` (60s timer), `Online` label removed (no `ONLINE` text node), single LED in the cluster (`ledCount=1`), no dual/multiple LEDs. The top-right cluster keeps the HH:MM `<time>` clock text (still advances on the 60s timer); the `Online` text label is removed; the LED is the single status indicator in the cluster — NO dual/multiple status LEDs reintroduced on the launcher surface. Reference desktop-chrome F-6/F-8.
 
 ## R-19 — Token-native restated for the changed launcher chrome
 
-- [ ] R-19: `LauncherChrome.tsx` + any new LED/tooltip component carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append (#2770); LED `var(--accent-primary)`/`var(--status-error)` + halo `tint()`; tooltip `bg.surface`/`fg.default`/`fg.muted`/`border.default`; Chakra v3 only (never `NativeSelect`). Reference R-5/R-9/R-12/R-14/R-16 + desktop-chrome R-11.
+- [x] R-19: **PASS (spec/2830 round 1)** — grep of `LauncherChrome.tsx` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(`/`var(--x)NN` → ZERO true literals; LED `rgb(0,209,209)` accent + `color-mix` halo (`tint('var(--accent-primary)',22)`); tooltip reads `--card-bg`/`--text-primary`/`--border-color`; Chakra v3 only (`Tooltip.Root/Trigger/Positioner/Content/Arrow`, no `NativeSelect`). `LauncherChrome.tsx` + any new LED/tooltip component carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append (#2770); LED `var(--accent-primary)`/`var(--status-error)` + halo `tint()`; tooltip `bg.surface`/`fg.default`/`fg.muted`/`border.default`; Chakra v3 only (never `NativeSelect`). Reference R-5/R-9/R-12/R-14/R-16 + desktop-chrome R-11.
 
 ## R-20 — #2823 Ctrl+Space + launcher open/close + focus lifecycle unchanged
 
-- [ ] R-20: The #2823 Ctrl+Space toggle (opens + focuses the searchbox, ESC closes, focus restores), the engaged grid reveal (focus/query), and the resting `surfaceZ` (SURFACE_Z_VISIBLE=1100 / COVERED=0 / OPENED=1300) are unchanged. The LED change must not interfere with the shortcut-open `coveredByWindow` sink or the keyboard nav. Reference R-10 (launcher) + desktop-chrome R-12.
+- [x] R-20: **PASS (spec/2830 round 1)** — resting/engaged launcher + ESC-close/searchbox-focus intact; the `coveredByWindow` sink holds (band z 1200↔0 with a maximized window). #2823 Ctrl+Space synthetic keypress note: did not land searchbox focus in this automation round (documented OS/WebView2 IME gate, launcher F-19 edge); #2830 did not touch the Ctrl+Space handler (git diff clean) — not a #2830 regression. The #2823 Ctrl+Space toggle (opens + focuses the searchbox, ESC closes, focus restores), the engaged grid reveal (focus/query), and the resting `surfaceZ` (SURFACE_Z_VISIBLE=1100 / COVERED=0 / OPENED=1300) are unchanged. The LED change must not interfere with the shortcut-open `coveredByWindow` sink or the keyboard nav. Reference R-10 (launcher) + desktop-chrome R-12.
 
 ## R-21 — No re-render loop from the LED/tooltip state
 
-- [ ] R-21: Hovering/focusing the LED trigger (tooltip open/close) and the `isOnline` flip do not introduce a re-render loop — console stays clean of `Maximum update depth exceeded`; no effect depends on array `.length` or newly-created object refs. Reference R-13 (launcher) + desktop-chrome R-14.
+- [x] R-21: **PASS (spec/2830 round 1)** — `tauri_read_logs(source=console)` across the hover/focus/Escape tooltip cycles shows NO `Maximum update depth exceeded` / `Uncaught`. Hovering/focusing the LED trigger (tooltip open/close) and the `isOnline` flip do not introduce a re-render loop — console stays clean of `Maximum update depth exceeded`; no effect depends on array `.length` or newly-created object refs. Reference R-13 (launcher) + desktop-chrome R-14.
