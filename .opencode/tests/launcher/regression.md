@@ -38,3 +38,24 @@
 ## R-9 — Theming token-native across the newly added chrome
 
 - [ ] R-9: No hardcoded hex/`rgba(`/`rgb(` in any NEW side-tick / dot-grid / rounded-frame component + the existing launcher files; no `var(--x)NN` alpha-append; hover/tint via `tint('var(--accent-primary)', N)`; Chakra v3 API only (never `NativeSelect`). Reference F-6 (#2808) + desktop-shell R-8.
+
+## #2823 extension — global Ctrl+Space keyboard/focus invariants (must-not-change)
+
+> Issue #2823. These invariants MUST hold after the Ctrl+Space keyboard/focus slice — any
+> FAIL is a regression. Run alongside R-1..R-9.
+
+## R-10 — Resting search surface stays mounted (AC5)
+
+- [ ] R-10: ESC / toggle-off must only re-z + idle the surface — it must NOT unmount the search/command bar (the resting search access never disappears; `launcher-disappears.png` is the fail state). Opening a feature window still re-z's the surface below the window stack (`surfaceZ` covered = 0, `LauncherShell.tsx:105-106`).
+
+## R-11 — Existing global keyboard consumers unaffected
+
+- [ ] R-11: The Konami-code listener (`useKonamiCode.ts:56`), the `DetailPanel` ESC listeners (`DetailPanel.tsx:202,223`), and the companion Ctrl-right-click teleport (`FredoCompanion.tsx:193`) are unchanged and still fire — Ctrl+Space never breaks them, and Ctrl+Space produces no second action.
+
+## R-12 — Token-native focus ring + no hardcoded color added
+
+- [ ] R-12: The searchbox focus ring remains `outline: 2px solid var(--accent-primary)` (`LauncherCommandBar.tsx:136-141`); any new overlay/scrim uses only existing semantic tokens (`var(--card-bg)`, `var(--bg-primary)`, `var(--border-color)`) — no hardcoded hex/rgba, no `var(--x)NN` alpha-append (use `tint()`/`color-mix`); Chakra v3 only (never `NativeSelect`).
+
+## R-13 — No re-render loop in the new open/close state
+
+- [ ] R-13: Toggling `open` does not introduce a re-render loop — no effect depends on array `.length` or newly-created object refs; console stays clean of `Maximum update depth exceeded`.

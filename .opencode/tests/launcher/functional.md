@@ -106,3 +106,45 @@
 
 - [ ] F-15: Open a feature window, then close it; verify the search/command bar REMAINS visible. Run ≥3 consecutive open→close cycles; also across minimize/restore. Compare against `.opencode/wireframes/bugs/launcher-disappears.png` (search gone) — must NOT match.
   - **Edge:** "always visible" means present in the resting Main surface and re-revealed on close/minimize — NOT rendered above a maximized feature window (windows open maximized, `Home.tsx:92`). Test with multiple windows open/closed at once; verify the launcher never unmounts.
+
+## #2823 extension — global Ctrl+Space keyboard focus slice
+
+> Issue #2823 — Ctrl+Space opens + focuses the launcher from anywhere. **Keyboard/focus slice
+> only** (styling out of scope; verify via `.opencode/tmp/2823/triage.md` `## QA Expert`,
+> AC-1..AC-5, mapping to REQ-1..REQ-5 once the Software Architect assigns them).
+> **Verification policy: live** — pure frontend keyboard/focus, NO telemetry fixture. Evidence
+> via `tauri_webview_keyboard` (Ctrl+Space = press key=" " modifiers=["Control"]),
+> `tauri_webview_execute_js` (`document.activeElement`), `tauri_webview_dom_snapshot`, `tauri_webview_screenshot`.
+
+## F-16 (AC-1) — Ctrl+Space opens + focuses the searchbox from any non-text focus
+
+- [ ] F-16a: With the launcher CLOSED (no searchbox focused, no overlay covering; optionally a feature window open), record the pre-open `document.activeElement`, press Ctrl+Space. **Expected:** overlay appears ON TOP and `document.activeElement` is the searchbox `input[role="searchbox"]`.
+- [ ] F-16b: Overlay-on-top assertion even when a maximized feature window covers the resting surface — `document.elementFromPoint(windowCenter)` returns a node inside `div[role="dialog"][aria-label="Fredo launcher"]`, NOT the feature-window surface (the resting surface is z'd BELOW the window stack, `LauncherShell.tsx:105-106`; the open must re-raise above it).
+- [ ] F-16c: Type a query immediately after open — the grid filters with no extra click/Tab.
+- [ ] F-16 edge: Open from any route/screen — body/desktop, from a feature window (Mission Monitor), from the notch button; every path opens + focuses.
+- [ ] F-16 edge (toggle): Press Ctrl+Space twice — first opens, second closes (exactly one action per press, no double-open / duplicate overlay); while open with focus in the searchbox, Ctrl+Space still toggle-closes (searchbox excluded from the AC-3 guard).
+
+## F-17 (AC-2) — ESC closes the launcher
+
+- [ ] F-17a: With the launcher open, press ESC; assert the overlay no longer covers content, `document.activeElement` is NO LONGER the searchbox, and the surface returns to its resting state (re-z'd under the window stack — it must NOT unmount; #2821 AC5).
+- [ ] F-17 edge: ESC while the launcher is already closed → pure no-op (no crash, `document.activeElement` unchanged).
+- [ ] F-17 edge: ESC must close the overlay and NOT co-fire the shell's old idle-collapse branch (`LauncherShell.tsx:224-239`) as a second action (AC4).
+
+## F-18 (AC-3) — Ctrl+Space does NOT fire while typing in a text control
+
+- [ ] F-18a: With the launcher CLOSED, focus a real textarea (a feature window's textarea), type a character, press Ctrl+Space; assert no overlay appears (`document.activeElement` stays the textarea), the pre-typed text is uninterrupted, no launcher `role="dialog"` node is created.
+- [ ] F-18 edge: Repeat for `input` (text), `textarea`, and `contenteditable` — Ctrl+Space must NOT fire in any (focus untouched, launcher stays closed).
+- [ ] F-18 edge: The keystroke is NOT `preventDefault`ed when suppressed (nothing swallowed for an unintended shortcut).
+
+## F-19 (AC-4) — Only the launcher toggle; no second action / no default
+
+- [ ] F-19a: Press Ctrl+Space and observe EVERY effect — the only action is the launcher toggle; `e.preventDefault()` suppresses the bare-Space page scroll and any IME/autocomplete popup; no console `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] F-19 edge: Existing global shortcuts unaffected — the Konami-code listener (`useKonamiCode.ts:56`) reacts only to its sequence (Ctrl+Space merely resets it), the `DetailPanel` ESC listeners (`DetailPanel.tsx:202,223`) are ESC-only, and the companion Ctrl-right-click (`FredoCompanion.tsx:193`) is mouse-based (not keydown) — all still work.
+- [ ] F-19 edge: Confirm the Ctrl+Space keydown reaches the webview (not swallowed by the OS IME toggle on Windows) — real Windows/WebView2 manual gate; matching uses `e.code === 'Space'` + exact modifiers.
+
+## F-20 (AC-5) — Focus restores to the pre-launch element on close
+
+- [ ] F-20a: Focus a known element (e.g. the notch `div[role="button"][aria-label="Fredo launcher"]` or a feature tile); press Ctrl+Space (opens, focuses searchbox); press ESC; assert `document.activeElement` is the SAME element as before.
+- [ ] F-20 edge: Toggle-off close (Ctrl+Space when open) restores to the same pre-open element.
+- [ ] F-20 edge (conditional restore): If the user tabbed/clicked OUT before close (focus already left the launcher), focus is NOT yanked back (UI/UX §3) — record this as the AC-5 verdict per the resolved discussion.
+- [ ] F-20 edge (degradation): If the pre-open element was unmounted while the launcher was open, focus falls back gracefully (to `body`/a sensible ref) with no crash and no focus-trap in a dead launcher.
