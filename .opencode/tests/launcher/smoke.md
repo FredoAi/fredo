@@ -21,3 +21,7 @@
 ## #2823 extension — Ctrl+Space keyboard smoke
 
 - [ ] S-7: Ctrl+Space opens the launcher from anywhere — from the app's home/desktop, press Ctrl+Space; assert the launcher `role="dialog"` overlay appears (`div[role="dialog"][aria-label="Fredo launcher"]`) and `document.activeElement` is the `input[role="searchbox"]`; no console `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2824 extension — ESC keycap engaged-hint smoke
+
+- [ ] S-8: Engaged launcher shows the close-hint row — focus the command bar / enter a query (non-empty feature set) so the hint row renders; `tauri_webview_dom_snapshot(type="structure")` shows the `ESC` badge + `CLOSE` hint text; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`.
