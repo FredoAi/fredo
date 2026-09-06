@@ -230,3 +230,46 @@
 - [x] F-30: Measure the rendered avatar via `getBoundingClientRect`/computed-style in the launcher; confirm size/aspect, the avatar change did not affect other launcher tiles, and check the console.
   - **PASS (live, default + narrow + light + dark).** Avatar `getBoundingClientRect` = **48 × 48 CSS px** at (936, 346) — 1:1 aspect (`aspect 1.000`), `offsetWidth/offsetHeight` = 48, SVG attribute `width="48" height="48"`, `viewBox="0 0 21 21"` (21:21 grid preserved), `shape-rendering=crispedges`, `aria-hidden="true"` (decorative, unchanged). Every `<rect>` is a crisp uniform cell (crispEdges), no subpixel blur/no blended distortion. **Narrow viewport** (resized to 700×900): avatar still 48×48 fully visible (`fullyVisible: true`), NOT clipped/cropped/scaled; the other launcher tiles/chrome (FREDO notch, command bar, dot-grid LED, clock) are unchanged — no layout shift (the avatar is a fixed 48×48 SVG in `Box mb="4"`; only its pixel content changed). **Light + dark (shipped presets):** 48×48 in both (`rgb(0,209,209)` cyan on `#ffffff` light / `#0c1117` dark). Console clean — `tauri_read_logs(source="console")` shows only INFO/DEBUG + the pre-existing `motion() is deprecated` WARN; NO `Error:` / `Uncaught` / `Maximum update depth exceeded`. No animation added, no other avatar variant toggled (base NEUTRAL is the only render), pixel guide PNG NOT modified, no cross-feature import (imports only React). **AC-5 = PASS.**
   - **Edge:** default (1936×1056) + narrow (700×900) widths; light `light-default` + dark `dark` base; grid cells crisp; console clean of the three error signatures.
+
+---
+
+## #2830 extension — single top-right status LED (LauncherChrome online cluster)
+
+> Issue #2830 — consolidate the desktop status LEDs to a SINGLE top-right LED. The top-right
+> `ONLINE •` readout cluster in `LauncherChrome.tsx` (the launcher's online clock cluster,
+> lines 350-383) is the home of the single LED: the `onlineLabel` Text (line 371) is DROPPED,
+> the 6px dot (lines 373-379) is ENLARGED to a 12px dot in a 16px hit target, and a Chakra v3
+> `Tooltip` (`placement="bottom"`, `hasArrow`) is added on hover (AC5). The bottom-center
+> `StreamStatus` pair is REMOVED (AC2). Map 1:1 to `.opencode/tmp/2830/triage.md` `## QA Expert`
+> (REQ-1..REQ-5, AC1..AC8). The canonical per-AC evidence lives in the `desktop-chrome` suite
+> **F-6..F-13** — run those here too; these launcher rows add the LauncherChrome-surface-specific
+> checks (the LED inside the launcher's online clock cluster, engaged/notch/Ctrl+Space interplay).
+>
+> **Verification policy: live** — pure-rendering, NO telemetry surface. Evidence via
+> `tauri_webview_dom_snapshot` + `tauri_webview_screenshot` + `upload-evidence --base spec/2830`
+> raw URL + `getBoundingClientRect`/computed-style. **OVERRIDE:** the #2821 dual-bottom-LED AC is
+> SUPERSEDED (bottom LEDs removed). Reference wireframes (`desktop-light.png`,
+> `desktop-light-dark-theme-compare.png`) are the PRE-fix baseline — the removed `ONLINE` label +
+> enlarged LED are the REQUIRED AC, NOT a fidelity deviation. Read them by EXPLICIT path (never glob).
+>
+> **Serving checkout:** `spec/2830` on a running Fredo desktop app (MCP driver `com.fredo.app`).
+
+## F-31 (AC1/AC3 launcher-surface) — Launcher's online cluster shows ONE (unlabeled) status LED
+
+- [ ] F-31: Open the launcher surface (idle OR engaged) so the top-right clock cluster is visible; `tauri_webview_dom_snapshot` the `<time aria-label*="online\|offline">` cluster. **Expected:** EXACTLY ONE status-LED element inside it, below the HH:MM clock text (`mt="6px"`); NO `ONLINE`/`OFFLINE` visible text node; no additional status LEDs elsewhere on the launcher surface. Cross-reference desktop-chrome F-6/F-8 for the canonical AC1/AC3 evidence.
+  - **Edge:** (a) idle vs engaged launcher (grid open) — LED present in both; (b) no `ONLINE` text in either state; (c) the clock HH:MM time still renders + advances.
+
+## F-32 (AC5 launcher-surface) — Hover tooltip on the launcher surface; no clip/overlap with the notch or frame
+
+- [ ] F-32: With the launcher surface shown (idle and engaged), `tauri_webview_interact(action="hover")` the LED trigger; `tauri_webview_dom_snapshot` locates the Chakra tooltip. **Expected:** a Chakra `Tooltip` (`placement="bottom"`, `hasArrow`) opens below the LED with state-driven content; it does NOT overlap the FREDO notch, the frame, or the clock; pointer-leave hides it. Cross-reference desktop-chrome F-10.
+  - **Edge:** (a) idle + engaged launcher; (b) open below, never above (no top clip); (c) narrow viewport — no clip.
+
+## F-33 (AC6 launcher-surface) — LED + tooltip re-tint token-native on the launcher surface
+
+- [ ] F-33: Grep the launcher chrome source (`apps/ui/src/features/home/components/launcher/LauncherChrome.tsx` + any new LED/tooltip component) for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`, and invalid `var(--x)NN` alpha-append (#2770). **Expected:** ZERO hardcoded color literals (comment issue-refs like `#2821` exempt); LED `var(--accent-primary)`/`var(--status-error)` + halo `tint('var(--accent-primary)', 22)`; tooltip surface `bg.surface`/`fg.default`/`fg.muted`/`border.default` tokens; Chakra v3 only. Re-theme via the shipped `ThemePresetSelector` (light preset ↔ dark base) — the LED + tooltip re-tint cleanly in both. Cross-reference desktop-chrome F-11.
+  - **Edge:** re-theme while the tooltip is open does not leave a stale color; no `var(--x)NN` alpha-append.
+
+## F-34 (AC7 launcher-surface) — Notch / Ctrl+Space / grid interaction with the new LED
+
+- [ ] F-34: After the LED change, confirm the launcher's notch toggle, the #2823 Ctrl+Space open (focuses searchbox, ESC closes, focus restores), the engaged grid reveal, and the keyboard-hints row are unchanged. Opening a feature window still sinks the whole band (clock + LED + frame) below the window stack. Cross-reference the launcher regression R-7+ / desktop-chrome F-12.
+  - **Edge:** (a) Ctrl+Space over a maximized window re-raises the launcher; (b) the LED does not intercept the notch or a grid-tile pointer (the LED re-enables `pointerEvents="auto"` on its own trigger only).
