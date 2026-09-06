@@ -28,3 +28,29 @@ export function registerFeature(feature: FredoFeatureClass): void {
 export function getFeatures(): FredoFeatureClass[] {
   return _registry;
 }
+
+/**
+ * Deduplicate a feature list by feature `id` (first-wins, stable order).
+ *
+ * Pure helper — NEVER mutates the input and NEVER mutates `_registry`. A single
+ * O(n) pass keeps the FIRST occurrence of each distinct `feature.id` and drops
+ * every later duplicate, preserving input order. Keyed by `feature.id` — NEVER
+ * by `name`/label, so two distinct ids that happen to share a label BOTH render.
+ *
+ * #2826: `registerFeature()` (lines 24-26) performs a plain `_registry.push`
+ * with NO by-id de-dup, so `getFeatures()` can carry the same feature more than
+ * once (double-registration). The launcher wraps
+ * `ALL_FEATURES.filter((f) => f.showable)` in this helper so the app grid and
+ * its keyboard-nav indices are index-aligned BY CONSTRUCTION — one tile per
+ * distinct id, no ghost tiles, no nav-sequence gaps.
+ */
+export function dedupeByFeatureId(features: FredoFeatureClass[]): FredoFeatureClass[] {
+  const seen = new Set<string>();
+  const out: FredoFeatureClass[] = [];
+  for (const feature of features) {
+    if (seen.has(feature.id)) continue;
+    seen.add(feature.id);
+    out.push(feature);
+  }
+  return out;
+}
