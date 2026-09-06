@@ -104,8 +104,7 @@ const LeftRightGlyph: React.FC = () => (
 const EscKeycap: React.FC = () => (
   <Box
     as="span"
-    px={7}
-    py={3}
+    p="3px 7px"
     borderRadius="5px"
     border="1px solid var(--text-primary)"
     bg="var(--card-bg)"
