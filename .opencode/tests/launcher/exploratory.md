@@ -42,3 +42,28 @@
 ## E-10 — Rapid open/close + new idle chrome
 
 - [ ] E-10: Probe opening a tile, closing it, then re-engaging the launcher rapidly — does the idle chrome (avatar, bar, ticks, dot-grid, frame) remain correct under the window lifecycle churn, with no console error and no orphan window?
+
+## #2823 extension — global Ctrl+Space keyboard/focus probes
+
+> Add findings here for issue #2823; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note).
+
+## E-11 — Rapid Ctrl+Space spam
+
+- [ ] E-11: Probe rapidly pressing Ctrl+Space multiple times (e.g. 5× fast) — does the launcher toggle cleanly each press, or does it get stuck / focus-bounce / double-toggle? Any console error or focus trap is a finding.
+
+## E-12 — Ctrl+Space in an IME / non-QWERTY layout
+
+- [ ] E-12: Probe Ctrl+Space with an active IME input context (Windows input-method / CJK) and on a non-QWERTY layout — does the toggle fire, or does the OS/IME swallow the keydown? Any missed toggle is a finding (the native-collision risk).
+
+## E-13 — Ctrl+Space over a maximized feature window
+
+- [ ] E-13: Probe Ctrl+Space while a feature window is MAXIMIZED over the resting surface — does the overlay re-raise ABOVE the window (`elementFromPoint` returns a node inside the launcher dialog), or does it stay hidden behind? The resting surface is z'd below the window, so the overlay raise is the critical path.
+
+## E-14 — Focus restore when the pre-open element is gone
+
+- [ ] E-14: Probe opening the launcher from an element, then removing/unmounting that element while the launcher is open, then closing — does focus fall back gracefully (no crash, no focus-trap in a dead launcher)? Record the landing element.
+
+## E-15 — ESC precedence across surfaces
+
+- [ ] E-15: Probe ESC behavior when a feature window is ALSO open behind the launcher overlay (e.g. Mission Monitor detail panel with its own ESC-close handler) — which ESC wins, does any co-fire (two actions)? Any double-close / focus-chatter is a finding.
