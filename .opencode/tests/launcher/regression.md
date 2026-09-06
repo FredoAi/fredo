@@ -72,3 +72,13 @@
 ## R-15 — No layout change beyond the ESC keycap/hint styling
 
 - [ ] R-15: Only the ESC keycap/hint styling changes. The `↑↓ NAVIGATE` / `←→ SELECT` hints, their glyphs, the frame geometry, and the hint-row layout (bottom padding, `justifyContent: space-between`, hint gap) are UNCHANGED; ESC functional behavior is out of scope and unchanged. Reference the F-10 hint-label checkpoint + R-7.
+
+## #2827 extension — PixelButler avatar invariants (must-not-change)
+
+> Issue #2827. These invariants MUST hold after the PixelButler base-form rework (BASE_FORM content
+> + grid constants) — any FAIL is a regression. Run alongside R-1..R-15.
+
+## R-16 — Token-native color baseline + no layout change beyond the avatar base form
+
+- [x] R-16: Token-native color baseline: the launcher source retains ZERO hardcoded hex/`rgba(`/`rgb(`; `#00D1D1` stays a TOKEN value (never an inline literal); no cross-feature import; no re-render loop (console clean of `Maximum update depth exceeded`); no layout change beyond the avatar base form (48×48 preserved, other tiles/chrome unchanged, pixel guide NOT modified).
+  - **PASS (live, spec/2827 @ 0620b736).** Grep of `launcher/**` returns zero true color literals; `#00D1D1` absent inline (token value only, theme.ts:209,228); `PixelButler.tsx` imports only React (no cross-feature import); console clean (no re-render loop); avatar 48×48 (`getBoundingClientRect` 48×48, aspect 1.0) — only `BASE_FORM` content + grid constants changed (git shows both #2827 commits touched only `PixelButler.tsx`); wireframe guide PNG unmodified; 91 rect cells render crisp.
