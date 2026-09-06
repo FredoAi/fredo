@@ -171,12 +171,12 @@
 
 ## F-23 (AC3) — Theme legibility/contrast under every shipped theme
 
-- [ ] F-23: Render the engaged launcher under EACH AVAILABLE theme and inspect the ESC badge + `CLOSE` label. **Expected:** keycap + hint legible with sufficient contrast in BOTH light and dark themes. NOTE: the product ships only the DARK base themes (`turbo`, `classic`) and exposes NO light/dark toggle — verify each shipped dark theme; do NOT invent a toggle. Low-contrast / washed-out / color-inverted glyph ⇒ FAIL.
-  - **Edge:** test both `turbo` and `classic`; re-theme live (switch turbo↔classic) while the hint is visible — badge/label re-tint token-native, no flicker/low-contrast.
+- [ ] F-23: Render the engaged launcher in BOTH a light surface and the dark base and inspect the ESC badge + `CLOSE` label. **Expected:** keycap + hint legible with sufficient contrast in both. **How to reach each surface (the `ThemePresetSelector` in theming settings):** select a LIGHT preset from the 18 curated `themePresets` (e.g. `light-default` — `--body-bg #ffffff`, `--card-bg #f7f8fa`, `--text-primary #0c1117`, `--border-color #d5dadd`; also `solarized`, `arctic`, `sunset`, `paper`) for the light leg; select `Default / None` (or a dark preset) for the DARK base leg (the stock locked base is `classic` — `--card-bg #2d2d2d`, `--text-primary #cccccc`). Do NOT invent a toggle — use the shipped preset selector (G-050). Low-contrast / washed-out / color-inverted glyph in EITHER leg ⇒ FAIL.
+  - **Edge:** verify BOTH legs (light preset `light-default` AND the dark base `classic`); re-theme live (switch light preset ↔ dark base) while the hint is visible — badge/label re-tint token-native, no flicker/low-contrast. (Note: `themePresets` has NO `turbo` entry — `turbo` is an unreachable legacy base mode, locked to `classic` since #2817. Do NOT attempt to select `turbo`.)
 
 ## F-24 (AC4) — Token-native colors (static + live)
 
-- [ ] F-24: Grep `apps/ui/src/features/home/components/launcher/**` (and any new keycap component) for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`. **Expected:** ZERO hardcoded color literals; keycap/hint colors flow theme token → CSS var (`var(--...)`) / `currentColor` / `tint()`; NO `var(--x)NN` alpha-append. Re-theme (turbo↔classic) live and confirm the keycap re-tints. Any hardcoded literal ⇒ FAIL.
+- [ ] F-24: Grep `apps/ui/src/features/home/components/launcher/**` (and any new keycap component) for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`. **Expected:** ZERO hardcoded color literals; keycap/hint colors flow theme token → CSS var (`var(--...)`) / `currentColor` / `tint()`; NO `var(--x)NN` alpha-append. Re-theme live (a light preset ↔ the dark base via the themed preset selector) and confirm the keycap re-tints. Any hardcoded literal ⇒ FAIL.
   - **Edge:** scan the changed file(s) specifically; no new semantic token without a `system.ts` mapping; no `NativeSelect`-style unstyled element; no Chakra v2 API (`isDisabled`/`colorScheme`).
 
 ## F-25 (AC5) — Clean keycap affordance, no regression
