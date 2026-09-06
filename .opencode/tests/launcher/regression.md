@@ -59,3 +59,16 @@
 ## R-13 — No re-render loop in the new open/close state
 
 - [ ] R-13: Toggling `open` does not introduce a re-render loop — no effect depends on array `.length` or newly-created object refs; console stays clean of `Maximum update depth exceeded`.
+
+## #2824 extension — ESC/close hint keycap polish invariants (must-not-change)
+
+> Issue #2824. These invariants MUST hold after the ESC keycap polish — any FAIL is a
+> regression. Run alongside R-1..R-13.
+
+## R-14 — Keycap/hint remain token-native
+
+- [ ] R-14: The ESC keycap/hint styling is token-native: no hardcoded hex/`rgba(`/`rgb(` in the changed launcher files, no `var(--x)NN` alpha-append, colors via `var(--...)`/`currentColor`/`tint()`. Reference F-24 + R-5/R-9/R-12.
+
+## R-15 — No layout change beyond the ESC keycap/hint styling
+
+- [ ] R-15: Only the ESC keycap/hint styling changes. The `↑↓ NAVIGATE` / `←→ SELECT` hints, their glyphs, the frame geometry, and the hint-row layout (bottom padding, `justifyContent: space-between`, hint gap) are UNCHANGED; ESC functional behavior is out of scope and unchanged. Reference the F-10 hint-label checkpoint + R-7.
