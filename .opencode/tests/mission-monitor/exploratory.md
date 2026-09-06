@@ -39,3 +39,19 @@
 - [ ] E-15 (OPEN): Composited / multi-hop (delegation depth ≥ 3) session — does the re-keyed/composited session appear as its OWN zero-node sidebar entry (which must NOT happen), or only composite under the parent? Requires a real drive / real-corpus replay (G-088); verify against real telemetry before declaring a ghost source.
 - [ ] E-16 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` is a defect that invalidates the leg's evidence (NFR-2). `tauri_read_logs source="console"` clean after every interaction.
 - [ ] E-17 (OPEN, confirmed finding promotes to functional): The deleted #2791 explanatory state's a11y — after removal does selecting a non-qualifying session (if reachable) leave a clean announce region / no broken `role="region"` with a stale "No graph content for this session" heading?
+
+---
+
+# Mission Monitor — Exploratory Probes (Spec #2835 — RTDB row-pipeline performance regression)
+
+> Unscripted edge/failure probes for the perf-regression surface. A CONFIRMED finding promotes to `functional.md` as a new `F-` case (keep the origin note). Root cause is UNKNOWN — probe for the growth/flood/re-render-loop classes the ACs name.
+
+## Probes to run beyond the script
+
+- [ ] E-18 (OPEN): Sustained unbounded-growth probe — keep the row stream active for a long window (≥ 60s, longer if practical): does JS heap or DOM grow without bound, or plateau? Sample `performance.memory.usedJSHeapSize` every ~15s; a heap that grows proportionally to time/data and never settles is the unbounded-growth defect (suspect: unbounded live-row store). Distinguish a GC-reading dip from a real leak.
+- [ ] E-19 (OPEN): Burst/large-replay — mount Mission Monitor right after a large telemetry replay (≥ 30 sessions, ≥ a few hundred rows): does first-render + replay drain stay responsive, or does the IPC `fredo-stream-event` flood / freeze the app? Watch `tauri_ipc_monitor` for max-throughput batch emission (suspect: IPC/flush batch flooding — RTDB_MAX_EMISSION_BATCH=512, coalescing, per-query replay drains) and measure first-render Δ.
+- [ ] E-20 (OPEN): Rapid-switch — rapidly toggle between sessions during active streaming (and across a ghost-class and a normal session): any stale/wrong-session graph, re-render loop, or freeze? Confirm the selected session via DOM before capture (G-035); cross-check `telemetry_spans` at the same instant.
+- [ ] E-21 (OPEN): Rapid feature open/close — open and close Mission Monitor repeatedly (leaving the row stream active): does the app accumulate without bound or freeze after many cycles? Checks a per-mount leak / subscription not torn down (suspect: register-before-snapshot / replay drain re-run per mount).
+- [ ] E-22 (OPEN): High session-count + streaming — with many listed sessions AND a live stream: does interaction latency degrade over time (vs. staying bounded)? Measures O(n²)/per-render identity churn (suspect: O(n²)/per-render identity) rather than an outright loop.
+- [ ] E-23 (OPEN): Repeated select/delete during stream — delete a session while others stream: does a re-render loop or a stale-row hit appear? Cross-check `telemetry_spans` for the deleted sessionId; persistence across mount/unmount (deleted session IDs) must survive (module-scoped state, not `useRef`).
+- [ ] E-24 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` is a defect to report in the verdict (invalidates that leg's evidence). `tauri_read_logs source="console"` clean after every interaction.
