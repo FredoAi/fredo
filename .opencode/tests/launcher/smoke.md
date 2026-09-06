@@ -17,3 +17,7 @@
 
 ## #2819 extension — idle launcher surface smoke
 - [ ] S-6: Idle launcher surface renders — on a fresh launch the avatar + `>` command bar are visible in the IDLE state (`surfaceOpen:true, engaged:false` — no notch click), plus the LEFT side-tick ruler, RIGHT dot-grid, and thin rounded frame; `#fredo-launcher-grid` is ABSENT. Focusing the command bar reveals the grid + hints (engaged); ESC returns to idle focusing the command bar.
+
+## #2823 extension — Ctrl+Space keyboard smoke
+
+- [ ] S-7: Ctrl+Space opens the launcher from anywhere — from the app's home/desktop, press Ctrl+Space; assert the launcher `role="dialog"` overlay appears (`div[role="dialog"][aria-label="Fredo launcher"]`) and `document.activeElement` is the `input[role="searchbox"]`; no console `Error:`/`Uncaught`/`Maximum update depth exceeded`.
