@@ -31,32 +31,32 @@ Overlapping suites to run alongside: `mission-monitor` (opens feature windows vi
 
 ## R-7 — Only the status-LED consolidation changes; the rest of the chrome is untouched
 
-- [ ] R-7: The FREDO notch, pixel-butler avatar, `>` command bar, side-tick rulers, dot-grid, rounded frame, and the keyboard-hints row geometry are UNCHANGED (only the top-right LED/`onlineLabel` cluster in `LauncherChrome.tsx`, and the `StreamStatus` component, change). No layout shift of the clock/notch/nav hints.
+- [x] R-7: The FREDO notch, pixel-butler avatar, `>` command bar, side-tick rulers, dot-grid, rounded frame, and the keyboard-hints row geometry are UNCHANGED (only the top-right LED/`onlineLabel` cluster in `LauncherChrome.tsx`, and the `StreamStatus` component, change). No layout shift of the clock/notch/nav hints. **PASS (spec/2830 round 1):** `git diff main spec/2830` touches only `LauncherChrome.tsx`, deleted `StreamStatus.tsx`, `Home.tsx`, and the `AppDrawer.tsx` comment; notch/avatar/command-bar/ticks/grid/hints render unchanged (desktop + light/dark screenshots).
 
 ## R-8 — The clock HH:MM text is retained and still advances
 
-- [ ] R-8: The top-right clock time (`HH:MM`) is retained and still updates on the 60s interval timer (`LauncherChrome.tsx`); only the `Online` text label row is removed. The clock does not break/disappear.
+- [x] R-8: The top-right clock time (`HH:MM`) is retained and still updates on the 60s interval timer (`LauncherChrome.tsx`); only the `Online` text label row is removed. The clock does not break/disappear. **PASS (spec/2830 round 1):** live `timeText` `02:49` → `02:55` across the round; `<time aria-label="02:49, online">` retained (accessible name); `ONLINE` text node absent.
 
 ## R-9 — The #2825 desktop-chrome z-order model is preserved
 
-- [ ] R-9: Band z = 1200 when the desktop is uncovered; the whole band (clock + LED + frame + side ticks) sinks to z = 0 below the z = 1 window stack `coveredByWindow`-driven. The LED never paints over the window titlebar min/max/close controls (`bugs/led-overlay.png` must NOT reproduce). Composed stacking: window frame z=1 > band z (0 when covered). Reference #2825 F-1/F-3.
+- [x] R-9: Band z = 1200 when the desktop is uncovered; the whole band (clock + LED + frame + side ticks) sinks to z = 0 below the z = 1 window stack `coveredByWindow`-driven. The LED never paints over the window titlebar min/max/close controls (`bugs/led-overlay.png` must NOT reproduce). Composed stacking: window frame z=1 > band z (0 when covered). Reference #2825 F-1/F-3. **PASS (spec/2830 round 1):** chrome band root `zIndex` 1200 (uncovered) → 0 (Mission Monitor open) → 1200 (close/minimize); `elementFromPoint(1913,21)` at "Close Sessions" returns the window control (`isWindowControl:true`); `led-overlay.png` does NOT reproduce.
 
 ## R-10 — Chrome band stays passive; only the LED trigger re-enables pointer events
 
-- [ ] R-10: The chrome band wrapper stays `pointerEvents="none"` (NFR-5); only the LED trigger re-enables `pointerEvents="auto"` on its OWN element (mirroring the FREDO notch, `LauncherChrome.tsx:327`) so the enlarged LED is hoverable/focusable but the band never swallows a pointer. No new invisible overlay intercepts the window min/max/close (reference #2825 F-5).
+- [x] R-10: The chrome band wrapper stays `pointerEvents="none"` (NFR-5); only the LED trigger re-enables `pointerEvents="auto"` on its OWN element (mirroring the FREDO notch, `LauncherChrome.tsx:327`) so the enlarged LED is hoverable/focusable but the band never swallows a pointer. No new invisible overlay intercepts the window min/max/close (reference #2825 F-5). **PASS (spec/2830 round 1):** chrome band root `pointerEvents="none"`, LED trigger `pointerEvents="auto"` (`triggerPointerEvents=auto`); real clicks on Min/Restore/Close dispatched successfully.
 
 ## R-11 — Token-native; no hardcoded color; Chakra v3 only
 
-- [ ] R-11: The changed files carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append (#2770); colors flow theme token → CSS var → `tint()`/`color-mix`; Chakra v3 API only (no v2 `isDisabled`/`colorScheme`, no `NativeSelect`). Reference #2825 R-6 + launcher R-5/R-9/R-12/R-14.
+- [x] R-11: The changed files carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append (#2770); colors flow theme token → CSS var → `tint()`/`color-mix`; Chakra v3 API only (no v2 `isDisabled`/`colorScheme`, no `NativeSelect`). Reference #2825 R-6 + launcher R-5/R-9/R-12/R-14. **PASS (spec/2830 round 1):** grep of `LauncherChrome.tsx` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(`/`var(--x)NN` → ZERO true literals; halo uses `tint('var(--accent-primary)', 22)` (→ `color-mix`); Chakra v3 `Tooltip.Root/Trigger/Positioner/Content/Arrow`. **NOTE:** #2821 R-3 (no top-right LED) and R-4 (chrome stays fully pointer-events:none) are SUPERSEDED by #2830 — see the #2830 extension note above.
 
 ## R-12 — #2823 Ctrl+Space launcher + #2821 fidelity fixes remain
 
-- [ ] R-12: The #2823 Ctrl+Space toggle (opens + focuses the searchbox, ESC closes, focus restores) and the #2821 desktop-fidelity fixes (clean top-right clock; no clock/LED overlap of window controls) are intact. The LED change must not break the shortcut-open `coveredByWindow` sink or the resting/engaged launcher z-model.
+- [x] R-12: The #2823 Ctrl+Space toggle (opens + focuses the searchbox, ESC closes, focus restores) and the #2821 desktop-fidelity fixes (clean top-right clock; no clock/LED overlap of window controls) are intact. The LED change must not break the shortcut-open `coveredByWindow` sink or the resting/engaged launcher z-model. **PASS (spec/2830 round 1):** #2821 fidelity holds (clock clean, no clock/LED overlap of controls — `elementFromPoint` at "Close Sessions" = window control); `coveredByWindow` sink verified (band z 1200↔0); launcher ESC-close + searchbox focus intact. #2823 Ctrl+Space synthetic-keypress note: the `press " " +Control` keypress did not land searchbox focus in this automation round (documented OS/WebView2 IME gate, launcher F-19 edge); #2830 did not touch the Ctrl+Space handler (git diff clean) — not a #2830 regression.
 
 ## R-13 — The removed `StreamStatus` does not return, and the single LED does not pulse
 
-- [ ] R-13: `StreamStatus` is NOT reintroduced (no dual-bottom-LED); the single top-right LED does NOT pulse (steady state) — the streaming/activity signal is out of scope and must not reappear as a second LED or a pulsing top-right dot.
+- [x] R-13: `StreamStatus` is NOT reintroduced (no dual-bottom-LED); the single top-right LED does NOT pulse (steady state) — the streaming/activity signal is out of scope and must not reappear as a second LED or a pulsing top-right dot. **PASS (spec/2830 round 1):** `StreamStatus.tsx` deleted; grep of `apps/ui/src` for `StreamStatus` → 5 comment-only hits (no import/render); DOM `statusRoles=["Online"]` only, `bottomCenterRadiusDots=0`; `ledCount=1` after window open/close; LED driven solely by `isOnline` (not row mutations) so it does not pulse.
 
 ## R-14 — No re-render loop from the hover/tooltip state
 
-- [ ] R-14: Hovering/focusing the LED trigger (open/close tooltip) does not introduce a re-render loop — the console stays clean of `Maximum update depth exceeded`. No effect depends on array `.length` or newly-created object refs.
+- [x] R-14: Hovering/focusing the LED trigger (open/close tooltip) does not introduce a re-render loop — the console stays clean of `Maximum update depth exceeded`. No effect depends on array `.length` or newly-created object refs. **PASS (spec/2830 round 1):** `tauri_read_logs(source=console)` across the hover/focus/Escape tooltip cycles shows NO `Maximum update depth exceeded` / `Uncaught` (only the stale pre-test Vite HMR note for the deleted `StreamStatus.tsx`).
