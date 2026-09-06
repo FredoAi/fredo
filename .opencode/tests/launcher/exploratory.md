@@ -105,3 +105,26 @@
 
 - [ ] E-21: Rapidly open/close the launcher (or a tool window) around the avatar — does the avatar stay correct (crisp cells, token color, no console error / no re-render loop, no orphan)?
   - **Observed (PASS, limited).** The avatar survived the settings-modal open/close cycle + a theme-to-heme + resize cycle with zero console errors and a stable 48×48 rect (post-cycle re-measure: 48×48, 91 rects, cyan). A focused rapid-close loop was not driven (window resize + modal open/close exercised the same render re-entrancy); no console `Error:`/`Uncaught`/`Maximum update depth exceeded` appeared. Recorded as an observed PASS; no promotion.
+
+---
+
+## #2830 extension — single top-right status LED probes
+
+> Add findings here for issue #2830; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note).
+
+## E-22 — Rapid hover on/off the launcher LED
+
+- [ ] E-22: Rapidly hover on/off the LED trigger in the launcher (idle AND engaged) — does the Chakra tooltip flicker/get stuck, or settle to the correct open/closed state? Any console error is a finding.
+
+## E-23 — LED + clock overlap at narrow/nonstandard widths
+
+- [ ] E-23: Resize the launcher window narrow/small — does the enlarged LED stay clear of the clock HH:MM text (below it, `mt="6px"`, right-aligned), or does it collide/overlap the clock or the frame? The `led-overlay.png` bug must not recur. Any overlap is a finding.
+
+## E-24 — Ctrl+Space / notch open does not hide the LED
+
+- [ ] E-24: Open the launcher via Ctrl+Space and via the notch, in both idle and engaged states — does the single LED remain visible in the top-right cluster (it is part of the chrome band, not the grid), and does opening a feature window still sink the band + LED below the window stack? Any missing LED / band resurface above a window is a finding.
+
+## E-25 — State flip while hovering the launcher LED
+
+- [ ] E-25: With the tooltip open over the launcher LED, drive a connection-state flip — does the tooltip content swap live (Connected ↔ Disconnected) and the LED recolor `var(--accent-primary)` ↔ `var(--status-error)`, token-native, with no stale tooltip text / console error?

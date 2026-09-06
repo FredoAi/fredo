@@ -7,3 +7,8 @@
 - [x] S-4: Telemetry Settings accessible — gear/nav opens the settings dialog with sections visible
 - [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/<issue>/e2e/smoke.jpeg")` succeeds
 - [x] S-6: Desktop chrome (FREDO logo band + clock) and the bottom LED pair render on the desktop surface
+  - **SUPERSEDED by #2830.** This was the #2825 check for the bottom LED pair. #2830 REMOVES the bottom-center LED pair (`StreamStatus`) — the current desktop surface renders the FREDO band + clock + a SINGLE top-right status LED (no bottom LEDs). See S-7 for the current expectation; keep this row as the #2825 record.
+
+## #2830 extension — single top-right status LED smoke
+
+- [ ] S-7: The desktop renders exactly ONE status LED top-right, below the clock — `tauri_webview_dom_snapshot(type="structure")` shows a single status-LED element in the top-right `<time>` cluster (below the HH:MM clock text), NO bottom-center status LEDs, and NO visible `ONLINE`/`OFFLINE` text label; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.

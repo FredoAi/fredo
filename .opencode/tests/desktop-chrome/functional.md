@@ -18,3 +18,70 @@ webview window min/max/close controls). Seeded from issue #2825.
 - [x] F-3 (AC3): window chrome always above desktop chrome. G-106 method c: within the same nearest stacking-context ancestor, `getComputedStyle(windowFrame).zIndex` > `getComputedStyle(launcherChrome).zIndex` (1200) AND > `getComputedStyle(streamStatus).zIndex` (1210); no desktop-chrome layer paints over the titlebar buttons. Plus screenshot of the unoccluded titlebar. Edge: multiple windows (focused vs background), maximized, window crossing under the notch + clock, light + dark themes, no feature window open (desktop only). **PASS (spec/2825 @ 531c37e):** computed stacking `getComputedStyle` — window frame z=1, LauncherChrome z=0, StreamStatus z=0 (window shown). Two-window (Sessions + Query Viewer) case re-probed: `elementFromPoint` at Query Viewer Min/Restore/Close with overlay pointerEvents auto returns the window control (isControl:true). Light theme re-verified. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2825/.opencode/evidence/2825/09-two-windows.jpeg`.
 - [x] F-4 (AC4): no #2821 dual-bottom-LED regression. Two 8px status dots at bottom-center (~24px above bottom edge, ~16px apart), `pointer-events:none`, `role="status"` + `aria-live="polite"`; LED-1 connection color (`--accent-primary` / `--status-error`), LED-2 activity color (`--status-info` / `--card-hover-bg`). DOM assert both dots at bottom-center (NOT top-right); screenshot compare. Inject a live row mutation (`fredo emit`) to drive LED-2 active — the activity dot pulses (suppressed under `prefers-reduced-motion`). Edge: connected vs disconnected, streaming vs idle, reduced-motion on, multiple windows, maximized, light + dark themes. **PASS (spec/2825 @ 531c37e):** wrapper center x=960 = viewport center, bottomOffset=24px, `pointer-events:none`, `role="status"`, `aria-live="polite"`; LED-1 "Online" x=944, LED-2 "Streaming" x=967 (mid-pulse ~9px), ~16px gap, both bottom-center NOT top-right (`ledAtTopRight:false`). `fredo emit --event-type tool_use --state init` advanced the row-mutation epoch → LED-2 became "Streaming" (active) with reduced-motion false. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2825/.opencode/evidence/2825/06-led-pulse-active.jpeg`.
 - [x] F-5 (AC5): window controls remain clickable — no invisible desktop-chrome layer intercepts the pointer. G-106 method a: (a) set the desktop-chrome overlay `pointerEvents='auto'` → `elementFromPoint` at a control center returns the OVERLAY (confirm the overlay is the top visual layer there in the build); restore `pointerEvents`. (b) Then a REAL click (`webview_interact` on `[aria-label="Close …"]` / `[aria-label="Minimize …"]` / `[aria-label="Maximize …"]`) dispatches to its handler (window closes / minimizes / maximizes-restores). Edge: pointer near the titlebar corners (resize-grip corners not covered), maximized, multiple windows focused/unfocused, window partially under the notch, light + dark themes. **PASS (spec/2825 @ 531c37e):** real `webview_interact` clicks — Minimize dispatched (desktop chrome restored to 1200/1210, window minimized to dock), Restore/Maximize dispatched (float→maximized), Close dispatched (window closed; all window controls gone; desktop chrome restored to 1200/1210). No overlay swallowed any click. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2825/.opencode/evidence/2825/07-window-closed-desktop.jpeg`.
+
+---
+
+## #2830 extension — consolidate to a SINGLE top-right status LED
+
+> Issue #2830 — consolidate ALL connection-status signaling to ONE top-right status LED:
+> drop the bottom-center LED pair (`StreamStatus.tsx` is REMOVED — the #2821 dual-bottom-LED
+> AC is SUPERSEDED), drop the `Online` text label on the top-right cluster (`LauncherChrome.tsx`
+> `onlineLabel`, line 371), render the remaining LED LARGER (UI/UX §1: 12px dot in a 16px hit
+> target, 2x the old 6px dot), and add a Chakra v3 `Tooltip` (`placement="bottom"`, `hasArrow`)
+> on hover (AC5). Map 1:1 to `.opencode/tmp/2830/triage.md` `## QA Expert` (REQ-1..REQ-5,
+> AC1..AC8).
+>
+> **Verification policy: live** — PURE-RENDERING, NO telemetry surface, NO `telemetry_spans`
+> leg (references.md G-099: a rendered static policy passes with rendered-webview receipts).
+> Evidence: `tauri_webview_dom_snapshot` + `tauri_webview_screenshot` +
+> `upload-evidence --base spec/2830 --body-file <draft> --image <png>` raw URL +
+> `getBoundingClientRect`/computed-style for the size/position/token checks.
+>
+> **Reference assets (Read by EXPLICIT absolute path, NEVER glob — `.opencode` is
+> dot-prefixed, G-105):** `desktop-light.png`, `desktop-light-dark-theme-compare.png`,
+> `bugs/led-overlay.png`. The wireframes are the **PRE-fix** baseline (they still show the
+> `ONLINE •` text + small dot); the removed `ONLINE` label + enlarged LED are the REQUIRED AC,
+> NOT a fidelity deviation — do NOT fail a side-by-side for them.
+>
+> **Serving checkout:** `spec/2830` (the spec integration branch) on a running Fredo desktop
+> app with the MCP driver session connected (`com.fredo.app`, port 9223).
+
+## F-6 (AC1) — Exactly ONE status LED, top-right only, and it sinks below windows
+
+- [ ] F-6: With NO feature window open, `tauri_webview_dom_snapshot(type="structure")` the desktop and count the status-LED **trigger** (the focusable 16px hit target — the visual 12px dot is `aria-hidden`). **Expected:** EXACTLY ONE status-LED trigger in the top-right region inside the `<time aria-label*="online\|offline">` clock cluster; its `getBoundingClientRect` places it top-right (right edge near viewport right, top near viewport top, BELOW the clock HH:MM text — `mt="6px"`); ZERO status LEDs at bottom-center, center, or elsewhere.
+  - **Edge:** (a) desktop-only — LED at full band z (1200); (b) a non-minimized feature window open — the whole band (clock + LED + frame + side ticks) sinks to z=0 below the z=1 window stack (`coveredByWindow`, #2825 R-2 lockstep), so the LED never paints over the titlebar min/max/close (`bugs/led-overlay.png` must NOT reproduce); (c) narrow viewport — LED not clipped/off-screen; (d) light + dark theme.
+
+## F-7 (AC2) — All bottom-center status LEDs removed
+
+- [ ] F-7: DOM-snapshot + source grep. **Expected:** ZERO status-LED elements at the bottom-center — the old `StreamStatus` wrapper (`role="status"` `aria-label="Desktop status"`, StreamStatus.tsx:134-138, `position="fixed" left="50%" bottom="24px"`) is GONE; there is NO `<StreamStatus />` mounted (`Home.tsx` no longer renders it, line 193); zero 8px `border-radius:50%` dots at `bottom:24px; left:50%`. Grep `apps/ui/src/features/home/components/` for `StreamStatus` — zero references (the component is deleted / no longer imported).
+  - **Edge:** (a) desktop-only — no bottom LEDs; (b) with a feature window open then closed — no bottom LED resurfaces on window-close; (c) after a `fredo emit` row-mutation burst (the old activity signal) — NO activity dot appears anywhere and the single top-right LED does NOT pulse (the streaming/activity LED is intentionally REMOVED by design — consolidation = one status source).
+
+## F-8 (AC3) — Top-right `Online` text label removed (only the LED remains)
+
+- [ ] F-8: DOM-snapshot the top-right `<time>` cluster + screenshot. **Expected:** NO visible `ONLINE`/`OFFLINE` text node (the `onlineLabel` Text element, LauncherChrome.tsx:371, is removed) — only the HH:MM clock text + the single status LED render. The `<time>` `aria-label` MAY still expose the readable state (`…, online\|offline`) — that is the ACCESSIBLE NAME, NOT a visible label, and is REQUIRED for a11y (do NOT fail it). The HH:MM clock time is retained (only the label row is dropped).
+  - **Edge:** (a) online AND offline — no visible label in either; (b) the clock time still advances (only the `Online` label removed — do NOT break the clock); (c) the LED's own accessible name (`aria-label` `Connected`/`Disconnected`) carries the state once the text is gone.
+
+## F-9 (AC4) — The remaining LED is visibly LARGER (12px dot in a 16px hit target)
+
+- [ ] F-9: `getBoundingClientRect` on the LED **visual dot** (the `aria-hidden` 12px circle) AND its 16px trigger hit target. **Expected:** visual dot is a circle — `width == height`, `borderRadius:50%`, aspect 1:1 — and measures **12px × 12px** (UI/UX §1, 2x the pre-fix 6px dot at LauncherChrome.tsx:375-376), strictly `> 6px` in both dims; the focusable trigger is **16px × 16px** (12px dot centered, fully contained, not overflowing). Record exact px; compare against the pre-fix 6px baseline (or a `main`-build capture — a stale capture is OK only as the baseline, the fix measurement must be from `spec/2830`).
+  - **Edge:** (a) online vs offline — same size; (b) light + dark — same size, no clipping; (c) narrow viewport — dot not scaled/clipped, trigger stays 16px; (d) `width != height` (stretched oval) ⇒ FAIL; (e) 12px dot fully inside the 16px trigger.
+
+## F-10 (AC5) — Hover shows a Chakra tooltip; it never clips/overlays
+
+- [ ] F-10: `tauri_webview_interact(action="hover")` on the LED trigger (16px hit target), then `tauri_webview_dom_snapshot` to locate the Chakra tooltip node (`[role="tooltip"]` / `.chakra-tooltip` / tooltip root) + `tauri_webview_screenshot`. **Expected:** a Chakra v3 `Tooltip` appears on hover, `placement="bottom"` (OPENS BELOW the LED — a top-opening tooltip that clips off the top viewport edge is a FAIL; UI/UX contract = `bottom` + `hasArrow`), with state-driven content (`Connected` / `Agent telemetry streaming` when online; `Disconnected` / `Waiting for stream to reconnect` when offline); readable (adequate contrast). Pointer-leave hides it (`closeDelay={0}`, no sticky tooltip).
+  - **Edge:** (a) hover-on reveals / hover-off hides; (b) online vs offline content reflects the live state; (c) light + dark — tooltip readable & legible in BOTH; (d) top-right placement — tooltip does NOT clip at the viewport right/top edge and opens below the LED (never above); (e) keyboard — Tab focuses the trigger → tooltip opens on focus, blur closes it; (f) `prefers-reduced-motion` — no distracting animation.
+
+## F-11 (AC6) — Token-native colors; readable in light + dark
+
+- [ ] F-11: Computed-style on the LED (`backgroundColor`) + the tooltip panel: assert the resolved value derives from a `var(--…)` / `color-mix` / `tint()` token (NOT a literal hex/`rgb(a)`). Online LED resolves to `var(--accent-primary)` + a halo via `tint('var(--accent-primary)', 22)`; offline resolves to `var(--status-error)` (the removed StreamStatus `CONNECTION_COLOR` disconnect token — a deliberate change from the old `var(--text-secondary)` dot). Static grep of the changed files (`apps/ui/src/features/home/components/launcher/LauncherChrome.tsx`, the removed `StreamStatus.tsx`, any new tooltip/LED component under `home/components/**`) for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`, and invalid `var(--x)NN` alpha-append (#2770) → ZERO true color literals (comment issue-refs like `#2821` are exempt). Then re-theme via the shipped `ThemePresetSelector` — both light + dark legs render the LED + tooltip legibly.
+  - **Edge:** (a) re-theme (a LIGHT preset e.g. `light-default` ↔ the DARK base e.g. `default`/`dark`) — LED + tooltip re-tint token-native with no stale/dead color; (b) NO `var(--x)NN` alpha-append anywhere; (c) Chakra v3 API only (no v2 `isDisabled`/`colorScheme`).
+
+## F-12 (AC7) — No regression to window lifecycle / Ctrl+Space / #2821 fidelity
+
+- [ ] F-12: Run the `desktop-chrome` + `launcher` regression cases (`regression.md` #2830 R-7+). **Expected:** window lifecycle (open/close/minimize/restore via the own-kernel, #2807), the #2823 Ctrl+Space launcher toggle (opens + focuses the searchbox, ESC closes, focus restores), and the #2821 desktop-fidelity fixes (clean top-right clock; no clock/LED overlap of window controls) all still hold. The ONLY intended behavioural change is the status-LED consolidation. `tauri_read_logs(source="console")` — no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge:** (a) Ctrl+Space over a maximized window still re-raises the launcher; (b) window min/max/close still clickable (no overlay swallows the pointer — the LED re-enables `pointerEvents="auto"` on its OWN element only, the band stays `pointerEvents="none"`); (c) the clock still advances; (d) `desktop-light.png` fidelity re-check EXCEPT the deliberately removed `ONLINE` label + enlarged LED.
+
+## F-13 (AC8) — build + test:run green
+
+- [ ] F-13: `pnpm --filter @fredo/ui build` (TypeScript) + the Rust backend check / `test:run` from the repo root. **Expected:** zero TypeScript errors in the changed frontend; `build` exits 0; `test:run` green. No cross-feature import introduced (the LED/tooltip stay under `home/components/`).
+  - **Edge:** no transpile-only `any` leakage; the change touches no IPC/API (no backend surface).

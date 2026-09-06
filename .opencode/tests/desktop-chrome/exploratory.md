@@ -9,3 +9,34 @@ Unscripted probes beyond the functional cases. A confirmed finding here PROMOTES
 - [ ] E-5: Pointer near the titlebar corners (resize-grip corners) — are the resize grips still reachable, or does any desktop-chrome layer swallow the pointer there?
 - [x] E-6: Toggle light → dark theme with a window open under the clock — does the stacking hold in both themes with no flicker/inversion on theme switch? **PASS:** switched to Light Default (bodyBg #ffffff, textPrimary #0c1117) and Dark — in both, window open → chrome z=0, stream z=0, frame z=1 (identical stacking). No inversion/flicker. Light evidence screenshot 08.
 - [x] E-7: Inject a burst of `fredo emit` row mutations so LED-2 pulses — does the pulsing dot ever overlap the bottom edge of a window or the window chrome? **PASS:** with a window open the LED pair is at z=0 (below the z=1 window stack), so it can never overlap the window chrome; `fredo emit` advanced the row-mutation epoch → LED-2 "Streaming" (active pulse). No overlap.
+
+---
+
+## #2830 extension — single top-right status LED probes
+
+> Add findings here for issue #2830; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note).
+
+## E-8 — Rapid hover on/off the LED trigger
+
+- [ ] E-8: Rapidly hover on/off the LED trigger (many quick transitions) — does the Chakra tooltip flicker/get stuck (no `closeDelay` leak), or does it settle to the correct open/closed state? Any console error is a finding.
+
+## E-9 — LED unreachable when a window covers the desktop
+
+- [ ] E-9: With a feature window OPEN (band sunk to z=0), attempt to hover where the LED normally sits — confirm the LED is unreachable/hidden below the window stack and the tooltip does NOT appear over the feature window (the `led-overlay.png` class bug must not recur). Record the element at that point (`elementFromPoint`).
+
+## E-10 — Re-theme while the tooltip is open
+
+- [ ] E-10: Open the tooltip (hover/focus the LED), then switch a theme preset (via the shipped `ThemePresetSelector`) with it open — does the tooltip + LED re-tint token-native (no stale/dead color, no hardcoded literal), or does it flash/die on a stale token? Any finding.
+
+## E-11 — Keyboard focus announce / double-announce
+
+- [ ] E-11: Tab to the LED trigger → tooltip opens on focus; Tab away → closes. Observe the DOM/accessibility: does the trigger announce its state (role="status"/aria-label) and does the `aria-describedby` tooltip cause a double-announce (UI/UX flagged the SR risk)? Record the ARIA attributes present (`role`, `aria-live`, `aria-atomic`, `aria-label`, `aria-describedby`) and whether any duplicate/conflicting announcement is detectable.
+
+## E-12 — Narrow-viewport tooltip/LED clipping
+
+- [ ] E-12: Resize the window narrow/small while the LED is visible; hover the LED — does the tooltip clip at the viewport right/top edge or reposition below without clipping? Does the LED itself clip/scale? Any finding.
+
+## E-13 — Live state flip while hovering
+
+- [ ] E-13: With the tooltip open (hovering the LED), drive a connection-state flip (toggle `isConnected` via the stream/backend) — does the tooltip content swap live (Online ↔ Offline) and the LED recolor token-native, without a stale tooltip text or a console error?

@@ -82,3 +82,34 @@
 
 - [x] R-16: Token-native color baseline: the launcher source retains ZERO hardcoded hex/`rgba(`/`rgb(`; `#00D1D1` stays a TOKEN value (never an inline literal); no cross-feature import; no re-render loop (console clean of `Maximum update depth exceeded`); no layout change beyond the avatar base form (48×48 preserved, other tiles/chrome unchanged, pixel guide NOT modified).
   - **PASS (live, spec/2827 @ 0620b736).** Grep of `launcher/**` returns zero true color literals; `#00D1D1` absent inline (token value only, theme.ts:209,228); `PixelButler.tsx` imports only React (no cross-feature import); console clean (no re-render loop); avatar 48×48 (`getBoundingClientRect` 48×48, aspect 1.0) — only `BASE_FORM` content + grid constants changed (git shows both #2827 commits touched only `PixelButler.tsx`); wireframe guide PNG unmodified; 91 rect cells render crisp.
+
+---
+
+## #2830 extension — single top-right status LED invariants (must-not-change)
+
+> Issue #2830 — consolidate the desktop status LEDs to ONE top-right LED. The launcher's
+> online clock cluster (`LauncherChrome.tsx`) drops the `Online` text label + enlarges the LED
+> to a 12px dot (AC3/AC4); the bottom `StreamStatus` pair is REMOVED (AC2). Run alongside
+> R-1..R-16 AND the desktop-chrome `#2830` regression R-7..R-14. **OVERRIDE:** the #2821
+> dual-bottom-LED AC is SUPERSEDED — the launcher regression must not re-assert a bottom LED
+> pair or a "no top-right LED" invariant.
+
+## R-17 — Only the top-right LED/label cluster changes in the launcher chrome
+
+- [ ] R-17: The FREDO notch, pixel-butler avatar, `>` command bar, side-tick rulers, dot-grid, rounded frame, and the keyboard-hints row are UNCHANGED. Only the top-right `onlineLabel`/dot cluster (`LauncherChrome.tsx`) + the `StreamStatus` component change. No layout shift of the notch/avatar/grid/hints. Reference #2808 F-4 + launcher R-7/R-15.
+
+## R-18 — The online clock cluster retains the clock; the LED is the single status there
+
+- [ ] R-18: The top-right cluster keeps the HH:MM `<time>` clock text (still advances on the 60s timer); the `Online` text label is removed; the LED is the single status indicator in the cluster — NO dual/multiple status LEDs reintroduced on the launcher surface. Reference desktop-chrome F-6/F-8.
+
+## R-19 — Token-native restated for the changed launcher chrome
+
+- [ ] R-19: `LauncherChrome.tsx` + any new LED/tooltip component carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append (#2770); LED `var(--accent-primary)`/`var(--status-error)` + halo `tint()`; tooltip `bg.surface`/`fg.default`/`fg.muted`/`border.default`; Chakra v3 only (never `NativeSelect`). Reference R-5/R-9/R-12/R-14/R-16 + desktop-chrome R-11.
+
+## R-20 — #2823 Ctrl+Space + launcher open/close + focus lifecycle unchanged
+
+- [ ] R-20: The #2823 Ctrl+Space toggle (opens + focuses the searchbox, ESC closes, focus restores), the engaged grid reveal (focus/query), and the resting `surfaceZ` (SURFACE_Z_VISIBLE=1100 / COVERED=0 / OPENED=1300) are unchanged. The LED change must not interfere with the shortcut-open `coveredByWindow` sink or the keyboard nav. Reference R-10 (launcher) + desktop-chrome R-12.
+
+## R-21 — No re-render loop from the LED/tooltip state
+
+- [ ] R-21: Hovering/focusing the LED trigger (tooltip open/close) and the `isOnline` flip do not introduce a re-render loop — console stays clean of `Maximum update depth exceeded`; no effect depends on array `.length` or newly-created object refs. Reference R-13 (launcher) + desktop-chrome R-14.
