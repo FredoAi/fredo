@@ -67,3 +67,20 @@
 ## E-15 — ESC precedence across surfaces
 
 - [ ] E-15: Probe ESC behavior when a feature window is ALSO open behind the launcher overlay (e.g. Mission Monitor detail panel with its own ESC-close handler) — which ESC wins, does any co-fire (two actions)? Any double-close / focus-chatter is a finding.
+
+## #2824 extension — ESC/close hint keycap probes
+
+> Add findings here for issue #2824; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note).
+
+## E-16 — Re-theme while the ESC hint is visible
+
+- [ ] E-16: Switch a base theme (turbo↔classic) while the engaged launcher shows `ESC CLOSE` — does the keycap badge + `CLOSE` label re-tint token-native (no hardcoded color, no stale token, no flicker)? Any element stuck on a stale color/text token is a finding.
+
+## E-17 — Narrow-viewport / small window spacing
+
+- [ ] E-17: Resize the webview window small/narrow while the launcher is engaged — does the ESC badge stay clear of the frame and the `CLOSE` label, or does it collide/clip at the reduced width? Any cramped/colliding layout is a finding.
+
+## E-18 — Empty-grid hint-row edge
+
+- [ ] E-18: Probe the engaged hint row when the grid is empty (empty feature set / non-matching query) — the `ESC CLOSE` hint is hidden (`showNavHints = entryCount > 0 && engaged`). Confirm the hint row + keycap do NOT render and no console error/crash occurs.
