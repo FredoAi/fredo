@@ -84,3 +84,24 @@
 ## E-18 — Empty-grid hint-row edge
 
 - [ ] E-18: Probe the engaged hint row when the grid is empty (empty feature set / non-matching query) — the `ESC CLOSE` hint is hidden (`showNavHints = entryCount > 0 && engaged`). Confirm the hint row + keycap do NOT render and no console error/crash occurs.
+
+## #2827 extension — PixelButler avatar probes
+
+> Add findings here for issue #2827; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note). Probe the avatar-base-form change for unforeseen
+> interactions; a confirmed regression-free probe is recorded here (no promotion).
+
+## E-19 — Re-theme while the avatar is visible
+
+- [x] E-19: Re-theme (via the shipped `ThemePresetSelector`) while the avatar is visible — does the avatar re-tint token-native (no dead/stale color, no hardcoded literal, no flicker)?
+  - **Observed (PASS).** Switching presets while the launcher avatar was visible re-tinted the avatar from the accent token every time: Light Default → `rgb(0,209,209)` cyan on white; Dark base → cyan on `#0c1117`; Matrix (supplementary) → `rgb(0,255,65)` green. No dead/stale color, no hardcoded literal, no flicker. The avatar color is genuinely token-driven (Matrix proved a non-cyan accent re-tints the non-cyan). **No finding — no promotion.**
+
+## E-20 — Narrow-viewport avatar scaling/clip
+
+- [x] E-20: Resize the webview window small/narrow while the launcher shows the avatar — does the avatar scale/clip/collapse the launcher tile?
+  - **Observed (PASS).** Resized the window to 700×900 (confirmed `window.innerWidth=700`, `innerHeight=900`): the avatar `getBoundingClientRect` stayed 48×48 at (326,306), `fullyVisible: true` — NOT clipped, cropped, or scaled; it re-centered; the command bar + chrome held. No layout collapse. Screenshot `avatar-ac5-narrow.png`. **No finding — no promotion.**
+
+## E-21 — Rapid launcher open/close avatar integrity
+
+- [ ] E-21: Rapidly open/close the launcher (or a tool window) around the avatar — does the avatar stay correct (crisp cells, token color, no console error / no re-render loop, no orphan)?
+  - **Observed (PASS, limited).** The avatar survived the settings-modal open/close cycle + a theme-to-heme + resize cycle with zero console errors and a stable 48×48 rect (post-cycle re-measure: 48×48, 91 rects, cyan). A focused rapid-close loop was not driven (window resize + modal open/close exercised the same render re-entrancy); no console `Error:`/`Uncaught`/`Maximum update depth exceeded` appeared. Recorded as an observed PASS; no promotion.
