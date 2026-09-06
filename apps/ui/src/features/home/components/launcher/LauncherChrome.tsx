@@ -46,6 +46,13 @@ export interface LauncherChromeProps {
   selectedIndex?: number;
   /** Host-owned toggle callback → notch click (optional; notch is a controlled visual when omitted). */
   onToggle?: () => void;
+  /** Window-presence signal (host-owned) — a non-minimized feature window covers the
+   *  desktop (Spec #2825 R-1/R-2/R-3). When true, the whole chrome band (logo plate +
+   *  clock + ONLINE readout + frame + side ticks) sinks BELOW the z=1 window stack
+   *  exactly as the launcher surface sinks to `SURFACE_Z_COVERED` (R-4 lockstep),
+   *  so it never paints over a feature window or its titlebar controls. When false
+   *  (desktop uncovered), the band rests at its desktop z (1200). */
+  coveredByWindow?: boolean;
 }
 
 const pad2 = (n: number): string => n.toString().padStart(2, '0');
@@ -198,6 +205,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
   engaged = false,
   selectedIndex = 0,
   onToggle,
+  coveredByWindow = false,
 }) => {
   // Live-updating clock — recompute on a 60s interval, NOT per-render `Date`.
   const [now, setNow] = useState(() => new Date());
@@ -217,7 +225,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
       : 0;
 
   return (
-    <Box position="fixed" inset="0" pointerEvents="none" zIndex={1200} aria-hidden={false}>
+    <Box position="fixed" inset="0" pointerEvents="none" zIndex={coveredByWindow ? 0 : 1200} aria-hidden={false}>
       {/* Thin rounded desktop frame — decorative, behind the notch (the notch's
           tab deliberately pokes through the top edge). Outer radius ~12px. */}
       <Box

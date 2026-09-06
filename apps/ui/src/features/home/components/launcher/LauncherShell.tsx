@@ -449,13 +449,17 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           open surface (zIndex 1200 vs 1100) and is pointerEvents:none except
           the notch, so the surface stays interactive. `engaged` +
           `selectedIndex` drive the engaged-only hint row + the dot-grid accent
-          scroll-thumb. */}
+          scroll-thumb. Spec #2825: when a non-minimized window covers the
+          desktop (`coveredByWindow`), the whole chrome band sinks to z=0 —
+          BELOW the z=1 window stack — in lockstep with the surface, so it
+          never paints over a feature window or its titlebar controls (R-1/2/3). */}
       <LauncherChrome
         entryCount={entryCount}
         isOnline={isConnected}
         engaged={engaged}
         selectedIndex={safeSelectedIndex}
         onToggle={toggleOpen}
+        coveredByWindow={coveredByWindow}
       />
 
       {/* Resting Main surface (AC5 structural hoist): ALWAYS mounted at the shell
