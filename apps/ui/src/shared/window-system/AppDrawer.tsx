@@ -56,10 +56,11 @@ import type { WindowEntry } from './windowTypes';
 const MAX_ROWS = 6;
 
 /**
- * Stacking: the status LED pair (`StreamStatus`) sits at z-index 1210. The
- * AppDrawer sits BELOW it (QA T4.3 draw-order) so the LEDs are never
- * occluded, yet above the window stack (z=1) and the launcher surface
- * (z=1100/0).
+ * Stacking: the desktop chrome band (clock + single status LED) rests at
+ * z-index 1200; the bottom-center `StreamStatus` LED pair (z=1210) was removed
+ * in Spec #2830. The AppDrawer still sits BELOW the chrome band (QA T4.3
+ * draw-order) so the status LED is never occluded, yet above the window stack
+ * (z=1) and the launcher surface (z=1100/0).
  */
 const DRAWER_Z_INDEX = 1200;
 

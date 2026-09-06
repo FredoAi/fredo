@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text } from '@chakra-ui/react';
+import { Box, Text, Tooltip, Portal } from '@chakra-ui/react';
 import { tint } from '../../../../shared/utils/colorTint';
 
 /**
@@ -14,8 +14,9 @@ import { tint } from '../../../../shared/utils/colorTint';
  *  - the FREDO header notch (top-center) — a notched tab/banner silhouette
  *    (shoulder steps + neck stem + downward notch, via clip-path) acting as the
  *    launcher trigger (role="button" / aria-label="Fredo launcher");
- *  - the online clock (top-right) — the large HH:MM + ONLINE • READOUT CLUSTER
- *    on a 60s interval timer (never a per-render `Date`);
+ *  - the online clock (top-right) — the large HH:MM on a 60s interval timer
+ *    (never a per-render `Date`), with a single consolidated status LED
+ *    (below the clock) that reveals a connection-status tooltip on hover/focus;
  *  - the keyboard-hints row (bottom, engaged-only) — ↑↓ NAVIGATE · ←→ SELECT ·
  *    ESC CLOSE, decorative labels whose behavior the host (ST-1) implements.
  *
@@ -30,9 +31,12 @@ import { tint } from '../../../../shared/utils/colorTint';
  * notch trigger). `entryCount` gates the navigational hints so an empty
  * feature set (AC4) never shows nav hints for tiles that do not exist.
  *
- * The ONLINE dot (top-right, Asset 1.6) is the labeled READOUT CLUSTER and is
- * kept — Ac4 forbids *status* LEDs overlapping the clock, not the readout
- * marker (the two bottom status LEDs live in `StreamStatus`).
+ * The top-right status LED (Spec #2830) is the SINGLE consolidated connection
+ * readout: a 12px visual dot inside a 16px focusable trigger that carries the
+ * accessible state (`role="status"` / `aria-label`) and reveals a Chakra v3
+ * tooltip (`Connected` / `Disconnected` + detail) on hover/focus. The former
+ * bottom-center `StreamStatus` LED pair is removed, so this is the only status
+ * LED on the desktop.
  */
 
 export interface LauncherChromeProps {
@@ -217,7 +221,6 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
 
   // Keyboard-hints row + the dot-grid accent thumb reveal ONLY in the engaged state.
   const showNavHints = entryCount > 0 && engaged;
-  const onlineLabel = isOnline ? 'ONLINE' : 'OFFLINE';
   // Proportional thumb position within the accent track (aligns to the selected tile).
   const thumbTop =
     entryCount > 1
@@ -345,8 +348,14 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
         </Text>
       </Box>
 
-      {/* Online READOUT CLUSTER — top-right; the large HH:MM + ONLINE • label
-          (Asset 1.6). This is the labeled connection readout, NOT a status LED. */}
+      {/* Online READOUT CLUSTER — top-right; the large HH:MM clock + the single
+          consolidated status LED (Spec #2830). The clock stays; the former
+          ONLINE/OFFLINE text label and 6px dot are replaced by one enlarged 12px
+          LED (below the clock, right-aligned) inside a 16px focusable trigger
+          that re-enables pointer events on itself only and reveals a Chakra v3
+          tooltip on hover/focus. The cluster wrapper + chrome root stay
+          pointer-events:none (the #2825 covered-by-window z-sink still applies).
+          Token-native: accent/status-error + tint() halo, never var(--x)NN. */}
       <Box position="absolute" top="16px" right="20px" textAlign="right" pointerEvents="none">
         <time aria-label={`${time}, ${isOnline ? 'online' : 'offline'}`}>
           <Box display="flex" flexDirection="column" alignItems="flex-end">
@@ -359,25 +368,62 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
             >
               {time}
             </Text>
-            <Box display="flex" alignItems="center" gap="5px" mt="5px">
-              <Text
-                fontFamily="var(--font-base)"
-                fontWeight={300}
-                fontSize="11px"
-                lineHeight="1"
-                color="var(--text-secondary)"
-                letterSpacing="0.08em"
-              >
-                {onlineLabel}
-              </Text>
-              <Box
-                as="span"
-                width="6px"
-                height="6px"
-                borderRadius="50%"
-                bg={isOnline ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-              />
-            </Box>
+            <Tooltip.Root positioning={{ placement: 'bottom' }} openDelay={150} closeDelay={0}>
+              <Tooltip.Trigger asChild>
+                <Box
+                  as="span"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  aria-label={isOnline ? 'Online' : 'Offline'}
+                  tabIndex={0}
+                  data-testid="desktop-status-led"
+                  width="16px"
+                  height="16px"
+                  display="inline-flex"
+                  alignItems="center"
+                  justifyContent="center"
+                  pointerEvents="auto"
+                  cursor="default"
+                  mt="6px"
+                >
+                  <Box
+                    as="span"
+                    width="12px"
+                    height="12px"
+                    borderRadius="50%"
+                    aria-hidden="true"
+                    bg={isOnline ? 'var(--accent-primary)' : 'var(--status-error)'}
+                    boxShadow={`0 0 0 4px ${tint(isOnline ? 'var(--accent-primary)' : 'var(--status-error)', 22)}`}
+                  />
+                </Box>
+              </Tooltip.Trigger>
+              <Portal>
+                <Tooltip.Positioner>
+                  <Tooltip.Content
+                    padding="8px"
+                    borderRadius="6px"
+                    fontFamily="var(--font-base)"
+                    css={{
+                      '--tooltip-bg': 'var(--card-bg)',
+                      '--tooltip-fg': 'var(--text-primary)',
+                      border: '1px solid var(--border-color)',
+                      boxShadow: `0 2px 8px ${tint('var(--border-color)', 30)}`,
+                    }}
+                  >
+                    <Tooltip.Arrow>
+                      <Tooltip.ArrowTip />
+                    </Tooltip.Arrow>
+                    <Text color="var(--text-primary)" fontWeight={500}>
+                      {isOnline ? 'Connected' : 'Disconnected'}
+                    </Text>
+                    <Text color="var(--text-secondary)" fontWeight={300} mt="2px">
+                      {isOnline ? 'Agent telemetry streaming' : 'Waiting for stream to reconnect'}
+                    </Text>
+                  </Tooltip.Content>
+                </Tooltip.Positioner>
+              </Portal>
+            </Tooltip.Root>
           </Box>
         </time>
       </Box>
