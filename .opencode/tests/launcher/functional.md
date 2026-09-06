@@ -148,3 +148,38 @@
 - [ ] F-20 edge: Toggle-off close (Ctrl+Space when open) restores to the same pre-open element.
 - [ ] F-20 edge (conditional restore): If the user tabbed/clicked OUT before close (focus already left the launcher), focus is NOT yanked back (UI/UX §3) — record this as the AC-5 verdict per the resolved discussion.
 - [ ] F-20 edge (degradation): If the pre-open element was unmounted while the launcher was open, focus falls back gracefully (to `body`/a sensible ref) with no crash and no focus-trap in a dead launcher.
+
+## #2824 extension — ESC/close hint keycap padded badge (visual polish)
+
+> Issue #2824 — the launcher's `ESC CLOSE` hint keycap becomes a small, padded, rounded
+> badge (not border-touching). Map 1:1 to `.opencode/tmp/2824/triage.md` `## QA Expert`
+> (AC1–AC5). **Verification policy: live** — pure chrome/rendering; evidence via
+> `tauri_webview_dom_snapshot` + `tauri_webview_screenshot` + `tauri_webview_interact`/
+> `tauri_webview_keyboard` + `tauri_read_logs(source="console")`. NO telemetry fixture —
+> the ACs are provable only on the running rendered webview. Read the reference image by
+> explicit path `C:\Code\fredo\.opencode\wireframes\bugs\esc-close.png` (never glob).
+
+## F-21 (AC1) — Visual fidelity gate: keycap is a small padded rounded badge
+
+- [ ] F-21: Read `C:\Code\fredo\.opencode\wireframes\bugs\esc-close.png` (explicit path), render the launcher ENGAGED (focus the command bar OR enter a query so the bottom `ESC CLOSE` hint is visible) on the `spec/2824` build at 100% OS scale, capture a screenshot, and compare side-by-side. **Expected:** the ESC keycap is a small, padded, rounded badge — `ESC` text inside a rounded-rect with a visible text→border padding gap, NOT touching/overlapping the launcher frame or any border. Any deviation (border-touching glyph, missing padding, missing rounded corners, wrong size) ⇒ FAIL. A `main`/old-build capture is rejected (`live`).
+  - **Edge:** capture at a standard viewport with no zoom; the engaged hint row must be visible (drive with a non-empty query/focus — an empty grid hides it).
+
+## F-22 (AC2) — Close-hint row spacing not cramped/colliding
+
+- [ ] F-22: With the engaged launcher showing `ESC CLOSE`, inspect + screenshot the hint row. **Expected:** an adequate (non-touching) gap between the ESC badge and the `CLOSE` label (~6px+ or per the reference), and the hint row bottom padding keeps the badge clear of the frame — no touching/overlap. The `↑↓ NAVIGATE` / `←→ SELECT` hints do not collide with the ESC badge.
+  - **Edge:** narrow viewport; the hint row stays clear of the frame; no adjacent-hint overlap; no bottom/right clipping of the ESC badge; NAVIGATE/SELECT hints remain in place.
+
+## F-23 (AC3) — Theme legibility/contrast under every shipped theme
+
+- [ ] F-23: Render the engaged launcher under EACH AVAILABLE theme and inspect the ESC badge + `CLOSE` label. **Expected:** keycap + hint legible with sufficient contrast in BOTH light and dark themes. NOTE: the product ships only the DARK base themes (`turbo`, `classic`) and exposes NO light/dark toggle — verify each shipped dark theme; do NOT invent a toggle. Low-contrast / washed-out / color-inverted glyph ⇒ FAIL.
+  - **Edge:** test both `turbo` and `classic`; re-theme live (switch turbo↔classic) while the hint is visible — badge/label re-tint token-native, no flicker/low-contrast.
+
+## F-24 (AC4) — Token-native colors (static + live)
+
+- [ ] F-24: Grep `apps/ui/src/features/home/components/launcher/**` (and any new keycap component) for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`. **Expected:** ZERO hardcoded color literals; keycap/hint colors flow theme token → CSS var (`var(--...)`) / `currentColor` / `tint()`; NO `var(--x)NN` alpha-append. Re-theme (turbo↔classic) live and confirm the keycap re-tints. Any hardcoded literal ⇒ FAIL.
+  - **Edge:** scan the changed file(s) specifically; no new semantic token without a `system.ts` mapping; no `NativeSelect`-style unstyled element; no Chakra v2 API (`isDisabled`/`colorScheme`).
+
+## F-25 (AC5) — Clean keycap affordance, no regression
+
+- [ ] F-25: With the launcher open showing the close hint, confirm the keycap still reads as a clean keycap affordance — the reference-image check reconfirmed on the fix build. **Expected:** the keycap is a clean, padded, rounded badge (no regression to the old border-touching/cramped look); `↑↓ NAVIGATE` / `←→ SELECT` and ESC functional behavior (out of scope) unchanged.
+  - **Edge:** re-verify after a fresh launcher reopen (fresh mount) and after a theme switch; only the ESC keycap/hint styling may change — NOT the nav hints, frame geometry, or hint-row layout.
