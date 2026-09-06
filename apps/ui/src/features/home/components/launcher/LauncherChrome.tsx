@@ -97,28 +97,41 @@ const LeftRightGlyph: React.FC = () => (
   </svg>
 );
 
-const EscGlyph: React.FC = () => (
-  <svg viewBox="0 0 30 16" width="30" height="16" fill="none" aria-hidden="true">
-    <rect x="1" y="1" width="28" height="14" rx="3" stroke="currentColor" strokeWidth="1.1" />
-    <text
-      x="15"
-      y="8.5"
-      textAnchor="middle"
-      dominantBaseline="central"
-      fill="currentColor"
+/** Decorative ESC keycap badge — a small, padded, rounded token-native badge
+ *  (replaces the previous cramped outlined-SVG glyph; fg.default border +
+ *  bg.surface fill so the `ESC` text keeps a clear inset from its outline and
+ *  re-tints through token → var → theme in light/dark). */
+const EscKeycap: React.FC = () => (
+  <Box
+    as="span"
+    p="3px 7px"
+    borderRadius="5px"
+    border="1px solid var(--text-primary)"
+    bg="var(--card-bg)"
+    aria-hidden="true"
+  >
+    <Text
+      as="span"
+      display="block"
       fontFamily="var(--font-primary)"
-      fontSize="7.5"
-      fontWeight="500"
-      letterSpacing="0.06em"
+      fontWeight={500}
+      fontSize="9px"
+      lineHeight={1}
+      letterSpacing="0.08em"
+      color="var(--text-primary)"
     >
       ESC
-    </text>
-  </svg>
+    </Text>
+  </Box>
 );
 
 /** A decorative key-cap glyph + muted label (fg.muted, Space Grotesk Light 11px). */
-const Hint: React.FC<{ label: string; glyph: React.ReactNode }> = ({ label, glyph }) => (
-  <Box display="flex" alignItems="center" gap="6px" color="var(--text-secondary)">
+const Hint: React.FC<{ label: string; glyph: React.ReactNode; gap?: number }> = ({
+  label,
+  glyph,
+  gap = 6,
+}) => (
+  <Box display="flex" alignItems="center" gap={`${gap}px`} color="var(--text-secondary)">
     {glyph}
     <Text
       fontFamily="var(--font-primary)"
@@ -371,7 +384,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
           display="flex"
           alignItems="center"
           justifyContent="space-between"
-          padding="0 24px 18px"
+          padding="0 24px 20px"
           pointerEvents="none"
           color="var(--text-secondary)"
         >
@@ -379,7 +392,7 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
             <Hint label="NAVIGATE" glyph={<UpDownGlyph />} />
             <Hint label="SELECT" glyph={<LeftRightGlyph />} />
           </Box>
-          <Hint label="CLOSE" glyph={<EscGlyph />} />
+          <Hint label="CLOSE" glyph={<EscKeycap />} gap={8} />
         </Box>
       )}
     </Box>
