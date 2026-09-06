@@ -6,6 +6,7 @@ import {
   subscribeToRowMutationLog,
   getRowMutationLogVersion,
 } from '../../../shared/contexts/StreamContext';
+import { useWindows } from '../../../shared/window-system/useWindows';
 import { TOAST_DURATION } from '../../../shared/constants';
 
 const RECENT_ACTIVITY_WINDOW = TOAST_DURATION.SHORT; // 2 seconds
@@ -87,6 +88,12 @@ export const StreamStatus: React.FC = () => {
   const [lastActivityEpoch, setLastActivityEpoch] = useState(0);
   const reducedMotion = useReducedMotion();
 
+  // Spec #2825 R-2/R-3: a non-minimized feature window covers the desktop — the
+  // LED pair must sink BELOW the z=1 window stack (same predicate the launcher
+  // surface/chrome use, NFR-4 lockstep) so it never overlays the titlebar
+  // min/max/close controls. When the desktop is uncovered it rests at 1210.
+  const coveredByWindow = useWindows().some((w) => !w.isMinimized);
+
   // Track the latest RTDB row mutation — a stable primitive dependency, no
   // array-length churn. The version advances exactly when a row delivery
   // mutates the store (P5.1: replaces the deleted v1 delivery queue as the
@@ -131,7 +138,7 @@ export const StreamStatus: React.FC = () => {
       left="50%"
       bottom="24px"
       transform="translateX(-50%)"
-      zIndex={1210}
+      zIndex={coveredByWindow ? 0 : 1210}
       display="flex"
       alignItems="center"
       gap="16px"
