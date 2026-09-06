@@ -69,6 +69,32 @@ const NOTCH_SELECTOR = '[role="button"][aria-label="Fredo launcher"]';
  *  desktop (AC5 — a maximized window legitimately covers the surface). */
 const SURFACE_Z_VISIBLE = 1100;
 const SURFACE_Z_COVERED = 0;
+/** #2823 open level: the shortcut-opened launcher MUST rise above the window
+ *  stack (WindowManager z=1) AND above the chrome (z=1200) / StreamStatus
+ *  (z=1210) so a maximized covering window never obscures it (AC1 "opens on
+ *  top" over a maximized window). Only the SHORTCUT-open state uses this; the
+ *  closed state preserves the resting z-sink (coveredByWindow). */
+const SURFACE_Z_OPENED = 1300;
+
+/** #2823 AC3: true for any text-editing control — the "another input" guard.
+ *  The launcher's own searchbox is an `input`, so this predicate ALONE is not
+ *  sufficient; it must be paired with an overlayRef containment check (NFR-7). */
+const isTextControl = (el: Element | null): boolean =>
+  !!el &&
+  (el.tagName === 'INPUT' ||
+    el.tagName === 'TEXTAREA' ||
+    el.tagName === 'SELECT' ||
+    (el as HTMLElement).isContentEditable === true);
+
+/** #2823 REQ-5 / NFR-4: connected AND focusable target for focus restore.
+ *  Excludes `body` (tabIndex -1), disabled, aria-disabled and detached nodes so
+ *  focus is never restored onto a stale/unmounted reference. */
+const isFocusable = (el: HTMLElement | null): boolean =>
+  !!el &&
+  el.isConnected &&
+  el.tabIndex >= 0 &&
+  !(el as HTMLInputElement).disabled &&
+  el.getAttribute('aria-disabled') !== 'true';
 
 /** Subtle dot/tick grid texture (Asset 1.7) — faint border-color color-mix
  *  lines, token-native, behind every window (the overlay is z-gated below the
@@ -93,17 +119,84 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const [engaged, setEngaged] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // #2823: shortcut-opened overlay state — DISTINCT from the #2819 `engaged`
+  // grid-reveal. `open` is TRUE only when the launcher was summoned by Ctrl+Space
+  // (it re-z's above the window stack + autofocuses the searchbox). When FALSE the
+  // resting z-model (coveredByWindow) applies unchanged.
+  const [open, setOpen] = useState(false);
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const prevWindowCountRef = useRef(currentWindows.length);
   // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
   // command bar) so the grid stays hidden while the surface returns to idle.
   const skipNextFocusEngageRef = useRef(false);
+  // #2823: synchronous `open` mirror so the document keydown handler (mounted once,
+  // reads the LATEST value) sees current state without the one-render lag that would
+  // turn a rapid Ctrl+Space double-press into a double-open (real AC-1 edge). We
+  // assign it directly inside the open/close helpers (never via an effect).
+  const openRef = useRef(false);
+  // #2823: focus origin captured on (shortcut) open, restored on close (REQ-5).
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  // #2823: NFR-2 idempotency guard — exactly ONE document keydown listener active.
+  const globalKeydownMountedRef = useRef(false);
+
+  // #2823: close the launcher overlay WITHOUT restoring focus — used when focus has
+  // already left the surface (window-open, tile-open, minimize, natural blur) so the
+  // overlay drops back to the resting z-model and the grid idles. `openRef` is set
+  // synchronously so the global handler never observes a stale open state.
+  const closeSurface = useCallback(() => {
+    openRef.current = false;
+    setOpen(false);
+    setEngaged(false);
+  }, []);
+
+  // #2823: Ctrl+Space open — capture the pre-open focus origin (first-open only;
+  // never re-captured on a toggle-close, so a Ctrl+Space in → Ctrl+Space out returns
+  // to the element the user was on before the FIRST open, not the searchbox), raise
+  // the overlay above the window stack and autofocus the command-bar searchbox.
+  const openOverlay = useCallback(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    openRef.current = true;
+    setOpen(true);
+    setEngaged(true);
+    window.requestAnimationFrame(() => {
+      // Guard against a within-frame toggle-off (rapid double-press): only focus the
+      // searchbox if the overlay is STILL open (openRef is read live, not captured).
+      if (!openRef.current) return;
+      const input = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
+      if (input && document.activeElement !== input) input.focus();
+    });
+  }, []);
+
+  // #2823: close (ESC / toggle-off) — drop the overlay to resting (closeSurface) AND
+  // restore focus to the pre-open element ONLY if focus was actually inside the
+  // launcher surface at close time (UI/UX §3). If the user already moved focus out,
+  // do NOT yank it back. Falls back to blur when the pre-open element is
+  // stale/unfocusable (NFR-4) — never a focus-trap into a dead launcher.
+  const closeOverlay = useCallback(() => {
+    const active = document.activeElement;
+    closeSurface();
+    if (overlayRef.current?.contains(active)) {
+      const prev = previousFocusRef.current;
+      if (isFocusable(prev)) {
+        window.requestAnimationFrame(() => {
+          // Don't yank focus back if the launcher was re-opened before this frame ran
+          // (rapid on→off→on): the re-open's own focus wins.
+          if (!openRef.current) prev?.focus();
+        });
+      } else {
+        (active as HTMLElement | null)?.blur();
+      }
+    }
+  }, [closeSurface]);
 
   // A window covers the surface when it is shown (not minimized). Windows open
   // maximized (`Home.tsx:91`), so any open window covers the resting Main.
   const coveredByWindow = currentWindows.some((w) => !w.isMinimized);
-  const surfaceZ = coveredByWindow ? SURFACE_Z_COVERED : SURFACE_Z_VISIBLE;
+  // Open override: the shortcut-opened overlay rises above the window stack / chrome
+  // regardless of `coveredByWindow`. The CLOSED state preserves the #2821 z-sink
+  // below a maximized window.
+  const surfaceZ = open ? SURFACE_Z_OPENED : coveredByWindow ? SURFACE_Z_COVERED : SURFACE_Z_VISIBLE;
 
   // Command-bar query filters the grid by tile name (type-ahead highlight).
   const filteredEntries = useMemo(() => {
@@ -131,7 +224,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const prev = prevWindowCountRef.current;
     prevWindowCountRef.current = currentWindows.length;
     if (currentWindows.length > prev) {
-      setEngaged(false);
+      // #2823: a window opening (via ANY path) closes the shortcut overlay too, so
+      // the freshly opened window is never obscured by a raised launcher surface.
+      closeSurface();
       // Move focus out of the (now window-covered) launcher surface so keystrokes
       // are routed to the freshly opened window rather than the hidden search
       // input behind it (AC5 — the surface stays mounted, but is below the window).
@@ -139,7 +234,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         (document.activeElement as HTMLElement | null)?.blur();
       }
     }
-  }, [currentWindows]);
+  }, [currentWindows, closeSurface]);
 
   // Keep the keyboard-selected tile scrolled into view within the grid's scroll
   // region — only meaningful while the grid is revealed (engaged).
@@ -178,37 +273,42 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       const root = overlayRef.current;
       const next = e.relatedTarget as Node | null;
       if (root && (!next || !root.contains(next))) {
-        setEngaged(false);
+        // #2823: focus left the surface — collapse the grid AND drop the open overlay
+        // back to the resting z-model (no focus-yank; the user moved focus deliberately).
+        closeSurface();
       }
     },
-    [query],
+    [query, closeSurface],
   );
 
   // `—` MINIMIZE control: collapse the ENGAGED grid back to the resting Main
   // (keep the search bar — AC5) and land focus on the FREDO notch trigger.
   const handleMinimize = useCallback(() => {
-    setEngaged(false);
+    // #2823: minimize closes a shortcut-opened overlay too (its z must drop).
+    closeSurface();
     setQuery('');
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
     });
-  }, []);
+  }, [closeSurface]);
 
   const openSelected = useCallback(() => {
     const feature = filteredEntries[safeSelectedIndex];
     if (!feature) return;
-    setEngaged(false);
+    // #2823: routing a tile through the own-kernel opener closes the overlay so the
+    // freshly opened window is never obscured by a raised launcher surface.
+    closeSurface();
     onOpenFeature(feature.id, feature);
-  }, [filteredEntries, safeSelectedIndex, onOpenFeature]);
+  }, [filteredEntries, safeSelectedIndex, onOpenFeature, closeSurface]);
 
   const handleSelect = useCallback(
     (index: number) => {
       const feature = filteredEntries[index];
       if (!feature) return;
-      setEngaged(false);
+      closeSurface();
       onOpenFeature(feature.id, feature);
     },
-    [filteredEntries, onOpenFeature],
+    [filteredEntries, onOpenFeature, closeSurface],
   );
 
   const handleQueryChange = useCallback((q: string) => {
@@ -223,7 +323,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        // #2819: ESC returns to IDLE (grid + hints hide), the surface stays.
+        if (open) {
+          // #2823: ESC on a shortcut-opened overlay closes the overlay (AC2) and
+          // restores focus to the pre-open element (REQ-5). This is the ONLY action
+          // — it does NOT co-fire the old idle-collapse branch (AC4).
+          closeOverlay();
+          return;
+        }
+        // #2819: ESC (mouse/idle, not shortcut-opened) returns to IDLE (grid +
+        // hints hide), the surface stays. This pre-existing behavior is untouched.
         setEngaged(false);
         // Restore focus to the command-bar searchbox (idle affordance) WITHOUT
         // re-engaging — the programmatic refocus is suppressed so the grid stays
@@ -266,16 +374,73 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           openSelected();
           break;
         case ' ':
-          // Space opens only when a tile is focused (not while typing a query).
-          if (!isFromInput) {
+          // Space opens only when a tile is focused (not while typing a query), AND
+          // only when unmodified. Ctrl+Space is the global launcher toggle (handled by
+          // the document listener) — a modified Space must NEVER be a plain-Space
+          // tile-open (AC4: the chord triggers only the launcher toggle).
+          if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !isFromInput) {
             e.preventDefault();
             openSelected();
           }
           break;
       }
     },
-    [columns, entryCount, openSelected],
+    [columns, entryCount, openSelected, open, closeOverlay],
   );
+
+  // #2823: the global Ctrl+Space shortcut — a bubble-phase `document` keydown
+  // listener (the `useKonamiCode.ts:55-60` precedent) that works from anywhere
+  // inside the Fredo window (no OS/Tauri global-shortcut plugin). It:
+  //   - matches EXACTLY Ctrl+Space (physical `code === 'Space'`, no meta/alt/shift)
+  //     so it is a distinct chord from plain Space (AC4 / NFR-5);
+  //   - is a NO-OP while typing in a text-control OUTSIDE the launcher surface
+  //     (AC3), treating the launcher's own searchbox as a valid toggle target (NFR-7);
+  //   - only `preventDefault()` + `stopPropagation()` when the toggle actually fires
+  //     so the chord NEVER reaches a second action (AC4);
+  //   - toggles: closed → open (overlay on top + searchbox focused), open → close.
+  const handleGlobalKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (!(e.ctrlKey === true && !e.metaKey && !e.altKey && !e.shiftKey && e.code === 'Space')) {
+        return;
+      }
+
+      // AC3: typing in a text-editing control OUTSIDE the launcher surface → the
+      // shortcut must NOT fire and MUST NOT steal focus (typing uninterrupted).
+      const active = document.activeElement as HTMLElement | null;
+      const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
+      if (isTextControl(active) && !activeInLauncher) return;
+
+      // AC4: only swallow the keydown when the launcher toggle actually fires.
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Toggle. "Active" = shortcut-open OR the launcher's own searchbox holds focus
+      // (NFR-7 — the launcher input is a valid toggle target, so it is never the
+      // AC3 "another input"). `openRef` is kept synchronous (no render lag).
+      const searchbox = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
+      const launcherActive = openRef.current || (!!searchbox && document.activeElement === searchbox);
+
+      if (launcherActive) {
+        closeOverlay();
+      } else {
+        openOverlay();
+      }
+    },
+    [closeOverlay, openOverlay],
+  );
+
+  // #2823: mount exactly ONE document listener (NFR-2). A ref-based guard keeps the
+  // effect idempotent under React StrictMode; the cleanup removes the listener so it
+  // never leaks across an unmount.
+  useEffect(() => {
+    if (globalKeydownMountedRef.current) return;
+    globalKeydownMountedRef.current = true;
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      globalKeydownMountedRef.current = false;
+      document.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [handleGlobalKeyDown]);
 
   return (
     <>
