@@ -11,4 +11,4 @@
 
 ## #2830 extension — single top-right status LED smoke
 
-- [ ] S-7: The desktop renders exactly ONE status LED top-right, below the clock — `tauri_webview_dom_snapshot(type="structure")` shows a single status-LED element in the top-right `<time>` cluster (below the HH:MM clock text), NO bottom-center status LEDs, and NO visible `ONLINE`/`OFFLINE` text label; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [x] S-7: The desktop renders exactly ONE status LED top-right, below the clock — `tauri_webview_dom_snapshot(type="structure")` shows a single status-LED element in the top-right `<time>` cluster (below the HH:MM clock text), NO bottom-center status LEDs, and NO visible `ONLINE`/`OFFLINE` text label; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. **PASS (spec/2830 round 1):** `ledCount=1` in the top-right `<time>` cluster below the `02:49` clock; `statusRoles=["Online"]`; `bottomCenterRadiusDots=0`; no visible `ONLINE`/`OFFLINE` text; console clean (only the stale pre-test Vite HMR note for the deleted `StreamStatus.tsx`).
