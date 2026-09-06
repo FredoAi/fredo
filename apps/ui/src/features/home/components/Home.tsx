@@ -12,7 +12,7 @@ import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
 import { setupFeature } from '../../setup';
 import '../../allFeatures';
-import { getFeatures } from '../../featureRegistry';
+import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
@@ -20,7 +20,12 @@ import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClas
 
 // Features self-register via allFeatures.ts — no manual list needed.
 const ALL_FEATURES = getFeatures();
-const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
+// #2826: de-dup by feature `id` before the launcher consumes showables. The app
+// grid and its keyboard-nav indices are index-aligned BY CONSTRUCTION — one tile
+// per distinct id (no ghost tiles, no nav-sequence gaps), robust to double
+// registration. ALL_FEATURES stays un-deduped for the open-callback registration
+// loop (line 41) and the settings button (line 190).
+const SHOWABLE_FEATURES = dedupeByFeatureId(ALL_FEATURES.filter((feature) => feature.showable));
 
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
 
