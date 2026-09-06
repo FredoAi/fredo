@@ -57,3 +57,27 @@
 
 - #2791 ghost-explanatory-state legs (F-2/F-3/F-4, R-1, E-2) are INVERTED — run the AC-1 negative (no explanatory message, ghost not listed) for #2795.
 - This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-12..F-16 and N-6..N-9.
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2835 — RTDB row-pipeline performance regression)
+
+> The "must not change" baseline for a perf fix. Run on every testing phase that touches the mission-monitor surface. Perf fixes commonly slip a semantic change under a perf cover — every invariant below is a FAIL if the perf branch changes it.
+
+## Must NOT change (regression invariants) — Spec #2835
+
+- [ ] R-21 (RTDB row-pipeline mappings unchanged): the IngestClassifier maps the SAME OTLP spans / CLI events onto the SAME canonical row upserts — no change to which rows are produced or to any field projection (`rtdb/ingest.rs` / `attrs.rs`). Cross-check `telemetry_spans`/`chat_rows`/`tool_use_rows` count + shape unchanged at the same instant.
+- [ ] R-22 (Ingest classification unchanged): the shared extract-rule implementation (`attrs.rs`, NFR-6) is unchanged — no duplicate extraction path introduced between the live classifier and the canonical backfill.
+- [ ] R-23 (Contract-trust single-path extraction unchanged): the frontend consumes the projected single-path row fields — no `??` fallback chains / multi-path lookups / output-driven derivation / v1 hydration reintroduced (Spec #568 cleanup not regressed).
+- [ ] R-24 (#523 compositing semantics unchanged): row-level compositing (relationship registry first-wins stamp; a re-key NEVER removes rows — only retention eviction emits `kind: remove`; child-session rows composite under the parent carrying `parentSessionId` + `compositedChildSessionId`); no event-level rewrite reintroduced.
+- [ ] R-25 (#509 subagent filter unchanged): `build`/`plan` internal tool-execution sessions are still excluded from the graph AND the sidebar; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves.
+- [ ] R-26 (Theming tokens unchanged): the perf fix must not introduce any hardcoded hex/rgba or invalid `var(--token)NN` alpha-append; all colors via semantic tokens → CSS vars → `tint()`/`color-mix()`.
+- [ ] R-27 (No cross-feature imports): the fix stays within `apps/ui/src/features/mission-monitor/*`, `apps/ui/src/shared/contexts/StreamContext.tsx`, `apps/ui/src/shared/hooks/useEventRows.ts`, and backend `infrastructure/rtdb/{flush,store,cache,ingest}.rs` + `infrastructure/comm/`; no new cross-feature import introduced.
+- [ ] R-28 (Re-render-loop pattern unchanged, Spec #523): no new `.length`/newly-created object-ref `useEffect`/`useMemo` deps; recomputation stays epoch-based; no `Maximum update depth exceeded`.
+- [ ] R-29 (Row-store merge semantics unchanged): `insert` spread-merges (init-time fields survive), `update` is seq-guarded with stale-patch drops, `remove` is only ever retention eviction — the perf fix must not bypass these semantics.
+
+## Overlapping prior-feature suites (Spec #2835)
+
+- #2791/#2792/#2795 functional legs (ghost sessions, tool-failure reason, real-sessions-only) — run the unaffected legs; the perf fix must not change graph rendering, list qualification, or tool-detail rendering.
+- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-17..F-24 and N-10..N-15.
+- The AC-4 window-manager/launcher/theming invariants (R-26) overlap the theming (N-4/N-9), launcher (S-8), and window-manager legs.
