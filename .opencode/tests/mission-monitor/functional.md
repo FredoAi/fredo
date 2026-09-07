@@ -115,3 +115,61 @@
   - EXPECTED: code inspection confirms ONE qualification path shared by list + graph (no defensive fallback extraction).
 - [ ] N-9 (NFR-4, theme): visual check of any state left after deleting the explanatory state (spinner empty state, "Select a session" hint) across light/dark/user-accent.
   - EXPECTED: theme tokens only; no hardcoded hex/rgba; no invalid `var(--token)NN` alpha-append (use `color-mix()`/`tint()`).
+
+---
+
+# Mission Monitor — Functional Test Cases (Spec #2835 — RTDB row-pipeline performance regression)
+
+> Durable functional suite (feature domain `mission-monitor`), extended for Spec #2835 (research-first perf regression: delayed first render, then slowdown/freeze). One `- [ ]` case per AC/REQ (R-1..R-4 = AC1..AC4); observable + MEASURED expected outcome per case. Marks `unknown` until executed by the Tester.
+>
+> **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result) and/or rendered-webview live receipts (DOM snapshots, console logs, IPC captures, JS-API metrics). A static-only PASS is a FALSE PASS. Root cause is UNKNOWN (research-first) — the BEFORE numbers must be measured against the buggy `main` baseline, never assumed.
+>
+> Fixture doctrine (G-073/G-076/G-080): drive via Fredo's Run CLI feature (free model, minimal session trees, unique marker in the FIRST prompt); never run the `opencode` binary from a shell. Sustained workload = a live opencode session streaming continuously for ≥ 60s with periodic selection toggles. Burst/large-replay = a high session-count corpus (≥ 30 sessions, ≥ a few hundred rows) replayed into the RTDB.
+
+## First-render latency (R-1 / AC-1)
+
+- [ ] F-17 (R-1, AC-1, `unknown`): From a cold webview, open Mission Monitor. Record `performance.now()` immediately before triggering the feature mount, then again when the session-list first row renders (`tauri_webview_wait_for` on a session-list/row selector); compute Δ. Repeat for a zero-session empty DB.
+  - EXPECTED: populated session-list Δ ≤ **500 ms** and empty-state Δ ≤ **300 ms** (budget pending Architect confirmation — QA-1); no "~seconds" stall. Record the exact ms in the verdict.
+  - Edge: empty DB; large-replay first-open; cold vs warm webview; measure the Δ against the BEFORE baseline (F-18), not an absolute if the buggy baseline is slower.
+- [ ] F-18 (R-1, AC-1, `unknown`): Capture F-17's Δ against `main` (buggy baseline, BEFORE) and against `spec/2835` (AFTER). Report both numbers + Δ.
+  - EXPECTED: AFTER Δ ≤ BEFORE Δ (a real improvement) AND within the AC-1 budget. A "renders faster" with no numbers is a FAIL.
+  - Edge: same workload both runs; same window size; repeat 3× take median; note GC/compaction noise.
+
+## Sustained-run / no-degradation (R-2 / AC-2)
+
+- [ ] F-19 (R-2, AC-2, `unknown`): With Mission Monitor open and the row stream active (live session streaming ≥ 60s + selection toggles), sample `performance.memory.usedJSHeapSize` via `tauri_webview_execute_js` at t0 (mount), t1 (+30s), t2 (+60s).
+  - EXPECTED: heap plateaus after GC (t2 ≈ t1, not t2 ≫ t1); growth t0→t2 ≤ **50 MB** (budget pending — QA-1); app responsive (a button click registers) at every sample; `telemetry_spans` row count bounded (ingest not leaking).
+  - Edge: read-only session (no streaming); high-session-count list; a GC pause read as a dip; server-side flood vs frontend leak (cross-check `telemetry_spans`).
+- [ ] F-20 (R-2, AC-2, `unknown`): Read `tauri_read_logs source="console"` repeatedly through F-19 and after every interaction.
+  - EXPECTED: no `Maximum update depth exceeded`, no `Uncaught`, no infinite re-render-loop console symptom; recomputation epoch-based (per #523) — no `.length`/object-ref `useEffect`/`useMemo` deps added.
+  - Edge: a one-off warning is tracked but not a FAIL; a repeated identical re-render trace is a FAIL.
+- [ ] F-21 (R-2, AC-2, `unknown`): Use `tauri_ipc_monitor` to capture `fredo-stream-event` RowDeliveryBatch emissions over a fixed window during the sustained workload; count emitted batches/envelopes.
+  - EXPECTED: batch emissions are coalesced/rate-bound (track the data rate, NOT a run-away per-render loop); no storm of identical/duplicated envelopes; no max-throughput flood (RTDB_MAX_EMISSION_BATCH=512) absent matching data growth.
+  - Edge: a large-replay burst is a legitimate transient; per-query replay drains are finite.
+- [ ] F-22 (R-2, AC-2, `unknown`): Cross-check the frontend live-row count against `telemetry_spans`/`chat_rows`/`tool_use_rows` counts at the same instant.
+  - EXPECTED: live-row count ≈ landed telemetry row count (no runaway growth beyond landed rows); `insert` spread-merge semantics not violated (no per-render duplicate re-add).
+  - Edge: retention eviction legitimately shrinks the store (do not read the eviction-only `remove` path as a leak).
+
+## Profile evidence before/after (R-3 / AC-3)
+
+- [ ] F-23 (R-3, AC-3, `unknown`): Produce a literal Before|After|Δ evidence table: (a) first-render latency (F-17/18), (b) long-task count over a 30s window (`performance.getEntriesByType('longtask')`), (c) JS heap growth (F-19), (d) session-list population time, (e) emitted batch count (F-21). Attach screenshots of each measurement + a `telemetry_spans` query at the same instant.
+  - EXPECTED: the verdict's Evidence carries a numerical Before|After|Δ table (a bare "it's faster"/"notably improved" with no numbers = **FAIL**); each AFTER row meets its AC threshold; a measured improvement over the buggy baseline; root cause(s) attributable to the AC suspects.
+  - Edge: Rust/flush-path numbers are NOT webview-readable (must come from the Architect/Developer — QA-4); CDP Performance recorder may not be reachable through the bridge (QA-3).
+
+## Regression — window-manager / launcher / theming (R-4 / AC-4)
+
+- [ ] F-24 (R-4, AC-4, `unknown`): (a) `tauri_manage_window` list/resize/focus/min/max succeed. (b) Run CLI launcher reachable (`button[aria-label="Run CLI"]`), `run-cli-terminal` launches, `write_pty_input` submits. (c) Sessions list + graph + tool-detail render with theme tokens across light/dark/user-accent.
+  - EXPECTED: all actions succeed with no console errors; theming renders from semantic tokens/CSS vars only (no hardcoded hex/rgba, no invalid `var(--token)NN` alpha-append); window-manager + launcher identical to pre-fix.
+  - Edge: the perf fix accidentally alters a window/launcher property or slips in a theming change.
+
+## Non-functional — #2835 (memory / latency / theme / contract-trust / row-path)
+
+- [ ] N-10 (NFR-1, memory): `performance.memory.usedJSHeapSize` plateaus over the sustained window (no monotonic unbounded growth).
+  - EXPECTED: bounded heap; plateau after GC; no growth proportional to time/data that never settles.
+  - Regression risk: an unbounded live-row store or per-render re-insert → FAIL.
+- [ ] N-11 (NFR-2, latency): first-render + interaction latency within the budgets (AC-1 / QA-1); no O(n²) per-render identity churn.
+  - EXPECTED: session list + graph derivation stays a single map pass / memoized on the row-store epoch.
+- [ ] N-12 (NFR-3, theme): theming tokens preserved across the perf fix — no hardcoded hex/rgba or invalid `var(--token)NN` introduced.
+- [ ] N-13 (NFR-4, IPC/coalescing): no runaway flush/batch flood (F-21); the ~5ms coalescing window + `RTDB_MAX_EMISSION_BATCH=512` chunking still function.
+- [ ] N-14 (NFR-5, contract-trust): the perf fix must NOT reintroduce defensive fallback extraction / event-level rewrite / v1 hydration — single-path extraction preserved (Spec #568 cleanup not regressed).
+- [ ] N-15 (NFR-6, RTDB row path unchanged): the RTDB row-pipeline mappings + ingest classification are unchanged — the perf fix touches only the render/flush/coalescing path, not what rows are produced (cross-check `telemetry_spans`).
