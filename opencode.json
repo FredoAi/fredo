@@ -554,13 +554,5 @@
             "enabled": true
         }
     },
-    "plugin": ["commandcode-go-opencode-provider/server"],
-    "provider": {
-        "commandcode": {
-        "npm": "commandcode-go-opencode-provider",
-        "name": "Command Code",
-        "env": ["COMMANDCODE_API_KEY"]
-        }
-    },
     "subagent_depth": 5
 }
