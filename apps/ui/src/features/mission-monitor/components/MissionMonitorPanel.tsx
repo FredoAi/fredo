@@ -52,6 +52,16 @@ const CENTER_DURATION_MS = 500;
 const DEFAULT_CHAT_NODE_WIDTH = 480;
 const DEFAULT_CHAT_NODE_HEIGHT = 240;
 
+// ── #2835 sub-task 4: replay recency window ─────────────────────────────────
+// The first open narrows the replay snapshot to a bounded RECENT window so it
+// no longer re-reads the ENTIRE chat + tool table (the measured 45,453-envelope
+// ≈89-batch IPC first-open flood). `startedAtNs >= MM_REPLAY_WINDOW_NS` is the
+// typed-arg comparison the backend `pushdown` accepts (commands.rs) and maps
+// onto the `started_at_ns` column via `select_snapshot`; the
+// `replayCompleteQueryId` settle marker still rides the terminal envelope
+// (`useEventRows.ready` contract unchanged). Value: 7 days of span start, ns.
+const MM_REPLAY_WINDOW_NS = 7 * 24 * 60 * 60 * 1e9;
+
 // ── AC-13 round-6 root cause: the minZoom CLAMP, not a never-firing fit ─────
 // ReactFlow's fitView computes the zoom that frames every measured node and
 // then CLAMPS it to [minZoom, maxZoom] (getViewportForBounds: `zoom = min(
@@ -659,11 +669,18 @@ export const MissionMonitorPanel: React.FC = () => {
   // row store via `useEventRows(..., { replay: true })` — the persisted
   // snapshot restores as full-row inserts and live patches continue on the
   // same path (one rendering path for restored + live, UI/UX parity
-  // constraint 3). `useDeliverySessions` holds its own Chat subscription for
-  // its `ready` gate + row metadata; duplicate envelopes dedupe by row key
-  // (idempotent).
-  const chatRows = useEventRows('Chat', {}, { replay: true });
-  const toolUseRows = useEventRows('ToolUse', {}, { replay: true });
+  // constraint 3). `useDeliverySessions` consumes THIS Chat subscription
+  // (passed as `chatRows`) instead of opening a second full-table replay leg
+  // (#2835 sub-task 2 dedupe — removes ≈14,011 duplicate insert deliveries
+  // on first open).
+  //
+  // #2835 sub-task 4 frontend half: the replay snapshot is narrowed to a
+  // bounded RECENT window via the typed comparison pushdown
+  // (`startedAtNs >= <window>`) — the first open no longer re-reads the ENTIRE
+  // chat + tool table. The `replayCompleteQueryId` settle contract + `ready`
+  // still resolve on the terminal marker of the retained single subscription.
+  const chatRows = useEventRows('Chat', { startedAtNs: { op: '>=', value: MM_REPLAY_WINDOW_NS } }, { replay: true });
+  const toolUseRows = useEventRows('ToolUse', { startedAtNs: { op: '>=', value: MM_REPLAY_WINDOW_NS } }, { replay: true });
 
   // ── Spec #2795: the ONE shared renderability rule (AC2/AC3/AC4) ───────────
   // Derive the graph-builder state from BOTH row sources ONCE here (the same
@@ -698,7 +715,7 @@ export const MissionMonitorPanel: React.FC = () => {
     searchFilter,
     setSearchFilter,
     userPickedRef,
-  } = useDeliverySessions({ renderableSessions });
+  } = useDeliverySessions({ renderableSessions, chatRows });
 
   // ── #2748 FIX-3 (round-2 AC4 / R-4.1): the window/dialog identity remnant ──
   // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header

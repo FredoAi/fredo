@@ -1,83 +1,70 @@
-# Mission Monitor — Regression Baseline (Spec #2791 — Ghost sessions)
+# Mission Monitor — Regression tests
 
-> The "must not change" baseline for this spec + links to overlapping prior suites. Run on every testing phase that touches the mission-monitor surface.
+> Feature domain: `mission-monitor`. These pin the invariants that MUST NOT
+> regress as a result of the #2835 perf fix. A regression is a FAIL.
+>
+> Executable unit gates: `rowPatchPipeline.test.ts`, `corpusParity.test.ts`,
+> `useMissionMonitor.realCorpus.test.ts`, `buildGraph.test.ts`,
+> `layout.chain-parity.test.ts`, `lateCompletion.test.ts`,
+> `useMissionMonitor.test.ts`, `useSessionHistory.test.ts`.
 
-## Must NOT change (regression invariants)
+## R-01 RTDB row-pipeline mapping + ingest classification unchanged
+- The row-derivation mapping (chat/tool → typed columns) and ingest
+  classification (`rtdb/ingest.rs`, `attrs.rs`) are UNCHANGED — `corpusParity`
+  derives the byte-identical node set + edge set as the v1 golden
+  (`v1Golden.json`) after the fix.
 
-- [x] R-1 (G-074, PASS 2026-09-02 #2791): A session whose telemetry spans have NOT yet landed (zero nodes + zero landed spans) still renders the transient empty state — selecting it must NOT show the ghost explanatory state and must NOT be a silent blank.
-- [x] R-2 (PASS 2026-09-02 #2791): A normal session (landed rows + rendered nodes) still renders its graph with the pre-fix node layout/colors/edges. No layout/color/edge change.
-- [x] R-3 (PASS 2026-09-02 #2791): Telemetry ingestion, storage, and tool-outcome classification are unchanged. No v1 hydration / fallback extraction reintroduced; the RTDB row path (`useEventRows`) is the only row source.
-- [x] R-4 (PASS 2026-09-02 #2791, #523 compositing semantics): row-level compositing (not event-level rewrite) is respected — the relationship registry's first-wins stamp persists, a re-key never removes rows (only retention eviction emits `kind: remove`), and child-session rows composite under the parent key carrying `parentSessionId` + `compositedChildSessionId`.
-- [x] R-5 (PASS 2026-09-02 #2791): No new re-render loops — epoch-based recomputation; no `Maximum update depth exceeded` with `.length`/object-ref effect deps.
-- [x] R-6 (PASS 2026-09-02 #2791): Subagent `build`/`plan` internal tool-execution sessions are still excluded from the graph; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves; subagent chat rows excluded from the graph (isSubagentChatRow) while the parent session still lists.
+## R-02 #523 row-native compositing + `compositedChildSessionId` preserved
+- Child-session rows remain COPIED under the parent key carrying
+  `parentSessionId` + `compositedChildSessionId`; a re-key NEVER removes rows;
+  `remove` only from retention eviction. The multi-hop real-corpus
+  (`realCorpus.ts`) depth-3 nested SubagentNode STILL presents correctly.
 
-## Overlapping prior-feature suites
+## R-03 #509/#523 subagent-agent-name filter preserved
+- Internal tool-execution agents (`build`/`plan`) STILL create NO SubagentNode
+  and NO embedded tool item; the skipped dispatch is exempt from the orphan
+  count.
 
-- Priority prior mission-monitor regression legs (chat node rendering, embedded `── TOOLS (N) ──` section, subagent nodes, session list derivation) — inherited and extended by this spec.
-- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-1..N and N-1..N-3.
+## R-04 Contract-trust — NO fallback extraction reintroduced
+- The graph reads fields at their single typed path; no `??` fallback chains,
+  no multi-path lookups, no event-level rewrite, no v1 hydration machinery
+  reinstated (Spec #568 cleanup not regressed).
 
----
+## R-05 No re-render loop (epoch-based recomputation)
+- Recomputations key on the monotonic row-store `epoch` primitive — no
+  `.length` / newly-created object-ref `useEffect`/`useMemo` deps. No
+  `Maximum update depth exceeded` / no infinite re-render trace.
 
-# Mission Monitor — Regression Baseline (Spec #2792 — Tool-failure reason in detail view)
+## R-06 No cross-feature imports; theming tokens only
+- No imports from other features; no hardcoded hex/rgba; no
+  `var(--token)NN` alpha-append (use the shared `tint()`/`color-mix()`).
 
-> The "must not change" baseline for this spec + links to overlapping prior suites. Run on every testing phase that touches the mission-monitor surface.
+## R-07 Chat subscription is SINGLE (deduped — sub-task 2)
+- Only ONE `useEventRows('Chat', …, { replay: true })` exists per panel mount
+  (the panel's); `useDeliverySessions` consumes it via `chatRows` and opens no
+  second replay leg. First-open Chat replay = 14,011 inserts (not ×2).
 
-## Must NOT change (regression invariants) — Spec #2792
+## R-08 Graph rebuild is selected-session-scoped (sub-task 1 / R-2.c)
+- The association pass processes ONLY the selected session's calls; the layout
+  operates on the selected session's chain + companion geometry. The derivation
+  over OTHER sessions' nodes does not drive the canvas.
 
-- [ ] R-7 (PASS gate): Tool-outcome classification (`getToolCallOutcome`, graph.ts:123-128) is unchanged — a failed call is still `error` when `call.error` is a non-empty string OR `success === false`; a success/`in-progress` call is never re-classified to `error` merely because a reason row now renders. No change to tool-outcome classification.
-- [ ] R-8 (PASS gate): Graph-node colors/edges, chat-node/subagent-node layout, and session-list/graph derivation are unchanged — adding a reason row to the scoped tool-call detail view must NOT alter the graph canvas, node set, or edges.
-- [ ] R-9 (PASS gate): Upstream error capture is unchanged — `tool.error` → `ToolUseRow.toolError` remains the single source (EventSubscription.ts:103, classifier); no change to ingest/classification/storage.
-- [ ] R-10 (PASS gate): A succeeded tool call still shows NO error/reason row (no regression to the success case — REQ-4).
-- [ ] R-11 (PASS gate): Contract-trust preserved — the detail view consumes the projected `ToolCallSummary.error` single path (rowDerivation.ts:276); NO `??` fallback chains / multi-path lookups / output-derived reason (REQ-5).
-- [ ] R-12 (PASS gate): No new re-render loop — epoch-based recomputation; no `Maximum update depth exceeded` with `.length`/object-ref `useEffect` deps (NFR-2).
-- [ ] R-13 (PASS gate): Subagent `build`/`plan` internal tool-execution sessions remain excluded from the graph; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves (from Spec #509/#523 — unchanged by #2792).
+## R-09 No d3-force on the chain rebuild (sub-task 3)
+- `computeForceLayout` is NOT invoked on a chain structure change; the positions
+  are pure closed-form chain + subagent companion geometry (the chain-parity
+  goldens are byte-identical).
 
-## Overlapping prior-feature suites
+## R-10 `replayCompleteQueryId` / `useEventRows.ready` settle preserved
+- The narrowed replay (sub-task 4) still resolves `ready` on the terminal
+  marker; a subscribe failure still opens the gate on `error !== null`.
 
-- Priority prior mission-monitor regression legs (chat node rendering, embedded `── TOOLS (N) ──` section, subagent nodes, tool-call accordion/detail views from Spec #2739/#2743/#2764, session list derivation) — inherited and extended by this spec.
-- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-7..F-11 and N-4..N-5.
+## R-11 Wire / replay volume bounded (AC1 / R-1)
+- First-open replay is a single Chat leg (deduped) + a narrowed recent-window
+  ToolUse/Chat; emitted batch count and IPC size are measurably BELOW the
+  BEFORE (`main`) baseline (≈89 batches → ≤40 target).
 
----
+## R-12 No window-manager / launcher / theming regression (R-4 / AC4)
+- `tauri_manage_window` list/resize/focus/min/max succeed; the CLI launcher
+  (Run CLI) launches; the theming resolves from semantic tokens/CSS vars only.
 
-# Mission Monitor — Regression Baseline (Spec #2795 — Ghost sessions follow-up)
-
-> The "must not change" baseline for this spec + links to overlapping prior suites. Run on every testing phase that touches the mission-monitor surface.
-
-## Must NOT change (regression invariants) — Spec #2795
-
-- [ ] R-14 (AC-1, INVERTED from #2791): The #2791 explanatory ghost state is REMOVED — "No graph content for this session" is NEVER rendered, and no empty-diagram placeholder replaces it. (Supersedes + inverts the #2791 positive R-1/F-2/F-3/F-4/E-2 which asserted the explanatory state.)
-- [ ] R-15 (AC-2/AC-3, shared truth): A normal session (landed rows + rendered nodes) still renders its graph with the pre-fix node layout/colors/edges; session-list qualification and graph-node emission share ONE rule — no listed session renders zero nodes once its rows have landed, and no unlisted-but-landed session renders ≥1 node.
-- [ ] R-16 (AC-3): Telemetry ingestion, storage, and tool-outcome classification are unchanged; the RTDB row path (`useEventRows`) is the only row source; no v1 hydration / fallback extraction reintroduced.
-- [ ] R-17 (AC-4, transient + no-hidden): A just-started session whose rows are still landing still appears and resolves to content (legitimate transient preserved, G-074); a session rendering ≥1 node is NEVER dropped; only a user-deleted session is not listed (anti-resurrection, REQ-3).
-- [ ] R-18 (#523 compositing): row-level compositing is respected — the relationship registry's first-wins stamp persists, a re-key never removes rows (only retention eviction emits `kind: remove`), and child-session rows composite under the parent key carrying `parentSessionId` + `compositedChildSessionId`.
-- [ ] R-19 (Spec #509): subagent `build`/`plan` internal tool-execution sessions are still excluded from the graph AND from the sidebar; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves.
-- [ ] R-20 (NFR-2): No new re-render loops — epoch-based recomputation; no `Maximum update depth exceeded` with `.length`/object-ref `useEffect`/`useMemo` deps.
-
-## Overlapping prior-feature suites (Spec #2795)
-
-- #2791 ghost-explanatory-state legs (F-2/F-3/F-4, R-1, E-2) are INVERTED — run the AC-1 negative (no explanatory message, ghost not listed) for #2795.
-- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-12..F-16 and N-6..N-9.
-
----
-
-# Mission Monitor — Regression Baseline (Spec #2835 — RTDB row-pipeline performance regression)
-
-> The "must not change" baseline for a perf fix. Run on every testing phase that touches the mission-monitor surface. Perf fixes commonly slip a semantic change under a perf cover — every invariant below is a FAIL if the perf branch changes it.
-
-## Must NOT change (regression invariants) — Spec #2835
-
-- [ ] R-21 (RTDB row-pipeline mappings unchanged): the IngestClassifier maps the SAME OTLP spans / CLI events onto the SAME canonical row upserts — no change to which rows are produced or to any field projection (`rtdb/ingest.rs` / `attrs.rs`). Cross-check `telemetry_spans`/`chat_rows`/`tool_use_rows` count + shape unchanged at the same instant.
-- [ ] R-22 (Ingest classification unchanged): the shared extract-rule implementation (`attrs.rs`, NFR-6) is unchanged — no duplicate extraction path introduced between the live classifier and the canonical backfill.
-- [ ] R-23 (Contract-trust single-path extraction unchanged): the frontend consumes the projected single-path row fields — no `??` fallback chains / multi-path lookups / output-driven derivation / v1 hydration reintroduced (Spec #568 cleanup not regressed).
-- [ ] R-24 (#523 compositing semantics unchanged): row-level compositing (relationship registry first-wins stamp; a re-key NEVER removes rows — only retention eviction emits `kind: remove`; child-session rows composite under the parent carrying `parentSessionId` + `compositedChildSessionId`); no event-level rewrite reintroduced.
-- [ ] R-25 (#509 subagent filter unchanged): `build`/`plan` internal tool-execution sessions are still excluded from the graph AND the sidebar; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves.
-- [ ] R-26 (Theming tokens unchanged): the perf fix must not introduce any hardcoded hex/rgba or invalid `var(--token)NN` alpha-append; all colors via semantic tokens → CSS vars → `tint()`/`color-mix()`.
-- [ ] R-27 (No cross-feature imports): the fix stays within `apps/ui/src/features/mission-monitor/*`, `apps/ui/src/shared/contexts/StreamContext.tsx`, `apps/ui/src/shared/hooks/useEventRows.ts`, and backend `infrastructure/rtdb/{flush,store,cache,ingest}.rs` + `infrastructure/comm/`; no new cross-feature import introduced.
-- [ ] R-28 (Re-render-loop pattern unchanged, Spec #523): no new `.length`/newly-created object-ref `useEffect`/`useMemo` deps; recomputation stays epoch-based; no `Maximum update depth exceeded`.
-- [ ] R-29 (Row-store merge semantics unchanged): `insert` spread-merges (init-time fields survive), `update` is seq-guarded with stale-patch drops, `remove` is only ever retention eviction — the perf fix must not bypass these semantics.
-
-## Overlapping prior-feature suites (Spec #2835)
-
-- #2791/#2792/#2795 functional legs (ghost sessions, tool-failure reason, real-sessions-only) — run the unaffected legs; the perf fix must not change graph rendering, list qualification, or tool-detail rendering.
-- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-17..F-24 and N-10..N-15.
-- The AC-4 window-manager/launcher/theming invariants (R-26) overlap the theming (N-4/N-9), launcher (S-8), and window-manager legs.
+*Authored by Developer (sub-task 7)*

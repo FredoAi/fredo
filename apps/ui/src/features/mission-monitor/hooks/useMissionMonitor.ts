@@ -25,7 +25,6 @@ import {
 import { graphStatusToMonitorStatus, GRAPH_NODE_TYPE_MAP } from '../types';
 import type { MonitorNodeData, MonitorNodeStatus } from '../types';
 import {
-  computeForceLayout,
   computeChatChainPositions,
   computeSubagentChainPositions,
   computeCompanionExtents,
@@ -443,10 +442,21 @@ function associateToolCalls(
   state: GraphBuilderState,
   chainPredecessor: Map<string, string>,
   visibleNonTransitional: Set<string>,
+  selectedSessionId: string,
 ): Set<string> {
   const touched = new Set<string>();
 
   for (const [sessionId, calls] of state.toolCallsBySession) {
+    // #2835 sub-task 1 (R-2.c): the graph is rebuilt for the SELECTED session
+    // only — the association pass must NOT iterate every session in the store
+    // (O(Sessions × Agents)); only the selected session's calls can create the
+    // SubagentNodes / embedded tools the canvas renders. Other sessions' calls
+    // are never rendered (the node emission gates scope to the session), so
+    // skipping them is byte-identical output for the selected session. The
+    // nested child-activity collectors (subagentToolCalls / subagentDispatches)
+    // stay fully populated by the row derivation, so nested subagents attach
+    // correctly regardless of this scope.
+    if (sessionId !== selectedSessionId) continue;
     if (calls.size === 0) continue;
 
     // This session's chat nodes (corrId → entry) — the parent candidates.
@@ -1038,7 +1048,7 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
 
     // ── #2739 ST-1 / #2745 ST-4 / #2764 ST-1: associate collected tool calls
     // with their chat nodes ──
-    const associateTouched = associateToolCalls(state, chainPredecessor, visibleNonTransitional);
+    const associateTouched = associateToolCalls(state, chainPredecessor, visibleNonTransitional, sessionId);
 
     // ── #2762 ST-2: nested association over the child-activity collectors ──
     // The orphan count feeds the D-6 `⚠ N unattributed` chip and is SCOPED to
@@ -1273,21 +1283,18 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
     const heightsChanged = heightSignature !== lastHeightsRef.current;
 
     // ── Chain layout — the ONLY mode (#2760 removed the Force engine) ──
+    // #2835 sub-task 3: the d3-force `computeForceLayout` pass is REMOVED.
+    // It was invoked on every structure change over ALL layout nodes, running
+    // up to maxIterations(300) × O(N log N) force ticks whose agent/subagent
+    // positions were ALWAYS overwritten below by the deterministic chain +
+    // companion geometry, and whose residue pass is inert for live sessions
+    // (every live node type is chain-owned agent/subagent). The output is now
+    // the pure closed-form chain + subagent companion-column geometry only —
+    // a node-set change no longer pays the wasted force simulation.
     if (structureChanged || layoutPositionsRef.current.size === 0) {
-      const layoutEdges = allLayoutEdges;
-      const { positions } = computeForceLayout(
-        layoutNodes,
-        layoutEdges,
-        {
-          maxIterations: 300,
-          alphaMin: 0.01,
-          alphaDecay: 0.02,
-          existingPositions: layoutPositionsRef.current,
-        },
-      );
+      const positions = new Map<string, { x: number; y: number }>();
 
-      // #2688 ST4: Replace the AGENT portion of the d3-force layout with
-      // deterministic per-session vertical chain positions (oldest on top,
+      // #2688 ST4: per-session vertical chain positions (oldest on top,
       // newest at the bottom, x centered — #2700 ST1 flipped the direction).
       // #2723 ST4 (R-4): the chain stacks by MEASURED height. Unmeasured
       // fresh nodes fall back to the conservative DEFAULT_NODE_HEIGHT until
