@@ -1189,3 +1189,85 @@ describe('Spec #2788 (P4.3): replay replaces mount-time hydration', () => {
     expect(result.current.selectedSessionId).toBeNull();
   });
 });
+
+// ── #2835 sub-task 2: the session-list hook consumes the panel's Chat rows ───
+// The panel passes its already-subscribed `useEventRows('Chat', …)` result as
+// `chatRows`, so `useDeliverySessions` must NOT open a second full-table Chat
+// replay leg on first open. Bare callers (no `chatRows`) keep their own
+// subscription (row-store dedupe is idempotent).
+describe('#2835 sub-task 2: useDeliverySessions consumes the panel Chat rows', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsSessionDeleted.mockImplementation(() => false);
+    mockUseEventRows.mockReturnValue(undefined); // must NOT be called when chatRows is passed
+    mockLoadPersistedSessions.mockResolvedValue([]);
+  });
+
+  function makeRows(rows: ChatRow[]): { rows: Map<string, ChatRow>; epoch: number; error: null; ready: boolean } {
+    return {
+      rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+      epoch: 1,
+      error: null,
+      ready: true,
+    };
+  }
+
+  it('WITHOUT `chatRows` still subscribes via useEventRows (bare-caller fallback)', async () => {
+    const rows = [chatRow('ses-bare', 'b1', '2026-01-02T09:00:00.000Z', 'bare prompt')];
+    mockUseEventRows.mockReturnValue(makeRows(rows));
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-bare')).toBe(true);
+    });
+    // The hook called useEventRows itself (its own subscription) — the
+    // bare-caller fallback path (multiple renders each call the hook).
+    expect(mockUseEventRows).toHaveBeenCalled();
+    expect(mockUseEventRows).toHaveBeenCalledWith('Chat', {}, { replay: true });
+    const session = result.current.sessions.find((s) => s.sessionId === 'ses-bare');
+    expect(session?.deliveryCount).toBe(1);
+  });
+
+  it('WITH `chatRows` the hook consumes the passed rows and opens NO second subscription', async () => {
+    const rows = [chatRow('ses-panel', 'p1', '2026-01-02T09:00:00.000Z', 'panel prompt')];
+    const panelRows = makeRows(rows);
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() =>
+      useDeliverySessions({ chatRows: panelRows }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-panel')).toBe(true);
+    });
+    // The internal useEventRows was NEVER opened (no duplicate replay leg).
+    expect(mockUseEventRows).not.toHaveBeenCalled();
+    const session = result.current.sessions.find((s) => s.sessionId === 'ses-panel');
+    expect(session?.deliveryCount).toBe(1);
+    expect(session?.derivedName).toBe('panel prompt');
+  });
+
+  it('WITH `chatRows` the renderableSessions gate still applies (list qualification unchanged)', async () => {
+    const rows = [
+      chatRow('ses-a', 'a1', '2026-01-02T09:00:00.000Z', 'alpha'),
+      chatRow('ses-b', 'b1', '2026-01-02T10:00:00.000Z', 'beta'),
+    ];
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() =>
+      useDeliverySessions({
+        chatRows: makeRows(rows),
+        renderableSessions: new Set(['ses-a']),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-a')).toBe(true);
+    });
+    // ses-b owns rows but is NOT renderable → excluded (the panel's shared rule).
+    expect(result.current.sessions.some((s) => s.sessionId === 'ses-b')).toBe(false);
+    expect(mockUseEventRows).not.toHaveBeenCalled();
+  });
+});

@@ -4609,3 +4609,184 @@ describe('#2770 round 6 ST-1 — single-owner dispatch bucketing', () => {
   });
 });
 
+// ── #2835 sub-task 1: the graph rebuild is selected-session-scoped (R-2.c) ───
+//
+// The hook's derivation is inherently GLOBAL (nested child-activity rows are
+// keyed under child/intermediate sessions — never the selected root — and feed
+// the per-owner collectors via the corrId session prefix, which the depth-
+// stamped nested nodes the canvas renders for the SELECTED session resolve
+// from). Session-scoping the derive would drop those rows and break nested
+// output, so the sub-task-1 fix eliminates the hook's duplicate full-store
+// derive instead (the panel derives ONCE per epoch and threads the state in).
+//
+// These tests pin the OUTPUT-TRANSPARENT scoping contract: the selected
+// session's rendered graph must be byte-identical whether OTHER sessions' rows
+// are present in the store or not — the rebuild is bounded to the selected
+// session's output, and foreign-session rows never leak into (or perturb) it.
+describe('#2835 sub-task 1 — selected-session graph output is foreign-row-transparent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeliveries.length = 0;
+  });
+
+  /** A flat selected session (s1) with one exchange + one subagent dispatch. */
+  function flatSessionDeliveries(): ContractDelivery[] {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'explore', prompt: 'flat' });
+    return [
+      makeDelivery('f-i1', 'init', 's1', 'corr-1', {
+        userMessage: 'delegate work', startTime: '2026-09-01T10:00:00.000Z',
+      }),
+      makeDelivery('f-e1', 'end', 's1', 'corr-1', {
+        userMessage: 'delegate work', agentReply: 'done',
+        startTime: '2026-09-01T10:00:00.000Z', endTime: '2026-09-01T10:01:00.000Z',
+      }),
+      makeToolDelivery('f-t1', 'init', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, startTime: '2026-09-01T10:00:10.000Z',
+      }),
+      makeToolDelivery('f-t2', 'end', 's1', 'task-1', 'task', {
+        input: TASK_ARGS, output: 'flat done', childSessionId: 'ses_flat_child',
+        startTime: '2026-09-01T10:00:10.000Z', endTime: '2026-09-01T10:00:30.000Z',
+      }),
+    ];
+  }
+
+  /** A foreign session (s2) with its own exchange, subagent dispatch + nested
+   *  child activity keyed under the child session — the noise class the
+   *  selected session's graph must be immune to. */
+  function foreignSessionDeliveries(): ContractDelivery[] {
+    const TASK_ARGS = JSON.stringify({ subagent_type: 'general', prompt: 'foreign' });
+    return [
+      makeDelivery('g-i1', 'init', 's2', 'corr-2', {
+        userMessage: 'other session work', startTime: '2026-09-01T11:00:00.000Z',
+      }),
+      makeDelivery('g-e1', 'end', 's2', 'corr-2', {
+        userMessage: 'other session work', agentReply: 'done-2',
+        startTime: '2026-09-01T11:00:00.000Z', endTime: '2026-09-01T11:01:00.000Z',
+      }),
+      makeToolDelivery('g-t1', 'init', 's2', 'task-2', 'task', {
+        input: TASK_ARGS, startTime: '2026-09-01T11:00:10.000Z',
+      }),
+      makeToolDelivery('g-t2', 'end', 's2', 'task-2', 'task', {
+        input: TASK_ARGS, output: 'foreign done', childSessionId: 'ses_foreign_child',
+        startTime: '2026-09-01T11:00:10.000Z', endTime: '2026-09-01T11:00:40.000Z',
+      }),
+      // s2's child activity keyed under the CHILD session (foreign child rows).
+      makeSubagentActivityDelivery('g-a1', 'end', 'ses_foreign_child', 'fchild-tool-1', 'Bash', {
+        input: 'ls', output: 'foreign files', parentSessionId: 's2',
+        startTime: '2026-09-01T11:00:20.000Z', endTime: '2026-09-01T11:00:21.000Z',
+      }),
+      makeSubagentActivityDelivery('g-a2', 'end', 'ses_foreign_child', 'fchild-task-1', 'task', {
+        input: JSON.stringify({ subagent_type: 'general', prompt: 'level 2' }),
+        output: 'nested done', childSessionId: 'ses_foreign_grandchild', parentSessionId: 's2',
+        startTime: '2026-09-01T11:00:30.000Z', endTime: '2026-09-01T11:00:45.000Z',
+      }),
+    ];
+  }
+
+  function graphSnapshot(r: { current: { nodes: any[]; edges: any[]; unattributedCount: number } }) {
+    return {
+      nodes: r.current.nodes
+        .map((n) => `${n.id}|${n.type}|${n.position.x},${n.position.y}`)
+        .sort(),
+      edges: r.current.edges
+        .map((e) => `${e.id}|${e.source}>${e.target}`)
+        .sort(),
+      unattributed: r.current.unattributedCount,
+    };
+  }
+
+  it('the selected session renders byte-identically whether foreign sessions\u0027 rows exist', async () => {
+    const selectedOnly = flatSessionDeliveries();
+    const withForeign = [...selectedOnly, ...foreignSessionDeliveries()];
+
+    const { result: only } = renderHook(() =>
+      useDeliveryGraph({ rows: rowSource(selectedOnly), sessionId: 's1' }),
+    );
+    await waitFor(() => {
+      expect(only.current.nodes.find((n) => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    const { result: mixed } = renderHook(() =>
+      useDeliveryGraph({ rows: rowSource(withForeign), sessionId: 's1' }),
+    );
+    await waitFor(() => {
+      expect(mixed.current.nodes.find((n) => n.id === 'subagent-task-1')).toBeDefined();
+    });
+
+    // Byte-identical selected-session output (nodes + positions, edges,
+    // orphan chip) despite the foreign rows in the same store.
+    expect(graphSnapshot(mixed)).toEqual(graphSnapshot(only));
+
+    // Belt: no foreign node or edge leaks into the selected session.
+    expect(mixed.current.nodes.some((n) => n.id.includes('corr-2') || n.id.includes('task-2'))).toBe(false);
+    expect(mixed.current.edges.some((e) => e.id.includes('task-2'))).toBe(false);
+  });
+
+  it('a nested/composited selected session renders its full delegation tree even when foreign child rows coexist', async () => {
+    // Selected session s1 = the full nested tree (root → L1 → L2), with every
+    // child call COMPOSITED (keyed under s1 per the #523 row-native shape).
+    const { root, childA } = makeNestedBase();
+    const compositedTree = [
+      ...root,
+      // The child's Bash call composited under s1 (prefix owner ses_child_1).
+      makeCompositedChildDelivery('cc-a1', 'end', 's1', 'ses_child_1', 'ses_child_1_tool1', 'Bash', {
+        input: 'ls', output: 'files',
+        startTime: '2026-09-01T10:00:20.000Z', endTime: '2026-09-01T10:00:21.000Z',
+      }),
+      // The child's own task dispatch composited under s1 (creates L2).
+      makeCompositedChildDelivery('cc-a2', 'end', 's1', 'ses_child_1', 'ses_child_1_task1', 'task', {
+        input: JSON.stringify({ subagent_type: 'general', prompt: 'level 2' }),
+        output: 'level-2 done', childSessionId: 'ses_child_2',
+        startTime: '2026-09-01T10:00:30.000Z', endTime: '2026-09-01T10:00:45.000Z',
+      }),
+    ];
+
+    // Render WITH the foreign noise in the store.
+    const { result: mixed } = renderHook(() =>
+      useDeliveryGraph({ rows: rowSource([...compositedTree, ...foreignSessionDeliveries()]), sessionId: 's1' }),
+    );
+
+    await waitFor(() => {
+      expect(mixed.current.nodes.find((n) => n.id === 'subagent-ses_child_1_task1')).toBeDefined();
+    });
+
+    const nodes = mixed.current.nodes;
+    const byId = (id: string) => nodes.find((n) => n.id === id)!;
+    // The full selected-session delegation tree renders: root agent + L1 + L2.
+    expect(byId('agent-corr-1')).toBeDefined();
+    const l1 = byId('subagent-task-1');
+    const l2 = byId('subagent-ses_child_1_task1');
+    expect(l1).toBeDefined();
+    expect(l2).toBeDefined();
+    // Nested payload: L2's parent is the L1 SubagentNode's corrId; session
+    // stays the ROOT (visibility is root-scoped).
+    expect((l2.data.payload as any).parentCorrelationId).toBe('task-1');
+    expect((l2.data.payload as any).sessionId).toBe('s1');
+    expect((l2.data.payload as any).childSessionId).toBe('ses_child_2');
+    // L1's embedded tools come from the composited child Bash call.
+    expect(((l1.data.payload as any).tools ?? []).length).toBe(1);
+    expect((l1.data.payload as any).nestedCount).toBe(1);
+    // L2's nested edge sources from the L1 SubagentNode.
+    const l2Edge = mixed.current.edges.find((e) => e.id === 'e-calls-ses_child_1_task1');
+    expect(l2Edge).toBeDefined();
+    expect(l2Edge!.source).toBe('subagent-task-1');
+    expect(l2Edge!.target).toBe('subagent-ses_child_1_task1');
+    // Zero unattributed calls and no foreign nodes leaked in.
+    expect(mixed.current.unattributedCount).toBe(0);
+    expect(mixed.current.nodes.some((n) => n.id.includes('task-2') || n.id.includes('corr-2'))).toBe(false);
+  });
+
+  it('renders a zero-row / no-eligible-rows selected session as an empty graph (no crash, no foreign leakage)', async () => {
+    const { result } = renderHook(() =>
+      useDeliveryGraph({ rows: rowSource([...foreignSessionDeliveries()]), sessionId: 's-empty' }),
+    );
+
+    await waitFor(() => {
+      // The processing effect runs with no session rows — empty desired set.
+      expect(result.current.nodes).toHaveLength(0);
+    });
+    expect(result.current.edges).toHaveLength(0);
+    expect(result.current.unattributedCount).toBe(0);
+  });
+});
+

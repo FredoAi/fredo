@@ -207,9 +207,9 @@ function makeSubagentReactFlowEdge(id: string, source: string, target: string): 
 /**
  * #2745 ST-4 (A-5) / #2762 ST-3+ST-4: apply the deterministic SubagentNode
  * companion-column chain slots on top of a positions map. Subagent nodes are
- * chain-owned — their chain slots are authoritative and they are never touched
- * by the d3-force residue pass. Called from BOTH the structural recompute and
- * the height-only reflow so a chain
+ * chain-owned — their chain slots are authoritative (the removed d3-force
+ * pass never touched them — #2835 sub-task 3). Called from BOTH the
+ * structural recompute and the height-only reflow so a chain
  * reflow re-aligns each subagent column with its parent's new y. A parent's
  * subagents are indexed by dispatch startTime (deterministic; the payload
  * startTime with the entry timestamp as fallback).
@@ -889,6 +889,13 @@ export interface RowGraphSources {
 interface UseDeliveryGraphOptions {
   sessionId: string | null;
   rows: RowGraphSources;
+  /** #2835 sub-task 1 (R-2.c): the panel's ALREADY-DERIVED global builder
+   *  state. MissionMonitorPanel derives `deriveRowGraphState` over the full
+   *  row store ONCE per epoch (it needs the global state for the session
+   *  list) and passes it here — so the graph hook never re-runs the second
+   *  ~31,790-row full-store derive per epoch. When absent (direct test
+   *  consumers), the hook derives internally from `rows` as before. */
+  builderState?: GraphBuilderState;
 }
 
 /**
@@ -905,7 +912,7 @@ interface UseDeliveryGraphOptions {
  * @param rows      - The chat + toolUse row sources (see RowGraphSources).
  * @returns nodes, edges, onNodesChange, onEdgesChange, unattributedCount
  */
-export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
+export function useDeliveryGraph({ sessionId, rows, builderState: injectedBuilderState }: UseDeliveryGraphOptions) {
   const [nodes, setNodes, rawOnNodesChange] = useNodesState<MonitorNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
@@ -946,14 +953,27 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
   // the current rows for the pure derivation.
   const chatEpoch = rows.chat.epoch;
   const toolEpoch = rows.toolUse.epoch;
+  // #2835 sub-task 1 (R-2.c): consume the panel-derived global builder state
+  // when supplied. The row derivation is INHERENTLY GLOBAL — nested
+  // child-activity rows (keyed under child/intermediate sessions, not the
+  // selected root) feed the per-owner collectors via the corrId session
+  // prefix, and the depth-stamped nested SubagentNodes the canvas renders for
+  // the SELECTED session resolve from those collectors. Scoping the derive to
+  // `sessionId === selected` rows would drop them and break nested output
+  // (byte-identical is a hard invariant). Instead the full-store derive runs
+  // exactly ONCE per epoch — in the panel (which needs the global state for
+  // the session list) — and is threaded here. Direct test consumers without a
+  // panel derive internally (unchanged path).
+  const externallyDerived = injectedBuilderState;
   const builderState = useMemo(
     () =>
+      externallyDerived ??
       deriveRowGraphState(
         [...rows.chat.rows.values()] as ChatRow[],
         [...rows.toolUse.rows.values()] as ToolUseRow[],
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatEpoch, toolEpoch],
+    [chatEpoch, toolEpoch, externallyDerived],
   );
 
   // Reset per-session graph state when the session changes.
@@ -1246,8 +1266,9 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
 
     // AC-6: Only recompute layout when graph structure changes.
     // #2723 ST4 (R-4): the layout signature is SPLIT — a structural signature
-    // (node ids + edges) gates the full d3-force recompute, and a chain-height
-    // signature (agent id → measured px) gates a cheap chain-only reflow.
+    // (node ids + edges) gates the full deterministic recompute, and a
+    // chain-height signature (agent id → measured px) gates a cheap
+    // chain-only reflow.
     const chainAgents: ChainAgent[] = [];
     // #2770 ST-3 (R-7): companion extents per chat node — the max vertical
     // span of each node's subagent-companion subtree (the SAME grouping the
@@ -1305,15 +1326,13 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
       }
 
       // #2745 ST-4 (A-5) / #2766 ST-2: place each SubagentNode in its own
-      // companion column RIGHT of the chat chain. Chain-owned — never touched
-      // by force/residue.
+      // companion column RIGHT of the chat chain. Chain-owned (deterministic).
       applySubagentChainPositions(positions, state, chainPositions, visibleNonTransitional, chainPredecessor);
 
       // #2723 ST4 belt-and-suspenders: rectangular de-overlap for any
-      // non-agent residue the d3 collision radii may still leave overlapping.
-      // #2745 ST-4: subagent nodes are chain-owned — excluded from this pass
-      // (all live types are chain-owned, so the pass is inert; kept for the
-      // frozen residue geometry).
+      // non-agent residue. #2745 ST-4: subagent nodes are chain-owned —
+      // excluded from this pass (all live types are chain-owned, so the pass
+      // is inert; kept for the non-live residue geometry).
       const residueRects: RectNode[] = [];
       for (const n of layoutNodes) {
         if (n.type === 'agent' || n.type === 'subagent') continue;
@@ -1340,8 +1359,8 @@ export function useDeliveryGraph({ sessionId, rows }: UseDeliveryGraphOptions) {
       lastHeightsRef.current = heightSignature;
     } else if (heightsChanged) {
       // #2723 ST4: height-only change — reflow the chain (measured-height
-      // stacking) without re-running the d3 force simulation. Non-agent
-      // force positions are preserved untouched (settled-node freezing).
+      // stacking). Positions of nodes the deterministic passes did not place
+      // are preserved untouched (settled-node freezing).
       const positions = new Map(layoutPositionsRef.current);
       const chainPositions = computeChatChainPositions(chainAgents);
       for (const [nodeId, pos] of chainPositions) {

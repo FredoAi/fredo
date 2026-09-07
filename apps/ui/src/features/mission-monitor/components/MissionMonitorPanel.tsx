@@ -19,6 +19,7 @@ import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
 import { deriveRowGraphState, deriveRenderableSessions } from '../lib/rowDerivation';
+import type { GraphBuilderState } from '../lib/rowDerivation';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -175,6 +176,11 @@ interface CanvasProps {
   sessionId: string;
   /** #2788 P4.2: the typed-row source (subscribed once at the panel level). */
   rows: RowGraphSources;
+  /** #2835 sub-task 1 (R-2.c): the panel's epoch-derived GLOBAL builder state
+   *  (the same `deriveRowGraphState` the graph hook consumes — the session
+   *  list qualification needs it globally). Threading it into the hook
+   *  eliminates the graph hook's duplicate full-store derive per epoch. */
+  builderState: GraphBuilderState;
   onFocusTarget: (target: DetailOpenTarget | null) => void;
   /** #2762 ST-3 (D-6): lifted orphan count — the builder is the authority on
    *  which child-session calls never resolved a parent SubagentNode; the panel
@@ -183,7 +189,7 @@ interface CanvasProps {
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, rows, onFocusTarget, onUnattributedCount,
+  sessionId, rows, builderState, onFocusTarget, onUnattributedCount,
 }) => {
   // #2788 P4.2: the graph's data source — typed RTDB rows with replay (the
   // persisted snapshot restores as full-row inserts; replay replaces the v1
@@ -193,6 +199,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   } = useDeliveryGraph({
     sessionId,
     rows,
+    builderState,
   });
 
   // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
@@ -949,6 +956,7 @@ export const MissionMonitorPanel: React.FC = () => {
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
                 rows={rowSources}
+                builderState={builderState}
                 onFocusTarget={handleFocusTarget}
                 onUnattributedCount={handleUnattributedCount}
               />

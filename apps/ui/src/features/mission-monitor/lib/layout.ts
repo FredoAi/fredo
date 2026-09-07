@@ -1,45 +1,24 @@
 /**
  * layout.ts — Mission Monitor graph geometry.
  *
- * Two concerns:
- * - Deterministic chain geometry (#2688/#2723/#2745/#2766): the vertical chat
- *   chain plus its SubagentNode companion column. #2764 ST-1 removed the
- *   standalone ToolsNode (tool calls embed inside the chat node), so the
- *   right-side tools column geometry is gone; #2766 ST-2 mirrored the
- *   SubagentNode companion column into that freed RIGHT-side slot.
- *   Pure closed-form math — no randomness, no simulation.
- * - The d3-force residue pass (`computeForceLayout`): the frozen Chain-mode
- *   position source for non-agent residue nodes before the chain geometry
- *   overrides the agents. Part of the frozen Chain output — do not remove.
+ * Deterministic chain geometry (#2688/#2723/#2745/#2766): the vertical chat
+ * chain plus its SubagentNode companion column. #2764 ST-1 removed the
+ * standalone ToolsNode (tool calls embed inside the chat node), so the
+ * right-side tools column geometry is gone; #2766 ST-2 mirrored the
+ * SubagentNode companion column into that freed RIGHT-side slot.
+ * Pure closed-form math — no randomness, no simulation.
+ *
+ * The #2835 sub-task 3 cleanup removed the d3-force residue pass
+ * (`computeForceLayout`) — it was production-dead: its agent/subagent
+ * positions were always overwritten by the deterministic chain + companion
+ * geometry, and its residue pass is inert for live sessions (every live node
+ * type is chain-owned). The residue rectangular de-overlap (`resolveRectOverlaps`)
+ * is retained for non-live residue geometry.
  *
  * The #2752/#2756/#2758 Force MODE (live simulation, layout-mode toggle,
  * persisted `Fredo_mm_layout_mode` preference, per-exchange anchors) was
  * removed by #2760 — Chain is the only layout.
  */
-
-import {
-  forceSimulation,
-  forceLink,
-  forceManyBody,
-  forceCollide,
-  forceCenter,
-  type Simulation,
-  type SimulationNodeDatum,
-  type SimulationLinkDatum,
-} from 'd3-force';
-
-/** Input node for layout computation. */
-export interface LayoutNode {
-  id: string;
-  status: string;
-  /** Depth in the graph hierarchy (0=agent, 1=subagent/tool, 2=file) */
-  depth?: number;
-  /** Node type identifier ('agent' | 'subagent' | 'tool' | 'file') */
-  type?: string;
-  /** Level in the hierarchy (1=agent, 2=subagent, 3=tool, 4=file).
-   *  Derived from `type` field when absent. */
-  level?: number;
-}
 
 // ── #2688 ST4 / #2723 ST4: deterministic vertical chat chain ─────────────────
 //
@@ -151,44 +130,17 @@ export function computeChatChainPositions(agents: ChainAgent[]): Map<string, { x
   return positions;
 }
 
-/** Half of the widest chat (agent) node (540px max → 270px half). Matches the
- *  agent forceCollide radius used by the d3-force pass (see computeForceLayout)
- *  and the plan's `AGENT_NODE_HALF_WIDTH` constant name. #2743 AC-6: scaled
- *  180 → 270 with the ~1.5× node widths. */
-export const AGENT_NODE_HALF_WIDTH = 270;
-
 /** Full width of the widest chat (agent) node (ChatNode.tsx `maxWidth: 540`).
  *  The subagent companion column sits just past the WIDEST chat node (on the
  *  positive side — #2766 ST-2 mirrored the column to the RIGHT of the chain)
  *  so no chat node width can overlap it. */
-export const AGENT_NODE_MAX_WIDTH = AGENT_NODE_HALF_WIDTH * 2;
+export const AGENT_NODE_MAX_WIDTH = 540;
 
 /** Companion-column gap (px) — the horizontal clearance between a column's
  *  edge and the next column (#2739 NFR-3, binding value 24). #2764 ST-1: the
  *  right-side tools column was removed with the standalone ToolsNode; the gap
  *  survives as the SUBAGENT_CHAIN_X mirror offset. */
 export const COMPANION_GAP = 24;
-
-/**
- * Level map for layout-node types.
- *
- * #2764 ST-1: the `tools` entry was removed with the standalone ToolsNode.
- * Legacy agent/subagent/tool/file levels are unchanged (frozen #2723
- * geometry). NOTE: subagent nodes are chain-owned and excluded from the
- * d3-force pass; this map is for signature/overlap handling only.
- */
-export const TYPE_TO_LEVEL: Record<string, number> = {
-  agent: 1,
-  subagent: 2,
-  tool: 3,
-  file: 4,
-};
-
-/** Resolve a layout-node type to its level. Unknown types fall back to the
- *  file level (4), mirroring computeForceLayout's fallback. */
-export function layoutLevelForType(type: string | undefined): number {
-  return type ? (TYPE_TO_LEVEL[type] ?? 4) : 4;
-}
 
 // ── #2745 ST-4 / #2762 ST-4 / #2766 ST-2: deterministic SubagentNode companion
 //    columns ──────────────────────────────────────────────────────────────────
@@ -201,9 +153,8 @@ export function layoutLevelForType(type: string | undefined): number {
 // the companion gap rule: next column x = previous column's max node width +
 // COMPANION_GAP (measured outward from the chain, on the positive side).
 //
-// Subagent nodes are chain-owned: placed by this pure geometry, NEVER by the
-// d3-force pass, and excluded from the force residue pass
-// (`useMissionMonitor.ts` skip list).
+// Subagent nodes are chain-owned: placed by this pure geometry only (the
+// removed d3-force pass never touched them — #2835 sub-task 3 deleted it).
 //
 // #2762 ST-4 — recursive SUBTREE-BAND allocation: nesting (a subagent's own
 // dispatched subagents) extends the same companion-column grammar one lane
@@ -505,11 +456,11 @@ export interface RectNode {
 /**
  * Deterministic pairwise de-overlap for non-agent residue rectangles.
  *
- * Belt-and-suspenders for the d3-force residue (tool/file/subagent legacy
- * paths): after the force layout computes their positions, this pass pushes
- * any overlapping pair apart along the axis of least penetration (newest
- * node wins — later entries in the input array move). Deterministic and
- * bounded (no random jitter), so a graph rebuild yields stable positions.
+ * Belt-and-suspenders residue de-overlap: after the deterministic positions
+ * are assigned, this pass pushes any overlapping pair apart along the axis of
+ * least penetration (newest node wins — later entries in the input array
+ * move). Deterministic and bounded (no random jitter), so a graph rebuild
+ * yields stable positions.
  *
  * @param nodes - Positioned rectangles (center x/y with width/height).
  * @returns A Map of node id → resolved { x, y } positions.
@@ -548,147 +499,4 @@ export function resolveRectOverlaps(nodes: RectNode[]): Map<string, { x: number;
   return positions;
 }
 
-/** Input edge for layout computation. */
-export interface LayoutEdge {
-  source: string;
-  target: string;
-}
-
-/** Extra options for force layout computation. */
-export interface ForceLayoutOptions {
-  maxIterations?: number;
-  alphaMin?: number;
-  alphaDecay?: number;
-  /** Existing positions to preserve as initial positions for matching nodes. */
-  existingPositions?: Map<string, { x: number; y: number }>;
-}
-
-/** Result of a force layout run. */
-export interface ForceLayoutResult {
-  positions: Map<string, { x: number; y: number }>;
-  converged: boolean;
-  iterations: number;
-}
-
-/** Internal simulation node — extends d3-force SimulationNodeDatum. */
-interface SimNode extends SimulationNodeDatum {
-  id: string;
-  status: string;
-  depth?: number;
-  type?: string;
-  level?: number;
-}
-
-/**
- * Run force-directed layout on a set of nodes and edges using d3-force.
- *
- * - forceCollide prevents node overlap with level-based radii:
- *   agent=270px, subagent=270px, tool=240px, file=210px.
- * - forceManyBody repels with per-node strength: agent -600,
- *   subagent -400, tool/file -300.
- * - forceCenter(0, 0) prevents drift to canvas edges.
- * - forceLink attracts connected nodes at 600px distance.
- * - Per-depth forceY: agent nodes (depth 0) at y≈0, children (depth 1) at y≈400.
- * - Level-based initial positioning: agents in a vertical column (y-spacing 200px),
- *   non-agent nodes offset horizontally.
- * - Nodes with status 'complete' or 'error' are settled: their positions are
- *   frozen with fx/fy so they don't move during simulation.
- * - Converges when alpha drops below alphaMin (default 0.01) or after
- *   maxIterations (default 300).
- * - Returns a Map of node id to {x, y} positions.
- */
-export function computeForceLayout(
-  nodes: LayoutNode[],
-  edges: LayoutEdge[],
-  options?: ForceLayoutOptions,
-): ForceLayoutResult {
-  const maxIterations = options?.maxIterations ?? 300;
-  const alphaMin = options?.alphaMin ?? 0.01;
-  const alphaDecay = options?.alphaDecay ?? 0.02;
-  const existingPositions = options?.existingPositions;
-
-  if (nodes.length === 0) {
-    return { positions: new Map(), converged: true, iterations: 0 };
-  }
-
-  let agentIndex = 0;
-  const simNodes: SimNode[] = nodes.map((n) => {
-    const isSettled = n.status === 'complete' || n.status === 'error';
-    const level = n.level ?? (n.type === 'agent' ? 1 : n.type === 'subagent' ? 2 : n.type === 'tool' ? 3 : 4);
-    const existing = existingPositions?.get(n.id);
-    let x: number;
-    let y: number;
-    if (existing) {
-      x = existing.x;
-      y = existing.y;
-    } else if (level === 1) {
-      x = -100;
-      y = -400 + agentIndex * 200;
-      agentIndex++;
-    } else {
-      x = 200 + Math.random() * 300;
-      y = -400;
-    }
-    return {
-      id: n.id,
-      status: n.status,
-      depth: n.depth,
-      type: n.type,
-      level,
-      x,
-      y,
-      fx: isSettled ? x : undefined,
-      fy: isSettled ? y : undefined,
-    };
-  });
-
-  const nodeIndexMap = new Map<string, number>();
-  simNodes.forEach((n, i) => nodeIndexMap.set(n.id, i));
-
-  const simLinks: SimulationLinkDatum<SimNode>[] = [];
-  for (const edge of edges) {
-    const sourceIdx = nodeIndexMap.get(edge.source);
-    const targetIdx = nodeIndexMap.get(edge.target);
-    if (sourceIdx !== undefined && targetIdx !== undefined) {
-      simLinks.push({ source: sourceIdx, target: targetIdx });
-    }
-  }
-
-  const resolveLevel = (d: SimNode): number =>
-    d.level ?? (d.type === 'agent' ? 1 : d.type === 'subagent' ? 2 : d.type === 'tool' ? 3 : 4);
-
-  const simulation = forceSimulation(simNodes)
-    .alphaDecay(alphaDecay)
-    .alphaMin(alphaMin)
-    .force('link', forceLink(simLinks).distance(600))
-    .force('charge', forceManyBody<SimNode>().strength((d) => {
-      const lvl = resolveLevel(d);
-      return lvl === 1 ? -600 : lvl === 2 ? -400 : -300;
-    }))
-    .force('collide', forceCollide<SimNode>().radius((d) => {
-      const lvl = resolveLevel(d);
-      return lvl === 1 ? 270 : lvl === 2 ? 270 : lvl === 3 ? 240 : 210;
-    }))
-    .force('center', forceCenter(0, 0));
-
-  let iterations = 0;
-  for (let i = 0; i < maxIterations; i++) {
-    simulation.tick();
-    iterations++;
-    if (simulation.alpha() < alphaMin) {
-      break;
-    }
-  }
-
-  simulation.stop();
-
-  const converged = simulation.alpha() < alphaMin;
-
-  const positions = new Map<string, { x: number; y: number }>();
-  for (const node of simNodes) {
-    positions.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
-  }
-
-  return { positions, converged, iterations };
-}
 
