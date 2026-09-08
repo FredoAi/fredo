@@ -1,10 +1,9 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, HStack, VStack, IconButton, chakra } from '@chakra-ui/react';
 import { LuRotateCcw } from 'react-icons/lu';
 import { useTheme } from '../../../app/providers/ThemeProvider';
-import { themePresets } from '../../../app/types/theme';
 import type { ThemeOverrides } from '../../../app/types/theme';
-import { PresetColorReadout } from './PresetColorReadout';
+import { NewPresetPrompt } from './NewPresetPrompt';
 
 // ── Fonts available (all loaded via Google Fonts in index.html) ───────────────
 const FONT_OPTIONS = [
@@ -75,12 +74,13 @@ const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 );
 
 /**
- * ThemePresetSelector — a `chakra.select` over the 18 curated `themePresets` plus a
- * "Default / None" option that clears the preset (returns to the stock base theme).
- * Wired to `setPreset`/`selectedPreset` from `useTheme()`. Token/vars only (AC3/AC5).
+ * ThemePresetSelector — a `chakra.select` over `allPresets` (user presets first, then
+ * the 18 curated built-ins) plus a "Default / None" option that clears the preset
+ * (returns to the stock base theme). Wired to `setPreset`/`selectedPreset` from
+ * `useTheme()`. Token/vars only (AC3/AC5).
  */
 const ThemePresetSelector: React.FC = () => {
-  const { selectedPreset, setPreset } = useTheme();
+  const { selectedPreset, setPreset, allPresets } = useTheme();
   return (
     <chakra.select
       {...selectStyles}
@@ -89,7 +89,7 @@ const ThemePresetSelector: React.FC = () => {
       aria-label="Theme presets"
     >
       <option value="">Default / None</option>
-      {themePresets.map((preset) => (
+      {allPresets.map((preset) => (
         <option key={preset.id} value={preset.id}>
           {preset.name}
         </option>
@@ -135,7 +135,9 @@ const ColorRow: React.FC<ColorRowProps> = ({ label, value, hasOverride, onChange
       {label}
     </Text>
     <HStack gap={2} flex={1} justify="flex-end">
-      {/* Color swatch — click opens native color picker */}
+      {/* Color swatch — click opens native color picker.
+          `_focusWithin` draws a token ring around the swatch so the opacity-0 native
+          color input has a visible focus indicator (AC5 a11y / R-5). */}
       <Box
         position="relative"
         w="36px"
@@ -147,10 +149,12 @@ const ColorRow: React.FC<ColorRowProps> = ({ label, value, hasOverride, onChange
         flexShrink={0}
         cursor="pointer"
         title={`Pick ${label} color`}
+        _focusWithin={{ boxShadow: '0 0 0 2px var(--accent-primary)' }}
       >
         <Box position="absolute" inset={0} bg={value} />
         <chakra.input
           type="color"
+          aria-label={`${label} color`}
           position="absolute"
           inset={0}
           opacity={0}
@@ -202,18 +206,110 @@ const ColorRow: React.FC<ColorRowProps> = ({ label, value, hasOverride, onChange
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export const ThemingSettings: React.FC = () => {
-  const { theme, overrides, setOverride, selectedPreset, setPreset, resetTheme } = useTheme();
+  const {
+    theme,
+    overrides,
+    setOverride,
+    clearOverrides,
+    selectedPreset,
+    resetTheme,
+    getPreset,
+    createUserPresetFromCurrent,
+  } = useTheme();
 
-  // Resolve the active preset with the SAME `themePresets.find(...) ?? null` expression
-  // the provider uses (ThemeProvider.tsx:62), so the readout stays in lockstep with
-  // the applied preset. A stale/unmatched id resolves to null (AC3).
-  const activePreset = themePresets.find((p) => p.id === selectedPreset) ?? null;
+  // Resolve the active preset through the provider's `getPreset` (user first, then
+  // built-in) — the SAME resolver the provider uses for `activePreset`, so the
+  // inputs stay in lockstep with the applied preset. A stale/unmatched id resolves
+  // to null → base theme (AC3, #2758 clamp preserved).
+  const activePreset = getPreset(selectedPreset);
 
+  // R-2 (AC2): resolve the INPUT to the effective `override ?? preset ?? base` value.
+  // `override` still wins; a preset token (or the base value when the preset omits it)
+  // feeds `toHex`/`matchFont` so the visible control value matches the selected preset.
+  // `activePreset?.colors?.[key]` guards the index against `undefined` when no preset is
+  // selected (Default/None or Reset → selectedPreset === ''), so the base fall-back
+  // renders instead of crashing the editor.
   const colorValue = (key: ColorKey): string =>
-    overrides[key] ?? toHex(theme.colors[THEME_COLOR_MAP[key]]);
+    toHex(
+      overrides[key]
+        ?? (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
+        ?? theme.colors[THEME_COLOR_MAP[key]],
+    );
 
   const fontValue = (key: FontKey): string =>
-    matchFont(overrides[key] ?? theme.colors[key]);
+    matchFont(
+      (overrides[key] as string)
+        ?? (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
+        ?? (theme.colors as Record<FontKey, string>)[key],
+    );
+
+  // ── Dirty-edit prompt (AC3/AC4) ────────────────────────────────────────────────
+  // Track the tokens the user has actively edited while a preset is selected. A
+  // token is "dirty" only on a TRUE divergence: the edited value !== the preset's
+  // token value (base when the preset omits it). "Default / None" (no preset) never
+  // arms the prompt — there is no preset to diverge from.
+  const [dirtyTokens, setDirtyTokens] = useState<Set<keyof ThemeOverrides>>(new Set());
+  const [promptOpen, setPromptOpen] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Preset token value for a given key: the preset's literal, else the base value
+  // (matching the engine's `override ?? preset ?? base` truthy fall-through). The
+  // optional `?.colors?.[key]` guards against `undefined` when no preset is selected.
+  const presetValueOf = (key: keyof ThemeOverrides): string =>
+    (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
+      ?? (theme.colors as Record<keyof ThemeOverrides, string>)[key];
+
+  const resolvePromptFor = (key: keyof ThemeOverrides, nextValue: string) => {
+    if (!activePreset) return; // no preset → plain override, never prompt (AC3 negative)
+    // Resolve the target the preset would apply: its literal, or the base value when
+    // it omits the token. Only a TRUE divergence (the edit !== that target) prompts.
+    const presetValue = presetValueOf(key);
+    if (!nextValue || nextValue === presetValue) return; // not a true divergence
+    // Divergence — count the token as dirty and arm the debounced prompt.
+    setDirtyTokens((prev) => new Set(prev).add(key));
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setPromptOpen(true);
+    }, 400);
+  };
+
+  const handleColorChange = (key: ColorKey, val: string) => {
+    setOverride(key, val);
+    resolvePromptFor(key, val);
+  };
+
+  const handleFontChange = (key: FontKey, val: string) => {
+    setOverride(key, val);
+    resolvePromptFor(key, val);
+  };
+
+  // R-3 Discard: revert ALL dirty tokens back to the preset in ONE composed write
+  // (avoids the stale-closure batch bug where a forEach loop leaves N-1 keys).
+  // Esc / X routes here too.
+  const handleDiscard = () => {
+    if (dirtyTokens.size > 0) clearOverrides([...dirtyTokens]);
+    setDirtyTokens(new Set());
+    setPromptOpen(false);
+  };
+
+  // R-4 Save: persist the current effective palette as a new user preset (the provider
+  // captures `override ?? preset ?? base`, selects it, and clears overrides so the
+  // applied palette is byte-preserved). Re-arm the prompt on the next diverging edit.
+  const handleSave = (name: string) => {
+    createUserPresetFromCurrent(name);
+    setDirtyTokens(new Set());
+    setPromptOpen(false);
+  };
+
+  // A preset switch (or a reset) is a context change — clear any pending prompt +
+  // dirty set. Prompt state may also reset on section switch (existing remount).
+  useEffect(() => {
+    setDirtyTokens(new Set());
+    setPromptOpen(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, [selectedPreset]);
+
+  const dirtyCount = dirtyTokens.size;
 
   const hasAnyOverride = (Object.keys(overrides) as (keyof ThemeOverrides)[]).some((k) => !!overrides[k]);
 
@@ -255,9 +351,6 @@ export const ThemingSettings: React.FC = () => {
         <Box>
           <SectionLabel>Theme Presets</SectionLabel>
           <ThemePresetSelector />
-          {activePreset && (
-            <PresetColorReadout preset={activePreset} overrides={overrides} baseColors={theme.colors} />
-          )}
         </Box>
 
         {/* ── Accent Colors ──────────────────────────── */}
@@ -266,7 +359,7 @@ export const ThemingSettings: React.FC = () => {
           <VStack gap={3} align="stretch">
             {ACCENT_ROWS.map(({ label, key }) => (
               <ColorRow key={key} label={label} value={colorValue(key)} hasOverride={!!overrides[key]}
-                onChange={(val) => setOverride(key, val)} onReset={() => setOverride(key, '')} />
+                onChange={(val) => handleColorChange(key, val)} onReset={() => setOverride(key, '')} />
             ))}
           </VStack>
         </Box>
@@ -277,7 +370,7 @@ export const ThemingSettings: React.FC = () => {
           <VStack gap={3} align="stretch">
             {BG_ROWS.map(({ label, key }) => (
               <ColorRow key={key} label={label} value={colorValue(key)} hasOverride={!!overrides[key]}
-                onChange={(val) => setOverride(key, val)} onReset={() => setOverride(key, '')} />
+                onChange={(val) => handleColorChange(key, val)} onReset={() => setOverride(key, '')} />
             ))}
           </VStack>
         </Box>
@@ -288,7 +381,7 @@ export const ThemingSettings: React.FC = () => {
           <VStack gap={3} align="stretch">
             {TEXT_ROWS.map(({ label, key }) => (
               <ColorRow key={key} label={label} value={colorValue(key)} hasOverride={!!overrides[key]}
-                onChange={(val) => setOverride(key, val)} onReset={() => setOverride(key, '')} />
+                onChange={(val) => handleColorChange(key, val)} onReset={() => setOverride(key, '')} />
             ))}
           </VStack>
         </Box>
@@ -299,7 +392,7 @@ export const ThemingSettings: React.FC = () => {
           <VStack gap={3} align="stretch">
             {STATUS_ROWS.map(({ label, key }) => (
               <ColorRow key={key} label={label} value={colorValue(key)} hasOverride={!!overrides[key]}
-                onChange={(val) => setOverride(key, val)} onReset={() => setOverride(key, '')} />
+                onChange={(val) => handleColorChange(key, val)} onReset={() => setOverride(key, '')} />
             ))}
           </VStack>
         </Box>
@@ -316,7 +409,7 @@ export const ThemingSettings: React.FC = () => {
                 <chakra.select
                   {...selectStyles}
                   value={fontValue(key)}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setOverride(key, e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => handleFontChange(key, e.target.value)}
                 >
                   {FONT_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
@@ -353,6 +446,16 @@ export const ThemingSettings: React.FC = () => {
         )}
 
       </VStack>
+
+      {/* ── Dirty-edit prompt (AC3/AC4) ───────────────────────────── */}
+      <NewPresetPrompt
+        isOpen={promptOpen}
+        presetName={activePreset?.name ?? ''}
+        dirtyCount={dirtyCount}
+        onSave={handleSave}
+        onDiscard={handleDiscard}
+        onClose={handleDiscard}
+      />
     </Box>
   );
 };

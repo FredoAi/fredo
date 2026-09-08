@@ -174,13 +174,22 @@ export const themes: Record<ThemeMode, Theme> = {
  * custom properties in ThemeProvider, never directly into a component.
  */
 export interface ThemePreset {
-  /** Stable machine id, e.g. 'light-default'. */
+  /** Stable machine id, e.g. 'light-default' (built-in) or 'user-<uuid>' (user-created). */
   id: string;
   /** Human display name, e.g. 'Light Default'. */
   name: string;
   /** The token subset the preset sets; a partial ThemeOverrides so per-token overrides still win. */
   colors: Partial<ThemeOverrides>;
 }
+
+/**
+ * User-created presets MUST carry this prefix; built-in ids never do
+ * (theme.ts:204-547). This keeps the merged selectable list
+ * `[...userPresets, ...themePresets]` collision-free and lets a selected user
+ * preset resolve through `getPreset()` without ever colliding with a built-in.
+ */
+export const USER_PRESET_PREFIX = 'user-';
+export const isUserPresetId = (id: string): boolean => id.startsWith(USER_PRESET_PREFIX);
 
 // ── Shared font stacks (token DATA only — applied via ThemeProvider CSS vars) ──
 const SANS_STACK: Pick<ThemeOverrides, 'fontPrimary' | 'fontSecondary' | 'fontBase'> = {
