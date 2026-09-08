@@ -11,7 +11,7 @@ interface FloatingSettingsButtonProps {
 }
 
 /**
- * Settings-buttion z-contract (Spec #2841 AC4 / R-4; Architect binding
+ * Settings-button z-contract (Spec #2841 AC4 / R-4; Architect binding
  * `[architect]`): the button renders BEFORE `LauncherChrome` in DOM order
  * (`Home.tsx:193`→`195`), so at equal z the band would paint over it. 1250 is
  * required to sit ABOVE the chrome band (1200) + the resting launcher surface
