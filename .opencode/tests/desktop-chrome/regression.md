@@ -71,3 +71,38 @@ Overlapping suites to run alongside: `mission-monitor` (opens feature windows vi
 
 - [x] R-15 (#2838): the #2830 desktop-chrome invariants hold unchanged with the dock present. EXPECTED: notch/avatar/command-bar/side-tick rulers/dot-grid/rounded frame/hints geometry unchanged (R-7); clock advances + exactly one top-right LED + no bottom LEDs (R-8/R-13); band z 1200↔0 sink/cover intact (R-9); band wrapper stays `pointer-events:none` (R-10); changed dock/chrome files token-native — zero hardcoded hex/`rgba(`/`rgb(` and zero `var(--x)NN` alpha-append (R-11); Ctrl+Space launcher + #2821 fidelity hold (R-12); no re-render loop from the dock reveal/hide + hover state (R-14 pattern). The dock adds NO desktop-chrome overlay above the window stack at rest and no second LED/status surface returns; `DOCK_Z_INDEX = 1200` (left-edge rail, ~88px top/bottom insets) never occludes the top-right clock/LED cluster or the window min/max/close controls.
   - **PASS (spec/2838 @ 6ccf4820, round 1).** R-7: dock diff touches only `Home.tsx` mount + new `dock/` files + deleted `AppDrawer.tsx` — no LauncherChrome/desktop-chrome geometry change (R-7 holds). R-8/R-13: clock advanced 03:51→04:41 live; `ledTriggers:1`, `statusRoles:["Online"]`, `bottomDotCount:0` — exactly one top-right LED, no bottom LEDs/no second status surface. R-9: band/surface z 1100 rest → 0 with a visible window → 1300 under Ctrl+Space, verified live. R-10: band wrapper `pointerEvents:"none"`. R-11: `dock/AppDock.tsx`+`DockEntry.tsx` grep = zero hex/rgba/rgb/hsla/`var(--x)NN` literals (only `#2838`/`#2821` comment refs); colors token→var→`tint()` only (window-manager F-30). R-12: Ctrl+Space round-trip verified (z1300 + searchbox focus → ESC → z0/1100); #2821 clock-clean fidelity holds. R-14 pattern: reveal/hide + hover/tooltip cycles produced no `Maximum update depth exceeded` (console read per leg; attribution notes in window-manager F-34). Dock at rest adds no overlay above the window stack (F-14 evidence); revealed rail disjoint from clock/LED and never above the Ctrl+Space overlay (`launcherZ:1300 > dockZ:1200`).
+
+---
+
+## #2841 extension — desktop chrome polish: non-goals / must-not-change invariants
+
+> Issue #2841 — desktop chrome polish. NO-CHANGE invariants that must hold while the
+> rail becomes resting-visible, the clock/LED cluster is centered, and the settings
+> button hoists to the chrome tier. Map 1:1 to `.opencode/tmp/2841/triage.md` `## QA Expert` (non-goals / R-7). Run the #2838/#2830 regression baseline (R-7..R-15) alongside — the delayed by deliberate redesign deviations (rail rest state, cluster geometry, settings z-order) are the AC, NOT fidelity failures.
+
+## R-16 — Window lifecycle, z-order, and Ctrl+Space launcher are untouched
+
+- [ ] R-16: Window lifecycle (open/close/minimize/restore/focus/maximize), the z-order model (#2825 window frame z=1 > band z 0 covered / 1200 uncovered), and the #2823 Ctrl+Space launcher toggle (opens + focuses searchbox, ESC closes, focus restores) behave EXACTLY as before. The rail stays a PURE READ-ONLY consumer of `useWindows()`/`useWindowActions()` — it never edits `windowStore.ts`/`windowTypes.ts`/the window components; no Rust diff (NFR-1).
+  - **Edge:** Ctrl+Space over a maximized window (launcher z1300 > rail z1200 > band z0 covered); window min/max/close clickable with the rail resting-visible AND covered; minimize does NOT auto-focus the rail.
+
+## R-17 — The single top-right LED + advancing clock contract is preserved (no LED regression)
+
+- [ ] R-17: Exactly ONE top-right status LED (no bottom LEDs / no second status surface), the clock HH:MM still advances on the 60s interval, and the band still sinks to z0 under a window so the `led-overlay.png` class bug does NOT recur. The ONLY intended change is the cluster's position (centered) — the LED count/size/state-machine and the clock timer must be untouched.
+  - **Edge:** exactly one LED trigger in the `<time>` cluster; no `StreamStatus` reintroduced; LED driven by `isOnline` (no pulse).
+
+## R-18 — Changed files token-native; no `var(--x)NN`; Chakra v3 only
+
+- [ ] R-18: The changed files (dock/AppDock.tsx, dock/DockEntry.tsx, launcher/LauncherChrome.tsx, settings/FloatingSettingsButton.tsx, Home.tsx) carry ZERO hardcoded hex/`rgba(`/`rgb(`/`hsla(` and NO `var(--x)NN` alpha-append (#2770); colors flow token → CSS var → `tint()`/`color-mix`; Chakra v3 API only (no v2 `isDisabled`/`colorScheme`/`NativeSelect`). The `FloatingSettingsButton.tsx:31` `rgba(0,0,0,0.2)` box-shadow is a KNOWN in-scope literal that MUST be converted (this is the intended fix, not a regression).
+  - **Edge:** destructive close affordance uses `tint('var(--status-error)',N)`, NOT `variant="outline" colorPalette="red"` (#431 pitfall); no hardcoded accent hex.
+
+## R-19 — The resting-visible rail does not break the covered/peek coexistence
+
+- [ ] R-19: When `coveredByWindow === true` (a maximized window covers the desktop), the rail reverts to the exact #2838 peek-only model (off-canvas at rest, slides in on ≤6px left-edge cross) so the window stays full-bleed — honoring the #2825 chrome-vs-window painting rule. When `coveredByWindow === false` (clean desktop), the rail rests visible. The transition between the two must not leave a stale state or a re-render loop.
+  - **Edge:** open a window (covered) → close it (clean) → the rail flips resting-visible cleanly; maximize→restore; console clean of `Maximum update depth exceeded` (NFR-2 transition-only reveal preserved).
+
+## R-20 — Corner cluster cleanup: no clock/LED overlap regressions remain
+
+- [ ] R-20: The clock/LED cluster centering change does NOT reintroduce any overlap of the cluster or the rail with the window titlebar min/max/close controls (`windows-buttons-time-overlap.png` class bug must NOT recur), and the cluster stays DISJOINT from the left-edge rail (`getBoundingClientRect` disjointness holds).
+  - **Edge:** maximized full-bleed; window dragged under the cluster; rail revealed vs hidden; light + dark; narrow viewport.
+
+Overlapping suites to run alongside: `window-manager` (window lifecycle + rail F-25..F-35 from #2838), `launcher` (Ctrl+Space + grid + clock), `theming` (preset re-tint).
