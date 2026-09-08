@@ -304,7 +304,7 @@ function Prepare-BaselineServing {
 # residue; never touches anything outside apps/.
 function Restore-ProductTree {
   param([uint64]$SpecIssue)
-  $dirty = (git status --porcelain -- apps).Trim()
+  $dirty = ((& git status --porcelain -- apps 2>$null) | Out-String).Trim()
   if ($dirty) {
     Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
     if ((Invoke-NativeQuiet git checkout HEAD -- apps) -ne 0) {
