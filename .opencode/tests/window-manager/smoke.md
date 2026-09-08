@@ -37,3 +37,7 @@
 - **S-6 PASS (round-2 fix)** — clicking the toolbar `button[aria-label="Mission Monitor"]` opens the window framed in the Fredo brand chrome (own engine); DOM shows `.fredo-window__surface` + header + controls; screenshot `01-mm-open.png`. The `onClickCapture` wrapper routes the launcher click to the own kernel's `openFeatureWindow`.
 - **S-7 PASS** — the window chrome controls (Minimize / Restore / Close) are rendered and reachable; clicking Close removes the window and the open-window list (idempotent, no crash); console clean.
 - **S-8 PASS** — re-opening the same feature window after closing opens cleanly (no stale frame, no duplicate, no focus trap); re-open + update twice works end-to-end (session list grew 1→2→3 with identical surface class = no remount).
+
+## #2838 extension — left-edge dock smoke
+
+- [ ] S-9: Open one feature window, then minimize it. EXPECTED: NO bottom-docked "Open applications" tray appears (the #2821 drawer is gone); hovering the real pointer at the left edge (x ~0-4) reveals the dock listing the open window's icon; moving the pointer away hides it again; `tauri_read_logs(source="console")` clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.

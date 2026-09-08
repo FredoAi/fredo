@@ -85,3 +85,17 @@ webview window min/max/close controls). Seeded from issue #2825.
 
 - [x] F-13: `pnpm --filter @fredo/ui build` (TypeScript) + the Rust backend check / `test:run` from the repo root. **Expected:** zero TypeScript errors in the changed frontend; `build` exits 0; `test:run` green. No cross-feature import introduced (the LED/tooltip stay under `home/components/`).
   - **Edge:** no transpile-only `any` leakage; the change touches no IPC/API (no backend surface). **PASS (spec/2830 round 1):** `pnpm --filter @fredo/ui build` → `tsc && vite build` **exit 0** ("✓ built in 8.59s", 2559 modules); `pnpm --filter @fredo/ui test:run` → **48 files / 709 tests passed**. Matches the developer's CI-parity receipt. No backend/IPC change (git diff shows only frontend LED files + deleted StreamStatus + AppDrawer comment).
+
+---
+
+## #2838 extension — left-edge auto-hide dock does not disturb the desktop chrome
+
+> Issue #2838 — left-edge auto-hide app dock REPLACES the #2821 bottom-docked tray. The dock
+> is a left-edge rail (`DOCK_Z_INDEX = 1200`, Architect binding — above window stack z=1 and
+> resting launcher z=1100, below the Ctrl+Space overlay z=1300, co-equal with the
+> `pointer-events:none` chrome band) revealed ONLY while >=1 window is open; at rest it is
+> off-canvas + `pointer-events:none` + `visibility:hidden`. Run the #2830 F-6..F-13 +
+> regression R-7..R-14 legs alongside (single top-right LED, band passive, band z sink/cover).
+> Map 1:1 to `.opencode/tmp/2838/triage.md` `## QA Expert` (QA-Plan row R-14; EARS D-10 / AC6).
+
+- [ ] F-14 (R-14 / D-10 / AC6): With the dock at rest AND revealed (>=1 window open incl minimized), verify the desktop chrome is unaffected and never occluded. EXPECTED: EXACTLY ONE top-right status LED + advancing clock as in F-6..F-10; the dock at rest occludes nothing and intercepts no pointer (G-106 method a probe: force `pointerEvents='auto'` on the dock rail only while revealed, `elementFromPoint` at the rail vs left-edge content — at rest no rail layer is hit); the revealed left-edge rail does NOT overlap the top-right clock/LED cluster (computed `getBoundingClientRect` disjoint — rail ~88px top/bottom insets) nor the window min/max/close controls; the chrome band z model holds (band z 1200 uncovered / 0 covered); the dock never paints above the band or the Ctrl+Space overlay (z=1300); window controls remain clickable. Edge: maximized window full-bleed with the dock revealed; all-minimized (band back at 1200 while the dock may reveal — rail geometry never reaches the top-right cluster); light + dark; narrow viewport; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.

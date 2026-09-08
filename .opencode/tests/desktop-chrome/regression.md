@@ -60,3 +60,13 @@ Overlapping suites to run alongside: `mission-monitor` (opens feature windows vi
 ## R-14 — No re-render loop from the hover/tooltip state
 
 - [x] R-14: Hovering/focusing the LED trigger (open/close tooltip) does not introduce a re-render loop — the console stays clean of `Maximum update depth exceeded`. No effect depends on array `.length` or newly-created object refs. **PASS (spec/2830 round 1):** `tauri_read_logs(source=console)` across the hover/focus/Escape tooltip cycles shows NO `Maximum update depth exceeded` / `Uncaught` (only the stale pre-test Vite HMR note for the deleted `StreamStatus.tsx`).
+
+---
+
+## #2838 extension — left-edge auto-hide dock: no desktop-chrome regression
+
+> Issue #2838 — the #2821 bottom-docked tray is REPLACED by a left-edge auto-hide app dock
+> (pure consumer; window kernel READ-ONLY). #2830 R-7..R-14 above remain the baseline and must
+> hold. Map 1:1 to `.opencode/tmp/2838/triage.md` `## QA Expert` (EARS D-10 / AC6; NFR-7).
+
+- [ ] R-15 (#2838): the #2830 desktop-chrome invariants hold unchanged with the dock present. EXPECTED: notch/avatar/command-bar/side-tick rulers/dot-grid/rounded frame/hints geometry unchanged (R-7); clock advances + exactly one top-right LED + no bottom LEDs (R-8/R-13); band z 1200↔0 sink/cover intact (R-9); band wrapper stays `pointer-events:none` (R-10); changed dock/chrome files token-native — zero hardcoded hex/`rgba(`/`rgb(` and zero `var(--x)NN` alpha-append (R-11); Ctrl+Space launcher + #2821 fidelity hold (R-12); no re-render loop from the dock reveal/hide + hover state (R-14 pattern). The dock adds NO desktop-chrome overlay above the window stack at rest and no second LED/status surface returns; `DOCK_Z_INDEX = 1200` (left-edge rail, ~88px top/bottom insets) never occludes the top-right clock/LED cluster or the window min/max/close controls.
