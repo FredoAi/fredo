@@ -83,3 +83,15 @@
 - **R-8 (graceful degradation) — PASS (re-confirm).** `Fredo_window_style` grep = 0 matches → nothing reads the key (reader deleted ST-4); a legacy value degrades to the single brand chrome with no crash (round-2 evidence: aero/bogus/absent all clean).
 - **R-9 (test suite mock stays green) — PASS.** Per dev summary: `pnpm --filter @fredo/ui test:run` 693/693; mocks re-pointed to own `useWindowActions` (unchanged this round).
 - **R-10 (no re-render loop / no console errors) — PASS.** No `Maximum update depth`/`Uncaught` during the round-3 lifecycle drive; console clean (only pre-existing `motion() is deprecated` warn + one transient React Flow "parent container width/height" warn, benign).
+
+---
+
+## #2838 extension — left-edge auto-hide dock: new no-change invariants
+
+> Issue #2838 REPLACES the #2821 minimize-triggered bottom-docked tray (functional.md F-16..F-19
+> are SUPERSEDED) with a left-edge auto-hide icon dock. The #2807 baseline R-1..R-10 above is
+> UNCHANGED and must still pass. Map 1:1 to `.opencode/tmp/2838/triage.md` `## QA Expert`
+> (EARS D-1..D-10, NFR-7; QA-Plan rows R-13/R-14/R-15 for AC6).
+
+- [ ] R-11 (#2838): minimize opens NO bottom tray; the left-edge dock is a passive read-only consumer of the shared window-system read surface. EXPECTED: the #2821 `AppDrawer` bottom-docked component is DELETED (`AppDrawer.tsx` gone; no mount/import in Home.tsx — grep zero references, build green); the dock never writes lifecycle state (kernel READ-ONLY — no edits to `windowStore.ts`/`windowTypes.ts`/`useWindows.ts`/`useWindowActions.ts`/`WindowManager.tsx`/`WindowFrame.tsx`/`WindowChrome.tsx`, NFR-1); the dock consumes `useWindows()` store-order entries keyed `win.id` (NFR-3). Edge: zero dangling `AppDrawer` import; the dock reveals only while >=1 window is open (empty gate, D-1).
+- [ ] R-12 (#2838): the dock at rest changes NOTHING about desktop/window stacking, pointer reach, or desktop chrome. EXPECTED: at rest the dock is off-canvas + `pointer-events:none` + `visibility:hidden` (out of tab order + a11y tree) — a maximized window stays full-bleed edge-to-edge, left-edge content stays pointer-reachable, the window min/max/close controls stay clickable; the chrome band z model (uncovered 1200 / covered 0, #2830 R-9) is untouched; `DOCK_Z_INDEX = 1200` (Architect binding, left-edge rail with ~88px top/bottom insets) never occludes the top-right clock/LED cluster. Edge: rapid reveal/hide does not re-indent content or re-render-loop (#523); desktop-chrome regression R-7..R-14 (single top-right LED, band passive) still hold alongside.
