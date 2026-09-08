@@ -38,15 +38,19 @@
   Status prints the root branch + HEAD.
 
 .PARAMETER At
-  Baseline-leg commit (Up only, OPTIONAL). Serves a PRE-FIX ancestor commit of
-  spec/<Spec> for a Before/baseline measurement in a research-first spec (Spec
-  #498 pattern). Fail-closed: the repo root must still be on spec/<Spec> (G-052)
-  and -At must resolve to a commit reachable from the origin/spec/<Spec> tip —
-  main's divergent code and any non-spec commit are REFUSED. Baseline legs
-  never check out main and never hand-roll a detached dev-server spawn; a
-  cross-branch serving need the tool does not cover is a tooling request to the
-  Self-Improver (new script/param), not an ad-hoc agent script. Without -At the
-  strict G-052 origin-tip check applies (the normal flow).
+  Baseline-leg commit (Up only, OPTIONAL). Serves the PRE-FIX PRODUCT code of an
+  ancestor commit of spec/<Spec> (apps/ materialized into the current serving
+  tree) for a Before/baseline measurement in a research-first spec (Spec #498
+  pattern) -- the tooling (this script, opencode.json) stays at the spec/<Spec>
+  tip, so the sandbox and tool surface are unchanged. Fail-closed: the repo root
+  must be on spec/<Spec> (G-052) and -At must resolve to a commit reachable from
+  the origin/spec/<Spec> tip -- main's divergent code and any non-spec commit are
+  REFUSED. Baseline legs never serve main and never hand-roll a detached
+  dev-server spawn; a cross-branch serving need the tool does not cover is a
+  tooling request to the Self-Improver (new script/param), not an ad-hoc agent
+  script. The next standard Up (without -At) restores apps/ to the spec/<Spec>
+  tip for the AFTER legs. Without -At the strict G-052 origin-tip check applies
+  (the normal flow).
 
 .PARAMETER VitePort
   Vite dev server port. Default: 5174.
@@ -237,17 +241,20 @@ function Assert-RootServingCurrency {
   return $tip
 }
 
-# -- Baseline-leg serving currency (research-first Before measurement) ----------
+# -- Baseline-leg serving (research-first Before measurement) -------------------
 
-# A research-first perf spec's Before/baseline leg serves a PRE-FIX ancestor of
-# the spec branch (the same buggy code) -- NEVER main and NEVER a hand-rolled
-# detached spawn (agents provide tools to agents; agents do not invent their
-# own). Up -Spec <N> -At <commit-ish> fail-closes on: root not on spec/<Spec>,
-# -At not resolvable, -At not reachable from origin/spec/<Spec> (so main's
-# divergent code and any non-spec commit are refused), or HEAD not actually at
-# the requested commit (the caller must `git checkout` the pre-fix commit first;
-# after the baseline leg, restore the root to the origin tip for the AFTER legs).
-function Assert-BaselineServingCurrency {
+# A research-first perf spec's Before/baseline leg must serve the PRE-FIX product
+# code (the same buggy code) -- NEVER main and NEVER a hand-rolled detached
+# spawn (agents provide tools to agents; agents do not invent their own). The
+# serving checkout stays on spec/<Spec> at the origin tip, so the tooling
+# (this script, opencode.json, the skills) is ALWAYS the current version; -At
+# materializes ONLY the pre-fix product code under apps/ into the working tree
+# (`git checkout <sha> -- apps`) and cold-starts the dev instance against it.
+# Fail-closed: root must be on spec/<Spec> and -At must be reachable from the
+# origin/spec/<Spec> tip (main's divergent code and foreign commits are refused).
+# After the baseline leg, the next standard Up (without -At) restores apps/ from
+# HEAD so the AFTER legs serve the fixed tip.
+function Prepare-BaselineServing {
   param([uint64]$SpecIssue, [string]$At)
 
   $branch = (git rev-parse --abbrev-ref HEAD).Trim()
@@ -281,12 +288,30 @@ function Assert-BaselineServingCurrency {
     exit 1
   }
 
-  $head = (git rev-parse HEAD).Trim()
-  if ($head -ne $atSha) {
-    Write-Log "ERROR: repo root HEAD is $($head.Substring(0, [Math]::Min(8, $head.Length))) but -At requests $($atSha.Substring(0, [Math]::Min(8, $atSha.Length))). Baseline leg: first run git checkout $atSha at the root, then Up -At $atSha." -Level ERROR
+  # Materialize ONLY the product code at the pre-fix commit. apps/ is gitignored-
+  # free tracked source (node_modules untracked) so this reverts exactly the
+  # product diff; tooling/opencode.json stay at the spec/<Spec> tip.
+  if ((Invoke-NativeQuiet git checkout $atSha -- apps) -ne 0) {
+    Write-Log "ERROR: could not materialize pre-fix product code from $($atSha.Substring(0, [Math]::Min(8, $atSha.Length))) into apps/ (git checkout failed)." -Level ERROR
     exit 1
   }
+  Write-Log "Materialized PRE-FIX product code (apps/) from $($atSha.Substring(0, [Math]::Min(12, $atSha.Length)))."
   return $atSha
+}
+
+# Restore apps/ to the current HEAD (spec/<Spec> tip) after a baseline leg. Runs
+# automatically on the standard Up path when the product tree carries baseline
+# residue; never touches anything outside apps/.
+function Restore-ProductTree {
+  param([uint64]$SpecIssue)
+  $dirty = (git status --porcelain -- apps).Trim()
+  if ($dirty) {
+    Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
+    if ((Invoke-NativeQuiet git checkout HEAD -- apps) -ne 0) {
+      Write-Log "ERROR: could not restore apps/ from HEAD (git checkout failed)." -Level ERROR
+      exit 1
+    }
+  }
 }
 
 # -- Actions ------------------------------------------------------------------
@@ -304,10 +329,13 @@ switch ($Action) {
       exit 1
     }
     if ($At) {
-      # Baseline leg: serve a PRE-FIX ancestor of spec/<Spec> (fail-closed).
-      $tip = Assert-BaselineServingCurrency -SpecIssue $Spec -At $At
-      Write-Log "BASELINE LEG: serving pre-fix commit $($tip.Substring(0, [Math]::Min(12, $tip.Length))) of spec/$Spec (Before/baseline measurement)."
+      # Baseline leg: serve the PRE-FIX product code (apps/ materialized from an
+      # ancestor of spec/<Spec>; tooling stays current). Fail-closed.
+      $tip = Prepare-BaselineServing -SpecIssue $Spec -At $At
+      Write-Log "BASELINE LEG: serving pre-fix product code of $($tip.Substring(0, [Math]::Min(12, $tip.Length))) on spec/$Spec (Before/baseline measurement). The next Up WITHOUT -At restores the spec/$Spec tip."
     } else {
+      # Standard flow: restore any baseline residue, then verify root currency.
+      Restore-ProductTree -SpecIssue $Spec
       $tip = Assert-RootServingCurrency -SpecIssue $Spec
     }
 
