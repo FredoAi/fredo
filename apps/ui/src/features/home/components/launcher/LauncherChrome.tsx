@@ -61,6 +61,12 @@ export interface LauncherChromeProps {
 
 const pad2 = (n: number): string => n.toString().padStart(2, '0');
 
+/** Symmetric corner inset (AC3 / R-3): the clock+LED cluster is centered within
+ *  a corner box inset EQUALLY from both the top and right edges, so neither the
+ *  HH:MM text nor the LED hugs the top/right edge. Equal top==right is what
+ *  makes "visually centered in the corner" deterministic. */
+const CLOCK_CORNER_INSET_PX = 16;
+
 const formatTime = (date: Date): string => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 
 /** Monoweight SVG glyphs — all `currentColor`, decorative (`aria-hidden`). */
@@ -351,14 +357,26 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
       {/* Online READOUT CLUSTER — top-right; the large HH:MM clock + the single
           consolidated status LED (Spec #2830). The clock stays; the former
           ONLINE/OFFLINE text label and 6px dot are replaced by one enlarged 12px
-          LED (below the clock, right-aligned) inside a 16px focusable trigger
+          LED (below the clock) inside a 16px focusable trigger
           that re-enables pointer events on itself only and reveals a Chakra v3
           tooltip on hover/focus. The cluster wrapper + chrome root stay
           pointer-events:none (the #2825 covered-by-window z-sink still applies).
-          Token-native: accent/status-error + tint() halo, never var(--x)NN. */}
-      <Box position="absolute" top="16px" right="20px" textAlign="right" pointerEvents="none">
+          Token-native: accent/status-error + tint() halo, never var(--x)NN.
+          Centering (AC3 / R-3): the cluster box uses a SYMMETRIC inset
+          (`CLOCK_CORNER_INSET_PX` from both top AND right) and centers the group
+          (`align-items:center`, `text-align:center`), so neither the HH:MM text
+          nor the LED hugs the top/right edge. The #2825 covered-clearance is a
+          z-sink concern (the whole band sinks to z=0), NOT a geometry one —
+          centering is purely clean-desktop geometry and is decoupled from it. */}
+      <Box
+        position="absolute"
+        top={`${CLOCK_CORNER_INSET_PX}px`}
+        right={`${CLOCK_CORNER_INSET_PX}px`}
+        textAlign="center"
+        pointerEvents="none"
+      >
         <time aria-label={`${time}, ${isOnline ? 'online' : 'offline'}`}>
-          <Box display="flex" flexDirection="column" alignItems="flex-end">
+          <Box display="flex" flexDirection="column" alignItems="center" gap="6px">
             <Text
               fontFamily="var(--font-base)"
               fontWeight={500}
@@ -385,7 +403,6 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
                   justifyContent="center"
                   pointerEvents="auto"
                   cursor="default"
-                  mt="6px"
                 >
                   <Box
                     as="span"
