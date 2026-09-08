@@ -19,7 +19,7 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 | Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart` | Down then Up. |
 | Logs | `powershell -File .opencode/scripts/dev-env.ps1 -Action Logs` | Tail process stdout/stderr. |
 
-Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`
+Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`, `-At <commit-ish>` (baseline-leg serving, Up only — see the baseline rule below).
 
 ## Cleaning the Fredo DB (fresh-slate reset for live e2e)
 
@@ -72,6 +72,8 @@ Notes:
 - A mismatch between the PID owning :9223 and the current run's `fredo.exe` (process start time after `Up`) means an orphaned instance owns the port — full `Down`, verify :9223 is free via `-List`, then `Up` again.
 
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
+
+> **Baseline legs (research-first specs) — NEVER hand-roll a dev-server spawn.** A Before/baseline measurement in a research-first perf spec (Spec #498 pattern, e.g. #2835) runs against the **pre-fix `spec/<N>` state** — the branch state BEFORE the fix work pushed (that state IS the same buggy code as `main`). The rule: **a baseline leg runs through `dev-env.ps1 -Action Up -Spec <N>`; you NEVER check out `main` for a baseline and NEVER hand-roll a detached spawn** (no ad-hoc `.mjs`/`.ps1`/`.js` scratch script that starts `pnpm dev:tauri` — `.opencode/tmp/<issue>/` is for DATA, not for re-inventing infrastructure). When the fix commits already sit on the branch and a pre-fix measurement is still required, serve the pre-fix ancestor commit through the sanctioned tool: `dev-env.ps1 -Action Up -Spec <N> -At <pre-fix-sha>` — the tool materializes ONLY the pre-fix product code (`apps/`) into the current `spec/<N>` serving tree and cold-starts it (tooling/`opencode.json` stay at the tip, so the sandbox and tool surface are unchanged); it is fail-closed (root must be on `spec/<N>`; the commit must be reachable from the `origin/spec/<N>` tip — main and foreign commits are refused). After the baseline leg, the next standard `Up` (no `-At`) restores the tip product code for the AFTER legs. **If a genuine cross-branch measurement (code NOT reachable from the spec branch tip) is ever required, that is a TOOLING REQUEST to the Self-Improver (a new script/param), not an ad-hoc agent script** — report the exact gap (command + why denied + what the provisioned tool lacks) and block/escalate instead of writing a scratch runner that re-implements a sanctioned tool's internals (G-110).
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
 

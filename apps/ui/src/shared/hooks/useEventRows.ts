@@ -53,7 +53,19 @@ import type {
 } from '../classes/EventSubscription';
 
 /** Equality filter args — strings are quoted, numbers/booleans/null are bare. */
-export type RowArgs = Record<string, string | number | boolean | null>;
+export type RowArgs = Record<string, string | number | boolean | null | RowCompareArg>;
+
+/** A comparison filter arg (`field <op> value`) the backend query parser maps
+ *  onto a typed column (commands.rs `pushdown` → store.rs `select_snapshot`).
+ *  Used to narrow the mission-monitor replay snapshot to a bounded recent
+ *  window on first open (#2835 sub-task 4 frontend half). */
+export interface RowCompareArg {
+  op: RowCompareOp;
+  value: string | number | boolean | null;
+}
+
+/** Comparison operators the RTDB query language accepts (commands.rs CompareOp). */
+export type RowCompareOp = '=' | '>' | '>=' | '<' | '<=';
 
 export interface UseEventRowsOptions {
   /** Replay the persisted snapshot as full-row inserts before live patches. */
@@ -132,7 +144,12 @@ export function buildQueryText(
   const argParts: string[] = [];
   for (const [field, value] of Object.entries(args)) {
     if (value === undefined) continue;
-    argParts.push(`${field} = ${formatQueryLiteral(value)}`);
+    if (value !== null && typeof value === 'object' && 'op' in value) {
+      const { op, value: cmp } = value as RowCompareArg;
+      argParts.push(`${field} ${op} ${formatQueryLiteral(cmp)}`);
+    } else {
+      argParts.push(`${field} = ${formatQueryLiteral(value)}`);
+    }
   }
   const argsClause = argParts.length > 0 ? `(${argParts.join(', ')})` : '';
   return `${root}${argsClause} { ${selection.join(', ')} }`;
@@ -165,7 +182,7 @@ function describeSubscribeError(err: unknown): string {
  * are safe (string comparison, no reference identity).
  */
 function stableArgsKey(args: RowArgs): string {
-  const entries: Array<[string, string | number | boolean | null]> = [];
+  const entries: Array<[string, string | number | boolean | null | RowCompareArg]> = [];
   for (const [field, value] of Object.entries(args)) {
     if (value === undefined) continue;
     entries.push([field, value]);

@@ -833,6 +833,16 @@ mod tests {
         (dir, store)
     }
 
+    /// RFC3339 "now − seconds" in the pipeline's canonical Utc stamp format.
+    /// Retention-prune tests need now-RELATIVE "fresh" rows: `prune` computes
+    /// its cutoff as wall-clock now − retention_days (store.rs), so a fixed
+    /// calendar-date fixture "goes stale" the day its date falls outside the
+    /// rolling window and the prune silently deletes it (observed 2026-09-07
+    /// for fixtures dated 2026-08-31 with retention_days = 7).
+    fn rfc3339_ago(seconds: i64) -> String {
+        (Utc::now() - chrono::Duration::seconds(seconds)).to_rfc3339()
+    }
+
     fn chat_row(session: &str, corr: &str, seq: i64, updated_at: &str) -> ChatRow {
         ChatRow {
             session_id: session.to_string(),
@@ -1105,7 +1115,7 @@ mod tests {
     fn prune_deletes_rows_older_than_retention_window() {
         let (_dir, store) = make_store();
         let old = chat_row("ses_old", "ses_old", 1, "2020-01-01T00:00:00+00:00");
-        let fresh = chat_row("ses_fresh", "ses_fresh", 1, "2026-08-31T00:00:00+00:00");
+        let fresh = chat_row("ses_fresh", "ses_fresh", 1, &rfc3339_ago(60));
         store.upsert_chat_rows(&[old, fresh]).expect("upsert");
         store
             .upsert_tool_use_rows(&[tool_row("ses_old", "t_old", 1, "2020-01-01T00:00:00+00:00")])
@@ -1176,8 +1186,8 @@ mod tests {
         let (_dir, store) = make_store();
         store
             .upsert_chat_rows(&[
-                chat_row("s", "a", 1, "2026-08-31T00:00:00+00:00"),
-                chat_row("s", "b", 2, "2026-08-31T00:00:01+00:00"),
+                chat_row("s", "a", 1, &rfc3339_ago(120)),
+                chat_row("s", "b", 2, &rfc3339_ago(60)),
             ])
             .expect("upsert");
 

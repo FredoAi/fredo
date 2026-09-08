@@ -218,7 +218,7 @@ describe('AppProvider — RowDelivery routing', () => {
 
   // ── Replay-completion marker (round-3 F-33 fix) ─────────────────────────
 
-  it('applies a marker-carrying batch FIRST, then settles the drain (rows before settle)', () => {
+  it('#2835 ST-9-R3a: a marker-carrying batch lands rows and fires the drain\'s ONE (early) bump — the marker does NOT double-bump', () => {
     const { adapter, dispatch } = makeAdapter();
     render(
       <StreamProvider>
@@ -233,13 +233,13 @@ describe('AppProvider — RowDelivery routing', () => {
       dispatch({ rowBatch: [ROW_DELIVERY] } as unknown as Record<string, unknown>);
     });
     expect(getRowMap('Chat').size).toBe(1, 'rows land even while the drain is pending');
-    expect(getRowEpoch('Chat')).toBe(0, 'bump deferred during the drain');
+    expect(getRowEpoch('Chat')).toBe(1, 'ST-9-R3a: the first row-bearing batch fires the ONE early bump');
 
     act(() => {
       // The terminal envelope: empty rowBatch + the marker.
       dispatch({ rowBatch: [], replayCompleteQueryId: 'q-1' } as unknown as Record<string, unknown>);
     });
-    expect(getRowEpoch('Chat')).toBe(1, 'ONE settle bump after the rows were applied');
+    expect(getRowEpoch('Chat')).toBe(1, 'the marker\'s settle sees no dirty — no second bump for a single-batch drain');
 
     // Drain consumed: a follow-up live batch bumps per-batch again.
     act(() => {
@@ -263,9 +263,9 @@ describe('AppProvider — RowDelivery routing', () => {
       dispatch({ rowBatch: [ROW_DELIVERY] } as unknown as Record<string, unknown>);
     });
     expect(getRowMap('Chat').size).toBe(1);
-    expect(getRowEpoch('Chat')).toBe(0, 'no marker → no settle');
+    expect(getRowEpoch('Chat')).toBe(1, 'ST-9-R3a: the row-bearing batch bumps once even without a marker');
 
     cancelReplayDrain('q-1');
-    expect(getRowEpoch('Chat')).toBe(1, 'cancel settles the deferred mutation');
+    expect(getRowEpoch('Chat')).toBe(1, 'cancel adds no bump — the early bump already fired');
   });
 });

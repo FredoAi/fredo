@@ -31,6 +31,13 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ---
 ## Known Failure Modes
+### G-110: agent_self_provisioned_tools
+- **activation_date:** 2026-09-07
+- **observed:** #2835 — an agent needing a pre-fix baseline run (the buggy code sits on `main`, which the dev-environment tool refuses to serve — G-052) responded by hand-rolling its own runner: `.opencode/tmp/2835/start-main.mjs` spawned `cmd.exe /c pnpm dev:tauri` DETACHED via `bun`/node to serve the repo root on `main`, re-implementing `dev-env.ps1 -Action Up`'s internal Start-Process machinery in a scratch script.
+- **target_failure:** an agent that hits a sandbox/allowlist/tooling wall (a denied verb, a fail-closed tool, a missing capability) responds by writing its OWN ad-hoc helper script that re-implements a sanctioned tool's internals (a detached dev-server spawn, a query runner, a port killer) — producing unmanaged processes, logs outside the sanctioned tooling, duplicated maintenance, and a second (unreviewed) implementation of infrastructure the pipeline already owns. The human's principle: **we provide the tools for our agents; agents never create their own tools.**
+- **guardrail:** An agent that needs a capability the provisioned tooling lacks MUST block/escalate to the Self-Improver with the exact gap (the command it tried + why it was denied + what the provisioned tool lacks) rather than write a scratch script that re-implements a sanctioned tool's internals. Scratch `.opencode/tmp/<issue>/` is for DATA (drafts, dumps, evidence) — never for re-inventing infrastructure. Baseline/BEFORE measurements in research-first specs run against the pre-fix `spec/<N>` state through `dev-env.ps1 -Action Up -Spec <N>` (or `-At <pre-fix-sha>` for an ancestor of the spec tip); agents NEVER check out `main` for a baseline and NEVER hand-roll a detached `pnpm dev:tauri` spawn. A genuine cross-branch measurement need is a tooling request to the SI (a new script/param), not an ad-hoc agent script. The SI treats any agent-authored scratch runner under `.opencode/tmp/<issue>/` that starts a dev server / re-implements `dev-env.ps1` / `process-hygiene.ps1` / the query tools as a G-110 violation: kill the spawned processes, delete the artifact, document the gap, and (if the capability is genuinely missing) extend the sanctioned tool in the same pass.
+- **home:** playbooks/self-improver.md (route subagent tool gaps) + skills/dev-environment/SKILL.md (baseline-leg rule) + dev-env.ps1 (`-At` baseline-leg param) + references.md (this record)
+- **effectiveness:** Pending
 ### G-108: pure_rendering_feature_blocked_by_telemetry_only_live_gate
 - **activation_date:** 2026-09-06
 - **observed:** #2824 round 2
