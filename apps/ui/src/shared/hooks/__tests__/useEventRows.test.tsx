@@ -123,6 +123,19 @@ describe('buildQueryText', () => {
       'startedAtNs >= 0',
     );
   });
+
+  // #2835 round-2 ST-8a: the warm-reopen delta bound is a STRING comparison on
+  // `updatedAt` (module-scoped watermark). The query language serializes it as
+  // a quoted string-literal comparison the backend registry re-evaluates
+  // lexicographically (pushdown intentionally skips String non-Eq args).
+  it('serializes an updatedAt string comparison with a quoted RFC3339 literal', () => {
+    const text = buildQueryText('Chat', {
+      startedAtNs: { op: '>=', value: 1.7e18 },
+      updatedAt: { op: '>', value: '2026-09-07T10:30:00+00:00' },
+    });
+    expect(text).toContain('startedAtNs >= 1700000000000000000');
+    expect(text).toContain('updatedAt > "2026-09-07T10:30:00+00:00"');
+  });
 });
 
 describe('useEventRows — subscription lifecycle', () => {
@@ -221,6 +234,39 @@ describe('useEventRows — subscription lifecycle', () => {
       expect(invokeMock).toHaveBeenCalledWith('unsubscribe_events', { queryIds: ['q-1'] });
     });
     expect(invokeMock.mock.calls.length).toBeGreaterThan(subscribeCallsAfterMount);
+    unmount();
+  });
+
+  // #2835 round-2 ST-8a: the panel's warm-reopen args combine a numeric
+  // recency compare AND a string `updatedAt` compare in ONE args object. The
+  // content-based args key must keep an equivalent inline object (a fresh
+  // literal per re-render) render-stable — no re-subscribe + re-replay churn.
+  it('does NOT resubscribe when a re-render passes an equivalent windowed+delta args object', async () => {
+    invokeMock.mockResolvedValue([{ queryId: 'q-1', eventType: 'Chat' }]);
+    const props = { cutoffNs: 1.7e18, watermark: '2026-09-07T10:30:00+00:00' };
+    const { rerender, unmount } = renderHook(
+      ({ cutoffNs, watermark }: { cutoffNs: number; watermark: string }) =>
+        useEventRows(
+          'Chat',
+          {
+            startedAtNs: { op: '>=', value: cutoffNs },
+            updatedAt: { op: '>', value: watermark },
+          },
+          { replay: true },
+        ),
+      { initialProps: props },
+    );
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('subscribe_events', expect.any(Object));
+    });
+    const subscribeCallsAfterMount = invokeMock.mock.calls.length;
+
+    // A re-render passing a FRESH inline args object of the SAME content must
+    // not resubscribe (the mount-stable replayArgs memo in the panel).
+    rerender({ ...props });
+    await act(async () => {});
+    expect(invokeMock.mock.calls.length).toBe(subscribeCallsAfterMount);
     unmount();
   });
 

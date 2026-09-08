@@ -30,6 +30,17 @@ import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
 import { initMmTables } from '../lib/persistence';
+// #2835 round-2 (ST-4-R2a + ST-8a): the replay recency window (a WINDOW WIDTH,
+// not a compare value — see lib/replayWindow.ts for the magnitude rule) and the
+// feature-local warm-reopen `updatedAt` watermark. The panel computes a
+// MOUNT-STABLE absolute cutoff and mounts the watermark-carrying replay args —
+// `useEventRows` resubscribes when `stableArgsKey(args)` changes, so the args
+// must be render-stable (never an inline `Date.now()` in the render body).
+import {
+  advanceReplayWatermark,
+  buildReplayArgs,
+  MM_REPLAY_WINDOW_NS,
+} from '../lib/replayWindow';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -52,16 +63,6 @@ const CENTER_DURATION_MS = 500;
 // with minWidth 420 / maxWidth 540 (#2743 AC-6 — scaled from 280/360).
 const DEFAULT_CHAT_NODE_WIDTH = 480;
 const DEFAULT_CHAT_NODE_HEIGHT = 240;
-
-// ── #2835 sub-task 4: replay recency window ─────────────────────────────────
-// The first open narrows the replay snapshot to a bounded RECENT window so it
-// no longer re-reads the ENTIRE chat + tool table (the measured 45,453-envelope
-// ≈89-batch IPC first-open flood). `startedAtNs >= MM_REPLAY_WINDOW_NS` is the
-// typed-arg comparison the backend `pushdown` accepts (commands.rs) and maps
-// onto the `started_at_ns` column via `select_snapshot`; the
-// `replayCompleteQueryId` settle marker still rides the terminal envelope
-// (`useEventRows.ready` contract unchanged). Value: 7 days of span start, ns.
-const MM_REPLAY_WINDOW_NS = 7 * 24 * 60 * 60 * 1e9;
 
 // ── AC-13 round-6 root cause: the minZoom CLAMP, not a never-firing fit ─────
 // ReactFlow's fitView computes the zoom that frames every measured node and
@@ -681,13 +682,56 @@ export const MissionMonitorPanel: React.FC = () => {
   // (#2835 sub-task 2 dedupe — removes ≈14,011 duplicate insert deliveries
   // on first open).
   //
-  // #2835 sub-task 4 frontend half: the replay snapshot is narrowed to a
-  // bounded RECENT window via the typed comparison pushdown
-  // (`startedAtNs >= <window>`) — the first open no longer re-reads the ENTIRE
-  // chat + tool table. The `replayCompleteQueryId` settle contract + `ready`
-  // still resolve on the terminal marker of the retained single subscription.
-  const chatRows = useEventRows('Chat', { startedAtNs: { op: '>=', value: MM_REPLAY_WINDOW_NS } }, { replay: true });
-  const toolUseRows = useEventRows('ToolUse', { startedAtNs: { op: '>=', value: MM_REPLAY_WINDOW_NS } }, { replay: true });
+  // #2835 round-2 (ST-4-R2a / ST-8a): the replay snapshot is bounded by a
+  // MOUNT-STABLE real recency cutoff (ST-4-R2a — round 1's defect was a 7-day
+  // WINDOW WIDTH passed as the absolute lower bound; every real row ≈1.7–1.8e18
+  // ns passed it, so the snapshot never narrowed) and, on a WARM reopen, by the
+  // feature-local `updatedAt > watermark` delta bound (ST-8a — the row store is
+  // module-scoped and survives mount/unmount, so only rows the store does NOT
+  // yet hold need to re-drain). The args are captured ONCE per mount in a
+  // `useMemo` — `useEventRows` resubscribes when `stableArgsKey(args)` changes,
+  // so an inline `Date.now()` in the render body would resubscribe + re-replay
+  // on every render. The `replayCompleteQueryId` settle contract + `ready` still
+  // resolve on the terminal marker of the retained single subscription.
+  //
+  // NULL `startedAtNs` policy (ST-4-R2c): rows with no span start are the
+  // mock/edge-only class (real rows always carry `telemetry_spans.start_time_ns`
+  // via the classifier). A time-bounded read has no place for timeless rows —
+  // the `>=` bound excludes them (SQL NULL semantics + the registry's
+  // null-never-matches rule), which is the intended behavior; the drawer's
+  // start-time fallback for a NULL-start row already exists (useSessionHistory
+  // falls back to `updatedAt`).
+  const replayCutoffNs = useMemo(
+    // Magnitude rule: real row `startedAtNs` ≈ Date.now() ms × 1e6 (absolute
+    // epoch ns, 1.7–1.8e18) — the cutoff is now minus the 7-day window width.
+    () => Date.now() * 1e6 - MM_REPLAY_WINDOW_NS,
+    [],
+  );
+  const replayArgs = useMemo(
+    () => ({
+      chat: buildReplayArgs('Chat', replayCutoffNs),
+      toolUse: buildReplayArgs('ToolUse', replayCutoffNs),
+    }),
+    [replayCutoffNs],
+  );
+  const chatRows = useEventRows('Chat', replayArgs.chat, { replay: true });
+  const toolUseRows = useEventRows('ToolUse', replayArgs.toolUse, { replay: true });
+
+  // ── #2835 round-2 (ST-8a): advance the module-scoped last-seen watermark ──
+  // Scans for the max `updatedAt` over the shared row store ONLY when the
+  // store's epoch advances (a real mutation). No setState — module Map only —
+  // so this can never re-render (the #523 no-loop rule). The watermark survives
+  // feature mount/unmount and resets on app restart (module reload): a cold
+  // boot still performs the full windowed replay; a warm reopen drains only the
+  // delta since the store's last-seen row.
+  useEffect(() => {
+    advanceReplayWatermark('Chat', chatRows.rows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatRows.epoch]);
+  useEffect(() => {
+    advanceReplayWatermark('ToolUse', toolUseRows.rows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toolUseRows.epoch]);
 
   // ── Spec #2795: the ONE shared renderability rule (AC2/AC3/AC4) ───────────
   // Derive the graph-builder state from BOTH row sources ONCE here (the same

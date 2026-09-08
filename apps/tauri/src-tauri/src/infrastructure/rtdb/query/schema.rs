@@ -12,8 +12,8 @@
 //! Every [`validate`] failure is a hard NAMED error whose message embeds a
 //! rendered snippet of the offending query fragment — unknown fields
 //! (including the P1.1 out-of-canonical names like `reasoningTokens`),
-//! type-mismatched args, and comparisons on non-numeric fields. Nothing is
-//! silently stripped.
+//! type-mismatched args, and ordering comparisons on fields that are neither
+//! numeric nor string. Nothing is silently stripped.
 
 use serde::{Deserialize, Serialize};
 
@@ -345,9 +345,17 @@ fn check_field_value(
             )),
         };
     }
-    if op != CompareOp::Eq && field.ty != FieldType::Number {
+    // Ordering comparisons are meaningful on NUMBER fields (numeric order) and
+    // STRING fields (lexicographic order — the pipeline's canonical RFC3339
+    // `updatedAt` stamps sort lexicographically == chronologically, which is
+    // what #2835 round-2's warm-reopen `updatedAt > <watermark>` delta arg
+    // relies on; see subscriptions.rs `json_ordering_compare`). Boolean/Json/
+    // Object fields support equality only, and the type/value mismatch arms
+    // below still reject e.g. `model > 5` (a number literal against a string
+    // field) and `promptTokens > "abc"` (a string literal against a number).
+    if op != CompareOp::Eq && !matches!(field.ty, FieldType::Number | FieldType::String) {
         return Err(format!(
-            "{} field '{}' is {}; comparison '{}' requires a number field — in: {}",
+            "{} field '{}' is {}; comparison '{}' requires a number or string field — in: {}",
             root,
             field.name,
             field.ty.as_str(),
@@ -658,18 +666,40 @@ mod tests {
     }
 
     #[test]
-    fn comparison_on_non_numeric_is_hard_named_error() {
+    fn ordering_comparisons_require_number_or_string_fields() {
+        // #2835 round-2 ST-8a: STRING ordering IS supported (the warm-reopen
+        // `updatedAt > <watermark>` delta arg) — the round-1 hard rejection of
+        // every non-numeric ordering comparison is relaxed to a
+        // number-or-string rule. These previously-rejected queries now
+        // validate (and the in-memory matcher applies lexicographic ordering).
+        validate(&valid_spec("chat(sessionId > \"a\") { sessionId }"))
+            .expect("string ordering args validate");
+        validate(&valid_spec("agentSession(state >= \"Init\") { state }"))
+            .expect("string ordering args validate");
+        validate(&valid_spec("chat(updatedAt > \"2026-09-07T10:30:00+00:00\") { updatedAt }"))
+            .expect("updatedAt string ordering validates");
+
+        // Boolean/Json/Object fields stay equality-only — ordering is a hard
+        // named error naming the offending op.
         assert_single_error(
-            "chat(sessionId > \"a\") { sessionId }",
-            "chat field 'sessionId' is string; comparison '>' requires a number field",
+            "toolUse(toolSuccess > true) { toolName }",
+            "toolUse field 'toolSuccess' is boolean; comparison '>' requires a number or string field",
         );
-        assert_single_error(
-            "agentSession(state >= \"Init\") { state }",
-            "comparison '>=' requires a number field",
-        );
+        // A null literal with an ordering op stays a null-rule violation
+        // (null compares with '=' only).
         assert_single_error(
             "chat(userMessage > null) { userMessage }",
-            "comparison '>' requires a number field",
+            "chat field 'userMessage': null comparison only supports '='",
+        );
+        // Type-mismatched literals still fail: a number literal cannot order
+        // against a string field, a string literal cannot order a number.
+        assert_single_error(
+            "chat(sessionId > 5) { sessionId }",
+            "chat field 'sessionId' is string; cannot compare with number 5",
+        );
+        assert_single_error(
+            "chat(promptTokens > \"abc\") { promptTokens }",
+            "chat field 'promptTokens' is number; cannot compare with string \"abc\"",
         );
     }
 

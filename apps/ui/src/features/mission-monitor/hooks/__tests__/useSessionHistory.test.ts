@@ -1141,6 +1141,40 @@ describe('Spec #2788 (P4.3): replay replaces mount-time hydration', () => {
     expect(result.current.sessions[0].deliveryCount).toBe(2);
   });
 
+  it('#2835 round-2 ST-7-R2(a): the drawer gate unlocks on `chatRows.ready` (the Chat replay settle), NEVER on row presence or any ToolUse readiness', async () => {
+    // Round-1 measurement: the first session-row appeared at the CHAT settle
+    // marker (~9.8 s) while the TOOL drain was still streaming (~16.2 s). The
+    // hook's `loaded` gate (useSessionHistory.ts) reads ONLY chatRows.ready —
+    // the ToolUse subscription is a sibling of the panel and can never gate the
+    // drawer. Pin the Chat-ready contract: rows in the store do NOT unlock the
+    // list while `ready` is false (the snapshot is still draining → spinner),
+    // and the same rows unlock the instant `ready` flips.
+    mockLoadPersistedSessions.mockResolvedValue([]);
+    mockRowStore([chatRow('ses-gated', 'g1', '2026-01-01T09:00:00.000Z', 'prompt')], {
+      ready: false,
+    });
+
+    const { result, rerender } = renderHook(() => useDeliverySessions());
+
+    // Persisted load settles; the Chat snapshot is still draining (ready
+    // false). The row is in the store, yet the drawer must stay parked — no
+    // false session list from a half-drained snapshot.
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual([]);
+    });
+    expect(result.current.sessions.some((s) => s.sessionId === 'ses-gated')).toBe(false);
+
+    // The backend `replayCompleteQueryId` marker lands → ready flips → the
+    // SAME rows unlock the list (first row at the Chat settle, never later).
+    mockRowStore([chatRow('ses-gated', 'g1', '2026-01-01T09:00:00.000Z', 'prompt')], {
+      ready: true,
+    });
+    rerender();
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-gated')).toBe(true);
+    });
+  });
+
   it('replayed rows surface a backend-only session through the row-only path', async () => {
     // No persisted snapshot at all — the session streamed entirely while the
     // panel was closed; its replayed rows are the only source.
