@@ -5,10 +5,16 @@ A desktop platform for working with AI coding agents, built with Tauri v2 (Rust 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](./LICENSE)
 [![CI](https://github.com/FredoAi/fredo/actions/workflows/validate.yml/badge.svg)](https://github.com/FredoAi/fredo/actions/workflows/validate.yml)
 
-<!-- TODO(human): add real screenshots post-launch -->
+![Fredo desktop home with companion](imgs/fredo-desktop.png)
 
-> *Screenshots coming soon.*
->
+![Fredo apps — Mission Monitor, Query Viewer, Run CLI, Stepper Probe](imgs/fredo-apps.png)
+
+![Mission Monitor session graph](imgs/mm-1.png)
+
+![Mission Monitor delegation chain detail](imgs/mm-2.png)
+
+![Mission Monitor subagent detail panel](imgs/mm-3.png)
+
 > **A personal project.** Fredo started as a personal tool I use to learn and experiment with AI —
 > building and tinkering with it is the point. It's not a commercial product and there's no SLA or
 > dedicated support. It may be rough around the edges, and the internals/APIs can change without

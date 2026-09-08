@@ -8,23 +8,29 @@
 
 ## The problem
 
-LLM agents are **stochastic**. Give the same specification to two model runs and you
+LLM agents are **non-deterministic**. Give the same specification to two model runs and you
 can get two different plans, two different implementation choices, two different
-outcomes. That's fine for loosely-defined exploration, but it is a liability when the
+outcomes — and the variance is unbounded, because it mixes two sources: missing or
+guessed context (wrong phase, inferred state, divergent plans) on top of sampling
+variance. That's fine for loosely-defined exploration, but it is a liability when the
 system is meant to produce *repeatable, auditable* work on a real codebase — the same
 feature should be built the same way each time, and a failure should be explained, not
 attributed to mood.
 
 You cannot make the model deterministic. So instead of trying, Fredo makes the
 **plumbing around it deterministic**, and injects that determinism into the agent as
-**context**. The pipeline is deterministic; the agents remain stochastic but are
-contained by, and steered by, that determinism.
+**context**. Deterministic context injection strips the unmodeled variance (no more
+guessing where we are or what done means), moving the pipeline from unbounded
+non-determinism to bounded **stochastic** behavior: the agents still sample and reason
+variably, but only inside a fixed frame. The pipeline is deterministic; the agents remain
+stochastic but are contained by, and steered by, that determinism.
 
 ## The idea in one line
 
 > Use **deterministic control** (a state machine that owns state, transitions, and
 > artifacts as the single writer) to **inject context** into each agent so the
-> pipeline's *stochastic* behavior stays bounded and convergent — and use the
+> pipeline moves from unbounded non-determinism to bounded *stochastic* behavior —
+> convergent variance inside a fixed frame — and use the
 > Self-Improver as the feedback loop that turns each failure into a tighter
 > deterministic control.
 
@@ -118,8 +124,9 @@ surface the pipeline's own state and anti-metrics.
 - **Determinism has a cost.** Building a state machine, exit guards, playbooks, and
   guardrails is more up-front machinery than "just let agents work." It pays off in
   reproducibility and audibility, but it is a real authoring/maintenance burden.
-- **Stochasticity is contained, not removed.** The model's variance still exists; the
-  goal is that it can't drift out of the controlled frame, not that it's eliminated.
+- **Stochasticity is contained, not removed.** The model's sampling variance still exists; the
+  goal is that unmodeled non-determinism (guessed context, drifted state) is gone, leaving
+  only bounded stochastic variance inside the controlled frame — not that variance is eliminated.
 
 ## Where things live
 

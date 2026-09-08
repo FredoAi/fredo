@@ -543,6 +543,45 @@ The `adapterBridge` singleton allows non-React code (e.g. `FredoFeatureClass` me
 
 ---
 
+## Agentic UI
+
+Fredo defines its own Agentic UI model instead of adopting AG-UI (agent→frontend SSE event
+stream: transient, conversation-scoped) or MCP-UI / MCP Apps (tool→sandboxed-iframe widget
+linked via `_meta.ui.resourceUri`): both are one-way, present-tense renderings — *what the
+agent says* or *what the tool wants to show right now*. Fredo subscribes to *what happened,
+durably* — and closes the loop both ways.
+
+### Apps (plugins)
+
+Every UI surface is an **app** — an autonomous `FredoFeatureClass` module (`apps/ui/src/features/*/`,
+auto-discovered via `allFeatures.ts`, registered with `registerFeature()`). An app never fetches;
+it declares what it cares about and reacts:
+
+- **Reactive subscription** — `useEventRows(eventType, args, options)` over the RTDB row store.
+  `replay: true` restores the persisted snapshot as full-row inserts (late-joiners get full state),
+  then live `insert`/`update`/`remove` patches keep it fresh. Display state derives via `useMemo`
+  off the `epoch` counter (advances only on real mutations), never by polling.
+- **Surviving store** — the row store is module-scoped (`StreamContext.tsx`), so app mount/unmount
+  cycles never lose state; replay replaces hydration.
+
+### Bidirectional by construction: agent <=> UI <=> human
+
+Communication and interaction are always designed in both directions — no one-way streams,
+no dead widgets:
+
+```
+agent → UI:    OTLP / fredo emit → classifier → RowDeliveryBatch → row store → re-render
+human → agent: UI action → adapterBridge.invoke() → Tauri command → Rust handler → new rows → same subscription path
+agent → human → agent: agent acts, UI reacts, human interrupts (select, rename, approve, play),
+               that interruption re-enters as rows and becomes agent context
+```
+
+Every app is therefore a **typed row subscription + an invoke back-channel**. Mission Monitor is
+the reference: the full delegation graph rebuilds from replayed rows after restart, then tracks
+live traffic on the identical path — observable, replayable, interruptible.
+
+---
+
 ## FredoCompanion
 
 The animated companion sprite on the Home panel:
