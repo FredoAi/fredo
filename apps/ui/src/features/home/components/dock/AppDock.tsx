@@ -7,13 +7,17 @@
  * dispatch). The window engine is READ-ONLY — this module never edits
  * `windowStore.ts` / `windowTypes.ts` / the window components.
  *
- * Transient edge peek (D-2): at rest the rail is OFF-CANVAS + `pointer-events:
- * none` + `visibility: hidden` (out of tab order and the a11y tree — D-9), so a
- * maximized window stays full-bleed and no pointer input is swallowed. Reveal
- * is driven by a passive document-`pointermove` state machine over the
- * left-edge zone (`clientX <= EDGE_ZONE_PX`); the rail stays visible while the
- * pointer is within the dock + keep margin and slides away after a hide-delay
- * grace when it leaves. No pinning, no full-height hover strip, no global CSS.
+ * Dual visibility mode (Spec #2841 AC1): a single derived `coveredByWindow`
+ * boolean (`windows.some(w => !w.isMinimized)`, mirroring LauncherShell) gates
+ * clean-vs-covered. On a CLEAN desktop (`restingVisible`) the rail is
+ * RESTING-VISIBLE — `visibility:visible`, `pointer-events:auto`, at its docking
+ * position, no edge gesture, no pointer listener, in the tab order + a11y tree
+ * (AC1: the user sees open apps without moving the pointer). When a window
+ * covers the desktop the rail reverts to the #2838 transient edge-peek model:
+ * OFF-CANVAS + `pointer-events:none` + `visibility:hidden` (out of tab order and
+ * the a11y tree — D-9), revealed on a passive document-`pointermove` over the
+ * left-edge zone (`clientX <= EDGE_ZONE_PX`), slid away after a hide-delay
+ * grace. No pinning, no full-height hover strip, no global CSS.
  *
  * No re-render loop (NFR-2): `revealed` is a single transition-only boolean;
  * the pointer handler only calls `setRevealed` on an actual boolean transition
@@ -92,8 +96,20 @@ export const AppDock: React.FC = () => {
   // Empty-dock gate (D-1/AC1): no listener and no dock when zero windows.
   const hasWindows = windows.length > 0;
 
+  // A NON-minimized feature window covers the desktop (#2825 chrome-vs-window
+  // rule). On a CLEAN desktop (no covering window) the rail rests VISIBLE (AC1
+  // — no edge gesture, no pointer movement); when a window covers the desktop
+  // it reverts to the #2838 transient edge-peek model. This mirrors the same
+  // predicate LauncherShell uses (`LauncherShell.tsx:195`) so the clean-vs-
+  // covered decision is byte-identical across the chrome surfaces.
+  const coveredByWindow = windows.some((w) => !w.isMinimized);
+
   const [revealed, setRevealedState] = useState(false);
   const revealedRef = useRef(false);
+  /** Whether the rail currently rests visible (clean desktop). Mirrored into a
+   *  ref so the event handlers (which must stay render-stable) can read the
+   *  latest resting-vs-covered decision without a stale closure. */
+  const restingVisibleRef = useRef(!coveredByWindow);
 
   const dockRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<number | null>(null);
@@ -154,13 +170,31 @@ export const AppDock: React.FC = () => {
     [clearHideTimer, armHideTimer, setRevealed],
   );
 
-  // Listener + empty gate (D-1): attach only while ≥1 window is open.
+  // Listener + empty gate (D-1): attach only while ≥1 window is open. On a CLEAN
+  // desktop (`restingVisible`) no pointer listener is attached (AC1 — the rail
+  // rests visible with no edge gesture); the #2838 transient edge-peek state
+  // machine mounts ONLY when a window covers the desktop (`coveredByWindow`).
+  // `restingVisible` is a derived primitive boolean (never `.length`/fresh
+  // object) so this effect stays a safe dependency (NFR-2).
+  const restingVisible = !coveredByWindow;
+  // Mirror for stable event handlers (read the LIVE decision, not a stale
+  // closure captured at mount).
+  restingVisibleRef.current = restingVisible;
   useEffect(() => {
     if (!hasWindows) {
       clearHideTimer();
       if (revealedRef.current) setRevealed(false);
       return;
     }
+    if (restingVisible) {
+      // Clean desktop → resting-visible: no hide timer, no edge listener.
+      clearHideTimer();
+      if (!revealedRef.current) setRevealed(true);
+      return;
+    }
+    // Covered desktop → revert to the #2838 transient edge-peek model: the rail
+    // starts OFF-CANVAS (revealed=false) so a maximized window stays full-bleed.
+    if (revealedRef.current) setRevealed(false);
     const handlePointerDown = (): void => {
       lastInputModeRef.current = 'pointer';
       focusInsideRef.current = false;
@@ -177,7 +211,7 @@ export const AppDock: React.FC = () => {
       document.removeEventListener('keydown', handleKeyDown);
       clearHideTimer();
     };
-  }, [hasWindows, handlePointerMove, clearHideTimer, setRevealed]);
+  }, [hasWindows, restingVisible, handlePointerMove, clearHideTimer, setRevealed]);
 
   // When the dock hides (pointer-away, ESC, or last-app close), keyboard focus
   // can no longer be inside it — reset the suspension flag so a later reveal is
@@ -190,8 +224,12 @@ export const AppDock: React.FC = () => {
   }, [revealed, clearHideTimer]);
 
   // Hide when focus leaves the dock and the pointer is outside the keep zone.
+  // Only applies in the covered/edge-peek branch — in the resting-visible
+  // branch the rail's reveal is governed by `restingVisible` (derived above),
+  // never by a hide timer.
   const handleRegionBlur = useCallback(
     (e: React.FocusEvent<HTMLDivElement>) => {
+      if (restingVisibleRef.current) return;
       const next = e.relatedTarget as Node | null;
       const dock = dockRef.current;
       if (dock && next && dock.contains(next)) return; // focus stayed inside
@@ -227,7 +265,9 @@ export const AppDock: React.FC = () => {
       focusInsideRef.current = true;
       if (e.key === 'Escape') {
         e.preventDefault();
-        setRevealed(false);
+        // Resting-visible rail stays persistently visible (AC1) — ESC restores
+        // focus but never hides it. Only the covered/edge-peek branch hides.
+        if (!restingVisibleRef.current) setRevealed(false);
         const origin = lastFocusedOutsideRef.current;
         if (isFocusableElement(origin)) {
           origin?.focus();
@@ -323,7 +363,11 @@ export const AppDock: React.FC = () => {
         border="1px solid"
         borderColor="border.default"
         bg="bg.surface"
-        boxShadow={`8px 0 24px ${tint('var(--border-color)', 25)}`}
+        backdropFilter="blur(10px)"
+        // Soft layered pill (UI/UX Spec §2): a wide ambient tint + a tight
+        // grounding tint — both via `tint()` color-mix, never a hardcoded
+        // rgba shadow (#2770 / AC5).
+        boxShadow={`0 8px 24px ${tint('var(--border-color)', 25)}, 0 1px 2px ${tint('var(--border-color)', 12)}`}
       >
         <Box
           role="list"
