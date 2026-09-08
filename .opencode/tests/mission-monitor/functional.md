@@ -120,61 +120,56 @@
 
 # Mission Monitor — Functional Test Cases (Spec #2835 — RTDB row-pipeline performance regression)
 
-> Durable functional suite (feature domain `mission-monitor`), extended for Spec #2835 (research-first perf regression: delayed first render, then slowdown/freeze). One `- [ ]` case per AC/REQ (R-1..R-4 = AC1..AC4); observable + MEASURED expected outcome per case.
+> Durable functional suite (feature domain `mission-monitor`), extended for Spec #2835 (research-first perf regression: delayed first render, then slowdown/freeze). One `- [ ]` case per AC/REQ (R-1..R-4 = AC1..AC4); observable + MEASURED expected outcome per case. Marks `unknown` until executed by the Tester.
 >
 > **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result) and/or rendered-webview live receipts (DOM snapshots, console logs, IPC captures, JS-API metrics). A static-only PASS is a FALSE PASS. Root cause is UNKNOWN (research-first) — the BEFORE numbers must be measured against the buggy `main` baseline, never assumed.
 >
 > Fixture doctrine (G-073/G-076/G-080): drive via Fredo's Run CLI feature (free model, minimal session trees, unique marker in the FIRST prompt); never run the `opencode` binary from a shell. Sustained workload = a live opencode session streaming continuously for ≥ 60s with periodic selection toggles. Burst/large-replay = a high session-count corpus (≥ 30 sessions, ≥ a few hundred rows) replayed into the RTDB.
->
-> Canonical budgets (QA-1 reconciled, triage plan): populated session-list Δ ≤ **1,000 ms**, empty-state Δ ≤ **300 ms**, replay `ready` settle ≤ **1,500 ms**; AFTER wire budget ≤ 40 batch envelopes. RESULTS (2026-09-07/08 #2835 round 1, tester): Before leg served pre-fix `296f881` via `dev-env -At`; After leg served fixed tip `00497c1a`. Corpus = the real fredo.db planning corpus (~14,0xx chat / ~17,4xx tool rows; clean+re-drive not reproducible at that scale — see baseline-before.md).
 
 ## First-render latency (R-1 / AC-1)
 
-- [x] F-17 (R-1, AC-1, FAIL 2026-09-07 #2835): From a cold webview, open Mission Monitor. Record `performance.now()` immediately before triggering the feature mount, then again when the session-list first row renders; compute Δ. Repeat for a zero-session empty DB.
-  - EXPECTED: populated session-list Δ ≤ **1,000 ms** (canonical) and empty-state Δ ≤ **300 ms**; no "~seconds" stall. Record the exact ms in the verdict.
-  - ACTUAL (AFTER tip `00497c1a`): populated first-row Δ = **10,397 ms / 18,075 ms** (2 cold runs, median ≈ 14.2 s) — ≫ 1,000 ms → FAIL. Empty-DB first-open empty-state Δ = **41 ms** → PASS (edge). Warm reopen also re-drains the full table (second full replay per mount).
-  - Edge: empty DB PASS (41 ms); large-replay first-open FAIL (multi-second false-empty "Waiting for agent activity…"); cold vs warm both pay the full replay.
-- [x] F-18 (R-1, AC-1, FAIL 2026-09-07 #2835): Capture F-17's Δ against the buggy baseline (BEFORE, pre-fix `296f881`) and `spec/2835` tip (AFTER). Report both numbers + Δ.
-  - EXPECTED: AFTER Δ ≤ BEFORE Δ (a real improvement) AND within the AC-1 budget.
-  - ACTUAL: BEFORE first-row Δ = ≤15,682 / 13,197 / 20,732 ms (median ≈ 15.7 s); AFTER = 10,397 / 18,075 ms (median ≈ 14.2 s). Modest improvement (~1.5 s) but far outside the 1,000 ms budget → FAIL. Root cause: the `startedAtNs >= 604800000000000` replay window is a no-op for real rows (1970-relative bound), so the full real-table replay (~31.5k envelopes) still drains on every open and the session-list gate waits on Chat replay `ready`.
-  - Edge: same workload + same DB corpus on both legs; window size constant.
+- [ ] F-17 (R-1, AC-1, `unknown`): From a cold webview, open Mission Monitor. Record `performance.now()` immediately before triggering the feature mount, then again when the session-list first row renders (`tauri_webview_wait_for` on a session-list/row selector); compute Δ. Repeat for a zero-session empty DB.
+  - EXPECTED: populated session-list Δ ≤ **500 ms** and empty-state Δ ≤ **300 ms** (budget pending Architect confirmation — QA-1); no "~seconds" stall. Record the exact ms in the verdict.
+  - Edge: empty DB; large-replay first-open; cold vs warm webview; measure the Δ against the BEFORE baseline (F-18), not an absolute if the buggy baseline is slower.
+- [ ] F-18 (R-1, AC-1, `unknown`): Capture F-17's Δ against `main` (buggy baseline, BEFORE) and against `spec/2835` (AFTER). Report both numbers + Δ.
+  - EXPECTED: AFTER Δ ≤ BEFORE Δ (a real improvement) AND within the AC-1 budget. A "renders faster" with no numbers is a FAIL.
+  - Edge: same workload both runs; same window size; repeat 3× take median; note GC/compaction noise.
 
 ## Sustained-run / no-degradation (R-2 / AC-2)
 
-- [x] F-19 (R-2, AC-2, PARTIAL→FAIL 2026-09-07 #2835): With Mission Monitor open and the row stream active (real live opencode session driven via Run CLI `fredo2835l3marker`, ~80 s observation + selection toggles), sample `performance.memory.usedJSHeapSize` at t0 / mid / t2.
-  - EXPECTED: heap plateaus after GC (t2 ≈ t1, not t2 ≫ t1); growth t0→t2 ≤ **50 MB**; app responsive at every sample; `telemetry_spans` row count bounded.
-  - ACTUAL (AFTER tip): heap 1,380 MB (t0) → 1,398 MB (+22 s) → 1,338 MB (+75 s, GC) → 1,343 MB (+87 s). Within-window growth ≈ bounded/plateau (Δ ≈ −37 MB after GC) → no unbounded growth in the observed window. Absolute heap is enormous (≈1.3-1.4 GB retained corpus after replay). No freeze; selection toggles registered. → PASS for plateau, but the AC2 no-long-task / responsiveness budgets fail elsewhere (F-23 long tasks); row-leg evidence OK.
-  - Edge: cross-checked `telemetry_spans`/`chat_rows` for the live session at the same instant (marker query: 8 spans / 2 sessions matched; chat 49 / tool 50 rows for the live session id at sample time).
-- [x] F-20 (R-2, AC-2, PASS 2026-09-07 #2835): Read `tauri_read_logs source="console"` repeatedly through F-19 and after every interaction.
-  - EXPECTED: no `Maximum update depth exceeded`, no `Uncaught`, no infinite re-render-loop symptom; recomputation epoch-based (per #523).
-  - ACTUAL: console clean across Before + After legs (only `motion()` deprecation WARN + pre-existing MM debug auto-fit lines + a repeated pre-existing `cache reconciliation fallback` WARN for one corpus session on the pre-fix leg). No `Error:`/`Uncaught`/`Maximum update depth`. Code inspection (R-28): builderState memo deps = [chatEpoch, toolEpoch, injected builderState ref] — no `.length`/object-ref deps. → PASS.
-- [x] F-21 (R-2, AC-2, PARTIAL 2026-09-07 #2835): Count emitted `fredo-stream-event` RowDeliveryBatch envelopes over the first-open window (webview-injected listener).
-  - EXPECTED: emissions coalesced/rate-bound, finite, no flood.
-  - ACTUAL: first-open replay batches = **94 / 102 / 96 (BEFORE)** vs **69 / 64 (AFTER)** per cold open; each open re-streams the FULL real corpus (≈45.5k envelopes BEFORE = 2×Chat+1×Tool; ≈31.5k AFTER = 1×Chat+1×Tool after the sub-task-2 dedupe). AFTER exceeds the plan's ≤ 40-envelope wire budget → FAIL on budget; no infinite flood (finite per-open drain, then quiescent).
-  - Edge: a per-open replay drain is finite; live coalescing functioned (no per-render storm).
-- [x] F-22 (R-2, AC-2, PASS 2026-09-07 #2835): Cross-check the frontend live-row store (deliveries observed in-window) against `chat_rows`/`tool_use_rows` at the same instant.
-  - EXPECTED: live-row count ≈ landed telemetry row count; no duplicate re-add beyond landed rows.
-  - ACTUAL: total deliveries across two mounts (cold + warm reopen) = 63,220 ≈ 2 × 31,680 landed rows (14,128 chat + 17,552 tool at that instant) — deliveries per mount ≈ landed rows exactly (replay is insert-deduped; store holds the unique row set ≈ landed rows). No runaway/duplicate-reinsert beyond the legitimate per-mount replay. → PASS (with the noted per-mount full replay cost).
+- [ ] F-19 (R-2, AC-2, `unknown`): With Mission Monitor open and the row stream active (live session streaming ≥ 60s + selection toggles), sample `performance.memory.usedJSHeapSize` via `tauri_webview_execute_js` at t0 (mount), t1 (+30s), t2 (+60s).
+  - EXPECTED: heap plateaus after GC (t2 ≈ t1, not t2 ≫ t1); growth t0→t2 ≤ **50 MB** (budget pending — QA-1); app responsive (a button click registers) at every sample; `telemetry_spans` row count bounded (ingest not leaking).
+  - Edge: read-only session (no streaming); high-session-count list; a GC pause read as a dip; server-side flood vs frontend leak (cross-check `telemetry_spans`).
+- [ ] F-20 (R-2, AC-2, `unknown`): Read `tauri_read_logs source="console"` repeatedly through F-19 and after every interaction.
+  - EXPECTED: no `Maximum update depth exceeded`, no `Uncaught`, no infinite re-render-loop console symptom; recomputation epoch-based (per #523) — no `.length`/object-ref `useEffect`/`useMemo` deps added.
+  - Edge: a one-off warning is tracked but not a FAIL; a repeated identical re-render trace is a FAIL.
+- [ ] F-21 (R-2, AC-2, `unknown`): Use `tauri_ipc_monitor` to capture `fredo-stream-event` RowDeliveryBatch emissions over a fixed window during the sustained workload; count emitted batches/envelopes.
+  - EXPECTED: batch emissions are coalesced/rate-bound (track the data rate, NOT a run-away per-render loop); no storm of identical/duplicated envelopes; no max-throughput flood (RTDB_MAX_EMISSION_BATCH=512) absent matching data growth.
+  - Edge: a large-replay burst is a legitimate transient; per-query replay drains are finite.
+- [ ] F-22 (R-2, AC-2, `unknown`): Cross-check the frontend live-row count against `telemetry_spans`/`chat_rows`/`tool_use_rows` counts at the same instant.
+  - EXPECTED: live-row count ≈ landed telemetry row count (no runaway growth beyond landed rows); `insert` spread-merge semantics not violated (no per-render duplicate re-add).
+  - Edge: retention eviction legitimately shrinks the store (do not read the eviction-only `remove` path as a leak).
 
 ## Profile evidence before/after (R-3 / AC-3)
 
-- [x] F-23 (R-3, AC-3, FAIL 2026-09-07 #2835): Produce a literal Before|After|Δ evidence table: (a) first-render latency, (b) long-task count/duration over a 30 s window, (c) JS heap, (d) session-list population time, (e) emitted batch count.
-  - EXPECTED: numerical Before|After|Δ table; each AFTER row meets its AC threshold.
-  - ACTUAL: full table in `tests-runs.md` (round 1). AFTER first-row Δ 10,397/18,075 ms vs ≤1,000 ms budget → FAIL; ready settle ~16 s vs ≤1,500 ms → FAIL; batches 64-69 vs ≤40 → FAIL; long tasks max 1,507-1,825 ms vs ≤50 ms → FAIL; heap 0.78-0.92 GB retained (improved vs 1.1-1.4 GB Before but not bounded-low). Only the empty-DB edge passes (41 ms). → FAIL.
-  - Edge: Rust/flush-path numbers not webview-readable (dev-provided regression tests cover the pushdown/prune contracts); CDP trace not available via bridge (JS-API metrics used).
+- [ ] F-23 (R-3, AC-3, `unknown`): Produce a literal Before|After|Δ evidence table: (a) first-render latency (F-17/18), (b) long-task count over a 30s window (`performance.getEntriesByType('longtask')`), (c) JS heap growth (F-19), (d) session-list population time, (e) emitted batch count (F-21). Attach screenshots of each measurement + a `telemetry_spans` query at the same instant.
+  - EXPECTED: the verdict's Evidence carries a numerical Before|After|Δ table (a bare "it's faster"/"notably improved" with no numbers = **FAIL**); each AFTER row meets its AC threshold; a measured improvement over the buggy baseline; root cause(s) attributable to the AC suspects.
+  - Edge: Rust/flush-path numbers are NOT webview-readable (must come from the Architect/Developer — QA-4); CDP Performance recorder may not be reachable through the bridge (QA-3).
 
 ## Regression — window-manager / launcher / theming (R-4 / AC-4)
 
-- [x] F-24 (R-4, AC-4, PARTIAL 2026-09-07 #2835): (a) window-manager list/resize/focus/min/max. (b) Run CLI launcher reachable, `run-cli-terminal` launches, `write_pty_input` submits. (c) Sessions list + graph + tool-detail render with theme tokens across light/dark/user-accent.
-  - EXPECTED: all succeed with no console errors; theming from semantic tokens/CSS vars only; window-manager + launcher identical to pre-fix.
-  - ACTUAL: (a) window list + resize PASS; focus/min/max UNVERIFIED — blocked by `tauri-plugin-mcp-bridge < 0.13` in the connected app ("needs 0.13.0 or newer", G-053 named blocker; not a #2835 defect — no window-manager code touched by the diff). (b) PASS live: Run CLI launcher reached, `run-cli-terminal` window launched, `write_pty_input` prompts (fredo2835l3marker / fredo2835l3cont) submitted and answered. (c) PASS: theme preset switched live (Solarized → dark → Solarized) with CSS vars re-resolving (`--body-bg` #fdf6e3 → #111827 → #fdf6e3); MM session-row bg computed as `color-mix(in srgb, var(--accent-primary) 8%, transparent)` (tint pattern) + fg token text — token-driven, no hardcoded hex introduced (2835 diff contains zero theming files). Tool list renders in the chat node (`── TOOLS (1) ── todowrite 3ms` DOM receipt).
-  - Edge: focus/min/max unverified (plugin version gap); launcher + theming no regression observed.
+- [ ] F-24 (R-4, AC-4, `unknown`): (a) `tauri_manage_window` list/resize/focus/min/max succeed. (b) Run CLI launcher reachable (`button[aria-label="Run CLI"]`), `run-cli-terminal` launches, `write_pty_input` submits. (c) Sessions list + graph + tool-detail render with theme tokens across light/dark/user-accent.
+  - EXPECTED: all actions succeed with no console errors; theming renders from semantic tokens/CSS vars only (no hardcoded hex/rgba, no invalid `var(--token)NN` alpha-append); window-manager + launcher identical to pre-fix.
+  - Edge: the perf fix accidentally alters a window/launcher property or slips in a theming change.
 
 ## Non-functional — #2835 (memory / latency / theme / contract-trust / row-path)
 
-- [x] N-10 (NFR-1, memory, FAIL 2026-09-07): heap plateaus over the sustained window BUT only at an enormous absolute level (~1.3-1.4 GB retained corpus after each open); no monotonic unbounded growth observed in-window, but first-open heap cost to ~0.9-1.4 GB is not "bounded-low" and the per-open full replay re-inflates it (1,328 MB after a warm reopen). → FAIL (memory cost of the full replay remains).
-- [x] N-11 (NFR-2, latency, FAIL 2026-09-07): first-render + ready settle far outside budget (10-18 s vs 1.0/1.5 s); the session-list gate waits on full Chat-drain `ready`; derive still re-runs per flush-batch epoch. → FAIL.
-- [x] N-12 (NFR-3, theme, PASS 2026-09-07): no hardcoded hex/rgba introduced (no theming file in diff); MM renders from CSS vars/`color-mix` (live computed-style receipt).
-- [x] N-13 (NFR-4, IPC/coalescing, PARTIAL 2026-09-07): per-open replay drain finite (not an infinite flood); coalescing + 512-chunking function. But every open (cold AND warm) re-streams the full corpus (~64-69 batches) — the wire budget (≤40) is exceeded → FAIL on the plan's budget.
-- [x] N-14 (NFR-5, contract-trust, PASS 2026-09-07): no `??` fallback chain / multi-path extraction / event-level rewrite reintroduced (diff review; single-path projections unchanged).
-- [x] N-15 (NFR-6, RTDB row path unchanged, PASS 2026-09-07): no change to `rtdb/ingest.rs`/`attrs.rs`/store production code (backend diff is test-only); `telemetry_spans`↔rows cross-checks consistent at every sampled instant.
+- [ ] N-10 (NFR-1, memory): `performance.memory.usedJSHeapSize` plateaus over the sustained window (no monotonic unbounded growth).
+  - EXPECTED: bounded heap; plateau after GC; no growth proportional to time/data that never settles.
+  - Regression risk: an unbounded live-row store or per-render re-insert → FAIL.
+- [ ] N-11 (NFR-2, latency): first-render + interaction latency within the budgets (AC-1 / QA-1); no O(n²) per-render identity churn.
+  - EXPECTED: session list + graph derivation stays a single map pass / memoized on the row-store epoch.
+- [ ] N-12 (NFR-3, theme): theming tokens preserved across the perf fix — no hardcoded hex/rgba or invalid `var(--token)NN` introduced.
+- [ ] N-13 (NFR-4, IPC/coalescing): no runaway flush/batch flood (F-21); the ~5ms coalescing window + `RTDB_MAX_EMISSION_BATCH=512` chunking still function.
+- [ ] N-14 (NFR-5, contract-trust): the perf fix must NOT reintroduce defensive fallback extraction / event-level rewrite / v1 hydration — single-path extraction preserved (Spec #568 cleanup not regressed).
+- [ ] N-15 (NFR-6, RTDB row path unchanged): the RTDB row-pipeline mappings + ingest classification are unchanged — the perf fix touches only the render/flush/coalescing path, not what rows are produced (cross-check `telemetry_spans`).
