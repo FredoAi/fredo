@@ -4,6 +4,7 @@ import { LuRotateCcw } from 'react-icons/lu';
 import { useTheme } from '../../../app/providers/ThemeProvider';
 import { themePresets } from '../../../app/types/theme';
 import type { ThemeOverrides } from '../../../app/types/theme';
+import { PresetColorReadout } from './PresetColorReadout';
 
 // ── Fonts available (all loaded via Google Fonts in index.html) ───────────────
 const FONT_OPTIONS = [
@@ -203,6 +204,11 @@ const ColorRow: React.FC<ColorRowProps> = ({ label, value, hasOverride, onChange
 export const ThemingSettings: React.FC = () => {
   const { theme, overrides, setOverride, selectedPreset, setPreset, resetTheme } = useTheme();
 
+  // Resolve the active preset with the SAME `themePresets.find(...) ?? null` expression
+  // the provider uses (ThemeProvider.tsx:62), so the readout stays in lockstep with
+  // the applied preset. A stale/unmatched id resolves to null (AC3).
+  const activePreset = themePresets.find((p) => p.id === selectedPreset) ?? null;
+
   const colorValue = (key: ColorKey): string =>
     overrides[key] ?? toHex(theme.colors[THEME_COLOR_MAP[key]]);
 
@@ -249,6 +255,9 @@ export const ThemingSettings: React.FC = () => {
         <Box>
           <SectionLabel>Theme Presets</SectionLabel>
           <ThemePresetSelector />
+          {activePreset && (
+            <PresetColorReadout preset={activePreset} overrides={overrides} baseColors={theme.colors} />
+          )}
         </Box>
 
         {/* ── Accent Colors ──────────────────────────── */}
