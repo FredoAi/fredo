@@ -205,22 +205,40 @@ export function subscribeToRowMutationLog(listener: () => void): () => void {
   };
 }
 
-// ── Replay-drain registry (round-3 F-33 fix) ────────────────────────────────
+// ── Replay-drain registry (round-3 F-33 fix + round-3 ST-9-R3a early settle) ─
 //
 // The backend replay leg is a spawned background drain: the snapshot arrives
 // as many batch envelopes terminated by a per-query `replayCompleteQueryId`
 // marker. While a drain is pending for a partition, epoch bumps from applied
-// batches are DEFERRED (marked dirty) and fired as ONE settle bump when the
-// drain completes — a full-table replay of ~58k rows (~113 envelopes) costs
-// ONE render instead of ~113. With no pending drain the per-batch bump
-// behavior is byte-identical to the round-2 semantics. Module-scoped per the
-// AGENTS.md persistence rule (refs reset on mount; this state must survive
-// remounts while subscriptions re-register).
+// batches are DEFERRED (marked dirty) so the drain does not cost one render
+// per envelope. Round-3 F-33: those deferred bumps collapse to ONE settle
+// bump when the drain completes — a full-table replay of ~58k rows (~113
+// envelopes) costs ONE render instead of ~113.
+//
+// #2835 round-3 (ST-9-R3a): an oversized multi-batch drain now also fires ONE
+// EARLY settle bump at its FIRST row-bearing batch (per-partition latch), so
+// mount-time consumers (the Mission Monitor session drawer) can unlock on the
+// first drained rows instead of the drain end; the deferred rows that land
+// after the early bump still fire the terminal settle bump at the marker.
+// Bump bound per drain: 0 for an empty drain (marker only), exactly 1 for a
+// single-batch drain (the early bump consumes the dirty flag — the terminal
+// settle sees no dirty and does NOT double-bump), at most TWO for a
+// multi-batch drain. With no pending drain the per-batch bump behavior is
+// byte-identical to the round-2 semantics. Module-scoped per the AGENTS.md
+// persistence rule (refs reset on mount; this state must survive remounts
+// while subscriptions re-register).
 
 /** eventType → queryId → settle callback (registered by useEventRows). */
 const replayDrains = new Map<RowEventType, Map<string, () => void>>();
 /** Partitions whose replay-window mutations are waiting on a settle bump. */
 const replayDirtyPartitions = new Set<RowEventType>();
+/**
+ * Partitions that already fired their ONE early settle bump for the current
+ * drain generation (ST-9-R3a). Reset when the partition's drain count drops
+ * to zero (`endReplayDrain`/`cancelReplayDrain`), so the next drain
+ * generation gets its own early bump.
+ */
+const replayEarlySettledPartitions = new Set<RowEventType>();
 /**
  * Markers that arrived BEFORE their hook registered the drain (the async
  * command returns and the spawned replay leg race — real on small corpora
@@ -282,14 +300,19 @@ export function beginReplayDrain(
  * the settle bump reflects final rows). Unknown queryIds are buffered: a
  * marker can legitimately precede its hook's `beginReplayDrain` (async
  * command return vs background drain race). A foreign queryId settles
- * nothing.
+ * nothing. When the partition's drain count drops to zero, the ST-9-R3a
+ * early-settle latch is reset so the next drain generation gets its own
+ * early bump.
  */
 export function endReplayDrain(queryId: string): void {
   for (const [eventType, drains] of replayDrains) {
     const onSettle = drains.get(queryId);
     if (onSettle === undefined) continue;
     drains.delete(queryId);
-    if (drains.size === 0) replayDrains.delete(eventType);
+    if (drains.size === 0) {
+      replayDrains.delete(eventType);
+      replayEarlySettledPartitions.delete(eventType);
+    }
     settleReplayDrain(eventType);
     onSettle();
     return;
@@ -306,14 +329,19 @@ export function endReplayDrain(queryId: string): void {
  * unmount/unsubscribe-before-marker (the hook's cancellation path). Fires
  * the settle bump if mutations are waiting (the rows ARE in the store —
  * consumers must see them), drops the settle callback, and removes any
- * buffered marker for the queryId. No-op when the drain already settled.
+ * buffered marker for the queryId. Resets the ST-9-R3a early-settle latch
+ * when the partition's drain count drops to zero. No-op when the drain
+ * already settled.
  */
 export function cancelReplayDrain(queryId: string): void {
   settledUnclaimedMarkers.delete(queryId);
   for (const [eventType, drains] of replayDrains) {
     if (!drains.has(queryId)) continue;
     drains.delete(queryId);
-    if (drains.size === 0) replayDrains.delete(eventType);
+    if (drains.size === 0) {
+      replayDrains.delete(eventType);
+      replayEarlySettledPartitions.delete(eventType);
+    }
     settleReplayDrain(eventType);
     return;
   }
@@ -398,11 +426,46 @@ function applyRowDeliveryInner(delivery: RowDelivery): RtdbRow | 'removed' | nul
 }
 
 /**
+ * Decide the epoch-bump policy after a real row mutation for `eventType`.
+ * Shared by the single (`applyRowDelivery`) and bulk (`applyRowDeliveries`)
+ * paths so both carry IDENTICAL drain semantics (W-2 — the bulk path must
+ * never diverge from the pinned single-delivery behavior):
+ *
+ * - No pending drain → bump now (round-2 per-delivery/per-batch semantics).
+ * - Pending drain + this is the partition's FIRST row-bearing apply of the
+ *   drain generation (#2835 ST-9-R3a) → mark dirty and settle IMMEDIATELY:
+ *   one EARLY epoch bump, then latch so later applies of the same drain
+ *   defer again (mark dirty) exactly as the round-3 F-33 fix.
+ * - Pending drain + latch already set → mark dirty (defer to the terminal
+ *   settle at `endReplayDrain`/`cancelReplayDrain`).
+ *
+ * Bump bound per drain: empty drain = 0 (marker only); single-batch drain =
+ * exactly 1 (the early bump consumes the dirty flag — the terminal settle
+ * sees no dirty and does NOT double-bump); multi-batch drain = at most TWO
+ * (one early, one final when rows arrived after the early bump).
+ */
+function noteRowMutation(eventType: RowEventType): void {
+  const partition = rowPartitionFor(eventType);
+  if (!partition) return;
+  if (!hasPendingDrain(eventType)) {
+    bumpRowEpoch(partition);
+    return;
+  }
+  if (!replayEarlySettledPartitions.has(eventType)) {
+    replayEarlySettledPartitions.add(eventType);
+    replayDirtyPartitions.add(eventType);
+    settleReplayDrain(eventType);
+  } else {
+    replayDirtyPartitions.add(eventType);
+  }
+}
+
+/**
  * Apply one RowDelivery envelope to the row store. Called from
  * AppProvider's onMessage routing (after `isRowDelivery` validation).
  * The epoch bumps AT MOST ONCE — exactly when the envelope mutated the store.
- * While a replay drain is pending for the partition (round-3 F-33 fix), the
- * bump is DEFERRED to the drain's settle instead.
+ * While a replay drain is pending for the partition, the bump policy is
+ * `noteRowMutation` (round-3 F-33 deferral + #2835 ST-9-R3a early settle).
  */
 export function applyRowDelivery(delivery: RowDelivery): void {
   const partition = rowPartitionFor(delivery.eventType);
@@ -410,11 +473,7 @@ export function applyRowDelivery(delivery: RowDelivery): void {
   const result = applyRowDeliveryInner(delivery);
   if (result !== null) {
     recordRowMutation(delivery.eventType, delivery, result === 'removed' ? null : result);
-    if (hasPendingDrain(delivery.eventType)) {
-      replayDirtyPartitions.add(delivery.eventType);
-    } else {
-      bumpRowEpoch(partition);
-    }
+    noteRowMutation(delivery.eventType);
   }
 }
 
@@ -430,6 +489,12 @@ export function applyRowDelivery(delivery: RowDelivery): void {
  * bumps are DEFERRED (marked dirty) and fire as ONE settle bump when the
  * drain completes (`endReplayDrain`/`cancelReplayDrain`) — a full-table
  * replay costs one render at settle, not one per envelope.
+ *
+ * #2835 round-3 (ST-9-R3a): the FIRST row-bearing batch of a pending drain
+ * fires ONE EARLY settle bump immediately (see `noteRowMutation`), so
+ * mount-time consumers unlock on the first drained rows instead of the drain
+ * end; later batches of the same drain defer to the terminal settle (≤2
+ * bumps per multi-batch drain).
  */
 export function applyRowDeliveries(deliveries: RowDelivery[]): void {
   const touched = new Set<RowEventType>();
@@ -443,11 +508,7 @@ export function applyRowDeliveries(deliveries: RowDelivery[]): void {
     }
   }
   for (const eventType of touched) {
-    if (hasPendingDrain(eventType)) {
-      replayDirtyPartitions.add(eventType);
-    } else {
-      bumpRowEpoch(rowPartitionFor(eventType));
-    }
+    noteRowMutation(eventType);
   }
 }
 
@@ -486,6 +547,7 @@ export function resetRowStoreForTests(): void {
   // total reset: a leaked pending drain would defer every later bump.
   replayDrains.clear();
   replayDirtyPartitions.clear();
+  replayEarlySettledPartitions.clear();
   settledUnclaimedMarkers.clear();
   rowMutationLog.length = 0;
   rowMutationLogVersion += 1;

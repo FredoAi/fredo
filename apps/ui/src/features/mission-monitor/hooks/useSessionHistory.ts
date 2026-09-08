@@ -101,7 +101,21 @@ export function useDeliverySessions(options?: {
   // A FAILED subscription must never wedge the gate (v1 hydration-failure
   // contract): `error !== null` opens it with the persisted data only — the
   // failure itself surfaces loudly through useEventRows (R-3a).
-  const loaded = persistedLoadDone && (chatRows.ready || chatRows.error !== null);
+  //
+  // #2835 round-3 (ST-9-R3b): the gate is released PROGRESSIVELY — it also
+  // opens on row PRESENCE (`rows.size > 0`) once the persisted snapshot
+  // load settles, so an oversized multi-batch replay unlocks the list at the
+  // FIRST drained batch (the ST-9-R3a early epoch bump supplies the
+  // mid-drain render that recomputes `loaded`/`sessions`) instead of at the
+  // drain end. `rows.size` is read as a render-time scalar into this boolean
+  // — it is NOT a memo/effect dep, so the #523 no-loop rule holds (a `.size`
+  // change alone never triggers a render). `ready` remains the completeness
+  // signal: the final settle recomputes the full list; a warm reopen with
+  // rows resident in the module store unlocks at `persistedLoadDone`
+  // (~50–150 ms) without waiting for the delta drain's marker.
+  const loaded =
+    persistedLoadDone &&
+    (chatRows.ready || chatRows.error !== null || chatRows.rows.size > 0);
 
   // Load the persisted session snapshot (name prefs + retention fallback) AND
   // seed the module-level deleted set from the durable tombstones — both
