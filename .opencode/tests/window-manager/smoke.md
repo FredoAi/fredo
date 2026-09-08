@@ -40,4 +40,5 @@
 
 ## #2838 extension — left-edge dock smoke
 
-- [ ] S-9: Open one feature window, then minimize it. EXPECTED: NO bottom-docked "Open applications" tray appears (the #2821 drawer is gone); hovering the real pointer at the left edge (x ~0-4) reveals the dock listing the open window's icon; moving the pointer away hides it again; `tauri_read_logs(source="console")` clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [x] S-9: Open one feature window, then minimize it. EXPECTED: NO bottom-docked "Open applications" tray appears (the #2821 drawer is gone); hovering the real pointer at the left edge (x ~0-4) reveals the dock listing the open window's icon; moving the pointer away hides it again; `tauri_read_logs(source="console")` clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **PASS (spec/2838 @ 6ccf4820, round 1):** opened Mission Monitor (Sessions), minimized → `bottomRegions: []` (no tray); pointermove to the left edge revealed the dock listing `Sessions (minimized)`; pointer away re-hid it (`visibility:hidden`, x=-60). Screenshot `s9-smoke-minimize-reveal.jpeg`. Console read after the leg: no dock-caused errors (the only errors in the round are the documented driver artifact + boot HMR note — see functional F-34).
