@@ -273,3 +273,52 @@
 
 - [x] F-34: **PASS (spec/2830 round 1)** — launcher notch/engage/ESC-close intact (searchbox focus → grid engaged → ESC collapses → focus returns); opening a feature window still sinks the band below the window stack (chrome z 1200↔0); LED does NOT intercept the notch/grid pointer (band stays `pointer-events:none`, only the LED re-enables auto on its own trigger). After the LED change, confirm the launcher's notch toggle, the #2823 Ctrl+Space open (focuses searchbox, ESC closes, focus restores), the engaged grid reveal, and the keyboard-hints row are unchanged. Opening a feature window still sinks the whole band (clock + LED + frame) below the window stack. Cross-reference the launcher regression R-7+ / desktop-chrome F-12. **#2823 note:** Ctrl+Space synthetic keypress did not land searchbox focus in this round (documented OS/WebView2 IME gate, launcher F-19 edge); #2830 did not touch the Ctrl+Space handler (git diff clean).
   - **Edge:** (a) Ctrl+Space over a maximized window re-raises the launcher; (b) the LED does not intercept the notch or a grid-tile pointer (the LED re-enables `pointerEvents="auto"` on its own trigger only).
+
+## #2837 extension — avatar geometry matches fredo-avatar.html (1014×1264 wireframe; live comparison gate)
+
+> Issue #2837 — the PixelButler avatar renders the #2827 21×21 base form, which is
+> geometry-WRONG against the authoritative `.opencode/wireframes/fredo-avatar.html`
+> (the avatar-guide.png match is NOT the brand geometry). The avatar must reproduce the
+> 1014×1264 pure-HTML rectangle decomposition (center X=507, mirror `newX = 1014 - x - width`).
+> **Verification policy: live** — pure-rendering, NO telemetry surface; live evidence =
+> rendered-webview receipts (`tauri_webview_screenshot` + `upload-evidence --base spec/2837`
+> raw URL + `tauri_webview_dom_snapshot` + `getBoundingClientRect`/computed style).
+> **SUPERSEDES the #2827 guide-match expectations (F-26..F-30):** the 21×21 base-form
+> geometry is the KNOWN-WRONG baseline; the fredo-avatar.html geometry is the new source of
+> truth. F-26..F-30 stay as history — F-35..F-40 below are current. Map 1:1 to
+> `.opencode/tmp/2837/triage.md` `## QA Expert` (AC-1..AC-5 + edges).
+> **Reference assets (Read by EXPLICIT absolute path, NEVER glob — `.opencode` is dot-prefixed, G-105):**
+> - `C:\Code\fredo\.opencode\wireframes\fredo-avatar.html` (authoritative geometry)
+> - `C:\Code\fredo\.opencode\wireframes\fredo-avatar.png` (rendered canonical context)
+> - `C:\Code\fredo\.opencode\wireframes\avatar-guide.png` (prior guide context)
+
+## F-35 (AC-1) — Comparison gate PERFORMED; every deviation listed
+
+- [ ] F-35: TWO legs. (1) Source/structural: compare the implementation's geometry table (`fredoAvatarGeometry.ts` or equivalent) against the `fredo-avatar.html` rect calls — each wireframe rect transcribed 1:1 into the 1014×1264 viewBox space, mirrored pairs intact, no "fixes". (2) Live/visual: render the avatar on the running `spec/2837` launcher; capture a screenshot + a zoomed capture; Read the three reference assets by EXPLICIT absolute path; compare the rendered avatar against the `fredo-avatar.html` geometry (PNGs as visual context). In the AC-1 evidence list EVERY remaining geometry/proportion deviation (forehead band; head side steps/diagonals; main head walls; lower face; eye size/placement; bow-tie cluster; body fragmentation/arm separation; leg length/width; feet; proportions) AND any extra/absent feature — the #2827 row-13 mouth bar must be GONE (the wireframe has no mouth). The deviation list is about GEOMETRY/PROPORTION, NOT texture (html `.pixel` gradient/`::after` seam/`::before` halo + PNG glow are visual context). A code-inspection-only comparison or a skipped gate ⇒ FAIL.
+  - **Edge:** capture from the running `spec/2837` build (never a stale `main` render); comparison is image/geometry-read (mandatory — #2827 passed code review and was still wrong); screenshots go under `.opencode/tmp/2837/e2e/` then `upload-evidence --base spec/2837`; PNG-vs-wireframe conflict → the WIREFRAME governs and the conflict is flagged to the SI (G-109).
+
+## F-36 (AC-2) — Head/face geometry
+
+- [ ] F-36: Verify the rendered head silhouette (live rects/screenshot overlay + the implementation's geometry source normalized into the 1014×1264 space). **Expected:** wide horizontal forehead band across the top ((373,67,268,38) → x 36.8–63.2% W, y 5.3–8.3% H); stepped/diagonal upper-head sides transitioning to long vertical main side walls ((87,317,41,267) + mirror → x 8.6–12.6% / 87.4–91.4% W, y 25.1–46.2% H); stepped lower-head narrowing into a broad continuous lower-face bar ((344,761,326,33) → x 33.9–66.1% W, y 60.2–62.8% H). The head is a stepped OUTLINE RIM with a hollow/transparent interior — the eyes are the only interior content; NO mouth element (the #2827 row-13 mouth bar is deleted — the jaw is the broad lower-face bar). The head must NOT read as a hollow dome with a narrow top, nor as a solid filled dome.
+  - **Edge:** verify at the displayed size AND zoomed; every region present with the correct relative size/placement (low-level rect coordinates need not be exact).
+
+## F-37 (AC-3) — Eyes + mirror symmetry
+
+- [ ] F-37: Verify the eye blocks render at the wireframe size/placement — LARGE mirrored blocks (323,453,68,131) + mirror (x 31.9–38.6% / 61.4–68.1% W; 68 wide ≈ 6.7% W; 131 tall ≈ 10.4% H; y 35.8–46.2% H) — NOT narrow slits — and the whole figure is mirror-symmetric about its vertical center axis per the wireframe's mirrored rectangle pairs (head steps/diagonals/walls, eyes, bow-tie wings, arms, legs, feet).
+  - **Edge:** measure left/right span equality about the center axis for each MIRRORED pair. Center single rects (forehead band, lower-face bar, center button (492,917,30,32)) are rendered ONCE — not mirrored. The as-authored center-button rect (491,991,31,36) is 0.5 unit OFF-center (true center 491.5) — transcribe as-authored, do NOT "fix" it; symmetry tolerance EXEMPTS it (Architect binding).
+
+## F-38 (AC-4) — Body/limb geometry
+
+- [ ] F-38: Verify the body/limb regions (wireframe y 812–1234). **Expected:** bow-tie cluster under the lower face (wings (427,823,52,69) + mirror + inner shape, y ≈ 64.2–68.7% H); body OPEN/fragmented with visible arm-separation gaps — separate upper-outer-arm / inner-arm / lower-arm clusters + center buttons with gaps — NOT a solid torso; legs SHORT and WIDE (outer (327,1085,34,115) + mirror; inner (460,1097,28,103) + mirror; y ≈ 85.8–94.9% H) with wide bottom feet ((339,1201,119,33) + mirror; 119 wide ≈ 11.7% W; y ≈ 95.0–97.6% H).
+  - **Edge:** gaps remain visible at the rendered display size (crispEdges — no anti-alias fill-in); legs short vs head height (wireframe legs 103–115 tall vs head ≈ 727).
+
+## F-39 (AC-5) — Token-native + no regression; light/dark + display-size legs
+
+- [ ] F-39a: Static grep of `PixelButler.tsx` + any new avatar helper under `apps/ui/src/features/home/components/launcher/**` for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN` → ZERO hardcoded literals (comment issue-refs exempt); the whole figure is a SINGLE accent fill from `color="var(--accent-primary)"` + `currentColor` (or div-mosaic `background: var(--accent-primary)`); any NEW glow token-based (`tint('var(--accent-primary)', N)` / `color-mix` / var-based filter); no new semantic token without a `system.ts` mapping. HUE follows the LIVE accent token — cyan is the accent default of `light-default`/`dark`; the `classic` base resolves purple; do NOT fail on hue when a non-cyan accent is active.
+- [ ] F-39b: Live — the avatar renders at the Architect-bound display size (`DISPLAY_WIDTH` ∈ [112, 168], `DISPLAY_HEIGHT = round(W·1264/1014)`, recommended 132×165; NEVER below 112 px wide — the 10-unit bow pixels collapse), undistorted (aspect 1014:1264, viewBox `0 0 1014 1264`), centered above the command bar, no clipping/overflow, in a LIGHT preset (shipped `ThemePresetSelector`, e.g. `light-default`) AND the DARK base.
+- [ ] F-39c: Live — narrow viewport (e.g. 700×900) + re-theme while visible (light ↔ dark ↔ classic); console clean (`tauri_read_logs` — no `Error:` / `Uncaught` / `Maximum update depth exceeded`).
+  - **Edge:** container `Box mb="4"` (LauncherShell.tsx:501) must not shift/clip; flex-column centering (LauncherShell.tsx:481-503) keeps the avatar centered above the command bar.
+
+## F-40 (NF) — Proportions preserved
+
+- [ ] F-40: Normalize key spans of the rendered figure (head width/height, body width, leg length/width, foot width) to % of the avatar bounding box and compare against the wireframe's normalized geometry (head silhouette x 8.6–91.4% W / y 5.3–62.8% H; legs y 85.8–94.9% H; feet ≈ 11.7% W each). Ratios within a small recorded tolerance; identical geometry in both themes.
