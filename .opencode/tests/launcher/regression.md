@@ -113,3 +113,28 @@
 ## R-21 — No re-render loop from the LED/tooltip state
 
 - [x] R-21: **PASS (spec/2830 round 1)** — `tauri_read_logs(source=console)` across the hover/focus/Escape tooltip cycles shows NO `Maximum update depth exceeded` / `Uncaught`. Hovering/focusing the LED trigger (tooltip open/close) and the `isOnline` flip do not introduce a re-render loop — console stays clean of `Maximum update depth exceeded`; no effect depends on array `.length` or newly-created object refs. Reference R-13 (launcher) + desktop-chrome R-14.
+
+## #2837 extension — PixelButler fredo-avatar.html geometry invariants (must-not-change)
+
+> Issue #2837 — the PixelButler avatar rework replaces the #2827 21×21 base-form geometry
+> with the `fredo-avatar.html` (1014×1264) geometry. **OVERRIDE:** the #2827 21×21
+> guide-match expectations (F-26..F-30 / R-16 form claims) are SUPERSEDED as the geometry
+> source of truth — do NOT fail this spec for deviating from the 21×21 base form. The
+> #2827/AC-5 token-native + layout-invariance invariants remain in force. Run alongside
+> R-1..R-21.
+
+## R-22 — Only the avatar geometry changes; launcher layout unchanged
+
+- [ ] R-22: The rework touches only `PixelButler.tsx` + any new avatar helper (git diff scope). The avatar container (`Box mb="4"`, LauncherShell.tsx:501), the command bar, the app grid, the keyboard hints, the clock/LED chrome, and the open/close lifecycle are UNCHANGED — no layout shift of the avatar box or the surrounding chrome at the declared display size or at narrow widths. Reference #2808 F-4 + R-15.
+
+## R-23 — Token-native color baseline retained
+
+- [ ] R-23: Changed launcher files carry ZERO hardcoded `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` and NO `var(--x)NN` alpha-append; the figure is a SINGLE accent fill driven by `var(--accent-primary)` (hue follows the LIVE accent token — cyan under `light-default`/`dark`, purple under the `classic` base; do NOT fail on hue when a non-cyan accent is active) and any added glow is token-based (`tint()`/`color-mix`/var filter); no cross-feature import (imports only React); no re-render loop (console clean of `Maximum update depth exceeded`). Reference F-6/R-5/R-9/R-12/R-14/R-16 + F-24 + R-19.
+
+## R-24 — Avatar still renders at the Architect-bound display size in the launcher
+
+- [ ] R-24: The avatar renders at the Architect-bound display size (`DISPLAY_WIDTH` ∈ [112, 168] px, recommended 132×165, aspect 1014:1264), undistorted, centered above the command bar, fully visible (no clipping/overflow) in BOTH a light preset and the dark base via the shipped `ThemePresetSelector`. Reference #2827 F-30/E-20 + #2824 F-23 + #2837 F-39b.
+
+## R-25 — Launcher interaction surface unchanged
+
+- [ ] R-25: The #2823 Ctrl+Space toggle, the #2824 ESC keycap/hints, and the #2830 single-LED cluster are unchanged by the avatar rework (reference launcher R-10..R-21 + desktop-chrome R-7..R-14). The avatar remains decorative (`aria-hidden`).
