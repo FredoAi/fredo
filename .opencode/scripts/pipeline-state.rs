@@ -1571,7 +1571,14 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     }
     let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
     if !local_exists {
-        run_cmd("git", &["checkout", "-b", &branch, "main"])?;
+        // Fork from origin/main, not the local main ref: `persist_tests` (the
+        // tests-commit side-effect) writes the QA-seeded suite to origin/main via
+        // the GitHub Contents API, which does NOT advance the LOCAL main ref. A
+        // fork from local main would carry a STALE `.opencode/tests/**` (G-038)
+        // and make the spec PR conflict at merge time. Fetch first so origin/main
+        // is at the post-tests-commit tip, then branch from it (G-032 idiom).
+        let _ = run_cmd("git", &["fetch", "origin", "main"]);
+        run_cmd("git", &["checkout", "-b", &branch, "origin/main"])?;
     }
     run_cmd("git", &["push", "-u", "origin", &branch])?;
     // Return the main worktree to `main` so the spec branch is free for a
