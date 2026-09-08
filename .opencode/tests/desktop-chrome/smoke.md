@@ -12,3 +12,7 @@
 ## #2830 extension — single top-right status LED smoke
 
 - [x] S-7: The desktop renders exactly ONE status LED top-right, below the clock — `tauri_webview_dom_snapshot(type="structure")` shows a single status-LED element in the top-right `<time>` cluster (below the HH:MM clock text), NO bottom-center status LEDs, and NO visible `ONLINE`/`OFFLINE` text label; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. **PASS (spec/2830 round 1):** `ledCount=1` in the top-right `<time>` cluster below the `02:49` clock; `statusRoles=["Online"]`; `bottomCenterRadiusDots=0`; no visible `ONLINE`/`OFFLINE` text; console clean (only the stale pre-test Vite HMR note for the deleted `StreamStatus.tsx`).
+
+## #2841 extension — desktop chrome polish smoke
+
+- [ ] S-8: On a clean desktop (all feature windows minimized), the THREE polished surfaces render simultaneously WITHOUT any pointer gesture: (1) the app-dock rail (`[data-testid="app-dock"]` / `role="region" aria-label="Open applications"`) is resting-visible at the left edge; (2) the clock/LED cluster is visually centered in the top-right corner; (3) the floating settings button (`IconButton` `aria-label="Settings"`) is visible. `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. **Edge:** 0 windows — the rail is absent (empty gate) but the clock/LED + settings button still render.

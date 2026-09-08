@@ -40,3 +40,29 @@ Unscripted probes beyond the functional cases. A confirmed finding here PROMOTES
 ## E-13 — Live state flip while hovering
 
 - [ ] E-13: With the tooltip open (hovering the LED), drive a connection-state flip (toggle `isConnected` via the stream/backend) — does the tooltip content swap live (Online ↔ Offline) and the LED recolor token-native, without a stale tooltip text or a console error?
+
+---
+
+## #2841 extension — desktop chrome polish probes
+
+> Add findings here for issue #2841; a confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
+
+## E-14 — Clean → covered → clean transition of the rail
+
+- [ ] E-14: On a clean desktop, note the rail is resting-visible. Open a feature window (maximized) → the rail should revert to the #2838 peek-only model (off-canvas at rest, no resting-visible). Close/minimize the window → the rail should flip back to resting-visible cleanly. Does the transition ever leave the rail in a stale/wrong state (e.g. stays hidden on a clean desktop, or stays visible over a full-bleed window)? Any re-render loop or console error on the flip?
+
+## E-15 — Pointer near the left edge while the rail is resting-visible
+
+- [ ] E-15: With the rail resting-visible on a clean desktop, does moving the pointer toward the left edge cause any reveal/hide churn (a flicker or re-hide) given the resting-visible model coexists with (or displaces) the edge-peek machine? Or does the rail stay put until a window covers the desktop? Record any visual jitter.
+
+## E-16 — Settings button vs the engaged launcher CLOSE hint group
+
+- [ ] E-16: With the launcher grid engaged (keyboard hint `ESC CLOSE` group at bottom-right), does the always-visible settings button at bottom-right collide with or overlap the engaged hint group? UI/UX reserved ~56px at bottom-right for the engaged state — verify the settings button clears it (or repositions) without occluding either.
+
+## E-17 — Theme switch with the settings modal open
+
+- [ ] E-17: Open the settings modal (from the always-visible button on a clean desktop), then switch a theme preset while it is open — does the button + modal re-tint token-native, and does the button stay visible after the modal closes? Any stale/dead color on the button's newly-converted box-shadow?
+
+## E-18 — Narrow viewport — rail + cluster + settings button together
+
+- [ ] E-18: Resize the window narrow/small on a clean desktop — do the resting-visible rail (left), the centered clock/LED cluster (top-right), and the settings button (bottom-right) all remain visible and non-overlapping? Does any surface clip/scale off-screen at the smallest supported viewport?
