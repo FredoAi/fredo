@@ -4,7 +4,7 @@ import { WindowSystemProvider } from '../../../shared/window-system/WindowSystem
 import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
-import { AppDrawer } from '../../../shared/window-system/AppDrawer';
+import { AppDock } from './dock/AppDock';
 import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
@@ -189,7 +189,7 @@ export const Home: React.FC = () => {
               <Box flex="1" position="relative" overflow="hidden">
                 <WindowManager />
                 <HomeDesktop registerOpenFeature={registerOpenFeature} />
-                <AppDrawer />
+                <AppDock />
                 <FloatingSettingsButton features={ALL_FEATURES} />
               </Box>
               <LauncherShell
