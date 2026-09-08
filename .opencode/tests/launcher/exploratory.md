@@ -128,3 +128,21 @@
 ## E-25 — State flip while hovering the launcher LED
 
 - [ ] E-25: With the tooltip open over the launcher LED, drive a connection-state flip — does the tooltip content swap live (Connected ↔ Disconnected) and the LED recolor `var(--accent-primary)` ↔ `var(--status-error)`, token-native, with no stale tooltip text / console error?
+
+## #2837 extension — PixelButler fredo-avatar.html geometry probes
+
+> Add findings here for issue #2837; a confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note). Probe the avatar re-geometry for unforeseen
+> interactions; a confirmed regression-free probe is recorded here (no promotion).
+
+## E-26 — Re-theme across presets while the new avatar is visible
+
+- [ ] E-26: Re-theme through several shipped presets (light + dark + a non-cyan accent such as Matrix) while the launcher avatar is visible — does the avatar re-tint token-native with no dead/stale color and NO geometry change/deformation? Any element stuck on a stale color, or any theme-dependent deformation, is a finding.
+
+## E-27 — Narrow/DPI resize + rapid open-close integrity
+
+- [ ] E-27: Resize the webview small/narrow and cycle launcher open/close rapidly around the new avatar — does the avatar stay crisp (uniform cells, no anti-alias fill-in of the fragmentation gaps), fully visible, no clip/overflow, no console error / no re-render loop? Any filled-in gap, clip, or console error is a finding.
+
+## E-28 — Fractional-DPI render of the new geometry
+
+- [ ] E-28: At a fractional OS/webview zoom or non-100% DPI, does the new multi-rect geometry stay proportional (no merged/seam-shifted cells, no subpixel blur destroying the fragmentation gaps)? Any distortion at non-integer scale is a finding.
