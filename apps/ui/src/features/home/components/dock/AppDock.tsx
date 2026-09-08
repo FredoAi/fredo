@@ -1,0 +1,345 @@
+/**
+ * AppDock — left-edge auto-hide open-apps rail (Spec #2838 ST-1/ST-2/ST-3).
+ *
+ * Replaces the #2821 minimize-triggered bottom drawer as the single open-apps
+ * surface. A PURE CONSUMER of the shared window-system read surface:
+ * `useWindows()` (store-order open list) + `useWindowActions()` (focus/close
+ * dispatch). The window engine is READ-ONLY — this module never edits
+ * `windowStore.ts` / `windowTypes.ts` / the window components.
+ *
+ * Transient edge peek (D-2): at rest the rail is OFF-CANVAS + `pointer-events:
+ * none` + `visibility: hidden` (out of tab order and the a11y tree — D-9), so a
+ * maximized window stays full-bleed and no pointer input is swallowed. Reveal
+ * is driven by a passive document-`pointermove` state machine over the
+ * left-edge zone (`clientX <= EDGE_ZONE_PX`); the rail stays visible while the
+ * pointer is within the dock + keep margin and slides away after a hide-delay
+ * grace when it leaves. No pinning, no full-height hover strip, no global CSS.
+ *
+ * No re-render loop (NFR-2): `revealed` is a single transition-only boolean;
+ * the pointer handler only calls `setRevealed` on an actual boolean transition
+ * and never reads/writes array `.length` or freshly created object refs in
+ * effect deps. Timers live in refs and are cleared on re-entry/unmount. The
+ * entry list is `useWindows()` store order (NFR-3) — no z-sort, no second
+ * registry, no list-length-driven effects.
+ *
+ * Geometry is module-level named constants (NFR-4 / testability).
+ */
+
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Box } from '@chakra-ui/react';
+import { useReducedMotion } from 'framer-motion';
+import { useWindows } from '../../../../shared/window-system/useWindows';
+import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
+import { tint } from '../../../../shared/utils/colorTint';
+import { DockEntry } from './DockEntry';
+import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
+
+// ── Geometry + timing constants (module-level, named) ────────────────────────
+
+/** Reveal zone: pointer `clientX <= EDGE_ZONE_PX` at the left edge reveals (D-2). */
+export const EDGE_ZONE_PX = 6;
+/** Keep zone: revealed stays while the pointer is within the dock + this margin. */
+export const DOCK_KEEP_MARGIN_PX = 24;
+/** Hide grace: slide away after the pointer leaves dock+zone for this long. */
+export const HIDE_DELAY_MS = 350;
+/** Stacking: above the window stack (z=1) + resting launcher (z=1100); below
+ *  the Ctrl+Space overlay (z=1300); co-equal with the chrome band (z=1200,
+ *  which is `pointer-events: none` and never steals dock input). */
+export const DOCK_Z_INDEX = 1200;
+
+/** Rail footprint width (px). */
+export const DOCK_WIDTH_PX = 52;
+/** Rail corner radius (px). */
+export const DOCK_RAIL_RADIUS_PX = 14;
+/** Top/bottom clearances when the rail is at max height. */
+export const DOCK_VERTICAL_INSET_PX = 88;
+/** Rail max height before the entry list scrolls (≥6 apps state). */
+export const DOCK_MAX_HEIGHT_PX = 480;
+/** Rail list entry gap (px). */
+export const DOCK_GAP_PX = 4;
+/** List padding (px) — right reserves the scrollbar gutter so the 36px wells
+ *  never clip when the rail scrolls (≥6 apps). */
+export const DOCK_LIST_PADDING = '6px 6px 6px 2px';
+
+/** Slide-in / slide-out durations (ms) — Doherty-friendly motion band. */
+export const REVEAL_DURATION_MS = 180;
+export const HIDE_DURATION_MS = 160;
+
+/** Keep-zone width measured from the viewport's left edge. */
+export const DOCK_KEEP_ZONE_PX = DOCK_WIDTH_PX + DOCK_KEEP_MARGIN_PX;
+/** Off-canvas rest shift: rail width (-100%) + an 8px shadow gap (UI/UX). */
+export const DOCK_HIDDEN_GAP_PX = 8;
+
+/** Rail max-height CSS (UI/UX: `min(480px, calc(100vh - 176px))`). */
+export const DOCK_RAIL_MAX_HEIGHT = `min(${DOCK_MAX_HEIGHT_PX}px, calc(100vh - ${DOCK_VERTICAL_INSET_PX * 2}px))`;
+
+/** Themed scrollbar (thumb `var(--card-hover-bg)`, track transparent). */
+const DOCK_SCROLLBAR_CSS = {
+  '&::-webkit-scrollbar': { width: '6px', height: '6px' },
+  '&::-webkit-scrollbar-thumb': { background: 'var(--card-hover-bg)', borderRadius: '8px' },
+  '&::-webkit-scrollbar-track': { background: 'transparent' },
+};
+/** Is a DOM element focusable (a11y focus-restore guard)? */
+function isFocusableElement(el: HTMLElement | null): boolean {
+  return !!el && el.isConnected && el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled;
+}
+
+export const AppDock: React.FC = () => {
+  const windows = useWindows();
+  const actions = useWindowActions();
+  const reducedMotion = useReducedMotion() ?? false;
+
+  // Empty-dock gate (D-1/AC1): no listener and no dock when zero windows.
+  const hasWindows = windows.length > 0;
+
+  const [revealed, setRevealedState] = useState(false);
+  const revealedRef = useRef(false);
+
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
+  const lastPointerXRef = useRef(-1);
+  const focusInsideRef = useRef(false);
+  /** Last input modality — determines whether dock focus suspends auto-hide. */
+  const lastInputModeRef = useRef<'pointer' | 'keyboard'>('pointer');
+  const lastFocusedOutsideRef = useRef<HTMLElement | null>(null);
+
+  /** Transition-only reveal setter — React bail-out + ref guard (NFR-2). */
+  const setRevealed = useCallback((next: boolean) => {
+    if (revealedRef.current === next) return;
+    revealedRef.current = next;
+    setRevealedState(next);
+  }, []);
+
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  const armHideTimer = useCallback(() => {
+    if (hideTimerRef.current !== null) return; // already armed
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setRevealed(false);
+    }, HIDE_DELAY_MS);
+  }, [setRevealed]);
+
+  /** Document pointermove: reveal on left-edge zone; keep/hide by keep-zone. */
+  const handlePointerMove = useCallback(
+    (e: PointerEvent) => {
+      const x = e.clientX;
+      lastPointerXRef.current = x;
+
+      if (!revealedRef.current) {
+        // Hidden → reveal only when the pointer reaches the true left edge.
+        if (x <= EDGE_ZONE_PX) {
+          clearHideTimer();
+          setRevealed(true);
+        }
+        return;
+      }
+
+      // Revealed: suspend auto-hide while keyboard focus is inside the dock.
+      if (focusInsideRef.current) {
+        clearHideTimer();
+        return;
+      }
+      if (x <= DOCK_KEEP_ZONE_PX) {
+        clearHideTimer();
+      } else {
+        armHideTimer();
+      }
+    },
+    [clearHideTimer, armHideTimer, setRevealed],
+  );
+
+  // Listener + empty gate (D-1): attach only while ≥1 window is open.
+  useEffect(() => {
+    if (!hasWindows) {
+      clearHideTimer();
+      if (revealedRef.current) setRevealed(false);
+      return;
+    }
+    const handlePointerDown = (): void => {
+      lastInputModeRef.current = 'pointer';
+      focusInsideRef.current = false;
+    };
+    const handleKeyDown = (): void => {
+      lastInputModeRef.current = 'keyboard';
+    };
+    document.addEventListener('pointermove', handlePointerMove, { passive: true });
+    document.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+      clearHideTimer();
+    };
+  }, [hasWindows, handlePointerMove, clearHideTimer, setRevealed]);
+
+  // When the dock hides (pointer-away, ESC, or last-app close), keyboard focus
+  // can no longer be inside it — reset the suspension flag so a later reveal is
+  // pointer-governed again (no stale focusInside stuck-visible dock).
+  useEffect(() => {
+    if (!revealed) {
+      focusInsideRef.current = false;
+      clearHideTimer();
+    }
+  }, [revealed, clearHideTimer]);
+
+  // Hide when focus leaves the dock and the pointer is outside the keep zone.
+  const handleRegionBlur = useCallback(
+    (e: React.FocusEvent<HTMLDivElement>) => {
+      const next = e.relatedTarget as Node | null;
+      const dock = dockRef.current;
+      if (dock && next && dock.contains(next)) return; // focus stayed inside
+      focusInsideRef.current = false;
+      if (lastPointerXRef.current > DOCK_KEEP_ZONE_PX) armHideTimer();
+    },
+    [armHideTimer],
+  );
+
+  // Track focus entry (suspends auto-hide) + the outside focus origin (ESC restore).
+  // Suspension applies only when focus arrived by KEYBOARD: a pointer click that
+  // happens to leave DOM focus on a dock button must NOT pin the dock open once
+  // the pointer leaves (pointer-governed hide). Modality is tracked by the
+  // document-level pointerdown/keydown listeners.
+  const handleRegionFocus = useCallback(
+    (e: React.FocusEvent<HTMLDivElement>) => {
+      const dock = dockRef.current;
+      const prev = e.relatedTarget as HTMLElement | null;
+      if (dock && (!prev || !dock.contains(prev))) {
+        lastFocusedOutsideRef.current = prev;
+      }
+      focusInsideRef.current = lastInputModeRef.current === 'keyboard';
+      clearHideTimer();
+    },
+    [clearHideTimer],
+  );
+
+  /** Roving keyboard model + ESC close on the revealed dock (NFR-6). */
+  const handleRegionKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // Any keydown inside the dock is genuine keyboard use → suspend auto-hide
+      // (keyboardOpen state). Roving keys below also require focus to be inside.
+      focusInsideRef.current = true;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setRevealed(false);
+        const origin = lastFocusedOutsideRef.current;
+        if (isFocusableElement(origin)) {
+          origin?.focus();
+        } else {
+          (document.activeElement as HTMLElement | null)?.blur();
+        }
+        return;
+      }
+
+      const dock = dockRef.current;
+      if (!dock) return;
+      const entries = Array.from(dock.querySelectorAll<HTMLButtonElement>('[data-dock-entry]'));
+      if (entries.length === 0) return;
+
+      let idx = entries.indexOf(document.activeElement as HTMLButtonElement);
+      if (idx === -1) {
+        const active = document.activeElement;
+        const row = active instanceof Element ? active.closest('[data-dock-item]') : null;
+        const rowBtn = row?.querySelector<HTMLButtonElement>('[data-dock-entry]');
+        idx = rowBtn ? entries.indexOf(rowBtn) : -1;
+      }
+
+      let nextIdx = idx;
+      if (e.key === 'ArrowDown') nextIdx = idx < 0 ? 0 : Math.min(idx + 1, entries.length - 1);
+      else if (e.key === 'ArrowUp') nextIdx = idx < 0 ? entries.length - 1 : Math.max(idx - 1, 0);
+      else if (e.key === 'Home') nextIdx = 0;
+      else if (e.key === 'End') nextIdx = entries.length - 1;
+      else return;
+
+      e.preventDefault();
+      entries[nextIdx]?.focus();
+    },
+    [setRevealed],
+  );
+
+  /** Consumer-side activation: top-window no-op guard + restore path (D-4). */
+  const handleActivate = useCallback(
+    (win: WindowEntry) => {
+      if (win.focused && !win.isMinimized) return; // already top → no-op
+      actions.focusWindow(win.id); // kernel clears minimize → restore
+    },
+    [actions],
+  );
+
+  const handleClose = useCallback(
+    (win: WindowEntry) => {
+      actions.closeWindow(win.id); // idempotent, re-entrancy-guarded
+    },
+    [actions],
+  );
+
+  // Empty gate: no dock, no listeners, no state when zero windows.
+  if (!hasWindows) return null;
+
+  const hidden = !revealed;
+  // CSS-only motion: transform slides; visibility flips immediately on reveal
+  // and after the slide-out on hide (transition-delay technique — no JS timer).
+  const transition = reducedMotion
+    ? 'none'
+    : hidden
+      ? `transform ${HIDE_DURATION_MS}ms ease-in, visibility 0s linear ${HIDE_DURATION_MS}ms`
+      : `transform ${REVEAL_DURATION_MS}ms ease-out, visibility 0s linear 0s`;
+
+  return (
+    <Box
+      ref={dockRef}
+      role="region"
+      aria-label="Open applications"
+      data-testid="app-dock"
+      position="fixed"
+      left="0"
+      top="50%"
+      zIndex={DOCK_Z_INDEX}
+      onPointerEnter={() => clearHideTimer()}
+      onKeyDown={handleRegionKeyDown}
+      onFocus={handleRegionFocus}
+      onBlur={handleRegionBlur}
+      style={{
+        transform: hidden
+          ? `translate(calc(-100% - ${DOCK_HIDDEN_GAP_PX}px), -50%)`
+          : 'translate(0px, -50%)',
+        visibility: hidden ? 'hidden' : 'visible',
+        pointerEvents: hidden ? 'none' : 'auto',
+        transition,
+      }}
+    >
+      <Box
+        width={`${DOCK_WIDTH_PX}px`}
+        display="flex"
+        flexDirection="column"
+        overflow="hidden"
+        borderRadius={`${DOCK_RAIL_RADIUS_PX}px`}
+        border="1px solid"
+        borderColor="border.default"
+        bg="bg.surface"
+        boxShadow={`8px 0 24px ${tint('var(--border-color)', 25)}`}
+      >
+        <Box
+          role="list"
+          maxHeight={DOCK_RAIL_MAX_HEIGHT}
+          overflowY="auto"
+          display="flex"
+          flexDirection="column"
+          gap={`${DOCK_GAP_PX}px`}
+          padding={DOCK_LIST_PADDING}
+          css={DOCK_SCROLLBAR_CSS}
+        >
+          {windows.map((win) => (
+            <DockEntry key={win.id} win={win} onActivate={handleActivate} onClose={handleClose} />
+          ))}
+        </Box>
+      </Box>
+    </Box>
+  );
+};
