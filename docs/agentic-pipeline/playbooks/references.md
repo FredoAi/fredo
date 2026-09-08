@@ -31,7 +31,6 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 ---
 ## Known Failure Modes
-
 ### G-110: agent_self_provisioned_tools
 - **activation_date:** 2026-09-07
 - **observed:** #2835 — an agent needing a pre-fix baseline run (the buggy code sits on `main`, which the dev-environment tool refuses to serve — G-052) responded by hand-rolling its own runner: `.opencode/tmp/2835/start-main.mjs` spawned `cmd.exe /c pnpm dev:tauri` DETACHED via `bun`/node to serve the repo root on `main`, re-implementing `dev-env.ps1 -Action Up`'s internal Start-Process machinery in a scratch script.
