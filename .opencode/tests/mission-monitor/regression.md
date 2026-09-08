@@ -66,15 +66,15 @@
 
 ## Must NOT change (regression invariants) — Spec #2835
 
-- [x] R-21 (PASS 2026-09-07 #2835, static+live): RTDB row-pipeline mappings unchanged — the spec's backend diff is test-only (`commands.rs` +2 unit tests, no production-code change); ingest/attrs/store production code identical. Live `telemetry_spans`↔`chat_rows`/`tool_use_rows` cross-checks consistent at every sampled instant.
-- [x] R-22 (PASS 2026-09-07 #2835, static): shared extract-rule implementation (`attrs.rs`, NFR-6) untouched by the diff.
-- [x] R-23 (PASS 2026-09-07 #2835, static): contract-trust single-path extraction preserved — no `??` fallback / multi-path / output-driven derivation / v1 hydration in the diff (frontend changes add the typed compare-arg query serialization + the `chatRows` dedupe handoff only).
-- [x] R-24 (PASS 2026-09-07 #2835, static): #523 compositing semantics unchanged — relationship registry / compositing code not in the diff; `StreamContext.tsx` untouched.
-- [x] R-25 (PASS 2026-09-07 #2835, static): #509 subagent filter untouched.
-- [x] R-26 (PASS 2026-09-07 #2835, static+live): theming tokens unchanged — zero theming files in the diff; live theme-preset switch re-tinted the MM surface via CSS vars/`color-mix` (computed-style receipt).
-- [x] R-27 (PASS 2026-09-07 #2835, static): no cross-feature imports — diff confined to `features/mission-monitor/*`, `shared/hooks/useEventRows.ts`, and backend `rtdb/commands.rs` tests.
-- [x] R-28 (PASS 2026-09-07 #2835, static+live): no `.length`/object-ref effect/memo deps added — `builderState` memo deps = `[chatEpoch, toolEpoch, injectedBuilderState]` (primitives + stable ref); no `Maximum update depth exceeded` on either leg.
-- [x] R-29 (PASS 2026-09-07 #2835, static): row-store merge semantics unchanged — `StreamContext.tsx` not in the diff; insert/update/remove semantics untouched.
+- [ ] R-21 (RTDB row-pipeline mappings unchanged): the IngestClassifier maps the SAME OTLP spans / CLI events onto the SAME canonical row upserts — no change to which rows are produced or to any field projection (`rtdb/ingest.rs` / `attrs.rs`). Cross-check `telemetry_spans`/`chat_rows`/`tool_use_rows` count + shape unchanged at the same instant.
+- [ ] R-22 (Ingest classification unchanged): the shared extract-rule implementation (`attrs.rs`, NFR-6) is unchanged — no duplicate extraction path introduced between the live classifier and the canonical backfill.
+- [ ] R-23 (Contract-trust single-path extraction unchanged): the frontend consumes the projected single-path row fields — no `??` fallback chains / multi-path lookups / output-driven derivation / v1 hydration reintroduced (Spec #568 cleanup not regressed).
+- [ ] R-24 (#523 compositing semantics unchanged): row-level compositing (relationship registry first-wins stamp; a re-key NEVER removes rows — only retention eviction emits `kind: remove`; child-session rows composite under the parent carrying `parentSessionId` + `compositedChildSessionId`); no event-level rewrite reintroduced.
+- [ ] R-25 (#509 subagent filter unchanged): `build`/`plan` internal tool-execution sessions are still excluded from the graph AND the sidebar; user-requested @-subagent dispatches still produce SubagentNodes when the parent anchor resolves.
+- [ ] R-26 (Theming tokens unchanged): the perf fix must not introduce any hardcoded hex/rgba or invalid `var(--token)NN` alpha-append; all colors via semantic tokens → CSS vars → `tint()`/`color-mix()`.
+- [ ] R-27 (No cross-feature imports): the fix stays within `apps/ui/src/features/mission-monitor/*`, `apps/ui/src/shared/contexts/StreamContext.tsx`, `apps/ui/src/shared/hooks/useEventRows.ts`, and backend `infrastructure/rtdb/{flush,store,cache,ingest}.rs` + `infrastructure/comm/`; no new cross-feature import introduced.
+- [ ] R-28 (Re-render-loop pattern unchanged, Spec #523): no new `.length`/newly-created object-ref `useEffect`/`useMemo` deps; recomputation stays epoch-based; no `Maximum update depth exceeded`.
+- [ ] R-29 (Row-store merge semantics unchanged): `insert` spread-merges (init-time fields survive), `update` is seq-guarded with stale-patch drops, `remove` is only ever retention eviction — the perf fix must not bypass these semantics.
 
 ## Overlapping prior-feature suites (Spec #2835)
 
