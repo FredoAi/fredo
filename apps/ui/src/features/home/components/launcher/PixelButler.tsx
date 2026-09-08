@@ -1,20 +1,30 @@
 import React from 'react';
 
+import {
+  expandFredoRects,
+  FREDO_AVATAR_SOURCE_RECTS,
+  FREDO_AVATAR_VIEWBOX,
+} from './fredoAvatarGeometry';
+
 /**
- * Pixel-butler avatar (base form) — the FREDO brand mascot.
+ * Pixel-butler avatar — the FREDO brand mascot.
  *
- * Renders the avatar-guide.png base NEUTRAL butler: a 21x21 pixel grid (hollow
- * round head, two vertical-bar eyes, a small horizontal mouth, bow-tie torso +
- * arm nubs + two legs).
+ * Renders a faithful VECTOR transcription of the authoritative
+ * `.opencode/wireframes/fredo-avatar.html` rectangle decomposition (#2837): the
+ * wireframe's 1014x1264 coordinate space IS the SVG viewBox, and every figure
+ * rect is one `<rect>` whose (x, y, width, height) matches the html call 1:1
+ * (mirrored pairs derived at x' = 1014 - x - width by `expandFredoRects`). The
+ * head is a stepped outline rim with a hollow interior — the eyes are the only
+ * interior content, and there is NO mouth (the jaw is the broad lower-face bar).
  *
- * Token-native (AC4/AC5): the SVG carries NO color of its own. Every pixel uses
+ * Token-native (AC5): the SVG carries NO color of its own. Every rect uses
  * `fill="currentColor"` and the root SVG sets `color="var(--accent-primary)"`,
- * so the cyan lives in the accent token (CYAN is the default accent value) and
- * theme-switch restyles the avatar with zero hardcoded hex/rgba.
+ * so theme/accent changes restyle the avatar with zero hardcoded hex/rgba.
  *
  * The `status` prop is an optional extension point for the icon-guide evolution
  * states (STANDBY / AWAITING / ANALYZING / PLANNING / EXECUTING / COMPLETE) —
- * NOT required by this slice's ACs; the base form is the default render.
+ * NOT implemented by this slice's ACs; the figure always renders the base
+ * neutral FREDO.
  */
 
 export type PixelButlerStatus =
@@ -28,77 +38,43 @@ export type PixelButlerStatus =
 export interface PixelButlerProps {
   /** Whether the avatar is currently shown (open launcher). */
   visible: boolean;
-  /** Optional expression/evolution extension point — base NEUTRAL (standby) is the default render. */
+  /** Optional expression/evolution extension point — base NEUTRAL is the default render. */
   status?: PixelButlerStatus;
 }
 
-// Guide grid dimension (cells). The guide renders it at a nominal 8px pixel-cell
-// scale (PIXEL_SIZE below), but the shipped avatar renders at DISPLAY_SIZE px with
-// a 21x21 viewBox so the on-screen size stays 48x48 (AC5).
-const GRID_SIZE = 21;
-// Guide pixel scale (px per cell) — auditability constant; the on-screen render
-// is driven by DISPLAY_SIZE + GRID_SIZE (crispEdges quantizes the viewBox cells).
-const PIXEL_SIZE = 8;
-// Rendered SVG px (unchanged — AC5 layout invariance).
-const DISPLAY_SIZE = 48;
+// Display size (Architect band: DISPLAY_HEIGHT ∈ [128, 210] ⇔ DISPLAY_WIDTH ∈
+// [103, 168]). Shipped default 132 wide; height is aspect-locked to the
+// wireframe 1014:1264 so the render is undistorted.
+const DISPLAY_WIDTH = 132;
+const DISPLAY_HEIGHT = Math.round((DISPLAY_WIDTH * 1264) / 1014);
 
-// 21x21 pixel matrix (top → bottom, left → right): '#' = filled, '.' = empty.
-// Base NEUTRAL butler (authoritative avatar-guide.png "BASE FORM" — transcribed
-// cell-for-cell, symmetric about col 11, single accent fill): a large HOLLOW
-// round-dome head OUTLINE (interior TRANSPARENT — never a solid fill) with TWO
-// vertical-bar eyes (array rows 9-11, cols 8-9 & 13-14) and a small horizontal
-// MOUTH bar centered below the eyes (array row 13, cols 9-11), then a compact
-// chunky body (array rows 16-19): arm nubs (cols 5 & 17), a torso, and two short
-// legs (cols 8-9 & 13-14). Every figure element (head outline, eyes, mouth,
-// body) is the SAME accent fill — there is no second light-contrast fill and no
-// two-fill SVG; the head interior stays transparent.
-const BASE_FORM = [
-  '.....................',
-  '......#########......',
-  '....##.........##....',
-  '...##...........##...',
-  '..##.............##..',
-  '..#...............#..',
-  '.#.................#.',
-  '.#.................#.',
-  '.#.................#.',
-  '.#.....##...##.....#.',
-  '.#.....##...##.....#.',
-  '.#.....##...##.....#.',
-  '.#.................#.',
-  '.#.......###.......#.',
-  '......#########......',
-  '.....................',
-  '....#..#######..#....',
-  '.....###########.....',
-  '.......##...##.......',
-  '.......##...##.......',
-  '.....................',
-];
+// Expanded once at module scope — no per-mount rebuild (58 rects).
+const RECTS = expandFredoRects(FREDO_AVATAR_SOURCE_RECTS);
 
 export const PixelButler: React.FC<PixelButlerProps> = ({ visible }) => {
   if (!visible) return null;
 
   return (
     <svg
-      width={DISPLAY_SIZE}
-      height={DISPLAY_SIZE}
-      viewBox={`0 0 ${GRID_SIZE} ${GRID_SIZE}`}
+      width={DISPLAY_WIDTH}
+      height={DISPLAY_HEIGHT}
+      viewBox={FREDO_AVATAR_VIEWBOX}
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
       shapeRendering="crispEdges"
       color="var(--accent-primary)"
     >
-      {BASE_FORM.flatMap((row, y) =>
-        row
-          .split('')
-          .map((cell, x) =>
-            cell === '#' ? (
-              <rect key={`${x}-${y}`} x={x} y={y} width={1} height={1} fill="currentColor" />
-            ) : null,
-          ),
-      )}
+      {RECTS.map((rect, index) => (
+        <rect
+          key={index}
+          x={rect.x}
+          y={rect.y}
+          width={rect.width}
+          height={rect.height}
+          fill="currentColor"
+        />
+      ))}
     </svg>
   );
 };
