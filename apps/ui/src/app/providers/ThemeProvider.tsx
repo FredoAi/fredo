@@ -10,6 +10,8 @@ export interface ThemeContextType {
   overrides: ThemeOverrides;
   /** Set or clear a single override. Pass an empty string to remove the key. */
   setOverride: (key: keyof ThemeOverrides, value: string) => void;
+  /** Clear a batch of keys in ONE composed write, avoiding stale-closure drops. */
+  clearOverrides: (keys: (keyof ThemeOverrides)[]) => void;
   /** Remove all overrides, reverting to the base theme values. */
   resetOverrides: () => void;
   /** Currently selected preset id, or '' for none. */
@@ -242,6 +244,17 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     setOverridesStorage(next);
   };
 
+  // Clear a batch of keys in ONE composed write. Without this, a multi-token
+  // Discard loops `setOverride` over the SAME stale `overrides` render closure,
+  // so under React batching only the last key's deletion survives (N-1 dirty
+  // tokens remain). Deleting every key from a single copy and writing once keeps
+  // the batch atomic (F-9 multi-edit).
+  const clearOverrides = (keys: (keyof ThemeOverrides)[]) => {
+    const next = { ...overrides };
+    for (const key of keys) delete next[key];
+    setOverridesStorage(next);
+  };
+
   const resetOverrides = () => {
     setOverridesStorage({});
   };
@@ -262,6 +275,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         theme: themes[activeTheme],
         overrides,
         setOverride,
+        clearOverrides,
         resetOverrides,
         selectedPreset,
         setPreset,

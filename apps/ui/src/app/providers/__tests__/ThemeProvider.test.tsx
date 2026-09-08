@@ -253,4 +253,35 @@ describe('ThemeProvider user presets (#2845)', () => {
     expect(result.current.userPresets).toHaveLength(1);
     expect(result.current.userPresets[0].name).toBe('Custom preset 1');
   });
+
+  it('clearOverrides removes a batch of keys atomically in ONE write (F-9 multi-edit)', async () => {
+    const getMock = settingsService.get as ReturnType<typeof vi.fn>;
+    getMock.mockImplementation(async (_key: string, defaultValue: unknown) => defaultValue);
+    const setMock = settingsService.set as ReturnType<typeof vi.fn>;
+
+    const { result } = renderHook(() => useTheme(), { wrapper: ThemeProvider });
+    await waitFor(() => expect(getMock).toHaveBeenCalled());
+    await flush();
+
+    act(() => result.current.setOverride('accentPrimary', '#111111'));
+    act(() => result.current.setOverride('bodyBg', '#222222'));
+    act(() => result.current.setOverride('statusSuccess', '#333333'));
+    await flush();
+    expect(Object.keys(result.current.overrides)).toHaveLength(3);
+
+    // Batch-clear two of the three in a single call.
+    const setCallsBefore = setMock.mock.calls.length;
+    act(() => result.current.clearOverrides(['accentPrimary', 'bodyBg']));
+    await flush();
+
+    // Only the two requested keys are removed; the untouched one survives.
+    expect(result.current.overrides).toEqual({ statusSuccess: '#333333' });
+    // Exactly ONE persisted write for the batch (atomic, not one per key).
+    expect(setMock.mock.calls.length - setCallsBefore).toBe(1);
+    // The CSS vars revert to (preset ?? base) for the cleared tokens.
+    expect(readVar('--accent-primary')).toBe(themes.classic.colors.accentPrimary);
+    expect(readVar('--body-bg')).toBe(themes.classic.colors.bodyBg);
+    // The untouched override survives — its CSS var is still the override value.
+    expect(readVar('--status-success')).toBe('#333333');
+  });
 });

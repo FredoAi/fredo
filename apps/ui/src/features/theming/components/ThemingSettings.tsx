@@ -210,6 +210,7 @@ export const ThemingSettings: React.FC = () => {
     theme,
     overrides,
     setOverride,
+    clearOverrides,
     selectedPreset,
     resetTheme,
     getPreset,
@@ -225,17 +226,20 @@ export const ThemingSettings: React.FC = () => {
   // R-2 (AC2): resolve the INPUT to the effective `override ?? preset ?? base` value.
   // `override` still wins; a preset token (or the base value when the preset omits it)
   // feeds `toHex`/`matchFont` so the visible control value matches the selected preset.
+  // `activePreset?.colors?.[key]` guards the index against `undefined` when no preset is
+  // selected (Default/None or Reset → selectedPreset === ''), so the base fall-back
+  // renders instead of crashing the editor.
   const colorValue = (key: ColorKey): string =>
     toHex(
       overrides[key]
-        ?? (activePreset?.colors as Partial<ThemeOverrides>)[key]
+        ?? (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
         ?? theme.colors[THEME_COLOR_MAP[key]],
     );
 
   const fontValue = (key: FontKey): string =>
     matchFont(
       (overrides[key] as string)
-        ?? (activePreset?.colors as Partial<ThemeOverrides>)[key]
+        ?? (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
         ?? (theme.colors as Record<FontKey, string>)[key],
     );
 
@@ -249,9 +253,10 @@ export const ThemingSettings: React.FC = () => {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Preset token value for a given key: the preset's literal, else the base value
-  // (matching the engine's `override ?? preset ?? base` truthy fall-through).
+  // (matching the engine's `override ?? preset ?? base` truthy fall-through). The
+  // optional `?.colors?.[key]` guards against `undefined` when no preset is selected.
   const presetValueOf = (key: keyof ThemeOverrides): string =>
-    (activePreset?.colors as Partial<ThemeOverrides>)[key]
+    (activePreset?.colors as Partial<ThemeOverrides> | undefined)?.[key]
       ?? (theme.colors as Record<keyof ThemeOverrides, string>)[key];
 
   const resolvePromptFor = (key: keyof ThemeOverrides, nextValue: string) => {
@@ -278,10 +283,11 @@ export const ThemingSettings: React.FC = () => {
     resolvePromptFor(key, val);
   };
 
-  // R-3 Discard: clear every dirty token override back to the preset (its value, or
-  // base when it omits the token), then disarm. Esc / X routes here too.
+  // R-3 Discard: revert ALL dirty tokens back to the preset in ONE composed write
+  // (avoids the stale-closure batch bug where a forEach loop leaves N-1 keys).
+  // Esc / X routes here too.
   const handleDiscard = () => {
-    dirtyTokens.forEach((key) => setOverride(key, ''));
+    if (dirtyTokens.size > 0) clearOverrides([...dirtyTokens]);
     setDirtyTokens(new Set());
     setPromptOpen(false);
   };
