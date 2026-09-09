@@ -47,7 +47,7 @@ import { useWindows } from '../../../../shared/window-system/useWindows';
 import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
 import { tint } from '../../../../shared/utils/colorTint';
 import { DockEntry } from './DockEntry';
-import { useDockPosition, type DockPosition } from './dockPositionStore';
+import { useDockPosition, hydrateDockPosition, type DockPosition } from './dockPositionStore';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
 
 // ── Geometry + timing constants (module-level, named) ────────────────────────
@@ -270,6 +270,19 @@ export const AppDock: React.FC = () => {
   // Mirror for stable event handlers (read the LIVE decision, not a stale
   // closure captured at mount).
   restingVisibleRef.current = restingVisible;
+  // Boot-time hydration of the persisted dock position (Spec #2848 round-2
+  // FD-1 / F-3): AppDock is the ALWAYS-mounted consumer at app boot
+  // (Home.tsx:192), so its first mount triggers the module store's idempotent
+  // once-only `hydrateDockPosition()` (dockPositionStore.ts:87-105). Without
+  // this the module store stays at DEFAULT_DOCK_POSITION ('sidebar') until the
+  // Settings → Appearance section happens to mount, so a persisted 'bottom'
+  // never applied after a full restart. The store is hydrationStarted-once +
+  // dirty-guarded, so the later DockPositionSettings mount call becomes a
+  // harmless no-op and this never clobbers an in-flight user selection.
+  // Mount-only ([] dep) — no listener, no re-render loop (#523 rule).
+  useEffect(() => {
+    void hydrateDockPosition();
+  }, []);
   useEffect(() => {
     if (!hasWindows) {
       clearHideTimer();

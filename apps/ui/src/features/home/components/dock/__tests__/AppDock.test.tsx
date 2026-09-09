@@ -24,7 +24,7 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { WindowEntry } from '@/shared/window-system/windowTypes';
 import { AppDock, EDGE_ZONE_PX, DOCK_BOTTOM_KEEP_ZONE_PX, HIDE_DELAY_MS } from '../AppDock';
 import { dockEntryLabel } from '../DockEntry';
-import { setDockPosition, resetDockPositionStoreForTests } from '../dockPositionStore';
+import { setDockPosition, getDockPosition, resetDockPositionStoreForTests } from '../dockPositionStore';
 
 // ── Mock state (vi.hoisted — referenced by vi.mock factories, mutable per test) ──
 
@@ -398,5 +398,102 @@ describe('AppDock bottom orientation (Spec #2848 ST-3b — render, roving, revea
       vi.advanceTimersByTime(HIDE_DELAY_MS);
     });
     expect(screen.queryByRole('region', { name: 'Open applications' })).toBeNull();
+  });
+});
+
+// ── Round-2 FD-4 (F-3 / E-9 fix regressions) ─────────────────────────────────
+// FD-1 boot hydration: AppDock's first mount must trigger the module store's
+// once-only `hydrateDockPosition()`, so a persisted 'bottom' renders the bottom
+// pill WITHOUT any Settings mount. FD-2: the active entry's bar axis follows the
+// orientation (left-edge `inset 3px 0` in the sidebar, bottom-edge
+// `inset 0 -3px` in the bottom bar).
+
+import { settingsService } from '../../../../settings';
+
+describe('AppDock boot hydration (Spec #2848 round-2 FD-1 — F-3 regression)', () => {
+  beforeEach(() => {
+    resetDockPositionStoreForTests();
+    // The persisted value ('bottom') is what AppDock's mount hydration must read.
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue('bottom');
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    cleanup();
+  });
+
+  it('mounts AppDock with settingsService.get resolving "bottom" and renders the bottom pill WITHOUT any Settings mount', async () => {
+    dockState.entries = buildEntries(8);
+
+    renderWithChakra(<AppDock />);
+
+    // AppDock's boot mount effect fires hydration → the async settingsService.get
+    // resolves 'bottom' → notify() → re-render to the bottom pill. Flush the
+    // microtask chain inside act.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The persisted position was applied WITHOUT any Settings surface.
+    expect(getDockPosition()).toBe('bottom');
+    expect(screen.queryByRole('combobox', { name: 'Dock position' })).toBeNull();
+
+    // Reveal the dock (covered desktop starts off-canvas) and assert the BOTTOM
+    // pill geometry — the F-3 observable at boot.
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const region = screen.getByRole('region', { name: 'Open applications' });
+    expect(region).toBeDefined();
+    expect(getComputedStyle(region).bottom).toBe('12px');
+    expect(getComputedStyle(region).left).toBe('50%');
+    const pill = region.firstElementChild as HTMLElement | null;
+    expect(pill).not.toBeNull();
+    if (pill) {
+      expect(getComputedStyle(pill).height).toBe('52px');
+      expect(getComputedStyle(pill).flexDirection).toBe('row');
+    }
+  });
+});
+
+describe('AppDock active-bar axis (Spec #2848 round-2 FD-2 — E-9 regression)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    resetDockPositionStoreForTests();
+    dockState.entries = buildEntries(8);
+    // Default persisted value ('sidebar') — the sidebar leg of this describe
+    // relies on hydration resolving the DEFAULT so the store never flips.
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue('sidebar');
+  });
+
+  it('renders the left-edge bar (`inset 3px 0`) on the active entry in the SIDEBAR orientation', () => {
+    const { container } = renderWithChakra(<AppDock />);
+    act(() => {
+      revealDock();
+    });
+    // The dock is in the default sidebar store state → hydration is a no-op
+    // (settingsService.get resolves 'sidebar' via the module mock).
+    const buttons = entryButtons(container);
+    const activeBtn = buttons[0]; // buildEntries: index 0 is focused + not minimized
+    expect(activeBtn.getAttribute('aria-current')).toBe('step');
+    // The `css` prop emits an Emotion class → read the resolved cascade from
+    // jsdom's injected stylesheet (same read the existing maxHeight assertions use).
+    expect(getComputedStyle(activeBtn).boxShadow).toBe('inset 3px 0 0 0 var(--accent-primary)');
+  });
+
+  it('renders the bottom-edge bar (`inset 0 -3px`) on the active entry in the BOTTOM orientation', async () => {
+    await act(async () => {
+      await setDockPosition('bottom');
+    });
+    const { container } = renderWithChakra(<AppDock />);
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const buttons = entryButtons(container);
+    expect(buttons.length).toBe(8);
+    const activeBtn = buttons[0];
+    expect(activeBtn.getAttribute('aria-current')).toBe('step');
+    expect(getComputedStyle(activeBtn).boxShadow).toBe('inset 0 -3px 0 0 var(--accent-primary)');
   });
 });
