@@ -54,3 +54,26 @@
 ## R-10 — Overlapping launcher surface
 
 - [ ] R-10: The launcher command-bar/grid behavior (`#2808`) is unchanged WHERE the spec does not redesign it: query filter (`filteredEntries`), keyboard nav (↑↓/←→ clamp, no wrap), Enter/Space open, empty-grid no-op (`entryCount === 0`), notch `aria-expanded`, `useWindows()` collapse-on-open, and the #2808 window z-order fix (window above the desktop, below the HUD). **NOTE (redesigned by #2819, NOT an unchanged baseline):** ESC no longer closes the shell / restores focus to the notch (ST-7) — it returns to IDLE and focuses the command bar; the surface is no longer notch-gated (idle = `open=true, engaged=false`). Reference `.opencode/tests/launcher/regression.md` R-1..R-6 + the #2819 launcher extension.
+
+## #2850 extension — shared-avatar refactor: shell invariants (must-not-change)
+
+> Issue #2850 — the launcher avatar becomes a shared `FredoAvatar size="md"` wrapper; the
+> companion overlay switches from the raster sprite pipeline to the same shared vector avatar.
+> The shell surface is a NON-GOAL — these invariants MUST hold after the refactor. Run alongside
+> R-1..R-10 AND the companion-suite regression R-1..R-10.
+
+## R-11 — Shell chrome + launcher layout unchanged by the shared avatar move
+
+- [ ] R-11: The FREDO notch, side-ticks, dot-grid, rounded frame, online clock/LED, command bar,
+      app grid, and keyboard hints are UNCHANGED by the avatar-source move (git diff scope: the
+      launcher change is the import/wrapper swap only). The shell idle/engaged lifecycle behaves as
+      before; the md avatar renders at 132 × 165 exactly as pre-refactor. Reference #2817 R-1 +
+      #2819 R-6/R-10 + launcher R-26.
+
+## R-12 — Token contract + no re-render loop across the refactor
+
+- [ ] R-12: The changed shell-adjacent files carry zero hardcoded hex/`rgba(`/`rgb(` / `var(--x)NN`
+      alpha-append; the shared avatar is accent-token driven (`var(--accent-primary)` +
+      `currentColor`) exactly as the launcher avatar was; no re-render loop / `Maximum update depth
+      exceeded` appears from the wrapper or the companion mount. Reference #2817 R-4 + launcher
+      R-28 + companion R-7/R-8.
