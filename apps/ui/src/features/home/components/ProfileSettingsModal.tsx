@@ -7,6 +7,7 @@ import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/Set
 import { ThemingSettings } from '../../theming/components/ThemingSettings';
 import { SetupWizard } from '../../setup/components/SetupWizard';
 import { TelemetrySettings } from './settings/TelemetrySettings';
+import { DockPositionSettings } from './dock/DockPositionSettings';
 
 interface ProfileSettingsModalProps {
   isOpen: boolean;
@@ -212,7 +213,13 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
                       <Box minH="100%"><CompanionSettingsPanel /></Box>
                     )}
                     {activeSection === 'appearance' && (
-                      <Box p={0} minH="100%"><ThemingSettings /></Box>
+                      <Box p={0} minH="100%">
+                        <ThemingSettings />
+                        {/* Dock position (Spec #2848 ST-4) — home-owned, rendered
+                            BENEATH ThemingSettings; immediate write-through via the
+                            dock-position store (no Save-footer gating). */}
+                        <DockPositionSettings />
+                      </Box>
                     )}
                     {activeSection === 'plugin-setup' && (
                       <Box minH="100%"><SetupWizard /></Box>
