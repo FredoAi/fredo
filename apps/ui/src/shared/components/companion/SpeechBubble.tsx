@@ -1,6 +1,8 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Box, Text } from '@chakra-ui/react';
+import { AVATAR_SM } from '../fredo-avatar';
+import { tint } from '../../utils/colorTint';
 
 interface SpeechBubbleProps {
   message: string | null;
@@ -52,8 +54,8 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   message,
   companionX,
   companionY,
-  companionWidth  = 80,
-  companionHeight = 80,
+  companionWidth  = AVATAR_SM.width,
+  companionHeight = AVATAR_SM.height,
   color = 'var(--accent-primary)',
   isStreaming = false,
   children,
@@ -127,7 +129,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
             border={`1.5px solid ${color}`}
             borderRadius="14px"
             padding={hasGame ? '0' : `${PAD}px`}
-            boxShadow="0 4px 24px rgba(0,0,0,0.45)"
+            boxShadow={`0 4px 24px ${tint('var(--border-color)', 45)}`}
             position="relative"
             width="100%"
             height="100%"

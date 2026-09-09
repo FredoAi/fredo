@@ -1,15 +1,93 @@
-/* Fredo Companion sprite-sheet animation */
+/* Fredo Companion — wrapper-level avatar motion + the retained streaming cursor.
 
-/* Loop: wraps frame 5 back to frame 0 */
-@keyframes Fredo-sprite-loop {
-  from { transform: translateX(0px); }
-  to   { transform: translateX(-480px); } /* 6 frames × 80px */
+   Whole-element motion (idle bob/glow, talk pulse, teleport shrink/fade and
+   grow/settle) lives HERE on the companion's own `.fredo-companion-avatar`
+   wrapper — NEVER inside the shared `FredoAvatar` (#2850). The shared component
+   only renders the frozen 58 base rects + the state-expression overlay, so the
+   launcher's md idle DOM stays byte-identical to today's PixelButler.
+
+   The wrapper is remounted by the preserved `animKey` (FredoCompanion), which
+   restarts the per-state keyframes cleanly; the state is exposed via
+   `data-state` + `aria-label` (machine-observable state probe).
+ */
+
+/* ── idle: subtle vertical bob + soft accent glow (2.4 s loop) ─────────────── */
+@keyframes fredo-idle-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
 }
 
-/* One-shot: ends exactly on frame 5 so forwards fill-mode holds it there */
-@keyframes Fredo-sprite-once {
-  from { transform: translateX(0px); }
-  to   { transform: translateX(-400px); } /* frame 5 = last frame */
+@keyframes fredo-idle-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 color-mix(in srgb, var(--accent-primary) 0%, transparent)); }
+  50%      { filter: drop-shadow(0 0 6px  color-mix(in srgb, var(--accent-primary) 22%, transparent)); }
+}
+
+.fredo-companion-avatar[data-state='idle'] {
+  animation:
+    fredo-idle-bob 2.4s ease-in-out infinite,
+    fredo-idle-glow 2.4s ease-in-out infinite;
+}
+
+/* ── talk: gentle pulse in sync with the Fredo-cursor-blink cursor (0.9 s) ─── */
+@keyframes fredo-talk-pulse {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(1.02); }
+}
+
+.fredo-companion-avatar[data-state='talk'] {
+  transform-origin: 50% 100%;
+  animation: fredo-talk-pulse 0.9s ease-in-out infinite;
+}
+
+/* ── teleport-out: shrink + lift + fade (one-shot 400 ms) ──────────────────── */
+@keyframes fredo-teleport-out-motion {
+  0%   { transform: scale(1)    translateY(0);    opacity: 1; }
+  100% { transform: scale(0.2)  translateY(-6px); opacity: 0; }
+}
+
+.fredo-companion-avatar[data-state='teleport-out'] {
+  animation: fredo-teleport-out-motion 400ms cubic-bezier(0.55, 0, 1, 0.45) 1 forwards;
+}
+
+/* ── teleport-in: grow in + settle wobble (one-shot 400 ms, +50 ms settle is
+      the preserved timer gap before idle) ─────────────────────────────────── */
+@keyframes fredo-teleport-in-motion {
+  0%   { transform: scale(0.15); opacity: 0; }
+  75%  { transform: scale(1);     opacity: 1; }
+  88%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+.fredo-companion-avatar[data-state='teleport-in'] {
+  animation: fredo-teleport-in-motion 400ms cubic-bezier(0, 0, 0.2, 1) 1 forwards;
+}
+
+/* ── Reduced motion: idle bob/glow + talk pulse off; teleport degrades to a
+      pure opacity crossfade (still ~400 ms — timing preserved); the mouth
+      keyframe slows (fredo-avatar.css) but stays functional. ──────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .fredo-companion-avatar[data-state='idle'],
+  .fredo-companion-avatar[data-state='talk'] {
+    animation: none;
+  }
+
+  .fredo-companion-avatar[data-state='teleport-out'] {
+    animation: fredo-teleport-out-fade 400ms ease-out 1 forwards;
+  }
+
+  .fredo-companion-avatar[data-state='teleport-in'] {
+    animation: fredo-teleport-in-fade 400ms ease-out 1 forwards;
+  }
+}
+
+@keyframes fredo-teleport-out-fade {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes fredo-teleport-in-fade {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
 }
 
 /* Blinking cursor shown in the speech bubble while LLM is streaming */

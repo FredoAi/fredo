@@ -14,7 +14,11 @@
 /* ── talk: mouth open/closed toggle ─────────────────────────────────────────
    Closed frame {440,692,134,14} is the persistent lower rect; the open frame
    {440,675,134,38} sits above it and toggles opacity so the figure reads
-   closed → open → closed at ~180 ms per half-cycle (360 ms loop). */
+   closed → open → closed at ~180 ms per half-cycle (360 ms loop).
+
+   R-2/Q-9: the mouth flaps ONLY while a joke/TicTacToe stream is live. The
+   host marks streaming on an ancestor wrapper (`data-streaming="true"`); when
+   the mark is absent the overlay rests on the neutral closed-mouth frame. */
 @keyframes fredo-talk-mouth {
   0%    { opacity: 0; }
   49.9% { opacity: 0; }
@@ -23,6 +27,10 @@
 }
 
 #fredo-expression[data-state='talk'] .fredo-talk-mouth-open {
+  opacity: 0;
+}
+
+[data-streaming='true'] #fredo-expression[data-state='talk'] .fredo-talk-mouth-open {
   animation: fredo-talk-mouth 360ms linear infinite;
 }
 
@@ -52,7 +60,7 @@
    overlays drop their intensity (the whole-element teleport itself degrades to
    an opacity crossfade on the consumer's wrapper, never here). */
 @media (prefers-reduced-motion: reduce) {
-  #fredo-expression[data-state='talk'] .fredo-talk-mouth-open {
+  [data-streaming='true'] #fredo-expression[data-state='talk'] .fredo-talk-mouth-open {
     animation-duration: 1000ms;
   }
 
