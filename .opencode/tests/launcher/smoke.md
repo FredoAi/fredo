@@ -34,3 +34,16 @@
 ## #2830 extension — single top-right status LED smoke
 
 - [ ] S-10: The launcher's top-right cluster shows a SINGLE status LED (no `ONLINE`/`OFFLINE` text label, no bottom-center LEDs) — `tauri_webview_dom_snapshot(type="structure")` shows one status-LED element below the HH:MM clock text in the `<time>` cluster; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2850 extension — shared-avatar refactor smoke
+
+> Issue #2850 — the launcher's PixelButler avatar becomes a thin wrapper over the shared
+> `FredoAvatar size="md"` component (`apps/ui/src/shared/components/fredo-avatar/`); the
+> geometry module + test move to the shared path. The launcher md render must be VISUALLY
+> UNCHANGED.
+
+- [ ] S-11: The launcher still renders the md avatar — open the launcher; the avatar SVG
+      (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) appears above
+      the command bar at 132 × 165 layout px, and `tauri_webview_screenshot` succeeds; console
+      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
