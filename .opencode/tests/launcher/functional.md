@@ -322,3 +322,53 @@
 ## F-40 (NF) — Proportions preserved
 
 - [ ] F-40: Normalize key spans of the rendered figure (head width/height, body width, leg length/width, foot width) to % of the avatar bounding box and compare against the wireframe's normalized geometry (head silhouette x 8.6–91.4% W / y 5.3–62.8% H; legs y 85.8–94.9% H; feet ≈ 11.7% W each). Ratios within a small recorded tolerance; identical geometry in both themes.
+
+---
+
+## #2850 extension — shared-avatar refactor: launcher md surface
+
+> Issue #2850 — the launcher's `PixelButler` becomes a thin `FredoAvatar size="md"` wrapper over
+> the canonical avatar moved to `apps/ui/src/shared/components/fredo-avatar/` (geometry module +
+> test move VERBATIM; launcher layout is a NON-GOAL — the 132×165 md render must be unchanged).
+> **Verification policy: live** for the render rows (the AC-1 geometry suite row F-41 is
+> static/unit and runs in `test:run` regardless). Reference assets (Read by EXPLICIT absolute
+> path, never glob): `.opencode/wireframes/fredo-avatar.html` + `.opencode/wireframes/fredo-avatar.png`.
+> Map 1:1 to `.opencode/tmp/2850/triage.md` `## QA Expert` (Q-1/Q-2/Q-21 + the companion-suite
+> F-2 cross-surface pixel-consistency). The companion-suite rows F-2..F-19 carry the AC-2..AC-6
+> verdicts; these launcher rows add the md-surface-specific checks.
+
+## F-41 (Q-1 / AC-1) — Geometry suite passes UNMODIFIED at the shared path
+
+- [ ] F-41: Byte-compare `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` at their new
+      shared location (`apps/ui/src/shared/components/fredo-avatar/`) against the pre-move
+      launcher files (only the relative import path must still resolve to the sibling). Run
+      `pnpm --filter @fredo/ui exec vitest run` on the moved test AND the full `test:run`.
+      **Expected:** all 8 assertions pass unchanged (FREDO_AVATAR_SPACE 1014×1264 centerX 507;
+      viewBox `0 0 1014 1264`; 31 source rects — 27 mirrored pairs + 4 center singles → 58
+      expanded; mirror math `x' = 1014 − x − width`; canvas bounds; as-authored center buttons;
+      guard rejects out-of-canvas). A content re-authoring in the move = FAIL.
+  - **Edge:** grep confirms ZERO duplicate geometry table / `expandFredoRects` remains under
+    `features/home/components/launcher/` (the launcher imports the shared module).
+
+## F-42 (Q-21 / AC-1, M1) — Launcher md avatar 132 px wide UNCHANGED (no visual regression)
+
+- [ ] F-42: Open the launcher; measure the avatar SVG layout size (`offsetWidth`/`offsetHeight`
+      per G-040 — never a transform-scaled `getBoundingClientRect`) and screenshot it.
+      **Expected:** `offsetWidth` = 132, `offsetHeight` = 165 (aspect 1014:1264, undistorted),
+      crispEdges, single accent-token fill (`color="var(--accent-primary)"` +
+      `fill="currentColor"`), `aria-hidden`, centered above the command bar — visually unchanged
+      from the pre-refactor #2837/#2839 launcher render (screenshot side-by-side compare).
+  - **Edge:** repeat in a light preset AND the dark base; narrow viewport (700×900) — no clip/overflow;
+    re-theme while visible re-tints with no stale color; the shell layout (notch, grid, command bar,
+    hints, clock/LED) is unchanged.
+
+## F-43 (Q-2 / AC-1) — Launcher imports the shared canonical avatar only
+
+- [ ] F-43: Grep `apps/ui/src/features/home/components/launcher/**` for a local base-rect geometry
+      implementation (`FREDO_AVATAR_SOURCE_RECTS` / `expandFredoRects` declarations) and for the
+      avatar import source. **Expected:** zero local geometry declarations — the launcher's avatar
+      wrapper (`PixelButler` or equivalent) imports `FredoAvatar` from
+      `shared/components/fredo-avatar/`; no cross-feature import (`features/*`); the shared module
+      is exported from `apps/ui/src/index.ts`.
+  - **Edge:** a thin wrapper that adds NO geometry is acceptable; a launcher-local duplicated
+    rect table is a FAIL (the #2837 regression net F-35..F-40 stays green through the move).
