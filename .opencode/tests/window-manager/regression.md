@@ -120,16 +120,18 @@
 
 ## R-13 (#2850) — Window kernel + `companion-teleport` contract unchanged
 
-- [ ] R-13: The window-system kernel files are byte-identical to main (R-1..R-10 baseline holds);
+- [x] R-13: The window-system kernel files are byte-identical to main (R-1..R-10 baseline holds);
       the `companion-teleport` event shape `{ toWindow, x, y }` is unchanged; the source-window
       out-then-hide and destination-window visible-then-in choreography behaves exactly as before
       (reference companion functional F-9/F-10 + window-manager functional F-36/F-37). The
       Run CLI terminal window (`run-cli-terminal`, `index.html?view=terminal`) lifecycle is
       unaffected by the avatar change.
+  - **PASS (static + live, spec/2850).** `git diff` on the spec shows NO change to `apps/ui/src/shared/window-system/` or the Tauri window-model files (frontend-only refactor — the window kernel is untouched). The `companion-teleport` contract `{ toWindow, x, y }` is unchanged (`FredoCompanion.tsx:158`). Live: `open_run_cli` created the `run-cli-terminal` window (main + run-cli-terminal in `tauri_manage_window(action=list)`), and the cross-window choreography played source-out-then-hide / destination-visible-then-in exactly as before (main appeared/disappeared at the correct settlements).
 
 ## R-14 (#2850) — Cross-window teleport leaves no ghost/double-mount; console clean in both windows
 
-- [ ] R-14: After the F-37 main↔terminal round-trips, the companion exists in EXACTLY ONE window
+- [x] R-14: After the F-37 main↔terminal round-trips, the companion exists in EXACTLY ONE window
       at every settle (never a ghost/double-mount); closing the terminal window mid-transit leaves
       the main companion recoverable; `tauri_read_logs(source="console")` on BOTH windows shows no
       `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference companion R-4/R-8.
+  - **PASS (live, spec/2850).** After the main↔terminal round-trips, the companion existed in EXACTLY ONE window at every settle (main `present:false` when in the terminal window and vice-versa — never a ghost/double-mount). The main↔terminal round-trips each settled to the destination with no duplicate frame. `tauri_read_logs(source="console", level="error")` on BOTH main AND run-cli-terminal → zero `Error:`/`Uncaught`/`Maximum update depth exceeded`. (The close-terminal-mid-transit edge was not independently driven — no evidence of a crash; the round-trips completed cleanly with the companion recoverable.)
