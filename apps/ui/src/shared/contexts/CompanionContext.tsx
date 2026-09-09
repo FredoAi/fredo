@@ -16,8 +16,6 @@ interface CompanionContextState {
   messageDuration: number;
   isVisible: boolean;
   position: CompanionPosition;
-  autoWalk: boolean;
-  color: string;
 }
 
 type CompanionAction =
@@ -25,9 +23,7 @@ type CompanionAction =
   | { type: 'SHOW_MESSAGE'; payload: { text: string; duration: number } }
   | { type: 'HIDE_MESSAGE' }
   | { type: 'SET_VISIBLE'; payload: boolean }
-  | { type: 'TELEPORT'; payload: CompanionPosition }
-  | { type: 'TOGGLE_AUTO_WALK'; payload: boolean }
-  | { type: 'SET_COLOR'; payload: string };
+  | { type: 'TELEPORT'; payload: CompanionPosition };
 
 interface CompanionContextValue {
   state: CompanionContextState;
@@ -36,13 +32,9 @@ interface CompanionContextValue {
   hideMessage: () => void;
   setVisible: (visible: boolean) => void;
   teleport: (x: number, y: number) => void;
-  toggleAutoWalk: (enabled: boolean) => void;
-  setColor: (color: string) => void;
 }
 
 // ── Reducer ──────────────────────────────────────────────────────────────────
-
-const DEFAULT_COLOR = '#a855f7'; // purple — matches Fredo accent
 
 const initialState: CompanionContextState = {
   animState: 'idle',
@@ -50,8 +42,6 @@ const initialState: CompanionContextState = {
   messageDuration: 4000,
   isVisible: false,
   position: { x: window.innerWidth - 120, y: window.innerHeight - 160 },
-  autoWalk: true,
-  color: DEFAULT_COLOR,
 };
 
 function reducer(state: CompanionContextState, action: CompanionAction): CompanionContextState {
@@ -66,10 +56,6 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       return { ...state, isVisible: action.payload };
     case 'TELEPORT':
       return { ...state, position: action.payload };
-    case 'TOGGLE_AUTO_WALK':
-      return { ...state, autoWalk: action.payload };
-    case 'SET_COLOR':
-      return { ...state, color: action.payload };
     default:
       return state;
   }
@@ -86,26 +72,14 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     (v) => String(v),
     (r) => r === 'true',
   );
-  const [persistedColor, setPersistedColor] = usePersistedSetting<string>(
-    'Fredo_companion_color', DEFAULT_COLOR,
-  );
-  const [persistedAutoWalk, setPersistedAutoWalk] = usePersistedSetting<boolean>(
-    'Fredo_companion_auto_walk', true,
-    (v) => String(v),
-    (r) => r === 'true',
-  );
 
   const [state, dispatch] = useReducer(reducer, {
     ...initialState,
     isVisible: persistedVisible,
-    color: persistedColor,
-    autoWalk: persistedAutoWalk,
   });
 
   // Sync persisted state back when the hook loads async values from SQLite
   useEffect(() => { dispatch({ type: 'SET_VISIBLE', payload: persistedVisible }); }, [persistedVisible]);
-  useEffect(() => { dispatch({ type: 'SET_COLOR', payload: persistedColor }); }, [persistedColor]);
-  useEffect(() => { dispatch({ type: 'TOGGLE_AUTO_WALK', payload: persistedAutoWalk }); }, [persistedAutoWalk]);
 
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -135,18 +109,8 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     dispatch({ type: 'TELEPORT', payload: { x, y } });
   }, []);
 
-  const toggleAutoWalk = useCallback((enabled: boolean) => {
-    dispatch({ type: 'TOGGLE_AUTO_WALK', payload: enabled });
-    setPersistedAutoWalk(enabled);
-  }, [setPersistedAutoWalk]);
-
-  const setColor = useCallback((color: string) => {
-    dispatch({ type: 'SET_COLOR', payload: color });
-    setPersistedColor(color);
-  }, [setPersistedColor]);
-
   return (
-    <CompanionContext.Provider value={{ state, setState, showMessage, hideMessage, setVisible, teleport, toggleAutoWalk, setColor }}>
+    <CompanionContext.Provider value={{ state, setState, showMessage, hideMessage, setVisible, teleport }}>
       {children}
     </CompanionContext.Provider>
   );
