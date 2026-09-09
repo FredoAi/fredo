@@ -5,6 +5,7 @@ import {
 import { LuTriangleAlert } from 'react-icons/lu';
 import { useCompanion } from '../../contexts/CompanionContext';
 import { adapterBridge } from '../../utils/adapterBridge';
+import { tint } from '../../utils/colorTint';
 import { useWindowActions } from '../../window-system/useWindowActions';
 import { setupFeature } from '../../../features/setup';
 
@@ -14,18 +15,6 @@ interface ModelFilesCheck {
   gguf_exists: boolean;
   mmproj_exists: boolean;
 }
-
-// Preset colors with labels
-const PRESET_COLORS: { label: string; value: string }[] = [
-  { label: 'Purple',  value: '#a855f7' },
-  { label: 'Cyan',    value: '#22d3ee' },
-  { label: 'Green',   value: '#4ade80' },
-  { label: 'Orange',  value: '#fb923c' },
-  { label: 'Pink',    value: '#f472b6' },
-  { label: 'Red',     value: '#f87171' },
-  { label: 'Yellow',  value: '#facc15' },
-  { label: 'White',   value: '#e2e8f0' },
-];
 
 const sectionLabel = (text: string) => (
   <Text
@@ -41,8 +30,8 @@ const sectionLabel = (text: string) => (
 );
 
 export const CompanionSettingsPanel: React.FC = () => {
-  const { state, setVisible, setColor } = useCompanion();
-  const { isVisible, color } = state;
+  const { state, setVisible } = useCompanion();
+  const { isVisible } = state;
   const { openWindow } = useWindowActions();
 
   const [modelsExist, setModelsExist] = useState<boolean>(true);
@@ -131,9 +120,9 @@ export const CompanionSettingsPanel: React.FC = () => {
             p={3}
             borderRadius="md"
             background="var(--status-error)"
-            bg="rgba(239, 68, 68, 0.12)"
+            bg={tint('var(--status-error)', 12)}
             border="1px solid"
-            borderColor="rgba(239, 68, 68, 0.3)"
+            borderColor={tint('var(--status-error)', 30)}
             gap={2}
           >
             <Box flexShrink={0}>
@@ -178,68 +167,6 @@ export const CompanionSettingsPanel: React.FC = () => {
           </Text>{' '}
           and right-click anywhere to teleport Fredo there.
         </Text>
-      </Box>
-
-      {/* Color picker */}
-      <Box opacity={isVisible && !modelsGate ? 1 : 0.4} pointerEvents={isVisible && !modelsGate ? 'auto' : 'none'}>
-        {sectionLabel('Speech bubble color')}
-        <HStack gap={2} flexWrap="wrap">
-          {PRESET_COLORS.map((preset) => {
-            const isSelected = color === preset.value;
-            return (
-              <Box
-                key={preset.value}
-                as="button"
-                title={preset.label}
-                onClick={() => setColor(preset.value)}
-                w="28px"
-                h="28px"
-                borderRadius="full"
-                background={preset.value}
-                border={isSelected ? '3px solid var(--text-primary)' : '2px solid transparent'}
-                boxShadow={isSelected ? `0 0 8px ${preset.value}` : 'none'}
-                outline={isSelected ? `2px solid ${preset.value}` : 'none'}
-                outlineOffset="2px"
-                transition="all 0.15s"
-                _hover={{ transform: 'scale(1.15)', boxShadow: `0 0 8px ${preset.value}` }}
-                cursor="pointer"
-                flexShrink={0}
-              />
-            );
-          })}
-
-          {/* Custom color input */}
-          <Box position="relative" w="28px" h="28px" flexShrink={0} title="Custom color">
-            <input
-              type="color"
-              value={color}
-              onChange={(e) => setColor(e.target.value)}
-              style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%', cursor: 'pointer', border: 'none', padding: 0 }}
-            />
-            <Box
-              w="28px"
-              h="28px"
-              borderRadius="full"
-              background={`conic-gradient(red, yellow, lime, cyan, blue, magenta, red)`}
-              border="2px solid var(--border-color)"
-              pointerEvents="none"
-            />
-          </Box>
-        </HStack>
-
-        {/* Live preview swatch */}
-        <HStack mt={3} gap={2} align="center">
-          <Box
-            w="14px"
-            h="14px"
-            borderRadius="full"
-            background={color}
-            boxShadow={`0 0 6px ${color}`}
-          />
-          <Text fontSize="xs" color="var(--text-secondary)" fontFamily="monospace">
-            {color}
-          </Text>
-        </HStack>
       </Box>
     </VStack>
   );
