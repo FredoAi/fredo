@@ -133,3 +133,35 @@
 - [ ] F-16: The idle command bar shows the wireframe's `—` MINIMIZE control at its right edge (a vertical divider `var(--border-color)` + a `—` dash `var(--text-secondary)`/`fg.muted`, token-native `currentColor`, hover → `accent.default`). Clicking `—` collapses the launcher surface to BARE CHROME (`open=false`: avatar + bar + grid hidden; notch + clock + frame + ticks + dot-grid remain).
   - **Edge (PO decision, triage Discussion QA-7 / UI/UX-1):** the `—` behavior is (a) collapse-to-bare-chrome (Architect binding), (b) ESC-alias → idle, or (c) decorative/no-op-safe. If the PO decides a behavior diverging from the binding, record it and adjust the assertion. No console error; no stuck state; focus lands on the notch after minimize.
   - **Edge (token):** the `—` control's divider + dash use token vars / `currentColor` only — NO hardcoded hex (F-13c grep gate includes the command bar).
+
+## #2850 extension — shared-avatar refactor: shell-surface no-regression
+
+> Issue #2850 — the desktop shell's launcher avatar becomes a shared-`FredoAvatar size="md"`
+> wrapper (`shared/components/fredo-avatar/`), the geometry module/test move with it, and the
+> companion overlay switches from the raster sprite pipeline to the same shared vector avatar.
+> The shell surface itself is a NON-GOAL. **Verification policy: live** (the AC-1 geometry-suite
+> row is static/unit and runs in `test:run` regardless). Map 1:1 to `.opencode/tmp/2850/triage.md`
+> `## QA Expert` (Q-2/Q-3/Q-21 + companion-suite F-2 cross-surface consistency).
+
+## F-17 (Q-21/M1 + companion-suite F-2) — Shell md avatar unchanged + neutral pixel-consistency with the companion sm avatar
+
+- [ ] F-17: On the running `spec/2850` build, render the launcher md avatar AND the companion sm
+      avatar in the SAME theme; DOM-probe both SVG rect sets; screenshot the shell. **Expected:**
+      the launcher md avatar renders at 132 × 165 (aspect 1014:1264, crispEdges, accent fill,
+      `aria-hidden`) — visually unchanged from the pre-refactor render; the companion sm render is
+      a faithful proportional downscale of the same 58-rect set (the two SVG coordinate sets are
+      IDENTICAL, only the element scale differs); the desktop idle/engaged surfaces and their
+      lifecycle are unchanged (no layout shift from the avatar-source move).
+  - **Edge:** verify the cross-surface rect-set equality in light AND dark; the neutral frame is
+    the transform:0/paused frame; the shell chrome (notch, ticks, dot-grid, clock, frame) is
+    unmodified by the shared move.
+
+## F-18 (Q-22 / NF) — Console hygiene across the shell + companion surfaces
+
+- [ ] F-18: After rendering the shell + companion and driving the F-17 legs, read the webview
+      console. **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` — the shared
+      avatar move introduced no re-render loop or mount error on either surface (the pre-existing
+      `motion() is deprecated` WARN is exempt).
+  - **Edge:** read the console after the FIRST shell render AND after the companion interaction
+    legs (a mount-order race between the launcher wrapper and the companion mount only appears
+    post-render).
