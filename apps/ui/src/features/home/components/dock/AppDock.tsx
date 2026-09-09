@@ -1,5 +1,12 @@
 /**
- * AppDock — left-edge auto-hide open-apps rail (Spec #2838 ST-1/ST-2/ST-3).
+ * AppDock — open-apps dock (Spec #2838 ST-1/ST-2/ST-3 + #2848 ST-3a).
+ *
+ * Positionable by the user: a LEFT-edge vertical rail (`position: 'sidebar'`,
+ * the #2838/#2841 baseline) or a BOTTOM-center horizontal pill
+ * (`position: 'bottom'`, Spec #2848). The chosen position comes from the
+ * module-scoped `dockPositionStore` (`useDockPosition()`, default `'sidebar'`)
+ * so a Settings → Appearance selection repositions the already-mounted dock on
+ * the same tick.
  *
  * Replaces the #2821 minimize-triggered bottom drawer as the single open-apps
  * surface. A PURE CONSUMER of the shared window-system read surface:
@@ -9,15 +16,17 @@
  *
  * Dual visibility mode (Spec #2841 AC1): a single derived `coveredByWindow`
  * boolean (`windows.some(w => !w.isMinimized)`, mirroring LauncherShell) gates
- * clean-vs-covered. On a CLEAN desktop (`restingVisible`) the rail is
+ * clean-vs-covered. On a CLEAN desktop (`restingVisible`) the dock is
  * RESTING-VISIBLE — `visibility:visible`, `pointer-events:auto`, at its docking
  * position, no edge gesture, no pointer listener, in the tab order + a11y tree
  * (AC1: the user sees open apps without moving the pointer). When a window
- * covers the desktop the rail reverts to the #2838 transient edge-peek model:
+ * covers the desktop the dock reverts to the #2838 transient edge-peek model:
  * OFF-CANVAS + `pointer-events:none` + `visibility:hidden` (out of tab order and
  * the a11y tree — D-9), revealed on a passive document-`pointermove` over the
- * left-edge zone (`clientX <= EDGE_ZONE_PX`), slid away after a hide-delay
- * grace. No pinning, no full-height hover strip, no global CSS.
+ * docked edge zone (left edge `clientX <= EDGE_ZONE_PX` for Sidebar), slid away
+ * after a hide-delay grace. No pinning, no full-height hover strip, no global
+ * CSS. (The #2848 bottom-edge reveal/keep predicates + roving keys are a
+ * FOLLOW-UP slice — ST-3a renders the bottom orientation only.)
  *
  * No re-render loop (NFR-2): `revealed` is a single transition-only boolean;
  * the pointer handler only calls `setRevealed` on an actual boolean transition
@@ -36,6 +45,7 @@ import { useWindows } from '../../../../shared/window-system/useWindows';
 import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
 import { tint } from '../../../../shared/utils/colorTint';
 import { DockEntry } from './DockEntry';
+import { useDockPosition } from './dockPositionStore';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
 
 // ── Geometry + timing constants (module-level, named) ────────────────────────
@@ -77,6 +87,38 @@ export const DOCK_HIDDEN_GAP_PX = 8;
 /** Rail max-height CSS (UI/UX: `min(480px, calc(100vh - 176px))`). */
 export const DOCK_RAIL_MAX_HEIGHT = `min(${DOCK_MAX_HEIGHT_PX}px, calc(100vh - ${DOCK_VERTICAL_INSET_PX * 2}px))`;
 
+// ── Bottom-bar geometry (Spec #2848 ST-3a) — the horizontal bottom-center pill.
+//  These constants are the mirror-image of the Sidebar rail set above with the
+//  x↔y axis swapped. The Sidebar values are UNCHANGED — the bottom pill introduces
+//  its own named slots so the two orientations never share mutable geometry.
+
+/** Pill height (px) — the bottom bar's track footprint (mirrors `DOCK_WIDTH_PX`). */
+export const DOCK_BOTTOM_HEIGHT_PX = 52;
+/** Pill corner radius (px) — mirrors `DOCK_RAIL_RADIUS_PX`. */
+export const DOCK_BOTTOM_RADIUS_PX = 14;
+/** Pill clearance above the viewport bottom edge (px). Keeps the resting pill
+ *  clear of the OS/launcher bottom edge and the engaged keyboard-hints row
+ *  (`LauncherChrome.tsx:448-468`). */
+export const DOCK_BOTTOM_INSET_PX = 12;
+/** Pill max width before the entry list scrolls horizontally (px). Clamped so
+ *  the bottom-center pill clears the engaged-launcher clearance — the keyboard
+ *  hints row renders along the full bottom edge (`LauncherChrome.tsx:448-468`)
+ *  and the settings button sits bottom-right — see the CSS clamp below. */
+export const DOCK_BOTTOM_MAX_WIDTH_PX = 560;
+/** Pill list entry gap (px) — mirrors `DOCK_GAP_PX` for the row flow. */
+export const DOCK_BOTTOM_GAP_PX = 4;
+/** Keep-zone height measured from the viewport bottom edge (mirrors the
+ *  Sidebar keep-zone measured from the left edge). */
+export const DOCK_BOTTOM_KEEP_ZONE_PX = DOCK_BOTTOM_HEIGHT_PX + DOCK_KEEP_MARGIN_PX;
+/** Pill list padding (px) — bottom reserves the horizontal scrollbar gutter so
+ *  the 36px wells never clip when the pill scrolls (≥~9 apps). */
+export const DOCK_BOTTOM_LIST_PADDING = '2px 6px 6px 6px';
+
+/** Pill max-width CSS (`min(560px, calc(100vw - 176px))`). The 176px
+ *  horizontal reserve (88px each side) clears the bottom-right settings button
+ *  and the engaged keyboard-hints row when the pill rests centered. */
+export const DOCK_BOTTOM_MAX_WIDTH = `min(${DOCK_BOTTOM_MAX_WIDTH_PX}px, calc(100vw - 176px))`;
+
 /** Themed scrollbar (thumb `var(--card-hover-bg)`, track transparent). */
 const DOCK_SCROLLBAR_CSS = {
   '&::-webkit-scrollbar': { width: '6px', height: '6px' },
@@ -92,6 +134,13 @@ export const AppDock: React.FC = () => {
   const windows = useWindows();
   const actions = useWindowActions();
   const reducedMotion = useReducedMotion() ?? false;
+  // Position (Spec #2848 ST-1/ST-3): module-scoped store shared with the
+  // Settings → Appearance control, so a selection there repositions the
+  // already-mounted dock on the same tick (AC1).
+  const position = useDockPosition();
+  // Bottom bar vs sidebar — only the geometry/axis of the render differs; the
+  // visibility state machine below is position-agnostic (kept as-is for ST-3a).
+  const isBottom = position === 'bottom';
 
   // Empty-dock gate (D-1/AC1): no listener and no dock when zero windows.
   const hasWindows = windows.length > 0;
@@ -338,28 +387,55 @@ export const AppDock: React.FC = () => {
       aria-label="Open applications"
       data-testid="app-dock"
       position="fixed"
-      left="0"
-      top="50%"
       zIndex={DOCK_Z_INDEX}
+      {...(isBottom
+        ? {
+            // Bottom bar (Spec #2848 ST-3a): fixed to the bottom-center. The
+            // dock slides Y off-canvas when hidden and centers horizontally via
+            // translateX(-50%) when visible. `bottom` = the resting clearance
+            // above the viewport's bottom edge.
+            bottom: `${DOCK_BOTTOM_INSET_PX}px`,
+            left: '50%',
+          }
+        : {
+            // Sidebar (baseline #2838/#2841): fixed to the left edge,
+            // vertically centered. Unchanged geometry.
+            left: '0',
+            top: '50%',
+          })}
       onPointerEnter={() => clearHideTimer()}
       onKeyDown={handleRegionKeyDown}
       onFocus={handleRegionFocus}
       onBlur={handleRegionBlur}
       style={{
-        transform: hidden
-          ? `translate(calc(-100% - ${DOCK_HIDDEN_GAP_PX}px), -50%)`
-          : 'translate(0px, -50%)',
+        transform: isBottom
+          ? hidden
+            ? `translate(-50%, calc(100% + ${DOCK_HIDDEN_GAP_PX}px))`
+            : 'translate(-50%, 0)'
+          : hidden
+            ? `translate(calc(-100% - ${DOCK_HIDDEN_GAP_PX}px), -50%)`
+            : 'translate(0px, -50%)',
         visibility: hidden ? 'hidden' : 'visible',
         pointerEvents: hidden ? 'none' : 'auto',
         transition,
       }}
     >
       <Box
-        width={`${DOCK_WIDTH_PX}px`}
-        display="flex"
-        flexDirection="column"
+        {...(isBottom
+          ? {
+              // Bottom-center pill: horizontal track, pill height.
+              height: `${DOCK_BOTTOM_HEIGHT_PX}px`,
+              display: 'flex',
+              flexDirection: 'row' as const,
+            }
+          : {
+              // Left-edge rail: vertical track, rail width.
+              width: `${DOCK_WIDTH_PX}px`,
+              display: 'flex',
+              flexDirection: 'column' as const,
+            })}
         overflow="hidden"
-        borderRadius={`${DOCK_RAIL_RADIUS_PX}px`}
+        borderRadius={`${isBottom ? DOCK_BOTTOM_RADIUS_PX : DOCK_RAIL_RADIUS_PX}px`}
         border="1px solid"
         borderColor="border.default"
         bg="bg.surface"
@@ -371,16 +447,37 @@ export const AppDock: React.FC = () => {
       >
         <Box
           role="list"
-          maxHeight={DOCK_RAIL_MAX_HEIGHT}
-          overflowY="auto"
-          display="flex"
-          flexDirection="column"
-          gap={`${DOCK_GAP_PX}px`}
-          padding={DOCK_LIST_PADDING}
+          {...(isBottom
+            ? {
+                // Bottom bar: horizontal entry flow that scrolls sideways past
+                // the max-width clamp (overflowX auto, themed scrollbar).
+                maxWidth: DOCK_BOTTOM_MAX_WIDTH,
+                overflowX: 'auto' as const,
+                display: 'flex',
+                flexDirection: 'row' as const,
+                gap: `${DOCK_BOTTOM_GAP_PX}px`,
+                padding: DOCK_BOTTOM_LIST_PADDING,
+              }
+            : {
+                // Sidebar: vertical entry flow that scrolls past the max-height
+                // clamp (overflowY auto, themed scrollbar).
+                maxHeight: DOCK_RAIL_MAX_HEIGHT,
+                overflowY: 'auto' as const,
+                display: 'flex',
+                flexDirection: 'column' as const,
+                gap: `${DOCK_GAP_PX}px`,
+                padding: DOCK_LIST_PADDING,
+              })}
           css={DOCK_SCROLLBAR_CSS}
         >
           {windows.map((win) => (
-            <DockEntry key={win.id} win={win} onActivate={handleActivate} onClose={handleClose} />
+            <DockEntry
+              key={win.id}
+              win={win}
+              onActivate={handleActivate}
+              onClose={handleClose}
+              orientation={position}
+            />
           ))}
         </Box>
       </Box>
