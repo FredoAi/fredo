@@ -105,3 +105,31 @@
 > Issue #2848 — the #2838/#2841 dock becomes positionable (Sidebar / Bottom bar). **NFR-1: the window kernel stays READ-ONLY** — no change to `windowStore.ts`/`windowTypes.ts`/`WindowManager`/`WindowFrame`/`WindowChrome`/`useWindows`/`useWindowActions` (verified: `git diff --name-only main spec/2848 -- apps/ui/src/shared/window-system` = empty, `-- apps/tauri` = empty). The dock remains a pure `useWindows()` consumer dispatching only `focusWindow`/`closeWindow`.
 >
 > **Round-1 regression sweep (spec/2848 @ 12afa697, LIVE):** window lifecycle fully exercised — open (Mission Monitor ≡ Sessions / Query Viewer / Stepper Probe from the launcher grid), minimize → restore at saved float, maximize → full-bleed (`x:0,w:1920`,`borderRadius:0`) → restore, focus/z-order (open-2nd brings to top + `aria-current=step`), close (focused + backgrounded), one-window-per-feature-id (no duplicate frame), update-while-minimized does NOT auto-restore. The dock (Sidebar + Bottom bar) as a pure consumer changed none of these; each window operation behaved exactly as the #2807 baseline. R-1..R-10 hold unchanged.
+
+---
+
+## #2850 extension — cross-window companion teleport: window-engine no-regression
+
+> Issue #2850 — the companion teleport choreography runs over the Tauri multi-window model
+> (main + `run-cli-terminal`) and moves to the shared vector avatar, but the window kernel is a
+> NON-GOAL (READ-ONLY, NFR-1 — `git diff --name-only main spec/2850 -- apps/ui/src/shared/window-system`
+> must be empty, and `-- apps/tauri/src-tauri/src/features/llm`/`.../terminal` must carry no
+> window-model change). The `companion-teleport` event contract (`{ toWindow, x, y }`) and the
+> source/destination window lifecycle are UNCHANGED. Run alongside R-1..R-12 + the companion-suite
+> regression R-1..R-10.
+
+## R-13 (#2850) — Window kernel + `companion-teleport` contract unchanged
+
+- [ ] R-13: The window-system kernel files are byte-identical to main (R-1..R-10 baseline holds);
+      the `companion-teleport` event shape `{ toWindow, x, y }` is unchanged; the source-window
+      out-then-hide and destination-window visible-then-in choreography behaves exactly as before
+      (reference companion functional F-9/F-10 + window-manager functional F-36/F-37). The
+      Run CLI terminal window (`run-cli-terminal`, `index.html?view=terminal`) lifecycle is
+      unaffected by the avatar change.
+
+## R-14 (#2850) — Cross-window teleport leaves no ghost/double-mount; console clean in both windows
+
+- [ ] R-14: After the F-37 main↔terminal round-trips, the companion exists in EXACTLY ONE window
+      at every settle (never a ghost/double-mount); closing the terminal window mid-transit leaves
+      the main companion recoverable; `tauri_read_logs(source="console")` on BOTH windows shows no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference companion R-4/R-8.
