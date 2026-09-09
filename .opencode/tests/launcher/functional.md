@@ -339,7 +339,7 @@
 
 ## F-41 (Q-1 / AC-1) — Geometry suite passes UNMODIFIED at the shared path
 
-- [ ] F-41: Byte-compare `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` at their new
+- [x] F-41: Byte-compare `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` at their new
       shared location (`apps/ui/src/shared/components/fredo-avatar/`) against the pre-move
       launcher files (only the relative import path must still resolve to the sibling). Run
       `pnpm --filter @fredo/ui exec vitest run` on the moved test AND the full `test:run`.
@@ -347,28 +347,31 @@
       viewBox `0 0 1014 1264`; 31 source rects — 27 mirrored pairs + 4 center singles → 58
       expanded; mirror math `x' = 1014 − x − width`; canvas bounds; as-authored center buttons;
       guard rejects out-of-canvas). A content re-authoring in the move = FAIL.
+  - **PASS (static/build, spec/2850).** The moved `fredoAvatarGeometry.ts` is byte-identical to the pre-move launcher source (Read-verified: the shared copy matches the `git show main:` original byte-for-byte; only the sibling `../fredoAvatarGeometry` import resolves). The moved `fredoAvatarGeometry.test.ts` is byte-identical to the pre-move `features/home/components/launcher/__tests__/fredoAvatarGeometry.test.ts` (verbatim, 8 assertions incl. `expandFredoRects`/`FREDO_AVATAR_SPACE`/58-count/mirror math/canvas/center buttons/guard). `pnpm --filter @fredo/ui exec vitest run` on the moved test → **7 tests passed**. `pnpm --filter @fredo/ui test:run` → **52 files / 757 tests passed** (incl. the moved geometry suite at its new shared path). Grep `features/home/components/launcher/` for `expandFredoRects`/`FREDO_AVATAR_SOURCE_RECTS` → **ZERO** (no duplicate geometry; the launcher imports the shared module). `git diff --stat main spec/2850 -- launcher/` = `LauncherShell.tsx +2/-2`, `PixelButler.tsx` deleted, `fredoAvatarGeometry.ts`/`.test.ts` deleted (moved).
   - **Edge:** grep confirms ZERO duplicate geometry table / `expandFredoRects` remains under
     `features/home/components/launcher/` (the launcher imports the shared module).
 
 ## F-42 (Q-21 / AC-1, M1) — Launcher md avatar 132 px wide UNCHANGED (no visual regression)
 
-- [ ] F-42: Open the launcher; measure the avatar SVG layout size (`offsetWidth`/`offsetHeight`
+- [x] F-42: Open the launcher; measure the avatar SVG layout size (`offsetWidth`/`offsetHeight`
       per G-040 — never a transform-scaled `getBoundingClientRect`) and screenshot it.
       **Expected:** `offsetWidth` = 132, `offsetHeight` = 165 (aspect 1014:1264, undistorted),
       crispEdges, single accent-token fill (`color="var(--accent-primary)"` +
       `fill="currentColor"`), `aria-hidden`, centered above the command bar — visually unchanged
       from the pre-refactor #2837/#2839 launcher render (screenshot side-by-side compare).
+  - **PASS (live, spec/2850, theme-classic).** Launcher md avatar SVG `offsetWidth`=132, `offsetHeight`=165 (aspect 1014:1264, undistorted — matches `AVATAR_MD` from `fredoAvatarSizes.ts:18`), 58 rects, `shapeRendering="crispEdges"`, `color="var(--accent-primary)"` (resolved `rgb(255,43,194)` classic base magenta) + `fill="currentColor"`, `aria-hidden="true"`, `fill="none"`, `viewBox="0 0 1014 1264"` — centered above the command bar (`LauncherShell.tsx:502` `<FredoAvatar size="md" />`). Visually unchanged from the #2837/#2839 render (SAME 58 rects, mirror math `886=1014-87-41` etc.). Re-themed light-default ↔ dark base + Matrix → the avatar re-tinted token-native (`rgb(0,209,209)` cyan / `rgb(0,255,65)` green) with no stale color; the shell layout (notch, grid, command bar, hints, clock/LED) is unchanged (the launcher layout is a non-goal — only the import swapped).
   - **Edge:** repeat in a light preset AND the dark base; narrow viewport (700×900) — no clip/overflow;
     re-theme while visible re-tints with no stale color; the shell layout (notch, grid, command bar,
     hints, clock/LED) is unchanged.
 
 ## F-43 (Q-2 / AC-1) — Launcher imports the shared canonical avatar only
 
-- [ ] F-43: Grep `apps/ui/src/features/home/components/launcher/**` for a local base-rect geometry
+- [x] F-43: Grep `apps/ui/src/features/home/components/launcher/**` for a local base-rect geometry
       implementation (`FREDO_AVATAR_SOURCE_RECTS` / `expandFredoRects` declarations) and for the
       avatar import source. **Expected:** zero local geometry declarations — the launcher's avatar
       wrapper (`PixelButler` or equivalent) imports `FredoAvatar` from
       `shared/components/fredo-avatar/`; no cross-feature import (`features/*`); the shared module
       is exported from `apps/ui/src/index.ts`.
+  - **PASS (static/live, spec/2850).** Grep `features/home/components/launcher/` for `expandFredoRects`/`FREDO_AVATAR_SOURCE_RECTS` → **ZERO** local geometry declarations. `LauncherShell.tsx:14` imports `FredoAvatar` from `../../../../shared/components/fredo-avatar` (the shared module) and renders `<FredoAvatar size="md" />` (`:502`) — a thin wrapper with NO local geometry. No `PixelButler.tsx` remains (deleted). No cross-feature import (`features/*`) — the launcher imports `shared/components/fredo-avatar`. `apps/ui/src/index.ts:32-47` exports `FredoAvatar` + geometry + sizes so both `tauri` and feature surfaces consume the ONE canonical geometry. Live: the launcher renders the shared sm/md avatar from the same component instance path as the companion.
   - **Edge:** a thin wrapper that adds NO geometry is acceptable; a launcher-local duplicated
     rect table is a FAIL (the #2837 regression net F-35..F-40 stays green through the move).
