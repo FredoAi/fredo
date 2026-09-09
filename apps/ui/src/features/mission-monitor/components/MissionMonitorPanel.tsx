@@ -10,7 +10,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { useWindowActions } from '@maomaolabs/core';
+import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { useEventRows } from '../../../shared/hooks/useEventRows';
 import type { ChatRow, ToolUseRow } from '../../../shared/classes/EventSubscription';
 import { tint } from '../../../shared/utils/colorTint';
@@ -19,6 +19,7 @@ import { useDeliverySessions } from '../hooks/useSessionHistory';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
 import { deriveRowGraphState, deriveRenderableSessions } from '../lib/rowDerivation';
+import type { GraphBuilderState } from '../lib/rowDerivation';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -29,6 +30,17 @@ import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
 import { initMmTables } from '../lib/persistence';
+// #2835 round-2 (ST-4-R2a + ST-8a): the replay recency window (a WINDOW WIDTH,
+// not a compare value — see lib/replayWindow.ts for the magnitude rule) and the
+// feature-local warm-reopen `updatedAt` watermark. The panel computes a
+// MOUNT-STABLE absolute cutoff and mounts the watermark-carrying replay args —
+// `useEventRows` resubscribes when `stableArgsKey(args)` changes, so the args
+// must be render-stable (never an inline `Date.now()` in the render body).
+import {
+  advanceReplayWatermark,
+  buildReplayArgs,
+  MM_REPLAY_WINDOW_NS,
+} from '../lib/replayWindow';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -165,6 +177,11 @@ interface CanvasProps {
   sessionId: string;
   /** #2788 P4.2: the typed-row source (subscribed once at the panel level). */
   rows: RowGraphSources;
+  /** #2835 sub-task 1 (R-2.c): the panel's epoch-derived GLOBAL builder state
+   *  (the same `deriveRowGraphState` the graph hook consumes — the session
+   *  list qualification needs it globally). Threading it into the hook
+   *  eliminates the graph hook's duplicate full-store derive per epoch. */
+  builderState: GraphBuilderState;
   onFocusTarget: (target: DetailOpenTarget | null) => void;
   /** #2762 ST-3 (D-6): lifted orphan count — the builder is the authority on
    *  which child-session calls never resolved a parent SubagentNode; the panel
@@ -173,7 +190,7 @@ interface CanvasProps {
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, rows, onFocusTarget, onUnattributedCount,
+  sessionId, rows, builderState, onFocusTarget, onUnattributedCount,
 }) => {
   // #2788 P4.2: the graph's data source — typed RTDB rows with replay (the
   // persisted snapshot restores as full-row inserts; replay replaces the v1
@@ -183,6 +200,7 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
   } = useDeliveryGraph({
     sessionId,
     rows,
+    builderState,
   });
 
   // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
@@ -659,11 +677,61 @@ export const MissionMonitorPanel: React.FC = () => {
   // row store via `useEventRows(..., { replay: true })` — the persisted
   // snapshot restores as full-row inserts and live patches continue on the
   // same path (one rendering path for restored + live, UI/UX parity
-  // constraint 3). `useDeliverySessions` holds its own Chat subscription for
-  // its `ready` gate + row metadata; duplicate envelopes dedupe by row key
-  // (idempotent).
-  const chatRows = useEventRows('Chat', {}, { replay: true });
-  const toolUseRows = useEventRows('ToolUse', {}, { replay: true });
+  // constraint 3). `useDeliverySessions` consumes THIS Chat subscription
+  // (passed as `chatRows`) instead of opening a second full-table replay leg
+  // (#2835 sub-task 2 dedupe — removes ≈14,011 duplicate insert deliveries
+  // on first open).
+  //
+  // #2835 round-2 (ST-4-R2a / ST-8a): the replay snapshot is bounded by a
+  // MOUNT-STABLE real recency cutoff (ST-4-R2a — round 1's defect was a 7-day
+  // WINDOW WIDTH passed as the absolute lower bound; every real row ≈1.7–1.8e18
+  // ns passed it, so the snapshot never narrowed) and, on a WARM reopen, by the
+  // feature-local `updatedAt > watermark` delta bound (ST-8a — the row store is
+  // module-scoped and survives mount/unmount, so only rows the store does NOT
+  // yet hold need to re-drain). The args are captured ONCE per mount in a
+  // `useMemo` — `useEventRows` resubscribes when `stableArgsKey(args)` changes,
+  // so an inline `Date.now()` in the render body would resubscribe + re-replay
+  // on every render. The `replayCompleteQueryId` settle contract + `ready` still
+  // resolve on the terminal marker of the retained single subscription.
+  //
+  // NULL `startedAtNs` policy (ST-4-R2c): rows with no span start are the
+  // mock/edge-only class (real rows always carry `telemetry_spans.start_time_ns`
+  // via the classifier). A time-bounded read has no place for timeless rows —
+  // the `>=` bound excludes them (SQL NULL semantics + the registry's
+  // null-never-matches rule), which is the intended behavior; the drawer's
+  // start-time fallback for a NULL-start row already exists (useSessionHistory
+  // falls back to `updatedAt`).
+  const replayCutoffNs = useMemo(
+    // Magnitude rule: real row `startedAtNs` ≈ Date.now() ms × 1e6 (absolute
+    // epoch ns, 1.7–1.8e18) — the cutoff is now minus the 7-day window width.
+    () => Date.now() * 1e6 - MM_REPLAY_WINDOW_NS,
+    [],
+  );
+  const replayArgs = useMemo(
+    () => ({
+      chat: buildReplayArgs('Chat', replayCutoffNs),
+      toolUse: buildReplayArgs('ToolUse', replayCutoffNs),
+    }),
+    [replayCutoffNs],
+  );
+  const chatRows = useEventRows('Chat', replayArgs.chat, { replay: true });
+  const toolUseRows = useEventRows('ToolUse', replayArgs.toolUse, { replay: true });
+
+  // ── #2835 round-2 (ST-8a): advance the module-scoped last-seen watermark ──
+  // Scans for the max `updatedAt` over the shared row store ONLY when the
+  // store's epoch advances (a real mutation). No setState — module Map only —
+  // so this can never re-render (the #523 no-loop rule). The watermark survives
+  // feature mount/unmount and resets on app restart (module reload): a cold
+  // boot still performs the full windowed replay; a warm reopen drains only the
+  // delta since the store's last-seen row.
+  useEffect(() => {
+    advanceReplayWatermark('Chat', chatRows.rows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatRows.epoch]);
+  useEffect(() => {
+    advanceReplayWatermark('ToolUse', toolUseRows.rows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toolUseRows.epoch]);
 
   // ── Spec #2795: the ONE shared renderability rule (AC2/AC3/AC4) ───────────
   // Derive the graph-builder state from BOTH row sources ONCE here (the same
@@ -698,19 +766,21 @@ export const MissionMonitorPanel: React.FC = () => {
     searchFilter,
     setSearchFilter,
     userPickedRef,
-  } = useDeliverySessions({ renderableSessions });
+  } = useDeliverySessions({ renderableSessions, chatRows });
 
   // ── #2748 FIX-3 (round-2 AC4 / R-4.1): the window/dialog identity remnant ──
   // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header
   // strip, but the feature window's chrome identity survived: `Home.tsx` opens
   // every feature window with `openWindow({ title: feature.name })`, and
-  // @maomaolabs/core's WindowManager renders that title as BOTH the visible
-  // window-header label AND the `role="dialog"` container's `aria-label`
-  // (dist/index.es.js:969-970) — so the a11y tree still exposed `dialog
-  // Mission Monitor` (tester round-1 FAIL, AC4). The AC4 letter requires NO
-  // `Mission Monitor` text anywhere in the panel's a11y tree. Neutralize the
-  // window title to the drawer-consistent "Sessions" (the drawer's "Sessions"
-  // header is the only remaining self-identification per the UI/UX spec).
+  // the own window kernel renders that title as BOTH the visible window-header
+  // label (the WindowChrome title, WindowFrame.tsx:233) AND the `role="group"`
+  // container's `aria-label` (WindowFrame.tsx:218) — so the a11y tree still
+  // exposed `Mission Monitor` as the window's self-identification (the
+  // third-party frame exposed it as `dialog Mission Monitor`; tester round-1
+  // FAIL, AC4). The AC4 letter requires NO `Mission Monitor` text anywhere in
+  // the panel's a11y tree. Neutralize the window title to the
+  // drawer-consistent "Sessions" (the drawer's "Sessions" header is the only
+  // remaining self-identification per the UI/UX spec).
   const { updateWindow } = useWindowActions();
   useLayoutEffect(() => {
     updateWindow('mission-monitor', { title: 'Sessions' });
@@ -930,6 +1000,7 @@ export const MissionMonitorPanel: React.FC = () => {
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
                 rows={rowSources}
+                builderState={builderState}
                 onFocusTarget={handleFocusTarget}
                 onUnattributedCount={handleUnattributedCount}
               />

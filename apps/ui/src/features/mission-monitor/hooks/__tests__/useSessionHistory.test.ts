@@ -1141,6 +1141,100 @@ describe('Spec #2788 (P4.3): replay replaces mount-time hydration', () => {
     expect(result.current.sessions[0].deliveryCount).toBe(2);
   });
 
+  it('#2835 round-3 ST-9-R3c(a): rows present + persistedLoadDone unlock the list PROGRESSIVELY while `ready` is still false (first drained rows, not the drain end)', async () => {
+    // PO decision (#2835): the empty-first-render is the defect — the list
+    // must unlock on the first drained rows, NOT on the full Chat drain
+    // settle. ST-9-R3a fires an EARLY epoch bump at the first row-bearing
+    // batch; ST-9-R3b opens the `loaded` gate on row presence
+    // (`rows.size > 0`), so a mid-drain render unlocks the partial list.
+    mockLoadPersistedSessions.mockResolvedValue([]);
+    mockRowStore([chatRow('ses-progressive', 'g1', '2026-01-01T09:00:00.000Z', 'first drained prompt')], {
+      ready: false,
+    });
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    // Persisted load settles while the Chat snapshot is STILL draining
+    // (ready false). The first drained batch's row is in the store → the list
+    // unlocks with the partial session (progressive list, NOT a false-empty).
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-progressive')).toBe(true);
+    });
+    expect(result.current.sessions[0].deliveryCount).toBe(1);
+  });
+
+  it('#2835 round-3 ST-9-R3c(b): an EMPTY store + ready:false stays parked — no false list from a half-drained empty snapshot', async () => {
+    // The snapshot is still draining and NO rows have landed yet — the gate
+    // must stay parked (the spinner copy) rather than show a false session
+    // list. A persisted-only session (bare-caller fallback) must NOT surface
+    // while the drain is pending either — `loaded` needs ready OR error OR
+    // rows, never the persisted snapshot alone.
+    mockLoadPersistedSessions.mockResolvedValue([
+      persistedSession({ sessionId: 'ses-persisted-only', label: 'Persisted Only' }),
+    ]);
+    mockRowStore([], { ready: false });
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    // Let the persisted snapshot load settle — the gate must still be parked.
+    await waitFor(() => {
+      expect(mockLoadPersistedSessions).toHaveBeenCalled();
+    });
+    await act(async () => {});
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.sessions.some((s) => s.sessionId === 'ses-persisted-only')).toBe(false);
+  });
+
+  it('#2835 round-3 ST-9-R3c(c): `ready` still resolves on the settle marker and the final recompute is the COMPLETE list', async () => {
+    mockLoadPersistedSessions.mockResolvedValue([]);
+    mockRowStore([chatRow('ses-final', 'f1', '2026-01-01T09:00:00.000Z', 'prompt')], {
+      ready: false,
+    });
+
+    const { result, rerender } = renderHook(() => useDeliverySessions());
+
+    // Progressive unlock on the first batch's rows (partial).
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-final')).toBe(true);
+    });
+
+    // The backend `replayCompleteQueryId` marker lands → ready flips true and
+    // the store now holds the FULL drain (both rows). The settle recompute is
+    // complete — deliveryCount reflects all drained rows, not the partial.
+    mockRowStore(
+      [
+        chatRow('ses-final', 'f1', '2026-01-01T09:00:00.000Z', 'prompt'),
+        chatRow('ses-final', 'f2', '2026-01-01T09:01:00.000Z', 'second turn'),
+      ],
+      { ready: true },
+    );
+    rerender();
+    await waitFor(() => {
+      expect(result.current.sessions[0].deliveryCount).toBe(2);
+    });
+  });
+
+  it('#2835 round-3 ST-9-R3c(d): the drawer gate reads ONLY the Chat subscription — a ToolUse drain can never gate it (chat-ready-only retained)', async () => {
+    // The hook consumes Chat rows only (`chatRows`) — no ToolUse subscription
+    // feeds the session list, so a still-streaming ToolUse drain is structurally
+    // unable to gate the drawer. Chat rows present + ready false unlock the
+    // list regardless of any sibling ToolUse drain state.
+    mockLoadPersistedSessions.mockResolvedValue([]);
+    mockRowStore([chatRow('ses-chat-gated', 'g1', '2026-01-01T09:00:00.000Z', 'prompt')], {
+      ready: false,
+    });
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-chat-gated')).toBe(true);
+    });
+    // The hook's only row subscription is the Chat replay (never ToolUse).
+    expect(mockUseEventRows).toHaveBeenCalledWith('Chat', {}, { replay: true });
+    const toolCalls = mockUseEventRows.mock.calls.filter(([eventType]) => eventType === 'ToolUse');
+    expect(toolCalls).toHaveLength(0);
+  });
+
   it('replayed rows surface a backend-only session through the row-only path', async () => {
     // No persisted snapshot at all — the session streamed entirely while the
     // panel was closed; its replayed rows are the only source.
@@ -1187,5 +1281,87 @@ describe('Spec #2788 (P4.3): replay replaces mount-time hydration', () => {
       expect(result.current.sessions).toEqual([]);
     });
     expect(result.current.selectedSessionId).toBeNull();
+  });
+});
+
+// ── #2835 sub-task 2: the session-list hook consumes the panel's Chat rows ───
+// The panel passes its already-subscribed `useEventRows('Chat', …)` result as
+// `chatRows`, so `useDeliverySessions` must NOT open a second full-table Chat
+// replay leg on first open. Bare callers (no `chatRows`) keep their own
+// subscription (row-store dedupe is idempotent).
+describe('#2835 sub-task 2: useDeliverySessions consumes the panel Chat rows', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsSessionDeleted.mockImplementation(() => false);
+    mockUseEventRows.mockReturnValue(undefined); // must NOT be called when chatRows is passed
+    mockLoadPersistedSessions.mockResolvedValue([]);
+  });
+
+  function makeRows(rows: ChatRow[]): { rows: Map<string, ChatRow>; epoch: number; error: null; ready: boolean } {
+    return {
+      rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+      epoch: 1,
+      error: null,
+      ready: true,
+    };
+  }
+
+  it('WITHOUT `chatRows` still subscribes via useEventRows (bare-caller fallback)', async () => {
+    const rows = [chatRow('ses-bare', 'b1', '2026-01-02T09:00:00.000Z', 'bare prompt')];
+    mockUseEventRows.mockReturnValue(makeRows(rows));
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useDeliverySessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-bare')).toBe(true);
+    });
+    // The hook called useEventRows itself (its own subscription) — the
+    // bare-caller fallback path (multiple renders each call the hook).
+    expect(mockUseEventRows).toHaveBeenCalled();
+    expect(mockUseEventRows).toHaveBeenCalledWith('Chat', {}, { replay: true });
+    const session = result.current.sessions.find((s) => s.sessionId === 'ses-bare');
+    expect(session?.deliveryCount).toBe(1);
+  });
+
+  it('WITH `chatRows` the hook consumes the passed rows and opens NO second subscription', async () => {
+    const rows = [chatRow('ses-panel', 'p1', '2026-01-02T09:00:00.000Z', 'panel prompt')];
+    const panelRows = makeRows(rows);
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() =>
+      useDeliverySessions({ chatRows: panelRows }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-panel')).toBe(true);
+    });
+    // The internal useEventRows was NEVER opened (no duplicate replay leg).
+    expect(mockUseEventRows).not.toHaveBeenCalled();
+    const session = result.current.sessions.find((s) => s.sessionId === 'ses-panel');
+    expect(session?.deliveryCount).toBe(1);
+    expect(session?.derivedName).toBe('panel prompt');
+  });
+
+  it('WITH `chatRows` the renderableSessions gate still applies (list qualification unchanged)', async () => {
+    const rows = [
+      chatRow('ses-a', 'a1', '2026-01-02T09:00:00.000Z', 'alpha'),
+      chatRow('ses-b', 'b1', '2026-01-02T10:00:00.000Z', 'beta'),
+    ];
+    mockLoadPersistedSessions.mockResolvedValue([]);
+
+    const { result } = renderHook(() =>
+      useDeliverySessions({
+        chatRows: makeRows(rows),
+        renderableSessions: new Set(['ses-a']),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.sessions.some((s) => s.sessionId === 'ses-a')).toBe(true);
+    });
+    // ses-b owns rows but is NOT renderable → excluded (the panel's shared rule).
+    expect(result.current.sessions.some((s) => s.sessionId === 'ses-b')).toBe(false);
+    expect(mockUseEventRows).not.toHaveBeenCalled();
   });
 });

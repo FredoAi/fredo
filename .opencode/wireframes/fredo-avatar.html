@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>FREDO Avatar</title>
+
+  <style>
+    :root {
+      --cyan: #55ddea;
+      --cyan-bright: #7aeef4;
+      --bg: #02070d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      min-height: 100vh;
+
+      display: grid;
+      place-items: center;
+
+      background:
+        radial-gradient(
+          circle at 50% 45%,
+          rgba(0, 60, 85, 0.12),
+          transparent 45%
+        ),
+        var(--bg);
+    }
+
+    /*
+      Original reference coordinate space:
+
+      width:  1014
+      height: 1264
+
+      Center axis:
+      X = 507
+    */
+
+    #fredo {
+      position: relative;
+
+      width: min(82vw, 760px);
+
+      aspect-ratio: 1014 / 1264;
+
+      overflow: visible;
+    }
+
+    .pixel {
+      position: absolute;
+
+      background:
+        linear-gradient(
+          90deg,
+          rgba(255,255,255,0.08),
+          transparent 25%,
+          rgba(0,0,0,0.03) 100%
+        ),
+        var(--cyan);
+
+      box-shadow:
+        0 0 5px rgba(92, 235, 245, 0.9),
+        0 0 14px rgba(47, 212, 230, 0.65),
+        0 0 30px rgba(0, 160, 220, 0.35);
+
+      border-radius: 1px;
+    }
+
+    /*
+      Subtle pixel seams.
+
+      The reference has faint internal
+      divisions inside some larger blocks.
+    */
+
+    .pixel::after {
+      content: "";
+
+      position: absolute;
+      inset: 0;
+
+      pointer-events: none;
+
+      background:
+        repeating-linear-gradient(
+          90deg,
+          transparent 0,
+          transparent 40px,
+          rgba(0, 100, 120, 0.18) 41px,
+          transparent 42px
+        ),
+        repeating-linear-gradient(
+          180deg,
+          transparent 0,
+          transparent 39px,
+          rgba(0, 100, 120, 0.18) 40px,
+          transparent 41px
+        );
+
+      mix-blend-mode: multiply;
+      opacity: 0.45;
+    }
+
+    /*
+      Extra glow layer behind FREDO.
+    */
+
+    #fredo::before {
+      content: "";
+
+      position: absolute;
+
+      left: 50%;
+      top: 46%;
+
+      width: 68%;
+      height: 70%;
+
+      transform: translate(-50%, -50%);
+
+      background:
+        radial-gradient(
+          ellipse,
+          rgba(0, 180, 230, 0.10),
+          transparent 65%
+        );
+
+      filter: blur(40px);
+
+      pointer-events: none;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="fredo"></div>
+
+
+  <script>
+    const fredo = document.getElementById("fredo");
+
+
+    /*
+      =================================================
+
+      REFERENCE COORDINATE SYSTEM
+
+      Original artwork center:
+
+      X = 507
+
+      Every left-side rectangle is mirrored.
+
+      mirror(x, width):
+
+      newX = 1014 - x - width
+
+      =================================================
+    */
+
+    const WIDTH = 1014;
+    const CENTER = 507;
+
+
+    function addRect(x, y, width, height) {
+
+      const el = document.createElement("div");
+
+      el.className = "pixel";
+
+      el.style.left =
+        (x / WIDTH * 100) + "%";
+
+      el.style.top =
+        (y / 1264 * 100) + "%";
+
+      el.style.width =
+        (width / WIDTH * 100) + "%";
+
+      el.style.height =
+        (height / 1264 * 100) + "%";
+
+      fredo.appendChild(el);
+    }
+
+
+    /*
+      Add rectangle and its exact mirror.
+
+      This guarantees mathematical symmetry.
+    */
+
+    function addMirrored(x, y, width, height) {
+
+      addRect(
+        x,
+        y,
+        width,
+        height
+      );
+
+      const mirrorX =
+        WIDTH - x - width;
+
+      addRect(
+        mirrorX,
+        y,
+        width,
+        height
+      );
+    }
+
+
+    /*
+      =================================================
+      =================================================
+
+      HEAD
+
+      =================================================
+      =================================================
+    */
+
+
+    /*
+      TOP CENTER
+
+      Wide horizontal forehead.
+
+      This was one of the biggest mistakes
+      in the previous version.
+    */
+
+    addRect(
+      373,
+      67,
+      268,
+      38
+    );
+
+
+    /*
+      UPPER HEAD STEPS
+
+      Left side is mirrored.
+    */
+
+    addMirrored(
+      320,
+      106,
+      50,
+      43
+    );
+
+    addMirrored(
+      277,
+      107,
+      42,
+      41
+    );
+
+
+    /*
+      Upper diagonal.
+    */
+
+    addMirrored(
+      218,
+      150,
+      58,
+      43
+    );
+
+
+    /*
+      Second diagonal.
+
+      Taller than one normal pixel block.
+    */
+
+    addMirrored(
+      168,
+      194,
+      48,
+      75
+    );
+
+
+    /*
+      Shoulder / transition
+      into the large vertical head side.
+    */
+
+    addMirrored(
+      123,
+      271,
+      44,
+      46
+    );
+
+
+    /*
+      MAIN HEAD SIDE.
+
+      Long vertical section.
+    */
+
+    addMirrored(
+      87,
+      317,
+      41,
+      267
+    );
+
+
+    /*
+      Lower head steps.
+    */
+
+    addMirrored(
+      126,
+      585,
+      40,
+      58
+    );
+
+    addMirrored(
+      169,
+      644,
+      46,
+      41
+    );
+
+    addMirrored(
+      218,
+      686,
+      58,
+      41
+    );
+
+    addMirrored(
+      276,
+      727,
+      67,
+      33
+    );
+
+
+    /*
+      =================================================
+
+      LOWER HEAD
+
+      Large horizontal bottom of the face.
+
+      The reference is essentially continuous
+      here, with a subtle center seam.
+    */
+
+    addRect(
+      344,
+      761,
+      326,
+      33
+    );
+
+
+    /*
+      =================================================
+      =================================================
+
+      EYES
+
+      The previous implementation made them
+      far too narrow.
+
+      =================================================
+      =================================================
+    */
+
+    addMirrored(
+      323,
+      453,
+      68,
+      131
+    );
+
+
+    /*
+      =================================================
+      =================================================
+
+      BOW TIE
+
+      This is deliberately much closer
+      to the fragmented geometry from
+      the reference.
+
+      =================================================
+      =================================================
+    */
+
+
+    /*
+      Small upper bow pixels.
+    */
+
+    addMirrored(
+      427,
+      812,
+      26,
+      10
+    );
+
+
+    addMirrored(
+      455,
+      812,
+      23,
+      10
+    );
+
+
+    /*
+      Main bow wings.
+
+      Left geometry mirrored exactly.
+    */
+
+    addMirrored(
+      427,
+      823,
+      52,
+      69
+    );
+
+
+    /*
+      Inner bow shape.
+    */
+
+    addMirrored(
+      479,
+      834,
+      28,
+      34
+    );
+
+
+    /*
+      =================================================
+      =================================================
+
+      BODY / ARMS
+
+      Notice that FREDO's body is NOT
+      a solid torso.
+
+      It is fragmented and open.
+
+      =================================================
+      =================================================
+    */
+
+
+    /*
+      Upper outer arm.
+    */
+
+    addMirrored(
+      274,
+      824,
+      58,
+      87
+    );
+
+
+    /*
+      Inner upper arm.
+    */
+
+    addMirrored(
+      358,
+      824,
+      30,
+      31
+    );
+
+
+    /*
+      Inner arm separation.
+    */
+
+    addMirrored(
+      358,
+      857,
+      30,
+      26
+    );
+
+
+    /*
+      Lower inner arm.
+    */
+
+    addMirrored(
+      426,
+      858,
+      26,
+      33
+    );
+
+
+    addMirrored(
+      358,
+      885,
+      30,
+      29
+    );
+
+
+    /*
+      =================================================
+
+      CENTER BUTTON / BODY PIXELS
+    */
+
+    addRect(
+      492,
+      917,
+      30,
+      32
+    );
+
+    addRect(
+      491,
+      991,
+      31,
+      36
+    );
+
+
+    /*
+      =================================================
+      =================================================
+
+      LOWER ARMS
+
+      =================================================
+      =================================================
+    */
+
+    addMirrored(
+      241,
+      916,
+      31,
+      75
+    );
+
+
+    addMirrored(
+      390,
+      916,
+      30,
+      33
+    );
+
+
+    addMirrored(
+      241,
+      993,
+      31,
+      36
+    );
+
+
+    addMirrored(
+      274,
+      1009,
+      59,
+      52
+    );
+
+
+    /*
+      =================================================
+      =================================================
+
+      LEGS
+
+      Much shorter and wider-looking than
+      the previous implementation.
+
+      This was another major difference.
+
+      =================================================
+      =================================================
+    */
+
+
+    /*
+      Outer leg.
+    */
+
+    addMirrored(
+      327,
+      1085,
+      34,
+      115
+    );
+
+
+    /*
+      Inner leg.
+    */
+
+    addMirrored(
+      460,
+      1097,
+      28,
+      103
+    );
+
+
+    /*
+      FOOT.
+
+      Wide bottom foot section.
+    */
+
+    addMirrored(
+      339,
+      1201,
+      119,
+      33
+    );
+
+
+    /*
+      =================================================
+
+      END
+
+      FREDO is built entirely with HTML
+      rectangles.
+
+      No SVG.
+      No image.
+      No canvas.
+      No external files.
+
+      =================================================
+    */
+  </script>
+
+</body>
+</html>

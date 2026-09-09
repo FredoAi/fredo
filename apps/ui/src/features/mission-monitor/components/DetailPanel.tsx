@@ -30,8 +30,8 @@ function clampPanelWidth(raw: number | string): number {
 }
 
 const NODE_TYPE_ICONS: Record<string, React.ReactNode> = {
-  agent:    <LuBrain size={14} color="#a855f7" />,
-  subagent: <LuBot size={14} color="#6366f1" />,
+  agent:    <LuBrain size={14} color="var(--accent-primary)" />,
+  subagent: <LuBot size={14} color="var(--accent-subagent)" />,
 };
 
 function formatDuration(startTime?: string, endTime?: string): string {
@@ -84,7 +84,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
   const status = isToolCall ? 'inactive' : target.data.status;
   const statusColor = isToolCall
     ? toolCallStatus(target.call).color
-    : (STATUS_COLORS[status] ?? '#334155');
+    : (STATUS_COLORS[status] ?? 'var(--text-secondary)');
   const icon = isToolCall
     ? <LuWrench size={14} />
     : (NODE_TYPE_ICONS[nodeType] ?? <LuBrain size={14} />);
@@ -234,13 +234,13 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         top: 0, right: 0, bottom: 0,
         width,
         zIndex: 30,
-        background: '#12121f',
+        background: 'var(--card-bg)',
         borderLeft: '1px solid var(--border-color)',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
         animation: 'detail-slide-in 0.3s ease',
-        boxShadow: '-4px 0 16px rgba(0,0,0,0.5)',
+        boxShadow: `-4px 0 16px ${tint('var(--border-color)', 33)}`,
       }}
     >
       <style>{`
@@ -302,7 +302,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         flexShrink: 0,
       }}>
         {icon}
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', flex: 1 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', flex: 1 }}>
           {/* AC-8: the scoped tool-call header is `🔧 toolName` (never a generic
               all-tools view). #2764 AC4: a call whose toolName never resolved
               falls back to 'Unknown tool' — the header never renders blank. */}
@@ -318,7 +318,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         {isToolCall && (
           <span style={{
             fontSize: 9,
-            background: `${statusColor}22`,
+            background: tint(statusColor, 13),
             color: statusColor,
             borderRadius: 3,
             padding: '1px 5px',
@@ -333,7 +333,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
           onClick={onClose}
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
-            color: '#4b5563', padding: 2, display: 'flex', alignItems: 'center',
+            color: 'var(--text-secondary)', padding: 2, display: 'flex', alignItems: 'center',
           }}
         >
           <LuX size={13} />
@@ -390,7 +390,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         {nodeType === 'agent' && (
           <>
             <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
-            <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            <div style={{ fontSize: 9, color: 'var(--accent-primary)', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               Token Usage
             </div>
             <DetailRow label="Input" value={formatTokenCount(inputTokens)} mono />
@@ -420,7 +420,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ target, onClose }) => 
         {(startTime || endTime) && (
           <>
             <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
-            <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            <div style={{ fontSize: 9, color: 'var(--accent-primary)', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               Timing
             </div>
             {startTime && (
@@ -468,7 +468,7 @@ const SubagentDetailView: React.FC<{ payload: SubagentNodePayload }> = ({ payloa
       {/* Divider + Child Usage block — present whenever any child figure is
           deliverable; the figures themselves zero-guard (never NaN). */}
       <div style={{ height: 1, background: 'var(--border-color)', margin: '8px 0' }} />
-      <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+      <div style={{ fontSize: 9, color: 'var(--accent-primary)', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
         Child Usage
       </div>
       <DetailRow label="Tokens" value={formatTokenCount(childTokens)} mono />
@@ -554,7 +554,7 @@ interface DetailRowProps {
 const DetailRow: React.FC<DetailRowProps> = ({ label, value, mono, color }) => (
   <div style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'baseline' }}>
     <span style={{
-      fontSize: 9, color: '#4b5563', minWidth: 70,
+      fontSize: 9, color: 'var(--text-secondary)', minWidth: 70,
       textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600,
     }}>
       {label}
@@ -562,7 +562,7 @@ const DetailRow: React.FC<DetailRowProps> = ({ label, value, mono, color }) => (
     <span style={{
       fontSize: 10,
       fontFamily: mono ? "'Cascadia Code','Fira Code',monospace" : 'inherit',
-      color: color ?? '#cbd5e1',
+      color: color ?? 'var(--text-primary)',
       wordBreak: 'break-all',
       lineHeight: 1.4,
     }}>

@@ -1,28 +1,38 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { Box } from '@chakra-ui/react';
-import { WindowSystemProvider, WindowManager, useWindowActions } from '@maomaolabs/core';
-import { DesktopToolbar } from './settings/DesktopToolbar';
-import { DesktopBackground } from './DesktopBackground';
-import { StreamStatus } from './StreamStatus';
+import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
+import { WindowManager } from '../../../shared/window-system/WindowManager';
+import { useWindowActions } from '../../../shared/window-system/useWindowActions';
+import { LauncherShell } from './launcher/LauncherShell';
+import { AppDock } from './dock/AppDock';
 import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
 import { setupFeature } from '../../setup';
 import '../../allFeatures';
-import { getFeatures } from '../../featureRegistry';
+import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { settingsService } from '../../settings';
-import { useWindowStyle } from '../../../shared/contexts/WindowStyleContext';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
+import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
 // Features self-register via allFeatures.ts — no manual list needed.
 const ALL_FEATURES = getFeatures();
-const SHOWABLE_FEATURES = ALL_FEATURES.filter((feature) => feature.showable);
+// #2826: de-dup by feature `id` before the launcher consumes showables. The app
+// grid and its keyboard-nav indices are index-aligned BY CONSTRUCTION — one tile
+// per distinct id (no ghost tiles, no nav-sequence gaps), robust to double
+// registration. ALL_FEATURES stays un-deduped for the open-callback registration
+// loop (line 41) and the settings button (line 190).
+const SHOWABLE_FEATURES = dedupeByFeatureId(ALL_FEATURES.filter((feature) => feature.showable));
 
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
 
-const HomeDesktop: React.FC = () => {
+interface HomeDesktopProps {
+  registerOpenFeature: (fn: (id: string, feature: FredoFeatureClass) => void) => void;
+}
+
+const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   const { openWindow, closeWindow, updateWindow } = useWindowActions();
   const { showMessage } = useCompanion();
 
@@ -43,6 +53,11 @@ const HomeDesktop: React.FC = () => {
     openFeatureWindowRef.current(devModeFeature.id, devModeFeature);
     showMessage('Dev Mode Enabled 🐛', 4000);
   }, [showMessage]);
+
+  // Re-home the konami → dev-mode easter egg. The hook attaches a document-level
+  // keydown listener (position-independent), so it keeps working after the
+  // decorative full-screen animated background was removed (#2817).
+  useKonamiCode(handleKonamiCode);
 
   // Greet the user once on mount
   useEffect(() => {
@@ -123,20 +138,36 @@ const HomeDesktop: React.FC = () => {
     }, 0);
   }, [openWindow, closeWindow, updateWindow]);
 
-  // Keep ref in sync so transition callbacks always call the latest version
-  openFeatureWindowRef.current = openFeatureWindow;
+  // Keep the ref in sync so transition callbacks always call the latest version, and
+  // register the opener with the Home-level ref so the sibling LauncherShell (which
+  // renders outside HomeDesktop, inside the provider) can route launcher clicks through
+  // the own kernel's full-lifecycle openFeatureWindow. openFeatureWindow is a stable
+  // useCallback and registerOpenFeature is a stable useCallback, so this runs once.
+  useEffect(() => {
+    openFeatureWindowRef.current = openFeatureWindow;
+    registerOpenFeature(openFeatureWindow);
+  }, [openFeatureWindow, registerOpenFeature]);
 
-  return (
-    <Box position="absolute" inset="0" zIndex={0} overflow="hidden">
-      <DesktopBackground onKonamiCode={handleKonamiCode} />
-    </Box>
-  );
+  // The decorative full-screen animated background (#2817) is gone — the clean
+  // shell chrome (FREDO notch, avatar, search bar, side ticks, clock) is rendered
+  // by the sibling LauncherShell. HomeDesktop keeps only its orchestration hooks
+  // (feature registration + konami), so it renders nothing.
+  return null;
 };
 
 // ── Top-level Home component ──────────────────────────────────────────────────
 
 export const Home: React.FC = () => {
-  const { windowStyle } = useWindowStyle();
+  // Stable ref to the own-kernel openFeatureWindow so the sibling LauncherShell (which
+  // renders outside HomeDesktop, inside the provider) can route a launcher click through
+  // the own kernel's full-lifecycle opener. The initial no-op default means any click
+  // before HomeDesktop's registration effect runs is a harmless no-op.
+  const openFeatureRef = useRef<(id: string, feature: FredoFeatureClass) => void>(() => {});
+
+  // Stable registration callback: HomeDesktop hands its openFeatureWindow up to this ref.
+  const registerOpenFeature = useCallback((fn: (id: string, feature: FredoFeatureClass) => void) => {
+    openFeatureRef.current = fn;
+  }, []);
 
   return (
     <Box
@@ -153,15 +184,18 @@ export const Home: React.FC = () => {
       <Box flex="1" display="flex" flexDirection="row" overflow="hidden" minHeight="0">
         {/* Desktop: transform scopes position:fixed windows to this box */}
         <Box flex="1" position="relative" overflow="hidden" style={{ transform: 'translateZ(0)' }}>
-          <WindowSystemProvider systemStyle={windowStyle as any}>
+          <WindowSystemProvider>
             <Box display="flex" flexDirection="column" height="100%">
               <Box flex="1" position="relative" overflow="hidden">
                 <WindowManager />
-                <HomeDesktop />
-                <StreamStatus />
+                <HomeDesktop registerOpenFeature={registerOpenFeature} />
+                <AppDock />
                 <FloatingSettingsButton features={ALL_FEATURES} />
               </Box>
-              <DesktopToolbar showableFeatures={SHOWABLE_FEATURES} />
+              <LauncherShell
+                showableFeatures={SHOWABLE_FEATURES}
+                onOpenFeature={(id, feature) => openFeatureRef.current(id, feature)}
+              />
             </Box>
           </WindowSystemProvider>
         </Box>

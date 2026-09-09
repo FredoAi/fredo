@@ -177,3 +177,7 @@ apps/browser-extension-svelte
 
 # OpenCode agent runtime state
 .opencode/state/
+
+# Agentic-pipeline scratch + QA evidence (uploaded to GitHub issues via `gh api`; not committed)
+.opencode/tmp/
+.opencode/evidence/

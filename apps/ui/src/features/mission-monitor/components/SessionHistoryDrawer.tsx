@@ -188,7 +188,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
     minWidth: effectiveOpen ? DRAWER_WIDTH : COLLAPSED_WIDTH,
     overflow: 'hidden',
     transition: 'width 0.22s ease, min-width 0.22s ease',
-    background: '#0d0d1c',
+    background: 'var(--card-bg)',
     borderRight: '1px solid var(--border-color)',
     display: 'flex',
     flexDirection: 'column',
@@ -211,7 +211,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             style={{
               background: 'none', border: 'none', cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: 0, color: '#6366f1',
+              padding: 0, color: 'var(--accent-primary)',
             }}
             title="Show sessions"
           >
@@ -219,7 +219,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
           </button>
           {sessions.length > 0 && (
             <span style={{
-              fontSize: 9, background: '#6366f133', color: '#6366f1',
+              fontSize: 9, background: tint('var(--accent-primary)', 20), color: 'var(--accent-primary)',
               borderRadius: 3, padding: '1px 4px', fontWeight: 700,
             }}>
               {sessions.length}
@@ -237,9 +237,9 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             padding: '8px 10px 6px',
             borderBottom: '1px solid var(--border-color)', flexShrink: 0,
           }}>
-            <LuHistory size={12} color="#6366f1" />
+            <LuHistory size={12} color="var(--accent-primary)" />
             <span style={{
-              fontSize: 10, fontWeight: 700, color: '#6366f1',
+              fontSize: 10, fontWeight: 700, color: 'var(--accent-primary)',
               letterSpacing: '0.08em', textTransform: 'uppercase', flex: 1,
             }}>
               Sessions
@@ -248,7 +248,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
               onClick={onToggle}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
-                padding: 2, color: '#4b5563', display: 'flex',
+                padding: 2, color: 'var(--text-secondary)', display: 'flex',
               }}
               title="Close"
             >
@@ -261,7 +261,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             display: 'flex', alignItems: 'center', gap: 4,
             padding: '6px 8px', borderBottom: '1px solid var(--border-color)',
           }}>
-            <LuSearch size={11} color="#4b5563" />
+            <LuSearch size={11} color="var(--text-secondary)" />
             <input
               type="text"
               value={searchFilter}
@@ -269,12 +269,12 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
               placeholder="Filter sessions..."
               style={{
                 flex: 1,
-                background: '#0a0a18',
+                background: 'var(--body-bg)',
                 border: '1px solid var(--border-color)',
                 borderRadius: 4,
                 padding: '3px 6px',
                 fontSize: 10,
-                color: '#e2e8f0',
+                color: 'var(--text-primary)',
                 outline: 'none',
                 fontFamily: 'inherit',
               }}

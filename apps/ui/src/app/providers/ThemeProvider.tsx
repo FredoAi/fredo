@@ -1,19 +1,37 @@
-import React, { createContext, useContext, useEffect, type ReactNode } from 'react';
-import type { ThemeMode, Theme, ThemeOverrides } from '../types/theme';
-import { themes } from '../types/theme';
+import React, { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
+import type { ThemeMode, Theme, ThemeOverrides, ThemePreset } from '../types/theme';
+import { themes, themePresets, USER_PRESET_PREFIX } from '../types/theme';
 import { usePersistedSetting } from '../../shared/hooks/usePersistedSetting';
 
 export interface ThemeContextType {
   currentTheme: ThemeMode;
   theme: Theme;
-  setTheme: (theme: ThemeMode) => void;
-  availableThemes: Theme[];
   /** Active per-key overrides (on top of the base theme) */
   overrides: ThemeOverrides;
   /** Set or clear a single override. Pass an empty string to remove the key. */
   setOverride: (key: keyof ThemeOverrides, value: string) => void;
+  /** Clear a batch of keys in ONE composed write, avoiding stale-closure drops. */
+  clearOverrides: (keys: (keyof ThemeOverrides)[]) => void;
   /** Remove all overrides, reverting to the base theme values. */
   resetOverrides: () => void;
+  /** Currently selected preset id, or '' for none. */
+  selectedPreset: string;
+  /** Apply a preset (its token values sit below per-token overrides). '' clears it. */
+  setPreset: (presetId: string) => void;
+  /** Clear the selected preset AND all per-token overrides → stock base theme. */
+  resetTheme: () => void;
+  /** User-created presets, persisted under 'Fredo_user_presets'. */
+  userPresets: ThemePreset[];
+  /** All selectable presets: user presets first, then the 18 built-ins. */
+  allPresets: ThemePreset[];
+  /** Resolve any preset by id (user first, then built-in); null when unmatched. */
+  getPreset: (id: string) => ThemePreset | null;
+  /**
+   * Persist the CURRENT effective palette (override ?? preset ?? base, all 15
+   * tokens) as a new user preset, select it, clear per-token overrides, and
+   * return its id. Auto-titles 'Custom preset N'; id = 'user-<uuid>'.
+   */
+  createUserPresetFromCurrent: (name?: string) => void;
 }
 
 /**
@@ -36,19 +54,73 @@ interface ThemeProviderProps {
  * Applies base theme CSS variables, then user overrides as a second pass.
  */
 export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
-  const [currentTheme, setThemeStorage] = usePersistedSetting<ThemeMode>('Fredo_theme', 'classic');
+  // #2817 — The base theme is LOCKED to the single stock `classic` base. The
+  // persisted 'Fredo_theme' read is dropped entirely so a stale persisted value
+  // (e.g. 'turbo' from before the base-theme selector was removed) is NEVER read,
+  // keeping the shell stable. The theme-preset + per-token override layers
+  // (`override ?? preset ?? base`) still apply on top of this locked base.
+  const activeTheme: ThemeMode = 'classic';
+
   const [overrides, setOverridesStorage] = usePersistedSetting<ThemeOverrides>(
     'Fredo_theme_overrides',
     {},
     JSON.stringify,
     (raw) => { try { return JSON.parse(raw); } catch { return {}; } },
   );
+  // #2811 — Curated preset applied as a MIDDLE layer between the base theme and
+  // per-token overrides. Persisted under its own key; '' = none (stock base).
+  const [selectedPreset, setSelectedPreset] = usePersistedSetting<string>('Fredo_theme_preset', '');
 
-  // #2758 — Clamp the persisted mode to a literal that exists in `themes`.
-  // A stale/unexpected 'Fredo_theme' storage value would otherwise flow into
-  // `themes[currentTheme]` → undefined, crashing every consumer that reads
-  // `theme.colors`. Validated once here; all downstream reads use this.
-  const activeTheme: ThemeMode = themes[currentTheme] ? currentTheme : 'classic';
+  // #2845 — user presets persist alongside the built-ins under their own key.
+  // A stale/unmatched preset id simply resolves to null → base theme (no crash),
+  // mirroring the #2758 clamp behavior for the preset layer.
+  const [userPresets, setUserPresets] = usePersistedSetting<ThemePreset[]>(
+    'Fredo_user_presets',
+    [],
+    JSON.stringify,
+    (raw) => { try { return JSON.parse(raw); } catch { return []; } },
+  );
+
+  // Resolve any preset by id — user presets (higher priority) then built-ins.
+  // A stale/unmatched id resolves to null → base theme (no crash).
+  const getPreset = (id: string): ThemePreset | null =>
+    userPresets.find((p) => p.id === id) ?? themePresets.find((p) => p.id === id) ?? null;
+
+  const activePreset = getPreset(selectedPreset);
+
+  // All selectable presets: user presets first, then the 18 built-ins.
+  const allPresets = useMemo(() => [...userPresets, ...themePresets], [userPresets]);
+
+  // All 15 user-overridable tokens (12 colors + 3 fonts) used to capture the
+  // effective palette when persisting a new user preset.
+  const USER_PRESET_TOKEN_KEYS: (keyof ThemeOverrides)[] = [
+    'accentPrimary', 'accentSecondary', 'borderColor',
+    'bodyBg', 'cardBg', 'headerBg',
+    'textPrimary', 'textSecondary',
+    'statusSuccess', 'statusWarning', 'statusError', 'statusInfo',
+    'fontPrimary', 'fontSecondary', 'fontBase',
+  ];
+
+  // Capture the effective `override ?? preset ?? base` palette for all 15
+  // tokens, persist it as a new user preset, select it, and clear per-token
+  // overrides so the applied palette is byte-preserved.
+  const createUserPresetFromCurrent = (name?: string) => {
+    const base = themes[activeTheme].colors as Record<keyof ThemeOverrides, string>;
+    const palette: Partial<ThemeOverrides> = {};
+    for (const key of USER_PRESET_TOKEN_KEYS) {
+      const value = overrides[key]
+        ?? (activePreset && (activePreset.colors as Partial<ThemeOverrides>)[key])
+        ?? base[key];
+      if (value) palette[key] = value;
+    }
+    const id = `${USER_PRESET_PREFIX}${crypto.randomUUID()}`;
+    setUserPresets([
+      ...userPresets,
+      { id, name: name ?? `Custom preset ${userPresets.length + 1}`, colors: palette },
+    ]);
+    setPreset(id);
+    resetOverrides();
+  };
 
   // Apply CSS variables whenever theme or overrides change
   useEffect(() => {
@@ -92,6 +164,45 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     document.body.style.fontFamily = theme.colors.fontFamily;
     document.body.className = `theme-${activeTheme}`;
 
+    // --- Preset (middle layer: base < preset < override) ---
+    // #2811 — a curated preset's token values sit between the base theme and the
+    // per-token override pass, so an individual override still wins over a preset
+    // (override ?? preset ?? base). The special side-effects (body bg/text/font,
+    // header→footer) mirror the override pass' behavior exactly so a light/dark
+    // palette renders correctly. If a preset leaves a token out it falls through
+    // to the base theme, so a preset never leaves a bare/undefined CSS var.
+    if (activePreset) {
+      const p = activePreset.colors;
+      if (p.accentPrimary) root.style.setProperty('--accent-primary', p.accentPrimary);
+      if (p.accentSecondary) root.style.setProperty('--accent-secondary', p.accentSecondary);
+      if (p.borderColor) root.style.setProperty('--border-color', p.borderColor);
+      if (p.bodyBg) {
+        root.style.setProperty('--body-bg', p.bodyBg);
+        document.body.style.background = p.bodyBg;
+      }
+      if (p.cardBg) root.style.setProperty('--card-bg', p.cardBg);
+      if (p.headerBg) {
+        root.style.setProperty('--header-bg', p.headerBg);
+        root.style.setProperty('--footer-bg', p.headerBg);
+      }
+      if (p.textPrimary) {
+        root.style.setProperty('--text-primary', p.textPrimary);
+        document.body.style.color = p.textPrimary;
+      }
+      if (p.textSecondary) root.style.setProperty('--text-secondary', p.textSecondary);
+      if (p.statusSuccess) root.style.setProperty('--status-success', p.statusSuccess);
+      if (p.statusWarning) root.style.setProperty('--status-warning', p.statusWarning);
+      if (p.statusError) root.style.setProperty('--status-error', p.statusError);
+      if (p.statusInfo) root.style.setProperty('--status-info', p.statusInfo);
+      if (p.fontPrimary) root.style.setProperty('--font-primary', p.fontPrimary);
+      if (p.fontSecondary) root.style.setProperty('--font-secondary', p.fontSecondary);
+      if (p.fontBase) {
+        root.style.setProperty('--font-base', p.fontBase);
+        root.style.setProperty('--font-family', p.fontBase);
+        document.body.style.fontFamily = p.fontBase;
+      }
+    }
+
     // --- Overrides (applied as a second pass) ---
     if (overrides.accentPrimary) root.style.setProperty('--accent-primary', overrides.accentPrimary);
     if (overrides.accentSecondary) root.style.setProperty('--accent-secondary', overrides.accentSecondary);
@@ -121,11 +232,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       root.style.setProperty('--font-family', overrides.fontBase);
       document.body.style.fontFamily = overrides.fontBase;
     }
-  }, [activeTheme, overrides]);
-
-  const setTheme = (theme: ThemeMode) => {
-    setThemeStorage(theme);
-  };
+  }, [activeTheme, overrides, activePreset]);
 
   const setOverride = (key: keyof ThemeOverrides, value: string) => {
     const next = { ...overrides };
@@ -137,7 +244,27 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     setOverridesStorage(next);
   };
 
+  // Clear a batch of keys in ONE composed write. Without this, a multi-token
+  // Discard loops `setOverride` over the SAME stale `overrides` render closure,
+  // so under React batching only the last key's deletion survives (N-1 dirty
+  // tokens remain). Deleting every key from a single copy and writing once keeps
+  // the batch atomic (F-9 multi-edit).
+  const clearOverrides = (keys: (keyof ThemeOverrides)[]) => {
+    const next = { ...overrides };
+    for (const key of keys) delete next[key];
+    setOverridesStorage(next);
+  };
+
   const resetOverrides = () => {
+    setOverridesStorage({});
+  };
+
+  const setPreset = (presetId: string) => {
+    setSelectedPreset(presetId);
+  };
+
+  const resetTheme = () => {
+    setSelectedPreset('');
     setOverridesStorage({});
   };
 
@@ -146,11 +273,17 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       value={{
         currentTheme: activeTheme,
         theme: themes[activeTheme],
-        setTheme,
-        availableThemes: Object.values(themes),
         overrides,
         setOverride,
+        clearOverrides,
         resetOverrides,
+        selectedPreset,
+        setPreset,
+        resetTheme,
+        userPresets,
+        allPresets,
+        getPreset,
+        createUserPresetFromCurrent,
       }}
     >
       {children}

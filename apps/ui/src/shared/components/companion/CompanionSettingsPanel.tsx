@@ -5,7 +5,7 @@ import {
 import { LuTriangleAlert } from 'react-icons/lu';
 import { useCompanion } from '../../contexts/CompanionContext';
 import { adapterBridge } from '../../utils/adapterBridge';
-import { useWindowActions } from '@maomaolabs/core';
+import { useWindowActions } from '../../window-system/useWindowActions';
 import { setupFeature } from '../../../features/setup';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

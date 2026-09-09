@@ -4,8 +4,7 @@
     "private": true,
     "type": "module",
     "exports": {
-        ".": "./src/index.ts",
-        "./styles": "./src/features/home/fredo-desktop.css"
+        ".": "./src/index.ts"
     },
     "scripts": {
         "dev": "vite",
@@ -18,16 +17,12 @@
         "@chenglou/pretext": "^0.0.6",
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
-        "@maomaolabs/core": "^1.1.0",
         "@tauri-apps/api": "^2",
         "@types/d3-force": "^3.0.10",
         "d3-force": "^3.0.0",
         "date-fns": "^4.1.0",
         "framer-motion": "^11.18.2",
         "ghostty-web": "^0.4.0",
-        "gsap": "^3.14.2",
-        "ogl": "^1.0.11",
-        "postprocessing": "^6.38.1",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "react-icons": "^5.5.0",

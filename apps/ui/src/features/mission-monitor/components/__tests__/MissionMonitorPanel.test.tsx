@@ -191,17 +191,17 @@ function makeTaskDelivery(
 }
 
 // #2748 FIX-3 (round-2 AC4 / R-4.1): capture the window-title neutralization —
-// the panel updates the @maomaolabs window's title (which the WindowManager
-// renders as BOTH the visible window-header label AND the `role="dialog"`
-// container's `aria-label`) so no `Mission Monitor` text survives in the
-// panel's a11y tree.
+// the panel updates the own window-kernel entry's title (which the kernel's
+// WindowFrame renders as BOTH the visible window-header label AND the
+// `role="group"` container's `aria-label`) so no `Mission Monitor` text
+// survives in the panel's a11y tree.
 const windowActionsState = vi.hoisted(() => ({
   updateWindow: vi.fn(),
 }));
 
-// Mock @maomaolabs/core — the panel consumes useWindowActions only to
-// neutralize the window title; the window system itself is out of scope here.
-vi.mock('@maomaolabs/core', () => ({
+// Mock the own window-kernel hooks — the panel consumes useWindowActions only
+// to neutralize the window title; the window system itself is out of scope here.
+vi.mock('@/shared/window-system/useWindowActions', () => ({
   useWindowActions: () => ({
     openWindow: vi.fn(),
     closeWindow: vi.fn(),

@@ -2,7 +2,6 @@ packages:
   - 'apps/tauri'
   - 'apps/ui'
   - 'apps/opencode-plugin'
-  - 'apps/tools-mcp'
   - 'apps/code-sandbox'
   # Archived — superseded by apps/tauri
   # - 'apps/docusaurus'
@@ -10,4 +9,5 @@ packages:
   # - 'apps/vscode-extension'
   # - 'apps/otel-collector'
   # - 'apps/otel-local-collector'
+  # - 'apps/tools-mcp'
   - 'packages/*'

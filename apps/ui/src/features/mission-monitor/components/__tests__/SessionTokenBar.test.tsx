@@ -29,6 +29,18 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { ContractDelivery } from '../../../../shared/classes/EventSubscription';
 import { SessionTokenBar } from '../SessionTokenBar';
 
+// Mock the own window-kernel hooks (Spec #2807 ST-5): the panel consumes
+// useWindowActions only to neutralize the window title; the window system
+// itself is out of scope here. Mirrors the MissionMonitorPanel.test.tsx mock.
+vi.mock('@/shared/window-system/useWindowActions', () => ({
+  useWindowActions: () => ({
+    openWindow: vi.fn(),
+    closeWindow: vi.fn(),
+    focusWindow: vi.fn(),
+    updateWindow: vi.fn(),
+  }),
+}));
+
 afterEach(() => cleanup());
 
 // ── SessionTokenBar component — pure presentational ───────────────────────────

@@ -1332,4 +1332,245 @@ mod tests {
             "the marker rode the final chunk of the coalesced drain"
         );
     }
+
+    // ── Sub-task 4 (AC1): the replay snapshot is NARROWED by a recency-range
+    //    arg pushed down the typed-column pushdown ────────────────────────────
+
+    /// Real-magnitude "now" as epoch ns (rows live at ≈1.7–1.8e18).
+    fn now_epoch_ns() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos() as i64
+    }
+
+    /// RFC3339 "now − seconds" in the pipeline's canonical Utc stamp format.
+    fn rfc3339_ago(seconds: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::seconds(seconds)).to_rfc3339()
+    }
+
+    #[test]
+    fn replay_recency_range_pushdown_bounds_the_snapshot_and_keeps_the_settle_marker() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+
+        // Fixture magnitudes are REAL ns-since-epoch (G-028 class guard): the
+        // round-1 shipped 1970-relative constant (`7*24*60*60*1e9` ≈ 6.048e14)
+        // must FAIL this fixture — both timed rows are > 6.048e14, so that
+        // constant would let them ALL replay and the assertions below would
+        // break. Round 1 shipped exactly that no-op; this test pins the real
+        // semantics: old = now−30d, recent = now−1h, cut at now−7d.
+        let now_ns = now_epoch_ns();
+        let day_ns = 24 * 60 * 60 * 1_000_000_000i64;
+        let cutoff = now_ns - 7 * day_ns;
+        assert!(
+            cutoff > 604_800_000_000_000,
+            "a real 7-day cutoff is ≈1.7–1.8e18 ns (epoch-absolute), never the 1970-relative 6.048e14 window width"
+        );
+
+        let mut old = chat_row("s_rr", "s_rr_old", &rfc3339_ago(30 * 24 * 60 * 60));
+        old.started_at_ns = Some(now_ns - 30 * day_ns);
+        old.seq = 1;
+        let mut recent = chat_row("s_rr", "s_rr_recent", &rfc3339_ago(60 * 60));
+        recent.started_at_ns = Some(now_ns - day_ns / 24);
+        recent.seq = 2;
+        // NULL `started_at_ns` row (ST-4-R2c): mock/edge-only rows carry no
+        // span start. A time-bounded read has no place for timeless rows — the
+        // `>=` bound excludes them via SQL NULL semantics AND the registry's
+        // in-memory null-never-matches rule, and the settle marker still fires.
+        let mut null_start = chat_row("s_rr", "s_rr_null", &rfc3339_ago(60 * 60));
+        null_start.started_at_ns = None;
+        null_start.seq = 3;
+        rtdb.cache()
+            .store()
+            .upsert_chat_rows(&[old, recent, null_start])
+            .expect("persist");
+
+        let text = format!("chat(startedAtNs >= {cutoff}) {{ userMessage }}");
+        let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
+        assert_eq!(registered.len(), 1);
+        rtdb.replay_query(&registered[0].query_id, &validated(&text)).expect("replay");
+        let out = emitted(&sink);
+        assert_eq!(out.len(), 1, "the recency range bounds the snapshot read to the recent row");
+        assert_eq!(out[0].key.correlation_id, "s_rr_recent");
+        assert_eq!(out[0].kind, RowChangeKind::Insert);
+        assert!(
+            out.iter()
+                .all(|d| d.key.correlation_id != "s_rr_old" && d.key.correlation_id != "s_rr_null"),
+            "rows below the real cutoff AND NULL-start rows must not replay"
+        );
+
+        // The `ready`/replayCompleteQueryId settle contract is UNCHANGED by the
+        // narrowed read: the per-query completion marker still rides the
+        // terminal envelope (flush.rs ::mark_replay_complete), even when the
+        // snapshot is far smaller than the whole table and even when rows were
+        // excluded.
+        rtdb.mark_replay_complete(&registered[0].query_id);
+        assert_eq!(markers(&marker_sink), vec![registered[0].query_id.clone()]);
+        assert_eq!(emitted(&sink).len(), 1, "the marker envelope carries no extra row");
+
+        // AC2.c / ST-7-R2(b): the narrowed snapshot only bounds HISTORICAL
+        // backfill — a NEW in-window session starting after the replay still
+        // live-refreshes through the retained subscription (full-row insert).
+        let mut live_new = chat_row("s_rr", "s_rr_new", &rfc3339_ago(5));
+        live_new.started_at_ns = Some(now_epoch_ns());
+        rtdb.ingest_row_upsert(IngestRow::Chat(live_new), &["userMessage".to_string()])
+            .expect("ingest");
+        window_drain(&rtdb);
+        let after_live = emitted(&sink);
+        assert_eq!(after_live.len(), 2, "recent replay insert + the live insert");
+        assert_eq!(after_live[1].kind, RowChangeKind::Insert);
+        assert_eq!(after_live[1].key.correlation_id, "s_rr_new");
+    }
+
+    // ── #2835 round-2 ST-8a: the warm-reopen `updatedAt > <watermark>` delta
+    //    arg (STRING ordering — pushdown intentionally skips String non-Eq, so
+    //    the snapshot SELECT reads the table and the registry re-evaluates the
+    //    arg per row lexicographically; the pipeline's canonical RFC3339
+    //    stamps make lexicographic == chronological) ──────────────────────────
+
+    #[test]
+    fn replay_updated_at_watermark_returns_only_the_delta_and_keeps_the_settle_marker() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+
+        // Two persisted rows with REAL RFC3339 updated_at values: one last
+        // updated BEFORE the watermark (the module-scoped store already holds
+        // it — a warm reopen must NOT re-drain it) and one updated AFTER the
+        // watermark (landed while Mission Monitor was closed — the warm
+        // reopen's whole point: drain only the delta).
+        let held_updated_at = rfc3339_ago(2 * 60 * 60); // 2h ago — held by the store
+        let delta_updated_at = rfc3339_ago(60); // 1 min ago — the delta
+        let watermark = rfc3339_ago(30 * 60); // 30 min ago — the store's max
+
+        let mut held = chat_row("s_wm", "s_wm_held", &held_updated_at);
+        held.seq = 1;
+        let mut delta = chat_row("s_wm", "s_wm_delta", &delta_updated_at);
+        delta.seq = 2;
+        rtdb.cache().store().upsert_chat_rows(&[held, delta]).expect("persist");
+
+        let text = format!("chat(updatedAt > \"{watermark}\") {{ userMessage }}");
+        let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
+        assert_eq!(registered.len(), 1);
+        rtdb.replay_query(&registered[0].query_id, &validated(&text)).expect("replay");
+        let out = emitted(&sink);
+        assert_eq!(out.len(), 1, "warm reopen drains ONLY the rows updated after the watermark");
+        assert_eq!(out[0].key.correlation_id, "s_wm_delta");
+        assert_eq!(out[0].kind, RowChangeKind::Insert);
+        assert!(
+            out.iter().all(|d| d.key.correlation_id != "s_wm_held"),
+            "a row the store already holds (updatedAt <= watermark) must not re-replay"
+        );
+
+        // The `ready`/replayCompleteQueryId settle contract is UNCHANGED on the
+        // delta drain — the marker still rides the terminal envelope.
+        rtdb.mark_replay_complete(&registered[0].query_id);
+        assert_eq!(markers(&marker_sink), vec![registered[0].query_id.clone()]);
+
+        // A live mutation that lands AFTER the watermark still flows through
+        // the retained subscription (streaming continues past the delta drain).
+        let mut live_after = chat_row("s_wm", "s_wm_live", &rfc3339_ago(5));
+        live_after.agent_reply = Some("live".to_string());
+        rtdb.ingest_row_upsert(IngestRow::Chat(live_after), &["agentReply".to_string(), "updatedAt".to_string()])
+            .expect("ingest");
+        window_drain(&rtdb);
+        let after_live = emitted(&sink);
+        assert_eq!(after_live.len(), 2, "delta replay insert + the live insert");
+        assert_eq!(after_live[1].key.correlation_id, "s_wm_live");
+        assert_eq!(after_live[1].kind, RowChangeKind::Insert);
+    }
+
+    // ── Sub-task 5 (AC2.b): a retention cap prune routes `kind: remove` to a
+    //    live subscriber so the shared frontend store cannot outgrow the cap ──
+
+    #[test]
+    fn cap_prune_routes_remove_to_live_subscriber_and_the_client_drops_the_rows() {
+        let (_dir, rtdb, mut rx, sink, _markers) = make_rtdb();
+
+        // The mission-monitor panel subscribes the UNFILTERED chat query (its
+        // shared per-event-type partition map holds every Chat row); a narrow
+        // subscriber only ever held one session. Both stay LIVE (never
+        // unsubscribed) — AC2.b's retention mirror must keep the shared store
+        // bounded by the backend's max_rows cap.
+        let registered = rtdb
+            .subscribe(
+                &[
+                    "chat { userMessage }".to_string(),
+                    "chat(sessionId = \"s_keep\") { userMessage }".to_string(),
+                ],
+                false,
+                None,
+            )
+            .expect("subscribe");
+        let (unfiltered, narrow) = (&registered[0], &registered[1]);
+
+        // Three live rows across three sessions — all within the retention
+        // window (so the age prune is inert) but with distinct updated_at so
+        // the oldest-first max_rows cap has a deterministic victim.
+        for (session, corr, updated_at) in [
+            ("s_old", "s_old_1", "2026-08-30T00:00:00+00:00"),
+            ("s_mid", "s_mid_1", "2026-08-31T00:00:00+00:00"),
+            ("s_keep", "s_keep_1", "2026-09-01T00:00:00+00:00"),
+        ] {
+            rtdb.ingest_row_upsert(
+                IngestRow::Chat(chat_row(session, corr, updated_at)),
+                &["userMessage".to_string()],
+            )
+            .expect("ingest");
+        }
+        window_drain(&rtdb);
+        assert_eq!(
+            emitted(&sink).len(),
+            4,
+            "unfiltered saw all 3 inserts; the narrow subscriber saw only its session"
+        );
+
+        // Land the write-behind batch so SQLite holds the rows, then apply the
+        // GLOBAL max_rows cap (retention_days large so the age prune is inert).
+        persist_write_behind(&rtdb, &mut rx);
+        let outcome = rtdb.cache().store().prune(365, 2).expect("prune");
+        assert_eq!(outcome.deleted, 1, "cap 3→2 evicts the single oldest row");
+        assert_eq!(outcome.evicted.len(), 1);
+        assert_eq!(outcome.evicted[0].session_id, "s_old");
+
+        rtdb.route_evictions(outcome.evicted);
+        window_drain(&rtdb);
+        let all = emitted(&sink);
+        let removals: Vec<&RowDelivery> = all
+            .iter()
+            .filter(|d| d.kind == RowChangeKind::Remove)
+            .collect();
+        assert_eq!(removals.len(), 1, "exactly one retention removal");
+        assert_eq!(removals[0].query_id, unfiltered.query_id, "the unfiltered subscriber held the key");
+        assert_eq!(removals[0].key.session_id, "s_old");
+        assert_eq!(removals[0].patch, None);
+        assert_eq!(removals[0].seq, 1, "remove carries the last delivered seq");
+
+        // The narrow subscriber's query never matched the evicted (s_old) key,
+        // so it receives NO remove for it — the shared per-event-type store
+        // still drops the row because the unfiltered subscriber's remove
+        // carries the SAME key (the P4.1 store keys rows only by eventType).
+        assert!(
+            all.iter()
+                .all(|d| d.query_id != narrow.query_id || d.kind != RowChangeKind::Remove),
+            "a query that never delivered the key must not receive the remove"
+        );
+
+        // Mirror the frontend store: every evicted key is dropped, so the live
+        // store cannot outgrow the backend cap (AC2.b).
+        let state = apply_client(&all);
+        assert!(
+            !state.contains_key(&(unfiltered.query_id.clone(), RowKey {
+                session_id: "s_old".to_string(),
+                correlation_id: "s_old_1".to_string(),
+            })),
+            "the evicted row is gone from the client store"
+        );
+        assert!(state.contains_key(&(unfiltered.query_id.clone(), RowKey {
+            session_id: "s_mid".to_string(),
+            correlation_id: "s_mid_1".to_string(),
+        })));
+        assert!(state.contains_key(&(unfiltered.query_id.clone(), RowKey {
+            session_id: "s_keep".to_string(),
+            correlation_id: "s_keep_1".to_string(),
+        })));
+    }
 }

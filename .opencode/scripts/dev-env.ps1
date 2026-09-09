@@ -37,6 +37,21 @@
   stale HEAD refuses to start), then serves the app from the repo root.
   Status prints the root branch + HEAD.
 
+.PARAMETER At
+  Baseline-leg commit (Up only, OPTIONAL). Serves the PRE-FIX PRODUCT code of an
+  ancestor commit of spec/<Spec> (apps/ materialized into the current serving
+  tree) for a Before/baseline measurement in a research-first spec (Spec #498
+  pattern) -- the tooling (this script, opencode.json) stays at the spec/<Spec>
+  tip, so the sandbox and tool surface are unchanged. Fail-closed: the repo root
+  must be on spec/<Spec> (G-052) and -At must resolve to a commit reachable from
+  the origin/spec/<Spec> tip -- main's divergent code and any non-spec commit are
+  REFUSED. Baseline legs never serve main and never hand-roll a detached
+  dev-server spawn; a cross-branch serving need the tool does not cover is a
+  tooling request to the Self-Improver (new script/param), not an ad-hoc agent
+  script. The next standard Up (without -At) restores apps/ to the spec/<Spec>
+  tip for the AFTER legs. Without -At the strict G-052 origin-tip check applies
+  (the normal flow).
+
 .PARAMETER VitePort
   Vite dev server port. Default: 5174.
 
@@ -53,6 +68,7 @@
   powershell -File .opencode/scripts/dev-env.ps1 -Action Up
   powershell -File .opencode/scripts/dev-env.ps1 -Action Status
   powershell -File .opencode/scripts/dev-env.ps1 -Action Logs -Lines 100
+  powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2835 -At 296f881
   powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Spec 2762
   powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Kill -Spec 2762
 #>
@@ -64,6 +80,10 @@ param(
 
   [ValidateRange(1, [uint64]::MaxValue)]
   [uint64]$Spec = 0,
+
+  # Baseline-leg serving commit (Up only): a PRE-FIX ancestor of spec/<Spec>.
+  # Optional -- the normal flow serves the origin/spec/<Spec> tip (G-052).
+  [string]$At = "",
 
   [int]$VitePort = 5174,
   [int]$McpPort = 9223,
@@ -221,6 +241,79 @@ function Assert-RootServingCurrency {
   return $tip
 }
 
+# -- Baseline-leg serving (research-first Before measurement) -------------------
+
+# A research-first perf spec's Before/baseline leg must serve the PRE-FIX product
+# code (the same buggy code) -- NEVER main and NEVER a hand-rolled detached
+# spawn (agents provide tools to agents; agents do not invent their own). The
+# serving checkout stays on spec/<Spec> at the origin tip, so the tooling
+# (this script, opencode.json, the skills) is ALWAYS the current version; -At
+# materializes ONLY the pre-fix product code under apps/ into the working tree
+# (`git checkout <sha> -- apps`) and cold-starts the dev instance against it.
+# Fail-closed: root must be on spec/<Spec> and -At must be reachable from the
+# origin/spec/<Spec> tip (main's divergent code and foreign commits are refused).
+# After the baseline leg, the next standard Up (without -At) restores apps/ from
+# HEAD so the AFTER legs serve the fixed tip.
+function Prepare-BaselineServing {
+  param([uint64]$SpecIssue, [string]$At)
+
+  $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+  if ($branch -ne "spec/$SpecIssue") {
+    Write-Log "ERROR: repo root is on '$branch' -- a baseline leg still requires the root on spec/$SpecIssue (G-052); baseline legs NEVER serve main." -Level ERROR
+    exit 1
+  }
+  Write-Log "Fetching origin/spec/$SpecIssue..."
+  if ((Invoke-NativeQuiet git fetch origin "spec/$SpecIssue") -ne 0) { throw "git fetch origin spec/$SpecIssue failed" }
+
+  # Resolve -At to a commit SHA (capture stdout; native stderr must not throw).
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  $revOut = (& git rev-parse --verify "${At}^{commit}") 2>&1
+  $revExit = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  if ($revExit -ne 0) {
+    Write-Log "ERROR: -At '$At' does not resolve to a commit (git rev-parse failed)." -Level ERROR
+    exit 1
+  }
+  $atSha = (($revOut | Select-Object -Last 1) -as [string]).Trim()
+  if (-not $atSha) {
+    Write-Log "ERROR: -At '$At' resolved but produced no commit SHA." -Level ERROR
+    exit 1
+  }
+
+  # Fail closed: the baseline commit MUST be reachable from origin/spec/<Spec>.
+  & git merge-base --is-ancestor $atSha "origin/spec/$SpecIssue" 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Log "ERROR: -At $($atSha.Substring(0, [Math]::Min(8, $atSha.Length))) is NOT reachable from origin/spec/$SpecIssue -- baseline legs serve only PRE-FIX ancestors of the spec branch, never main or foreign commits. A genuine cross-branch measurement is a tooling request to the Self-Improver." -Level ERROR
+    exit 1
+  }
+
+  # Materialize ONLY the product code at the pre-fix commit. apps/ is gitignored-
+  # free tracked source (node_modules untracked) so this reverts exactly the
+  # product diff; tooling/opencode.json stay at the spec/<Spec> tip.
+  if ((Invoke-NativeQuiet git checkout $atSha -- apps) -ne 0) {
+    Write-Log "ERROR: could not materialize pre-fix product code from $($atSha.Substring(0, [Math]::Min(8, $atSha.Length))) into apps/ (git checkout failed)." -Level ERROR
+    exit 1
+  }
+  Write-Log "Materialized PRE-FIX product code (apps/) from $($atSha.Substring(0, [Math]::Min(12, $atSha.Length)))."
+  return $atSha
+}
+
+# Restore apps/ to the current HEAD (spec/<Spec> tip) after a baseline leg. Runs
+# automatically on the standard Up path when the product tree carries baseline
+# residue; never touches anything outside apps/.
+function Restore-ProductTree {
+  param([uint64]$SpecIssue)
+  $dirty = ((& git status --porcelain -- apps 2>$null) | Out-String).Trim()
+  if ($dirty) {
+    Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
+    if ((Invoke-NativeQuiet git checkout HEAD -- apps) -ne 0) {
+      Write-Log "ERROR: could not restore apps/ from HEAD (git checkout failed)." -Level ERROR
+      exit 1
+    }
+  }
+}
+
 # -- Actions ------------------------------------------------------------------
 
 $LogDir  = Join-Path $PSScriptRoot "..\logs"
@@ -235,17 +328,33 @@ switch ($Action) {
       Write-Log "ERROR: -Action Up requires -Spec <N> (G-052: the repo root must sit on spec/<N> at the origin tip; the app is served from the root)." -Level ERROR
       exit 1
     }
-    $tip = Assert-RootServingCurrency -SpecIssue $Spec
+    if ($At) {
+      # Baseline leg: serve the PRE-FIX product code (apps/ materialized from an
+      # ancestor of spec/<Spec>; tooling stays current). Fail-closed.
+      $tip = Prepare-BaselineServing -SpecIssue $Spec -At $At
+      Write-Log "BASELINE LEG: serving pre-fix product code of $($tip.Substring(0, [Math]::Min(12, $tip.Length))) on spec/$Spec (Before/baseline measurement). The next Up WITHOUT -At restores the spec/$Spec tip."
+    } else {
+      # Standard flow: restore any baseline residue, then verify root currency.
+      Restore-ProductTree -SpecIssue $Spec
+      $tip = Assert-RootServingCurrency -SpecIssue $Spec
+    }
 
     $ports = Test-BothPorts $VitePort $McpPort
     if ($ports.Vite -and $ports.Mcp) {
-      Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
-      # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
-      # injected only on the cold-start path below (G-046 block) -- this
-      # fast-path exit skips the injection, so a Run CLI child may inherit
-      # a stale env and emit zero telemetry spans.
-      Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
-      exit 0
+      if ($At) {
+        # A baseline leg MUST serve the requested pre-fix commit -- an instance
+        # already running (possibly from an AFTER leg) cannot be trusted as that
+        # code, so fall through to the stale-kill + cold start below.
+        Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- baseline leg requires a COLD start at the pre-fix commit; killing and cold-starting..."
+      } else {
+        Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
+        # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
+        # injected only on the cold-start path below (G-046 block) -- this
+        # fast-path exit skips the injection, so a Run CLI child may inherit
+        # a stale env and emit zero telemetry spans.
+        Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
+        exit 0
+      }
     }
 
     # Kill any stale instance from a previous (possibly mismatched) run.
@@ -375,7 +484,7 @@ switch ($Action) {
     Start-Sleep -Seconds 2
 
     # Re-invoke Up
-    & $PSCommandPath -Action Up -Spec $Spec -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs
+    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs
     exit $LASTEXITCODE
   }
 

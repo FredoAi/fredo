@@ -3,6 +3,7 @@ import type { MissionMonitorSession } from '../lib/graph';
 import { loadPersistedSessions, deleteSessionFromStore, markSessionDeleted, isSessionDeleted, saveCustomName, seedDeletedSessionIdsIntoModule } from '../lib/persistence';
 import { formatDerivedName, deriveDisplayName } from '../lib/sessionMeta';
 import { useEventRows } from '../../../shared/hooks/useEventRows';
+import type { UseEventRowsResult } from '../../../shared/hooks/useEventRows';
 import type { ChatRow } from '../../../shared/classes/EventSubscription';
 
 // ── Spec #2788 (P4.3): replay replaces hydration ─────────────────────────────
@@ -55,8 +56,18 @@ import type { ChatRow } from '../../../shared/classes/EventSubscription';
  */
 export function useDeliverySessions(options?: {
   renderableSessions?: Set<string>;
+  /** #2835 sub-task 2: the panel's already-subscribed Chat rows (the shared
+   *  module-scoped row store). When supplied, the hook CONSUMES them and does
+   *  NOT open a second `useEventRows('Chat', …)` subscription — eliminating the
+   *  duplicate full-table Chat replay leg (≈14,011 duplicate insert
+   *  deliveries) on first open. Bare test callers (no `chatRows`) fall back to
+   *  their own subscription (idempotent row-store dedupe); when the panel
+   *  supplies it, the internal call is skipped so the duplicate replay is never
+   *  opened. */
+  chatRows?: UseEventRowsResult<ChatRow>;
 }) {
   const renderableInput = options?.renderableSessions;
+  const externalChatRows = options?.chatRows;
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [persistedSessions, setPersistedSessions] = useState<MissionMonitorSession[]>([]);
@@ -68,8 +79,12 @@ export function useDeliverySessions(options?: {
 
   // Replay subscription — the session list's live data source. Shares the
   // module-scoped row store with the panel's own Chat subscription (duplicate
-  // envelopes dedupe by row key in the store — idempotent).
-  const chatRows = useEventRows('Chat', {}, { replay: true });
+  // envelopes dedupe by row key in the store — idempotent). When the panel
+  // passes its rows (production, sub-task 2) the internal subscription is
+  // skipped so the second replay leg is never opened.
+  const chatRows: UseEventRowsResult<ChatRow> = externalChatRows
+    ? externalChatRows
+    : useEventRows('Chat', {}, { replay: true });
 
   // The `loaded` gate (the UX ladder's spinner state — MissionMonitorPanel
   // renders its spinner empty-state while `sessions` is empty). It covers
@@ -86,7 +101,21 @@ export function useDeliverySessions(options?: {
   // A FAILED subscription must never wedge the gate (v1 hydration-failure
   // contract): `error !== null` opens it with the persisted data only — the
   // failure itself surfaces loudly through useEventRows (R-3a).
-  const loaded = persistedLoadDone && (chatRows.ready || chatRows.error !== null);
+  //
+  // #2835 round-3 (ST-9-R3b): the gate is released PROGRESSIVELY — it also
+  // opens on row PRESENCE (`rows.size > 0`) once the persisted snapshot
+  // load settles, so an oversized multi-batch replay unlocks the list at the
+  // FIRST drained batch (the ST-9-R3a early epoch bump supplies the
+  // mid-drain render that recomputes `loaded`/`sessions`) instead of at the
+  // drain end. `rows.size` is read as a render-time scalar into this boolean
+  // — it is NOT a memo/effect dep, so the #523 no-loop rule holds (a `.size`
+  // change alone never triggers a render). `ready` remains the completeness
+  // signal: the final settle recomputes the full list; a warm reopen with
+  // rows resident in the module store unlocks at `persistedLoadDone`
+  // (~50–150 ms) without waiting for the delta drain's marker.
+  const loaded =
+    persistedLoadDone &&
+    (chatRows.ready || chatRows.error !== null || chatRows.rows.size > 0);
 
   // Load the persisted session snapshot (name prefs + retention fallback) AND
   // seed the module-level deleted set from the durable tombstones — both

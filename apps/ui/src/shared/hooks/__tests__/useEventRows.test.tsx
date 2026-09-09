@@ -94,6 +94,48 @@ describe('buildQueryText', () => {
   it('escapes special characters in string literals', () => {
     expect(buildQueryText('Chat', { sessionId: 'ses_"x' })).toContain('sessionId = "ses_\\"x"');
   });
+
+  // #2835 sub-task 4: the replay recency-window comparison arg
+  // (`startedAtNs >= <ns>`) serializes into the RTDB query language as a
+  // typed comparison the backend `pushdown` maps onto the `started_at_ns`
+  // column.
+  it('serializes a RowCompareArg into a typed comparison (`field >= value`)', () => {
+    const text = buildQueryText('Chat', { startedAtNs: { op: '>=', value: 5000 } });
+    expect(text).toMatch(/^chat\(startedAtNs >= 5000\) \{ /);
+    expect(text).toContain('startedAtNs >= 5000');
+    expect(text).not.toContain('startedAtNs = ');
+  });
+
+  it('serializes every RowCompareOp and leaves scalar args as equality comparisons', () => {
+    expect(buildQueryText('Chat', { startedAtNs: { op: '>', value: 1 } })).toContain('startedAtNs > 1');
+    expect(buildQueryText('Chat', { startedAtNs: { op: '<', value: 2 } })).toContain('startedAtNs < 2');
+    expect(buildQueryText('Chat', { startedAtNs: { op: '<=', value: 3 } })).toContain('startedAtNs <= 3');
+    expect(buildQueryText('Chat', { startedAtNs: { op: '=', value: 4 } })).toContain('startedAtNs = 4');
+    // Scalar args remain equality (unchanged).
+    expect(buildQueryText('Chat', { sessionId: 'ses_x' })).toContain('sessionId = "ses_x"');
+  });
+
+  it('quotes string values and leaves numbers bare inside a comparison arg', () => {
+    expect(buildQueryText('ToolUse', { toolName: { op: '=', value: 'bash' } })).toContain(
+      'toolName = "bash"',
+    );
+    expect(buildQueryText('ToolUse', { startedAtNs: { op: '>=', value: 0 } })).toContain(
+      'startedAtNs >= 0',
+    );
+  });
+
+  // #2835 round-2 ST-8a: the warm-reopen delta bound is a STRING comparison on
+  // `updatedAt` (module-scoped watermark). The query language serializes it as
+  // a quoted string-literal comparison the backend registry re-evaluates
+  // lexicographically (pushdown intentionally skips String non-Eq args).
+  it('serializes an updatedAt string comparison with a quoted RFC3339 literal', () => {
+    const text = buildQueryText('Chat', {
+      startedAtNs: { op: '>=', value: 1.7e18 },
+      updatedAt: { op: '>', value: '2026-09-07T10:30:00+00:00' },
+    });
+    expect(text).toContain('startedAtNs >= 1700000000000000000');
+    expect(text).toContain('updatedAt > "2026-09-07T10:30:00+00:00"');
+  });
 });
 
 describe('useEventRows — subscription lifecycle', () => {
@@ -160,6 +202,71 @@ describe('useEventRows — subscription lifecycle', () => {
     });
     const secondQuery = invokeMock.mock.calls[2][1].queries[0] as string;
     expect(secondQuery).toBe(buildQueryText('Chat', { sessionId: 'ses_2' }));
+    unmount();
+  });
+
+  // #2835 sub-task 4: `stableArgsKey` is content-based (no reference identity),
+  // so an equivalent inline compare-arg object on a re-render does NOT trigger
+  // a re-subscribe — the recency-window arg the panel passes inline every
+  // render is stable across renders (no churn).
+  it('does NOT resubscribe when a re-render passes an equivalent inline compare arg (stableArgsKey)', async () => {
+    invokeMock.mockResolvedValue([{ queryId: 'q-1', eventType: 'Chat' }]);
+    const { rerender, unmount } = renderHook(
+      ({ ns }: { ns: number }) =>
+        useEventRows('Chat', { startedAtNs: { op: '>=', value: ns } }, { replay: true }),
+      { initialProps: { ns: 7 * 24 * 60 * 60 * 1e9 } },
+    );
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('subscribe_events', expect.any(Object));
+    });
+    const subscribeCallsAfterMount = invokeMock.mock.calls.length;
+
+    // Re-render with a fresh inline object of the SAME content — the stable
+    // args key must prevent a re-subscribe (no new subscribe/unsubscribe).
+    rerender({ ns: 7 * 24 * 60 * 60 * 1e9 });
+    await act(async () => {});
+    expect(invokeMock.mock.calls.length).toBe(subscribeCallsAfterMount);
+
+    // A genuinely different window value DOES resubscribe.
+    rerender({ ns: 1 });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('unsubscribe_events', { queryIds: ['q-1'] });
+    });
+    expect(invokeMock.mock.calls.length).toBeGreaterThan(subscribeCallsAfterMount);
+    unmount();
+  });
+
+  // #2835 round-2 ST-8a: the panel's warm-reopen args combine a numeric
+  // recency compare AND a string `updatedAt` compare in ONE args object. The
+  // content-based args key must keep an equivalent inline object (a fresh
+  // literal per re-render) render-stable — no re-subscribe + re-replay churn.
+  it('does NOT resubscribe when a re-render passes an equivalent windowed+delta args object', async () => {
+    invokeMock.mockResolvedValue([{ queryId: 'q-1', eventType: 'Chat' }]);
+    const props = { cutoffNs: 1.7e18, watermark: '2026-09-07T10:30:00+00:00' };
+    const { rerender, unmount } = renderHook(
+      ({ cutoffNs, watermark }: { cutoffNs: number; watermark: string }) =>
+        useEventRows(
+          'Chat',
+          {
+            startedAtNs: { op: '>=', value: cutoffNs },
+            updatedAt: { op: '>', value: watermark },
+          },
+          { replay: true },
+        ),
+      { initialProps: props },
+    );
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('subscribe_events', expect.any(Object));
+    });
+    const subscribeCallsAfterMount = invokeMock.mock.calls.length;
+
+    // A re-render passing a FRESH inline args object of the SAME content must
+    // not resubscribe (the mount-stable replayArgs memo in the panel).
+    rerender({ ...props });
+    await act(async () => {});
+    expect(invokeMock.mock.calls.length).toBe(subscribeCallsAfterMount);
     unmount();
   });
 

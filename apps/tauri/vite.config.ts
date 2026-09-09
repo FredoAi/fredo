@@ -14,7 +14,6 @@ export default defineConfig({
   resolve: {
     alias: {
       // Resolve @fredo/ui directly from source for fast HMR
-      '@fredo/ui/styles': resolve(__dirname, '../ui/src/features/home/fredo-desktop.css'),
       '@fredo/ui': resolve(__dirname, '../ui/src/index.ts'),
       '@': resolve(__dirname, './src'),
     },

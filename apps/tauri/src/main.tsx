@@ -1,6 +1,4 @@
 import React from 'react';
-import '@maomaolabs/core/style.css';
-import '@fredo/ui/styles';
 import { createRoot } from 'react-dom/client';
 import { ReactFlowProvider } from 'reactflow';
 import {
@@ -10,8 +8,6 @@ import {
   ThemeProvider,
   Provider,
   Toaster,
-  WindowStyleProvider,
-  AnimationProvider,
   TauriAdapter,
   CompanionProvider,
   FredoCompanion,
@@ -33,21 +29,17 @@ createRoot(rootElement).render(
   <React.StrictMode>
     <Provider>
       <ThemeProvider>
-        <WindowStyleProvider>
-          <AnimationProvider>
-            <StreamProvider>
-              <AppProvider adapter={adapter}>
-                <CompanionProvider>
-                  <ReactFlowProvider>
-                    <Router />
-                    <Toaster />
-                  </ReactFlowProvider>
-                  <FredoCompanion />
-                </CompanionProvider>
-              </AppProvider>
-            </StreamProvider>
-          </AnimationProvider>
-        </WindowStyleProvider>
+        <StreamProvider>
+          <AppProvider adapter={adapter}>
+            <CompanionProvider>
+              <ReactFlowProvider>
+                <Router />
+                <Toaster />
+              </ReactFlowProvider>
+              <FredoCompanion />
+            </CompanionProvider>
+          </AppProvider>
+        </StreamProvider>
       </ThemeProvider>
     </Provider>
   </React.StrictMode>,
