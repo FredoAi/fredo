@@ -32,3 +32,31 @@
 - **E-10 (a11y semantics) — PASS.** Window frame is a non-modal `role="group"` named by the window title (NOT `role="dialog"`); min/max/close are labeled tabbable buttons ("Minimize Sessions"/"Restore Sessions"/"Close Sessions"); the maximize/restore control exposes `aria-expanded`; a minimized window is hidden from the a11y tree (display:none).
 - **E-11/E-12 (theme re-tint / a11y/reduced-motion) — PARTIAL.** The accent/surface surfaces re-tint across classic→turbo (accent border rgb(147,51,234)→#ae53ba; surface bg #2d2d2d→rgba(0,0,0,0.3)). **CONFIRMED defect:** the header (`bg.subtle`) + icon tile (`bg.muted`) do NOT re-tint — they render Chakra defaults (#fafafa/#f4f4f5) instead of the theme vars, so the window title is light-on-light (invisible) in both presets. Promotes to functional F-13 (AC3 FAIL).
 - **CONFIRMED exploratory finding (round 2, promotes to functional F-13):** the window chrome header/icon-tile are NOT token-native at runtime — `bg.subtle`/`bg.muted` resolve to Chakra's defaultConfig built-ins (#fafafa/#f4f4f5), shadowing the custom `var(--header-bg)`/`var(--card-hover-bg)` in `system.ts`, so the header does not follow the theme and the title (light `fg.default`) is light-on-light/invisible.
+
+## #2850 extension — companion cross-window teleport probes
+
+> Add findings here for issue #2850; a confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Probe the cross-window teleport choreography for unforeseen
+> interactions; a confirmed regression-free probe is recorded here (no promotion).
+
+## E-13 — Rapid cross-window teleport ping-pong
+
+- [ ] E-13: Rapidly Ctrl+right-click in main, then terminal, then main again in quick succession.
+      Does the out→hidden→in choreography settle cleanly each hop with NO double-mount, ghost
+      avatar, or stuck `isTeleportingRef` in either window, and does the console stay clean? Any
+      race/corruption is a finding (promotes to companion functional F-10).
+
+## E-14 — Teleport while a game/bubble is open in the source window
+
+- [ ] E-14: Open TicTacToe (double-click) in main, then Ctrl+right-click in the terminal window.
+      Does the game bubble close cleanly on out and does main return to idle-with-no-bubble after
+      the teleport? Mirror: teleport back to main while the terminal has a streaming joke — does
+      the terminal clean up its bubble/stream state on out? Any orphaned bubble/game/stream state
+      in either window is a finding.
+
+## E-15 — Terminal window close mid-transit
+
+- [ ] E-15: Trigger a cross-window teleport (main → terminal), then close the terminal window
+      DURING the transit (between out and in). Does the main companion recover to a sane state
+      (idle, no pending-teleport ghost), and does the app stay console-clean? Any stuck
+      hidden/never-arrives state is a finding.
