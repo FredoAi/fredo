@@ -20,3 +20,13 @@
 
 - [ ] S-6: Idle chrome renders — on a fresh launch, the FREDO notch, PERSISTENT pixel-butler avatar, `>` search-or-command bar, LEFT side-tick ruler, RIGHT dot-grid, online clock, and thin rounded frame are present; `#fredo-launcher-grid` is ABSENT.
 - [ ] S-7: Engage → idle quick path — focusing the command bar reveals the grid + keyboard hints; pressing ESC hides them and restores the idle chrome (no console error, focus back on the notch).
+
+## #2850 extension — shared-avatar smoke
+
+> Issue #2850 — the launcher avatar renders from the shared `FredoAvatar size="md"`; the
+> companion overlay renders the same shared avatar at sm.
+
+- [ ] S-8: The shell boots with the shared md avatar — on a fresh launch the avatar SVG
+      (`viewBox="0 0 1014 1264"`, 58 crisp rects, accent fill) renders above the command bar at
+      132 × 165; `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`; a screenshot succeeds.
