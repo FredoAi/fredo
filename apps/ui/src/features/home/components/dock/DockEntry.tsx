@@ -18,6 +18,7 @@ import React from 'react';
 import { Box, chakra, Tooltip, Portal } from '@chakra-ui/react';
 import { tint } from '../../../../shared/utils/colorTint';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
+import type { DockPosition } from './dockPositionStore';
 
 /** Icon-well geometry (module-level named constants — testability). */
 const DOCK_WELL_WIDTH_PX = 36;
@@ -37,6 +38,10 @@ export interface DockEntryProps {
   onActivate: (win: WindowEntry) => void;
   /** Close dispatch — closes ONLY this app. */
   onClose: (win: WindowEntry) => void;
+  /** Layout orientation (Spec #2848 ST-2). Defaults to `'sidebar'` so the
+   *  existing left-rail call site compiles unchanged and ST-3 lands
+   *  independently. Only the tooltip placement is orientation-aware here. */
+  orientation?: DockPosition;
 }
 
 /** Accessible name = app name + window state (D-3). */
@@ -61,10 +66,16 @@ function DockGlyph({ icon }: { icon: React.ReactNode }): React.ReactElement {
   return <>{icon}</>;
 }
 
-export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose }) => {
+export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose, orientation = 'sidebar' }) => {
   const minimized = win.isMinimized;
   const active = win.focused && !minimized;
   const label = dockEntryLabel(win);
+  // Tooltip placement is orientation-aware (Spec #2848 ST-2): the sidebar rail
+  // sits on the left edge so the title reads to the RIGHT; the bottom bar sits
+  // at the viewport's bottom edge so a right/left placement would clip — the
+  // title reads ABOVE. Accessible names live on the real buttons (D-3) — the
+  // tooltip is never the sole label.
+  const tooltipPlacement = orientation === 'bottom' ? 'top' : 'right';
 
   return (
     <Box
@@ -87,7 +98,7 @@ export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose }
         },
       }}
     >
-      <Tooltip.Root positioning={{ placement: 'right' }} openDelay={150} closeDelay={0}>
+      <Tooltip.Root positioning={{ placement: tooltipPlacement }} openDelay={150} closeDelay={0}>
         <Tooltip.Trigger asChild>
           <chakra.button
             type="button"
