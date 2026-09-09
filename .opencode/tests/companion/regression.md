@@ -10,49 +10,59 @@
 
 ## Must NOT change (regression invariants)
 
-- [ ] **R-1 (SpeechBubble geometry unchanged):** The speech bubble keeps its fixed dimensions —
+- [x] **R-1 (SpeechBubble geometry unchanged):** The speech bubble keeps its fixed dimensions —
       240×120 text bubble, 208×268 game bubble — and its side-choosing ranking
       (`above > right > left > below`), on-screen margin clamp, framer-motion spring transition
       (`stiffness: 380, damping: 30`), and the streaming cursor block (`Fredo-cursor-blink`
       0.9s step-end infinite, 2×14 px accent) are UNCHANGED. Only the avatar's derived
       width/height feeding the anchor change (80/100 sm vs the old 80/80).
+  - **PASS (live, spec/2850).** The bubble rendered 240×120 `(style width:240px; height:120px)` for text and 208×268 for the game bubble; the `chooseSide` ranking `above > right > left > below` is preserved (`SpeechBubble.tsx:49`), the margin clamp (`:90-91`), and the spring `stiffness:380, damping:30` (`:116`) are unchanged. The streaming cursor 2×14 px blinks on `Fredo-cursor-blink` 0.9s (`companion.css:94` retained + `SpeechBubble.tsx:160`), verified live during active streaming (`cursorAnim {w:2px,h:14px,anim:Fredo-cursor-blink,dur:0.9s}`). The anchor now feeds the real sm dims (80/100).
   - **Edge:** the streaming cursor BLINKS after the sprite-keyframe cleanup — `Fredo-cursor-blink`
     must remain in `companion.css` and the cursor must blink during F-7 streaming.
-- [ ] **R-2 (single vs double-click discriminator):** The 250 ms click timer semantics are
+- [x] **R-2 (single vs double-click discriminator):** The 250 ms click timer semantics are
       unchanged — a single click fires the joke (unless TicTacToe is open), a second click within
       250 ms toggles TicTacToe WITHOUT firing the joke. Reference functional F-7/F-8.
-- [ ] **R-3 (TicTacToe behaviors unchanged):** The board, X-vs-O rules, Fredo's single-digit
+  - **PASS (live, spec/2850).** Single-click fired the joke (state → talk); double-click logged `[companion] double-click → toggle TicTacToe` and opened the game bubble with NO `askForJoke`. The 250 ms timer (`FredoCompanion.tsx:280`) + the `if (!showTicTacToe) askForJoke()` guard are unchanged.
+- [x] **R-3 (TicTacToe behaviors unchanged):** The board, X-vs-O rules, Fredo's single-digit
       response, the `capture_screen_region` vision move, the random-move fallback, and the
       win/draw status text all behave as before. Reference functional F-8.
-- [ ] **R-4 (teleport choreography unchanged):** The cross-window choreography (source plays
+  - **PASS (live, spec/2850).** TicTacToe opened in the 208×268 game bubble, X placed (user), Fredo (O) replied in a legal empty cell (center), status text updated `Your turn (X)`↔`Companion's turn (O)`.
+- [x] **R-4 (teleport choreography unchanged):** The cross-window choreography (source plays
       teleport-out then hides; destination becomes visible and plays teleport-in; hidden
       elsewhere in every non-active window), the `isTeleportingRef` guard, the `+50` settle, and
       the local-dev vs Tauri `companion-teleport` broadcast split are unchanged — only the clamp
       math source (80/80 → real dims) changes. Reference functional F-6/F-9/F-10.
-- [ ] **R-5 (launcher md avatar unchanged):** The launcher renders the md avatar (132 × 165,
+  - **PASS (live, spec/2850).** Same-window teleport: state sequence `idle→teleport-out→teleport-in→idle` at preserved ~400ms+50ms timing. Cross-window (main↔terminal): source plays out + hides (`present:false`), destination plays in + settles, hidden elsewhere. `isTeleportingRef` guard + `+50` settle + the `IS_TAURI` broadcast/local split all unchanged.
+- [x] **R-5 (launcher md avatar unchanged):** The launcher renders the md avatar (132 × 165,
       aspect 1014:1264, crispEdges, accent fill, `aria-hidden`) visually unchanged after the
       shared refactor. Launcher layout (app grid, command bar, keyboard hints, clock/LED chrome,
       open/close lifecycle) is NOT changed by this spec. Cross-reference `.opencode/tests/launcher/`
       regression R-16/R-22..R-25 + functional F-39b/F-39c.
-- [ ] **R-6 (persisted legacy keys tolerated):** A pre-existing install that carries
+  - **PASS (live, spec/2850).** md avatar 132×165, 58 rects, crispEdges, accent fill, `aria-hidden` — unchanged; launcher layout verified unchanged (only the import swap).
+- [x] **R-6 (persisted legacy keys tolerated):** A pre-existing install that carries
       `Fredo_companion_color` and/or `Fredo_companion_auto_walk` in its store must boot clean and
       render the companion with the theme accent — the keys are inert, never crash, and never
       resurrect the color/auto-walk UI. Reference functional F-13.
-- [ ] **R-7 (token contract):** No hardcoded hex/`rgba(`/`rgb(` and no `var(--x)NN` alpha-append
+  - **PASS (live, spec/2850).** Seeded keys (valid + malformed) in localStorage + AppStore, relaunched → booted clean, companion rendered with the theme accent (`rgb(147,51,234)`, NOT the seeded cyan), keys stayed present but inert.
+- [x] **R-7 (token contract):** No hardcoded hex/`rgba(`/`rgb(` and no `var(--x)NN` alpha-append
       are introduced in the changed companion/avatar/settings files; SpeechBubble's accent-derived
       border/tail/cursor use `var(--accent-primary)` (+ `tint()` for translucent surfaces).
       Reference functional F-15 + `.opencode/tests/launcher/` regression R-23.
-- [ ] **R-8 (no re-render loop / no console errors):** The new state-expression code introduces no
+  - **PASS (static grep).** ZERO hardcoded hex/rgb in the changed files; `var(--accent-primary)` + `tint()` only; banner literals converted to `tint('var(--status-error)',…)`, boxShadow to `tint('var(--border-color)',45)`.
+- [x] **R-8 (no re-render loop / no console errors):** The new state-expression code introduces no
       `Maximum update depth exceeded`; the state transitions remain timer-driven as today. Console
       clean after every interaction. Reference functional F-19.
-- [ ] **R-9 (settings Companion section survives):** The model-missing warning banner + the
+  - **PASS (live, console).** No `Maximum update depth exceeded`/`Uncaught`/`Error:` in any leg in either window; state transitions are timer-driven (`useRef` timers + `animKey`).
+- [x] **R-9 (settings Companion section survives):** The model-missing warning banner + the
       visibility toggle + the teleport tip survive the bubble-color section deletion; the settings
       modal (ProfileSettingsModal Companion nav item) still mounts `CompanionSettingsPanel`
       without an orphan section/crash. Reference functional F-12/F-13.
-- [ ] **R-10 (geometry-suite move):** `fredoAvatarGeometry.test.ts` passes UNMODIFIED from its new
+  - **PASS (live, spec/2850).** Companion settings section (with the legacy keys seeded) renders ONLY the toggle + tip; the model-missing banner (token-native `tint('var(--status-error)',…)`) + toggle survive the color-section deletion; no orphan nav item/crash.
+- [x] **R-10 (geometry-suite move):** `fredoAvatarGeometry.test.ts` passes UNMODIFIED from its new
       shared path inside `pnpm --filter @fredo/ui test:run` — the #2837 geometry invariants (31
       source rects → 58 expanded; mirror math `x' = 1014 − x − width`; canvas bounds; as-authored
       center buttons) are the strongest regression net for the avatar asset.
+  - **PASS (static/build).** Moved test passes UNMODIFIED (7 tests) at `shared/fredo-avatar/__tests__/` inside the full `test:run` (52 files/757 tests green) — byte-identical to the pre-move source.
   - **Edge:** the launcher regression rows R-22..R-25 in `.opencode/tests/launcher/regression.md`
     (#2837 avatar geometry invariants) remain in force — the launcher render stays geometry-correct
     through the shared move.
