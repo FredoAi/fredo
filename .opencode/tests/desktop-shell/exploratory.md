@@ -61,3 +61,23 @@
 ## E-12 — ESC vs shell-close (redesigned semantics)
 
 - [ ] E-12: Probe ESC throughout the #2819 redesign — the surface must STAY (idle), NOT close to bare chrome. Confirm ESC never sets `open=false` (bare chrome is reached only via tile-open / `—`-minimize), and that focus always lands on the command bar after ESC. Any ESC that collapses the whole surface is a regression against the Architect's binding contract (triage line 388).
+
+## #2850 extension — shared-avatar refactor probes
+
+> Add findings here for issue #2850; a confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Probe the shared-avatar change for unforeseen shell-surface
+> interactions; a confirmed regression-free probe is recorded here (no promotion).
+
+## E-13 — Mount-order race between the shared avatar consumers
+
+- [ ] E-13: With the companion toggled ON, boot the shell and immediately open the launcher (avatar
+      mount) while the companion avatar mounts — is there any mount-order race, double-render, or
+      console error from BOTH surfaces consuming the same shared component module? Any error / flicker
+      is a finding.
+
+## E-14 — Shared-avatar re-theme across both surfaces simultaneously
+
+- [ ] E-14: With the launcher md avatar AND the companion sm avatar both visible, switch theme presets
+      rapidly (light ↔ dark ↔ a changed accent). Do BOTH surfaces re-tint from the same
+      `--accent-primary` in lockstep with no stale color, no flicker, and no geometry deformation?
+      Any surface left on a stale color or deformed is a finding.
