@@ -1,5 +1,5 @@
 /**
- * AppDock — open-apps dock (Spec #2838 ST-1/ST-2/ST-3 + #2848 ST-3a).
+ * AppDock — open-apps dock (Spec #2838 ST-1/ST-2/ST-3 + #2848 ST-3a/ST-3b).
  *
  * Positionable by the user: a LEFT-edge vertical rail (`position: 'sidebar'`,
  * the #2838/#2841 baseline) or a BOTTOM-center horizontal pill
@@ -23,10 +23,12 @@
  * covers the desktop the dock reverts to the #2838 transient edge-peek model:
  * OFF-CANVAS + `pointer-events:none` + `visibility:hidden` (out of tab order and
  * the a11y tree — D-9), revealed on a passive document-`pointermove` over the
- * docked edge zone (left edge `clientX <= EDGE_ZONE_PX` for Sidebar), slid away
+ * docked edge zone (left edge `clientX <= EDGE_ZONE_PX` for Sidebar; bottom
+ * edge `clientY >= viewportH - EDGE_ZONE_PX` for the Bottom bar), slid away
  * after a hide-delay grace. No pinning, no full-height hover strip, no global
- * CSS. (The #2848 bottom-edge reveal/keep predicates + roving keys are a
- * FOLLOW-UP slice — ST-3a renders the bottom orientation only.)
+ * CSS. (ST-3a parameterized the render by orientation + shipped the bottom-bar
+ * geometry; ST-3b made the reveal/keep predicates, the roving keys, and the
+ * edge-peek machine orientation-aware.)
  *
  * No re-render loop (NFR-2): `revealed` is a single transition-only boolean;
  * the pointer handler only calls `setRevealed` on an actual boolean transition
@@ -45,7 +47,7 @@ import { useWindows } from '../../../../shared/window-system/useWindows';
 import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
 import { tint } from '../../../../shared/utils/colorTint';
 import { DockEntry } from './DockEntry';
-import { useDockPosition } from './dockPositionStore';
+import { useDockPosition, type DockPosition } from './dockPositionStore';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
 
 // ── Geometry + timing constants (module-level, named) ────────────────────────
@@ -119,6 +121,29 @@ export const DOCK_BOTTOM_LIST_PADDING = '2px 6px 6px 6px';
  *  and the engaged keyboard-hints row when the pill rests centered. */
 export const DOCK_BOTTOM_MAX_WIDTH = `min(${DOCK_BOTTOM_MAX_WIDTH_PX}px, calc(100vw - 176px))`;
 
+// ── Orientation-aware reveal/keep geometry predicates (Spec #2848 ST-3b) ──────
+//  Pure functions of pointer position + viewport height + orientation so the
+//  edge-peek machine reads ONE expression per decision. Sidebar measures the
+//  LEFT edge on `clientX`; the bottom bar measures the BOTTOM edge on
+//  `clientY` (the mirror of the sidebar geometry — same constants, swapped
+//  axis). Exported for the component-level tests.
+
+/** In the docked-edge reveal zone? Sidebar: pointer at the true left edge
+ *  (`clientX <= EDGE_ZONE_PX`). Bottom bar: pointer at the true bottom edge
+ *  (`clientY >= viewportH - EDGE_ZONE_PX`). */
+export function isInRevealZone(x: number, y: number, viewportH: number, o: DockPosition): boolean {
+  return o === 'bottom' ? y >= viewportH - EDGE_ZONE_PX : x <= EDGE_ZONE_PX;
+}
+
+/** Outside the keep zone (the dock footprint + its margin), so a hide timer is
+ *  armed? Sidebar: pointer past `DOCK_KEEP_ZONE_PX` from the left edge. Bottom
+ *  bar: pointer above `viewportH - DOCK_BOTTOM_KEEP_ZONE_PX`. */
+export function isOutsideKeepZone(x: number, y: number, viewportH: number, o: DockPosition): boolean {
+  return o === 'bottom'
+    ? y < viewportH - DOCK_BOTTOM_KEEP_ZONE_PX
+    : x > DOCK_KEEP_ZONE_PX;
+}
+
 /** Themed scrollbar (thumb `var(--card-hover-bg)`, track transparent). */
 const DOCK_SCROLLBAR_CSS = {
   '&::-webkit-scrollbar': { width: '6px', height: '6px' },
@@ -138,8 +163,9 @@ export const AppDock: React.FC = () => {
   // Settings → Appearance control, so a selection there repositions the
   // already-mounted dock on the same tick (AC1).
   const position = useDockPosition();
-  // Bottom bar vs sidebar — only the geometry/axis of the render differs; the
-  // visibility state machine below is position-agnostic (kept as-is for ST-3a).
+  // Bottom bar vs sidebar — only the geometry/axis of the render + the reveal/
+  // keep predicates + the roving axis differ; the visibility state machine is
+  // orientation-aware via the position ref (ST-3b).
   const isBottom = position === 'bottom';
 
   // Empty-dock gate (D-1/AC1): no listener and no dock when zero windows.
@@ -163,6 +189,15 @@ export const AppDock: React.FC = () => {
   const dockRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const lastPointerXRef = useRef(-1);
+  /** Pointer Y at the last document pointermove — kept alongside X for the
+   *  bottom keep-zone check in `handleRegionBlur` (orientation-aware ST-3b). */
+  const lastPointerYRef = useRef(-1);
+  /** Latest dock orientation, mirrored for the render-stable document listeners
+   *  (ST-3b): the passive pointermove trio reads this ref so it is NOT re-armed
+   *  on an orientation flip — the handlers see the live orientation without a
+   *  stale closure. */
+  const positionRef = useRef<DockPosition>(position);
+  positionRef.current = position;
   const focusInsideRef = useRef(false);
   /** Last input modality — determines whether dock focus suspends auto-hide. */
   const lastInputModeRef = useRef<'pointer' | 'keyboard'>('pointer');
@@ -190,15 +225,21 @@ export const AppDock: React.FC = () => {
     }, HIDE_DELAY_MS);
   }, [setRevealed]);
 
-  /** Document pointermove: reveal on left-edge zone; keep/hide by keep-zone. */
+  /** Document pointermove: reveal on the docked-edge zone (left edge for the
+   *  sidebar, bottom edge for the bottom bar); keep/hide by the keep zone.
+   *  Reads the live orientation from `positionRef` so the listener trio is not
+   *  re-armed on a position flip (ST-3b). */
   const handlePointerMove = useCallback(
     (e: PointerEvent) => {
       const x = e.clientX;
+      const y = e.clientY;
+      const o = positionRef.current;
       lastPointerXRef.current = x;
+      lastPointerYRef.current = y;
 
       if (!revealedRef.current) {
-        // Hidden → reveal only when the pointer reaches the true left edge.
-        if (x <= EDGE_ZONE_PX) {
+        // Hidden → reveal only when the pointer reaches the true docked edge.
+        if (isInRevealZone(x, y, window.innerHeight, o)) {
           clearHideTimer();
           setRevealed(true);
         }
@@ -210,7 +251,7 @@ export const AppDock: React.FC = () => {
         clearHideTimer();
         return;
       }
-      if (x <= DOCK_KEEP_ZONE_PX) {
+      if (!isOutsideKeepZone(x, y, window.innerHeight, o)) {
         clearHideTimer();
       } else {
         armHideTimer();
@@ -283,7 +324,9 @@ export const AppDock: React.FC = () => {
       const dock = dockRef.current;
       if (dock && next && dock.contains(next)) return; // focus stayed inside
       focusInsideRef.current = false;
-      if (lastPointerXRef.current > DOCK_KEEP_ZONE_PX) armHideTimer();
+      if (isOutsideKeepZone(lastPointerXRef.current, lastPointerYRef.current, window.innerHeight, positionRef.current)) {
+        armHideTimer();
+      }
     },
     [armHideTimer],
   );
@@ -306,7 +349,13 @@ export const AppDock: React.FC = () => {
     [clearHideTimer],
   );
 
-  /** Roving keyboard model + ESC close on the revealed dock (NFR-6). */
+  /** Roving keyboard model + ESC close on the revealed dock (NFR-6). The roving
+   *  axis is orientation-aware (Spec #2848 AC5): the SIDEBAR is a vertical rail
+   *  so ArrowUp/ArrowDown rove; the BOTTOM bar is a horizontal pill so
+   *  ArrowLeft/ArrowRight rove. Home/End reach the first/last entry in both.
+   *  The other-axis arrows fall through (browser default scroll) in both
+   *  orientations. Reads the live orientation from `positionRef` (the handler
+   *  is re-created only on mount — position flips are read ref-side). */
   const handleRegionKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       // Any keydown inside the dock is genuine keyboard use → suspend auto-hide
@@ -339,12 +388,23 @@ export const AppDock: React.FC = () => {
         idx = rowBtn ? entries.indexOf(rowBtn) : -1;
       }
 
+      const horizontal = positionRef.current === 'bottom';
       let nextIdx = idx;
-      if (e.key === 'ArrowDown') nextIdx = idx < 0 ? 0 : Math.min(idx + 1, entries.length - 1);
-      else if (e.key === 'ArrowUp') nextIdx = idx < 0 ? entries.length - 1 : Math.max(idx - 1, 0);
-      else if (e.key === 'Home') nextIdx = 0;
-      else if (e.key === 'End') nextIdx = entries.length - 1;
-      else return;
+      if (horizontal) {
+        // Bottom bar: rove along the horizontal axis (Right = +1, Left = −1).
+        if (e.key === 'ArrowRight') nextIdx = idx < 0 ? 0 : Math.min(idx + 1, entries.length - 1);
+        else if (e.key === 'ArrowLeft') nextIdx = idx < 0 ? entries.length - 1 : Math.max(idx - 1, 0);
+        else if (e.key === 'Home') nextIdx = 0;
+        else if (e.key === 'End') nextIdx = entries.length - 1;
+        else return;
+      } else {
+        // Sidebar: rove along the vertical axis (Down = +1, Up = −1).
+        if (e.key === 'ArrowDown') nextIdx = idx < 0 ? 0 : Math.min(idx + 1, entries.length - 1);
+        else if (e.key === 'ArrowUp') nextIdx = idx < 0 ? entries.length - 1 : Math.max(idx - 1, 0);
+        else if (e.key === 'Home') nextIdx = 0;
+        else if (e.key === 'End') nextIdx = entries.length - 1;
+        else return;
+      }
 
       e.preventDefault();
       entries[nextIdx]?.focus();
