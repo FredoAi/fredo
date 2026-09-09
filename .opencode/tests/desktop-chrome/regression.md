@@ -111,3 +111,11 @@ Overlapping suites to run alongside: `mission-monitor` (opens feature windows vi
   - **PASS (spec/2841 @ 0852210f, round 1):** With a maximized window, `elementFromPoint` at Min/Max/Close centers returns the window control (isControl:true) — `windows-buttons-time-overlap.png` does NOT recur (F-18). Cluster DISJOINT from the rail: rail x:0..52, cluster box x:1874+ (top-right), LED x:1878 — no overlap. Verified light + dark + narrow viewport.
 
 Overlapping suites to run alongside: `window-manager` (window lifecycle + rail F-25..F-35 from #2838), `launcher` (Ctrl+Space + grid + clock), `theming` (preset re-tint).
+
+---
+
+## #2848 extension — positionable dock: desktop-chrome no-regression
+
+> Issue #2848 — the #2838/#2841 left-edge dock becomes positionable (Sidebar / Bottom bar). The desktop-chrome invariants (single top-right LED, band passive, clock advancing, band z sink, cluster centered) must hold unchanged whichever dock orientation renders. The dock remains a pure `useWindows()` consumer; the window kernel is READ-ONLY.
+>
+> **Round-1 sweep (spec/2848 @ 12afa697, LIVE):** EXACTLY ONE top-right status LED (`statusCount:1`,`statusLabels:["Online"]`, inside `<time aria-label="22:51, online">`), ZERO bottom LEDs; band clock advancing (22:23→22:51 across the round); dock revealed (Sidebar + Bottom bar) never paints over the window min/max/close controls; left-edge Sidebar rail (`w:52`, ~88px top/bottom insets) stays DISJOINT from the top-right clock/LED cluster; the maximized window stays full-bleed (`x:0,w:1920`) with the dock both hidden AND revealed (no re-indent); `git diff --name-only main spec/2848 -- apps/ui/src/shared/window-system` = empty, `-- apps/tauri` = empty (kernel READ-ONLY, no Rust diff). R-7..R-14 hold unchanged.
