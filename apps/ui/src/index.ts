@@ -28,6 +28,24 @@ export { themes } from './app/types/theme';
 export { Provider } from './shared/components/ui/provider';
 export { Toaster } from './shared/components/ui/toaster';
 
+// ── Shared FREDO avatar (canonical mascot, Spec #2850) ───────────────────────
+export { FredoAvatar } from './shared/components/fredo-avatar';
+export type { FredoAvatarProps, FredoAvatarState } from './shared/components/fredo-avatar';
+export {
+  FREDO_AVATAR_SPACE,
+  FREDO_AVATAR_VIEWBOX,
+  FREDO_AVATAR_SOURCE_RECTS,
+  expandFredoRects,
+  AVATAR_SM,
+  AVATAR_MD,
+  AVATAR_SIZE,
+} from './shared/components/fredo-avatar';
+export type {
+  FredoRect,
+  FredoAvatarSourceRect,
+  FredoAvatarSize,
+} from './shared/components/fredo-avatar';
+
 // ── Shared window system (own kernel, Spec #2807 ST-1) ───────────────────────
 export { WindowSystemProvider } from './shared/window-system/WindowSystemProvider';
 export { WindowManager } from './shared/window-system/WindowManager';

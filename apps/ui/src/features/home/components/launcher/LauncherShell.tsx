@@ -11,7 +11,7 @@ import { tint } from '../../../../shared/utils/colorTint';
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
 import { LauncherCommandBar } from './LauncherCommandBar';
-import { PixelButler } from './PixelButler';
+import { FredoAvatar } from '../../../../shared/components/fredo-avatar';
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -499,7 +499,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           }}
         >
           <Box mb="4">
-            <PixelButler visible />
+            <FredoAvatar size="md" />
           </Box>
           <LauncherCommandBar
             query={query}

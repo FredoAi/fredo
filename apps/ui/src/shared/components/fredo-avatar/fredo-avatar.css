@@ -1,0 +1,64 @@
+/* FREDO avatar expression overlay keyframes (shared `FredoAvatar`).
+
+   Only the state-expression overlays live here — the mouth toggles, the
+   teleport energy streak, and the teleport-in sparkles. Whole-element motion
+   (idle bob/glow, teleport shrink/fade, grow/settle wobble) NEVER lives inside
+   the shared component: it belongs to the consumer's own wrapper so the
+   launcher's idle DOM stays byte-identical to today's PixelButler (#2850).
+
+   Selectors are scoped to `#fredo-expression` (the overlay <g>, rendered only
+   when state !== 'idle') + the overlay's own class names, so the 58 frozen base
+   rects are never animated from this file.
+ */
+
+/* ── talk: mouth open/closed toggle ─────────────────────────────────────────
+   Closed frame {440,692,134,14} is the persistent lower rect; the open frame
+   {440,675,134,38} sits above it and toggles opacity so the figure reads
+   closed → open → closed at ~180 ms per half-cycle (360 ms loop). */
+@keyframes fredo-talk-mouth {
+  0%    { opacity: 0; }
+  49.9% { opacity: 0; }
+  50%   { opacity: 1; }
+  100%  { opacity: 1; }
+}
+
+#fredo-expression[data-state='talk'] .fredo-talk-mouth-open {
+  animation: fredo-talk-mouth 360ms linear infinite;
+}
+
+/* ── teleport-out: energy-gather streak — a single crisp frame, then gone ── */
+@keyframes fredo-teleport-streak {
+  0%, 74.9% { opacity: 0; }
+  75%, 80%  { opacity: 1; }
+  80.1%, 100% { opacity: 0; }
+}
+
+#fredo-expression[data-state='teleport-out'] .fredo-teleport-streak {
+  animation: fredo-teleport-streak 400ms steps(1, end) 1 forwards;
+}
+
+/* ── teleport-in: surprise sparkle highlights fade over the first ~120 ms ── */
+@keyframes fredo-teleport-sparkle {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+#fredo-expression[data-state='teleport-in'] .fredo-teleport-sparkle {
+  animation: fredo-teleport-sparkle 120ms ease-out 1 forwards;
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────────
+   The mouth keyframe slows but stays functional; the teleport streak/sparkle
+   overlays drop their intensity (the whole-element teleport itself degrades to
+   an opacity crossfade on the consumer's wrapper, never here). */
+@media (prefers-reduced-motion: reduce) {
+  #fredo-expression[data-state='talk'] .fredo-talk-mouth-open {
+    animation-duration: 1000ms;
+  }
+
+  #fredo-expression[data-state='teleport-out'] .fredo-teleport-streak,
+  #fredo-expression[data-state='teleport-in'] .fredo-teleport-sparkle {
+    animation: none;
+    opacity: 0;
+  }
+}
