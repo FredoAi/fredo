@@ -42,8 +42,9 @@
 > geometry module + test move to the shared path. The launcher md render must be VISUALLY
 > UNCHANGED.
 
-- [ ] S-11: The launcher still renders the md avatar — open the launcher; the avatar SVG
+- [x] S-11: The launcher still renders the md avatar — open the launcher; the avatar SVG
       (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) appears above
       the command bar at 132 × 165 layout px, and `tauri_webview_screenshot` succeeds; console
       clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **PASS (live, spec/2850).** The launcher rendered the shared `FredoAvatar size="md"` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent-token fill `var(--accent-primary)`/`currentColor`, `aria-hidden`) above the `>` command bar at `offsetWidth`=132/`offsetHeight`=165. `tauri_webview_screenshot` succeeded; console clean (no `Error:`/`Uncaught`/`Maximum update depth exceeded`).
 
