@@ -146,3 +146,24 @@
 ## E-28 — Fractional-DPI render of the new geometry
 
 - [ ] E-28: At a fractional OS/webview zoom or non-100% DPI, does the new multi-rect geometry stay proportional (no merged/seam-shifted cells, no subpixel blur destroying the fragmentation gaps)? Any distortion at non-integer scale is a finding.
+
+## #2850 extension — shared-avatar refactor probes
+
+> Add findings here for issue #2850; a confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Probe the launcher-md-over-shared-avatar change for unforeseen
+> interactions; a confirmed regression-free probe is recorded here (no promotion).
+
+## E-29 — Launcher md ↔ companion sm cross-surface consistency
+
+- [ ] E-29: Render the launcher md avatar AND the companion sm avatar in the SAME theme and compare
+      their rect sets + aspect side-by-side. Is the sm render a faithful proportional downscale of
+      md (identical 58-rect set, only the viewBox scale differs), and do both stay crisp at their
+      sizes? Any rect-set drift or a sm render that loses the fragmentation gaps / reads as a
+      solid silhouette is a finding.
+
+## E-30 — Launcher md after the shared move: rapid open/close + narrow/DPI integrity
+
+- [ ] E-30: Cycle the launcher open/close rapidly around the shared md avatar and resize narrow /
+      fractional-DPI. Does the avatar stay crisp (uniform cells, no anti-alias fill-in), fully
+      visible, un-clipped, with no console error / re-render loop? Reference E-27/E-28 — any
+      regression from the shared-path change is a finding.
