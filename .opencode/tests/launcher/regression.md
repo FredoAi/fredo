@@ -138,3 +138,35 @@
 ## R-25 — Launcher interaction surface unchanged
 
 - [ ] R-25: The #2823 Ctrl+Space toggle, the #2824 ESC keycap/hints, and the #2830 single-LED cluster are unchanged by the avatar rework (reference launcher R-10..R-21 + desktop-chrome R-7..R-14). The avatar remains decorative (`aria-hidden`).
+
+---
+
+## #2850 extension — shared-avatar refactor invariants (must-not-change)
+
+> Issue #2850 — the avatar + geometry move from `features/home/components/launcher/` to the
+> shared `apps/ui/src/shared/components/fredo-avatar/`; the launcher `PixelButler` becomes a thin
+> `FredoAvatar size="md"` wrapper. Launcher layout is a NON-GOAL — the md render must be
+> byte/visually unchanged. Run alongside R-1..R-25 AND the companion-suite regression R-1..R-10.
+
+## R-26 — Shared-avatar move changes NO launcher layout/render
+
+- [ ] R-26: The launcher md avatar renders at 132×165 (aspect 1014:1264) exactly as before
+      (reference #2837 F-39b + R-24), and the avatar container (`Box mb="4"`, LauncherShell.tsx),
+      command bar, app grid, keyboard hints, clock/LED chrome, and open/close lifecycle are
+      UNCHANGED by the shared move (git diff scope: the launcher change is the import/wrapper
+      swap only). Reference #2837 R-22 + desktop-shell R-6/R-10.
+
+## R-27 — Geometry-suite move is byte-identical (the #2837 regression net holds)
+
+- [ ] R-27: `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` move VERBATIM to the shared
+      path (content byte-equal, only the sibling import resolves); `test:run` stays green with the
+      test at its new location. The #2837 geometry invariants (F-35..F-40) — 31→58 rects, mirror
+      math, canvas bounds, as-authored center buttons — remain in force through the move.
+      Reference companion R-10 + launcher F-41.
+
+## R-28 — Token-native + zero duplicate geometry in the launcher after the move
+
+- [ ] R-28: The launcher's changed files carry ZERO hardcoded `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `var(--x)NN` alpha-append; the wrapper adds NO new color and NO local geometry table; no
+      cross-feature import is introduced (the wrapper imports the shared module); no re-render loop
+      (console clean of `Maximum update depth exceeded`). Reference #2837 R-23 + companion R-7.
