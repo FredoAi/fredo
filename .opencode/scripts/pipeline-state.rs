@@ -1021,7 +1021,14 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "branch" => {
-            // git branch -D <name>
+            // git branch <name> <start> (create ref) / git branch -D <name> (delete)
+            if !args.iter().any(|a| *a == "-D" || *a == "-d") {
+                if let Some(name) = args.get(1) {
+                    if !name.is_empty() && !name.starts_with('-') {
+                        mock_ref_write(name)?;
+                    }
+                }
+            }
             Ok(String::new())
         }
         "ls-tree" => {
@@ -1577,12 +1584,22 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
         // fork from local main would carry a STALE `.opencode/tests/**` (G-038)
         // and make the spec PR conflict at merge time. Fetch first so origin/main
         // is at the post-tests-commit tip, then branch from it (G-032 idiom).
+        //
+        // Create the ref WITHOUT checking it out. The planners seed the suite
+        // files into the main WORKING TREE, so after `persist_tests` pushes them to
+        // origin/main the worktree is still dirty with those now-persisted files
+        // while the local main ref lags. `git checkout -b` would abort with "local
+        // changes would be overwritten" and fail the whole transition (observed
+        // #2852). `git branch` touches no worktree, so the ref is created cleanly
+        // regardless of local dirt; the main worktree is deliberately never reset
+        // here (the machine must not discard uncommitted work).
         let _ = run_cmd("git", &["fetch", "origin", "main"]);
-        run_cmd("git", &["checkout", "-b", &branch, "origin/main"])?;
+        run_cmd("git", &["branch", &branch, "origin/main"])?;
     }
     run_cmd("git", &["push", "-u", "origin", &branch])?;
-    // Return the main worktree to `main` so the spec branch is free for a
-    // linked developer worktree (git allows one worktree per branch).
+    // The main worktree is already on `main` (the ref was created, never checked
+    // out), so the spec branch stays free for a linked developer worktree — git
+    // allows one worktree per branch.
     let _ = run_cmd("git", &["checkout", "main"]);
     println!("SPEC BRANCH CREATED: {}", branch);
     Ok(Some(format!("spec branch `{}` created", branch)))
