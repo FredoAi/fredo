@@ -50,6 +50,8 @@
 
 ## #2852 extension — desktop mascot 80×100 + idle animation smoke
 
+> **Round 1 (spec/2852 @ 1677eca8) — S-12 PASS.** Mascot SVG `viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`; wrapper 80×100 running `fredo-idle-bob`+`fredo-idle-glow` 2.4s; screenshot succeeded; console clean.
+
 > Issue #2852 — the launcher mascot renders at the shared `sm` size (80×100) and plays the
 > companion's idle bob+glow. **OVERRIDE:** S-11's 132×165 md-size expectation is SUPERSEDED —
 > the required render is now 80×100.
