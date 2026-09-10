@@ -173,3 +173,33 @@
       cross-feature import is introduced (the wrapper imports the shared module); no re-render loop
       (console clean of `Maximum update depth exceeded`). Reference #2837 R-23 + companion R-7.
   - **PASS (static/live, spec/2850).** Grep `shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(` → ZERO true literals (only comment issue-refs `#2837`/`#2850`); the entire figure is `color="var(--accent-primary)"` + `fill="currentColor"`, no `var(--x)NN` alpha-append. The wrapper (`FredoAvatar`) adds NO new color and NO local geometry table (it delegates to the shared `expandFredoRects`). No cross-feature import. Console clean of `Maximum update depth exceeded` across the whole run (`tauri_read_logs` error-level → none).
+
+---
+
+## #2852 extension — desktop mascot size + idle animation invariants (must-not-change)
+
+> Issue #2852 — the launcher mascot drops `md` → `sm` (80×100) and plays the companion's exact
+> idle bob+glow on the wrapper. Run alongside R-1..R-28 AND the companion-suite regression
+> R-11. **OVERRIDE:** the #2850/S-11 md-at-132×165 launcher expectation is SUPERSEDED — the
+> 80×100 `sm` render is the new REQUIRED size; do NOT fail this spec for the size change.
+> The #2837/#2850 frozen-geometry + token-native + layout invariants remain in force.
+
+## R-29 — Launcher layout unchanged apart from the mascot size + motion
+
+- [ ] R-29: The rework touches only the launcher mascot size prop + the wrapper motion (git diff scope). The command bar, app grid + keyboard nav, keyboard-hints row, ESC keycap, clock/LED chrome, side ticks, dot-grid, rounded frame and the open/close lifecycle are UNCHANGED. The avatar container (`Box mb="4"`, LauncherShell.tsx:501) keeps the mascot centered above the command bar with no layout shift/clip and no new scrollbar — at default AND narrow (700×900) widths. Reference #2808 F-4 + #2850 R-26.
+  - **Edge:** the −2px idle bob must not shift the command bar/grid (it is a compositor transform on the avatar only); engaged (grid open) vs resting both hold their layout.
+
+## R-30 — Frozen 58-rect geometry + the geometry regression net still hold
+
+- [ ] R-30: The shared `fredoAvatarGeometry.ts` + `__tests__/fredoAvatarGeometry.test.ts` are UNMODIFIED (byte-identical) and the suite passes in `pnpm --filter @fredo/ui test:run`. The launcher renders exactly the 58 expanded rects (31 source = 27 mirrored pairs + 4 singles), mirror math `x' = 1014 − x − width`, canvas bounds, as-authored center buttons — unchanged by #2852. The idle animation never mutates a rect. Reference #2837 F-35..F-40 + #2850 R-27/F-41.
+  - **Edge:** grep confirms the md→sm change is a `size` prop swap only (no geometry table touched); a rect-set drift = FAIL.
+
+## R-31 — Token-native + no re-render loop / console clean
+
+- [ ] R-31: The changed launcher files carry ZERO hardcoded `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN` alpha-append; the glow is `color-mix`/`tint()` on `var(--accent-primary)` (no new hardcoded color / no new semantic token without a `system.ts` mapping); the animation is CSS-only (no JS state per frame, no effect on array `.length` / fresh object refs) → console clean of `Maximum update depth exceeded`. Reference R-5/R-9/R-23 + companion R-7/R-8 + #2770 (no alpha-append on `var()`).
+  - **Edge:** re-theme while animating re-tints the glow token-native with no stale color; the SVG stays `aria-hidden` decorative (no new focusable element).
+
+## R-32 — Companion surface unchanged at 80×100
+
+- [ ] R-32: The companion is OUT of scope and UNCHANGED: `.fredo-companion-avatar` stays `offsetWidth = 80`/`offsetHeight = 100`; the 58-rect set, the `fredo-idle-bob`/`fredo-idle-glow` 2.4 s idle, the talk/teleport states, the click/teleport gestures and the clamp/bubble-anchor math (AVATAR_SM) are byte/behaviour-identical to the pre-#2852 render. git diff shows NO companion file change. Reference companion R-11 + `.opencode/tests/companion/`.
+  - **Edge:** a shared-size refactor must not alter `AVATAR_SM` (80×100); the launcher adopting sm must not introduce a second/duplicated size literal.
