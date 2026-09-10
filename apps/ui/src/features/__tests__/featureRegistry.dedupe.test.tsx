@@ -33,6 +33,15 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
   useConnectionStatus: () => ({ isConnected: true }),
 }));
 
+// #2853 ST-4: LauncherShell also consumes useCompanion to gate the desktop
+// mascot on designated presence; CompanionProvider is not present in this
+// isolated harness either. Stub the hook (same idiom as the StreamContext mock
+// above) so the shell renders standalone — the presence gate itself is covered
+// by the companion suite. No assertion in this file is changed or weakened.
+vi.mock('@/shared/contexts/CompanionContext', () => ({
+  useCompanion: () => ({ state: { isVisible: false, isAutoHidden: false } }),
+}));
+
 // ── Fixture feature ──────────────────────────────────────────────────────────
 
 /** Minimal concrete FredoFeatureClass; `id`/`name` are the de-dup keys. */
