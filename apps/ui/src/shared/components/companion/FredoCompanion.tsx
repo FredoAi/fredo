@@ -52,7 +52,7 @@ const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in windo
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, setState, teleport, showMessage, hideMessage, confirmAutoReturn, setHosting } = useCompanion();
+  const { state, setState, teleport, showMessage, hideMessage, confirmAutoReturn, setHosting, notifyInteraction } = useCompanion();
   const { animState, message, isVisible, isAutoHidden, isAutoReturning, position } = state;
 
   const [displayPos, setDisplayPos] = useState({ x: position.x, y: position.y });
@@ -218,6 +218,8 @@ export const FredoCompanion: React.FC = () => {
   const handleMouseDown = useCallback((e: MouseEvent) => {
     if (e.button !== 2 || !e.ctrlKey) return;
     e.preventDefault();
+    // #2853 ST-3: a teleport request is a companion interaction — reset the idle timer.
+    notifyInteraction();
     // Clamp using the avatar's REAL rendered width AND height (never the old
     // 80x80 frame) so the full sm figure stays on-screen at every edge.
     const { width, height } = getAvatarSize();
@@ -233,7 +235,7 @@ export const FredoCompanion: React.FC = () => {
       // Dev mode: local-only teleport
       startTeleportOut({ x: targetX, y: targetY });
     }
-  }, [startTeleportOut, getAvatarSize]);
+  }, [startTeleportOut, getAvatarSize, notifyInteraction]);
 
   const handleContextMenu = useCallback((e: MouseEvent) => {
     if (e.ctrlKey) e.preventDefault();
@@ -294,6 +296,9 @@ export const FredoCompanion: React.FC = () => {
   // ── Click / double-click on avatar ─────────────────────────────────────────
   // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
   const handleSpriteClick = useCallback(() => {
+    // #2853 ST-3: a click/double-click is a companion interaction — reset the
+    // idle timer (covers both the joke and the TicTacToe toggle).
+    notifyInteraction();
     console.log('[companion] avatar clicked — showTicTacToe:', showTicTacToe, 'clickTimer:', !!clickTimerRef.current);
     if (clickTimerRef.current) {
       // Second click within 250 ms → double-click → toggle game
@@ -312,7 +317,7 @@ export const FredoCompanion: React.FC = () => {
       console.log('[companion] single-click fired — showTicTacToe:', showTicTacToe);
       if (!showTicTacToe) askForJoke();
     }, 250);
-  }, [askForJoke, showTicTacToe]);
+  }, [askForJoke, showTicTacToe, notifyInteraction]);
 
   // Hide when companion is not in this window, but keep mounted during teleport-out
   // so the leaving animation can still play. The auto-return gate keys on the
@@ -342,13 +347,19 @@ export const FredoCompanion: React.FC = () => {
       >
         {showTicTacToe && (
           <TicTacToe
-            onStreamingMessage={(msg) => setStreamingMessage(msg)}
+            onStreamingMessage={(msg) => {
+              // #2853 ST-3: game cells/streaming are companion interactions.
+              notifyInteraction();
+              setStreamingMessage(msg);
+            }}
             onStartStreaming={() => {
+              notifyInteraction();
               setIsStreaming(true);
               playAnim('talk');
               setState('talk');
             }}
             onDoneStreaming={() => {
+              notifyInteraction();
               setIsStreaming(false);
               timerRef.current = setTimeout(() => {
                 setStreamingMessage(null);
