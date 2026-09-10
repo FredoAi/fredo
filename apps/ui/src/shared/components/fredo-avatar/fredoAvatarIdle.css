@@ -1,0 +1,16 @@
+/* FREDO avatar idle wrapper motion — the SINGLE source for the resting bob/glow.
+
+   Whole-element motion NEVER lives inside the shared `FredoAvatar` (#2850) — it
+   belongs to the CONSUMER's own wrapper. This file is imported by the shared
+   component so the keyframes load in every window that renders it, giving the
+   companion (`.fredo-companion-avatar[data-state='idle']`) and the launcher
+   mascot (`.fredo-avatar-idle`) the EXACT same bob + accent glow.
+
+   Token-native: the glow is `color-mix` on `var(--accent-primary)` — no
+   hardcoded alpha-append (`var(--accent-primary)22` is invalid CSS).
+ */
+@keyframes fredo-idle-bob  { 0%,100% { transform: translateY(0); }    50% { transform: translateY(-2px); } }
+@keyframes fredo-idle-glow { 0%,100% { filter: drop-shadow(0 0 0  color-mix(in srgb, var(--accent-primary)  0%, transparent)); }
+                             50%     { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-primary) 22%, transparent)); } }
+.fredo-avatar-idle { animation: fredo-idle-bob 2.4s ease-in-out infinite, fredo-idle-glow 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .fredo-avatar-idle { animation: none; } }

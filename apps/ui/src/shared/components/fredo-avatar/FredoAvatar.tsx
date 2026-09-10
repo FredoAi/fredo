@@ -7,6 +7,7 @@ import {
 } from './fredoAvatarGeometry';
 import { AVATAR_SIZE, type FredoAvatarSize } from './fredoAvatarSizes';
 import './fredo-avatar.css';
+import './fredoAvatarIdle.css';
 
 /**
  * Shared FREDO avatar — the ONE canonical brand mascot for every surface.
