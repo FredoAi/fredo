@@ -170,6 +170,8 @@
 
 ## #2852 extension — desktop mascot 80×100 + idle-animation probes
 
+> **Round 1 (spec/2852 @ 1677eca8) — no confirmed findings; E-32 UNVERIFIED-with-named-blocker.** E-31 ✓ animation stayed `running` after focus/query/ESC + settings/theme churn; size held 80×100; console clean (feature-window-open leg not driveable — automation limitation, no product finding). E-32 ⚠ UNVERIFIED (no media-feature emulation in the MCP driver; suppression rule + size verified). E-33 ✓ 700×900: 80×100, un-clipped, no scrollbar, 58 crisp cells. E-34 ✓ glow `oklab` re-tinted purple→cyan→green with the accent token across Default/None, Light Default, Matrix.
+
 > Add findings here for issue #2852; a confirmed finding PROMOTES to `functional.md` as a new
 > `F-` row (keep the origin note). A confirmed regression-free probe is recorded here (no
 > promotion).
