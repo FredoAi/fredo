@@ -375,3 +375,45 @@
   - **PASS (static/live, spec/2850).** Grep `features/home/components/launcher/` for `expandFredoRects`/`FREDO_AVATAR_SOURCE_RECTS` → **ZERO** local geometry declarations. `LauncherShell.tsx:14` imports `FredoAvatar` from `../../../../shared/components/fredo-avatar` (the shared module) and renders `<FredoAvatar size="md" />` (`:502`) — a thin wrapper with NO local geometry. No `PixelButler.tsx` remains (deleted). No cross-feature import (`features/*`) — the launcher imports `shared/components/fredo-avatar`. `apps/ui/src/index.ts:32-47` exports `FredoAvatar` + geometry + sizes so both `tauri` and feature surfaces consume the ONE canonical geometry. Live: the launcher renders the shared sm/md avatar from the same component instance path as the companion.
   - **Edge:** a thin wrapper that adds NO geometry is acceptable; a launcher-local duplicated
     rect table is a FAIL (the #2837 regression net F-35..F-40 stays green through the move).
+
+---
+
+## #2852 extension — desktop mascot 80×100 + idle animation (live render gate)
+
+> Issue #2852 — the desktop/launcher mascot drops from `md` (132×165) to `sm` (80×100,
+> aspect 1014:1264 — the SAME shared size the companion uses) and plays the companion's
+> EXACT idle bob + soft accent glow on the consumer wrapper while resting. Reduced motion
+> suppresses the animation without changing the size. The frozen 58-rect base geometry and
+> the companion are NOT touched.
+> **Verification policy: live** — pure-rendering, NO telemetry fixture. Live evidence =
+> rendered-webview receipts: `tauri_webview_dom_snapshot` + `tauri_webview_screenshot` +
+> `getComputedStyle`/`offsetWidth`/`offsetHeight` + rAF transform/filter sampling +
+> `upload-evidence --base spec/<N>` raw URL.
+> **Reference assets (Read by EXPLICIT absolute path, NEVER glob — `.opencode` is dot-prefixed, G-105):**
+> `.opencode/wireframes/fredo-avatar.html` (authoritative 1014×1264 geometry),
+> `.opencode/wireframes/fredo-avatar.png`.
+> Map 1:1 to `.opencode/tmp/2852/triage.md` `## QA Expert` (REQ-1..REQ-4 / F-44..F-47).
+
+## F-44 (REQ-1/AC1) — Desktop mascot renders 80 × 100 (same sm as the companion)
+
+- [ ] F-44: Open the launcher's resting desktop surface on the running `spec/<N>` build (no window covering). Locate the mascot SVG above `input[role="searchbox"]` (LauncherShell.tsx:501-503). Read `offsetWidth`/`offsetHeight` (G-040 — NOT the transform-scaled `getBoundingClientRect`, which the idle bob would perturb), the SVG `width`/`height`/`viewBox` attributes, and the source constant `AVATAR_SM`.
+  **Expected:** `offsetWidth = 80`, `offsetHeight = 100` (`Math.round(80 × 1264/1014) = 100`); SVG `width="80" height="100" viewBox="0 0 1014 1264"`; rendered aspect 1014:1264 (0.8022) — undistorted, no letterbox/stretch; the value equals the companion's `AVATAR_SM`; NO `size="md"` / 132×165 remains anywhere in the launcher.
+  - **Edge:** narrow viewport (700×900) — still 80×100, fully visible, not clipped/cropped/scaled; fractional OS scale/zoom; light preset AND the dark base; height derives from the ONE shared `FREDO_AVATAR_SPACE` aspect (never a separate height literal); the SVG still renders exactly 58 crisp `crispEdges` rects. Reference #2850 F-4 / companion F-4.
+
+## F-45 (REQ-2/AC2) — Resting mascot plays the companion's EXACT idle bob + glow, on the wrapper
+
+- [ ] F-45: On the resting desktop (no window covering), read `getComputedStyle` of the mascot's CONSUMER wrapper AND of the SVG element; rAF-sample the wrapper `transform` and `filter` through ≥1 full 2.4 s cycle (set `.fredo-companion-avatar`/launcher equivalent `animationPlayState` unchanged; read the raw animated values).
+  **Expected:** wrapper `animation-name` includes BOTH `fredo-idle-bob` AND `fredo-idle-glow` (identical names to `companion.css:14-29` — PO 2026-09-10: no distinct/calmer variant), `animation-duration: 2.4s`, `animation-timing-function: ease-in-out`, `animation-iteration-count: infinite`; sampled `matrix().f`/`translateY` varies 0 → −2px → 0 and `filter` varies `drop-shadow(0 0 0 …)` → `drop-shadow(0 0 6px …)` tinted from `var(--accent-primary)` (22% `color-mix`). The SVG element's OWN `animation-name = none` (whole-element motion is on the wrapper, NEVER the frozen geometry). The command bar, grid, hints row and clock rects are unchanged; no layout shift; no clip/overflow/scrollbar.
+  - **Edge:** resting vs engaged (grid open) — the loop must not break either way; rapid launcher open/close restarts the loop cleanly (no stuck/ghost frame/flicker); CSS-only (no JS state per frame → no re-render loop / no `Maximum update depth exceeded`); re-theme mid-animation keeps the glow on the live `var(--accent-primary)` (no stale color). Reference companion F-3 idle + #2850 R-1.
+
+## F-46 (REQ-3/AC3) — prefers-reduced-motion: reduce suppresses the idle animation; size persists
+
+- [ ] F-46: Force `prefers-reduced-motion: reduce` (OS "Show animations in Windows" off / driver media emulation) and re-inspect the resting mascot (computed style + `offsetWidth`/`offsetHeight` + rect count). If the driver cannot emulate reduced motion, record the tooling limitation and verify the `@media (prefers-reduced-motion: reduce)` suppression rule in the stylesheet PLUS re-measure the live size.
+  **Expected:** under reduce, the wrapper `animation-name = none` (bob + glow suppressed → static mascot) while `offsetWidth/offsetHeight` STILL = 80×100 and all 58 rects render; the figure is still VISIBLE (not hidden/faded by the suppression); no layout shift; console clean.
+  - **Edge:** toggling reduce while the mascot is mounted produces no geometry jump (size invariant across motion modes); reduced-motion OFF → animation returns; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; reduced-motion live emulation is a documented tooling limitation today (mirrors companion F-19) — do NOT convert a static CSS check into a live PASS without recording the limitation.
+
+## F-47 (REQ-4/AC4) — Frozen 58-rect geometry byte-identical; companion unchanged at 80×100
+
+- [ ] F-47: Read the launcher SVG's full `<rect>` set (x/y/width/height, in document order) at several animation frames, in a light preset and the dark base, and under reduced motion; diff it against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)` AND against the companion sm avatar's rect set. Then measure `.fredo-companion-avatar` (`offsetWidth`/`offsetHeight`) and read its idle `animation-name`.
+  **Expected:** the launcher SVG carries exactly the 58 base rects, byte-identical to the shared source and to the companion `sm` set, invariant across frames/themes/reduced-motion; `#fredo-expression` is ABSENT (idle); no `<rect>` carries an animation/transform (the frozen geometry is never animated). The companion `.fredo-companion-avatar` remains `offsetWidth = 80` / `offsetHeight = 100`, its 58-rect set and its `fredo-idle-bob`/`fredo-idle-glow` 2.4 s idle UNCHANGED by this spec.
+  - **Edge:** compare both surfaces in the SAME theme (rect sets identical); the geometry suite `fredoAvatarGeometry.test.ts` passes UNMODIFIED in `test:run`; launcher open/close cycles do not mutate the rect set; the companion is byte/visually identical to its pre-#2852 render. Reference #2850 R-26/R-28 + companion R-10.
