@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, HStack, Text, VStack, Switch,
+  Box, HStack, Text, VStack, Switch, NumberInput,
 } from '@chakra-ui/react';
 import { LuTriangleAlert } from 'react-icons/lu';
-import { useCompanion } from '../../contexts/CompanionContext';
+import {
+  useCompanion, MIN_IDLE_TIMEOUT_S, MAX_IDLE_TIMEOUT_S,
+} from '../../contexts/CompanionContext';
 import { adapterBridge } from '../../utils/adapterBridge';
 import { tint } from '../../utils/colorTint';
 import { useWindowActions } from '../../window-system/useWindowActions';
@@ -29,8 +31,17 @@ const sectionLabel = (text: string) => (
   </Text>
 );
 
+// ── Idle auto-return control (#2853 ST-5) ────────────────────────────────────
+
+/** Stepper increment for the idle timeout (seconds). */
+const IDLE_TIMEOUT_STEP_S = 5;
+const IDLE_TIMEOUT_INPUT_ID = 'companion-idle-timeout-seconds';
+const IDLE_TIMEOUT_HELP_ID = 'companion-idle-timeout-help';
+
 export const CompanionSettingsPanel: React.FC = () => {
-  const { state, setVisible } = useCompanion();
+  const {
+    state, setVisible, idleTimeoutSeconds, setIdleTimeoutSeconds,
+  } = useCompanion();
   const { isVisible } = state;
   const { openWindow } = useWindowActions();
 
@@ -67,6 +78,32 @@ export const CompanionSettingsPanel: React.FC = () => {
   }, []);
 
   const modelsGate = checkingModels || !modelsExist;
+
+  // ── Idle auto-return duration (#2853 ST-5) ─────────────────────────────────
+  // A local draft mirrors the persisted value while the user edits; the value is
+  // written ONLY on commit (blur / Enter / stepper), never per keystroke.
+  // `setIdleTimeoutSeconds` clamps (default 60, range [5, 3600]) so a cleared /
+  // non-numeric / out-of-range entry heals instead of wedging the timer.
+  const [idleDraft, setIdleDraft] = useState<string>(String(idleTimeoutSeconds));
+  const idleDraftRef = useRef<string>(String(idleTimeoutSeconds));
+
+  // Re-sync the draft whenever the persisted value changes (async load on mount,
+  // or a clamp applied on commit). The ref keeps stepper commits from going stale.
+  useEffect(() => {
+    const next = String(idleTimeoutSeconds);
+    idleDraftRef.current = next;
+    setIdleDraft(next);
+  }, [idleTimeoutSeconds]);
+
+  const handleIdleChange = useCallback((value: string) => {
+    idleDraftRef.current = value;
+    setIdleDraft(value);
+  }, []);
+
+  const commitIdleTimeout = useCallback((raw: string) => {
+    // NaN / empty (Number('') === 0) / non-positive → default; else round + clamp.
+    setIdleTimeoutSeconds(Number(raw));
+  }, [setIdleTimeoutSeconds]);
 
   const handleOpenSetup = useCallback(() => {
     openWindow({
@@ -148,6 +185,59 @@ export const CompanionSettingsPanel: React.FC = () => {
             </Text>
           </HStack>
         )}
+
+        {/* Idle auto-return duration — #2853 ST-5. Gated by model files presence
+            (reduced opacity + non-interactive), mirroring the Teleport tip —
+            expected, not an error state. */}
+        <HStack
+          mt={2}
+          justify="space-between"
+          p={3}
+          borderRadius="md"
+          background="var(--hover-bg)"
+          border="1px solid var(--border-color)"
+          opacity={modelsGate ? 0.4 : 1}
+          pointerEvents={modelsGate ? 'none' : 'auto'}
+        >
+          <VStack align="start" gap={0}>
+            <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+              Auto-return after inactivity
+            </Text>
+            <Text id={IDLE_TIMEOUT_HELP_ID} fontSize="xs" color="var(--text-secondary)">
+              Fredo returns to the desktop after this many seconds without interaction.
+            </Text>
+          </VStack>
+          <HStack gap={1} align="center" flexShrink={0}>
+            <NumberInput.Root
+              value={idleDraft}
+              onValueChange={(e) => handleIdleChange(e.value)}
+              onValueCommit={(e) => commitIdleTimeout(e.value)}
+              min={MIN_IDLE_TIMEOUT_S}
+              max={MAX_IDLE_TIMEOUT_S}
+              step={IDLE_TIMEOUT_STEP_S}
+              size="sm"
+              width="110px"
+              disabled={modelsGate}
+            >
+              {/* Zag only invokes onValueCommit on blur/Enter, so persist the
+                  latest value explicitly when the stepper control is clicked. */}
+              <NumberInput.Control onClick={() => commitIdleTimeout(idleDraftRef.current)} />
+              <NumberInput.Input
+                id={IDLE_TIMEOUT_INPUT_ID}
+                aria-label="Auto-return after inactivity (seconds)"
+                aria-describedby={IDLE_TIMEOUT_HELP_ID}
+                bg="var(--card-bg)"
+                color="var(--text-primary)"
+                borderColor="var(--border-color)"
+                _hover={{ borderColor: 'var(--accent-primary)' }}
+                _focus={{ borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }}
+              />
+            </NumberInput.Root>
+            <Text as="span" fontSize="sm" color="var(--text-secondary)">
+              s
+            </Text>
+          </HStack>
+        </HStack>
       </Box>
 
       {/* Teleport tip */}
