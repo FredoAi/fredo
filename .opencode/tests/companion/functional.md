@@ -224,14 +224,47 @@
 
 ## F-16 (Q-18 / AC-4, M10) — Dev mode (non-Tauri): renders, local teleport, joke streams
 
-- [ ] F-16: Serve the UI via the Vite dev server (`pnpm dev:ui`, DevAdapter, no Tauri host).
-      **Expected:** the companion renders (sm avatar + idle); single-click streams a MOCK joke
-      token-by-token (DevAdapter interval) into the bubble with the cursor blinking; double-click
-      opens TicTacToe and Fredo answers (DevAdapter returns the center `4`); Ctrl+right-click
-      teleports LOCALLY (`startTeleportOut`) with NO `companion-teleport` broadcast attempt and NO
-      crash on the `import('@tauri-apps/api/event')` path (the `IS_TAURI` guard must select the
-      dev path).
-  - **UNVERIFIED — tooling gap (G-053 named blocker).** The live dev-mode leg requires serving the UI via `pnpm dev:ui` (a Vite dev server with DevAdapter and NO Tauri host) and driving it in a NON-Tauri browser. This environment exposes ONLY Tauri webview tools (`tauri_webview_*`/`tauri_ipc_*`/`tauri_driver_session`) bound to the running Tauri app; there is NO browser-automation tool for a standalone Vite page, so the M10 dev-mode render + mock-joke stream + local-teleport cannot be driven here. **Static architecture PASSES:** the `IS_TAURI` guard (`'__TAURI_INTERNALS__' in window`, `FredoCompanion.tsx:50`) correctly branches — the `import('@tauri-apps/api/event')` is guarded by `if (!IS_TAURI) return;` (`:154`) for the teleport listener effect, and the `handleMouseDown` (`:200-208`) uses `if (IS_TAURI) emit('companion-teleport') else startTeleportOut(...)` — so dev mode runs the LOCAl `startTeleportOut` with no `companion-teleport` broadcast attempt and no crash on the guarded dynamic import. → Recommend a human/browser-automation run of this single leg.
+- [x] F-16: Serve the UI via the Vite dev server (`pnpm dev:ui`, DevAdapter, no Tauri host).
+      **Expected (PO-amended round 2, R2-3):** the companion renders (sm avatar + idle);
+      single-click streams a MOCK joke token-by-token (DevAdapter 30 ms interval) into the bubble
+      with the 2×14 px cursor blinking; double-click opens TicTacToe (208×268) and Fredo answers in
+      a LEGAL EMPTY cell (in a real dev browser `TicTacToe.tsx:46-53` gates the move behind
+      `adapterBridge.invoke('capture_screen_region')`, which `DevAdapter.invoke` no-ops
+      (`DevAdapter.ts:35-38` → `undefined`) → the legal-move fallback at `TicTacToe.tsx:93-100`
+      plays; the `DevAdapter.llmChatWithImage` mock `'4'` center is covered by the jsdom test with
+      a stubbed capture); Ctrl+right-click teleports LOCALLY (`startTeleportOut`) with NO
+      `companion-teleport` broadcast attempt and NO crash on the `import('@tauri-apps/api/event')`
+      path (the `IS_TAURI` guard must select the dev path).
+  - **PASS — round-2 in-environment jsdom evidence (R2-1/R2-2).** New evidence-only test
+    `apps/ui/src/shared/components/companion/__tests__/FredoCompanion.devMode.test.tsx` (435 lines,
+    5 tests) renders the REAL `FredoCompanion` in jsdom under a mocked `adapterBridge` registering
+    the real `DevAdapter` (`setLlmChat`/`setLlmChatWithImage`/`setInvoke`/`setListen`) with
+    `window.__TAURI_INTERNALS__` absent → `IS_TAURI === false` at `FredoCompanion.tsx:50`. Run:
+    `pnpm --filter @fredo/ui exec vitest run src/shared/components/companion/__tests__/FredoCompanion.devMode.test.tsx`
+    → **1 file / 5 tests passed (5), 0 failed**; full `pnpm --filter @fredo/ui test:run` → **53
+    files / 762 tests passed, 0 failed**. Assertions: (1) dev render — persisted
+    `Fredo_companion_visible='true'` path → `data-state="idle"`, `aria-label="Fredo companion --
+    idle"`, `viewBox="0 0 1014 1264"`, **58 base rects byte-identical to `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`**,
+    no idle overlay, console clean; (2) mock joke stream — single-click → 250 ms discriminator →
+    `talk` + `data-streaming="true"` + 2×14 px `Fredo-cursor-blink` cursor → token-by-token
+    DevAdapter 30 ms fill → onDone talk hold → idle + bubble closes; (3) Ctrl+right-click at
+    (500,400) → local `teleport-out` → clamped `teleport-in` at (460,350) (real sm 80×100 box) →
+    idle via the preserved 400+50/400+50 chain, with `tauriEvent.imported === false` (the guarded
+    dynamic import was NEVER attempted) and zero `emit('companion-teleport')`; (4) double-click →
+    TicTacToe 208×268, X at cell 8 → Fredo (O) at cell 0 via the `capture_screen_region` no-op
+    legal-move fallback (no `Uncaught`/`Unhandled`); (5) stubbed capture → `llmChatWithImage` mock
+    `'4'` center (cell 4). **Static `IS_TAURI` guard re-confirmed on the round-2 tip:**
+    `FredoCompanion.tsx:50` (`'__TAURI_INTERNALS__' in window`), `:154` (`if (!IS_TAURI) return;`
+    before the guarded `import('@tauri-apps/api/event')`), `:200-208` (`if (IS_TAURI) emit(...)
+    else startTeleportOut(...)`), `main.tsx:19-20` adapter selection, `DevAdapter.ts:35-38`
+    invoke no-op / `:40-69` mock stream / `:71-80` `'4'` mock. Product code UNTOUCHED this round
+    (`git diff 1bb8e2a bb6b9c7 -- apps/ui/src` = ONLY the added test file).
+  - **Live Vite page remains a human/browser spot-run (environment blocker, G-053).** The standalone
+    `pnpm dev:ui` page in a NON-Tauri browser still cannot be driven here (this sandbox exposes
+    ONLY Tauri webview tools bound to the running desktop app; no non-Tauri browser driver). The
+    jsdom test above deterministically covers the dev branch; the remaining live spot-run is the
+    visual Vite page itself + the dev settings model-gate (`check_model_files` invoke no-ops → the
+    warning banner may show; the companion toggle stays reachable).
   - **Edge:** console has no `Uncaught` from the missing Tauri API; the settings model-gate
     behaves in dev (`check_model_files` invoke no-ops → the warning banner may show; the companion
     toggle stays reachable).
@@ -245,7 +278,7 @@
       `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)` — the live
       span-store proof (mirrors #2817 F-5e / #2819 F-14: `fredo emit` bypasses OTLP so the
       injected session appears in the ROW tables; `telemetry_spans` is the live store reference).
-  - **PASS (live receipt, same run as the live legs).** `fredo emit --event-type chat` (session `q19-chat-2850`) → `{"queued":true}`; `fredo emit --event-type tool_use` (session `q19-tool-2850`, tool read_file) → `{"queued":true}`. **`telemetry_spans` query = 8881 spans, max(ingested_at)=2026-09-09 22:48:40** (recent live span store). `chat_rows` = 1 under `q19-chat-2850`; `tool_use_rows` = 1 under `q19-tool-2850` (tool `read_file`) — the injected events classify into the RTDB row tables under the injected session ids. This is the mandatory live-policy receipt; a static-only PASS would be a FALSE PASS.
+  - **PASS (live receipt).** **Round 2 (spec/2850 @ bb6b9c7 — branch moved since round 1, re-run per Fix Plan R2-2(c)):** `fredo emit --event-type chat` (session `q19b-chat-2850`) → `{"queued":true}`; `fredo emit --event-type tool_use` (session `q19b-tool-2850`, tool `read_file`) → `{"queued":true}`. **`telemetry_spans` query = 9578 spans, max(ingested_at)=2026-09-09 23:46:19** (recent live span store). `chat_rows` = 1 under `q19b-chat-2850`; `tool_use_rows` = 1 under `q19b-tool-2850` (tool `read_file`) — the injected events classify into the RTDB row tables under the injected session ids. This is the mandatory live-policy receipt; a static-only PASS would be a FALSE PASS. **Round 1 (spec/2850 @ 25ba296)** receipt for the record: `q19-chat-2850`/`q19-tool-2850`, 8881 spans @ 2026-09-09 22:48:40.
   - **Exit-gate note:** a static-only PASS with no F-17 receipt is a FALSE PASS under the live
     policy.
 
