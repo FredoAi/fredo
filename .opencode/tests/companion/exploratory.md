@@ -53,3 +53,13 @@
       teleport still readable as a teleport (opacity crossfade out/in ~400 ms), and is the mouth
       still visible while talking? Any state that becomes indistinguishable under reduced motion is
       a finding.
+
+## #2852 extension — launcher-adopts-sm cross-surface probes
+
+> Add findings here for issue #2852; a confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). A confirmed regression-free probe is recorded here (no
+> promotion).
+
+## E-11 — Reduced-motion parity across both surfaces
+
+- [ ] E-11: Under `prefers-reduced-motion: reduce`, compare the launcher sm mascot and the companion sm avatar — is the idle bob/glow suppressed on BOTH (static), while both stay 80×100 and render their 58 rects? Is the companion's teleport opacity-crossfade unaffected by the launcher change? Any asymmetry (one surface still animating, a size drift) is a finding. Reference companion F-19/R-11 + launcher F-46.
