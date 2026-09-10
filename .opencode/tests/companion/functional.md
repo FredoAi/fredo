@@ -310,6 +310,8 @@
 
 ## #2852 extension — cross-surface parity after the launcher adopts sm
 
+> **Round 1 (spec/2852 @ 1677eca8) — F-20 PASS.** Both surfaces render the shared `FredoAvatar size="sm"`: `offsetWidth=80`/`offsetHeight=100`, the identical 58-rect coordinate set (`rectSetsIdentical=true`, `firstDiffIndex=-1`), `shape-rendering="crispEdges"`, `color="var(--accent-primary)"` + rect `fill="currentColor"`, `aria-hidden="true"`, no idle overlay. The previous 132×165-vs-80×100 difference is gone.
+
 > Issue #2852 makes the LAUNCHER mascot render at the companion's `sm` size (80×100) + idle
 > motion. This companion row locks the parity that #2850 F-2 established against the launcher
 > `md` render — now BOTH surfaces render the identical `sm` geometry. The companion itself is
