@@ -187,6 +187,18 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }, idleTimeoutRef.current * 1000);
   }, [clearIdleTimer]);
 
+  // #2853 ST-3: every companion interaction (re)arms the host idle timer and
+  // recalls Fredo if he is mid auto-return. Host-local — only the host owns a
+  // timer, so no cross-window reset broadcast is needed.
+  const notifyInteraction = useCallback(() => {
+    const s = stateRef.current;
+    // No-op unless the companion is designated present in this (host) window.
+    if (!s.isVisible || !s.isHosting || s.isAutoHidden) return;
+    // An interaction during the leave motion recalls Fredo instead of hiding him.
+    if (s.isAutoReturning) dispatch({ type: 'CANCEL_AUTO_RETURN' });
+    armIdleTimer();
+  }, [armIdleTimer]);
+
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setState = useCallback((s: CompanionState) => {
@@ -194,12 +206,14 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, []);
 
   const showMessage = useCallback((text: string, duration = 4000) => {
+    // #2853 ST-3: a shown message is a companion interaction — reset the idle timer.
+    notifyInteraction();
     if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
     dispatch({ type: 'SHOW_MESSAGE', payload: { text, duration } });
     dismissTimerRef.current = setTimeout(() => {
       dispatch({ type: 'HIDE_MESSAGE' });
     }, duration);
-  }, []);
+  }, [notifyInteraction]);
 
   const hideMessage = useCallback(() => {
     if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
@@ -224,17 +238,10 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [setPersistedVisible, emitPresence]);
 
   const teleport = useCallback((x: number, y: number) => {
+    // #2853 ST-3: a teleport is a companion interaction — reset the idle timer.
+    notifyInteraction();
     dispatch({ type: 'TELEPORT', payload: { x, y } });
-  }, []);
-
-  const notifyInteraction = useCallback(() => {
-    const s = stateRef.current;
-    // No-op unless the companion is designated present in this (host) window.
-    if (!s.isVisible || !s.isHosting || s.isAutoHidden) return;
-    // An interaction during the leave motion recalls Fredo instead of hiding him.
-    if (s.isAutoReturning) dispatch({ type: 'CANCEL_AUTO_RETURN' });
-    armIdleTimer();
-  }, [armIdleTimer]);
+  }, [notifyInteraction]);
 
   const confirmAutoReturn = useCallback(() => {
     // Settle locally FIRST, then broadcast the global presence.

@@ -5,6 +5,8 @@ import { Box, useBreakpointValue } from '@chakra-ui/react';
 import { useWindows } from '../../../../shared/window-system/useWindows';
 // Live stream/connection flag — mirrors StreamStatus.tsx (ONLINE dot).
 import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
+// Companion designated presence — gates the launcher mascot (#2853 ST-4).
+import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
 import { tint } from '../../../../shared/utils/colorTint';
 
@@ -111,6 +113,16 @@ const DESKTOP_TEXTURE_CSS = {
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
+  const { state: companion } = useCompanion();
+
+  // #2853 ST-4: exactly ONE Fredo globally — the desktop mascot yields to the
+  // companion whenever the companion is designated present. `isVisible` is the
+  // persisted preference; `isAutoHidden` is the cross-window-synced transient
+  // flag (ST-2), so the main-window mascot stays hidden while the companion is
+  // hosted in another webview and reappears after an idle auto-return (or when
+  // the preference is toggled off). Deliberately INDEPENDENT of `isInThisWindow`:
+  // the companion may live in the terminal window while the mascot lives here.
+  const companionPresent = companion.isVisible && !companion.isAutoHidden;
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -498,9 +510,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             '&::-webkit-scrollbar-track': { background: 'transparent' },
           }}
         >
-          <Box mb="4" className="fredo-avatar-idle" data-state="idle">
-            <FredoAvatar size="sm" />
-          </Box>
+          {/* #2853 ST-4: the decorative desktop mascot renders ONLY when the
+              companion is NOT designated present, so exactly one Fredo shows at
+              a time. It stays purely decorative — no role/tabIndex/click, and
+              the SVG keeps its own `aria-hidden="true"` (FredoAvatar). */}
+          {!companionPresent && (
+            <Box mb="4" className="fredo-avatar-idle" data-state="idle">
+              <FredoAvatar size="sm" />
+            </Box>
+          )}
           <LauncherCommandBar
             query={query}
             onQueryChange={handleQueryChange}
