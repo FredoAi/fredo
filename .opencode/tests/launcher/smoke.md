@@ -48,3 +48,11 @@
       clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **PASS (live, spec/2850).** The launcher rendered the shared `FredoAvatar size="md"` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent-token fill `var(--accent-primary)`/`currentColor`, `aria-hidden`) above the `>` command bar at `offsetWidth`=132/`offsetHeight`=165. `tauri_webview_screenshot` succeeded; console clean (no `Error:`/`Uncaught`/`Maximum update depth exceeded`).
 
+## #2852 extension — desktop mascot 80×100 + idle animation smoke
+
+> Issue #2852 — the launcher mascot renders at the shared `sm` size (80×100) and plays the
+> companion's idle bob+glow. **OVERRIDE:** S-11's 132×165 md-size expectation is SUPERSEDED —
+> the required render is now 80×100.
+
+- [ ] S-12: The launcher renders the sm mascot with its idle animation — open the launcher; the mascot SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) appears above the command bar at `offsetWidth`=80/`offsetHeight`=100, its wrapper carries a running `fredo-idle-bob` + `fredo-idle-glow` 2.4 s animation, and `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
