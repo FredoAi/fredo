@@ -25,6 +25,8 @@
 
 ## #2852 extension — cross-surface sm parity smoke
 
+> **Round 1 (spec/2852 @ 1677eca8) — S-7 PASS.** Launcher + companion both render the shared `FredoAvatar` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) at `offsetWidth=80`/`offsetHeight=100`; screenshot succeeded; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
 > Issue #2852 makes the launcher mascot render at the companion's sm size + idle motion. This
 > smoke row confirms both surfaces still render the shared canonical avatar.
 

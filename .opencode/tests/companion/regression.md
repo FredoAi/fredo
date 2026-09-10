@@ -90,6 +90,8 @@
 
 ## R-11 — Companion avatar stays exactly 80×100 with its idle animation unchanged
 
+> **Round 1 (spec/2852 @ 1677eca8) — PASS.** `.fredo-companion-avatar` `offsetWidth=80`/`offsetHeight=100`; 58-rect set byte-identical to the shared source (and to the launcher sm render); `animationName="fredo-idle-bob, fredo-idle-glow"` 2.4s ease-in-out infinite. The only companion diff is the planned `@keyframes` relocation in `companion.css` (selector + reduced-motion rule retained → computed animation byte-equivalent).
+
 - [ ] R-11: Measure the companion `.fredo-companion-avatar` (`offsetWidth`/`offsetHeight`, G-040) and read its computed idle `animation-name`/`animation-duration`; read its full `<rect>` set and diff against the launcher sm avatar + `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
   **Expected:** companion `offsetWidth = 80` / `offsetHeight = 100` (unchanged, aspect 1014:1264); its 58-rect set byte-identical to the shared source (and now also to the launcher sm render); idle `animation-name` still includes `fredo-idle-bob` + `fredo-idle-glow` at `2.4s ease-in-out infinite`; the talk/teleport states, gestures, clamp/bubble-anchor `AVATAR_SM` math are UNCHANGED. git diff for #2852 shows NO companion file change.
   - **Edge:** the shared-size module must still resolve `AVATAR_SM = {80,100}` (no drift); a launcher change must not alternatively alter the companion's size, animation, or rect set; reduced-motion companion behavior (F-19) still holds. Reference #2850 R-5 + companion F-4/F-19 + launcher R-32.

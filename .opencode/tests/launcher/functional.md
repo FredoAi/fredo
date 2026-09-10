@@ -380,6 +380,8 @@
 
 ## #2852 extension — desktop mascot 80×100 + idle animation (live render gate)
 
+> **Round 1 (spec/2852 @ 1677eca8) — ALL PASS (F-46 live leg UNVERIFIED-with-named-blocker).** F-44 ✓ wrapper `offsetWidth=80`/`offsetHeight=100`, SVG `80×100 viewBox=0 0 1014 1264`, 58 rects, aspect ≈1014:1264. F-45 ✓ wrapper `animationName="fredo-idle-bob, fredo-idle-glow"` 2.4s ease-in-out infinite running; SVG own `animationName=none`; bob sampled 0→−2px, glow 0→6px accent `color-mix` 22%; command-bar layout invariant. F-46 ⚠ live reduced-motion emulation UNVERIFIED (named blocker: no media-feature emulation in the MCP driver) — `@media (prefers-reduced-motion: reduce){ .fredo-avatar-idle{animation:none} }` verified in the loaded CSSOM + live size 80×100 re-measured. F-47 ✓ 58 rects byte-identical to companion + shared source, stable across frames/themes; no per-rect animation; `#fredo-expression` absent. Full live receipts + screenshots in the issue's `## Tests Runs` (round 1).
+
 > Issue #2852 — the desktop/launcher mascot drops from `md` (132×165) to `sm` (80×100,
 > aspect 1014:1264 — the SAME shared size the companion uses) and plays the companion's
 > EXACT idle bob + soft accent glow on the consumer wrapper while resting. Reduced motion
