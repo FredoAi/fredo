@@ -22,3 +22,10 @@
 - LLM model (UQFF) + mmproj present and loaded (the companion settings model-gate requires them).
 - Run CLI terminal window (`run-cli-terminal`) launchable for the cross-window teleport leg (F-10).
 - Dev-mode Vite server (`pnpm dev:ui`, DevAdapter) for the M10 leg.
+
+## #2852 extension — cross-surface sm parity smoke
+
+> Issue #2852 makes the launcher mascot render at the companion's sm size + idle motion. This
+> smoke row confirms both surfaces still render the shared canonical avatar.
+
+- [ ] S-7: Launcher + companion both render the shared sm avatar — open the launcher and toggle the companion on; each renders the shared `FredoAvatar` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) at `offsetWidth`=80/`offsetHeight`=100, and `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
