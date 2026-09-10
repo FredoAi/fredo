@@ -587,7 +587,7 @@ live traffic on the identical path — observable, replayable, interruptible.
 
 The animated companion on the Home panel renders the **shared `FredoAvatar` component** (size `sm`, 80×100px, derived from the single `FREDO_AVATAR_SPACE` aspect constant):
 
-- **Shared avatar**: `apps/ui/src/shared/components/fredo-avatar/` — `FredoAvatar.tsx` (frozen 58-rect base SVG + state overlay), `fredoAvatarGeometry.ts` (canonical rect table), `fredoAvatarSizes.ts` (`AVATAR_SM`/`AVATAR_MD`), `fredo-avatar.css` (mouth/streak/sparkle keyframes + reduced-motion). The launcher renders the same component at `md` (132×165).
+- **Shared avatar**: `apps/ui/src/shared/components/fredo-avatar/` — `FredoAvatar.tsx` (frozen 58-rect base SVG + state overlay), `fredoAvatarGeometry.ts` (canonical rect table), `fredoAvatarSizes.ts` (`AVATAR_SM`/`AVATAR_MD`), `fredo-avatar.css` (mouth/streak/sparkle keyframes + reduced-motion), `fredoAvatarIdle.css` (the shared consumer-wrapper idle bob + accent glow, reused by both surfaces; `prefers-reduced-motion` suppresses it). The launcher renders the same component at `sm` (80×100) and applies the same idle bob + glow on its own wrapper (`.fredo-avatar-idle`) — one consistent, alive mascot across both surfaces (#2852).
 - **States**: idle (58 base rects only), talk (mouth overlay + streaming pulse), teleport-out (closed-eyes + streak), teleport-in (sparkles) — expressed via the overlay `<g id="fredo-expression" data-state>` + wrapper-level CSS motion; base rects frozen byte-identical in every state.
 - **Personality**: "friendly robot who loves programming, tells jokes, plays Tic-Tac-Toe"
 - **Jokes**: 20 topics (recursion, git, CSS, regex, etc.)
