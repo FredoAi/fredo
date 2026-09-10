@@ -167,3 +167,25 @@
       fractional-DPI. Does the avatar stay crisp (uniform cells, no anti-alias fill-in), fully
       visible, un-clipped, with no console error / re-render loop? Reference E-27/E-28 — any
       regression from the shared-path change is a finding.
+
+## #2852 extension — desktop mascot 80×100 + idle-animation probes
+
+> Add findings here for issue #2852; a confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). A confirmed regression-free probe is recorded here (no
+> promotion).
+
+## E-31 — Rapid open/close churn around the animating mascot
+
+- [ ] E-31: Rapidly cycle the launcher open/engaged → ESC → resting around the animating 80×100 mascot (and open/close a feature window over it). Does the idle loop restart cleanly (no stuck/frozen mid-bob frame, no ghost), does the size stay 80×100, and does the console stay clean (no `Maximum update depth exceeded` / no re-render loop)? Any frozen animation, size drift, or console error is a finding. Reference F-45 + R-31.
+
+## E-32 — Reduced-motion flip while the mascot is mounted
+
+- [ ] E-32: If the environment can drive it, flip `prefers-reduced-motion` reduce ↔ no-preference while the launcher mascot is mounted (or toggle the OS animation setting). Does the animation stop/start WITHOUT any geometry jump (still 80×100), with the figure staying visible and no console error? Any size shift, hidden figure, or stuck animation is a finding. Reference F-46.
+
+## E-33 — Fractional-DPI / narrow-viewport bob clipping
+
+- [ ] E-33: Resize the webview small/narrow (e.g. 700×900) and run at a fractional OS scale/zoom while the mascot bobs. Does the −2px lift stay inside the avatar container (no clipping, no creep into the command bar, no scrollbar), with the size still 80×100 and the 58 cells crisp (no anti-alias fill-in)? Any clip, subpixel smear, or layout shift is a finding. Reference F-44/F-45 + E-27/E-28.
+
+## E-34 — Glow re-tint across presets while animating
+
+- [ ] E-34: Re-theme through shipped presets (light + dark + a non-cyan accent such as Matrix) while the mascot's idle glow is running. Does the glow (the `drop-shadow` filter) re-tint token-native to the live `var(--accent-primary)` with no stale color, no hardcoded fallback, and no animation interruption? Any stale/off-token glow is a finding. Reference F-45 + E-26.
