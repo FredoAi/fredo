@@ -3,26 +3,12 @@ import { useCompanion } from '../../contexts/CompanionContext';
 import type { CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
 import { TicTacToe } from './features/tictactoe';
+import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
 import './companion.css';
-import spritesheetUrl from '../../../assets/spritesheet.png';
 import { adapterBridge } from '../../utils/adapterBridge';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
 
-// ── Sprite-sheet constants ────────────────────────────────────────────────────
-// Sheet: 1264x843px  |  6 cols x 4 rows  |  display at 80x80px per frame
-const FRAME_W = 80;
-const FRAME_H = 80;
-const FRAMES_PER_ROW = 6;
-const SHEET_DISPLAY_W = FRAME_W * FRAMES_PER_ROW; // 480
-const SHEET_DISPLAY_H = FRAME_H * 4;               // 320
-
-const ROW_Y: Record<CompanionState, number> = {
-  'idle':          0,
-  'talk':         -FRAME_H,
-  'teleport-out': -FRAME_H * 2,
-  'teleport-in':  -FRAME_H * 3,
-};
-
+// ── Animation timing (preserved from the sprite era — do NOT change) ────────
 const ANIM_DURATION: Record<CompanionState, number> = {
   'idle':         800,
   'talk':          500,
@@ -76,14 +62,27 @@ export const FredoCompanion: React.FC = () => {
   const [showTicTacToe, setShowTicTacToe] = useState(false);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // currentAnim drives which row is displayed
+  // currentAnim drives which avatar state (expression) is shown
   const [currentAnim, setCurrentAnim] = useState<CompanionState>('idle');
-  // animKey forces the div to remount and restart CSS animation cleanly
+  // animKey forces the wrapper to remount and restart the CSS animation cleanly
   const [animKey, setAnimKey] = useState(0);
 
   const isTeleportingRef = useRef(false);
   const pendingDestRef = useRef<{ x: number; y: number } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The interactive avatar wrapper — its live layout box (offsetWidth/offsetHeight,
+  // immune to CSS transforms) is the runtime source of truth for the click-target,
+  // the teleport clamp, and the SpeechBubble anchor. Falls back to AVATAR_SM before
+  // the first layout (the declared sm size IS 80x100, so the fallback is exact).
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  const getAvatarSize = useCallback(() => {
+    const el = wrapperRef.current;
+    return {
+      width: el ? el.offsetWidth : AVATAR_SM.width,
+      height: el ? el.offsetHeight : AVATAR_SM.height,
+    };
+  }, []);
 
   // Cross-window: companion starts in main, hidden in terminal
   const isInThisWindowRef = useRef(MY_WINDOW === 'main');
@@ -192,8 +191,11 @@ export const FredoCompanion: React.FC = () => {
   const handleMouseDown = useCallback((e: MouseEvent) => {
     if (e.button !== 2 || !e.ctrlKey) return;
     e.preventDefault();
-    const targetX = Math.max(0, Math.min(e.clientX - FRAME_W / 2, window.innerWidth - FRAME_W));
-    const targetY = Math.max(0, Math.min(e.clientY - FRAME_H / 2, window.innerHeight - FRAME_H));
+    // Clamp using the avatar's REAL rendered width AND height (never the old
+    // 80x80 frame) so the full sm figure stays on-screen at every edge.
+    const { width, height } = getAvatarSize();
+    const targetX = Math.max(0, Math.min(e.clientX - width / 2, window.innerWidth - width));
+    const targetY = Math.max(0, Math.min(e.clientY - height / 2, window.innerHeight - height));
 
     if (IS_TAURI) {
       // Broadcast to all webview windows (including this one)
@@ -204,7 +206,7 @@ export const FredoCompanion: React.FC = () => {
       // Dev mode: local-only teleport
       startTeleportOut({ x: targetX, y: targetY });
     }
-  }, [startTeleportOut]);
+  }, [startTeleportOut, getAvatarSize]);
 
   const handleContextMenu = useCallback((e: MouseEvent) => {
     if (e.ctrlKey) e.preventDefault();
@@ -259,10 +261,10 @@ export const FredoCompanion: React.FC = () => {
     );
   }, [playAnim, setState, hideMessage]);
 
-  // ── Click / double-click on sprite ────────────────────────────────────────
+  // ── Click / double-click on avatar ─────────────────────────────────────────
   // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
   const handleSpriteClick = useCallback(() => {
-    console.log('[companion] sprite clicked — showTicTacToe:', showTicTacToe, 'clickTimer:', !!clickTimerRef.current);
+    console.log('[companion] avatar clicked — showTicTacToe:', showTicTacToe, 'clickTimer:', !!clickTimerRef.current);
     if (clickTimerRef.current) {
       // Second click within 250 ms → double-click → toggle game
       clearTimeout(clickTimerRef.current);
@@ -287,18 +289,14 @@ export const FredoCompanion: React.FC = () => {
   if (!isVisible) return null;
   if (!isInThisWindow && !isTeleportingRef.current) return null;
 
-  const isOneShot = currentAnim === 'teleport-out' || currentAnim === 'teleport-in';
-  const duration = ANIM_DURATION[currentAnim];
-  // One-shot: steps(5,end) over 0→-400px lands on frame 5, held by forwards fill-mode.
-  // Loop: steps(6,end) over 0→-480px wraps cleanly back to frame 0.
-  const animName = isOneShot ? 'Fredo-sprite-once' : 'Fredo-sprite-loop';
-  const animSteps = isOneShot ? FRAMES_PER_ROW - 1 : FRAMES_PER_ROW;
-  const animFill = isOneShot ? 'forwards' : 'none';
-
   // Prefer the live streaming message; fall back to context message.
   // Strip any model control tokens that may leak through (e.g. <end_of_turn>).
   const displayMessage = (streamingMessage ?? message)
     ?.replace(/<end_of_turn>|<start_of_turn>/g, '').trimEnd() || null;
+
+  // Real rendered layout size for the bubble anchor + click box (offsetWidth/
+  // offsetHeight — immune to the CSS transform animations on the wrapper).
+  const { width: avatarWidth, height: avatarHeight } = getAvatarSize();
 
   return (
     <>
@@ -306,8 +304,8 @@ export const FredoCompanion: React.FC = () => {
         message={showTicTacToe ? null : displayMessage}
         companionX={displayPos.x}
         companionY={displayPos.y}
-        companionWidth={FRAME_W}
-        companionHeight={FRAME_H}
+        companionWidth={avatarWidth}
+        companionHeight={avatarHeight}
         isStreaming={isStreaming && !showTicTacToe}
       >
         {showTicTacToe && (
@@ -330,38 +328,33 @@ export const FredoCompanion: React.FC = () => {
         )}
       </SpeechBubble>
 
-      {/* Outer clipping viewport; inner div handles GPU-accelerated transform animation */}
+      {/* Interactive avatar wrapper — real click box is the avatar's layout
+          width AND height (sm = 80 wide x 100 tall). The wrapper carries the
+          state + streaming marks and the animKey remount that restarts the
+          CSS motion keyframes (companion.css). Whole-element motion (idle bob,
+          talk pulse, teleport shrink/fade + grow/settle) lives HERE on the
+          wrapper — never inside the shared FredoAvatar. */}
       <div
+        key={animKey}
+        ref={wrapperRef}
         onClick={handleSpriteClick}
+        data-state={currentAnim}
+        data-streaming={isStreaming || undefined}
         title="Click to chat | Double-click to play Tic-Tac-Toe | Ctrl+right-click to teleport"
         aria-label={`Fredo companion -- ${currentAnim}`}
+        className="fredo-companion-avatar"
         style={{
           position: 'fixed',
           left: displayPos.x,
           top: displayPos.y,
-          width: FRAME_W,
-          height: FRAME_H,
-          overflow: 'hidden',
+          width: AVATAR_SM.width,
+          height: AVATAR_SM.height,
           zIndex: 100,
           pointerEvents: 'auto',
           cursor: isGeneratingRef.current ? 'default' : 'pointer',
         }}
       >
-        <div
-          key={animKey}
-          style={{
-            width: SHEET_DISPLAY_W,
-            height: SHEET_DISPLAY_H,
-            backgroundImage: `url(${spritesheetUrl})`,
-            backgroundSize: `${SHEET_DISPLAY_W}px ${SHEET_DISPLAY_H}px`,
-            backgroundRepeat: 'no-repeat',
-            imageRendering: 'pixelated',
-            position: 'relative',
-            top: `${ROW_Y[currentAnim]}px`,
-            willChange: 'transform',
-            animation: `${animName} ${duration}ms steps(${animSteps}, end) ${isOneShot ? `1 ${animFill}` : 'infinite'}`,
-          }}
-        />
+        <FredoAvatar size="sm" state={currentAnim} />
       </div>
     </>
   );
