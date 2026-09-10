@@ -31,3 +31,12 @@
 > smoke row confirms both surfaces still render the shared canonical avatar.
 
 - [ ] S-7: Launcher + companion both render the shared sm avatar — open the launcher and toggle the companion on; each renders the shared `FredoAvatar` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) at `offsetWidth`=80/`offsetHeight`=100, and `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2853 extension — presence lifecycle smoke
+
+> Issue #2853 adds single-Fredo presence + idle auto-return. Quick paths below; the full
+> lifecycle lives in `functional.md` F-21..F-29. Live policy — screenshot + console-clean per step.
+
+- [ ] S-8: Companion ON ⇒ exactly one Fredo — toggle the companion on (Settings → Companion); a DOM snapshot/count probe shows `.fredo-companion-avatar` present and the desktop/launcher mascot **not rendered** (absent from the DOM); `tauri_webview_screenshot` succeeds; console clean.
+- [ ] S-9: Companion OFF ⇒ desktop mascot returns — toggle the companion off; the desktop/launcher mascot is present at its usual place and the companion is absent; screenshot succeeds; console clean.
+- [ ] S-10: Short idle ⇒ auto-return — with a short configured idle value (e.g. 5 s) and no interaction, the companion hides and the desktop mascot returns with no user action; screenshot before/after succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
