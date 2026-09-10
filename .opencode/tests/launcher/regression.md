@@ -178,6 +178,8 @@
 
 ## #2852 extension — desktop mascot size + idle animation invariants (must-not-change)
 
+> **Round 1 (spec/2852 @ 1677eca8) — R-29..R-32 ALL PASS.** R-29 ✓ diff scope = exactly the 4 planned files; command-bar top invariant (499.03 resting == engaged); no clip/scrollbar at default or 700×900. R-30 ✓ geometry module + test byte-unmodified (empty diff); `test:run` 53 files/762 tests green incl. the 7 geometry tests; 58 expanded rects; no rect animates. R-31 ✓ zero hardcoded color literals; glow `color-mix` on `var(--accent-primary)`; CSS-only; console clean. R-32 ✓ companion `offsetWidth=80`/`offsetHeight=100`, 58-rect set byte-identical to launcher, `fredo-idle-bob`+`fredo-idle-glow` 2.4s unchanged; `companion.css` diff = planned keyframe relocation only.
+
 > Issue #2852 — the launcher mascot drops `md` → `sm` (80×100) and plays the companion's exact
 > idle bob+glow on the wrapper. Run alongside R-1..R-28 AND the companion-suite regression
 > R-11. **OVERRIDE:** the #2850/S-11 md-at-132×165 launcher expectation is SUPERSEDED — the
