@@ -65,3 +65,15 @@
 ## E-11 — Reduced-motion parity across both surfaces
 
 - [ ] E-11: Under `prefers-reduced-motion: reduce`, compare the launcher sm mascot and the companion sm avatar — is the idle bob/glow suppressed on BOTH (static), while both stay 80×100 and render their 58 rects? Is the companion's teleport opacity-crossfade unaffected by the launcher change? Any asymmetry (one surface still animating, a size drift) is a finding. Reference companion F-19/R-11 + launcher F-46.
+
+## #2853 extension — presence-lifecycle edge probes
+
+> Unscripted probes for issue #2853. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note); a confirmed regression-free probe is recorded here.
+
+- [ ] E-12: **Auto-return race with an interaction.** Fire an interaction (click/joke, double-click/game, teleport, or drag) at/near the exact idle deadline — does the interaction win (companion stays / returns) or does the auto-return fire and swallow the gesture? Any lost gesture, stuck state, duplicate Fredo, or console error is a finding (promotes to functional F-22/F-24).
+- [ ] E-13: **Auto-return while the launcher is covered by a window.** With another window over the launcher, let the countdown expire — does the companion still hide and the desktop mascot return (behind the covering window is accepted per the PO)? Any failure to swap, two Fredos in the DOM, or console error is a finding (do **not** fail on Z-order).
+- [ ] E-14: **Cleared / absurd timeout values.** Set the idle timeout to cleared/empty, `0`, a negative number, a non-numeric string, and a very large value (e.g. 99999) in turn — does the UI reject/fallback cleanly, or crash/wedge/freeze the countdown? Any unhandled error, infinite loop, or timer that never fires (or fires instantly forever) is a finding (promotes to functional F-25).
+- [ ] E-15: **Cross-window auto-return.** With the terminal window open and the companion in the terminal, let the countdown expire there — does the terminal companion hide and the terminal desktop mascot return, without disturbing the main window's presence state? Any ghost across windows is a finding (promotes to functional F-22/R-16).
+- [ ] E-16: **Manual toggle off during the countdown.** Toggle the companion off while a countdown is running, then back on — is the old timer cancelled cleanly (no late auto-return firing against the freshly-shown companion, no double timer)? Any stale/duplicate timer or premature hide is a finding (promotes to functional F-26/F-27).
+- [ ] E-17: **Rapid toggle churn around the deadline.** Toggle the companion on/off several times straddling the idle deadline — does the timer re-arm exactly once per show, with no accumulating timers, no re-render loop (`Maximum update depth exceeded`), and exactly one Fredo at rest? Any timer leak / loop / zero-or-two Fredo is a finding (promotes to functional F-28).
