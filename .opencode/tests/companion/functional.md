@@ -305,3 +305,18 @@
   - **Edge:** console read after EACH leg (a stream-end or teleport-race error only appears
     post-interaction); check BOTH windows (main + terminal); the pre-existing
     `motion() is deprecated` WARN is exempt.
+
+---
+
+## #2852 extension — cross-surface parity after the launcher adopts sm
+
+> Issue #2852 makes the LAUNCHER mascot render at the companion's `sm` size (80×100) + idle
+> motion. This companion row locks the parity that #2850 F-2 established against the launcher
+> `md` render — now BOTH surfaces render the identical `sm` geometry. The companion itself is
+> unchanged (see regression R-11).
+
+## F-20 (REQ-1/REQ-4) — Launcher sm and companion sm are the SAME 80×100 geometry
+
+- [ ] F-20: Render the launcher mascot and the companion in the SAME theme. `tauri_webview_execute_js` reads every mounted avatar `<rect>` (x/y/width/height) in BOTH SVGs and both `offsetWidth`/`offsetHeight`; screenshot both at the neutral (transform:0) frame.
+  **Expected:** both SVGs carry the IDENTICAL 58-rect coordinate set, both `offsetWidth = 80` / `offsetHeight = 100` (aspect 1014:1264), both `shapeRendering="crispEdges"`, both single-accent `color="var(--accent-primary)"` + `fill="currentColor"`, both `aria-hidden`, no state overlay in idle. The launcher is no longer `md` — the previous 132×165 vs 80×100 difference is gone.
+  - **Edge:** repeat in a light preset AND the dark base; the companion's idle bob/glow is whole-element transform only — the neutral gate uses the transform:0 frame, never a mid-animation frame; reduced motion suppresses both without changing size. Reference #2850 F-2 + launcher F-44/F-47.
