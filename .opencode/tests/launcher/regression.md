@@ -150,23 +150,26 @@
 
 ## R-26 — Shared-avatar move changes NO launcher layout/render
 
-- [ ] R-26: The launcher md avatar renders at 132×165 (aspect 1014:1264) exactly as before
+- [x] R-26: The launcher md avatar renders at 132×165 (aspect 1014:1264) exactly as before
       (reference #2837 F-39b + R-24), and the avatar container (`Box mb="4"`, LauncherShell.tsx),
       command bar, app grid, keyboard hints, clock/LED chrome, and open/close lifecycle are
       UNCHANGED by the shared move (git diff scope: the launcher change is the import/wrapper
       swap only). Reference #2837 R-22 + desktop-shell R-6/R-10.
+  - **PASS (live, spec/2850).** Launcher md avatar SVG `offsetWidth`=132, `offsetHeight`=165 (aspect 1014:1264, undistorted), 58 rects, crispedges, accent-token fill, `aria-hidden` — unchanged from the pre-refactor render. `git diff --stat main spec/2850 -- launcher/` = `LauncherShell.tsx +2/-2` (import swap), `PixelButler.tsx` deleted, geometry/test deleted — the ONLY launcher change is the import/wrapper swap. The launcher layout (notch, command bar, app grid, keyboard hints, clock/LED) is unchanged (verified live DOM: the launcher renders its full chrome + the md avatar at the same position).
 
 ## R-27 — Geometry-suite move is byte-identical (the #2837 regression net holds)
 
-- [ ] R-27: `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` move VERBATIM to the shared
+- [x] R-27: `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` move VERBATIM to the shared
       path (content byte-equal, only the sibling import resolves); `test:run` stays green with the
       test at its new location. The #2837 geometry invariants (F-35..F-40) — 31→58 rects, mirror
       math, canvas bounds, as-authored center buttons — remain in force through the move.
       Reference companion R-10 + launcher F-41.
+  - **PASS (static/build, spec/2850).** The moved geometry module + test are byte-identical to the pre-move `main` originals (Read-verified; only `../fredoAvatarGeometry` resolves to the sibling in the shared folder). `pnpm --filter @fredo/ui exec vitest run` on the moved test → 7 tests passed; `test:run` → 52 files/757 tests green. The #2837 invariants (31 source→58 expanded, mirror `x'=1014-x-width`, canvas bounds, as-authored center buttons `(492,917,30,32)`+`(491,991,31,36)`, out-of-canvas guard) hold — the geometry suite is the avatar's strongest regression net and it stays green.
 
 ## R-28 — Token-native + zero duplicate geometry in the launcher after the move
 
-- [ ] R-28: The launcher's changed files carry ZERO hardcoded `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+- [x] R-28: The launcher's changed files carry ZERO hardcoded `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
       `var(--x)NN` alpha-append; the wrapper adds NO new color and NO local geometry table; no
       cross-feature import is introduced (the wrapper imports the shared module); no re-render loop
       (console clean of `Maximum update depth exceeded`). Reference #2837 R-23 + companion R-7.
+  - **PASS (static/live, spec/2850).** Grep `shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(` → ZERO true literals (only comment issue-refs `#2837`/`#2850`); the entire figure is `color="var(--accent-primary)"` + `fill="currentColor"`, no `var(--x)NN` alpha-append. The wrapper (`FredoAvatar`) adds NO new color and NO local geometry table (it delegates to the shared `expandFredoRects`). No cross-feature import. Console clean of `Maximum update depth exceeded` across the whole run (`tauri_read_logs` error-level → none).

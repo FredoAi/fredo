@@ -64,16 +64,18 @@
 
 ## R-11 — Shell chrome + launcher layout unchanged by the shared avatar move
 
-- [ ] R-11: The FREDO notch, side-ticks, dot-grid, rounded frame, online clock/LED, command bar,
+- [x] R-11: The FREDO notch, side-ticks, dot-grid, rounded frame, online clock/LED, command bar,
       app grid, and keyboard hints are UNCHANGED by the avatar-source move (git diff scope: the
       launcher change is the import/wrapper swap only). The shell idle/engaged lifecycle behaves as
       before; the md avatar renders at 132 × 165 exactly as pre-refactor. Reference #2817 R-1 +
       #2819 R-6/R-10 + launcher R-26.
+  - **PASS (live, spec/2850).** The launcher rendered its full chrome (FREDO notch, `>` command bar `input[role=searchbox]`, clock/LED cluster `data-testid=desktop-status-led`, dot-grid, frame) with the md avatar `offsetWidth`=132/`offsetHeight`=165, 58 rects, crispEdges, accent-token fill, `aria-hidden` — the shell idle surface is unchanged. `git diff --stat main spec/2850 -- launcher/` = only `LauncherShell.tsx +2/-2` + the geometry/PixelButler deletions (the move). The md avatar renders at 132×165 exactly as pre-refactor.
 
 ## R-12 — Token contract + no re-render loop across the refactor
 
-- [ ] R-12: The changed shell-adjacent files carry zero hardcoded hex/`rgba(`/`rgb(` / `var(--x)NN`
+- [x] R-12: The changed shell-adjacent files carry zero hardcoded hex/`rgba(`/`rgb(` / `var(--x)NN`
       alpha-append; the shared avatar is accent-token driven (`var(--accent-primary)` +
       `currentColor`) exactly as the launcher avatar was; no re-render loop / `Maximum update depth
       exceeded` appears from the wrapper or the companion mount. Reference #2817 R-4 + launcher
       R-28 + companion R-7/R-8.
+  - **PASS (static + live console).** Grep `shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(` → zero true literals (only comment issue-refs); the shared avatar is `color="var(--accent-primary)"` + `fill="currentColor"` exactly as the launcher avatar was. No `Maximum update depth exceeded`/`Uncaught`/`Error:` in the console across the whole run (companion mount + wrapper + teleport). Console clean of the three error signatures.
