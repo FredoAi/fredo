@@ -322,3 +322,81 @@
 - [ ] F-20: Render the launcher mascot and the companion in the SAME theme. `tauri_webview_execute_js` reads every mounted avatar `<rect>` (x/y/width/height) in BOTH SVGs and both `offsetWidth`/`offsetHeight`; screenshot both at the neutral (transform:0) frame.
   **Expected:** both SVGs carry the IDENTICAL 58-rect coordinate set, both `offsetWidth = 80` / `offsetHeight = 100` (aspect 1014:1264), both `shapeRendering="crispEdges"`, both single-accent `color="var(--accent-primary)"` + `fill="currentColor"`, both `aria-hidden`, no state overlay in idle. The launcher is no longer `md` — the previous 132×165 vs 80×100 difference is gone.
   - **Edge:** repeat in a light preset AND the dark base; the companion's idle bob/glow is whole-element transform only — the neutral gate uses the transform:0 frame, never a mid-animation frame; reduced motion suppresses both without changing size. Reference #2850 F-2 + launcher F-44/F-47.
+
+---
+
+## #2853 extension — presence lifecycle (desktop mascot yields to the companion, then returns after idle)
+
+> Issue #2853 adds a **presence lifecycle** for the companion + one new setting: exactly one Fredo
+> at a time (companion visible ⇒ desktop/launcher mascot not rendered; companion hidden ⇒ mascot
+> shown at its place); the companion auto-hides after the configured idle period and the mascot
+> returns home with no user action; the idle period is configurable in Settings → Companion and
+> persists across restart; any companion interaction (drag/move, click/joke, double-click/game,
+> teleport) resets the idle timer.
+> **Verification policy: live** — every row is provable only on a running app (single-Fredo render
+> state + a real idle countdown + persistence across restart). Evidence per case:
+> `tauri_webview_dom_snapshot` / `tauri_webview_execute_js` / `tauri_webview_screenshot` /
+> `tauri_webview_interact` + `tauri_read_logs(source="console")`. The mandatory live receipt is
+> F-29; a static-only PASS is a FALSE PASS.
+> **PO amendment (2026-09-10):** default idle timeout = **60 s** (supersedes the issue's 2 min);
+> interaction = drag/move, click/joke, double-click/game, teleport; auto-return while the launcher
+> is covered by a window may leave the mascot behind the window — the human ACCEPTS that; test the
+> observable single-Fredo + auto-return behavior, **not** window Z-order.
+> **Test data:** running app on the spec branch, MCP driver `com.fredo.app`; short configured idle
+> value (e.g. 5 s) for the interactive countdown legs; persisted visibility key
+> `Fredo_companion_visible`; idle-timeout key `Fredo_companion_idle_timeout` (integer seconds,
+> default 60, range [5, 3600]). Reference prompts E-12..E-17.
+
+## F-21 (REQ-1 / AC-1) — Exactly one Fredo: companion visible ⇒ desktop mascot not rendered; hidden ⇒ mascot shown
+
+- [ ] F-21: With the companion toggled ON, snapshot the DOM/`execute_js` and count every rendered Fredo mascot (`.fredo-companion-avatar` + the desktop/launcher mascot element); take a screenshot. Toggle the companion OFF and recount + rescreenshot.
+  **Expected:** **exactly one Fredo at a time.** Companion ON → `.fredo-companion-avatar` present AND the desktop/launcher mascot is **NOT rendered** (absent from the DOM / a11y tree — not merely behind a window). Companion OFF → the desktop/launcher mascot is present **at its usual place** (same slot/geometry as the pre-slice baseline; default companion position unchanged) and the companion is absent. Never two, never zero when one is expected. **Screenshot leg:** the screenshot shows exactly ONE Fredo *visible* — if the companion node exists but is occluded by the resting launcher surface (z-index risk raised by UI/UX), that is ZERO visible Fredos = report as a finding, not a PASS.
+  - **Edge:** rapid ON/OFF toggling settles to the correct single-Fredo state; with the terminal window open, per-window rules hold (exactly one Fredo per window — cross-ref F-10); companion enabled for the first time before the idle timer arms; launcher covered by another window → assert DOM presence, **not** Z-order. Required data: companion ON, one DOM snapshot + one count probe.
+
+## F-22 (REQ-2 / AC-2) — Auto-return after the configured idle period
+
+- [ ] F-22: Companion ON + desktop mascot hidden; configure a short idle value (e.g. 5 s). Do not interact. Sample companion + desktop-mascot presence at t < timeout, then again after the timeout (timestamp the samples).
+  **Expected:** the scenario holds end-to-end — after the configured idle period with no interaction the companion is no longer visible **and** the desktop mascot is shown at its place, **with no user action**. No premature return before the timeout; the swap observed within ~timeout (+ ~1 s tolerance).
+  - **Edge:** just under vs just over the timeout boundary; webview unfocused / OS idle does not suppress the return; auto-return while the launcher is covered by a window → observe the result, do **not** fail on Z-order (PO note). Required data: companion visible, mascot hidden, timeout value, wall-clock timestamps of the samples.
+
+## F-23 (REQ-3 / AC-3) — Idle period configurable in Companion settings + persists across restart
+
+- [ ] F-23: On a fresh profile, read the idle-timeout control in Settings → Companion and its value. Set a distinct non-default value (e.g. 30 s), close settings, **restart the app**, reopen Settings → Companion and re-read; then wait out the countdown.
+  **Expected:** a timeout control exists in the Companion settings panel; fresh-profile **default = 60 s** (PO amendment); the changed value **persists across restart** and still governs the timer after restart (the re-armed countdown uses the persisted value).
+  - **Edge:** change the value while the companion is visible → the timer re-arms with the new value (no stale countdown); the persisted value survives a webview reload; the AppStore/localStorage read path returns the persisted value. Required data: fresh profile, settings panel, one changed value, one restart.
+
+## F-24 (REQ-4 / AC-4) — Any companion interaction resets the idle timer
+
+- [ ] F-24: With a short timeout, wait to ~80 % of the countdown, then perform each interaction — (a) click/joke, (b) double-click/game, (c) Ctrl+right-click teleport, (d) drag/move. Sample presence after each, then go quiet for a full timeout.
+  **Expected:** **every** listed interaction resets the idle timer — Fredo does not return home while in use. After the interaction, auto-return fires only after a **full quiet period** post-interaction (never from the pre-interaction deadline).
+  - **Edge:** interaction landing exactly at the timeout boundary; interaction during the countdown; an active joke stream (`isStreaming`) or open TicTacToe (`showTicTacToe`) suppresses auto-return — treated as continuous interaction, re-arms only after it settles (Architect-confirmed); Ctrl+right-click teleport resets the timer in both source/destination windows. Required data: short timeout, one gesture of each of the four kinds.
+
+## F-25 (REQ-5 / AC-5) — Invalid / cleared / out-of-range timeout values fall back or clamp without crashing
+
+- [ ] F-25: Seed the timeout with each bad/edge value in turn — cleared/empty, `0`, negative, non-numeric, below-min (`1`), above-max (`99999`), fractional — apply/relaunch, then exercise the control and run a countdown.
+  **Expected (Architect's `clampIdleTimeout` contract, key `Fredo_companion_idle_timeout`):** `!Number.isFinite(s) || s <= 0` → **default 60**; otherwise **round then clamp to [5, 3600]** (so `1`→`5`, `99999`→`3600`, `30.6`→`31`). No crash, no wedge, no infinite loop, no never-firing / fires-forever timer, no unhandled error; the control reflects the resolved/clamped value.
+  - **Edge:** clear the field (empty string) then restart; `0`; negative; non-numeric (`"abc"`); `1`; `99999`; a fractional value; `Fredo_companion_visible` seeded `false` at boot (companion hidden ⇒ mascot shown, timer not armed). Required data: each value, console read after each.
+
+## F-26 (REQ-6 / AC-5) — Auto-return is transient; the visibility preference and toggle are preserved
+
+- [ ] F-26: (a) With the companion visible, trigger auto-return, then read the persisted `Fredo_companion_visible`. (b) Toggle "Show Fredo Companion" OFF then ON; inspect the settings switch and the re-armed countdown.
+  **Expected:** (a) auto-return is **transient** — `Fredo_companion_visible` is **NOT** overwritten (still the user's `true`); the settings switch still reads the persisted preference ON after an auto-return. (b) Toggling still shows/hides exactly as today; `SET_VISIBLE(true)` re-shows the companion **and restarts the idle timer** (clears `isAutoHidden`). The auto-return path never resets the timeout value.
+  - **Edge:** auto-return then immediate toggle; toggle OFF during a countdown then ON; repeated auto-return cycles leave the preference + timeout intact; reload the app after an auto-return → the companion returns per preference. Required data: `Fredo_companion_visible` snapshots before/after, the settings switch state.
+
+## F-27 (REQ-7) — No idle timer runs while the companion is hidden
+
+- [ ] F-27: Hide the companion by **preference OFF** and, separately, by letting a countdown fire; then wait well past the timeout without re-showing. Watch for any timer activity (console/state).
+  **Expected:** while hidden (preference off OR auto-hidden) **no idle timer runs** — no background arming/polling, no late `SET_AUTO_HIDDEN`, nothing that fires against a later re-show. Arming happens only while designated present (`isVisible && !isAutoHidden`), and the timer is cleared on unmount / preference-off (mirroring `dismissTimerRef`).
+  - **Edge:** preference off at boot; auto-hidden then left alone for multiple timeout periods; teleport-to-terminal while the main companion is auto-hidden (per-window timer rules). Required data: hidden-by-preference and hidden-by-auto-return states, console read.
+
+## F-28 (REQ-NF) — Console hygiene + no re-render loop; timer in refs
+
+- [ ] F-28: After every live leg read `tauri_read_logs(source="console")` in BOTH main and terminal windows; inspect the idle-timer/interaction implementation (refs/timers vs `useEffect`/`useMemo` deps); drive a countdown through unrelated re-renders.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded`; **no re-render loop**; the idle timer + interaction listeners live in refs/timers — never in effect/memo deps keyed on `.length` or freshly-created refs (AGENTS.md #523); unrelated re-renders do not reset the countdown; one `setTimeout` ref, cleared before re-arm and on unmount, no `setInterval`.
+  - **Edge:** many re-renders during the countdown; interaction exactly at a reset boundary; console checked post-interaction, not only at boot. Required data: console access per window.
+
+## F-29 (REQ-LIVE) — Mandatory live telemetry + rendered-webview receipt (same run as F-21..F-28)
+
+- [ ] F-29: On the running app, exercise the presence slice (F-21..F-28); run `fredo emit --event-type chat` + `--event-type tool_use` with distinct session ids; query the RTDB row tables + `telemetry_spans` (telemetry-query skill); capture DOM/screenshot/geometry of the single-Fredo state and the idle swap.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)`; the injected events classify into `chat_rows`/`tool_use_rows` under their session ids; a rendered-webview receipt (DOM snapshot / screenshot / measured geometry) of the companion→mascot swap exists. This is the mandatory live-policy receipt — a static-only PASS is a FALSE PASS.
+  - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit + query output in the `## Tests Runs` evidence.
