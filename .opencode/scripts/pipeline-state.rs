@@ -2203,14 +2203,33 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
     // substring "PASS" in its per-AC rows must NOT be read as PASS. Bold- and
     // blockquote-tolerant: `**Verdict: PASS**` / `> Verdict: **PASS**` count,
-    // matching the policy-line tolerance below (Spec #2680).
-    let verdict_line = latest.lines()
+    // matching the policy-line tolerance below (Spec #2680). The DECLARED value
+    // is the FIRST TOKEN after the colon — NOT a whole-line contains: a PASS
+    // verdict whose parenthetical explains a prior round's FAIL (e.g. `Verdict:
+    // PASS (6/6 ACs — the round-1 sole FAIL is cleared)`) must not be misread
+    // as FAIL by a whole-line `!contains("fail")` (#2850 round 2 — the guard
+    // misfired on exactly this pattern and blocked a genuine PASS).
+    let verdict_pass = latest.lines()
         .find(|l| line_has_verdict(l))
         .map(|l| {
-            l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*')
-                .trim().to_lowercase()
-        });
-    let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
+            let t = l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*')
+                .trim().to_lowercase();
+            match t.strip_prefix("verdict:") {
+                Some(rest) => {
+                    // The DECLARED value is the first token after the colon
+                    // (mirrors the policy-line parser below): `Verdict: PASS (...)` →
+                    // token "pass"; `Verdict: **FAIL** (...)` → token "fail".
+                    let first = rest.trim().trim_matches('*').trim();
+                    let value = first.split(|c: char| c.is_whitespace() || c == '-' || c == '—' || c == '(')
+                        .next().unwrap_or("")
+                        .trim_matches(|c| c == '*' || c == '.' || c == ')' || c == ']')
+                        .trim();
+                    value.contains("pass") && !value.contains("fail")
+                }
+                None => false,
+            }
+        })
+        .unwrap_or(false);
     // The verification policy comes from the plan. Single-issue model: the plan is
     // the feature issue's `## Triage Plan` comment (or the A2A file's QA section
     // pre-posting); the legacy plan-issue body remains a fallback for old specs.

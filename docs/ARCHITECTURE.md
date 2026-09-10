@@ -445,8 +445,9 @@ apps/ui/src/
     |   +-- types.ts                — GridItemConfig
     +-- utils/adapterBridge.ts      — non-React singleton for feature → invoke()
     +-- components/
+        +-- fredo-avatar/         — shared FREDO avatar (FredoAvatar.tsx, geometry, sizes, css)
         +-- companion/
-            +-- FredoCompanion.tsx  — Animated sprite + LLM companion
+            +-- FredoCompanion.tsx  — LLM companion rendering the shared FredoAvatar (sm)
             +-- SpeechBubble.tsx    — Positionable bubble with game slot
             +-- features/
                 +-- tictactoe/      — Tic-Tac-Toe game (vision-based AI)
@@ -584,14 +585,14 @@ live traffic on the identical path — observable, replayable, interruptible.
 
 ## FredoCompanion
 
-The animated companion sprite on the Home panel:
+The animated companion on the Home panel renders the **shared `FredoAvatar` component** (size `sm`, 80×100px, derived from the single `FREDO_AVATAR_SPACE` aspect constant):
 
-- **Spritesheet**: 6-col × 4-row at 80×80px per frame
-- **States**: idle (loop), talk (loop), teleport-out (one-shot), teleport-in (one-shot)
+- **Shared avatar**: `apps/ui/src/shared/components/fredo-avatar/` — `FredoAvatar.tsx` (frozen 58-rect base SVG + state overlay), `fredoAvatarGeometry.ts` (canonical rect table), `fredoAvatarSizes.ts` (`AVATAR_SM`/`AVATAR_MD`), `fredo-avatar.css` (mouth/streak/sparkle keyframes + reduced-motion). The launcher renders the same component at `md` (132×165).
+- **States**: idle (58 base rects only), talk (mouth overlay + streaming pulse), teleport-out (closed-eyes + streak), teleport-in (sparkles) — expressed via the overlay `<g id="fredo-expression" data-state>` + wrapper-level CSS motion; base rects frozen byte-identical in every state.
 - **Personality**: "friendly robot who loves programming, tells jokes, plays Tic-Tac-Toe"
 - **Jokes**: 20 topics (recursion, git, CSS, regex, etc.)
 - **Streaming**: Token-by-token accumulation with `<end_of_turn>`/`<start_of_turn>` stripping
-- **Cross-window teleport**: Tauri global `companion-teleport` events broadcast to all webview windows
+- **Cross-window teleport**: Tauri global `companion-teleport` events broadcast to all webview windows (dev mode — no Tauri host — teleports locally via `startTeleportOut`, guarded `IS_TAURI` branch)
 - **Interaction**: Single-click → joke; double-click → Tic-Tac-Toe; Ctrl+right-click → teleport
 
 ### Tic-Tac-Toe

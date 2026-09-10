@@ -2623,6 +2623,51 @@ Test-Script "Verdict line with a leading UTF-8 BOM still parses as PASS" {
   }
 }
 
+# The verdict VALUE is the FIRST TOKEN after the `Verdict:` colon, not a
+# whole-line contains scan - a round-2 PASS verdict that explains the prior
+# round's FAIL in its parenthetical (e.g. "Verdict: PASS (6/6 ACs - the
+# round-1 sole FAIL is cleared)") legitimately contains the substring "fail"
+# and must NOT be misread as FAIL (observed on #2850 round 2, where the
+# whole-line `!contains("fail")` guard blocked a genuine PASS).
+Test-Script "PASS verdict mentioning a prior round's FAIL in the same line still parses as PASS" {
+  $url = Mock-IssueCreate "temp: verdict-pass-mentions-fail" "verdict-pass-fail scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # The #2850 round-2 shape: PASS verdict + parenthetical referencing the
+    # round-1 FAIL + a genuine live telemetry_spans receipt.
+    $evBody = Join-Path $env:TEMP "fredo-ev-pass-fail.md"
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs (round 2)`n`nVerdict: **PASS** (6/6 ACs - the round-1 sole FAIL, Q-18/M10 dev-mode, is cleared by the round-2 in-environment jsdom evidence)`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    $auditJson = $auditStr.Substring($auditStr.IndexOf("{"))
+    $json = $auditJson | ConvertFrom-Json
+    if (-not $json.verdict_is_pass) { throw "PASS verdict mentioning prior FAIL must parse as pass, got: $auditStr" }
+    if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
+    # And the inverse guard still holds: a FAIL verdict mentioning PASS in its
+    # per-AC rows must NOT be read as PASS (#1499 semantic preserved).
+    $failBody = Join-Path $env:TEMP "fredo-ev-fail-pass.md"
+    [System.IO.File]::WriteAllText($failBody, "## Tests Runs (round 2)`n`nVerdict: **FAIL** (21/22 Q-rows PASS; 1 row UNVERIFIED)`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $failBody" 2>&1 | Out-Null
+    Remove-Item $failBody -Force -ErrorAction SilentlyContinue
+    $audit2 = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $audit2Str = if ($audit2 -is [array]) { $audit2 -join "`n" } else { "$audit2" }
+    $audit2Json = $audit2Str.Substring($audit2Str.IndexOf("{"))
+    $json2 = $audit2Json | ConvertFrom-Json
+    if ($json2.verdict_is_pass) { throw "FAIL verdict mentioning PASS rows must parse as fail, got: $audit2Str" }
+    if ($json2.verification_ok) { throw "FAIL verdict must block verification_ok, got: $audit2Str" }
+    return "verdict first-token parse: PASS-with-FAIL-mention passes, FAIL-with-PASS-rows still blocks"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # The verification policy is the DECLARED value after "Verification policy:",
 # not a whole-line "contains static" scan — the template's explanatory sentence
 # ("replace `live` with `static` ONLY if every AC...") contains the word, so a
