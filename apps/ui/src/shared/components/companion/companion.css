@@ -11,17 +11,11 @@
    `data-state` + `aria-label` (machine-observable state probe).
  */
 
-/* ── idle: subtle vertical bob + soft accent glow (2.4 s loop) ─────────────── */
-@keyframes fredo-idle-bob {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-2px); }
-}
-
-@keyframes fredo-idle-glow {
-  0%, 100% { filter: drop-shadow(0 0 0 color-mix(in srgb, var(--accent-primary) 0%, transparent)); }
-  50%      { filter: drop-shadow(0 0 6px  color-mix(in srgb, var(--accent-primary) 22%, transparent)); }
-}
-
+/* ── idle: subtle vertical bob + soft accent glow (2.4 s loop) ───────────────
+   The `fredo-idle-bob` / `fredo-idle-glow` keyframes are the SHARED single
+   source in `../fredo-avatar/fredoAvatarIdle.css` (imported by the shared
+   `FredoAvatar`). The companion wrapper keeps its own selector + reduced-motion
+   rule below, so its computed animation is byte-equivalent. */
 .fredo-companion-avatar[data-state='idle'] {
   animation:
     fredo-idle-bob 2.4s ease-in-out infinite,

@@ -498,8 +498,8 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             '&::-webkit-scrollbar-track': { background: 'transparent' },
           }}
         >
-          <Box mb="4">
-            <FredoAvatar size="md" />
+          <Box mb="4" className="fredo-avatar-idle" data-state="idle">
+            <FredoAvatar size="sm" />
           </Box>
           <LauncherCommandBar
             query={query}
