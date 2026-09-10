@@ -56,6 +56,8 @@
 
 ## #2852 extension — launcher-adopts-sm cross-surface probes
 
+> **Round 1 (spec/2852 @ 1677eca8) — E-11 UNVERIFIED-with-named-blocker (no confirmed finding).** The MCP driver cannot flip `prefers-reduced-motion` live (named blocker). Parity is structurally satisfied: both surfaces consume the SAME shared keyframes and each carries its own `@media (prefers-reduced-motion: reduce){ … animation:none }` rule; companion teleport crossfade rules unchanged in the diff. No asymmetry observable in the non-reduced state.
+
 > Add findings here for issue #2852; a confirmed finding PROMOTES to `functional.md` as a new
 > `F-` row (keep the origin note). A confirmed regression-free probe is recorded here (no
 > promotion).
