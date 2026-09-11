@@ -20,6 +20,9 @@
  *      isAutoReturning WITHOUT persisting (setVisible is the sole persisted
  *      writer — asserted via a `settingsService.set` spy).
  *   6. Presence derivation — designated presence = `isVisible && !isAutoHidden`.
+ *   7. Continuous "in use" suppression (ST-3 round 2) — `isInUse` clears/re-arms
+ *      the host idle timer, never arms without designated presence, and is
+ *      transient (never persisted via `settingsService.set`).
  *
  * The Tauri branch (`IS_TAURI`) is forced ON at module-eval time via
  * `vi.hoisted` so the `companion-presence` listener registers; the event module
@@ -85,7 +88,7 @@ let api: CompanionApi;
 
 function PresenceProbe() {
   api = useCompanion();
-  const { isVisible, isAutoHidden, isAutoReturning, isHosting } = api.state;
+  const { isVisible, isAutoHidden, isAutoReturning, isHosting, isInUse } = api.state;
   return (
     <div
       data-testid="presence"
@@ -93,6 +96,7 @@ function PresenceProbe() {
       data-autohidden={String(isAutoHidden)}
       data-autoreturning={String(isAutoReturning)}
       data-hosting={String(isHosting)}
+      data-inuse={String(isInUse)}
       data-present={String(isVisible && !isAutoHidden)}
       data-idle-timeout={String(api.idleTimeoutSeconds)}
     />
@@ -106,6 +110,7 @@ function presence() {
     autoHidden: el.getAttribute('data-autohidden') === 'true',
     autoReturning: el.getAttribute('data-autoreturning') === 'true',
     hosting: el.getAttribute('data-hosting') === 'true',
+    inUse: el.getAttribute('data-inuse') === 'true',
     present: el.getAttribute('data-present') === 'true',
   };
 }
@@ -436,5 +441,84 @@ describe('designated presence = isVisible && !isAutoHidden (#2853 ST-2)', () => 
     act(() => { api.setVisible(false); });
     expect(presence().visible).toBe(false);
     expect(presence().present).toBe(false);
+  });
+});
+
+// ── 7. Continuous "in use" suppression (ST-3 round 2) ────────────────────────
+
+describe('CompanionProvider — continuous "in use" suppression (#2853 ST-3 round 2)', () => {
+  it('setInUse(true) clears a running timer so it does not fire at the deadline', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.setHosting(true); });
+    act(() => { vi.advanceTimersByTime(4_000); }); // 4 s elapsed of a 5 s countdown
+    act(() => { api.setInUse(true); });
+    expect(presence().inUse).toBe(true);
+
+    act(() => { vi.advanceTimersByTime(60_000); }); // way past the original deadline
+    expect(presence().autoReturning).toBe(false, 'suppressed while continuously in use');
+    expect(presence().autoHidden).toBe(false);
+    expect(presence().visible).toBe(true);
+  });
+
+  it('setInUse(false) while designated-present re-arms a full quiet period', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.setHosting(true); });
+    act(() => { api.setInUse(true); });
+    act(() => { vi.advanceTimersByTime(60_000); }); // held in use well past the deadline
+    expect(presence().autoReturning).toBe(false);
+
+    act(() => { api.setInUse(false); });
+    // timeout − 1: the re-armed quiet period has not elapsed yet.
+    act(() => { vi.advanceTimersByTime(4_999); });
+    expect(presence().autoReturning).toBe(false);
+
+    // +1 reaches the full quiet period → the leave motion is requested.
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(presence().autoReturning).toBe(true);
+    expect(presence().autoHidden).toBe(false);
+  });
+
+  it('isInUse alone does not arm a timer while hidden by preference (no fire)', async () => {
+    await mountProvider({ visible: false, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.setHosting(true); }); // hosting, but not designated present
+    act(() => { api.setInUse(true); });
+    act(() => { api.setInUse(false); }); // release must NOT arm without presence
+    act(() => { vi.advanceTimersByTime(60_000); });
+
+    expect(presence().autoReturning).toBe(false);
+    expect(presence().autoHidden).toBe(false);
+    expect(presence().visible).toBe(false);
+  });
+
+  it('isInUse alone does not arm a timer in a non-host window (no fire)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    // `isHosting` stays false (this webview does not display the companion).
+    expect(presence().hosting).toBe(false);
+    act(() => { api.setInUse(true); });
+    act(() => { api.setInUse(false); });
+    act(() => { vi.advanceTimersByTime(60_000); });
+
+    expect(presence().autoReturning).toBe(false);
+    expect(presence().autoHidden).toBe(false);
+  });
+
+  it('setInUse never writes a persisted setting (transient, host-local)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    act(() => { api.setInUse(true); });
+    act(() => { api.setInUse(false); });
+
+    expect(presence().inUse).toBe(false);
+    expect(setSpy).not.toHaveBeenCalled();
+    setSpy.mockRestore();
   });
 });

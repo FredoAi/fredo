@@ -55,10 +55,14 @@ interface CompanionContextState {
   isVisible: boolean;
   position: CompanionPosition;
   // Transient presence flags — NEVER persisted; `isAutoHidden` is cross-window
-  // synced, `isAutoReturning`/`isHosting` are host-window-local.
+  // synced, `isAutoReturning`/`isHosting`/`isInUse` are host-window-local.
   isAutoHidden: boolean;
   isAutoReturning: boolean;
   isHosting: boolean;
+  // #2853 ST-3 (round 2): continuous-interaction suppression — true while Fredo
+  // is actively in use (open TicTacToe / active joke stream / talk hold). Host-
+  // local and transient: never persisted, never broadcast.
+  isInUse: boolean;
 }
 
 type CompanionAction =
@@ -71,6 +75,7 @@ type CompanionAction =
   | { type: 'AUTO_RETURN_SETTLED' }
   | { type: 'CANCEL_AUTO_RETURN' }
   | { type: 'SET_HOSTING'; payload: boolean }
+  | { type: 'SET_IN_USE'; payload: boolean }
   | { type: 'SYNC_PRESENCE'; payload: { visible?: boolean; autoHidden?: boolean } };
 
 interface CompanionContextValue {
@@ -88,6 +93,8 @@ interface CompanionContextValue {
   confirmAutoReturn: () => void;
   /** FredoCompanion reports whether this webview currently displays the companion. */
   setHosting: (hosting: boolean) => void;
+  /** FredoCompanion reports continuous use (open game / active stream / talk). */
+  setInUse: (inUse: boolean) => void;
 }
 
 // ── Reducer ──────────────────────────────────────────────────────────────────
@@ -101,6 +108,7 @@ const initialState: CompanionContextState = {
   isAutoHidden: false,
   isAutoReturning: false,
   isHosting: false,
+  isInUse: false,
 };
 
 function reducer(state: CompanionContextState, action: CompanionAction): CompanionContextState {
@@ -125,6 +133,8 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       return state.isAutoReturning ? { ...state, isAutoReturning: false } : state;
     case 'SET_HOSTING':
       return state.isHosting === action.payload ? state : { ...state, isHosting: action.payload };
+    case 'SET_IN_USE':
+      return state.isInUse === action.payload ? state : { ...state, isInUse: action.payload };
     case 'SYNC_PRESENCE': {
       // Remote presence: apply fields that were provided, always clear the local
       // in-flight return. Never persists (setVisible is the only persisted writer).
@@ -253,6 +263,10 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     dispatch({ type: 'SET_HOSTING', payload: hosting });
   }, []);
 
+  const setInUse = useCallback((inUse: boolean) => {
+    dispatch({ type: 'SET_IN_USE', payload: inUse });
+  }, []);
+
   const setIdleTimeoutSeconds = useCallback((s: number) => {
     setIdleTimeout(clampIdleTimeout(s));
   }, [setIdleTimeout]);
@@ -284,11 +298,11 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Primitive deps only (no array .length / object identity) so this can never
   // loop; idleTimeoutSeconds is a dep so a mid-countdown change re-arms with it.
   useEffect(() => {
-    const gate = state.isVisible && state.isHosting && !state.isAutoHidden && !state.isAutoReturning;
+    const gate = state.isVisible && state.isHosting && !state.isAutoHidden && !state.isAutoReturning && !state.isInUse;
     if (!gate) { clearIdleTimer(); return; }
     armIdleTimer();
     return clearIdleTimer;
-  }, [state.isVisible, state.isHosting, state.isAutoHidden, state.isAutoReturning, idleTimeoutSeconds, armIdleTimer, clearIdleTimer]);
+  }, [state.isVisible, state.isHosting, state.isAutoHidden, state.isAutoReturning, state.isInUse, idleTimeoutSeconds, armIdleTimer, clearIdleTimer]);
 
   // Clear the idle timer on unmount.
   useEffect(() => () => clearIdleTimer(), [clearIdleTimer]);
@@ -296,11 +310,11 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const value = useMemo<CompanionContextValue>(() => ({
     state, setState, showMessage, hideMessage, setVisible, teleport,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
-    confirmAutoReturn, setHosting,
+    confirmAutoReturn, setHosting, setInUse,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
-    confirmAutoReturn, setHosting,
+    confirmAutoReturn, setHosting, setInUse,
   ]);
 
   return (

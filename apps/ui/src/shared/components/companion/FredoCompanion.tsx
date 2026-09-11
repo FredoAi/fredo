@@ -52,7 +52,7 @@ const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in windo
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, setState, teleport, showMessage, hideMessage, confirmAutoReturn, setHosting, notifyInteraction } = useCompanion();
+  const { state, setState, teleport, showMessage, hideMessage, confirmAutoReturn, setHosting, setInUse, notifyInteraction } = useCompanion();
   const { animState, message, isVisible, isAutoHidden, isAutoReturning, position } = state;
 
   const [displayPos, setDisplayPos] = useState({ x: position.x, y: position.y });
@@ -96,6 +96,18 @@ export const FredoCompanion: React.FC = () => {
   // #2853 ST-2: report host identity to the context so ONLY the webview that
   // currently displays the companion arms the host-owned idle auto-return timer.
   useEffect(() => { setHosting(isInThisWindow); }, [isInThisWindow, setHosting]);
+
+  // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
+  // auto-return while Fredo is actively engaged — an open TicTacToe, an active
+  // joke stream, or the talk hold. `isInUse` is intentionally NOT a dep (same
+  // shape as setHosting) so the SET_IN_USE re-render cannot re-run this effect.
+  useEffect(() => {
+    setInUse(showTicTacToe || isStreaming || animState === 'talk');
+  }, [showTicTacToe, isStreaming, animState, setInUse]);
+
+  // Defensive: never leave the context stuck "in use" if this component unmounts
+  // while the predicate is still true (component is mounted at app root).
+  useEffect(() => () => setInUse(false), [setInUse]);
 
   const clearTimer = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
