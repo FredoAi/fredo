@@ -10,7 +10,7 @@
 
 ## Must NOT change (regression invariants)
 
-- [ ] **R-1 (existing companion controls survive when setup IS complete):** On a machine with both
+- [x] **R-1 (existing companion controls survive when setup IS complete):** On a machine with both
       prerequisites satisfied, Companion settings still renders the existing controls —
       "Show Fredo Companion" toggle + the auto-return (idle-timeout) control + the teleport tip;
       the toggle still shows/hides the companion and persists `Fredo_companion_visible`; the idle
@@ -20,7 +20,7 @@
     (not stuck disabled); settings modal mounts cleanly. Reference `.opencode/tests/companion/`
     R-12..R-18 + functional F-21..F-28.
 
-- [ ] **R-2 (`check_model_files` contract + consumers unchanged):** The command still returns
+- [x] **R-2 (`check_model_files` contract + consumers unchanged):** The command still returns
       `{ gguf_exists, mmproj_exists, gguf_path, mmproj_path }` (`commands.rs:969`) and its existing
       consumers still work — `CompanionSettingsPanel`'s model gate and `SetupWizard`'s `model`
       step (`SetupWizard.tsx:131`) both still resolve their state. The new per-prerequisite
@@ -29,7 +29,7 @@
     step in the standalone SetupWizard still reaches `done` when both files exist; the Rust
     command compiles with its `ModelFilesStatus` shape unchanged.
 
-- [ ] **R-3 (`Model not downloaded` banner / `handleOpenSetup` removal is clean):** The UI/UX plan
+- [x] **R-3 (`Model not downloaded` banner / `handleOpenSetup` removal is clean):** The UI/UX plan
       (§1/§6) deliberately DELETES the model-missing banner (`CompanionSettingsPanel.tsx:154-187`)
       and its `handleOpenSetup`/`setupFeature` import (`:108-119`) — the inline wizard owns the
       flow. This is an intentional supersede, NOT a regression; the invariant is that the removal
@@ -40,26 +40,43 @@
     references; mounting `CompanionSettingsPanel` on a models-missing machine does not throw (it
     now renders the wizard instead); the standalone `SetupWizard` (R-4) is unaffected.
 
-- [ ] **R-4 (standalone Fredo Setup wizard unchanged):** The existing `SetupWizard`
+- [x] **R-4 (standalone Fredo Setup wizard unchanged):** The existing `SetupWizard`
       (`features/setup/components/SetupWizard.tsx`, the "Fredo Setup" nav item) still renders its
       steps and its `model` / `fredo-path` / `plugin-*` / `otel` actions still invoke the same
       commands. #2855 must not re-scope or break the standalone setup page.
   - **Edge:** `get_setup_plan` / `check_cli_installations` / `download_model` wiring unchanged;
     the standalone wizard opens from the nav.
 
-- [ ] **R-5 (companion behavior untouched):** The companion overlay itself is unchanged —
+- [x] **R-5 (companion behavior untouched):** The companion overlay itself is unchanged —
       single-Fredo presence, auto-return, teleport, joke, TicTacToe, speech bubble, avatar
       geometry/animation. Reference `.opencode/tests/companion/` R-1..R-23 + functional
       F-1..F-29; the gating slice must not alter the overlay.
   - **Edge:** a wizard gate must not prevent the companion from rendering when it is legitimately
     enabled on a set-up machine.
 
-- [ ] **R-6 (token contract):** No hardcoded hex/`rgba(`/`rgb(`/`hsla(` and no `var(--x)NN`
+- [x] **R-6 (token contract):** No hardcoded hex/`rgba(`/`rgb(`/`hsla(` and no `var(--x)NN`
       alpha-append are introduced in the changed wizard/gating files; theme token → CSS var +
       `tint()` only. Reference `.opencode/tests/companion/` R-7 + theming suite.
 
-- [ ] **R-7 (build gates):** `pnpm --filter @fredo/ui build` exits 0 with zero TS errors; if Rust
+- [x] **R-7 (build gates):** `pnpm --filter @fredo/ui build` exits 0 with zero TS errors; if Rust
       is touched, `cargo check` has zero warnings; `pnpm --filter @fredo/ui test:run` is green.
+
+## Execution Log — round 1 (2026-09-11, spec/2855 @ c5c29c42)
+
+R-1..R-7 PASS live (except R-7 Rust leg, not runnable in the tester sandbox — `cargo` is not an
+allowed command; covered by CI `rust-validate`, which was pending at capture).
+- R-1: `companion-controls` rendered on MS-4; `#companion-idle-timeout-seconds` present/enabled;
+  `Fredo_companion_visible` toggled true→false→true via the Switch (persisted each time).
+- R-2: `check_model_files` returns unchanged `{gguf_exists,mmproj_exists,gguf_path,mmproj_path}`
+  (both true; real paths). Wire contract untouched.
+- R-3: grep for `handleOpenSetup` / "Model not downloaded" in `apps/ui/src` → 0 hits. The
+  remaining `setupFeature` refs are Home.tsx's intentional standalone-setup window, not the
+  removed Companion path.
+- R-4: standalone `setupFeature` registration + `SetupWizard.test.tsx` still green (792 UI tests).
+- R-5: no overlay file changed by the diff; controls render + toggle persists.
+- R-6: no hardcoded hex/rgba/hsl in the five new #2855 files (only pre-existing `tictactoe.css`).
+- R-7: `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` → 55 files /
+  792 tests passed. `cargo` unavailable to the tester (tool-access gap).
 
 ## Overlapping prior-feature suites (run alongside)
 
