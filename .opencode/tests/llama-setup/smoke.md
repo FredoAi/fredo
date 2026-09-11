@@ -43,3 +43,12 @@ with per-row state, `companion-controls` query = 0.
 - [ ] S-9: Screenshot the three-file model step —
       `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2856/e2e/model-step.jpeg")`
       succeeds.
+
+## Execution Log — round 1 (2026-09-11, spec/2856 @ 0f3f3595)
+
+Real wizard-driven pull (superseding the stub methodology per the binding human directive). S-7
+PASS (3 rows, all `Missing`, summary `0 of 3`, step `data-state=incomplete`); S-8 PASS (real
+`download_model` → `downloading` with determinate progress, no console errors); S-9 PASS
+(screenshots captured under `.opencode/tmp/2856/e2e/` and uploaded to
+`.opencode/evidence/2856/`). Console clean after every interaction (only the pre-existing
+`motion() is deprecated` warning).
