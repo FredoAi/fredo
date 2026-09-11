@@ -4,6 +4,8 @@ import type { CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
 import { TicTacToe } from './features/tictactoe';
 import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
+import type { FredoAvatarState } from '../fredo-avatar';
+import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
@@ -15,6 +17,15 @@ const ANIM_DURATION: Record<CompanionState, number> = {
   'teleport-out':  400,
   'teleport-in':   400,
 };
+
+// #2854 — status-flow hold durations. These are the EXISTING windows (the joke's
+// 5 s hold and the TicTacToe onDone/outcome 4 s hold) — only the rendered
+// expression changes, never the timing.
+const HAPPY_HOLD_MS = 5000;
+const TALK_HOLD_MS = 4000;
+// AC4 "no state sticks": any LLM-bound status (thinking/joking) that never
+// receives its first token / completion falls back to idle after this bound.
+const SAFETY_TIMEOUT_MS = 15000;
 
 const JOKE_TOPICS = [
   'recursion', 'null pointers', 'git', 'CSS', 'regex', 'merge conflicts',
@@ -62,10 +73,30 @@ export const FredoCompanion: React.FC = () => {
   const [showTicTacToe, setShowTicTacToe] = useState(false);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // currentAnim drives which avatar state (expression) is shown
-  const [currentAnim, setCurrentAnim] = useState<CompanionState>('idle');
+  // currentAnim drives which avatar state (expression) is shown. Widened from
+  // `CompanionState` to the shared `FredoAvatarState` (#2854) so the companion's
+  // LOCAL flow can hold thinking/joking/happy/playful WITHOUT touching the
+  // presence reducer (`CompanionState` / `ANIM_DURATION` stay untouched).
+  const [currentAnim, setCurrentAnim] = useState<FredoAvatarState>('idle');
   // animKey forces the wrapper to remount and restart the CSS animation cleanly
   const [animKey, setAnimKey] = useState(0);
+
+  // #2854 — a status owned by the companion's local flow (thinking/joking/happy)
+  // outranks the context `animState` sync. The flag is read inside effects/JSX
+  // and never triggers a render, so it can not participate in a render loop.
+  const flowOwnsExpressionRef = useRef(false);
+  // #2854 AC4 — bounded fallback to idle for LLM-bound statuses (watchdog).
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #2854 — the joke's first REAL token promotes thinking -> joking exactly once.
+  const firstTokenRef = useRef(false);
+
+  // #2854 — resting cadence: while truly at rest (no stream / game / message)
+  // the companion emits a bounded `playful` beat, then returns to idle, repeating.
+  const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
+  // The playful beat is a DERIVED display layer — it never mutates `currentAnim`,
+  // so a flow-owned thinking/joking/happy always wins and playful only tints idle.
+  const displayAnim: FredoAvatarState =
+    currentAnim === 'idle' && resting === 'playful' ? 'playful' : currentAnim;
 
   const isTeleportingRef = useRef(false);
   const pendingDestRef = useRef<{ x: number; y: number } | null>(null);
@@ -113,24 +144,67 @@ export const FredoCompanion: React.FC = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
   };
 
-  const playAnim = useCallback((anim: CompanionState) => {
+  const playAnim = useCallback((anim: FredoAvatarState) => {
     setCurrentAnim(anim);
     setAnimKey((k) => k + 1);
   }, []);
+
+  // #2854 — a teleport OWNS the expression while in flight; a status flow must
+  // never clobber the leaving/arriving motion (teleport timing + the
+  // `isTeleportingRef` guard remain intact).
+  const playFlowAnim = useCallback((anim: FredoAvatarState) => {
+    if (isTeleportingRef.current) return;
+    playAnim(anim);
+  }, [playAnim]);
+
+  // #2854 AC4 — every LLM-bound status carries a bounded watchdog. It clears on
+  // the first token / done / error path / unmount (the same single-`setTimeout`
+  // pattern as `timerRef`), so a dropped stream can never leave thinking/joking
+  // stuck.
+  const clearWatchdog = useCallback(() => {
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+  }, []);
+
+  const startWatchdog = useCallback(() => {
+    clearWatchdog();
+    watchdogRef.current = setTimeout(() => {
+      watchdogRef.current = null;
+      isGeneratingRef.current = false;
+      setIsStreaming(false);
+      setStreamingMessage(null);
+      flowOwnsExpressionRef.current = false;
+      playAnim('idle');
+      setState('idle');
+      hideMessage();
+    }, SAFETY_TIMEOUT_MS);
+  }, [clearWatchdog, playAnim, setState, hideMessage]);
 
   // Sync context position changes (initial placement / external teleport)
   useEffect(() => {
     setDisplayPos({ x: position.x, y: position.y });
   }, [position.x, position.y]);
 
-  // Respond to context animState (message show -> 'talk', hide -> 'idle')
-  // Ignore during active teleport sequence
+  // Respond to context animState (message show -> 'talk', hide -> 'idle').
+  // Ignore during an active teleport sequence.
+  //
+  // #2854 sync guard: a flow-owned expression (thinking/joking/happy) must NOT be
+  // clobbered by the context broadcast. `talk` is honored ONLY when a context
+  // message is actually present (message-driven talk, e.g. Home's showMessage);
+  // `idle` is honored only when no flow owns the expression and the resting
+  // playful beat is not mid-flight (replaying idle would remount the wrapper and
+  // cut the beat short).
   useEffect(() => {
     if (isTeleportingRef.current) return;
-    if (animState === 'talk' || animState === 'idle') {
-      playAnim(animState);
+    if (animState === 'talk') {
+      if (message != null) playAnim('talk');
+      return;
     }
-  }, [animState, playAnim]);
+    if (animState === 'idle') {
+      if (!flowOwnsExpressionRef.current && resting !== 'playful') {
+        playAnim('idle');
+      }
+    }
+  }, [animState, message, resting, playAnim]);
 
   // Teleport sequence (fully timer-driven)
   const startTeleportIn = useCallback((dest: { x: number; y: number }) => {
@@ -264,24 +338,41 @@ export const FredoCompanion: React.FC = () => {
 
   useEffect(() => () => {
     clearTimer();
+    clearWatchdog();
     if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
-  }, []);
+  }, [clearWatchdog]);
 
   // ── LLM joke generation ───────────────────────────────────────────────────
   const askForJoke = useCallback(() => {
     console.log('[companion] askForJoke called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
     if (isTeleportingRef.current || isGeneratingRef.current) return;
     isGeneratingRef.current = true;
+    firstTokenRef.current = false;
     setStreamingMessage('💭 Thinking...');
     setIsStreaming(true);
-    playAnim('talk');
+    // #2854 R-2a — the joke's LLM wait renders `thinking` (not `talk`). The
+    // context state STAYS 'talk' as the presence/busy marker the #2853 `isInUse`
+    // gate keys on (`animState === 'talk'`); the expression is flow-owned.
+    flowOwnsExpressionRef.current = true;
+    playFlowAnim('thinking');
     setState('talk');
+    startWatchdog();
 
     console.log('[companion] calling adapterBridge.llmChat');
     adapterBridge.llmChat(
       buildJokeMessages(),
       (token) => {
         console.log('[companion] llm-token:', token.slice(0, 40));
+        // #2854 R-2b — the first REAL token promotes the flow to `joking`; the
+        // context state is intentionally untouched. (Empty/zero-token responses
+        // skip `joking` — thinking -> happy -> idle.)
+        if (!firstTokenRef.current && token.length > 0) {
+          firstTokenRef.current = true;
+          clearWatchdog();
+          if (!isTeleportingRef.current) {
+            playAnim('joking');
+          }
+        }
         setStreamingMessage((prev) => {
           // Clear the placeholder on the first real token
           if (prev === '💭 Thinking...' || prev === '⏳ Loading model...') return token;
@@ -292,18 +383,22 @@ export const FredoCompanion: React.FC = () => {
         console.log('[companion] llm-done received');
         isGeneratingRef.current = false;
         setIsStreaming(false);
-        isGeneratingRef.current = false;
-        setIsStreaming(false);
-        // Hold 'talk' for 5 s then return to idle
+        clearWatchdog();
+        // #2854 R-3a — completion renders `happy` through the EXISTING 5 s hold
+        // (HAPPY_HOLD_MS; timing unchanged — only the expression changes), then
+        // returns to idle. `flowOwns` is released on that return.
+        flowOwnsExpressionRef.current = true;
+        playFlowAnim('happy');
         timerRef.current = setTimeout(() => {
+          flowOwnsExpressionRef.current = false;
           setStreamingMessage(null);
           playAnim('idle');
           setState('idle');
           hideMessage();
-        }, 5000);
+        }, HAPPY_HOLD_MS);
       },
     );
-  }, [playAnim, setState, hideMessage]);
+  }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog]);
 
   // ── Click / double-click on avatar ─────────────────────────────────────────
   // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
@@ -367,17 +462,44 @@ export const FredoCompanion: React.FC = () => {
             onStartStreaming={() => {
               notifyInteraction();
               setIsStreaming(true);
-              playAnim('talk');
+              // #2854 R-2c — the TicTacToe LLM wait renders `thinking`; `talk`
+              // stays the presence/busy marker (#2853 `isInUse`).
+              flowOwnsExpressionRef.current = true;
+              playFlowAnim('thinking');
               setState('talk');
+              startWatchdog();
             }}
             onDoneStreaming={() => {
               notifyInteraction();
               setIsStreaming(false);
+              clearWatchdog();
+              // Preserved 4 s hold; the expression is whatever the flow set (a
+              // terminal outcome replaces this hold with `happy` via onOutcome).
               timerRef.current = setTimeout(() => {
+                flowOwnsExpressionRef.current = false;
                 setStreamingMessage(null);
                 playAnim('idle');
                 setState('idle');
-              }, 4000);
+              }, TALK_HOLD_MS);
+            }}
+            onOutcome={() => {
+              // #2854 R-3b — ANY terminal outcome (X win / O win / draw) renders
+              // `happy` for the existing 4 s window, then idle. A teleport owns
+              // the expression while in flight — never cancel its timer or
+              // clobber its motion with the outcome hold.
+              notifyInteraction();
+              if (isTeleportingRef.current) return;
+              // Clear the pending onDoneStreaming hold so the two never fight.
+              clearTimer();
+              clearWatchdog();
+              flowOwnsExpressionRef.current = true;
+              playFlowAnim('happy');
+              timerRef.current = setTimeout(() => {
+                flowOwnsExpressionRef.current = false;
+                setStreamingMessage(null);
+                playAnim('idle');
+                setState('idle');
+              }, TALK_HOLD_MS);
             }}
           />
         )}
@@ -393,10 +515,10 @@ export const FredoCompanion: React.FC = () => {
         key={animKey}
         ref={wrapperRef}
         onClick={handleSpriteClick}
-        data-state={currentAnim}
+        data-state={displayAnim}
         data-streaming={isStreaming || undefined}
         title="Click to chat | Double-click to play Tic-Tac-Toe | Ctrl+right-click to teleport"
-        aria-label={`Fredo companion -- ${currentAnim}`}
+        aria-label={`Fredo companion -- ${displayAnim}`}
         className="fredo-companion-avatar"
         style={{
           position: 'fixed',
@@ -409,7 +531,7 @@ export const FredoCompanion: React.FC = () => {
           cursor: isGeneratingRef.current ? 'default' : 'pointer',
         }}
       >
-        <FredoAvatar size="sm" state={currentAnim} />
+        <FredoAvatar size="sm" state={displayAnim} />
       </div>
     </>
   );

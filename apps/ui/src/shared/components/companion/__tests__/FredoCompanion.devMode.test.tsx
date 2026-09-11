@@ -259,11 +259,12 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
     // Single/double discriminator (250 ms): nothing fires yet.
     expect(avatar(container).getAttribute('data-state')).toBe('idle');
 
-    // After the 250 ms discriminator the joke starts: talk + streaming marks.
+    // After the 250 ms discriminator the joke starts: #2854 R-2a/Q2 — the LLM
+    // wait renders `thinking` (NOT `talk`, which #2850 asserted) + streaming marks.
     act(() => {
       vi.advanceTimersByTime(250);
     });
-    expect(avatar(container).getAttribute('data-state')).toBe('talk');
+    expect(avatar(container).getAttribute('data-state')).toBe('thinking');
     expect(avatar(container).getAttribute('data-streaming')).toBe('true');
 
     // Placeholder shows while waiting for the first DevAdapter token; the 2×14 px
@@ -296,9 +297,10 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
       if (avatar(container).getAttribute('data-streaming') == null) break;
     }
     expect(avatar(container).getAttribute('data-streaming')).toBeNull();
-    // Talk holds after onDone (the 5 s hold timer has not fired yet); full joke text
-    // is in the bubble and the placeholder + streaming cursor are gone.
-    expect(avatar(container).getAttribute('data-state')).toBe('talk');
+    // #2854 R-3a/Q3 — happy holds after onDone (the 5 s HAPPY_HOLD_MS timer has
+    // not fired yet); full joke text is in the bubble and the placeholder +
+    // streaming cursor are gone.
+    expect(avatar(container).getAttribute('data-state')).toBe('happy');
     expect((textEl.textContent ?? '').length).toBeGreaterThan(20);
     expect(screen.queryByText('💭 Thinking...')).toBeNull();
     expect(textEl.querySelector('span')).toBeNull();
