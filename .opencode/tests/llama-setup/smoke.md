@@ -20,5 +20,13 @@ the wizard (MS-3: llama missing / models installed); S-4 settings nav visible; S
 `.opencode/tmp/2855/e2e/*.jpeg` captured; S-6 `companion-step-llama-server` +
 `companion-step-model-files` rendered with per-row state, `companion-controls` query = 0.
 
-**Note:** the real `Install llama.cpp` action FAILs deterministically (wrong exact winget id) —
-see functional F-08/F-17.
+## Execution Log — round 2 (2026-09-11, spec/2855 @ b7cc2d13 / e735e92)
+
+All six smoke checks PASS live again after the winget-id fix. S-1 body non-empty; S-2 console clean
+after every interaction (only pre-existing `motion() is deprecated` warning); S-3 gear → Companion
+renders the wizard on MS-3; S-4 settings nav visible; S-5 new round-2 screenshots under
+`.opencode/tmp/2855/e2e/`; S-6 `companion-step-llama-server` + `companion-step-model-files` rendered
+with per-row state, `companion-controls` query = 0.
+
+**Round-2 note:** the real `Install llama.cpp` action now resolves + installs `ggml.llamacpp`
+(round 1 failed with "No package found matching input criteria."). See functional F-08/F-14/F-17.
