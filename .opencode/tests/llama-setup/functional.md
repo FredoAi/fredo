@@ -289,3 +289,104 @@ The AC3 real-install leg was driven from the UI on MS-3 (llama missing, models p
 | F-15 | PASS | console clean after every leg (only pre-existing `motion()` warn); `pnpm --filter @fredo/ui build` exit 0; `cargo` unavailable to the tester (tool-access gap) |
 | F-16 | PASS | `fredo emit` chat+tool `{"queued":true}`; `chat_rows(e2e-2855-r2-chat)=1`, `tool_use_rows(e2e-2855-r2-tool)=1`; `telemetry_spans` total 12,398, newest ingested 2026-09-11T17:43:54.122Z, 1,976 in last 15 min |
 | F-17 | **PASS** | real `winget install --id ggml.llamacpp -e` resolves + installs the package (see case body) |
+
+---
+
+## #2856 — Three-file model acquisition with visible per-file progress (Spec #2856)
+
+> Extends the SAME suite/feature domain (Companion setup wizard). Rows F-18..F-31 add the
+> `modelFiles` step's per-file acquisition. **The required model set changes 2 → 3**
+> (`gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, `mmproj-BF16.gguf`, `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf`
+> from `unsloth/gemma-4-E2B-it-qat-GGUF`) — the #2855 count expectations for F-05/F-06/E-07
+> ("n of 2") are superseded to "n of 3" for this spec; prior execution logs above are kept as
+> the historical record.
+> **Verification policy: live** (static leg = the `(S)` rows under `cargo test`).
+> **Never download a real multi-GB file** — drive every state via the overrides:
+> `save_setting("models_dir", …)`, the Architect's `model_download_base_url` +
+> manifest override, and the local stub server `.opencode/tmp/2856/stub-server/`.
+> Constructed model states: **MS-6** all 3 absent · **MS-7** model present+verified only ·
+> **MS-8** all 3 present+verified · **MS-9** mtp present but truncated (0-byte/below-min).
+> Proposed testids: step `companion-step-model-files` with `-status`/`-summary`/`-download`/
+> `-cancel`/`-recheck`; file rows `companion-model-file-<slot>`
+> (`model`|`vision`|`mtp`) with `-status`/`-progress`/`-retry` and `data-state`. Uniform four-state
+> vocabulary `missing | downloading | present | error`; truncated = `missing` + an inline
+> "interrupted" detail (no 5th state).
+
+### Functional — #2856
+
+- [ ] **F-18 (R-1):** On MS-6, open Settings → Companion → the model step. DOM snapshot + screenshot.
+  **Expected:** three file rows render, each with its own icon+text status ("Missing"); the exact
+  filenames are shown (incl. the `MTP/` segment for mtp); the step summary reads incomplete.
+  - **Edge:** MS-7/MS-9 mixed state — each row independent, a 2-of-3 set stays incomplete and names
+    the missing slot; never color-only.
+
+- [ ] **F-19 (R-1, S):** Unit-test per-file status derivation from (presence, size, optional hash).
+  **Expected:** absent→`missing`; `0 < size < expected`→`missing` + shortfall detail; `size == expected`→`present`;
+  `size > expected`/IO error/SHA-256 mismatch→`error` (Architect API Contract). No 5th state; truncated is
+  `missing` + detail.
+
+- [ ] **F-20 (R-2):** On MS-7, inject the stub manifest + stub server, start acquisition; read rows + stub access log.
+  **Expected:** the verified-present `model` is SKIPPED (no GET in the log; row stays `present`);
+  `vision` enters `downloading` with a visibly advancing progress bar; then `mtp`; all `present` on finish.
+  - **Edge:** absent/unknown `Content-Length` → indeterminate progress (not a frozen 0%); a
+    present-but-truncated file is re-acquired, not skipped.
+
+- [ ] **F-21 (R-2, S):** Unit-test the acquisition state machine.
+  **Expected:** stable file order; verified-present files skip the transport; progress fractions
+  monotonic 0→100 for the in-flight file.
+
+- [ ] **F-22 (R-2, G-123):** During a slow in-flight download, sample summary + companion gate ~every 150 ms.
+  **Expected:** at NO sample does the step read complete/ready; the gate never yields to the normal
+  companion controls while a file is in flight.
+  - **Edge:** a near-instant stub still never shows a false complete; after file 1 completes, the step
+    stays incomplete until all three verify.
+
+- [ ] **F-23 (R-3):** On MS-8 (manual placement after `models_dir` override), Re-check.
+  **Expected:** model step COMPLETE/Installed; all three rows `present`; manual placement accepted
+  (no forced re-download); in-place re-check, no reload.
+
+- [ ] **F-24 (R-3):** On MS-9 (mtp truncated) then with `vision` removed, Re-check.
+  **Expected:** stays INCOMPLETE and names EXACTLY the missing/truncated file(s) (`mtp`, then `vision`);
+  truncated is not "present".
+
+- [ ] **F-25 (R-3, S):** Unit-test aggregate completion.
+  **Expected:** `complete` iff every required file verifies; otherwise the exact missing/truncated
+  slot list. An extra unrelated file in the dir satisfies nothing.
+
+- [ ] **F-26 (R-4):** Stub server in `abort` mode mid-file → start → restart in `range` mode.
+  **Expected:** the aborted row shows error/incomplete + Retry; the retry makes a `Range: bytes=<n>-`
+  request and RESUMES (or safely restarts if no Range); the already-complete `model` file is untouched
+  and not re-requested; final bytes match the stub sources.
+  - **Edge:** Range-ignoring server (200) → safe truncate+restart, no append corruption; pre-existing
+    verified file never overwritten.
+
+- [ ] **F-27 (R-4, S):** Unit-test resume with an injected transport (fail after N bytes).
+  **Expected:** persisted partial offset is honored on retry; completed files skipped; assembled bytes
+  equal the source; no-Range path truncates before writing.
+
+- [ ] **F-32 (R-4, live — scope-flagged):** Start a slow stub download, then activate Cancel
+  (`companion-step-model-files-cancel`).
+  **Expected:** acquisition stops; the in-flight file returns to `missing` with the
+  `Cancelled — download not complete.` detail; earlier `present` files untouched; step incomplete.
+  - **Only run if the Architect commits a backend cancellation path;** otherwise the `-cancel`
+    control must not ship (an untested Cancel affordance is a FAIL).
+
+- [ ] **F-28 (R-5):** Stub returns HTTP 500 (and separately a dead port) for one file; start acquisition.
+  **Expected:** that row shows an ERROR with an actionable message (URL/status/cause) + inline Retry;
+  the step is NEVER complete; the gate stays not-ready; Retry re-attempts.
+  - **Edge:** failure on file 2/3 keeps earlier rows `present`; a successful Retry clears the error;
+    inline/persistent error, NOT a toast.
+
+- [ ] **F-29 (R-5, S):** Unit-test transport-error mapping.
+  **Expected:** 4xx/5xx, timeout, mid-stream reset each → per-file error; aggregation `incomplete`;
+  error text carries the status/URL tail.
+
+- [ ] **F-30 (NF):** During a slow download, interact with app chrome; read the error state in light AND dark.
+  **Expected:** UI responsive (download off the UI thread); progress advances at a visible cadence;
+  status is text+icon with `role="status"`/`aria-live`; tokens only (no hardcoded hex/rgba, no
+  `var(--x)NN`); `pnpm --filter @fredo/ui build` exit 0; console clean after every leg.
+
+- [ ] **F-31 (LIVE):** Same run as the live legs — `fredo emit --event-type chat` + `--event-type tool_use`;
+  query RTDB rows + `telemetry_spans` (telemetry-query skill); capture the model-step DOM/screenshot.
+  **Expected:** both emits `{"queued":true}`; rows classify; `telemetry_spans` non-zero/recent — the
+  live-policy receipt. A static-only PASS is a FALSE PASS.
