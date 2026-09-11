@@ -28,7 +28,7 @@
 
 ## F-01 (AC1) — Not set up → Companion settings shows ONLY the wizard
 
-- [ ] F-01: On MS-1 (or MS-2/MS-3), open Settings (gear) → Companion. `tauri_webview_dom_snapshot`
+- [x] F-01: On MS-1 (or MS-2/MS-3), open Settings (gear) → Companion. `tauri_webview_dom_snapshot`
       + `tauri_webview_screenshot` the content area.
   **Expected:** the Companion content renders the llama setup wizard (title + one row per
       prerequisite with a per-step state + the install affordance when actionable). The strings
@@ -39,7 +39,7 @@
 
 ## F-02 (AC1) — Normal controls absent while the wizard is shown
 
-- [ ] F-02: With the wizard rendered on MS-1, `tauri_webview_find_element` / `execute_js` for the
+- [x] F-02: With the wizard rendered on MS-1, `tauri_webview_find_element` / `execute_js` for the
       toggle, the teleport tip, and the auto-return input by text/label.
   **Expected:** zero matches for "Show Fredo Companion", the teleport tip, and the auto-return
       control — the wizard and the normal companion controls are mutually exclusive.
@@ -48,7 +48,7 @@
 
 ## F-03 (AC1) — No flash of normal controls while detection is `checking`
 
-- [ ] F-03: Reopen Companion and sample the DOM immediately (before the detection promise
+- [x] F-03: Reopen Companion and sample the DOM immediately (before the detection promise
       resolves): poll `execute_js` for the toggle every ~50 ms; timestamp samples.
   **Expected:** the wizard/`checking` state gates the content from first paint — the normal
       toggle/tip never render transiently (no flicker of "Show Fredo Companion" before the wizard
@@ -58,7 +58,7 @@
 
 ## F-04 (AC2) — `llama-server` availability reported independently
 
-- [ ] F-04: On MS-2 (server present) and MS-3 (server absent), read the wizard's `llama-server`
+- [x] F-04: On MS-2 (server present) and MS-3 (server absent), read the wizard's `llama-server`
       row + its status text; `tauri_ipc_monitor` the detection response.
   **Expected:** the `llama-server` row reports its OWN state — installed/present on MS-2,
       missing/not-found on MS-3 — independent of the model-files row. The detection is a real
@@ -68,7 +68,7 @@
 
 ## F-05 (AC2) — Required model files presence reported independently
 
-- [ ] F-05: On MS-3 (models present) and MS-2 (models absent), read the wizard's model-files row +
+- [x] F-05: On MS-3 (models present) and MS-2 (models absent), read the wizard's model-files row +
       status text.
   **Expected:** the model-files row reports its own state — present on MS-3, missing on MS-2 —
       independent of the `llama-server` row. This may reuse `check_model_files`, but the row's
@@ -78,7 +78,7 @@
 
 ## F-06 (AC2) — Partial readiness never reads "complete" (both directions)
 
-- [ ] F-06: On MS-2 (server-only) and MS-3 (models-only), snapshot the Companion content + any
+- [x] F-06: On MS-2 (server-only) and MS-3 (models-only), snapshot the Companion content + any
       readiness/summary label.
   **Expected:** neither state reads complete/ready and neither renders the normal companion
       controls — the wizard is shown with exactly one prerequisite satisfied and the other
@@ -88,7 +88,7 @@
 
 ## F-07 (AC3) — Install action invokes the backend install command
 
-- [ ] F-07: Start `tauri_ipc_monitor`; click the wizard's install action. Capture IPC + console.
+- [x] F-07: Start `tauri_ipc_monitor`; click the wizard's install action. Capture IPC + console.
   **Expected:** an install command invoke is captured (the `winget install llama.cpp`-backed
       backend command) and/or the backend log shows the winget invocation; the wizard row enters
       `running`/`checking` with a spinner — the click is wired to a real command.
@@ -96,9 +96,9 @@
     real winget, exercise the controlled shim/backend seam and label the real-install verb
     UNVERIFIED-with-named-blocker (G-053).
 
-## F-08 (AC3) — Re-check after install: `checking` → installed/missing, NO reload
+## F-08 (AC3) — Re-check after install: `checking` → installed/missing, NO reload — **FAIL (round 1)**
 
-- [ ] F-08: After completing F-07 on MS-1 with a controlled successful install (shim materializes
+- [ ] F-08: **FAIL (round 1)** — After completing F-07 on MS-1 with a controlled successful install (shim materializes
       `llama-server` / real install), observe the row + overall readiness; read
       `performance.timeOrigin` and the navigation-entry count before and after.
   **Expected:** the row transitions `checking` → `installed` (or `missing` if the install did not
@@ -111,7 +111,7 @@
 
 ## F-09 (AC3 / NF) — No UI freeze while the install runs; other prerequisite stays readable
 
-- [ ] F-09: During a slow/simulated install, interact with the app chrome (open settings nav /
+- [x] F-09: During a slow/simulated install, interact with the app chrome (open settings nav /
       toggle a section) and read the OTHER prerequisite row; record wall-clock duration.
   **Expected:** the webview stays responsive (chrome interaction works, no freeze/dead input); the
       install runs off the UI thread (async command); the other prerequisite row remains readable
@@ -121,7 +121,7 @@
 
 ## F-10 (AC4) — Both prerequisites satisfied → normal Companion settings render
 
-- [ ] F-10: On MS-4 (or after F-08 resolves both satisfied), read the Companion content.
+- [x] F-10: On MS-4 (or after F-08 resolves both satisfied), read the Companion content.
   **Expected:** the normal Companion settings render IN PLACE of the wizard — "Show Fredo
       Companion" toggle + auto-return control + teleport tip present; the wizard's prerequisite
       rows ABSENT. (Launch of the server is #2857 — out of scope.)
@@ -130,16 +130,16 @@
 
 ## F-11 (AC4) — Wizard → normal controls transitions without reopen/reload
 
-- [ ] F-11: Complete an install on MS-1 so both prerequisites become satisfied while the Companion
+- [x] F-11: Complete an install on MS-1 so both prerequisites become satisfied while the Companion
       settings modal stays open; then read the DOM + `performance.timeOrigin`.
   **Expected:** the wizard is replaced by the normal companion controls without closing/reopening
       the modal and without a reload — the transition is driven by the re-check (AC3).
   - **Edge:** transition while the user is mid-interaction with the wizard; the auto-return /
     visibility controls are immediately usable after the swap.
 
-## F-12 (AC5) — winget unavailable → actionable error, remains not-set-up
+## F-12 (AC5) — winget unavailable → actionable error, remains not-set-up — **UNVERIFIED (round 1)**
 
-- [ ] F-12: On MS-5 (winget absent/shadowed), open the wizard and trigger the install.
+- [ ] F-12: **UNVERIFIED (round 1)** — On MS-5 (winget absent/shadowed), open the wizard and trigger the install.
       Snapshot the error UI + capture console.
   **Expected:** an actionable error names the cause and the next step (e.g. winget / App Installer
       unavailable) and/or the install command output; the wizard REMAINS not-set-up — no normal
@@ -149,16 +149,16 @@
 
 ## F-13 (AC5) — Install non-zero exit / throw → actionable error, remains not-set-up
 
-- [ ] F-13: Drive an install that returns a non-zero exit (shim exits 1) and, separately, one that
+- [x] F-13: Drive an install that returns a non-zero exit (shim exits 1) and, separately, one that
       throws/rejects; capture the error UI + console.
   **Expected:** the wizard shows an actionable error (command + exit code / error output tail) and
       remains not-set-up; retry available; no crash and no false "complete".
   - **Edge:** a non-zero exit AFTER partial progress; an exception thrown before any output; the
     error state is visually distinct from the idle-missing state.
 
-## F-14 (AC5) — Install reports success but server still not resolvable → not complete
+## F-14 (AC5) — Install reports success but server still not resolvable → not complete — **UNVERIFIED (round 1)**
 
-- [ ] F-14: Use a shim that exits 0 but does NOT put `llama-server` on PATH (or a real install
+- [ ] F-14: **UNVERIFIED (round 1)** — Use a shim that exits 0 but does NOT put `llama-server` on PATH (or a real install
       whose bin dir is not yet on the running process's PATH). Trigger install, then re-check.
   **Expected:** the wizard does NOT declare success — the `llama-server` row stays missing and the
       wizard stays not-set-up (a reported install success is never trusted over a fresh detection).
@@ -168,7 +168,7 @@
 
 ## F-15 (NF) — Console hygiene, no UI freeze, build gates
 
-- [ ] F-15: After EVERY leg read `tauri_read_logs(source="console")`; run `pnpm --filter @fredo/ui
+- [x] F-15: After EVERY leg read `tauri_read_logs(source="console")`; run `pnpm --filter @fredo/ui
       build`; `cargo check` if Rust was touched.
   **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg; build exit 0 /
       zero TS errors; `cargo check` zero warnings (Rust legs); existing `check_model_files`
@@ -178,7 +178,7 @@
 
 ## F-16 (LIVE) — Mandatory live telemetry receipt (same run as F-01..F-15)
 
-- [ ] F-16: While the wizard surface is exercised (same run/window-set as the live legs), run
+- [x] F-16: While the wizard surface is exercised (same run/window-set as the live legs), run
       `fredo emit --event-type chat` + `--event-type tool_use` with distinct session ids; query the
       RTDB row tables + `telemetry_spans` (telemetry-query skill); capture the wizard DOM/screenshot.
   **Expected:** both events `{"queued":true}` and classify into `chat_rows`/`tool_use_rows` under
@@ -186,3 +186,54 @@
       — the live-policy receipt (mirrors companion F-17). A static-only PASS is a FALSE PASS.
   - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit + query
     output in the `## Tests Runs` evidence.
+
+## F-17 (AC3, promoted from E-05 / round 1) — One-click install must use a resolvable winget id
+
+- [ ] F-17: Trigger `Install llama.cpp` on a machine with `winget` present; read the backend
+      `install_llama_cpp` result (`output`/`error`/`code`).
+  **Expected:** `winget install` resolves the llama.cpp package and installs (exit 0) — or a
+      genuine environment failure (no network / source unavailable) is surfaced. It must NOT
+      fail deterministically because the requested PackageIdentifier does not exist.
+  - **Actual (round 1, FAIL):** `install_llama_cpp` ran the real verb and returned
+    `{"success":false,"code":"installFailed","output":"No package found matching input criteria."}`.
+    Cause: the command uses `winget install --id llama.cpp -e` (`WINGET_APP_ID = "llama.cpp"`,
+    `setup/commands.rs:1094`). `-e` forces an EXACT PackageIdentifier match; the canonical
+    winget package id is **`ggml.llamacpp`** (PackageName `llama.cpp`), so `--id llama.cpp -e`
+    never matches (verified: `manifests/l/llama` → 404 in microsoft/winget-pkgs;
+    `manifests/g/ggml/llamacpp/.../ggml.llamacpp.installer.yaml` → `PackageIdentifier: ggml.llamacpp`).
+  - **Repro:** open Settings → Companion (not set up) → `Install llama.cpp`; or invoke
+    `install_llama_cpp` directly. Row flips `running` → `error`; the one-click install can never
+    reach `installed` on a standard winget repo.
+  - **Fix direction:** use `WINGET_APP_ID = "ggml.llamacpp"` (keep `--id … -e`) or match the
+    documented `winget install llama.cpp` (drop `--id`+`-e` for a name/moniker search).
+
+## Execution Log — round 1 (2026-09-11, spec/2855 @ c5c29c42)
+
+Machine states constructed via the `save_setting`/`get_setting` seams (`models_dir`,
+`llama_server_path`) — no user model files moved, no PATH/SYSTEM changes; originals restored
+(both reset to `""`, functionally unset) and the companion toggle restored to `true`.
+- MS-3 (models only): llamaServer=missing, modelFiles=installed.
+- MS-2 (server only): llamaServer=installed (`llama_server_path` → scratch stub), modelFiles=missing.
+- MS-1 (neither): both missing.
+- MS-4 (both): llamaServer=installed + modelFiles=installed → `ready:true`.
+- MS-5 (winget absent): NOT constructible — cannot shadow winget on the running process's PATH.
+
+| Case | Result | Evidence (round 1) |
+|------|--------|--------------------|
+| F-01 | PASS | wizard-only on MS-3/MS-2/MS-1; toggle/tip/auto-return absent (DOM query `false`) |
+| F-02 | PASS | `[data-testid="companion-controls"]` absent on all not-set-up states |
+| F-03 | PASS | MutationObserver across Companion remount: `companion-controls` never appeared (0), wizard 3× |
+| F-04 | PASS | llamaServer installed on MS-2 / missing on MS-3 — independent of modelFiles |
+| F-05 | PASS | modelFiles installed on MS-3 / missing on MS-2; partial (1 of 2) → missing |
+| F-06 | PASS | both partial directions render "1 of 2 prerequisites ready — setup required", no controls |
+| F-07 | PASS | install click → row `running`, button disabled + `aria-busy`, indeterminate progress; backend invoked |
+| F-08 | **FAIL** | real `winget install --id llama.cpp -e` → "No package found matching input criteria"; row `running`→`error`, never `installed` (wrong exact id — see F-17) |
+| F-09 | PASS | install runs off UI thread (`spawn_blocking`); UI responsive; other row readable |
+| F-10 | PASS | MS-4 → `companion-controls` render, wizard absent |
+| F-11 | PASS | in-place MS-2→MS-4 re-check swap with modal open; `performance.timeOrigin` unchanged, nav=1 |
+| F-12 | **UNVERIFIED** | named blocker: cannot shadow/remove `winget` from the already-running app's PATH; branch covered by unit test `install_llama_cpp_winget_unavailable_is_actionable_and_not_complete` (static) |
+| F-13 | PASS | install non-zero exit → "Setup failed: No package found matching input criteria.. Choose Retry or Re-check."; retry present; no controls; not "complete" |
+| F-14 | **UNVERIFIED** | named blocker: cannot inject a successful winget shim into the app's fixed command path, so "success but server absent" is not drivable live |
+| F-15 | PASS | console clean after every leg; `pnpm --filter @fredo/ui build` exit 0; `cargo` not runnable in tester sandbox (Rust via CI) |
+| F-16 | PASS | `fredo emit` chat+tool both `{"queued":true}`; `chat_rows(e2e-2855-chat)=1`, `tool_use_rows(e2e-2855-tool)=1`; `telemetry_spans` total 12,009, 1,587 recent, newest ingested 2026-09-11T17:13:07.923Z |
+| F-17 | **FAIL** | new — one-click install uses a non-existent exact winget id; see case body |
