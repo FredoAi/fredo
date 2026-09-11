@@ -56,3 +56,9 @@
 - [ ] S-11: Companion boots + statuses render — with the companion ON, the resting avatar renders; single-click → the avatar shows `thinking` during the wait then `joking` while the joke streams, and returns to rest; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 - [ ] S-12: Both surfaces render the shared avatar under the new vocabulary — with the companion ON exactly one Fredo renders (`.fredo-companion-avatar`, 80×100, shared SVG); toggle it OFF and the desktop mascot (`.fredo-avatar-idle`) renders the shared SVG; screenshot succeeds; console clean.
 - [ ] S-13: No stuck state after a joke/TicTacToe moment — after a joke completes and after a TicTacToe turn, the avatar returns to its resting state (no lingering `thinking`/`joking`/`happy`); screenshot succeeds; console clean.
+
+### Round 1 (spec/2854 @ 0e52c599) — results
+
+- **S-11 PASS (live).** Companion ON, single-click → `thinking` during the wait then `joking` while the joke streamed, returning to rest; screenshots captured; console clean.
+- **S-12 PASS (live).** Companion ON ⇒ exactly one Fredo (`.fredo-companion-avatar` 80×100, shared SVG); OFF ⇒ desktop mascot `.fredo-avatar-idle` (shared SVG, 80×100) renders; screenshots captured; console clean.
+- **S-13 PASS (live).** Joke `happy→idle` after 4998 ms and TicTacToe `happy→idle` after 3993 ms — no lingering status; screenshots captured; console clean.
