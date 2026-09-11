@@ -212,7 +212,7 @@ It ties related rows together within a session (e.g. an `Init` event that starte
 
 ### What is the FredoCompanion?
 
-An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the in-process LLM engine for all interactions.
+An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the in-process LLM engine for all interactions. Fredo expresses distinct moods on both the companion and the launcher mascot: `thinking` while an LLM response is pending, `joking` while a joke streams, `happy` after a joke or a Tic-Tac-Toe outcome, and `playful` at rest (a bounded beat that always returns to idle; reduced motion is respected).
 
 The companion and the launcher's desktop mascot are mutually exclusive — while the companion is out, the desktop mascot is hidden, so only one Fredo is shown at a time. After an idle period with no interaction (default 60 s, configurable in **Settings → Companion**) the companion returns home: it hides and the desktop mascot reappears. Any interaction resets the timer, an open Tic-Tac-Toe or an active joke stream keeps Fredo out while in use, and auto-return never turns off your "Show Fredo Companion" preference.
 
