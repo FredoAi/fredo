@@ -55,6 +55,53 @@
   animation: fredo-teleport-sparkle 120ms ease-out 1 forwards;
 }
 
+/* ── thinking: 3-dot ellipsis pausing + a floating thought-bubble trail ────── */
+@keyframes fredo-thinking-dot-pulse {
+  0%, 100% { opacity: 0.45; transform: translateY(0); }
+  50%      { opacity: 1;    transform: translateY(-2px); }
+}
+
+@keyframes fredo-thinking-bubble-float {
+  0%, 100% { opacity: 0.55; transform: translateY(0); }
+  50%      { opacity: 1;    transform: translateY(-5px); }
+}
+
+#fredo-expression[data-state='thinking'] .fredo-thinking-dot {
+  animation: fredo-thinking-dot-pulse 1.4s ease-in-out infinite;
+}
+
+/* Stagger the ellipsis left → right. */
+#fredo-expression[data-state='thinking'] .fredo-thinking-dot + .fredo-thinking-dot {
+  animation-delay: 180ms;
+}
+#fredo-expression[data-state='thinking'] .fredo-thinking-dot + .fredo-thinking-dot + .fredo-thinking-dot {
+  animation-delay: 360ms;
+}
+
+#fredo-expression[data-state='thinking'] .fredo-thinking-bubble {
+  animation: fredo-thinking-bubble-float 2.8s ease-in-out infinite;
+}
+
+/* ── joking: wide open laugh with a gentle live toggle (transform only) ───── */
+@keyframes fredo-joking-mouth-jiggle {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+
+#fredo-expression[data-state='joking'] .fredo-joking-mouth {
+  animation: fredo-joking-mouth-jiggle 0.45s ease-in-out infinite;
+}
+
+/* The half-tone tongue is a static reinforcement — never opacity-animated, so
+   the second tone stays exactly 0.5. The single permitted second tone is CSS
+   opacity (no color, no hex). */
+#fredo-expression[data-state='joking'] .fredo-joking-tongue {
+  opacity: 0.5;
+}
+
+/* ── happy / playful: distinguishing shapes are static (legible without motion;
+   whole-element motion belongs to the consumer's wrapper, never here). ─────── */
+
 /* ── Reduced motion ──────────────────────────────────────────────────────────
    The mouth keyframe slows but stays functional; the teleport streak/sparkle
    overlays drop their intensity (the whole-element teleport itself degrades to
@@ -68,5 +115,14 @@
   #fredo-expression[data-state='teleport-in'] .fredo-teleport-sparkle {
     animation: none;
     opacity: 0;
+  }
+
+  /* Status expressions stay LEGIBLE under reduced motion: the continuous overlay
+     motion is dropped, but every distinguishing shape keeps its resting frame
+     (never opacity:0). The joking tongue keeps its static 0.5 tone. */
+  #fredo-expression[data-state='thinking'] .fredo-thinking-dot,
+  #fredo-expression[data-state='thinking'] .fredo-thinking-bubble,
+  #fredo-expression[data-state='joking'] .fredo-joking-mouth {
+    animation: none;
   }
 }

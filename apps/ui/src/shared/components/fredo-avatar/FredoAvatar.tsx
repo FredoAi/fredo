@@ -37,13 +37,34 @@ import './fredoAvatarIdle.css';
  *   teleport-in  — sparkle highlight rects near each eye's top-inner edge
  *                  {340,452,16,16} + mirror {658,452,16,16}, fading over the
  *                  first ~120ms.
+ *   thinking     — 3-dot ellipsis in the hollow mouth void plus a thought-bubble
+ *                  trail rising into the empty upper-right canvas (no mouth flap).
+ *   joking       — a wide open laugh in the mouth void, a half-tone tongue, and
+ *                  laugh lines beside each outer eye corner.
+ *   happy        — a 5-rect upward smile arc in the mouth void plus a 3-star burst
+ *                  around the head.
+ *   playful      — an asymmetric smirk + cocked brow above the right eye + a cheek
+ *                  star (the one deliberately off-symmetry expression).
+ *
+ * ADDITIVE-INTO-EMPTY-REGIONS: the base figure is solid `fill="currentColor"`, so
+ * a new `currentColor` shape drawn OVER a base rect is invisible. Every new delta
+ * is placed in an EMPTY region — the mouth void (x≈276-738, y≈590-755), the hollow
+ * head interior beside the eyes, or the empty canvas around the head.
  *
  * Token-native: the SVG carries NO color of its own. Every rect uses
  * `fill="currentColor"` and the root SVG sets `color="var(--accent-primary)"`,
  * so theme/accent changes restyle the avatar with zero hardcoded hex/rgba.
  */
 
-export type FredoAvatarState = 'idle' | 'talk' | 'teleport-out' | 'teleport-in';
+export type FredoAvatarState =
+  | 'idle'
+  | 'talk'
+  | 'teleport-out'
+  | 'teleport-in'
+  | 'thinking'
+  | 'happy'
+  | 'playful'
+  | 'joking';
 
 export interface FredoAvatarProps {
   /** sm → AVATAR_SM (companion ~80x100); md → AVATAR_MD (launcher 132x165). */
@@ -123,6 +144,69 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
                   edge (mirror x' = 1014 − 340 − 16 = 658). */}
               <rect className="fredo-teleport-sparkle" x={340} y={452} width={16} height={16} fill="currentColor" />
               <rect className="fredo-teleport-sparkle" x={658} y={452} width={16} height={16} fill="currentColor" />
+            </>
+          )}
+          {state === 'thinking' && (
+            <>
+              {/* 3-dot ellipsis in the hollow mouth void — pondering, no mouth flap
+                  (echoes the `💭 Thinking...` placeholder). Outer dots mirror the
+                  center X=507: x=470 / 528, mid x=499. */}
+              <rect className="fredo-thinking-dot" x={470} y={700} width={16} height={16} fill="currentColor" />
+              <rect className="fredo-thinking-dot" x={499} y={700} width={16} height={16} fill="currentColor" />
+              <rect className="fredo-thinking-dot" x={528} y={700} width={16} height={16} fill="currentColor" />
+              {/* Thought-bubble trail rising into the empty upper-right canvas. */}
+              <rect className="fredo-thinking-bubble" x={846} y={150} width={20} height={20} fill="currentColor" />
+              <rect className="fredo-thinking-bubble" x={884} y={110} width={28} height={28} fill="currentColor" />
+              <rect className="fredo-thinking-bubble" x={930} y={58} width={40} height={40} fill="currentColor" />
+            </>
+          )}
+          {state === 'joking' && (
+            <>
+              {/* Wide open laugh — clearly wider/warmer than talk's 134-wide toggle.
+                  Sits in the hollow lower-face void (center X=507). */}
+              <rect className="fredo-joking-mouth" x={432} y={682} width={150} height={52} fill="currentColor" />
+              {/* Half-tone tongue inside the laugh (reinforcement, not load-bearing;
+                  the only permitted second tone is opacity — no hex/rgba). */}
+              <rect
+                className="fredo-joking-tongue"
+                x={452}
+                y={708}
+                width={110}
+                height={20}
+                opacity={0.5}
+                fill="currentColor"
+              />
+              {/* Laugh lines beside each outer eye corner (hollow interior). */}
+              <rect className="fredo-joking-laugh" x={300} y={468} width={14} height={22} fill="currentColor" />
+              <rect className="fredo-joking-laugh" x={700} y={468} width={14} height={22} fill="currentColor" />
+            </>
+          )}
+          {state === 'happy' && (
+            <>
+              {/* 5-rect upward smile arc in the lower-face void — corners high, slopes,
+                  then the low center bar (symmetric about X=507). */}
+              <rect className="fredo-happy-mouth" x={440} y={690} width={26} height={22} fill="currentColor" />
+              <rect className="fredo-happy-mouth" x={548} y={690} width={26} height={22} fill="currentColor" />
+              <rect className="fredo-happy-mouth" x={466} y={714} width={36} height={16} fill="currentColor" />
+              <rect className="fredo-happy-mouth" x={512} y={714} width={36} height={16} fill="currentColor" />
+              <rect className="fredo-happy-mouth" x={489} y={730} width={36} height={12} fill="currentColor" />
+              {/* 3-star burst — two outside the head, one in the left cheek hollow. */}
+              <rect className="fredo-happy-star" x={150} y={150} width={22} height={22} fill="currentColor" />
+              <rect className="fredo-happy-star" x={862} y={180} width={20} height={20} fill="currentColor" />
+              <rect className="fredo-happy-star" x={330} y={700} width={18} height={18} fill="currentColor" />
+            </>
+          )}
+          {state === 'playful' && (
+            <>
+              {/* Asymmetric smirk — flat bar + raised right corner (the one
+                  deliberately off-symmetry expression). */}
+              <rect className="fredo-playful-smirk" x={464} y={716} width={72} height={16} fill="currentColor" />
+              <rect className="fredo-playful-smirk" x={536} y={704} width={18} height={12} fill="currentColor" />
+              {/* Cocked brow above the right eye (hollow band y430-444, above the
+                  eye top y453). */}
+              <rect className="fredo-playful-brow" x={600} y={430} width={64} height={14} fill="currentColor" />
+              {/* Cheek star in the hollow interior right of the eye. */}
+              <rect className="fredo-playful-star" x={700} y={600} width={20} height={20} fill="currentColor" />
             </>
           )}
         </g>
