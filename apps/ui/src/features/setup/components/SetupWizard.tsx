@@ -128,8 +128,11 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'model': {
-      const res = await adapterBridge.invoke<{ gguf_exists: boolean; mmproj_exists: boolean }>('check_model_files');
-      if (res?.gguf_exists && res?.mmproj_exists) return { status: 'done' };
+      // The backend manifest now covers all three required files; only its
+      // `complete` flag (every file present) may mark this step done — never a
+      // partial legacy gguf_exists/mmproj_exists check (#2856 ST-7).
+      const res = await adapterBridge.invoke<{ complete?: boolean }>('check_model_files');
+      if (res?.complete) return { status: 'done' };
       return { status: 'idle' };
     }
     case 'otel-config': {

@@ -4,6 +4,14 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::storage::AppStore;
+use super::model_download::{
+    download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
+    ReqwestTransport, SystemClock,
+};
+use super::model_download_state::{
+    default_manifest, is_step_complete, load_manifest, probe_files, FileState, ModelFileStatus,
+    ModelManifest,
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,12 +65,21 @@ pub struct CheckAllSetupResult {
     pub otel: StepStatus,
 }
 
+/// Extended `check_model_files` result. The legacy snake_case fields are
+/// preserved verbatim for `SetupWizard.tsx`; `complete` + `files` are the
+/// authoritative 3-file manifest status (#2856).
 #[derive(Serialize)]
 pub struct ModelFilesStatus {
+    /// true iff EVERY manifest file is present-and-complete.
+    pub complete: bool,
+    /// Per-file status, ordered `model` → `vision` → `mtp`.
+    pub files: Vec<ModelFileStatus>,
     pub gguf_exists: bool,
     pub mmproj_exists: bool,
+    pub mtp_exists: bool,
     pub gguf_path: Option<String>,
     pub mmproj_path: Option<String>,
+    pub mtp_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -72,18 +89,12 @@ pub struct SetupStepResult {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct DownloadProgress {
-    pub file: String,
-    pub total: u64,
-    pub downloaded: u64,
-    pub percent: f64,
-}
+/// `download_model` wire result: the streamed engine outcome, named for the API
+/// contract the UI consumes (additive `files` over the legacy `SetupStepResult`).
+pub type ModelDownloadResult = ModelDownloadOutcome;
 
-/// Model constants for download and checking
-const MODEL_SUBDIR: &str = "gemma-e2b-it";
-const MODEL_GGUF: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
-const MODEL_MMPROJ: &str = "mmproj-F16.gguf";
+/// AppStore key holding an optional whole-manifest JSON override (#2856 test seam).
+const MODEL_MANIFEST_PATH_KEY: &str = "model_manifest_path";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -847,15 +858,33 @@ fn resolve_models_dir(app: &AppHandle) -> PathBuf {
     home.join("fredo-models")
 }
 
-/// Resolve a model file path relative to the configured models_dir.
-fn resolve_model_path(app: &AppHandle, subdir: &str, filename: &str) -> Option<PathBuf> {
-    let base = resolve_models_dir(app);
-    let path = base.join(subdir).join(filename);
-    if path.exists() {
-        Some(path)
-    } else {
-        None
+/// Resolve the acquisition manifest: the AppStore `model_manifest_path` JSON
+/// override when present and valid, else the compiled [`default_manifest`].
+/// An invalid override never breaks the probe — it logs and falls back.
+fn resolve_manifest(app: &AppHandle) -> ModelManifest {
+    let override_json = app
+        .state::<Arc<AppStore>>()
+        .get(MODEL_MANIFEST_PATH_KEY)
+        .ok()
+        .flatten();
+    match load_manifest(override_json.as_deref()) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            tracing::warn!(
+                "invalid {MODEL_MANIFEST_PATH_KEY} override — using the compiled default manifest: {error}"
+            );
+            default_manifest()
+        }
     }
+}
+
+/// The absolute path of the file with `id` when it exists on disk (legacy
+/// `gguf_path`/`mmproj_path`/`mtp_path` semantics — existence only).
+fn legacy_path(files: &[ModelFileStatus], id: &str) -> Option<String> {
+    files
+        .iter()
+        .find(|status| status.id == id)
+        .and_then(|status| status.path.clone())
 }
 
 /// Check all setup steps and return JSON status for each.
@@ -889,17 +918,33 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
         StepStatus { status: "missing".into(), detail: Some("Fredo plugin not installed.".into()) }
     };
 
-    // model
-    let gguf_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_GGUF);
-    let mmproj_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_MMPROJ);
-    let model = if gguf_path.is_some() && mmproj_path.is_some() {
-        StepStatus { status: "ok".into(), detail: Some("Both model files present.".into()) }
-    } else if gguf_path.is_some() {
-        StepStatus { status: "missing".into(), detail: Some("GGUF model found but mmproj missing.".into()) }
-    } else if mmproj_path.is_some() {
-        StepStatus { status: "missing".into(), detail: Some("mmproj found but GGUF model missing.".into()) }
+    // model — derived from the same 3-file manifest as the acquisition surfaces,
+    // so this step can never report ok on a partial/truncated set.
+    let manifest = resolve_manifest(&app);
+    let model_files = probe_files(&resolve_models_dir(&app), &manifest);
+    let total = model_files.len();
+    let present = model_files
+        .iter()
+        .filter(|status| status.state == FileState::Present)
+        .count();
+    let model = if total > 0 && present == total {
+        StepStatus {
+            status: "ok".into(),
+            detail: Some("All required model files present.".into()),
+        }
     } else {
-        StepStatus { status: "missing".into(), detail: Some("No model files found. Run download_model to fetch them.".into()) }
+        let missing: Vec<&str> = model_files
+            .iter()
+            .filter(|status| status.state != FileState::Present)
+            .map(|status| status.relative_path.as_str())
+            .collect();
+        StepStatus {
+            status: "missing".into(),
+            detail: Some(format!(
+                "{present} of {total} model files present — missing: {}",
+                missing.join(", ")
+            )),
+        }
     };
 
     // otel
@@ -964,114 +1009,69 @@ pub async fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult 
     }
 }
 
-/// Check whether GGUF and mmproj model files exist in the configured models directory.
+/// Probe the three required model files from the resolved manifest. The legacy
+/// snake_case fields remain (existence semantics for `SetupWizard.tsx`); the
+/// authoritative honesty gate is `complete` (`files` all present).
 #[tauri::command]
 pub fn check_model_files(app: AppHandle) -> ModelFilesStatus {
-    let gguf_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_GGUF);
-    let mmproj_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_MMPROJ);
+    let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
+    let files = probe_files(&models_dir, &manifest);
+    let complete = is_step_complete(&models_dir, &manifest);
+
+    let gguf_path = legacy_path(&files, "model");
+    let mmproj_path = legacy_path(&files, "vision");
+    let mtp_path = legacy_path(&files, "mtp");
 
     ModelFilesStatus {
+        complete,
         gguf_exists: gguf_path.is_some(),
         mmproj_exists: mmproj_path.is_some(),
-        gguf_path: gguf_path.map(|p| p.to_string_lossy().into_owned()),
-        mmproj_path: mmproj_path.map(|p| p.to_string_lossy().into_owned()),
+        mtp_exists: mtp_path.is_some(),
+        gguf_path,
+        mmproj_path,
+        mtp_path,
+        files,
     }
 }
 
-/// Download both model files from Hugging Face.
-/// Emits `setup:download-progress` events per file with progress info.
+/// Bridges the streamed engine's progress sink onto the existing
+/// `setup:download-progress` event (camelCase, additively richer payload).
+struct AppHandleProgressReporter {
+    app: AppHandle,
+}
+
+impl ProgressReporter for AppHandleProgressReporter {
+    fn report(&self, progress: DownloadProgress) {
+        if let Err(error) = self.app.emit("setup:download-progress", &progress) {
+            tracing::debug!("failed to emit setup:download-progress: {error}");
+        }
+    }
+}
+
+/// Acquire every required model file that is not present-and-complete. Delegates
+/// to the ST-2 streamed engine (skip-present / Range-resume / streaming SHA-256)
+/// and returns the final per-file status. Legacy `success`/`output`/`error` are
+/// retained; `files` is additive.
 #[tauri::command]
-pub async fn download_model(app: AppHandle) -> SetupStepResult {
-    let models_dir = resolve_models_dir(&app).join(MODEL_SUBDIR);
-    if let Err(e) = std::fs::create_dir_all(&models_dir) {
-        return SetupStepResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Failed to create models directory: {e}")),
-        };
-    }
+pub async fn download_model(app: AppHandle) -> ModelDownloadResult {
+    let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
 
-    let base_url = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main";
-    let files = [MODEL_GGUF, MODEL_MMPROJ];
-
-    for filename in &files {
-        let url = format!("{base_url}/{filename}");
-        let dest = models_dir.join(filename);
-
-        // Skip if already exists
-        if dest.exists() {
-            let _ = app.emit("setup:download-progress", DownloadProgress {
-                file: filename.to_string(),
-                total: 0,
-                downloaded: 0,
-                percent: 100.0,
-            });
-            continue;
-        }
-
-        // Download with progress
-        let client = reqwest::Client::new();
-        let response = match client.get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => return SetupStepResult {
+    let transport = match ReqwestTransport::new() {
+        Ok(transport) => transport,
+        Err(error) => {
+            return ModelDownloadResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Failed to download {filename}: {e}")),
-            },
-        };
-
-        let total = response.content_length().unwrap_or(0);
-        let mut downloaded: u64 = 0;
-        let mut stream = response.bytes_stream();
-
-        use futures_util::StreamExt;
-        let mut file = match tokio::fs::File::create(&dest).await {
-            Ok(f) => f,
-            Err(e) => return SetupStepResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Failed to create file {filename}: {e}")),
-            },
-        };
-
-        use tokio::io::AsyncWriteExt;
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(chunk) => {
-                    downloaded += chunk.len() as u64;
-                    if let Err(e) = file.write_all(&chunk).await {
-                        return SetupStepResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Failed to write {filename}: {e}")),
-                        };
-                    }
-                    let percent = if total > 0 {
-                        (downloaded as f64 / total as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-                    let _ = app.emit("setup:download-progress", DownloadProgress {
-                        file: filename.to_string(),
-                        total,
-                        downloaded,
-                        percent,
-                    });
-                }
-                Err(e) => return SetupStepResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Download stream error for {filename}: {e}")),
-                },
-            }
+                error: Some(format!("Failed to initialize the download client: {error}")),
+                files: Vec::new(),
+            };
         }
-    }
+    };
 
-    SetupStepResult {
-        success: true,
-        output: format!("Downloaded model files to {}", models_dir.display()),
-        error: None,
-    }
+    let reporter = AppHandleProgressReporter { app: app.clone() };
+    download_missing_files(&transport, &manifest, &models_dir, &reporter, &SystemClock).await
 }
 
 // ── Companion readiness + llama.cpp install (Spec #2855) ───────────────────────
@@ -1080,12 +1080,6 @@ pub async fn download_model(app: AppHandle) -> SetupStepResult {
 // owns the set; the frontend renders exactly what `check_companion_readiness`
 // returns through its ordered `COMPANION_SETUP_STEPS` registry. #2856 appends a
 // model-download action; #2857 appends a `serverLaunch` prerequisite.
-
-/// Canonical required model files — ONE list; #2856 extends it here (single extension point).
-pub const REQUIRED_MODEL_FILES: &[(&str, &str)] = &[
-    (MODEL_SUBDIR, MODEL_GGUF),
-    (MODEL_SUBDIR, MODEL_MMPROJ),
-];
 
 const LLAMA_SERVER_BIN: &str = "llama-server";
 const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
@@ -1207,6 +1201,38 @@ fn resolve_llama_server(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     ))
 }
 
+/// Aggregate the manifest probe into the `modelFiles` prerequisite. Pure — the
+/// resolved manifest is the single source of required files, so a partial set
+/// (or an empty manifest) can never read `Installed`.
+fn model_files_prerequisite(
+    files: &[ModelFileStatus],
+    resolved_path: String,
+) -> PrerequisiteReport {
+    let total = files.len();
+    let present = files
+        .iter()
+        .filter(|status| status.state == FileState::Present)
+        .count();
+    let complete = total > 0 && present == total;
+    let (state, detail) = if complete {
+        (
+            PrerequisiteState::Installed,
+            "All required model files present.".to_string(),
+        )
+    } else {
+        (
+            PrerequisiteState::Missing,
+            format!("{present} of {total} model files present."),
+        )
+    };
+    PrerequisiteReport {
+        id: "modelFiles".to_string(),
+        state,
+        detail,
+        resolved_path: if complete { Some(resolved_path) } else { None },
+    }
+}
+
 /// The two prerequisites the companion needs before it can run. Read-only.
 #[tauri::command]
 pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
@@ -1237,34 +1263,15 @@ pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
         resolved_path: llama_path,
     });
 
-    // Prerequisite 2 — the required model files.
-    let models_subdir = resolve_models_dir(&app).join(MODEL_SUBDIR);
-    let present = REQUIRED_MODEL_FILES
-        .iter()
-        .filter(|(subdir, filename)| resolve_model_path(&app, subdir, filename).is_some())
-        .count();
-    let total = REQUIRED_MODEL_FILES.len();
-    let (model_state, model_detail) = if present == total {
-        (
-            PrerequisiteState::Installed,
-            "All required model files present.".to_string(),
-        )
-    } else {
-        (
-            PrerequisiteState::Missing,
-            format!("{present} of {total} model files present."),
-        )
-    };
-    prerequisites.push(PrerequisiteReport {
-        id: "modelFiles".to_string(),
-        state: model_state,
-        detail: model_detail,
-        resolved_path: if present == total {
-            Some(models_subdir.to_string_lossy().into_owned())
-        } else {
-            None
-        },
-    });
+    // Prerequisite 2 — the required model files, derived from the manifest.
+    let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
+    let model_files = probe_files(&models_dir, &manifest);
+    let models_subdir = models_dir.join(&manifest.subdir);
+    prerequisites.push(model_files_prerequisite(
+        &model_files,
+        models_subdir.to_string_lossy().into_owned(),
+    ));
 
     let ready = prerequisites
         .iter()
@@ -1658,10 +1665,67 @@ mod tests {
     }
 
     #[test]
-    fn required_model_files_are_the_two_engine_files() {
-        assert_eq!(REQUIRED_MODEL_FILES.len(), 2);
-        assert_eq!(REQUIRED_MODEL_FILES[0], (MODEL_SUBDIR, MODEL_GGUF));
-        assert_eq!(REQUIRED_MODEL_FILES[1], (MODEL_SUBDIR, MODEL_MMPROJ));
+    fn model_files_prerequisite_is_installed_only_when_every_manifest_file_is_present() {
+        let file = |id: &str, state: FileState| ModelFileStatus {
+            id: id.to_string(),
+            filename: format!("{id}.gguf"),
+            relative_path: format!("gemma-4-e2b-it-qat/{id}.gguf"),
+            state,
+            downloaded_bytes: 0,
+            expected_bytes: 10,
+            detail: None,
+            path: (state == FileState::Present).then(|| format!("/models/{id}.gguf")),
+        };
+
+        let all = vec![
+            file("model", FileState::Present),
+            file("vision", FileState::Present),
+            file("mtp", FileState::Present),
+        ];
+        let report = model_files_prerequisite(&all, "/models/gemma-4-e2b-it-qat".to_string());
+        assert_eq!(report.state, PrerequisiteState::Installed);
+        assert_eq!(
+            report.resolved_path.as_deref(),
+            Some("/models/gemma-4-e2b-it-qat")
+        );
+
+        // 2 of 3 — a truncated `mtp` classifies as Missing, so never Installed.
+        let partial = vec![
+            file("model", FileState::Present),
+            file("vision", FileState::Present),
+            file("mtp", FileState::Missing),
+        ];
+        let report = model_files_prerequisite(&partial, "/models/gemma-4-e2b-it-qat".to_string());
+        assert_eq!(report.state, PrerequisiteState::Missing);
+        assert_eq!(report.detail, "2 of 3 model files present.");
+        assert!(report.resolved_path.is_none());
+
+        // An errored file also blocks completion.
+        let errored = vec![
+            file("model", FileState::Present),
+            file("vision", FileState::Error),
+            file("mtp", FileState::Present),
+        ];
+        assert_eq!(
+            model_files_prerequisite(&errored, "/models".to_string()).state,
+            PrerequisiteState::Missing
+        );
+
+        // An empty/misconfigured manifest is never complete.
+        let empty: Vec<ModelFileStatus> = Vec::new();
+        assert_eq!(
+            model_files_prerequisite(&empty, "/models".to_string()).state,
+            PrerequisiteState::Missing
+        );
+    }
+
+    #[test]
+    fn default_manifest_is_the_three_engine_files_in_acquisition_order() {
+        let manifest = default_manifest();
+        let ids: Vec<&str> = manifest.files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["model", "vision", "mtp"]);
+        assert_eq!(manifest.subdir, "gemma-4-e2b-it-qat");
+        assert!(manifest.files[2].path.starts_with("MTP/"));
     }
 
     #[test]

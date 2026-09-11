@@ -221,22 +221,19 @@ pub fn describe_file(
 ) -> ModelFileStatus {
     let absolute = file_path(models_dir, manifest, spec);
     let relative_path = format!("{}/{}", manifest.subdir, spec.path);
+    // ONE classification rule (NFR-6): reuse `classify_file` for the `state`
+    // instead of re-deriving the size gate here.
+    let state = classify_file(&absolute, spec);
 
-    let (state, downloaded_bytes, detail, exists) = match std::fs::metadata(&absolute) {
-        Err(e) if e.kind() == ErrorKind::NotFound => (FileState::Missing, 0, None, false),
-        Err(e) => (
-            FileState::Error,
-            0,
-            Some(format!("Could not inspect file: {e}")),
-            false,
-        ),
+    let (downloaded_bytes, detail, exists) = match std::fs::metadata(&absolute) {
+        Err(e) if e.kind() == ErrorKind::NotFound => (0, None, false),
+        Err(e) => (0, Some(format!("Could not inspect file: {e}")), false),
         Ok(meta) => {
             let len = meta.len();
-            if len == spec.expected_bytes {
-                (FileState::Present, len, None, true)
+            if state == FileState::Present {
+                (len, None, true)
             } else if len > spec.expected_bytes {
                 (
-                    FileState::Error,
                     len,
                     Some(format!(
                         "Unexpected size — {len} of {} bytes",
@@ -246,7 +243,6 @@ pub fn describe_file(
                 )
             } else {
                 (
-                    FileState::Missing,
                     len,
                     Some(format!("Incomplete — {len} of {} bytes", spec.expected_bytes)),
                     true,
