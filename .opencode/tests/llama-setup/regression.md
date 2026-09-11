@@ -78,6 +78,22 @@ allowed command; covered by CI `rust-validate`, which was pending at capture).
 - R-7: `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` → 55 files /
   792 tests passed. `cargo` unavailable to the tester (tool-access gap).
 
+## Execution Log — round 2 (2026-09-11, spec/2855 @ b7cc2d13 / e735e92)
+
+Re-sweep of the fixed surface after the winget-id change (`WINGET_APP_ID = "ggml.llamacpp"`). All
+invariants still hold; the change is a single constant + unit test, so no baseline moved.
+- R-1: `companion-controls` rendered (toggle + idle input + Teleport tip) once both prerequisites read
+  `installed` (MS-3 via seam); wizard absent. PASS.
+- R-2: `check_companion_readiness`/`check_model_files` wire shapes unchanged (per-prereq report +
+  `{gguf_exists,mmproj_exists,gguf_path,mmproj_path}`); MS-2/MS-3/MS-1 all resolved correctly. PASS.
+- R-3: no new dangling refs introduced by `e735e92` (single-constant diff); panel mounts in both
+  wizard and controls states. PASS.
+- R-4: standalone `SetupWizard` file untouched; registered nav unchanged. PASS.
+- R-5: no overlay file touched by the diff. PASS.
+- R-6: token contract unaffected (no UI files changed). PASS.
+- R-7: `pnpm --filter @fredo/ui build` exit 0 (tsc + vite). `cargo` unavailable to the tester
+  (tool-access gap; nested/`cargo` is not in the allowlist) — Rust guard test covered by CI.
+
 ## Overlapping prior-feature suites (run alongside)
 
 - `.opencode/tests/companion/` — the settings panel + overlay whose content is gated (R-12..R-23,
