@@ -46,6 +46,8 @@ axum = { version = "0.7", features = ["http1", "http2"] }
 opentelemetry-proto = { version = "0.7", features = ["gen-tonic", "logs", "metrics", "trace", "with-serde"] }
 prost = "0.13"
 bytes = "1"
+# Streaming SHA-256 verification for model-file acquisition (Spec #2856)
+sha2 = "0.10"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
