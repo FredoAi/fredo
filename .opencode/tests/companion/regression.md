@@ -186,3 +186,11 @@
 
 - [ ] R-23: Static-grep the changed files for hardcoded colors; run `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
   **Expected:** ZERO hardcoded hex/rgb/hsla in the changed files; theme token → CSS var + `tint()` only; build exit 0 / zero TS errors; suite green. Reference F-40 + #2850 R-7/F-15/F-18.
+
+### Round 1 (spec/2854 @ 0e52c599) — results
+
+- **R-19 PASS (live).** idle/talk/teleport-out/teleport-in fingerprints unchanged (same overlay rect sets + wrapper motion); teleport out 0→460 ms, in 460→920 ms; `ANIM_DURATION` untouched; the 250 ms click discriminator, joke, and TicTacToe still work.
+- **R-20 PASS (live).** 58 base rects byte-identical across ALL 8 states (`bytesEq=true`, `firstDiff=-1`); geometry suite green unmodified.
+- **R-21 PASS (live).** single-click joke, double-click TicTacToe (250 ms discriminator, no stray joke), 208×268 game bubble, legal O moves, `Your turn (X)` status text — unchanged.
+- **R-22 PASS (live).** Companion ON ⇒ one Fredo (`.fredo-companion-avatar`); OFF ⇒ mascot home; toggle + persisted `Fredo_companion_visible` intact.
+- **R-23 PASS (static).** Only issue-refs matched the color grep in the 9 changed files (zero true hex/rgb/hsla); `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` 54/787 passed.
