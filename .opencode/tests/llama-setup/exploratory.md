@@ -124,3 +124,46 @@ back to `true`).
   the real-install-only re-probe `missing` (F-14). Recorded so #2856/#2857 do not assume a Links shim
   exists.
 - **E-06/E-09/E-10/E-11 (not executed):** unchanged from round 1.
+
+## Probes — #2856 (three-file model acquisition)
+
+> Unscripted probes for the per-file download surface. Promote any confirmed invariant to
+> `functional.md` (Spec #2856). Drive with the stub base URL / manifest override and the
+> `.opencode/tmp/2856/stub-server/` modes — never a real multi-GB download.
+
+- [ ] **E-14 — File collision / corruption.** Put a pre-existing file with the RIGHT name but
+      wrong content/length in the models subdir, then start acquisition. Does it refuse to
+      overwrite a verified file, and re-acquire a truncated/hash-mismatched one safely (no
+      append-onto-garbage)?
+  - Prompt: craft a 0-byte and a wrong-hash file; read the resulting bytes.
+
+- [ ] **E-15 — Disk-full / permission-denied.** Make the models dir read-only (or point it at a
+      non-writable path) and start acquisition. Is the failure surfaced per file (AC5) and never
+      reported complete? Any leftover partial file?
+  - Prompt: `attrib +r` on the dir, or a locked path.
+
+- [ ] **E-16 — Close the modal / app mid-download.** Close the settings modal (or kill the app)
+      while a file is downloading; reopen. Stale progress? Does the partial file resume, restart
+      cleanly, or wedge?
+  - Prompt: close during the spinner; compare the `.part`/final file bytes on reopen.
+
+- [ ] **E-17 — Manual placement race.** Drop a complete valid file into the models dir while a
+      download for that same file is in flight. Is the result the valid file (or a clean
+      re-download), never a corrupt append?
+  - Prompt: write the destination while streaming.
+
+- [ ] **E-18 — `MTP/` nested subpath.** Does the mtp file's `MTP/` segment create/read the nested
+      directory correctly on Windows (separators, case), and is the row's filename shown correctly?
+
+- [ ] **E-19 — Long / spaced / Unicode models dir.** Point `models_dir` at a path with spaces and
+      non-ASCII; does download + placement + verification still work and label correctly?
+
+- [ ] **E-20 — Retry storm / concurrency.** Click Retry repeatedly while a download is in flight.
+      Is a second concurrent download prevented (button disabled / synchronous guard)? No duplicated
+      transport calls or interleaved writes to the same file?
+
+- [ ] **E-21 — Redirect / chunked / unknown-length.** Stub a 302 redirect and a chunked response
+      with no `Content-Length`. Does progress degrade to indeterminate and the file still verify?
+
+- [ ] **E-22 — Progress listener churn.** Navigate away from Companion and back during a download.
+      Any leaked listener, duplicated progress updates, or stale percent?
