@@ -415,3 +415,174 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 - **F-28 PASS (live).** Console error-level reads empty in main + run-cli-terminal; timer in a `useRef`, gate deps primitives only, report effect excludes `isInUse`.
 - **F-29 PASS (live).** `telemetry_spans` = 11,180 spans, max(ingested_at)=2026-09-11T00:37:51; `chat_rows` q2853r2-chat=1; `tool_use_rows` q2853r2-tool/read_file=1.
 - **Cross-window (R-16/E-14) PASS (canonical).** Main companion visible → Ctrl+right-click in `run-cli-terminal` → exactly one Fredo globally (terminal companion, main mascot suppressed); terminal host-owned 20 s timer returned it and the main mascot came home via the `companion-presence {idle-settle}` broadcast. Edge (see exploratory E-18): a window (re)loaded AFTER main auto-returned misses the `idle-settle` broadcast, so a teleport into it renders the companion while main's mascot is still home (one Fredo per window per the F-21 edge; two avatars globally) — pre-existing presence-sync gap, not introduced by the round-2 diff.
+
+---
+
+## #2854 extension — extended avatar status vocabulary (thinking / happy / playful / joking)
+
+> Issue #2854 adds four new statuses to the shared avatar — `thinking`, `happy`,
+> `playful`, `joking` — alongside the existing `idle`/`talk`/`teleport-out`/`teleport-in`,
+> wired on BOTH the companion and the desktop mascot (PO amendment). Rows map 1:1 to the QA
+> Plan `Q1..Q6` in `.opencode/tmp/2854/triage.md` `## QA Expert`.
+> **Verification policy: live** — every row is provable only on a running app. Evidence per
+> case: `tauri_webview_execute_js` DOM/geometry probes + `tauri_webview_screenshot` +
+> `tauri_read_logs(source="console")`. The mandatory live receipt is F-41; a static-only PASS
+> is a FALSE PASS.
+> **Serving checkout:** `spec/2854` on a running Fredo desktop app (dev-env Up -Spec 2854,
+> MCP driver `com.fredo.app`); LLM model + mmproj loaded for F-31..F-34; short idle timeout
+> for F-39.
+
+## F-30 (REQ-1 / AC-1, Q1) — Four new statuses exposed; all 8 states pairwise distinct
+
+- [ ] F-30: Drive each of the 8 states — `idle`, `talk`, `teleport-out`, `teleport-in`,
+      `thinking`, `happy`, `playful`, `joking` — on the shared avatar. Per state, via
+      `tauri_webview_execute_js`, record the consumer wrapper `data-state` + `aria-label`;
+      `#fredo-expression` presence + its `data-state`; every overlay `<rect>` x/y/width/height;
+      `getComputedStyle(wrapper).animationName` and each overlay child's computed
+      `animationName`. Screenshot each and compare the 8 fingerprints.
+  **Expected:** `FredoAvatarState` (and `CompanionState`, re-exported from `apps/ui/src/index.ts`)
+  include `thinking`/`happy`/`playful`/`joking`; every new state renders a NON-empty, UNIQUE
+  fingerprint — a distinct `#fredo-expression[data-state=<s>]` overlay rect set and/or a
+  distinct whole-element `animationName`; all 8 fingerprints are pairwise different (no new
+  state collapses to `talk`/`idle`); `idle` = the 58 base rects only, no overlay; each is
+  distinguishable at the 80×100 sm render. Probe at the mounted companion + mascot sm scale
+  AND the shared component at md (132×165) — the vocabulary is scale-agnostic.
+  **Probe contract (UI/UX §3):** thinking → `.fredo-thinking-dot` ×3 + `.fredo-thinking-bubble`
+  ×3 + `fredo-thinking-ponder`; joking → `.fredo-joking-mouth` + `.fredo-joking-tongue` +
+  `.fredo-joking-laugh` ×2 + `fredo-joking-jiggle`; happy → `.fredo-happy-mouth` ×5 +
+  `.fredo-happy-star` ×3 + `fredo-happy-bounce`; playful → `.fredo-playful-smirk` ×2 +
+  `.fredo-playful-brow` + `.fredo-playful-star` + `fredo-playful-wobble`.
+  - **Edge:** a new state reusing the `talk` overlay DOM (same rect set AND same animationName)
+    = FAIL; overlay rects at integer viewBox coords (crisp at sm); `teleport-out`/`teleport-in`
+    and all four new states remain mutually distinct. Reference #2850 F-3 + #2852 F-20.
+
+## F-31 (REQ-2 / AC-2, Q2) — Companion LLM wait shows `thinking` (not `talk`)
+
+- [ ] F-31: Start `tauri_ipc_monitor`; single-click the companion. Interval/rAF-sample the
+      wrapper `data-state` + the bubble text from the click through the pending phase.
+  **Expected:** during the pending phase (bubble `💭 Thinking...`, before the first real token)
+      `data-state="thinking"` and `#fredo-expression[data-state=thinking]` render — NOT `talk`.
+      The state is observable from the click until the first streamed token.
+  - **Edge:** the model-mid-load `⏳ Loading model...` path shows `thinking` (never a stuck
+    `talk`/`idle`); Ctrl+right-click during the wait hands off cleanly (no stuck `thinking`).
+    Reference #2850 F-7.
+
+## F-32 (REQ-2 / AC-2, Q2) — Active joke delivery shows `joking`
+
+- [ ] F-32: While F-31's joke stream is live (first token → `llm-done`), sample the wrapper
+      `data-state` + overlay.
+  **Expected:** from the first real token through stream-end `data-state="joking"` with its
+      distinct overlay — NOT `talk`. On `llm-done` the state shows `happy` (~1400 ms hold) then
+      returns to rest (the existing 5 s message-hide); console clean.
+  - **Edge:** an instant/zero-token stream still transitions `thinking`→`joking`→rest; the
+    streaming cursor (`Fredo-cursor-blink`) still blinks; control tokens stripped from the
+    bubble text. Reference #2850 F-7.
+
+## F-33 (REQ-2 / AC-2, Q2) — TicTacToe LLM wait shows `thinking` (backlog trigger)
+
+- [ ] F-33: Double-click the companion to open TicTacToe; play a move as X and sample the
+      wrapper `data-state` during Fredo's vision/LLM turn (status text `Companion is thinking…`,
+      no O placed yet).
+  **Expected:** `data-state="thinking"` (+ its overlay) while the TicTacToe response is
+      pending — the wait moment is not generic `talk`. Once O is placed / the turn completes,
+      the state returns to rest.
+  - **Edge:** the `capture_screen_region` no-op / error fallback still ends in a legal move
+    + rest (no stuck thinking); the game's `🤔 Analyzing board...` text is not required to
+    change, only the avatar state. Reference #2850 F-8.
+
+## F-34 (REQ-3 / AC-3, Q3) — `happy` renders on the defined positive outcome
+
+- [ ] F-34: Play TicTacToe to each outcome (X win / Fredo win / draw) and complete a joke;
+      probe the wrapper `data-state` + overlay on each completion.
+  **Expected:** on ANY TicTacToe outcome (X win / Fredo win / draw — UI/UX §4 default) and on
+      joke completion `data-state="happy"` + `#fredo-expression[data-state=happy]` render,
+      distinct from `idle` and `playful`. `happy` is transient — it returns to the resting
+      state after its moment.
+  - **Edge:** win vs loss vs draw classification per the UI/UX draft (Discussion #4);
+    `happy` on the companion AND the mascot surface (F-36); a joke that ends in an error
+    does not falsely show `happy`. Reference #2850 F-7/F-8.
+
+## F-35 (REQ-3 / AC-3, Q3) — `playful` renders on the defined resting trigger
+
+- [ ] F-35: Let the companion rest (no interaction) past its status moment and probe; repeat
+      on the mascot with the companion OFF/auto-hidden.
+  **Expected:** on the `useFredoRestingCadence` resting trigger (delay ≈12 s sustained rest →
+      `playful` for ≈1.8 s, then back to `idle`) `data-state="playful"` + its distinct
+      overlay/motion render, visibly distinguishable from `idle` and `happy` per F-30.
+  - **Edge:** playful-vs-idle semantics keyed to the drafted definition (Discussion #1);
+    grounded in the real resting lifecycle, not a hardcoded class. Reference F-30.
+
+## F-36 (REQ-3 / AC-3, PO amendment, Q3) — BOTH surfaces wired to the shared vocabulary
+
+- [ ] F-36: With the companion OFF (or auto-hidden) so the desktop/launcher mascot renders,
+      drive/expose each new status on the mascot surface and probe the mascot wrapper
+      `data-state` + the `#fredo-expression` overlay; then repeat on the companion.
+  **Expected:** the mascot wrapper (`.fredo-avatar-idle`, currently a hardcoded
+      `data-state="idle"`) and the companion wrapper (`.fredo-companion-avatar`) BOTH carry
+      the new statuses via the same shared `FredoAvatarState` and render the matching
+      expression overlay. Exactly one Fredo at a time is preserved (#2853 F-21).
+  - **Edge:** the mascot's status source/trigger is defined by the Architect (Discussion #3);
+    switching the companion ON/OFF mid-status does not leave the mascot stuck in a status;
+    per-window presence rules hold. Reference #2852 F-20 + #2853 F-21/F-22.
+
+## F-37 (REQ-4 / AC-4, Q4) — Frozen 58 base rects byte-identical across ALL 8 states
+
+- [ ] F-37: In each of the 8 states read every mounted avatar `<rect>` (x/y/width/height) and
+      diff the base rects against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
+  **Expected:** the 58 base rects are byte-identical across ALL states
+      (idle/talk/teleport-out/teleport-in/thinking/happy/playful/joking) — a new status only
+      adds its `#fredo-expression` overlay; it never replaces or mutates a base rect. The
+      first 58 rects in every state equal the 58-item source set.
+  - **Edge:** a status that adds/removes/reorders base rects = FAIL; overlay rects are appended
+    after the 58; probe both sm (companion/mascot) and md renders. Reference #2850 F-3.
+
+## F-38 (REQ-4 / AC-4, Q4) — Reduced motion respected; expression still legible
+
+- [ ] F-38: Drive a `prefers-reduced-motion: reduce` pass and re-run the F-30 state legs;
+      read the computed `animation-name` on the wrapper + overlay.
+  **Expected:** under reduced motion the whole-element motion is suppressed (computed
+      `animation-name:none`, or the teleport opacity crossfade at ~400 ms) while each state's
+      expression overlay stays legible and distinguishable; the new statuses do not become
+      motion-only.
+  - **Edge:** every new state under reduced motion must remain readable via the overlay
+      (not motion alone); the teleport timing is preserved. Reference #2850 F-19 + #2852 E-11.
+
+## F-39 (REQ-4 / AC-4, Q4) — No state sticks; teleport timing unchanged
+
+- [ ] F-39: After each new status moment (joke done, game end, wait done) go quiet and sample
+      the wrapper `data-state` until rest. Then drive a same-window teleport and timestamp the
+      `data-state` sequence every ~50 ms.
+  **Expected:** every new status returns to the resting state after its moment (nothing
+      stuck — including after an error/fallback path); teleport sequence
+      `idle → teleport-out → (hidden in transit) → teleport-in → idle`, out ≈400 ms, in ≈400 ms
+      + ~50 ms settle (±150 ms tolerance); `ANIM_DURATION` constants unchanged.
+  - **Edge:** a new status at the exact teleport boundary; repeated status cycles show no
+    drift; teleport while `joking`/`thinking` hands off cleanly. Reference #2850 F-6.
+
+## F-40 (REQ-NF, Q5) — Console clean, no re-render loop, token-native, build gates
+
+- [ ] F-40: After EVERY live leg read `tauri_read_logs(source="console")` in every open window;
+      inspect the new status code for effect/memo deps on array `.length`/fresh refs;
+      static-grep the changed files for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`, `hsla(`; run
+      `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window (the
+      pre-existing `motion() is deprecated` WARN is exempt); no re-render loop from the new
+      status code (AGENTS.md #523); ZERO hardcoded color literals in the changed files (theme
+      token → CSS var + `tint()` only; no `var(--x)NN` alpha-append); build exit 0 / zero TS
+      errors; suite green.
+  - **Edge:** console read post-interaction, not only at boot; both windows; `#2850`/`#2854`
+    comment refs are not color literals. Reference #2850 F-15/F-18/F-19.
+
+## F-41 (REQ-LIVE, Q6) — Mandatory live telemetry + rendered-webview receipt
+
+- [ ] F-41: On the running app exercise F-30..F-40; run `fredo emit --event-type chat` +
+      `--event-type tool_use` with distinct session ids; query the RTDB row tables +
+      `telemetry_spans` (telemetry-query skill); retain DOM/screenshot/geometry captures of
+      each new status.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)`;
+      both emitted events classify into `chat_rows`/`tool_use_rows` under their session ids;
+      a rendered-webview receipt (DOM snapshot / screenshot / measured geometry) of each new
+      status exists. **A static-only PASS with no `telemetry_spans` receipt is a FALSE PASS**
+      under the live policy.
+  - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit +
+    query output in `## Tests Runs`. Reference #2850 F-17 + #2853 F-29.
