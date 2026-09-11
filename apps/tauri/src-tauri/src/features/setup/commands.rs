@@ -1091,7 +1091,7 @@ const LLAMA_SERVER_BIN: &str = "llama-server";
 const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
 const WINGET_BIN: &str = "winget";
 #[cfg(target_os = "windows")]
-const WINGET_APP_ID: &str = "llama.cpp";
+const WINGET_APP_ID: &str = "ggml.llamacpp";
 
 /// Per-prerequisite state. `Error` = could not determine; `Missing` = determined absent.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -1347,8 +1347,8 @@ fn run_install_with(
     }
 }
 
-/// One-click `winget install llama.cpp`. Runs OFF the UI thread; does NOT launch
-/// the server and does NOT re-check readiness — the frontend re-probes after.
+/// One-click `winget install --id ggml.llamacpp -e`. Runs OFF the UI thread; does
+/// NOT launch the server and does NOT re-check readiness — the frontend re-probes.
 #[tauri::command]
 pub async fn install_llama_cpp() -> LlamaCppInstallResult {
     let winget_available = is_binary_available(WINGET_BIN);
@@ -1608,6 +1608,17 @@ mod tests {
         });
         assert!(!result.success);
         assert_eq!(result.code, Some(LlamaCppInstallCode::SpawnFailed));
+    }
+
+    /// Guard: `-e` forces an exact PackageIdentifier match, so a wrong id fails with
+    /// "No package found matching input criteria." and the one-click install can never
+    /// succeed. Canonical id per the microsoft/winget-pkgs manifest
+    /// `manifests/g/ggml/llamacpp/<version>/ggml.llamacpp.installer.yaml`
+    /// (`PackageIdentifier: ggml.llamacpp`). `WINGET_APP_ID` is Windows-only.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn winget_app_id_is_the_canonical_winget_package_identifier() {
+        assert_eq!(WINGET_APP_ID, "ggml.llamacpp");
     }
 
     #[test]
