@@ -98,7 +98,7 @@
 
 ## F-08 (AC3) — Re-check after install: `checking` → installed/missing, NO reload — **FAIL (round 1)**
 
-- [ ] F-08: **FAIL (round 1)** — After completing F-07 on MS-1 with a controlled successful install (shim materializes
+- [x] F-08: **PASS (round 2)** — After completing F-07 on MS-1 with a controlled successful install (shim materializes
       `llama-server` / real install), observe the row + overall readiness; read
       `performance.timeOrigin` and the navigation-entry count before and after.
   **Expected:** the row transitions `checking` → `installed` (or `missing` if the install did not
@@ -158,7 +158,7 @@
 
 ## F-14 (AC5) — Install reports success but server still not resolvable → not complete — **UNVERIFIED (round 1)**
 
-- [ ] F-14: **UNVERIFIED (round 1)** — Use a shim that exits 0 but does NOT put `llama-server` on PATH (or a real install
+- [x] F-14: **PASS (round 2)** — Use a shim that exits 0 but does NOT put `llama-server` on PATH (or a real install
       whose bin dir is not yet on the running process's PATH). Trigger install, then re-check.
   **Expected:** the wizard does NOT declare success — the `llama-server` row stays missing and the
       wizard stays not-set-up (a reported install success is never trusted over a fresh detection).
@@ -189,7 +189,7 @@
 
 ## F-17 (AC3, promoted from E-05 / round 1) — One-click install must use a resolvable winget id
 
-- [ ] F-17: Trigger `Install llama.cpp` on a machine with `winget` present; read the backend
+- [x] F-17: **PASS (round 2)** — Trigger `Install llama.cpp` on a machine with `winget` present; read the backend
       `install_llama_cpp` result (`output`/`error`/`code`).
   **Expected:** `winget install` resolves the llama.cpp package and installs (exit 0) — or a
       genuine environment failure (no network / source unavailable) is surfaced. It must NOT
@@ -201,6 +201,14 @@
     winget package id is **`ggml.llamacpp`** (PackageName `llama.cpp`), so `--id llama.cpp -e`
     never matches (verified: `manifests/l/llama` → 404 in microsoft/winget-pkgs;
     `manifests/g/ggml/llamacpp/.../ggml.llamacpp.installer.yaml` → `PackageIdentifier: ggml.llamacpp`).
+  - **Actual (round 2, PASS):** live `install_llama_cpp` now runs the real
+    `winget install --id ggml.llamacpp -e --accept-package-agreements --accept-source-agreements
+    --disable-interactivity`; a fresh UI click installed `ggml.llamacpp` (extracted to
+    `%LOCALAPPDATA%\Microsoft\WinGet\Packages\ggml.llamacpp_Microsoft.Winget.Source_8wekyb3d8bbwe\
+    llama-server.exe`), and a second backend invoke returned
+    `{"success":false,"output":"Found an existing package already installed...No available upgrade found...",
+    "code":"installFailed"}` — i.e. the package RESOLVED (no "No package found"). The id defect is fixed
+    and a guard unit test pins `WINGET_APP_ID == "ggml.llamacpp"` (`e735e92`).
   - **Repro:** open Settings → Companion (not set up) → `Install llama.cpp`; or invoke
     `install_llama_cpp` directly. Row flips `running` → `error`; the one-click install can never
     reach `installed` on a standard winget repo.
@@ -237,3 +245,47 @@ Machine states constructed via the `save_setting`/`get_setting` seams (`models_d
 | F-15 | PASS | console clean after every leg; `pnpm --filter @fredo/ui build` exit 0; `cargo` not runnable in tester sandbox (Rust via CI) |
 | F-16 | PASS | `fredo emit` chat+tool both `{"queued":true}`; `chat_rows(e2e-2855-chat)=1`, `tool_use_rows(e2e-2855-tool)=1`; `telemetry_spans` total 12,009, 1,587 recent, newest ingested 2026-09-11T17:13:07.923Z |
 | F-17 | **FAIL** | new — one-click install uses a non-existent exact winget id; see case body |
+
+## Execution Log — round 2 (2026-09-11, spec/2855 @ b7cc2d13 / e735e92)
+
+Fixed surface: `WINGET_APP_ID = "ggml.llamacpp"` (+ guard unit test). Gating/detection untouched.
+States constructed via the backend `save_setting`/`get_setting` seams (`models_dir`,
+`llama_server_path`) exactly as round 1; both keys restored to `""` and the panel remounted at the end.
+The AC3 real-install leg was driven from the UI on MS-3 (llama missing, models present).
+
+- **Real install verb RESOLVED/INSTALLED the package.** First UI `Install llama.cpp` click ran the real
+  `winget install --id ggml.llamacpp -e ...`, installed `ggml.llamacpp` (row returned to `missing` with
+  NO actionError ⇒ `success:true`), and extracted
+  `…\Microsoft\WinGet\Packages\ggml.llamacpp_Microsoft.Winget.Source_8wekyb3d8bbwe\llama-server.exe`.
+  A second backend invoke returned `installFailed` with "Found an existing package already installed…
+  No available upgrade found" — proving the package now RESOLVES (round 1 failed at "No package found").
+- **In-session re-probe (no reload).** Row `running` (button `disabled` + `aria-busy`, indeterminate
+  progressbar) → `missing`, with `performance.timeOrigin` (1789148151818.2) and navigation count (1)
+  UNCHANGED. **F-14 verified live:** a successful install whose binary the stale running-process cannot
+  resolve leaves the wizard not-set-up (no false "complete") — exactly the documented behavior.
+  Named environment fact: winget created **no** `…\WinGet\Links\llama-server.exe` shim (the Links dir
+  was verified empty via a read-only FS listing), so the real-install-only path reported `missing`.
+- **`installed` transition (permitted backend seam).** With `llama_server_path` set to the real
+  install-delivered binary, the install action's re-probe flipped the llama row to `installed`
+  (resolved path shown) and, with models present, readiness re-evaluated in place → `companion-controls`
+  rendered — no reload.
+
+| Case | Result | Evidence (round 2) |
+|------|--------|--------------------|
+| F-01 | PASS | MS-1: wizard-only; `companion-controls`=0; "Show Fredo Companion"/teleport/idle-input absent; summary "2 prerequisites need attention" |
+| F-02 | PASS | normal controls absent on MS-1/MS-3 (DOM query false) |
+| F-03 | PASS | gated from first paint (no controls on remount) |
+| F-04 | PASS | MS-2 llamaServer `installed` (resolved path) / MS-3 `missing` — independent of modelFiles |
+| F-05 | PASS | MS-3 modelFiles `installed` / MS-1 `missing` ("0 of 2 model files present.") |
+| F-06 | PASS | both partial directions render "1 of 2 prerequisites ready — setup required", no controls |
+| F-07 | PASS | install click → row `running`, button disabled + `aria-busy`, progressbar; real winget invoked |
+| F-08 | **PASS** | real install → in-place re-probe `running`→`missing` (F-14 stale-PATH); seam-assisted `installed`; timeOrigin/nav unchanged |
+| F-09 | PASS | install off UI thread; chrome/DOM responsive during install; other row readable |
+| F-10 | PASS | both satisfied → `companion-controls` render, wizard absent |
+| F-11 | PASS | in-place wizard→controls swap with modal open; timeOrigin/nav unchanged |
+| F-12 | **UNVERIFIED** | named blocker: cannot shadow/remove `winget` from the already-running app's inherited PATH (launch-environment override not drivable in the tester sandbox); branch covered by the `install_llama_cpp_winget_unavailable_*` unit test |
+| F-13 | PASS | real winget non-zero exit → "Failed" row, actionable message, Retry + Re-check, focus moved, no controls, not "complete" |
+| F-14 | **PASS** | install success but not resolvable (no Links shim / stale PATH) → stays `missing`, no false complete |
+| F-15 | PASS | console clean after every leg (only pre-existing `motion()` warn); `pnpm --filter @fredo/ui build` exit 0; `cargo` unavailable to the tester (tool-access gap) |
+| F-16 | PASS | `fredo emit` chat+tool `{"queued":true}`; `chat_rows(e2e-2855-r2-chat)=1`, `tool_use_rows(e2e-2855-r2-tool)=1`; `telemetry_spans` total 12,398, newest ingested 2026-09-11T17:43:54.122Z, 1,976 in last 15 min |
+| F-17 | **PASS** | real `winget install --id ggml.llamacpp -e` resolves + installs the package (see case body) |
