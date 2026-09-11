@@ -144,12 +144,12 @@
   **Expected:** auto-return does not move or mutate the companion's default/home position (a non-goal of this slice); the desktop mascot returns to its own usual slot (F-21).
   - **Edge:** drag/move before an auto-return — the moved position is preserved or reset per existing behavior, not silently mutated by the presence lifecycle. Reference functional F-21.
 
-### #2853 round 1 results (spec/2853 @ 1c9696aa, live)
+### Round 2 (spec/2853 @ 4c9ba542) — regression results
 
-- **R-12 PASS.** Toggle OFF → companion hides / mascot shown (visible=false); ON → companion returns (mascot suppressed) with the idle-timeout control present and no orphan/crash.
-- **R-13 PASS (partial).** Teleport choreography/sequence + click/joke + double-click TicTacToe + avatar geometry observed intact; speech-bubble side-choosing not re-driven this round (covered by #2850 and unchanged).
-- **R-14 PASS.** The launcher shell layout is not shifted by gating the mascot: mascot returns to the identical slot (920,345→346); command bar/notch unaffected; no reserved gap.
-- **R-15 PASS.** `Fredo_companion_visible` stayed "true" through auto-return; the timeout value was not reset by the auto-return path.
-- **R-16 PASS (live, run-cli-terminal).** Terminal hosts the companion; main showed 0 companion / 0 mascot at t+5.7 s and t+9.9 s (exactly one Fredo globally); after the terminal's host-owned timer the `companion-presence` settle mounted the main mascot at (920,344) and the terminal companion hid.
-- **R-17 PASS.** Console error-level read empty in both windows after every leg; no re-render loop from the timer.
-- **R-18 PASS.** Auto-return did not mutate the companion's default/home position; the next teleport re-derived the position (clamp math intact).
+- **R-12 PASS (live).** Toggle OFF ⇒ companion=0/mascot=1, persisted `Fredo_companion_visible`="false"; ON ⇒ companion=1/mascot=0, persisted "true"; settings modal mounts cleanly with the added idle-timeout control.
+- **R-13 PASS (live+unit).** Single-click joke (talk + streaming cursor), double-click TicTacToe (250 ms discriminator, no stray joke), Ctrl+right-click teleport, bubble anchor at the real 80×100 dims — all unchanged; ST-6 suite (25/25) green.
+- **R-14 PASS (live).** Launcher shell renders with the companion ON (mascot suppressed) and OFF (mascot at its usual slot); no collapsed/blank layout.
+- **R-15 PASS (live).** After auto-return, persisted `Fredo_companion_visible` stayed "true" and `Fredo_companion_idle_timeout` stayed "20" — transient only.
+- **R-16 PASS (live, canonical).** Cross-window teleport main→terminal: exactly one Fredo globally (terminal companion, main mascot suppressed); terminal host-owned 20 s timer returned it and the main mascot returned via the `companion-presence {idle-settle}` broadcast. Edge: a window (re)loaded after main auto-returned misses the broadcast (exploratory E-18).
+- **R-17 PASS (live).** Console error-level reads empty in both windows; no `Maximum update depth exceeded`; no re-render loop from the new `isInUse` report effect.
+- **R-18 PASS (live).** Auto-return did not move the companion's home position; after re-show the companion returned at its slot and the mascot at its own slot.
