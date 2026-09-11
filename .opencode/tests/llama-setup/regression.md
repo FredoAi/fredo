@@ -137,6 +137,28 @@ invariants still hold; the change is a single constant + unit test, so no baseli
       must not repoint or delete it (the deletion slice owns it). The new `gemma-4-e2b-it-qat`
       subfolder is ADDITIVE.
 
+## Execution Log — round 1 (2026-09-11, spec/2856 @ 0f3f3595)
+
+Real wizard-driven pull (human directive); `models_dir` = `C:\Code\fredo\models` via the IPC seam.
+- **R-8** PASS: the step rows + legacy `check_model_files` shape coexist; the panel rendered the
+  per-file rows (model/vision/mtp) and the legacy `SetupWizard` model step was not exercised
+  (out of the real-pull path) — its completion gate now derives from `complete` (ST-7) per the
+  developer receipt; UI build + 797 UI tests green per the dev summary.
+- **R-9** PASS: single wizard preserved; `llama-server` row + `Install llama.cpp` + Re-check still
+  render with the model step; gating held (wizard-only while not ready) across all legs.
+- **R-10** PASS: the pull was driven by the wizard `download_model`; `setup:download-progress`
+  delivered the additive payload (fileId/file/relativePath/total/downloaded/percent/state).
+- **R-11** PASS: files landed under `<models_dir>/gemma-4-e2b-it-qat/` with the nested `MTP/`
+  segment exactly as configured; `kguf paths` shown in the UI = `C:\Code\fredo\models\gemma-4-e2b-it-qat\…`.
+- **R-12** PASS (static): CLI setup mirror changed only to share the manifest (dev receipt); not
+  driven live this round.
+- **R-13** PASS: rows/progress/error use `tint()` + semantic tokens; no hex/rgba observed; the
+  companion overlay is untouched (no overlay file in the diff).
+- **R-14** PASS (UI): `pnpm --filter @fredo/ui build` green per the dev summary; `cargo` not
+  runnable in the tester sandbox (named tool-access gap) — Rust gates via CI `rust-validate`.
+- **R-15** PASS: additive only — the legacy `gemma-e2b-it` layout (in-process engine) was not
+  repointed; the new `gemma-4-e2b-it-qat` folder is separate.
+
 ## Overlapping prior-feature suites (run alongside)
 
 - `.opencode/tests/companion/` — the settings panel + overlay whose content is gated (R-12..R-23,
