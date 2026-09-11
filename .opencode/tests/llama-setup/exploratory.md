@@ -8,7 +8,7 @@
 
 ## Probes
 
-- [ ] **E-01 — PATH refresh after a real install.** Install llama.cpp via winget (if permitted)
+- [x] **E-01 — PATH refresh after a real install.** (verified round 2) Install llama.cpp via winget (if permitted)
       while Fredo is running; immediately re-check WITHOUT restarting Fredo. Does detection see the
       new `llama-server`, or is the running process's PATH stale (install dir not yet on process
       env)? Probe whether the wizard re-resolves PATH fresh or caches it at start. Record the
@@ -105,3 +105,22 @@ back to `true`).
 - **E-06 (not executed):** closing/cancelling the modal mid-install was not exercised.
 - **E-09/E-10/E-11 (not executed):** multiple `llama-server` on PATH, Unicode/spaces in the models
   dir, and theme/legibility of the error row were not probed this round.
+
+## Findings — round 2 (2026-09-11, spec/2855 @ b7cc2d13)
+
+- **E-01 (verified):** a real `winget install` of `ggml.llamacpp` extracted `llama-server.exe` under
+  `%LOCALAPPDATA%\Microsoft\WinGet\Packages\ggml.llamacpp_Microsoft.Winget.Source_8wekyb3d8bbwe\`,
+  but the running Fredo process did NOT see it: `check_companion_readiness` stayed `missing` across the
+  in-session re-probe. Confirmed expected behavior (F-14) — the running process's PATH is stale.
+- **E-05 (verified — now fixed):** with the corrected id the real verb no longer returns
+  "No package found matching input criteria." Instead it installs the package; a repeat install of the
+  same version returns winget's non-zero "No available upgrade found." (row `error`, actionable). The
+  round-1 E-05 defect is closed by `e735e92`.
+- **E-13 (verified, environment/package fact — no product defect in scope):** `ggml.llamacpp` is
+  `InstallerType: zip` + `NestedInstallerType: portable`, and winget created **no** shim in
+  `%LOCALAPPDATA%\Microsoft\WinGet\Links` (read-only FS listing returned `[]`). The resolver's branch
+  #3 (`winget_links_shim()`) therefore never matches for this package on this host; the fresh-process
+  branch #2 (`where llama-server`) is the only PATH path and is stale until restart. This is what makes
+  the real-install-only re-probe `missing` (F-14). Recorded so #2856/#2857 do not assume a Links shim
+  exists.
+- **E-06/E-09/E-10/E-11 (not executed):** unchanged from round 1.
