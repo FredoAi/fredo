@@ -13,7 +13,8 @@ import { tint } from '../../../../shared/utils/colorTint';
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
 import { LauncherCommandBar } from './LauncherCommandBar';
-import { FredoAvatar } from '../../../../shared/components/fredo-avatar';
+import { FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
+import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -78,6 +79,11 @@ const SURFACE_Z_COVERED = 0;
  *  closed state preserves the resting z-sink (coveredByWindow). */
 const SURFACE_Z_OPENED = 1300;
 
+/** #2854 ST-4: the desktop mascot's bounded `happy` beat on a feature-tile open.
+ *  A single cleared `setTimeout` (no interval/loop) then returns to the rest
+ *  expression; `desktopState` priority keeps it above `thinking`. */
+const DESKTOP_HAPPY_BEAT_MS = 1600;
+
 /** #2823 AC3: true for any text-editing control — the "another input" guard.
  *  The launcher's own searchbox is an `input`, so this predicate ALONE is not
  *  sufficient; it must be paired with an overlayRef containment check (NFR-7). */
@@ -137,6 +143,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // resting z-model (coveredByWindow) applies unchanged.
   const [open, setOpen] = useState(false);
 
+  // #2854 ST-4: the desktop mascot's SURFACE-LOCAL expression state (never the
+  // companion context / `CompanionState` / presence payload — #2853 invariant).
+  // `happy` is a bounded beat on a feature-tile open; `thinking` while the
+  // command bar is engaged OR a non-empty query is present; `playful` on the
+  // shared resting cadence. Priority: happy > thinking > playful > idle.
+  const [desktopMoment, setDesktopMoment] = useState<'happy' | null>(null);
+  const desktopMomentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const commandActive = engaged || query.trim() !== '';
+  const restingPhase = useFredoRestingCadence(commandActive, { delayMs: 12000, holdMs: 1800 });
+  const desktopState: FredoAvatarState =
+    desktopMoment === 'happy' ? 'happy' : commandActive ? 'thinking' : restingPhase;
+
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const prevWindowCountRef = useRef(currentWindows.length);
   // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
@@ -161,6 +179,26 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     setOpen(false);
     setEngaged(false);
   }, []);
+
+  // #2854 ST-4: a feature-tile open fires the mascot's bounded `happy` beat. A
+  // SINGLE cleared `setTimeout` (never doubled) — cleared on re-trigger and on
+  // unmount, so no timer can leak (AGENTS.md #523 — no re-render loops). The
+  // deps are stable (ref + setState) so the callback identity never changes.
+  const triggerDesktopHappy = useCallback(() => {
+    setDesktopMoment('happy');
+    if (desktopMomentTimerRef.current) clearTimeout(desktopMomentTimerRef.current);
+    desktopMomentTimerRef.current = setTimeout(() => {
+      desktopMomentTimerRef.current = null;
+      setDesktopMoment(null);
+    }, DESKTOP_HAPPY_BEAT_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (desktopMomentTimerRef.current) clearTimeout(desktopMomentTimerRef.current);
+    },
+    [],
+  );
 
   // #2823: Ctrl+Space open — capture the pre-open focus origin (first-open only;
   // never re-captured on a toggle-close, so a Ctrl+Space in → Ctrl+Space out returns
@@ -310,17 +348,21 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     // #2823: routing a tile through the own-kernel opener closes the overlay so the
     // freshly opened window is never obscured by a raised launcher surface.
     closeSurface();
+    // #2854 ST-4: a tile open is the mascot's `happy` trigger (bounded beat).
+    triggerDesktopHappy();
     onOpenFeature(feature.id, feature);
-  }, [filteredEntries, safeSelectedIndex, onOpenFeature, closeSurface]);
+  }, [filteredEntries, safeSelectedIndex, onOpenFeature, closeSurface, triggerDesktopHappy]);
 
   const handleSelect = useCallback(
     (index: number) => {
       const feature = filteredEntries[index];
       if (!feature) return;
       closeSurface();
+      // #2854 ST-4: a tile open is the mascot's `happy` trigger (bounded beat).
+      triggerDesktopHappy();
       onOpenFeature(feature.id, feature);
     },
-    [filteredEntries, onOpenFeature, closeSurface],
+    [filteredEntries, onOpenFeature, closeSurface, triggerDesktopHappy],
   );
 
   const handleQueryChange = useCallback((q: string) => {
@@ -513,10 +555,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           {/* #2853 ST-4: the decorative desktop mascot renders ONLY when the
               companion is NOT designated present, so exactly one Fredo shows at
               a time. It stays purely decorative — no role/tabIndex/click, and
-              the SVG keeps its own `aria-hidden="true"` (FredoAvatar). */}
+              the SVG keeps its own `aria-hidden="true"` (FredoAvatar). #2854 ST-4
+              wires only the mascot's INTERNAL expression (`data-state` + avatar
+              `state`): thinking/happy/playful/idle — surface-local, never context. */}
           {!companionPresent && (
-            <Box mb="4" className="fredo-avatar-idle" data-state="idle">
-              <FredoAvatar size="sm" />
+            <Box mb="4" className="fredo-avatar-idle" data-state={desktopState}>
+              <FredoAvatar size="sm" state={desktopState} />
             </Box>
           )}
           <LauncherCommandBar

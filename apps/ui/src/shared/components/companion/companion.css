@@ -56,12 +56,66 @@
   animation: fredo-teleport-in-motion 400ms cubic-bezier(0, 0, 0.2, 1) 1 forwards;
 }
 
+/* ── #2854 status flows: whole-element motion on the wrapper only. The overlay
+      shapes stay static in the shared `FredoAvatar`; the wrapper carries the
+      state mood. Reduce-motion suppresses all four (shapes stay legible). ─── */
+
+/* thinking — slow ponder sway (transform only). */
+@keyframes fredo-thinking-ponder {
+  0%, 100% { transform: rotate(-1.5deg) translateY(0); }
+  50%      { transform: rotate(1.5deg) translateY(-1px); }
+}
+
+.fredo-companion-avatar[data-state='thinking'] {
+  transform-origin: 50% 100%;
+  animation: fredo-thinking-ponder 2.8s ease-in-out infinite;
+}
+
+/* joking — quick jiggle while the laugh streams. */
+@keyframes fredo-joking-jiggle {
+  0%, 100% { transform: rotate(0) translateY(0); }
+  25%      { transform: rotate(-2.5deg) translateY(-1px); }
+  75%      { transform: rotate(2.5deg) translateY(-1px); }
+}
+
+.fredo-companion-avatar[data-state='joking'] {
+  transform-origin: 50% 100%;
+  animation: fredo-joking-jiggle 0.45s ease-in-out infinite;
+}
+
+/* happy — a small celebratory bounce. */
+@keyframes fredo-happy-bounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50%      { transform: translateY(-3px) scale(1.03); }
+}
+
+.fredo-companion-avatar[data-state='happy'] {
+  transform-origin: 50% 100%;
+  animation: fredo-happy-bounce 0.6s ease-in-out infinite;
+}
+
+/* playful — the resting wobble/tilt (pivot near the base). */
+@keyframes fredo-playful-wobble {
+  0%, 100% { transform: rotate(-3deg); }
+  50%      { transform: rotate(3deg); }
+}
+
+.fredo-companion-avatar[data-state='playful'] {
+  transform-origin: 50% 85%;
+  animation: fredo-playful-wobble 1.8s ease-in-out infinite;
+}
+
 /* ── Reduced motion: idle bob/glow + talk pulse off; teleport degrades to a
       pure opacity crossfade (still ~400 ms — timing preserved); the mouth
-      keyframe slows (fredo-avatar.css) but stays functional. ──────────────── */
+      keyframe slows (fredo-avatar.css) but stays functional. The #2854 status
+      wrapper motion is suppressed while the expression overlay stays legible. ── */
 @media (prefers-reduced-motion: reduce) {
   .fredo-companion-avatar[data-state='idle'],
-  .fredo-companion-avatar[data-state='talk'] {
+  .fredo-companion-avatar[data-state='talk'],
+  .fredo-companion-avatar[data-state='thinking'],
+  .fredo-companion-avatar[data-state='joking'],
+  .fredo-companion-avatar[data-state='happy'],
+  .fredo-companion-avatar[data-state='playful'] {
     animation: none;
   }
 

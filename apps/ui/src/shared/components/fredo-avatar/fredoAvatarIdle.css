@@ -13,4 +13,37 @@
 @keyframes fredo-idle-glow { 0%,100% { filter: drop-shadow(0 0 0  color-mix(in srgb, var(--accent-primary)  0%, transparent)); }
                              50%     { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-primary) 22%, transparent)); } }
 .fredo-avatar-idle { animation: fredo-idle-bob 2.4s ease-in-out infinite, fredo-idle-glow 2.4s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) { .fredo-avatar-idle { animation: none; } }
+
+/* ── #2854 ST-4 — the desktop mascot's per-state wrapper motion. `idle` keeps
+      the shared bob/glow above; `thinking`/`happy`/`playful` swap in the mood
+      motion (transform/opacity only). The keyframes are the SHARED single
+      source defined for the companion wrapper (`companion.css`:
+      `fredo-thinking-ponder` / `fredo-happy-bounce` / `fredo-playful-wobble`) —
+      the companion is mounted app-root in every webview, so those keyframes are
+      in the bundle that renders this mascot. Only the selector is
+      desktop-specific here (scoped by `data-state`). */
+.fredo-avatar-idle[data-state='thinking'] {
+  transform-origin: 50% 100%;
+  animation: fredo-thinking-ponder 2.8s ease-in-out infinite;
+}
+.fredo-avatar-idle[data-state='happy'] {
+  transform-origin: 50% 100%;
+  animation: fredo-happy-bounce 0.6s ease-in-out infinite;
+}
+.fredo-avatar-idle[data-state='playful'] {
+  transform-origin: 50% 85%;
+  animation: fredo-playful-wobble 1.8s ease-in-out infinite;
+}
+
+/* #2854 ST-4 — reduced motion suppresses the whole-element motion for EVERY
+   mascot state (the `[data-state]` selectors are repeated so they out-specificity
+   the state rules above) while the expression overlay in the shared component
+   stays legible. */
+@media (prefers-reduced-motion: reduce) {
+  .fredo-avatar-idle,
+  .fredo-avatar-idle[data-state='thinking'],
+  .fredo-avatar-idle[data-state='happy'],
+  .fredo-avatar-idle[data-state='playful'] {
+    animation: none;
+  }
+}
