@@ -367,7 +367,7 @@
 
 ## F-24 (REQ-4 / AC-4) — Any companion interaction resets the idle timer
 
-- [ ] F-24: With a short timeout, wait to ~80 % of the countdown, then perform each interaction — (a) click/joke, (b) double-click/game, (c) Ctrl+right-click teleport, (d) drag/move. Sample presence after each, then go quiet for a full timeout.
+- [x] F-24: With a short timeout, wait to ~80 % of the countdown, then perform each interaction — (a) click/joke, (b) double-click/game, (c) Ctrl+right-click teleport, (d) drag/move. Sample presence after each, then go quiet for a full timeout.
   **Expected:** **every** listed interaction resets the idle timer — Fredo does not return home while in use. After the interaction, auto-return fires only after a **full quiet period** post-interaction (never from the pre-interaction deadline).
   - **Edge:** interaction landing exactly at the timeout boundary; interaction during the countdown; an active joke stream (`isStreaming`) or open TicTacToe (`showTicTacToe`) suppresses auto-return — treated as continuous interaction, re-arms only after it settles (Architect-confirmed); Ctrl+right-click teleport resets the timer in both source/destination windows. Required data: short timeout, one gesture of each of the four kinds.
 
@@ -401,14 +401,17 @@
   **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)`; the injected events classify into `chat_rows`/`tool_use_rows` under their session ids; a rendered-webview receipt (DOM snapshot / screenshot / measured geometry) of the companion→mascot swap exists. This is the mandatory live-policy receipt — a static-only PASS is a FALSE PASS.
   - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit + query output in the `## Tests Runs` evidence.
 
-### #2853 round 1 results (spec/2853 @ 1c9696aa, live)
+### Round 2 (spec/2853 @ 4c9ba542) — presence lifecycle re-verification
 
-- **F-21 PASS (live).** Companion ON: `.fredo-companion-avatar`=1, `.fredo-avatar-idle`=0 (mascot absent from DOM); companion (1800,855) 80×100 zIndex 100. Companion OFF: companion=0, mascot=1 (920,345), 58 rects, aria-hidden. `elementsFromPoint(1840,905)` → companion SVG above the launcher surface (`css-16xfefm`). Screenshots: `req1-on-companion.png`, `req1-off-mascot.png`.
-- **F-22 PASS (live).** Timeout 5 s, t0=1789084751364: at t+5.2 s companion present/`teleport-out`, mascot 0 (no premature return); after settle companion 0, mascot 1 at (920,346). No user action.
-- **F-23 PASS (live).** Default 60; set 30 via the control; SQLite+localStorage=30; webview reload → control reads 30; governs the timer.
-- **F-24 FAIL (live) — "in use" suppression edge.** Reset sub-cases PASS (teleport/click reset the timer; return fires only after a full quiet period). But an **open, idle TicTacToe did NOT suppress auto-return**: double-click at t+6.5 s opened the game; companion auto-returned at t+21 s after the double-click (timeout 20 s) and the game unmounted. Expected per QA Plan REQ-4 edge / Architect binding: open `showTicTacToe` (and active joke stream) suppress return. `CompanionContext.tsx` has no `showTicTacToe`/`isStreaming` gate. Repro + timeline in the round's `## Tests Runs`.
-- **F-25 PASS (live).** Commit-path clamp: cleared/``→60, 0→60, -5→60, abc→60, 1→5, 99999→3600, 30.6→31; no crash/wedge; console clean.
-- **F-26 PASS (live).** After auto-return `Fredo_companion_visible`="true" (unchanged), switch still ON; toggle OFF→ON re-showed the companion and restarted the timer.
-- **F-27 PASS (live).** Preference OFF: hidden for 10.4 s (2+ timeouts), no activity; toggling ON showed a fresh timer.
-- **F-28 PASS (live).** Console error-level read empty in both windows after every leg; timer in `idleTimerRef`; no re-render loop.
-- **F-29 PASS (live).** `fredo emit` chat+tool_use → `{"queued":true}` each; `telemetry_spans`=10,533, max(ingested_at)=2026-09-11T00:05:59; `chat_rows`=1, `tool_use_rows`=1.
+Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED** by the transient `isInUse` folded into the arm gate (`CompanionContext.tsx:301,305`) + `FredoCompanion.tsx:105` reporting `showTicTacToe || isStreaming || animState === 'talk'`.
+
+- **F-21 PASS (live).** Companion ON: `.fredo-companion-avatar`=1 (80×100 at 1800,856), `.fredo-avatar-idle`=0 (mascot absent from the DOM); OFF: companion=0, mascot=1 (58-rect SVG), persisted `Fredo_companion_visible`="false". Exactly one Fredo at a time.
+- **F-22 PASS (live).** Timeout 20 s, no interaction: present at t+14.8 s, returned by t+32.1 s; post-return mascot back at (920,343).
+- **F-23 PASS (live).** Control `#companion-idle-timeout-seconds` enabled; committed 5 then 20 (read back from SQLite + localStorage); 20 governed the re-armed countdown after reload. Default 60 + clamp matrix unit-covered.
+- **F-24 PASS (live — was FAIL round 1).** Timeout 20 s; TicTacToe opened by double-click at t0; **still open + companion present at t+28.3 s and t+29.0 s** (past the 20 s deadline; no return). Closed the game: companion present immediately and at t+14.8 s (<20 s, no early return); returned at t+32.1 s. Joke stream (recorder + console): click `00:29:28.376`, streaming `28.630→32.945`, `talk→idle` `37.945`, return `42.945` (= 5.0 s after settle, not click+5 s) — stream/talk suppressed, timer re-armed on settle.
+- **F-25 PASS (live+unit).** Seeded `0` → control resolves 60 (stored `0` inert); `clampIdleTimeout` matrix green in the ST-6 suite.
+- **F-26 PASS (live).** Persisted `Fredo_companion_visible` stayed "true" across auto-returns; switch still ON; toggle OFF/ON still shows/hides.
+- **F-27 PASS (live+unit).** Preference OFF ⇒ companion=0/mascot=1 sustained, no late churn; gate has no timer while `!isVisible`/`!isHosting`.
+- **F-28 PASS (live).** Console error-level reads empty in main + run-cli-terminal; timer in a `useRef`, gate deps primitives only, report effect excludes `isInUse`.
+- **F-29 PASS (live).** `telemetry_spans` = 11,180 spans, max(ingested_at)=2026-09-11T00:37:51; `chat_rows` q2853r2-chat=1; `tool_use_rows` q2853r2-tool/read_file=1.
+- **Cross-window (R-16/E-14) PASS (canonical).** Main companion visible → Ctrl+right-click in `run-cli-terminal` → exactly one Fredo globally (terminal companion, main mascot suppressed); terminal host-owned 20 s timer returned it and the main mascot came home via the `companion-presence {idle-settle}` broadcast. Edge (see exploratory E-18): a window (re)loaded AFTER main auto-returned misses the `idle-settle` broadcast, so a teleport into it renders the companion while main's mascot is still home (one Fredo per window per the F-21 edge; two avatars globally) — pre-existing presence-sync gap, not introduced by the round-2 diff.
