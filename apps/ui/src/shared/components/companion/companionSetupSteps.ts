@@ -53,7 +53,12 @@ export const COMPANION_SETUP_STEPS: CompanionSetupStepMeta[] = [
     label: 'Model files',
     description: 'The required GGUF + mmproj model files for the companion.',
     icon: LuFileArchive,
-    // Action reserved for #2856 (download_model) — detect-only this slice.
+    action: {
+      command: 'download_model',
+      label: 'Download model files',
+      runningLabel: 'Downloading…',
+      kind: 'download',
+    },
   },
 ];
 

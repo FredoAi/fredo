@@ -40,12 +40,12 @@ export interface SetupStepCardProps {
   onRecheck: () => void;
 }
 
-interface CardColors {
+export interface CardColors {
   bg: string;
   borderColor: string;
 }
 
-function cardColors(uiState: SetupStepUiState): CardColors {
+export function cardColors(uiState: SetupStepUiState): CardColors {
   switch (uiState) {
     case 'running':
       return {

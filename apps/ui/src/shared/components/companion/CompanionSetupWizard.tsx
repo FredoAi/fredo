@@ -20,8 +20,13 @@ import {
 } from 'react-icons/lu';
 
 import { SetupStepCard, type SetupStepUiState } from './SetupStepCard';
+import { ModelFilesStepCard } from './ModelFilesStepCard';
 import { COMPANION_SETUP_STEPS, type CompanionSetupStepMeta } from './companionSetupSteps';
-import type { PrerequisiteId, PrerequisiteUiState } from './companionReadiness';
+import type {
+  ModelFilesStatus,
+  PrerequisiteId,
+  PrerequisiteUiState,
+} from './companionReadiness';
 
 export interface CompanionSetupWizardPrerequisite {
   id: PrerequisiteId;
@@ -34,6 +39,8 @@ export interface CompanionSetupWizardProps {
   prerequisites: CompanionSetupWizardPrerequisite[];
   runningActionId: PrerequisiteId | null;
   actionError: Partial<Record<PrerequisiteId, string>>;
+  /** Per-file model status from `check_model_files` (#2856). */
+  modelFiles?: ModelFilesStatus | null;
   onRunAction: (id: PrerequisiteId) => void;
   onRecheck: () => void;
 }
@@ -50,6 +57,7 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
   prerequisites,
   runningActionId,
   actionError,
+  modelFiles,
   onRunAction,
   onRecheck,
 }) => {
@@ -142,6 +150,20 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
               : errorText && baseState !== 'installed'
                 ? 'error'
                 : baseState;
+          if (prerequisite.id === 'modelFiles') {
+            return (
+              <ModelFilesStepCard
+                key={prerequisite.id}
+                step={meta}
+                uiState={uiState}
+                detail={prerequisite.detail}
+                errorText={errorText}
+                modelFiles={modelFiles ?? null}
+                onRunAction={onRunAction}
+                onRecheck={onRecheck}
+              />
+            );
+          }
           return (
             <SetupStepCard
               key={prerequisite.id}
