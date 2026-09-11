@@ -585,4 +585,19 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
       status exists. **A static-only PASS with no `telemetry_spans` receipt is a FALSE PASS**
       under the live policy.
   - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit +
-    query output in `## Tests Runs`. Reference #2850 F-17 + #2853 F-29.
+      query output in `## Tests Runs`. Reference #2850 F-17 + #2853 F-29.
+
+### Round 1 (spec/2854 @ 0e52c599) — results
+
+- **F-30 PASS (live).** Real shared `FredoAvatar` rendered at sm (80×100) + md (132×165) for all 8 states. Fingerprints: idle = no overlay + `fredo-idle-bob, fredo-idle-glow`; talk = 2 mouth rects + `fredo-talk-pulse`; teleport-out = streak + `fredo-teleport-out-motion`; teleport-in = 2 sparkles + `fredo-teleport-in-motion`; thinking = 6 (3 dot + 3 bubble) + `fredo-thinking-ponder`; joking = 4 (mouth/tongue/2 laugh) + `fredo-joking-jiggle`; happy = 8 (5 mouth + 3 star) + `fredo-happy-bounce`; playful = 4 (2 smirk + brow + star) + `fredo-playful-wobble`. All pairwise distinct; idle overlayCount 0; md rect coords identical (scale-agnostic).
+- **F-31 PASS (live).** Single-click → `data-state="thinking"` + `#fredo-expression[data-state=thinking]` (6 rects) before the first token; never `talk`.
+- **F-32 PASS (live).** First token → `joking` (4 rects); `llm-done` → `happy` (8 rects) for 4998 ms (`HAPPY_HOLD_MS` 5000) → `idle`. Real joke streamed; console clean.
+- **F-33 PASS (live).** TicTacToe companion turn → `thinking` (6 rects) each O move (recorder).
+- **F-34 PASS (live).** Terminal board `XOO.O.XXX` (X wins 6-7-8) → `happy` (5 mouth + 3 star) 3993 ms (`TALK_HOLD_MS` 4000) → idle. (Companion O-move intermittently no-ops on the vision path — pre-existing, see exploratory E-26; the happy render was reached.)
+- **F-35 PASS (live).** Companion + desktop mascot rest cadence: `playful` every 12000 ms for 1800 ms (`delayMs`/`holdMs`), returning to idle.
+- **F-36 PASS (live).** `.fredo-companion-avatar` (all 8 states) and `.fredo-avatar-idle` (`thinking` on command-query, `happy` on tile-open 1618 ms, `playful` rest) both carry `data-state` + the shared overlay; exactly one Fredo per surface.
+- **F-37 PASS (live).** 16/16 (sm+md × 8 states) `baseCount=58`, `bytesEq=true`, `firstDiff=-1` vs `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
+- **F-38 PASS (static).** `matchMedia reduce=false` (driver cannot flip it — named blocker); CSS verified: `companion.css:112-129` all status states `animation:none` + teleport 400 ms opacity crossfade; `fredoAvatarIdle.css:42-49` mascot states `animation:none`; `fredo-avatar.css:109-127` thinking dots/bubbles + joking mouth `animation:none` with resting frames kept (never `opacity:0`).
+- **F-39 PASS (live).** Joke `happy→idle` 4998 ms; TicTacToe `happy→idle` 3993 ms; teleport out 0→460 ms, in 460→920 ms, clamp (400,400)→(360,350); `ANIM_DURATION` unchanged.
+- **F-40 PASS (live+static).** Console: only LOG, no `Error:`/`Uncaught`/`Maximum update depth exceeded`; zero true color literals in the 9 changed files; `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` 54 files / 787 passed.
+- **F-41 PASS (live).** `fredo emit` chat+tool `{"queued":true}`; `telemetry_spans` = 11,750, max(ingested_at)=2026-09-11T05:23:52; `chat_rows` q2854-chat=1; `tool_use_rows` q2854-tool/read_file=1.
