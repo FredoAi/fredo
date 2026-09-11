@@ -94,6 +94,49 @@ invariants still hold; the change is a single constant + unit test, so no baseli
 - R-7: `pnpm --filter @fredo/ui build` exit 0 (tsc + vite). `cargo` unavailable to the tester
   (tool-access gap; nested/`cargo` is not in the allowlist) — Rust guard test covered by CI.
 
+## #2856 — Must NOT change (three-file model acquisition)
+
+> Added at Spec #2856. The model step gains per-file acquisition; these invariants pin the
+> surfaces it must not disturb. Run alongside R-1..R-7 above.
+
+- [ ] **R-8 (`check_model_files` legacy contract preserved):** the command still returns
+      `{ gguf_exists, mmproj_exists, gguf_path, mmproj_path }` (`commands.rs:969`) for the
+      standalone `SetupWizard` model step (`SetupWizard.tsx:131`). #2856 EXTENDS the response
+      (`complete`, `files`, additive `mtp_*`) — it does not rename/remove the legacy fields.
+  - **Edge:** a GGUF-only / mmproj-only directory still yields the partial booleans; the
+    standalone model step reaches "done" ONLY when all three files are present (ST-7) — a
+    2-of-3 set must NOT read done. `SetupWizard.test.tsx` may be updated for ST-7, but the
+    legacy field names must not change.
+
+- [ ] **R-9 (#2855 wizard shell untouched):** gating (wizard-only while not ready), the
+      `llama-server` install step + in-place re-check, `COMPANION_SETUP_STEPS` ordering, the
+      `companion-step-*` testids, and `useCompanionReadiness` fail-closed behavior are unchanged
+      — F-01..F-17 + R-1..R-7 above still hold.
+
+- [ ] **R-10 (`download_model` consumers + progress event):** the standalone `SetupWizard` model
+      step (`SetupWizard.tsx:242`) and its `setup:download-progress` listener contract
+      (`{ file, total, downloaded, percent }`) are preserved — or migrated with the consumer in
+      the same slice. No dangling listener / event rename.
+
+- [ ] **R-11 (models-dir resolution + fixed placement):** `resolve_models_dir` order (configured
+      `models_dir` → `~/fredo-models`) and the fixed `<models_dir>/<MODEL_SUBDIR>/` placement
+      (`commands.rs:838`) hold, so the #2857 launch slice can reference the files deterministically.
+
+- [ ] **R-12 (CLI setup mirror coherent):** `infrastructure/cli/commands/setup.rs`
+      (`resolve_models_dir` / the model block) stays consistent with the app's model path/filenames.
+
+- [ ] **R-13 (token + companion overlay):** no hardcoded hex/rgba or `var(--x)NN` alpha-append in
+      the new rows/progress/error UI (`.opencode/tests/theming/`); the companion overlay/controls
+      (`.opencode/tests/companion/`) are untouched.
+
+- [ ] **R-14 (build gates):** `pnpm --filter @fredo/ui build` exit 0 (zero TS errors);
+      `cargo check` zero warnings and `cargo test` green if Rust is touched.
+
+- [ ] **R-15 (legacy in-process engine lookup untouched):** `lib.rs:137-148` still resolves the
+      legacy `gemma-e2b-it` layout (`gemma-4-E2B-it-Q4_K_M.gguf` + `mmproj-F16.gguf`); this slice
+      must not repoint or delete it (the deletion slice owns it). The new `gemma-4-e2b-it-qat`
+      subfolder is ADDITIVE.
+
 ## Overlapping prior-feature suites (run alongside)
 
 - `.opencode/tests/companion/` — the settings panel + overlay whose content is gated (R-12..R-23,
