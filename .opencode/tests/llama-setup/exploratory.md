@@ -167,3 +167,27 @@ back to `true`).
 
 - [ ] **E-22 — Progress listener churn.** Navigate away from Companion and back during a download.
       Any leaked listener, duplicated progress updates, or stale percent?
+
+## Findings — round 1 (2026-09-11, spec/2856 @ 0f3f3595)
+
+Real wizard-driven pull (human directive); `models_dir` = `C:\Code\fredo\models`.
+
+- **E-16 (verified, promotes a new finding):** killed the app mid-download twice. On reopen the
+  partial file is preserved (correct prefix at the exact persisted size) and reads `Missing` with an
+  `Incomplete — N of M bytes` detail; the already-complete `vision`/`mtp` stayed `Present` and the
+  resume emitted `state:"skipped"` for them (never re-fetched). **Promoted to `functional.md` F-20
+  skip evidence + F-24.**
+- **E-17 (verified):** the first resume event carried `downloaded = <on-disk partial>` — resume
+  starts from the partial offset, never from zero, and never append-corrupts.
+- **E-21 (real-endpoint variant, verified as a NEW DEFECT):** the app's reqwest stream resets
+  (`error decoding response body`) after ~5–9 MB on 3 consecutive attempts against the real HF
+  endpoint; a direct `bun fetch` of the same `Range` completed 1.32 GB in 31 s. The failure surfaces
+  a correct inline `Error` + per-file `Retry` (AC5 behavior is correct), but the transfer cannot
+  finish for a multi-GB file — a robustness gap (no automatic retry/backoff on mid-stream body
+  decoding failure). **Recorded here; folded into the F-26 verdict (not a separate promoted
+  functional row this round — it is an environment-resilience finding, not a UI vocabulary gap).**
+- **E-14 (partially verified):** after 2 interrupts the on-disk file remained a valid prefix
+  (resume re-hashed the prefix and continued); no append-onto-garbage observed.
+- **E-15/E-18/E-19/E-20/E-22 (not executed):** disk-full/permission, nested-`MTP` case-variant,
+  Unicode paths, retry-storm concurrency, and listener churn were not probed this round (the
+  real-pull legs dominated the session).
