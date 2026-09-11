@@ -41,8 +41,8 @@
 - [x] S-9: Companion OFF ⇒ desktop mascot returns — toggle the companion off; the desktop/launcher mascot is present at its usual place and the companion is absent; screenshot succeeds; console clean.
 - [x] S-10: Short idle ⇒ auto-return — with a short configured idle value (e.g. 5 s) and no interaction, the companion hides and the desktop mascot returns with no user action; screenshot before/after succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
-### #2853 round 1 results (spec/2853 @ 1c9696aa, live)
+### Round 2 (spec/2853 @ 4c9ba542) — smoke results
 
-- **S-8 PASS.** Companion ON → `.fredo-companion-avatar`=1, `.fredo-avatar-idle`=0 (mascot absent from DOM); screenshot + console clean.
-- **S-9 PASS.** Companion OFF → mascot present at its usual slot (920,345), companion absent; screenshot + console clean.
-- **S-10 PASS.** Timeout 5 s, no interaction: at t+5.2 s `teleport-out` (no premature return), after settle companion hidden + mascot back; screenshots + console clean.
+- **S-8 PASS (live).** Companion ON ⇒ `.fredo-companion-avatar`=1 (80×100), `.fredo-avatar-idle`=0 (mascot absent from the DOM); screenshot succeeded; console clean.
+- **S-9 PASS (live).** Companion OFF ⇒ companion=0, `.fredo-avatar-idle`=1 (58 rects) at its usual place; persisted `Fredo_companion_visible`="false"; screenshot succeeded; console clean.
+- **S-10 PASS (live).** 5 s timeout, no interaction: companion returned, mascot home; also verified at 20 s (present at t+14.8 s, returned by t+32.1 s); console clean.
