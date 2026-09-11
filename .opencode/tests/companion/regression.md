@@ -153,3 +153,36 @@
 - **R-16 PASS (live, canonical).** Cross-window teleport main→terminal: exactly one Fredo globally (terminal companion, main mascot suppressed); terminal host-owned 20 s timer returned it and the main mascot returned via the `companion-presence {idle-settle}` broadcast. Edge: a window (re)loaded after main auto-returned misses the broadcast (exploratory E-18).
 - **R-17 PASS (live).** Console error-level reads empty in both windows; no `Maximum update depth exceeded`; no re-render loop from the new `isInUse` report effect.
 - **R-18 PASS (live).** Auto-return did not move the companion's home position; after re-show the companion returned at its slot and the mascot at its own slot.
+
+---
+
+## #2854 extension — the new status vocabulary must not change existing behavior
+
+> Issue #2854 extends the shared avatar status vocabulary. These invariants MUST hold after
+> the slice — any FAIL is a regression. Run alongside R-1..R-18 + the #2852/#2853 rows.
+
+## R-19 — Existing 4 states + teleport timing unchanged
+
+- [ ] R-19: Drive idle/talk/teleport-out/teleport-in on the companion; probe the wrapper `data-state`, `#fredo-expression` overlay rect set, and computed `animationName`; timestamp a same-window teleport.
+  **Expected:** the pre-#2854 fingerprints for idle/talk/teleport-out/teleport-in are unchanged (same overlay rect sets + same wrapper motion); teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `ANIM_DURATION` unchanged; the click discriminator (250 ms), the joke, and TicTacToe still work.
+  - **Edge:** a new status must not hijack an existing state's overlay selector; teleport timing on the tested tip. Reference #2850 F-3/F-6/F-7/F-8 + R-2/R-4.
+
+## R-20 — Frozen-geometry invariant holds
+
+- [ ] R-20: Read the 58 base rects in every state (old + new) and diff against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
+  **Expected:** the 58 base rects are byte-identical across ALL states; the shared geometry suite (`fredoAvatarGeometry.test.ts`) passes unmodified. Reference F-37 + #2850 R-10.
+
+## R-21 — Joke / TicTacToe / speech-bubble behaviors untouched
+
+- [ ] R-21: Exercise single-click joke, double-click TicTacToe (250 ms discriminator), and the speech-bubble side-choosing/anchoring; inspect the bubble geometry.
+  **Expected:** R-1/R-2/R-3 still hold — the 240×120 bubble, the 208×268 game bubble, the `above > right > left > below` ranking, the streaming cursor, the vision move + legal-move fallback, and the status text. The new statuses change only the avatar expression/state, not the game or the bubble. Reference #2850 R-1..R-3/F-7/F-8/F-11.
+
+## R-22 — Presence lifecycle (single Fredo + auto-return) unchanged
+
+- [ ] R-22: Toggle the companion ON/OFF; with a short idle timeout let it auto-return; count rendered Fredos.
+  **Expected:** #2853 R-12/R-15/F-21/F-22 still hold — exactly one Fredo at a time; the persisted visibility preference is honored; auto-return is transient. A new status must not keep the timer armed or block the auto-return. Reference #2853 R-12/R-15/F-21/F-22.
+
+## R-23 — Token contract + build gates unchanged
+
+- [ ] R-23: Static-grep the changed files for hardcoded colors; run `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO hardcoded hex/rgb/hsla in the changed files; theme token → CSS var + `tint()` only; build exit 0 / zero TS errors; suite green. Reference F-40 + #2850 R-7/F-15/F-18.
