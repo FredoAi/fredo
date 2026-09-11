@@ -30,3 +30,16 @@ with per-row state, `companion-controls` query = 0.
 
 **Round-2 note:** the real `Install llama.cpp` action now resolves + installs `ggml.llamacpp`
 (round 1 failed with "No package found matching input criteria."). See functional F-08/F-14/F-17.
+
+## #2856 — Smoke (three-file model acquisition)
+
+> Quick sanity for the per-file download surface. Use the stub base URL + manifest override;
+> never a real multi-GB download.
+
+- [ ] S-7: On a not-ready machine, the Companion model step renders THREE file rows, each with its
+      own icon+text status ("Missing"), and the step summary reads incomplete.
+- [ ] S-8: Start acquisition against the injected stub manifest + server; the in-flight row enters `downloading` and
+      a progress affordance renders (determinate or indeterminate); no console `Error:`/`Uncaught`.
+- [ ] S-9: Screenshot the three-file model step —
+      `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2856/e2e/model-step.jpeg")`
+      succeeds.
