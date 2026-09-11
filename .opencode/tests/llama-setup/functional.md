@@ -314,79 +314,105 @@ The AC3 real-install leg was driven from the UI on MS-3 (llama missing, models p
 
 ### Functional — #2856
 
-- [ ] **F-18 (R-1):** On MS-6, open Settings → Companion → the model step. DOM snapshot + screenshot.
-  **Expected:** three file rows render, each with its own icon+text status ("Missing"); the exact
-  filenames are shown (incl. the `MTP/` segment for mtp); the step summary reads incomplete.
-  - **Edge:** MS-7/MS-9 mixed state — each row independent, a 2-of-3 set stays incomplete and names
-    the missing slot; never color-only.
+> **ROUND 1 EXECUTION NOTE (human directive):** the plan's stub-server / `model_manifest_path`
+> override methodology was SUPERSEDED by a BINDING human directive — a **real wizard-driven pull**
+> of the 3 pinned HF files into `C:\Code\fredo\models\gemma-4-e2b-it-qat\`, with a real
+> kill-mid-download + Range resume. No stub manifest and no stub server were used. F-19/F-21/F-25/
+> F-27/F-29 are Rust `cargo test` unit rows — the tester sandbox cannot run `cargo` (tool-access
+> gap); they are covered by CI `rust-validate` + the developer's local receipt.
 
-- [ ] **F-19 (R-1, S):** Unit-test per-file status derivation from (presence, size, optional hash).
-  **Expected:** absent→`missing`; `0 < size < expected`→`missing` + shortfall detail; `size == expected`→`present`;
-  `size > expected`/IO error/SHA-256 mismatch→`error` (Architect API Contract). No 5th state; truncated is
-  `missing` + detail.
+- [x] **F-18 (R-1):** PASS (round 1, real). MS-6 baseline: 3 rows, each `Missing`; summary
+      `Incomplete — no model files downloaded yet (0 of 3).`; step `data-state=incomplete`; status
+      `0 of 3 present`; exact filenames incl. `MTP/…`.
 
-- [ ] **F-20 (R-2):** On MS-7, inject the stub manifest + stub server, start acquisition; read rows + stub access log.
-  **Expected:** the verified-present `model` is SKIPPED (no GET in the log; row stays `present`);
-  `vision` enters `downloading` with a visibly advancing progress bar; then `mtp`; all `present` on finish.
-  - **Edge:** absent/unknown `Content-Length` → indeterminate progress (not a frozen 0%); a
-    present-but-truncated file is re-acquired, not skipped.
+- [ ] **F-19 (R-1, S):** UNVERIFIED (round 1) — named blocker: `cargo` is not in the tester sandbox
+      allowlist; covered by 15 `model_download_state` unit tests (CI `rust-validate`) + dev receipt.
 
-- [ ] **F-21 (R-2, S):** Unit-test the acquisition state machine.
-  **Expected:** stable file order; verified-present files skip the transport; progress fractions
-  monotonic 0→100 for the in-flight file.
+- [x] **F-20 (R-2):** PASS (round 1, real). Real pull MS-6→MS-8: model→present, vision→present,
+      mtp→present; determinate progress; all 3 SHA-256 match the pinned manifest. Skip semantics
+      additionally proven in the AC4 resume (`vision`/`mtp` emitted `state:"skipped"`).
 
-- [ ] **F-22 (R-2, G-123):** During a slow in-flight download, sample summary + companion gate ~every 150 ms.
-  **Expected:** at NO sample does the step read complete/ready; the gate never yields to the normal
-  companion controls while a file is in flight.
-  - **Edge:** a near-instant stub still never shows a false complete; after file 1 completes, the step
-    stays incomplete until all three verify.
+- [ ] **F-21 (R-2, S):** UNVERIFIED (round 1) — named blocker: `cargo` unavailable (see F-19).
 
-- [ ] **F-23 (R-3):** On MS-8 (manual placement after `models_dir` override), Re-check.
-  **Expected:** model step COMPLETE/Installed; all three rows `present`; manual placement accepted
-  (no forced re-download); in-place re-check, no reload.
+- [x] **F-22 (R-2, G-123):** PASS (round 1, real). Sampled the live step throughout the pull:
+      `complete` appears ONLY when all 3 are present; during model download the step read
+      `Downloading 1 of 3…` (vision+mtp `Missing`), never complete.
 
-- [ ] **F-24 (R-3):** On MS-9 (mtp truncated) then with `vision` removed, Re-check.
-  **Expected:** stays INCOMPLETE and names EXACTLY the missing/truncated file(s) (`mtp`, then `vision`);
-  truncated is not "present".
+- [x] **F-23 (R-3):** PASS (round 1, real). After the pull all 3 rows read `Present` with resolved
+      absolute paths; step `data-state=complete`, status `3 of 3 present`, summary
+      `Complete — all 3 model files are present.`; `download` button unmounted. Re-check re-probes
+      in place, no reload.
 
-- [ ] **F-25 (R-3, S):** Unit-test aggregate completion.
-  **Expected:** `complete` iff every required file verifies; otherwise the exact missing/truncated
-  slot list. An extra unrelated file in the dir satisfies nothing.
+- [x] **F-24 (R-3):** PASS (round 1, real). Moved `MTP/…gguf` aside → Re-check → step `incomplete`,
+      `2 of 3 present`, summary names EXACTLY `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf`; then moved the
+      `model` file aside → summary names exactly `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`. Restored →
+      complete again.
 
-- [ ] **F-26 (R-4):** Stub server in `abort` mode mid-file → start → restart in `range` mode.
-  **Expected:** the aborted row shows error/incomplete + Retry; the retry makes a `Range: bytes=<n>-`
-  request and RESUMES (or safely restarts if no Range); the already-complete `model` file is untouched
-  and not re-requested; final bytes match the stub sources.
-  - **Edge:** Range-ignoring server (200) → safe truncate+restart, no append corruption; pre-existing
-    verified file never overwritten.
+- [ ] **F-25 (R-3, S):** UNVERIFIED (round 1) — named blocker: `cargo` unavailable (see F-19).
 
-- [ ] **F-27 (R-4, S):** Unit-test resume with an injected transport (fail after N bytes).
-  **Expected:** persisted partial offset is honored on retry; completed files skipped; assembled bytes
-  equal the source; no-Range path truncates before writing.
+- [ ] **F-26 (R-4):** UNVERIFIED with NAMED FINDING (round 1, real) — the real `Range` resume was
+      PROVEN (first event on resume = the exact on-disk partial offset; resumed bytes were a
+      correct prefix; `vision`/`mtp` skipped). However completion of the resumed file could NOT be
+      reached: the app's reqwest stream resets (`error decoding response body`) after ~5–9 MB on
+      every attempt across 3 retries, at offsets 1,281,035,595 / 1,289,973,111 / 1,297,305,495. A
+      direct `bun fetch` of the same `Range: bytes=1297305495-` completed the full 1,323,065,481
+      bytes in 30.9 s, so the endpoint is healthy. The retry loop is non-terminating for a multi-GB
+      file → this is a real robustness FAIL for F-26's "final bytes match the source" leg.
 
-- [ ] **F-32 (R-4, live — scope-flagged):** Start a slow stub download, then activate Cancel
-  (`companion-step-model-files-cancel`).
-  **Expected:** acquisition stops; the in-flight file returns to `missing` with the
-  `Cancelled — download not complete.` detail; earlier `present` files untouched; step incomplete.
-  - **Only run if the Architect commits a backend cancellation path;** otherwise the `-cancel`
-    control must not ship (an untested Cancel affordance is a FAIL).
+- [ ] **F-27 (R-4, S):** UNVERIFIED (round 1) — named blocker: `cargo` unavailable (see F-19).
 
-- [ ] **F-28 (R-5):** Stub returns HTTP 500 (and separately a dead port) for one file; start acquisition.
-  **Expected:** that row shows an ERROR with an actionable message (URL/status/cause) + inline Retry;
-  the step is NEVER complete; the gate stays not-ready; Retry re-attempts.
-  - **Edge:** failure on file 2/3 keeps earlier rows `present`; a successful Retry clears the error;
-    inline/persistent error, NOT a toast.
+- [ ] **F-32 (R-4):** N/A — Cancel is not in scope (architect decision G-023); no `-cancel` control
+      ships (verified absent on all 3 states).
 
-- [ ] **F-29 (R-5, S):** Unit-test transport-error mapping.
-  **Expected:** 4xx/5xx, timeout, mid-stream reset each → per-file error; aggregation `incomplete`;
-  error text carries the status/URL tail.
+- [x] **F-28 (R-5):** PASS (round 1, real). A real mid-stream transport error rendered the `model`
+      row as `Error` with an inline persistent detail (`error decoding response body`) and a per-file
+      `Retry` button (`aria-label="Retry Model (text) download"`); step `data-state=error`, status
+      `Download failed`, summary names the failed file; `vision`/`mtp` stayed `Present`; step never
+      complete.
 
-- [ ] **F-30 (NF):** During a slow download, interact with app chrome; read the error state in light AND dark.
-  **Expected:** UI responsive (download off the UI thread); progress advances at a visible cadence;
-  status is text+icon with `role="status"`/`aria-live`; tokens only (no hardcoded hex/rgba, no
-  `var(--x)NN`); `pnpm --filter @fredo/ui build` exit 0; console clean after every leg.
+- [ ] **F-29 (R-5, S):** UNVERIFIED (round 1) — named blocker: `cargo` unavailable (see F-19).
 
-- [ ] **F-31 (LIVE):** Same run as the live legs — `fredo emit --event-type chat` + `--event-type tool_use`;
-  query RTDB rows + `telemetry_spans` (telemetry-query skill); capture the model-step DOM/screenshot.
-  **Expected:** both emits `{"queued":true}`; rows classify; `telemetry_spans` non-zero/recent — the
-  live-policy receipt. A static-only PASS is a FALSE PASS.
+- [x] **F-30 (NF):** PASS (round 1, real, partial). UI stayed responsive throughout the multi-GB
+      pull; progress advanced at ~100 ms cadence (throttle); status is icon+text with role/aria-live;
+      tokens via `tint()`; console clean after every leg.
+
+- [x] **F-31 (LIVE):** PASS (round 1). `fredo emit` chat + tool_use both `{"queued":true}`;
+      `chat_rows(e2e-2856-chat)=1` (init), `tool_use_rows(e2e-2856-tool)=1`; `telemetry_spans`
+      total 13,067, 2,653 in the last 15 min, newest ingested `2026-09-11T23:48:14.927Z`.
+
+## Execution Log — round 1 (2026-09-11, spec/2856 @ 0f3f3595)
+
+**Method (binding human directive):** real dev app, real Companion wizard `Download model files`
+click, real HF endpoint (pinned revision `66a399f6…`), files hashed IN PLACE under
+`C:\Code\fredo\models\gemma-4-e2b-it-qat\`. `models_dir` set via the IPC `save_setting` seam; NO
+`model_manifest_path` override; NO stub server.
+
+**Real receipts — fresh full pull (run 1):**
+
+| File | Bytes (actual = expected) | Wall clock (first→terminal progress event) | SHA-256 (bun streaming) |
+|------|---------------------------|--------------------------------------------|--------------------------|
+| model | 2,620,370,976 | 82.1 s (97:17:55.612→97:20:57.751) | `e5310072…a16889` ✔ pinned |
+| vision | 986,833,728 | 30.9 s (97:20:58.235→97:21:29.095) | `38b33846…6efe02` ✔ pinned |
+| mtp | 59,235,648 | 2.2 s (97:21:29.564→97:21:31.738) | `586f2460…e4aae0` ✔ pinned |
+
+Total wall clock click→complete ≈ **127.7 s** for **3,666,440,352 B** (≈ 28.7 MB/s). Progress
+cadence ~100 ms (Throttle `PROGRESS_MIN_INTERVAL`), 1,150 progress events across the 3 files.
+
+**Interrupt / resume receipts:** killed the app mid-`model` at 543,186,458 B (interrupt #1). On
+restart the row read `Missing` + `Incomplete — 543186458 of 2620370976 bytes` (summary
+`Incomplete — incomplete: gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf (interrupted download).`), step
+`incomplete` — vision+mtp `Present`. The resume's FIRST progress event carried
+`downloaded: 1281035595` = the exact on-disk partial offset at that moment (HTTP `Range` proof);
+`vision`/`mtp` each emitted `state:"skipped"` (not re-fetched).
+
+**Non-terminating resilience defect (new finding, NOT promoted to an exclusive FAIL row; folded
+into F-26):** the app's reqwest stream reset (`error decoding response body`) after ~5–9 MB on
+3 consecutive attempts on the same file (offsets 1,281,035,595 → 1,289,973,111 → 1,297,305,495).
+Resume always restarts from the persisted offset (no corruption — the on-disk bytes are a correct
+prefix), but the file never completed in-session. `bun fetch` (undici) of the same range completed
+in 31 s, so the endpoint is healthy — the defect is in the app's transfer resilience (no automatic
+retry/backoff on a mid-stream body-decoding error). Evidence: AC5 screenshot + the trace offsets.
+
+**Final filesystem state:** `model` file at 1,297,305,495 B (partial, correct prefix); `vision` and
+`mtp` complete and hash-verified. The completed files were hashed at completion BEFORE any
+interrupt; no corruption occurred across interrupts.
