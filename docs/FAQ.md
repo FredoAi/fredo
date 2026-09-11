@@ -216,6 +216,10 @@ An animated sprite on the Home panel with an LLM-powered personality. Single-cli
 
 The companion and the launcher's desktop mascot are mutually exclusive — while the companion is out, the desktop mascot is hidden, so only one Fredo is shown at a time. After an idle period with no interaction (default 60 s, configurable in **Settings → Companion**) the companion returns home: it hides and the desktop mascot reappears. Any interaction resets the timer, an open Tic-Tac-Toe or an active joke stream keeps Fredo out while in use, and auto-return never turns off your "Show Fredo Companion" preference.
 
+### How do I get the companion ready to use?
+
+Open **Settings → Companion**. If the runtime is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls) that checks two things independently: the **llama.cpp runtime** (`llama-server` availability) and the required **model files**. The llama.cpp step offers a one-click `winget install llama.cpp` and re-checks readiness automatically — no app restart — and shows an actionable message if `winget` is unavailable or the install fails. Once both prerequisites read as installed, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
+
 ### How does the Tic-Tac-Toe AI work?
 
 The companion takes a screenshot of the board via `capture_screen_region`, sends it to the LLM with a vision prompt ("reply with single digit 0-8"), and parses the first digit from the response. Falls back to the first empty cell on error.

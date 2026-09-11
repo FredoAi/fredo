@@ -172,9 +172,9 @@ src-tauri/src/
 |   +-- settings/               — Persistent KV settings (SQLite)
 |   |   +-- mod.rs              — SettingsFeature
 |   |   +-- commands.rs         — save_setting, get_setting
-|   +-- setup/                  — CLI detection, PATH management, OTel config, model download
+|   +-- setup/                  — CLI detection, PATH management, OTel config, model download, Companion readiness + llama.cpp install
 |   |   +-- mod.rs              — SetupFeature
-|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model
+|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness, install_llama_cpp
 |   +-- screenshot/             — Screen capture (xcap)
 |       +-- mod.rs              — ScreenshotFeature
 |       +-- commands.rs         — capture_screen_region
@@ -594,6 +594,7 @@ The animated companion on the Home panel renders the **shared `FredoAvatar` comp
 - **Streaming**: Token-by-token accumulation with `<end_of_turn>`/`<start_of_turn>` stripping
 - **Cross-window teleport**: Tauri global `companion-teleport` events broadcast to all webview windows (dev mode — no Tauri host — teleports locally via `startTeleportOut`, guarded `IS_TAURI` branch)
 - **Interaction**: Single-click → joke; double-click → Tic-Tac-Toe; Ctrl+right-click → teleport
+- **Setup gating (#2855)**: **Settings → Companion** renders a setup wizard as its ONLY content until the machine is ready — i.e. a usable `llama-server` is available AND all required model files are present. The wizard reports each prerequisite independently (`checking | missing | installed | error`), offers a one-click `install_llama.cpp` via `winget` with an in-session re-check (no reload), and shows an actionable error (staying not-set-up) when `winget` is unavailable or the install fails. Once both prerequisites are satisfied, the normal Companion controls (toggle + Teleport tip) replace the wizard. The wizard is the single shell that later runtime slices extend (model download, server launch).
 - **Presence lifecycle — one Fredo (#2853)**: the companion and the launcher's desktop mascot are mutually exclusive. While the companion is *designated present* (`Fredo_companion_visible` ON and not auto-hidden), the launcher mascot is not rendered; when the companion hides, the desktop mascot returns to its place. After an idle period with no interaction the companion auto-returns (hides) and the mascot comes home — default **60 s**, configurable in **Settings → Companion** (key `Fredo_companion_idle_timeout`, integer seconds, range 5–3600 via `usePersistedSetting`; invalid/cleared/≤0 values fall back to 60, out-of-range values clamp). Any interaction (click/joke, double-click/game, Ctrl+right-click teleport) resets the timer, and an open Tic-Tac-Toe or an active joke stream *suppresses* the return while in use (continuous-interaction gate). Auto-return is transient — it never rewrites the persisted visibility preference. The idle timer is **host-owned** (only the window currently displaying the companion arms it) and transient presence is synced across webview windows via a global `companion-presence` Tauri broadcast, so the main-window mascot stays hidden while the companion is hosted in the terminal window and returns home on the host's idle-settle.
 
 ### Tic-Tac-Toe
@@ -763,6 +764,8 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `run_setup_step` | setup | Execute a single setup step |
 | `check_model_files` | setup | Check local model file existence |
 | `download_model` | setup | Download model GGUF + mmproj |
+| `check_companion_readiness` | setup | Report Companion prerequisites (`llama-server` availability + required model files) and overall readiness |
+| `install_llama_cpp` | setup | Install llama.cpp via `winget` off the UI thread; returns a structured result (no launch, no model download) |
 | `llm_chat` | llm | Chat with in-process LLM (streams tokens) |
 | `llm_chat_with_image` | llm | Chat with image (multimodal) |
 | `capture_screen_region` | screenshot | Capture screen region as base64 PNG |

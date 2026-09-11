@@ -76,6 +76,15 @@ Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`:
 
 Switch models via Settings → Model Selector in the UI. Changes take effect on next launch.
 
+## Companion Setup
+
+The companion's runtime prerequisites are checked in-app. Open **Settings → Companion** on a machine that is not yet set up and the panel shows a setup wizard as its only content:
+
+- **llama.cpp runtime** — a usable `llama-server` (resolved from a configured path, then `PATH`, then the winget Links shim). The wizard offers a one-click **Install llama.cpp** (`winget install --id ggml.llamacpp -e`) and re-checks readiness in place — no app reload.
+- **Model files** — the required GGUF + vision projector under the configured models directory (see [Download Models](#download-models)).
+
+Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once both are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
+
 ## OTLP Configuration
 
 Fredo includes local OTLP receivers for agent telemetry. Configure OpenCode to send OTLP data:
