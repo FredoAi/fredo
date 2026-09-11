@@ -214,6 +214,8 @@ It ties related rows together within a session (e.g. an `Init` event that starte
 
 An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the in-process LLM engine for all interactions.
 
+The companion and the launcher's desktop mascot are mutually exclusive — while the companion is out, the desktop mascot is hidden, so only one Fredo is shown at a time. After an idle period with no interaction (default 60 s, configurable in **Settings → Companion**) the companion returns home: it hides and the desktop mascot reappears. Any interaction resets the timer, an open Tic-Tac-Toe or an active joke stream keeps Fredo out while in use, and auto-return never turns off your "Show Fredo Companion" preference.
+
 ### How does the Tic-Tac-Toe AI work?
 
 The companion takes a screenshot of the board via `capture_screen_region`, sends it to the LLM with a vision prompt ("reply with single digit 0-8"), and parses the first digit from the response. Falls back to the first empty cell on error.
