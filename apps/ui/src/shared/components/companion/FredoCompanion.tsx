@@ -52,8 +52,8 @@ const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in windo
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, setState, teleport, showMessage, hideMessage } = useCompanion();
-  const { animState, message, isVisible, position } = state;
+  const { state, setState, teleport, showMessage, hideMessage, confirmAutoReturn, setHosting, setInUse, notifyInteraction } = useCompanion();
+  const { animState, message, isVisible, isAutoHidden, isAutoReturning, position } = state;
 
   const [displayPos, setDisplayPos] = useState({ x: position.x, y: position.y });
   const [streamingMessage, setStreamingMessage] = useState<string | null>(null);
@@ -70,6 +70,9 @@ export const FredoCompanion: React.FC = () => {
   const isTeleportingRef = useRef(false);
   const pendingDestRef = useRef<{ x: number; y: number } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Auto-return settle timer (distinct from the teleport sequence timer):
+  // observed from `isAutoReturning`, cleared on cancel/unmount.
+  const autoReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The interactive avatar wrapper — its live layout box (offsetWidth/offsetHeight,
   // immune to CSS transforms) is the runtime source of truth for the click-target,
   // the teleport clamp, and the SpeechBubble anchor. Falls back to AVATAR_SM before
@@ -89,6 +92,22 @@ export const FredoCompanion: React.FC = () => {
   const [isInThisWindow, setIsInThisWindow] = useState(MY_WINDOW === 'main');
   // Pending teleport-in destination — applied once the component becomes visible
   const pendingTeleportInRef = useRef<{ x: number; y: number } | null>(null);
+
+  // #2853 ST-2: report host identity to the context so ONLY the webview that
+  // currently displays the companion arms the host-owned idle auto-return timer.
+  useEffect(() => { setHosting(isInThisWindow); }, [isInThisWindow, setHosting]);
+
+  // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
+  // auto-return while Fredo is actively engaged — an open TicTacToe, an active
+  // joke stream, or the talk hold. `isInUse` is intentionally NOT a dep (same
+  // shape as setHosting) so the SET_IN_USE re-render cannot re-run this effect.
+  useEffect(() => {
+    setInUse(showTicTacToe || isStreaming || animState === 'talk');
+  }, [showTicTacToe, isStreaming, animState, setInUse]);
+
+  // Defensive: never leave the context stuck "in use" if this component unmounts
+  // while the predicate is still true (component is mounted at app root).
+  useEffect(() => () => setInUse(false), [setInUse]);
 
   const clearTimer = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -187,10 +206,32 @@ export const FredoCompanion: React.FC = () => {
     return () => { unlisten?.(); };
   }, [playAnim, setState, startTeleportOut]);
 
+  // ── Idle auto-return (host-initiated, distinct from teleport) ──────────────
+  // The context requests the return when the host idle timer fires. Play the
+  // existing teleport-out leave motion, then settle to hidden after the
+  // preserved +50 ms gap and let the provider broadcast the global presence.
+  // NOT startTeleportOut — that path re-enters via startTeleportIn.
+  useEffect(() => {
+    if (!isAutoReturning) return;
+    playAnim('teleport-out');
+    autoReturnTimerRef.current = setTimeout(() => {
+      autoReturnTimerRef.current = null;
+      confirmAutoReturn();
+    }, ANIM_DURATION['teleport-out'] + 50);
+    return () => {
+      if (autoReturnTimerRef.current) {
+        clearTimeout(autoReturnTimerRef.current);
+        autoReturnTimerRef.current = null;
+      }
+    };
+  }, [isAutoReturning, playAnim, confirmAutoReturn]);
+
   // Ctrl+right-click — teleport companion to THIS window at clicked position
   const handleMouseDown = useCallback((e: MouseEvent) => {
     if (e.button !== 2 || !e.ctrlKey) return;
     e.preventDefault();
+    // #2853 ST-3: a teleport request is a companion interaction — reset the idle timer.
+    notifyInteraction();
     // Clamp using the avatar's REAL rendered width AND height (never the old
     // 80x80 frame) so the full sm figure stays on-screen at every edge.
     const { width, height } = getAvatarSize();
@@ -206,7 +247,7 @@ export const FredoCompanion: React.FC = () => {
       // Dev mode: local-only teleport
       startTeleportOut({ x: targetX, y: targetY });
     }
-  }, [startTeleportOut, getAvatarSize]);
+  }, [startTeleportOut, getAvatarSize, notifyInteraction]);
 
   const handleContextMenu = useCallback((e: MouseEvent) => {
     if (e.ctrlKey) e.preventDefault();
@@ -221,7 +262,10 @@ export const FredoCompanion: React.FC = () => {
     };
   }, [handleMouseDown, handleContextMenu]);
 
-  useEffect(() => () => clearTimer(), []);
+  useEffect(() => () => {
+    clearTimer();
+    if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
+  }, []);
 
   // ── LLM joke generation ───────────────────────────────────────────────────
   const askForJoke = useCallback(() => {
@@ -264,6 +308,9 @@ export const FredoCompanion: React.FC = () => {
   // ── Click / double-click on avatar ─────────────────────────────────────────
   // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
   const handleSpriteClick = useCallback(() => {
+    // #2853 ST-3: a click/double-click is a companion interaction — reset the
+    // idle timer (covers both the joke and the TicTacToe toggle).
+    notifyInteraction();
     console.log('[companion] avatar clicked — showTicTacToe:', showTicTacToe, 'clickTimer:', !!clickTimerRef.current);
     if (clickTimerRef.current) {
       // Second click within 250 ms → double-click → toggle game
@@ -282,11 +329,13 @@ export const FredoCompanion: React.FC = () => {
       console.log('[companion] single-click fired — showTicTacToe:', showTicTacToe);
       if (!showTicTacToe) askForJoke();
     }, 250);
-  }, [askForJoke, showTicTacToe]);
+  }, [askForJoke, showTicTacToe, notifyInteraction]);
 
   // Hide when companion is not in this window, but keep mounted during teleport-out
-  // so the leaving animation can still play
-  if (!isVisible) return null;
+  // so the leaving animation can still play. The auto-return gate keys on the
+  // SETTLED `isAutoHidden` only, so the leave-motion frames stay mounted while
+  // `isAutoReturning` is in flight (#2853 ST-2).
+  if (!isVisible || isAutoHidden) return null;
   if (!isInThisWindow && !isTeleportingRef.current) return null;
 
   // Prefer the live streaming message; fall back to context message.
@@ -310,13 +359,19 @@ export const FredoCompanion: React.FC = () => {
       >
         {showTicTacToe && (
           <TicTacToe
-            onStreamingMessage={(msg) => setStreamingMessage(msg)}
+            onStreamingMessage={(msg) => {
+              // #2853 ST-3: game cells/streaming are companion interactions.
+              notifyInteraction();
+              setStreamingMessage(msg);
+            }}
             onStartStreaming={() => {
+              notifyInteraction();
               setIsStreaming(true);
               playAnim('talk');
               setState('talk');
             }}
             onDoneStreaming={() => {
+              notifyInteraction();
               setIsStreaming(false);
               timerRef.current = setTimeout(() => {
                 setStreamingMessage(null);
