@@ -46,3 +46,13 @@
 - **S-8 PASS (live).** Companion ON ⇒ `.fredo-companion-avatar`=1 (80×100), `.fredo-avatar-idle`=0 (mascot absent from the DOM); screenshot succeeded; console clean.
 - **S-9 PASS (live).** Companion OFF ⇒ companion=0, `.fredo-avatar-idle`=1 (58 rects) at its usual place; persisted `Fredo_companion_visible`="false"; screenshot succeeded; console clean.
 - **S-10 PASS (live).** 5 s timeout, no interaction: companion returned, mascot home; also verified at 20 s (present at t+14.8 s, returned by t+32.1 s); console clean.
+
+## #2854 extension — status-vocabulary smoke
+
+> Issue #2854 adds thinking/happy/playful/joking to the shared avatar on both surfaces.
+> Quick paths; the full status matrix lives in `functional.md` F-30..F-41. Live policy —
+> screenshot + console-clean per step.
+
+- [ ] S-11: Companion boots + statuses render — with the companion ON, the resting avatar renders; single-click → the avatar shows `thinking` during the wait then `joking` while the joke streams, and returns to rest; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-12: Both surfaces render the shared avatar under the new vocabulary — with the companion ON exactly one Fredo renders (`.fredo-companion-avatar`, 80×100, shared SVG); toggle it OFF and the desktop mascot (`.fredo-avatar-idle`) renders the shared SVG; screenshot succeeds; console clean.
+- [ ] S-13: No stuck state after a joke/TicTacToe moment — after a joke completes and after a TicTacToe turn, the avatar returns to its resting state (no lingering `thinking`/`joking`/`happy`); screenshot succeeds; console clean.
