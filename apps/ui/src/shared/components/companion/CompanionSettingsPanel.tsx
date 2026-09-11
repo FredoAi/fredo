@@ -2,21 +2,16 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box, HStack, Text, VStack, Switch, NumberInput,
 } from '@chakra-ui/react';
-import { LuTriangleAlert } from 'react-icons/lu';
 import {
   useCompanion, MIN_IDLE_TIMEOUT_S, MAX_IDLE_TIMEOUT_S,
 } from '../../contexts/CompanionContext';
-import { adapterBridge } from '../../utils/adapterBridge';
-import { tint } from '../../utils/colorTint';
-import { useWindowActions } from '../../window-system/useWindowActions';
-import { setupFeature } from '../../../features/setup';
+import { CompanionSetupWizard } from './CompanionSetupWizard';
+import type { CompanionSetupWizardPrerequisite } from './CompanionSetupWizard';
+import { COMPANION_SETUP_STEPS } from './companionSetupSteps';
+import { useCompanionReadiness } from './useCompanionReadiness';
+import type { PrerequisiteUiState } from './companionReadiness';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-interface ModelFilesCheck {
-  gguf_exists: boolean;
-  mmproj_exists: boolean;
-}
 
 const sectionLabel = (text: string) => (
   <Text
@@ -43,41 +38,12 @@ export const CompanionSettingsPanel: React.FC = () => {
     state, setVisible, idleTimeoutSeconds, setIdleTimeoutSeconds,
   } = useCompanion();
   const { isVisible } = state;
-  const { openWindow } = useWindowActions();
 
-  const [modelsExist, setModelsExist] = useState<boolean>(true);
-  const [checkingModels, setCheckingModels] = useState<boolean>(true);
-
-  // Check model files presence on mount — re-checks every time the tab is
-  // switched back because React unmounts/remounts via `key={activeSection}`
-  // in ProfileSettingsModal.
-  useEffect(() => {
-    let cancelled = false;
-
-    async function checkModels() {
-      try {
-        setCheckingModels(true);
-        const result = await adapterBridge.invoke<ModelFilesCheck>('check_model_files');
-        if (!cancelled) {
-          setModelsExist((result?.gguf_exists && result?.mmproj_exists) ?? false);
-        }
-      } catch (err) {
-        console.error('[CompanionSettingsPanel] Failed to check model files:', err);
-        if (!cancelled) {
-          setModelsExist(false);
-        }
-      } finally {
-        if (!cancelled) {
-          setCheckingModels(false);
-        }
-      }
-    }
-
-    checkModels();
-    return () => { cancelled = true; };
-  }, []);
-
-  const modelsGate = checkingModels || !modelsExist;
+  // Readiness gate (#2855): the backend is authoritative. While not ready — and
+  // while the first probe is still in flight — the wizard is the ONLY content.
+  const {
+    readiness, checking, refresh, runAction, runningActionId, actionError,
+  } = useCompanionReadiness();
 
   // ── Idle auto-return duration (#2853 ST-5) ─────────────────────────────────
   // A local draft mirrors the persisted value while the user edits; the value is
@@ -105,22 +71,38 @@ export const CompanionSettingsPanel: React.FC = () => {
     setIdleTimeoutSeconds(Number(raw));
   }, [setIdleTimeoutSeconds]);
 
-  const handleOpenSetup = useCallback(() => {
-    openWindow({
-      id: setupFeature.id,
-      title: setupFeature.name,
-      icon: React.createElement(setupFeature.icon as any, { size: 16 }) as React.ReactNode,
-      component: setupFeature.render() as React.ReactNode,
-      canClose: true,
-      canMaximize: true,
-      canMinimize: true,
-      isMaximized: true,
-    });
-  }, [openWindow]);
+  const isReady = !checking && readiness?.ready === true;
+
+  if (!isReady) {
+    // While checking (or not ready), render ONLY the wizard — never the toggle
+    // or the Teleport tip (AC-1 / REQ-6). During the first probe, derive the
+    // steps from the registry so each row shows its `checking` state.
+    const prerequisites: CompanionSetupWizardPrerequisite[] = checking
+      ? COMPANION_SETUP_STEPS.map((step) => ({
+          id: step.id,
+          uiState: 'checking' as PrerequisiteUiState,
+        }))
+      : (readiness?.prerequisites ?? []).map((p) => ({
+          id: p.id,
+          uiState: p.state as PrerequisiteUiState,
+          detail: p.detail,
+          resolvedPath: p.resolvedPath,
+        }));
+
+    return (
+      <CompanionSetupWizard
+        prerequisites={prerequisites}
+        runningActionId={runningActionId}
+        actionError={actionError}
+        onRunAction={(id) => { void runAction(id); }}
+        onRecheck={() => { void refresh(); }}
+      />
+    );
+  }
 
   return (
-    <VStack align="stretch" gap={6} p={6}>
-      {/* Enable / Disable — gated by model files presence */}
+    <VStack data-testid="companion-controls" align="stretch" gap={6} p={6}>
+      {/* Enable / Disable */}
       <Box>
         {sectionLabel('Companion')}
         <HStack
@@ -139,8 +121,7 @@ export const CompanionSettingsPanel: React.FC = () => {
             </Text>
           </VStack>
           <Switch.Root
-            checked={isVisible && modelsExist}
-            disabled={modelsGate}
+            checked={isVisible}
             onCheckedChange={(e) => setVisible(e.checked)}
             colorPalette="purple"
             size="md"
@@ -150,45 +131,7 @@ export const CompanionSettingsPanel: React.FC = () => {
           </Switch.Root>
         </HStack>
 
-        {/* Model-missing warning banner */}
-        {!checkingModels && !modelsExist && (
-          <HStack
-            mt={2}
-            p={3}
-            borderRadius="md"
-            background="var(--status-error)"
-            bg={tint('var(--status-error)', 12)}
-            border="1px solid"
-            borderColor={tint('var(--status-error)', 30)}
-            gap={2}
-          >
-            <Box flexShrink={0}>
-              <LuTriangleAlert size={16} color="var(--status-error)" />
-            </Box>
-            <Text fontSize="sm" color="var(--text-secondary)" flex={1}>
-              Model not downloaded —{' '}
-              <Box
-                as="button"
-                display="inline"
-                onClick={handleOpenSetup}
-                color="var(--accent-primary)"
-                textDecoration="underline"
-                cursor="pointer"
-                background="none"
-                border="none"
-                padding={0}
-                fontSize="inherit"
-                fontFamily="inherit"
-              >
-                run Setup to install
-              </Box>
-            </Text>
-          </HStack>
-        )}
-
-        {/* Idle auto-return duration — #2853 ST-5. Gated by model files presence
-            (reduced opacity + non-interactive), mirroring the Teleport tip —
-            expected, not an error state. */}
+        {/* Idle auto-return duration — #2853 ST-5. */}
         <HStack
           mt={2}
           justify="space-between"
@@ -196,8 +139,6 @@ export const CompanionSettingsPanel: React.FC = () => {
           borderRadius="md"
           background="var(--hover-bg)"
           border="1px solid var(--border-color)"
-          opacity={modelsGate ? 0.4 : 1}
-          pointerEvents={modelsGate ? 'none' : 'auto'}
         >
           <VStack align="start" gap={0}>
             <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
@@ -217,7 +158,6 @@ export const CompanionSettingsPanel: React.FC = () => {
               step={IDLE_TIMEOUT_STEP_S}
               size="sm"
               width="110px"
-              disabled={modelsGate}
             >
               {/* Zag only invokes onValueCommit on blur/Enter, so persist the
                   latest value explicitly when the stepper control is clicked. */}
@@ -242,8 +182,8 @@ export const CompanionSettingsPanel: React.FC = () => {
 
       {/* Teleport tip */}
       <Box
-        opacity={isVisible && !modelsGate ? 1 : 0.4}
-        pointerEvents={isVisible && !modelsGate ? 'auto' : 'none'}
+        opacity={isVisible ? 1 : 0.4}
+        pointerEvents={isVisible ? 'auto' : 'none'}
         p={3}
         borderRadius="md"
         background="var(--hover-bg)"

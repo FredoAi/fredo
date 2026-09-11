@@ -1074,6 +1074,326 @@ pub async fn download_model(app: AppHandle) -> SetupStepResult {
     }
 }
 
+// ── Companion readiness + llama.cpp install (Spec #2855) ───────────────────────
+//
+// ONE canonical prerequisite set for the Companion setup wizard. The backend
+// owns the set; the frontend renders exactly what `check_companion_readiness`
+// returns through its ordered `COMPANION_SETUP_STEPS` registry. #2856 appends a
+// model-download action; #2857 appends a `serverLaunch` prerequisite.
+
+/// Canonical required model files — ONE list; #2856 extends it here (single extension point).
+pub const REQUIRED_MODEL_FILES: &[(&str, &str)] = &[
+    (MODEL_SUBDIR, MODEL_GGUF),
+    (MODEL_SUBDIR, MODEL_MMPROJ),
+];
+
+const LLAMA_SERVER_BIN: &str = "llama-server";
+const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
+const WINGET_BIN: &str = "winget";
+#[cfg(target_os = "windows")]
+const WINGET_APP_ID: &str = "llama.cpp";
+
+/// Per-prerequisite state. `Error` = could not determine; `Missing` = determined absent.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum PrerequisiteState {
+    Installed,
+    Missing,
+    Error,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PrerequisiteReport {
+    /// Stable id: "llamaServer" | "modelFiles" (#2857 adds "serverLaunch").
+    pub id: String,
+    pub state: PrerequisiteState,
+    pub detail: String,
+    pub resolved_path: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionReadiness {
+    /// true iff EVERY prerequisite is `Installed` (never for Missing/Error).
+    pub ready: bool,
+    pub prerequisites: Vec<PrerequisiteReport>,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum LlamaCppInstallCode {
+    WingetUnavailable,
+    InstallFailed,
+    SpawnFailed,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LlamaCppInstallResult {
+    pub success: bool,
+    pub output: String,
+    pub error: Option<String>,
+    pub code: Option<LlamaCppInstallCode>,
+}
+
+/// Resolve an executable on PATH (first match). Local helper — no cross-feature import.
+fn find_on_path(bin: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let finder = "where";
+    #[cfg(not(target_os = "windows"))]
+    let finder = "which";
+
+    std::process::Command::new(finder)
+        .arg(bin)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The winget shim location — required because the running process's inherited
+/// PATH does not refresh after `winget install` (keeps AC-3's "no reload" honest).
+#[cfg(target_os = "windows")]
+fn winget_links_shim() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|dir| {
+        PathBuf::from(dir)
+            .join("Microsoft")
+            .join("WinGet")
+            .join("Links")
+            .join(format!("{LLAMA_SERVER_BIN}.exe"))
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn winget_links_shim() -> Option<PathBuf> {
+    None
+}
+
+/// Pure resolution order (unit-tested): configured path → PATH → winget shim.
+/// `on_path` is the already-resolved PATH candidate; `shim` the winget Link.
+fn resolve_llama_server_order(
+    configured: Option<&str>,
+    on_path: Option<PathBuf>,
+    shim: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = configured {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    if let Some(path) = on_path {
+        return Some(path);
+    }
+    shim.filter(|p| p.is_file())
+}
+
+/// Resolve a usable `llama-server` executable. #2855 only DETECTS — never launches.
+/// `Err` means the configured path could not be read (the prerequisite is then
+/// reported as `Error` — "could not determine" — never as `Missing`).
+fn resolve_llama_server(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    let configured = app
+        .state::<Arc<AppStore>>()
+        .get(LLAMA_SERVER_SETTING_KEY)
+        .map_err(|e| e.to_string())?;
+    Ok(resolve_llama_server_order(
+        configured.as_deref(),
+        find_on_path(LLAMA_SERVER_BIN),
+        winget_links_shim(),
+    ))
+}
+
+/// The two prerequisites the companion needs before it can run. Read-only.
+#[tauri::command]
+pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
+    let mut prerequisites = Vec::with_capacity(2);
+
+    // Prerequisite 1 — a usable llama-server executable.
+    let (llama_state, llama_detail, llama_path) = match resolve_llama_server(&app) {
+        Ok(Some(path)) => (
+            PrerequisiteState::Installed,
+            format!("llama-server found at {}", path.display()),
+            Some(path.to_string_lossy().into_owned()),
+        ),
+        Ok(None) => (
+            PrerequisiteState::Missing,
+            "llama-server not found. Install llama.cpp to continue.".to_string(),
+            None,
+        ),
+        Err(e) => (
+            PrerequisiteState::Error,
+            format!("Could not determine llama-server availability: {e}"),
+            None,
+        ),
+    };
+    prerequisites.push(PrerequisiteReport {
+        id: "llamaServer".to_string(),
+        state: llama_state,
+        detail: llama_detail,
+        resolved_path: llama_path,
+    });
+
+    // Prerequisite 2 — the required model files.
+    let models_subdir = resolve_models_dir(&app).join(MODEL_SUBDIR);
+    let present = REQUIRED_MODEL_FILES
+        .iter()
+        .filter(|(subdir, filename)| resolve_model_path(&app, subdir, filename).is_some())
+        .count();
+    let total = REQUIRED_MODEL_FILES.len();
+    let (model_state, model_detail) = if present == total {
+        (
+            PrerequisiteState::Installed,
+            "All required model files present.".to_string(),
+        )
+    } else {
+        (
+            PrerequisiteState::Missing,
+            format!("{present} of {total} model files present."),
+        )
+    };
+    prerequisites.push(PrerequisiteReport {
+        id: "modelFiles".to_string(),
+        state: model_state,
+        detail: model_detail,
+        resolved_path: if present == total {
+            Some(models_subdir.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+    });
+
+    let ready = prerequisites
+        .iter()
+        .all(|p| p.state == PrerequisiteState::Installed);
+    CompanionReadiness { ready, prerequisites }
+}
+
+/// Tail of a (possibly long) install output for an actionable error.
+fn tail_of(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= max_chars {
+        return trimmed.to_string();
+    }
+    trimmed.chars().skip(count - max_chars).collect()
+}
+
+fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let out = String::from_utf8_lossy(stdout).trim().to_string();
+    let err = String::from_utf8_lossy(stderr).trim().to_string();
+    match (out.is_empty(), err.is_empty()) {
+        (false, false) => format!("{out}\n{err}"),
+        (false, true) => out,
+        (true, false) => err,
+        (true, true) => String::new(),
+    }
+}
+
+/// Shape a successful/failed exit into the structured wire result. Pure.
+fn classify_install_outcome(success: bool, combined_output: String) -> LlamaCppInstallResult {
+    if success {
+        LlamaCppInstallResult {
+            success: true,
+            output: combined_output,
+            error: None,
+            code: None,
+        }
+    } else {
+        LlamaCppInstallResult {
+            success: false,
+            error: Some(format!(
+                "Setup failed: {}. Choose Retry or Re-check.",
+                tail_of(&combined_output, 400)
+            )),
+            output: combined_output,
+            code: Some(LlamaCppInstallCode::InstallFailed),
+        }
+    }
+}
+
+/// Decide the install result from winget availability + the executed command.
+/// The `execute` closure is injected so the failure branches are unit-testable
+/// WITHOUT running a real `winget install`. Pure.
+fn run_install_with(
+    winget_available: bool,
+    execute: impl FnOnce() -> std::io::Result<(bool, String)>,
+) -> LlamaCppInstallResult {
+    if !winget_available {
+        return LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some(
+                "Couldn't install llama.cpp — winget isn't available on this machine. \
+                 Install llama.cpp manually, then choose Re-check."
+                    .to_string(),
+            ),
+            code: Some(LlamaCppInstallCode::WingetUnavailable),
+        };
+    }
+    match execute() {
+        Ok((success, combined)) => classify_install_outcome(success, combined),
+        Err(e) => LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!(
+                "Couldn't run winget: {e}. Install llama.cpp manually, then choose Re-check."
+            )),
+            code: Some(LlamaCppInstallCode::SpawnFailed),
+        },
+    }
+}
+
+/// One-click `winget install llama.cpp`. Runs OFF the UI thread; does NOT launch
+/// the server and does NOT re-check readiness — the frontend re-probes after.
+#[tauri::command]
+pub async fn install_llama_cpp() -> LlamaCppInstallResult {
+    let winget_available = is_binary_available(WINGET_BIN);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        run_install_with(winget_available, || {
+            #[cfg(target_os = "windows")]
+            {
+                let output = std::process::Command::new(WINGET_BIN)
+                    .args([
+                        "install",
+                        "--id",
+                        WINGET_APP_ID,
+                        "-e",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                        "--disable-interactivity",
+                    ])
+                    .output()?;
+                Ok((
+                    output.status.success(),
+                    combine_output(&output.stdout, &output.stderr),
+                ))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "llama.cpp install is Windows-only",
+                ))
+            }
+        })
+    })
+    .await;
+
+    match joined {
+        Ok(result) => result,
+        Err(e) => LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!("Install task failed: {e}. Choose Retry.")),
+            code: Some(LlamaCppInstallCode::SpawnFailed),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1213,5 +1533,130 @@ mod tests {
         assert_eq!(deserialized.plugin.status, "missing");
         assert_eq!(deserialized.model.status, "missing");
         assert_eq!(deserialized.otel.status, "missing");
+    }
+
+    // ── Spec #2855: companion readiness + llama.cpp install ──────────────
+
+    #[test]
+    fn resolve_llama_server_prefers_configured_then_path_then_shim() {
+        let existing = std::env::current_exe().expect("current exe");
+        let existing_str = existing.to_string_lossy().into_owned();
+        let on_path = PathBuf::from(r"C:\fake\llama-server.exe");
+
+        // 1. A configured path that exists wins over PATH + shim.
+        assert_eq!(
+            resolve_llama_server_order(Some(&existing_str), Some(on_path.clone()), Some(existing.clone())),
+            Some(existing.clone())
+        );
+        // 2. A configured path that does not exist falls through to PATH.
+        assert_eq!(
+            resolve_llama_server_order(Some("Z:\\missing\\llama-server.exe"), Some(on_path.clone()), None),
+            Some(on_path.clone())
+        );
+        // 3. No configured path → PATH candidate.
+        assert_eq!(
+            resolve_llama_server_order(None, Some(on_path.clone()), None),
+            Some(on_path.clone())
+        );
+        // 4. No configured/PATH → winget shim (when it exists).
+        assert_eq!(
+            resolve_llama_server_order(None, None, Some(existing.clone())),
+            Some(existing)
+        );
+        // 5. A shim that does not exist is rejected; empty resolution → None.
+        assert_eq!(
+            resolve_llama_server_order(None, None, Some(PathBuf::from("Z:\\nope.exe"))),
+            None
+        );
+        assert_eq!(resolve_llama_server_order(None, None, None), None);
+    }
+
+    #[test]
+    fn install_llama_cpp_winget_unavailable_is_actionable_and_not_complete() {
+        let result = run_install_with(false, || {
+            panic!("must not execute when winget is unavailable")
+        });
+        assert!(!result.success);
+        assert_eq!(result.code, Some(LlamaCppInstallCode::WingetUnavailable));
+        let error = result.error.expect("actionable error");
+        assert!(error.contains("winget"));
+        assert!(error.contains("Re-check"));
+        assert!(!error.to_lowercase().contains("complete"));
+    }
+
+    #[test]
+    fn install_llama_cpp_nonzero_exit_reports_failure_with_tail() {
+        let result = run_install_with(true, || Ok((false, "0x8A150 something failed".to_string())));
+        assert!(!result.success);
+        assert_eq!(result.code, Some(LlamaCppInstallCode::InstallFailed));
+        assert!(result.error.expect("error").contains("something failed"));
+    }
+
+    #[test]
+    fn install_llama_cpp_success_reports_complete() {
+        let result = run_install_with(true, || Ok((true, "Successfully installed".to_string())));
+        assert!(result.success);
+        assert_eq!(result.code, None);
+        assert!(result.error.is_none());
+        assert!(result.output.contains("Successfully installed"));
+    }
+
+    #[test]
+    fn install_llama_cpp_spawn_error_is_structured() {
+        let result = run_install_with(true, || {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "winget missing"))
+        });
+        assert!(!result.success);
+        assert_eq!(result.code, Some(LlamaCppInstallCode::SpawnFailed));
+    }
+
+    #[test]
+    fn companion_readiness_serializes_camel_case() {
+        let readiness = CompanionReadiness {
+            ready: false,
+            prerequisites: vec![
+                PrerequisiteReport {
+                    id: "llamaServer".into(),
+                    state: PrerequisiteState::Missing,
+                    detail: "not found".into(),
+                    resolved_path: None,
+                },
+                PrerequisiteReport {
+                    id: "modelFiles".into(),
+                    state: PrerequisiteState::Installed,
+                    detail: "present".into(),
+                    resolved_path: Some(r"C:\models".into()),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&readiness).unwrap();
+        assert!(json.contains("\"resolvedPath\""));
+        assert!(json.contains("\"llamaServer\""));
+        assert!(json.contains("\"missing\""));
+        assert!(json.contains("\"installed\""));
+        assert!(json.contains("\"ready\":false"));
+
+        let install = LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some("x".into()),
+            code: Some(LlamaCppInstallCode::WingetUnavailable),
+        };
+        let json = serde_json::to_string(&install).unwrap();
+        assert!(json.contains("\"wingetUnavailable\""));
+    }
+
+    #[test]
+    fn required_model_files_are_the_two_engine_files() {
+        assert_eq!(REQUIRED_MODEL_FILES.len(), 2);
+        assert_eq!(REQUIRED_MODEL_FILES[0], (MODEL_SUBDIR, MODEL_GGUF));
+        assert_eq!(REQUIRED_MODEL_FILES[1], (MODEL_SUBDIR, MODEL_MMPROJ));
+    }
+
+    #[test]
+    fn tail_of_truncates_long_output() {
+        let long = "x".repeat(1000);
+        assert_eq!(tail_of(&long, 400).chars().count(), 400);
+        assert_eq!(tail_of("short", 400), "short");
     }
 }

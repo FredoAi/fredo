@@ -449,6 +449,8 @@ pub fn run() {
             features::setup::commands::run_setup_step,
             features::setup::commands::check_model_files,
             features::setup::commands::download_model,
+            features::setup::commands::check_companion_readiness,
+            features::setup::commands::install_llama_cpp,
             features::llm::commands::llm_chat,
             features::llm::commands::llm_chat_with_image,
             features::screenshot::commands::capture_screen_region,
