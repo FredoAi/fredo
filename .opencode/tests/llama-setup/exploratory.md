@@ -214,3 +214,63 @@ Fix under test: `acquire_file` seeds the resume SHA-256 hasher BEFORE the GET + 
 - **E-15/E-19/E-20/E-22 (still not executed):** disk-full/permission, Unicode/space models dir,
   retry-storm concurrency, and listener churn remain unprobed (the banned stub server + manifest
   override and the real-pull focus make them hard to drive safely).
+
+## Probes — #2857 (out-of-process launch + in-process removal)
+
+> Unscripted probes for the launch/health/round-trip/orphan surface. Promote any confirmed
+> invariant to `functional.md` (Spec #2857). REAL path only — no stub servers, no scratch-dir
+> shortcuts. A confirmed finding becomes a new `F-` row (keep the origin note).
+
+- [ ] **E-23 — Hard-kill orphan + next-launch recovery.** Kill Fredo from Task Manager mid-server
+      (not a clean exit), then relaunch and start the companion. Is the orphaned `llama-server.exe`
+      detected/reclaimed, or does the new launch fail on a held port? Record the actual behavior.
+  - Prompt: process list before/after; port probe; backend log.
+
+- [ ] **E-24 — Port conflict / second instance.** Start a second Fredo (or another listener on the
+      configured port); start the companion. Is the conflict surfaced as an actionable start
+      failure (R-4), and does the resolver pick/announce a free port if designed to?
+  - Prompt: hold the port with `ncat`/another listener; observe IPC + error UI.
+
+- [ ] **E-25 — Double-start / rapid toggle.** Click Start twice quickly, or start → stop → start
+      within a second. Is a duplicate process prevented (guard/idempotent), with no port race?
+  - Prompt: `tauri_ipc_monitor` counts of the launch command; process list.
+
+- [ ] **E-26 — Settings change while the server runs.** Change ctx-size / temp / threads / port
+      while the server is running. Does it require a restart, auto-relaunch, or apply on next
+      start? Is the user told? Is the generated config the effective one afterward?
+  - Prompt: capture config before/after; server log; UI affordance.
+
+- [ ] **E-27 — Model file moved/removed while running.** Move a GGUF aside after a successful
+      launch; send a chat. Does the running server keep serving (mmap) or fail cleanly? Does the
+      next launch surface the missing file actionably?
+  - Prompt: symlink/move a file; re-check; next launch.
+
+- [ ] **E-28 — Disk-full / read-only models dir at launch.** Point `models_dir` at a read-only or
+      non-existent path and start. Is the failure actionable (R-4), with no partial process left?
+  - Prompt: `attrib +r`, or a locked path.
+
+- [ ] **E-29 — Exit during a stream.** Trigger app exit while a long generation is streaming. Is
+      the process terminated (no orphan), and does the UI/state close coherently?
+  - Prompt: start a long generation; exit; process list + port probe.
+
+- [ ] **E-30 — Long / spaced / Unicode install path + quoting.** Point `llama_server_path` (or the
+      models dir) at a path with spaces and non-ASCII; launch. Does the argv quoting hold and the
+      server start?
+  - Prompt: copy the binary/models to a spaced+Unicode dir (restore after).
+
+- [ ] **E-31 — Server crashes mid-stream.** Kill `llama-server.exe` from outside while streaming.
+      Does the UI surface an actionable error (not a hang), and is the orphan state cleaned up?
+  - Prompt: kill the child; observe the chat surface + console.
+
+- [ ] **E-32 — Bind host is localhost-only.** Confirm the server binds `127.0.0.1`, not `0.0.0.0`
+      (no LAN exposure). Probe from a second interface.
+  - Prompt: `netstat`/process listing; attempt a non-loopback connect.
+
+- [ ] **E-33 — GPU/CUDA unavailable fallback.** Force a CPU/no-CUDA environment (or a bad
+      `--gpu-layers` value) and launch. Does the error surface actionably, or does it silently fall
+      back to CPU? Record the actual behavior.
+  - Prompt: override the flag/backend; server log.
+
+- [ ] **E-34 — Repeated start/stop cycles (leak).** Start/stop the companion 5–10 times; check for
+      accumulated `llama-server.exe` processes, leaked ports, or growing handles/memory.
+  - Prompt: process list + memory snapshots across cycles.
