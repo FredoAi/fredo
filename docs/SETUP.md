@@ -15,15 +15,12 @@
 # WebView2 (usually pre-installed on Windows 11)
 # Install from: https://developer.microsoft.com/microsoft-edge/webview2/
 
-# Visual Studio 2022 Build Tools with C++ workload (for Rust + CMake compilation)
+# Visual Studio 2022 Build Tools with C++ workload (MSVC linker for Rust Windows builds)
 # The --add flag ensures the C++ toolchain is included
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-
-# LLVM/Clang (required by llama-cpp-sys-2 for bindgen)
-winget install LLVM.LLVM
 ```
 
-> **Important:** Restart your terminal after installing LLVM and VS Build Tools so `libclang.dll` and CMake generators are found on `PATH`.
+> **Important:** Restart your terminal after installing VS Build Tools so the MSVC linker is found on `PATH`.
 
 ### macOS additional dependencies
 
@@ -49,7 +46,7 @@ pnpm install
 
 GGUF model files are **not required to build** — they are only needed at runtime for local AI inference. Models are **not stored in git** (too large).
 
-The **Companion** (llama.cpp runtime) downloads its three required files in-app. The legacy in-process engine uses a separate two-file set (quick/manual download below).
+The **Companion** (out-of-process `llama-server` runtime) downloads its three required files in-app — no manual download is required for a normal setup.
 
 ### In-app download (Companion — recommended)
 
@@ -61,23 +58,11 @@ Open **Settings → Companion** and click **Download model files** in the guided
 | `mmproj-BF16.gguf` | ~987 MB | vision projector |
 | `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` | ~59 MB | speculative draft (MTP) |
 
-### Quick download (in-process engine, legacy set)
-
-```powershell
-# From repo root — downloads Gemma 4 E2B model + vision projector (~4 GB total)
-pwsh apps/tauri/src-tauri/scripts/download-mmproj.ps1
-```
-
 ### Manual download
 
-Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`:
+Place the required files (table above) under `<models_dir>/gemma-4-e2b-it-qat/` — default `~/fredo-models/gemma-4-e2b-it-qat/`. Preserve the `MTP/` subfolder for the draft file. Correctly-sized files dropped there manually are detected by **Re-check** in the wizard.
 
-| File | Size | Source |
-|------|------|--------|
-| `gemma-4-E2B-it-Q4_K_M.gguf` | ~3.1 GB | [unsloth/gemma-4-E2B-it-GGUF](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
-| `mmproj-F16.gguf` | ~986 MB | [unsloth/gemma-4-E2B-it-GGUF](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf) |
-
-> `*.gguf` files are gitignored. The metadata files (`config.json`, `tokenizer.json`, etc.) are tracked in git and already present after cloning.
+> `*.gguf` files are not stored in git.
 
 ### Supported Models
 
@@ -86,7 +71,7 @@ Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`:
 | Gemma 4 E2B (`gemma-4-e2b`) | ✅ | Full vision support via mmproj projector |
 | MiniCPM-V 4.6 (`minicpm-v-4-6`) | ⚠️ | Vision projector unsupported; falls back to text-only |
 
-Switch models via Settings → Model Selector in the UI. Changes take effect on next launch.
+The companion serves the model set configured in the Companion setup; no separate model selector is required.
 
 ## Companion Setup
 
@@ -94,8 +79,9 @@ The companion's runtime prerequisites are checked in-app. Open **Settings → Co
 
 - **llama.cpp runtime** — a usable `llama-server` (resolved from a configured path, then `PATH`, then the winget Links shim). The wizard offers a one-click **Install llama.cpp** (`winget install --id ggml.llamacpp -e`) and re-checks readiness in place — no app reload.
 - **Model files** — the three required files (model + vision projector + MTP speculative draft) under `<models_dir>/gemma-4-e2b-it-qat/`. The step lists them individually (`missing` / `downloading` / `present` / `error`), downloads them in-app with per-file progress, skips files already present, resumes an interrupted transfer via HTTP `Range`, verifies each with its pinned SHA-256, and names exactly which file(s) are missing. See [Download Models](#download-models).
+- **Companion server** — starting the companion launches `llama-server` from the generated launch config and confirms readiness with a health check on the configured port before any chat is sent. Its state is composed from `get_llama_server_status`; its action calls `launch_llama_server`, which always returns an actionable error (never hangs).
 
-Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once both are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
+Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once all prerequisites are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
 
 ## OTLP Configuration
 

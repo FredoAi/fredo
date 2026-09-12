@@ -388,15 +388,6 @@ switch ($Action) {
     $env:OPENCODE_OTLP_ENDPOINT    = "http://localhost:4317"
     $env:OPENCODE_OTLP_PROTOCOL    = "grpc"
 
-    # Native-build generator pin (observed 2026-08-26): llama-cpp-sys-2's CMake
-    # auto-detection can pick "Visual Studio 18 2026" whose instance is unusable,
-    # failing every fresh native rebuild with "could not find any instance of
-    # Visual Studio". Pin the known-good installed generator for this machine's
-    # cargo/cmake child processes (no-op on non-Windows).
-    if ($IsWindows -or $env:OS -eq "Windows_NT") {
-      $env:CMAKE_GENERATOR = "Visual Studio 17 2022"
-    }
-
     $proc = Start-Process -FilePath "cmd" `
       -ArgumentList "/c cd /d `"$PWD`" && pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
       -WindowStyle Hidden -PassThru
