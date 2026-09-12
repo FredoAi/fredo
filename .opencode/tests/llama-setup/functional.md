@@ -466,3 +466,150 @@ tester sandbox allowlist; covered by CI `rust-validate` (`cargo test --locked`, 
 **Final filesystem state:** all three files complete and hash-verified (model 2,620,370,976; vision
 986,833,728; mtp 59,235,648). A pre-existing round-1 leftover `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf.ac4-bak`
 (2,620,370,976 B) remains in the dir (not created by this round; not a manifest file).
+
+---
+
+## #2857 — Out-of-process `llama-server` launch + legacy in-process engine removal (Spec #2857)
+
+> Extends the SAME suite/feature domain. Rows F-33..F-46 add the launch/health/round-trip/
+> orphan ACs and the in-process-engine removal. **REQ ids are AC-aligned 1:1** (`R-1`=AC1 …
+> `R-5`=AC5) per G-022 — keep the mapping when extending.
+> **Verification policy: live.**
+>
+> **BINDING human methodology (inline):** REAL verification through the product path. NO stub
+> servers on a scratch port, NO scratch-dir shortcuts, NO bypassing the real backend commands.
+> The launch/health/round-trip/orphan ACs MUST be driven against a REAL `llama-server` launched
+> by the product. If a real model load is impossible in the tester's resource/time budget, the
+> affected row is UNVERIFIED-with-named-blocker carrying residual substantiation (prior live
+> evidence on the unchanged surface + a unit/CI pin) per **G-131** — never fabricate a PASS.
+> **G-130:** F-39 must reproduce the real streaming/volume class, not only a fast small fixture.
+> **No `cargo` in the tester shell** (from #2855) — Rust build/clippy/test gates are covered by
+> CI `rust-validate`; the tester drives the live product path and does NOT run `cargo`.
+>
+> **Test data / host facts:** real models under `models_dir`
+> (`C:\Code\fredo\models\gemma-4-e2b-it-qat\`): `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf` (~2.62 GB),
+> `mmproj-BF16.gguf` (~0.99 GB), `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` (~59 MB). Real
+> `llama-server.exe`; on this host winget `ggml.llamacpp` created NO Links shim (E-13), so set
+> `llama_server_path` to the real binary (or its install dir). Settings seams (restore after each
+> leg): `models_dir`, `llama_server_path`, and the port/context/sampling settings the Architect
+> names. The human's `.bat` defaults are the AC1 expected set. **Timing budget:** a real ~2.6 GB
+> CUDA load + mmproj + MTP draft is heavy — allow/record a health wait of ~60–180 s (cold disk)
+> plus post-ready TTFT; the app's bounded timeout must be ≥ this. NOTE: the UI's frontend
+> `LAUNCH_WATCHDOG_MS` (proposed 45 s) is a no-hang affordance, NOT the authoritative health
+> timeout — a still-loading healthy server must stay in `starting`, never flip to `failed`.
+
+### Functional — #2857
+
+- [ ] **F-33 (R-1/AC1):** Capture the generated launch config for the current persisted settings:
+      `tauri_ipc_monitor` the `launch_llama_server` invoke (its detail exposes the config PATH per
+      UI §5 — Architect to define the file/format) and read that file / the log's config echo.
+      **Expected:** every required flag is present with a value — `--model`,
+      `--mmproj`, `--model-draft`, `--spec-type draft-mtp`, `--spec-draft-n-max 2`, `--fit off`,
+      `--load-mode none`, `--gpu-layers all`, `--threads 6`, `--threads-batch 12`, `--reasoning on`,
+      `--ctx-size 131072`, `--temp 1.0`, `--top-p 0.95`, `--top-k 64`, `--parallel 1`,
+      `--kv-unified 1`, `--log-verbosity 4`, `--alias Gemma-4-E2B` — 18/18, zero missing, zero
+      empty. Paths are RESOLVED absolute on-disk paths, not the `.bat`'s relative `gguf\…`.
+  - **Edge:** a path with spaces is one quoted token; an absent `--model-draft`/`--mmproj` file ⇒
+    explicit error, never a dropped flag; restore defaults.
+
+- [ ] **F-34 (R-1/AC1):** Config derives from PERSISTED SETTINGS — change a bound setting, relaunch,
+      re-capture; clear the override and re-capture. **Expected:** the captured value reflects the
+      persisted setting; unset ⇒ the `.bat` default; changing one setting changes exactly its flag.
+  - **Edge:** blank setting falls back to default; out-of-range value rejected/clamped without a
+    bad launch; restore the setting.
+
+- [ ] **F-35 (R-2/AC2):** On a ready host start the companion via the wizard's
+      `companion-step-server-launch` → `-start` (command `launch_llama_server`); capture IPC + the
+      OS process list + backend logs; read the card's `data-server-state`.
+      **Expected:** a REAL `llama-server.exe` starts (child of Fredo) with the F-33 config; the
+      resolved binary path + config are logged; `data-server-state` goes `starting` → `healthy`
+      (chip "Running"); no in-process engine load.
+  - **Edge:** missing/broken binary ⇒ F-41; a second start does not duplicate the process; a stale
+    server from a prior crash is reclaimed or reported.
+
+- [ ] **F-36 (R-2/AC2):** Arm `tauri_ipc_monitor`, start the companion, send NO chat; probe
+      `http://127.0.0.1:<configured-port>/health` (+ `/v1/models`) and read `-phase`.
+      **Expected:** health returns a success status on the configured port BEFORE any chat/completion
+      request is issued (IPC order: health OK → ready → first chat); the card stays
+      `data-server-state=starting` with the "Waiting for health check…" caption until health passes;
+      readiness is the REAL HTTP result, not a fixed delay.
+  - **Edge:** port held by another process ⇒ explicit start failure (F-41), never false ready; a
+    port override honored; one bad probe retried within budget.
+
+- [ ] **F-37 (R-2c / NF):** During the real model load, interact with app chrome and record
+      wall-clock timings; observe the `-phase` captions + the `LAUNCH_WATCHDOG_MS` behaviour; read
+      console after every leg. **Expected:** webview responsive (no freeze/dead input); named phases
+      render (config → starting → health) with spinner + indeterminate progress < 100 ms; the
+      BACKEND health wait is bounded (record its value); console clean.
+  - **Edge:** cold-disk slow load inside budget ⇒ still `healthy`; the frontend watchdog (proposed
+    45 s) must NOT mislabel a still-loading healthy server as `failed`; app exit during load ⇒ F-40.
+
+- [ ] **F-38 (R-3/AC3):** Send a companion chat message; sample the answer DOM (`execute_js`) + the
+      server request log; watch the `llm_chat` → `llm-token`/`llm-done` IPC.
+      **Expected:** the prompt reaches the server and the reply STREAMS back — the
+      `SpeechBubble`/answer DOM shows ≥2 distinct partial contents over time, then the final text
+      matching the completion; assistant rows still land on the chat surface.
+  - **Edge:** multi-turn context; abort mid-stream; slow TTFT; a server-unreachable `llm_chat`
+    error surfaces one line (never a second chat surface).
+
+- [ ] **F-39 (R-3c, G-130 streamed class):** Ask for a LONG generation (target ≥ ~300 output
+      tokens / ≥ ~20 s of streaming) and sample the answer DOM across the window. **Expected:**
+      tokens render INCREMENTALLY across multiple samples (not one final block); TTFT + total
+      wall-clock recorded; other surfaces responsive.
+  - **Edge:** very long output does not stall; a 1-token/instant reply is NOT acceptable evidence.
+
+- [ ] **F-40 (R-3/AC3):** Exit Fredo cleanly (and once via force-kill) with a server running; after
+      the app is gone list OS processes + probe the port; on relaunch observe the
+      `exited`/`Restart` lifecycle if the backend re-probe trigger exists.
+      **Expected:** no `llama-server.exe` survives (zero orphans; port free) — the child is
+      terminated on app exit.
+  - **Edge:** exit while generating; exit during load; hard-kill may orphan — record actual
+    behavior + next-launch recovery; two windows do not double-own the process.
+
+- [ ] **F-41 (R-4/AC4):** Force a START failure (non-existent binary / non-zero shim / port held by
+      another listener); start the companion. **Expected:** within the bounded timeout the
+      `companion-step-server-launch` card enters `data-server-state=failed` with the actionable
+      copy ("Couldn't start the companion server… then choose Retry."), `-retry` + `-recheck`
+      present, focus moved to the error group (`role=group`, `aria-label="Companion server error"`),
+      NEVER an infinite spinner; readiness never `healthy`; no chat issued.
+  - **Edge:** missing `llama-server` guides to install; a binary exiting with output surfaces the
+    tail; a held port is not misread as healthy.
+
+- [ ] **F-42 (R-4/AC4):** Force a health failure/timeout (server starts but `/health` never answers,
+      or load beyond the backend budget); start the companion. **Expected:** after the bounded
+      backend budget the card enters `failed` with the health-timeout copy ("…didn't answer its
+      health check in time. It may still be loading the model — choose Retry…"); no hang, not
+      `healthy`; no chat attempted; `-retry` present; the process cleaned up or clearly reported.
+  - **Edge:** server up but 500/timeout; load inside vs beyond budget; the frontend watchdog's
+    "taking longer than expected" copy does NOT pre-empt the backend verdict; close modal mid-wait;
+    no leftover spinner on reopen.
+
+- [ ] **F-43 (R-5/AC5, whole-workspace grep — G-103):** Grep BOTH workspaces +
+      `Cargo.toml`/`Cargo.lock`/manifests for `llama-cpp-2`, `llama_cpp_2`, `llama-cpp-sys-2`,
+      `LlmEngine`, `load_with_vision`, `features/llm`. **Expected:** zero live references —
+      `llama-cpp-2` gone from the dependency graph (`Cargo.toml` + `Cargo.lock`), no `LlmEngine`
+      type/import/startup, `features/llm` removed; any residual `vendor/llama-cpp-2` outside the
+      build/import graph and its handling stated.
+  - **Edge:** residual doc/comment references declared, not silent; grep scope covers `apps/ui` AND
+    `apps/tauri`; nothing in `apps/ui` imports the removed engine.
+
+- [ ] **F-44 (R-5/AC5):** Live removal + old-path replacement — boot the app on a ready host;
+      confirm no legacy in-process startup load; exercise the new setup/launch flow. **Expected:**
+      the app boots WITHOUT the legacy in-process model load (no `fredo::llm` engine-load log, no
+      in-process GPU init); the new setup flow owns readiness; no dangling consumer of the old
+      model-check path throws.
+  - **Edge:** legacy `gemma-e2b-it` layout no longer consulted; standalone `SetupWizard` still
+    resolves its model step; models-missing machine still guides to setup.
+
+- [ ] **F-45 (NF):** Console + build hygiene across every leg. **Expected:** no `Error:`/`Uncaught`/
+      `Maximum update depth exceeded` after any interaction; `pnpm --filter @fredo/ui build` exit 0;
+      Rust `cargo check`/`clippy`/`test` GREEN via CI `rust-validate` (tester has NO `cargo`);
+      screenshots captured.
+  - **Edge:** console read AFTER interaction; no re-render loop from health/stream effects (#523).
+
+- [ ] **F-46 (LIVE):** While the live legs run, `fredo emit --event-type chat` + `--event-type
+      tool_use`; query the RTDB row tables + `telemetry_spans` (telemetry-query skill); capture the
+      UI. **Expected:** both `{"queued":true}` and rows classify under their session ids;
+      `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)` — the live-policy
+      receipt. A static-only PASS is a FALSE PASS.
+  - **Edge:** re-run on the tested tip; keep emit + query output in `## Tests Runs`.
