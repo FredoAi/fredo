@@ -38,3 +38,35 @@
 - [ ] **F-10 (AC5 / #2842 token-native + light/dark readable):** Static grep + live. (a) Grep the new readout component for raw hex/rgba injected into a JSX `style`/`backgroundColor` prop — must be zero (token VALUES in the data map are acceptable; the mono hex caption uses `toHex()` purely to format display data). (b) Capture a light preset (**Light Default**, `#f7f8fa` cardBg) and a dark preset (**Dark**, `#151a21` cardBg) screenshot; confirm readout chips + badge labels legible in both (≥4.5:1 on the preset's own `cardBg` surface).
       **Expected:** build green; zero component-injected raw hex; no invalid `var(--x)NN` alpha-append; badge tints via `tint()`/`color-mix`. Light + dark presets render readable label/badge text.
       **Edge:** a color-only chip with no text/badge is a FAIL. High-Contrast / Monochrome must not make labels invisible on their chips. The `LuCheck` icon (if present) is decorative (`aria-hidden`) — the text word carries the state. Per #2842.
+
+## #2864 extension — Settings chrome derives from the theming feature
+
+> Issue #2864 requires every color in the audited Settings surface to derive from the theming
+> feature. Rows map to the QA Plan `Q-3..Q-5`, `Q-12` in `.opencode/tmp/2864/triage.md`.
+> Live policy — computed-style + contrast probes on a running app (plus static grep).
+
+- [ ] **F-11 (Q-3, Q-4 / AC-2): `--hover-bg` is defined in the theming feature (light + dark).**
+      Grep the repo for `var(--hover-bg)` and for its definition (`--hover-bg` set via
+      `root.style.setProperty` or CSS). Then read `getComputedStyle` of a `--hover-bg` consumer
+      (e.g. a `CompanionSettingsPanel` setting row) live in both themes.
+      **Expected:** either the token is added to the theming feature (`theme.ts` … `ThemeProvider`
+      `setProperty('--hover-bg', …)`) with a light AND dark value, or the consumers use an
+      existing defined token. The live computed background is a real color — NOT
+      `rgba(0, 0, 0, 0)`/`transparent`. Currently referenced 9× / defined 0×.
+      **Edge:** any global token addition must not alter existing `--card-hover-bg` consumers;
+      `system.ts` maps new tokens to semantic values.
+- [ ] **F-12 (Q-4 / AC-2): Settings chrome re-tints with the live accent.**
+      In Settings, switch preset (dark → light → Matrix) and set/clear an `accentPrimary`
+      override; read computed styles of the active nav highlight, nav hover, scrollbar thumb,
+      dialog border, and the SaveFooter button.
+      **Expected:** every accent-linked value changes with the accent and reverts on reset;
+      no stale color; the nav highlight is `tint('var(--accent-primary)', …)` or a token (NOT
+      `rgba(147, 51, 234, 0.12)`); hover is a token (NOT white-alpha); the scrollbar thumb is
+      visible on BOTH themes.
+      **Edge:** switch while the modal is open; clear override → revert to preset/base.
+- [ ] **F-13 (Q-5 / AC-3): Settings chrome contrast AA (dark + light + non-default accent).**
+      Compute contrast for nav labels (active/inactive) vs sidebar bg, section labels/help vs
+      surface, scrollbar thumb vs track, and button label vs accent bg.
+      **Expected:** text ≥ 4.5:1, non-text UI ≥ 3:1 in every combination. Quote the measured
+      ratios; a failing pair is a FAIL naming it.
+      **Edge:** light theme + a light preset; the selected-nav label on its tinted highlight.
