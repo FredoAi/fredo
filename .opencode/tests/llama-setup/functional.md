@@ -613,3 +613,39 @@ tester sandbox allowlist; covered by CI `rust-validate` (`cargo test --locked`, 
       `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)` — the live-policy
       receipt. A static-only PASS is a FALSE PASS.
   - **Edge:** re-run on the tested tip; keep emit + query output in `## Tests Runs`.
+
+## Execution Log — round 2 (2026-09-12, spec/2857 @ 61f77d18)
+
+Real product path only (no stubs/scratch). `llama_server_companion_dir` = `C:\Code\fredo\.runtime\companion\`
+(ST-11 receipt: `generate_llama_server_config` returned that `.bat` path; `Test-Path` True; log created there).
+`models_dir` kept at `C:\Code\fredo\models` (the manifest appends `gemma-4-e2b-it-qat`; the brief's
+"models_dir = the subdir" would double-nest — recorded, not authored). `llama_server_path` = the resolved
+winget `ggml.llamacpp` CPU build.
+
+**Headline:** AC1 config generation is fully correct (18/18 flags, resolved absolute paths, setting-derived),
+but **AC2 launch/health FAILS**: the spawned child dies at argument parse with `error: invalid argument: 1`.
+Diagnosis proved the offending argument is `--kv-unified` emitted with a value (error value tracked the config
+exactly: `1`→`invalid argument: 1`, then `{"kvUnified":false}` → `invalid argument: 0`); reducing
+`ctxSize`/`gpuLayers` did NOT change the fatal (E-13 CPU-build hypothesis refuted). AC1 was NOT weakened.
+
+| Case | Result (round 2) | Evidence |
+|------|------------------|----------|
+| F-33 | **PASS** | returned `.bat` + Read: `--model`/`--mmproj`/`--model-draft` abs paths, `--spec-type draft-mtp`, `--spec-draft-n-max 2`, `--fit off`, `--load-mode none`, `--gpu-layers all`, `--threads 6`, `--threads-batch 12`, `--reasoning on`, `--ctx-size 131072`, `--temp 1.0`, `--top-p 0.95`, `--top-k 64`, `--parallel 1`, `--kv-unified 1`, `--log-verbosity 4`, `--alias Gemma-4-E2B` (18/18). `Test-Path` on `MTP/mtp-…gguf` literal = True |
+| F-34 | **PASS** | `{"ctxSize":4096,"temp":0.5}` changed exactly `--ctx-size 4096` + `--temp 0.5`; cleared → defaults restored |
+| F-35 | **FAIL** | card `starting` (spinner, disabled+aria-busy) but child dies `error: invalid argument: 1`; never `healthy` |
+| F-36 | **FAIL** | `/health` never binds (server dead at startup); no 200 |
+| F-37 | **PASS** | webview + chrome Re-check responsive during the 180 s wait; phase caption + 45 s watchdog copy; card stayed `starting` (never `failed`); console clean |
+| F-38 | **UNVERIFIED** | named blocker: AC2 defect — no healthy server; `llmChat` reached "💭 Thinking…" but no token/done (ensure-healthy can never succeed) |
+| F-39 | **UNVERIFIED** | named blocker: AC2 defect — no stream exists to sample |
+| F-40 | **UNVERIFIED** | named blocker: no server ever ran + no `llama-server.exe` process-lister / :8080 probe in the tester sandbox; ST-7 hook+sweep present/CI-tested |
+| F-41 | **PASS** | `llama_server_path` = real non-executable file → `launch_llama_server` returned immediately `{code:"spawnFailed", state:"error", success:false}`; card failed surface = actionable copy + Retry/Re-check |
+| F-42 | **PASS** | AC1-default launch → at exactly 180 s card `failed` with health-timeout copy, `role=group`, `aria-label="Companion server error"`, focus moved, Retry present, never healthy |
+| F-43 | **PASS** | 0 matches for `llama-cpp-2`/`llama_cpp_2`/`llama-cpp-sys-2`/`LlmEngine`/`load_with_vision`/`features::llm::`; `vendor\llama-cpp-2` + `src\features\llm` absent; `Cargo.toml`/`Cargo.lock` clean; `ModelSelector` gone |
+| F-44 | **PASS** | newest `telemetry_logs` target `fredo::llm` is `2026-09-12T00:40:12Z` (pre-deploy) — none this boot (17:22:38Z); `LlmEngine|llama-cpp` message count = 0 |
+| F-45 | **PASS** | console clean after every leg (only pre-existing `motion()` warn); `pnpm --filter @fredo/ui build` exit 0; CI `rust-validate` pass |
+| F-46 | **PASS (LIVE)** | both `fredo emit` → `{"queued":true}`; `chat_rows(e2e-2857-r2-chat)=1`, `tool_use_rows(e2e-2857-r2-tool)=1`; `telemetry_spans` total 14030, newest ingested `2026-09-12T17:26:53.621Z`, 867 in last 15 min |
+
+**Round-2 open defect (for the Architect):** `LlamaServerConfig::to_args()` (`config.rs:154-155`) always emits
+`--kv-unified 0|1`; the resolved winget CPU `llama-server` rejects a value on this switch
+(`error: invalid argument: <value>`), so the AC1 argv can never reach `/health` on this host. Requires an
+Architect/PO resolution — the AC1 parameter contract was not modified to force a pass.

@@ -246,3 +246,25 @@ the change is confined to the ST-2 acquisition engine, so no #2856 UI/contract b
       `EventBus.emit_row_delivery_batch`; no `app_handle.emit()` for row deliveries.
   - **Edge:** process supervision belongs in the owning feature/command module, not duplicated in
     `infrastructure/`; `tokio::spawn` is never used (Tauri runtime only).
+
+## Execution Log — round 2 (2026-09-12, spec/2857 @ 61f77d18)
+
+Re-sweep after the ST-11 companion-dir setting + the ST-11-R launch diagnosis. No #2855/#2856 baseline moved.
+The round's new defect is in AC2's launch argv (see functional F-35/F-36); it does not regress the pinned surfaces.
+
+- **R-16 PASS:** the wizard rendered all three steps in registry order (`companion-step-llama-server` →
+  `-model-files` → `-server-launch`); gating stayed wizard-only while `serverLaunch` ≠ healthy; prior steps/state
+  rendered normally.
+- **R-17 UNVERIFIED (blocked by the AC2 defect):** the chat contract is intact in code
+  (`llm_chat`/`llm_chat_with_image` names+shapes; `llm-token`/`llm-done` semantics; additive `llm-error`; no
+  re-introduced fallback extraction), but no live round-trip could run without a healthy server.
+- **R-18 PASS:** `gh pr checks 2863` → `rust-validate`, `ui-validate`, `fast-validate`, `paths`, `validate`,
+  `audit` all **pass** at `61f77d188523e079f050cb5d6f48ab03180aad4b`.
+- **R-19 PASS:** `check_companion_readiness` resolved `llamaServer=installed` with `resolvedPath` = the winget
+  binary (configured→PATH order intact; the configured real path won).
+- **R-20 PASS:** `modelFiles=installed`, resolvedPath `C:\Code\fredo\models\gemma-4-e2b-it-qat`; the UI showed all
+  three files Present at their absolute paths (incl. the nested `MTP/` segment).
+- **R-21 PASS (static):** the new launch UI uses `tint()` + semantic tokens (no hardcoded hex/rgba, no
+  `var(--x)NN` alpha-append); the companion overlay was untouched by the round-2 diff.
+- **R-22 PASS (static):** no cross-feature import introduced; row emission still only via
+  `EventBus.emit_row_delivery_batch`; no `tokio::spawn`; process supervision stays in the owning feature.
