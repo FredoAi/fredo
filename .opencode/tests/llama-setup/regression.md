@@ -194,3 +194,55 @@ the change is confined to the ST-2 acquisition engine, so no #2856 UI/contract b
   sandbox (named tool-access gap) — covered by CI `rust-validate`.
 - **R-15** PASS: additive only — `model_download.rs` does not touch the legacy `gemma-e2b-it`
   in-process engine lookup.
+
+---
+
+## #2857 — Must NOT change (out-of-process launch + in-process engine removal)
+
+> Added at Spec #2857. Run alongside R-1..R-15 above. The removal slice deletes the legacy
+> in-process engine and repoints readiness at the out-of-process server — these invariants pin the
+> surfaces that must survive the surgery. **Verification policy: live** (Rust gates via CI).
+
+- [ ] **R-16 (#2855 wizard shell + #2856 model step untouched):** gating (wizard-only while not
+      ready), the `llama-server` install step + in-place re-check, the model-files step +
+      per-file download, `COMPANION_SETUP_STEPS` ordering, the `companion-step-*` testids, and
+      `useCompanionReadiness` fail-closed behavior are unchanged — F-01..F-32 + R-1..R-15 still hold.
+  - **Edge:** the new launch step is ADDITIVE to the same seam; it must not reorder or drop the
+    existing steps; a not-ready machine still renders the wizard.
+
+- [ ] **R-17 (chat contract preserved):** the assistant reply still lands through the row pipeline
+      (`chat_rows` / `useEventRows` streaming) with NO new frontend fallback extraction path —
+      the row store's canonical projection remains the contract; the row merge semantics
+      (insert spread-merge / seq-guarded update / retention-only remove) are untouched.
+  - **Edge:** multi-turn history renders; a message sent while the server is starting is queued or
+    rejected with an actionable state, never silently lost or duplicated.
+
+- [ ] **R-18 (Rust CI green after dependency removal):** `cargo check` zero warnings, `cargo clippy`
+      clean, `cargo test` green on CI `rust-validate`; removing `llama-cpp-2` from the manifest +
+      lockfile must not break the workspace build or leave an unresolved `llama_cpp_2` import.
+  - **Edge:** the tester shell has NO `cargo` — this gate is CI-only; the tester records the CI
+    result, never attempts a local build.
+
+- [ ] **R-19 (`llama-server` resolver order preserved):** configured `llama_server_path` → PATH
+      `where llama-server` → winget Links shim (`resolve_llama_server_order`) still resolves in that
+      order for both detection and launch; a configured valid path wins.
+  - **Edge:** E-13 fact — winget `ggml.llamacpp` creates no Links shim on this host, so branch #3
+    legitimately misses; branch #1/#2 still work.
+
+- [ ] **R-20 (settings + model resolution unchanged):** `resolve_models_dir` order (configured
+      `models_dir` → `~/fredo-models`) and the fixed `<models_dir>/gemma-4-e2b-it-qat/` placement
+      (incl. the nested `MTP/` segment) hold, so the launch config paths stay deterministic; the
+      `#2853` settings surfaces still function.
+  - **Edge:** a custom/spaced `models_dir` still resolves; the standalone `SetupWizard` model step
+    still reaches done only when all three files are present.
+
+- [ ] **R-21 (token + companion overlay):** no hardcoded hex/`rgba(`/`rgb(`/`hsla(` and no
+      `var(--x)NN` alpha-append in the changed launch/health/error UI (`.opencode/tests/theming/`);
+      the companion overlay/controls (`.opencode/tests/companion/`) are untouched.
+  - **Edge:** the new error/ready surfaces use semantic tokens + `tint()`; light + dark legible.
+
+- [ ] **R-22 (architecture boundaries):** no cross-feature import introduced; row-pipeline code
+      stays under `infrastructure/rtdb/`; webview emission remains ONLY via
+      `EventBus.emit_row_delivery_batch`; no `app_handle.emit()` for row deliveries.
+  - **Edge:** process supervision belongs in the owning feature/command module, not duplicated in
+    `infrastructure/`; `tokio::spawn` is never used (Tauri runtime only).
