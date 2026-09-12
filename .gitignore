@@ -161,6 +161,9 @@ uploads/
 temp/
 tmp/
 
+# Companion runtime artifacts (generated launch config + server log)
+.runtime/
+
 # Environment variables
 .env
 .env.*

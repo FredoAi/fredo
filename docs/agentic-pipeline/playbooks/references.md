@@ -32,6 +32,9 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 ---
 ## Known Failure Modes
 
+
+
+
 ### G-128: external_identifier_assumed_from_product_name
 - **activation_date:** 2026-09-11
 - **observed:** #2855 round 1 — the plan and an AC described a one-click `winget install llama.cpp`, and the developer pinned the winget PackageIdentifier to the product name (`llama.cpp`) alongside the exact-match flag. No winget package carries that identifier; the canonical id is `ggml.llamacpp`. Live winget returned "No package found matching input criteria.", so the install action could never reach `installed` and the tester FAILed AC3 — a full rework round for a one-constant defect. The fix was the identifier plus a guard test.
@@ -62,6 +65,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **target_failure:** when a human/PO binding directive forbids the methodology a plan's QA section relies on, affected ACs become unverifiable live, and the loop either burns rounds re-attempting an impossible fixture or silently claims a PASS with an UNVERIFIED row.
 - **guardrail:** When a binding human directive supersedes the plan's QA methodology, the orchestrator MUST (a) record it as a `Status` amendment and inline it in every dispatch; (b) map its effect per AC before the round; (c) for an AC whose only live lever the directive removed, keep it UNVERIFIED-with-named-blocker carrying its residual substantiation (prior live evidence on the unchanged surface + a unit/CI pin) and document it as a PO-methodology-limited partial in the verdict and audit rather than looping an un-drivable fixture; (d) never present that residual as fresh live verification.
 - **home:** playbooks/self-improver.md (dispatch + audit partial handling) + playbooks/tester.md (named-blocker row) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-132: human_authorized_preverdict_rework_stranded_by_evidence_guard
+- **activation_date:** 2026-09-12
+- **observed:** #2857 — a binding human directive added scope to a feature whose `testing` entry had been aborted by the human before any tester verdict (the testing runs were killed), and required the dev work to precede testing. The rework leg `testing → implementation` is gated on tester evidence (a `## Tests Runs` comment), which could not exist yet, so the authorized dev task was stranded — and the developer cannot even obtain a worktree while the issue label is `testing` (`create-worktree` requires a dev label). A prior orchestrator reconciliation ("test first, then rework") was explicitly overridden by the human.
+- **target_failure:** a human-authorized scope addition arrives while the feature sits mid-`testing` with no verdict; the machine's testing exit guard offers no legal dev-first path, so the orchestrator either disobeys the human (burns a tester round just to manufacture a verdict) or bypasses the machine (unrecorded dev work, corrupted round accounting).
+- **guardrail:** Use the machine's narrow `transition --to-phase implementation --human-authorized --reason "<directive + added scope>"` for exactly this case: it bypasses ONLY the `testing → implementation` evidence exit guard and records an auditable `human.authorization` event. Use it only when a binding human directive adds scope to a verdict-less aborted testing round; record the authorization and added scope as a `Status` comment; the Architect's authored `fix-plan.md` still posts as `## Fix Plan (round N)`. The flag is ignored on every other leg and without a non-empty reason. The machine change is in-domain (SI owns `pipeline-state.rs`), documented in the same pass, and harness-tested.
+- **home:** .opencode/scripts/pipeline-state.rs + docs/agentic-pipeline/state-machine.md + playbooks/self-improver.md + references.md (this record)
 - **effectiveness:** Pending
 
 ### G-127: on_the_go_improvement

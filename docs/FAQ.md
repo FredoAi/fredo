@@ -4,7 +4,7 @@
 
 ### What is Fredo?
 
-Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical SQLite rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical SQLite rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and a companion backed by a managed out-of-process `llama-server`.
 
 ### Is this a commercial product?
 
@@ -125,20 +125,17 @@ Fredo also collects its own internal metrics and structured logs from the Rust b
 
 ### How do I switch models?
 
-Open Settings in the UI → Model Selector → choose a model. The change takes effect on next app launch.
+The companion runs the model set configured in the Companion setup (`<models_dir>/gemma-4-e2b-it-qat/`); there is no separate in-app model selector.
 
 ### Where do I put model files?
 
 For the **Companion**, you usually don't place them manually: the setup wizard's **Model files** step downloads the three required files (model + vision projector + MTP speculative draft) in-app with per-file progress, skip-present, and SHA-256 verification, landing them under `<models_dir>/gemma-4-e2b-it-qat/` (the models directory is configurable via the `models_dir` setting; default `~/fredo-models`). Correctly-sized files dropped there manually are detected by **Re-check**.
 
-For the legacy in-process engine, place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`. For example:
-```
-apps/tauri/src-tauri/models/gemma-e2b-it/gemma-e2b-it-q4_k_m.gguf
-```
+To place files manually, drop the correctly-sized GGUFs under `<models_dir>/gemma-4-e2b-it-qat/` — e.g. `~/fredo-models/gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`.
 
 ### Does Fredo run llama.cpp as a subprocess?
 
-No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings. No child processes, no HTTP/SSE round-trips.
+Yes. Companion inference is served by a managed **`llama-server`** child process, launched from a generated launch config once setup is complete. Fredo health-checks the server before chatting, streams tokens over the server's HTTP API, and stops the process on exit so no orphan survives. The legacy in-process engine — and its `llama-cpp-2` dependency — is retired.
 
 ---
 
@@ -214,7 +211,7 @@ It ties related rows together within a session (e.g. an `Init` event that starte
 
 ### What is the FredoCompanion?
 
-An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the in-process LLM engine for all interactions. Fredo expresses distinct moods on both the companion and the launcher mascot: `thinking` while an LLM response is pending, `joking` while a joke streams, `happy` after a joke or a Tic-Tac-Toe outcome, and `playful` at rest (a bounded beat that always returns to idle; reduced motion is respected).
+An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the managed out-of-process `llama-server` for all interactions. Fredo expresses distinct moods on both the companion and the launcher mascot: `thinking` while an LLM response is pending, `joking` while a joke streams, `happy` after a joke or a Tic-Tac-Toe outcome, and `playful` at rest (a bounded beat that always returns to idle; reduced motion is respected).
 
 The companion and the launcher's desktop mascot are mutually exclusive — while the companion is out, the desktop mascot is hidden, so only one Fredo is shown at a time. After an idle period with no interaction (default 60 s, configurable in **Settings → Companion**) the companion returns home: it hides and the desktop mascot reappears. Any interaction resets the timer, an open Tic-Tac-Toe or an active joke stream keeps Fredo out while in use, and auto-return never turns off your "Show Fredo Companion" preference.
 

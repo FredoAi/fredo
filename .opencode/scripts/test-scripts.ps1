@@ -2544,6 +2544,53 @@ Low
   }
 }
 
+# Human-authorized pre-verdict rework (SI hardening, #2857): a binding human
+# directive may add scope while a feature sits in `testing` with its round
+# aborted before any tester verdict. The normal `testing -> implementation`
+# exit guard requires tester evidence, which cannot exist yet, so
+# `--human-authorized` + a non-empty `--reason` bypasses ONLY that leg and
+# records a `human.authorization` event. Without the flag (or without a reason)
+# the guard still blocks; every other leg keeps its normal exit guard.
+Test-Script "testing->implementation human-authorized rework bypasses the evidence guard" {
+  $url = Mock-IssueCreate "temp: human-auth rework" "human-auth rework scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Baseline: no tester evidence -> the normal rework leg is blocked.
+    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation 2>&1
+    $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
+    if ($bStr -notmatch "no tester Evidence") { throw "Expected evidence block without the flag, got: $bStr" }
+    # The flag WITHOUT a reason must still block (the authorization is justified).
+    $nr = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation --human-authorized 2>&1
+    $nrStr = if ($nr -is [array]) { $nr -join "`n" } else { "$nr" }
+    if ($nrStr -notmatch "no tester Evidence") { throw "Expected evidence block without a reason, got: $nrStr" }
+    # Seed the A2A (the implementation-entry side-effect reads it).
+    $a2aDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    # Flag + reason -> allowed; records human.authorization; label implementation.
+    $ok = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation --human-authorized --reason "human-authorized scope addition" 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "human-authorized rework failed: $okStr" }
+    if ($okStr -notmatch "TRANSITIONED: testing -> implementation") { throw "Expected testing->implementation, got: $okStr" }
+    if ($okStr -notmatch "HUMAN-AUTHORIZED REWORK") { throw "Expected human-authorized marker, got: $okStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "ready-for-dev") { throw "expected ready-for-dev after rework, got: $($st.Labels)" }
+    $authEv = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.authorization" } | Select-Object -Last 1
+    if (-not $authEv) { throw "no human.authorization event recorded" }
+    return "human-authorized testing->implementation: blocked w/o flag/reason, allowed with both (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # A verdict-less `## Evidence` screenshot receipt (upload-evidence) posted after a
 # PASS verdict must NOT mask it — the verification guard reads the latest comment
 # that CARRIES a verdict (Spec #2680 masking vector).

@@ -163,12 +163,14 @@ src-tauri/src/
 |   |   +-- mod.rs              — TerminalFeature (DesktopCapable)
 |   |   +-- state.rs            — RunCliState (PTY writer, buffer, killer)
 |   |   +-- commands.rs         — open_run_cli, get_pty_buffer, write_pty_input, resize_pty, close_run_cli
-|   +-- llm/                    — In-process llama.cpp inference
-|   |   +-- mod.rs              — LlmFeature (DesktopCapable)
-|   |   +-- engine.rs           — LlmEngine (direct llama.cpp bindings via llama-cpp-2)
-|   |   +-- service.rs          — LlmService (async chat, chat_with_image)
-|   |   +-- state.rs            — LlmState + LlmLoadingState
-|   |   +-- commands.rs         — llm_chat, llm_chat_with_image
+|   +-- llm_server/             — Out-of-process companion inference (managed `llama-server`)
+|   |   +-- mod.rs              — persisted setting keys + launch defaults
+|   |   +-- config.rs           — pure launch-config model + generated `.bat` (single argv builder)
+|   |   +-- process.rs          — spawn/stop the child process tree + startup orphan sweep
+|   |   +-- health.rs           — bounded HTTP `/health` readiness probe
+|   |   +-- state.rs            — LlamaServerState + ManagedServer
+|   |   +-- commands.rs         — generate_llama_server_config, launch_llama_server, stop_llama_server, get_llama_server_status, llm_chat, llm_chat_with_image
+|   |   +-- chat.rs             — chat + vision routing to the server HTTP API
 |   +-- settings/               — Persistent KV settings (SQLite)
 |   |   +-- mod.rs              — SettingsFeature
 |   |   +-- commands.rs         — save_setting, get_setting
@@ -193,6 +195,9 @@ src-tauri/src/
     |       +-- mod.rs
     |       +-- internal.rs     — InternalAdapter (fredo emit enrichment)
     |       +-- parent_prompt_cache.rs — bounded parent-prompt cache helpers
+    +-- companion/              — Shared companion runtime helpers (Spec #2857)
+    |   +-- resolver.rs         — `llama-server` executable resolution (setting → PATH → winget shim)
+    |   +-- models.rs           — required model-file manifest (pinned names/sizes/SHA-256) + on-disk probe
     +-- rtdb/                   — RTDB row store — the production event pipeline
     |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
     |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables
@@ -388,24 +393,24 @@ A background async task in `lib.rs` runs `LogCollector.flush_if_needed()` at a 1
 
 ---
 
-## In-Process LLM Engine
+## Out-of-Process `llama-server`
 
-The `llm` feature runs **llama.cpp directly in-process** via vendored `llama-cpp-2` Rust bindings — no child processes, no HTTP/SSE round-trips.
+Companion inference is served by a managed `llama-server` **child process** — the in-process engine is retired and there is no `llama-cpp-2` dependency. The `llm_server` feature (`features/llm_server/`) owns the runtime; executable resolution and the required model-file manifest live in the shared `infrastructure/companion/` layer, consumed by both `features/setup` (readiness/acquisition) and `features/llm_server` (launch/config).
 
-### LlmEngine
-- `load()` — text-only GGUF model loading
-- `load_with_vision()` — multimodal loading with mmproj projector
-- `generate()` — autoregressive token generation with greedy+dist sampler
-- `generate_with_image()` — decodes PNG/JPEG, resizes to 448×448, creates `MtmdBitmap`, tokenizes with media markers
+### Launch Config
+`generate_llama_server_config` builds the launch config from persisted settings (executable path, model / vision / MTP paths, host, port, launch parameters) and materializes a runnable `.bat`. There is exactly ONE argv builder (`LlamaServerConfig::to_args`) — the `.bat` text and the spawned process both derive from it, so they can never drift.
 
-### Token Streaming
-`LlmService.chat_async()` and `chat_with_image_async()` stream tokens via `mpsc::unbounded_channel` → `tokio::task::spawn_blocking` → Tauri `app.emit("llm-token")` / `app.emit("llm-done")`.
+### Process Lifecycle
+- `launch_llama_server` — generate → resolve the executable → spawn the child (`std::process::Command`, not a Tauri sidecar) → poll the server's `/health` with a bounded timeout → record the managed server. Idempotent when already healthy; ALWAYS resolves (never hangs).
+- `stop_llama_server` — kill the process tree and clear the managed state.
+- `get_llama_server_status` — the UI/QA poll target (running / healthy / port / PID / last error).
+- No orphan survives Fredo: the `RunEvent::Exit` hook calls `stop_llama_server_on_exit`, and a PID-reuse-guarded startup sweep (`process::sweep_orphan`) reclaims a persisted PID after a hard-kill.
 
-### Supported Models
-| Model | Vision | Notes |
-|-------|--------|-------|
-| Gemma 4 E2B (`gemma-4-e2b`) | ✓ | Full vision support via mmproj |
-| MiniCPM-V 4.6 (`minicpm-v-4-6`) | ⚠️ | Vision projector unsupported in current llama.cpp; falls back to text-only |
+### Chat Routing
+`llm_chat` and `llm_chat_with_image` preserve the frontend contract (`adapterBridge.llmChat` / `llmChatWithImage`, same argument shapes) but route to the server's OpenAI-compatible streaming API (`POST /v1/chat/completions`, `stream: true`). Each SSE delta emits `llm-token`; `[DONE]` emits `llm-done`; a connection / non-200 / stream error emits an additive `llm-error` line followed by `llm-done`, so the UI never hangs. Sampling parameters are NOT sent per request — the generated launch config is authoritative.
+
+### Wizard Step
+The Companion setup wizard appends a `serverLaunch` step (after `llamaServer` and `modelFiles`). Its state is composed in `useCompanionReadiness` from `get_llama_server_status`, and its action calls `launch_llama_server`; the backend readiness command stays two-prerequisite.
 
 ---
 
@@ -428,7 +433,7 @@ apps/ui/src/
 |   +-- run-cli/                    — xterm.js terminal (PTY output)
 |   +-- query-viewer/               — SQL query result display (multi-instance)
 |   +-- my-workitems/               — Azure DevOps work items
-|   +-- settings/                   — Settings panel + ModelSelector
+|   +-- settings/                   — Settings persistence service (settings live in the modal)
 |   +-- setup/                      — SetupWizard (OTel config, CLI detection)
 |   +-- mission-monitor/            — Real-time agent activity graph
 |   +-- dev-mode/                   — Dev tools + OTLP inspector
@@ -597,7 +602,7 @@ The animated companion on the Home panel renders the **shared `FredoAvatar` comp
 - **Cross-window teleport**: Tauri global `companion-teleport` events broadcast to all webview windows (dev mode — no Tauri host — teleports locally via `startTeleportOut`, guarded `IS_TAURI` branch)
 - **Interaction**: Single-click → joke; double-click → Tic-Tac-Toe; Ctrl+right-click → teleport
 - **Setup gating (#2855)**: **Settings → Companion** renders a setup wizard as its ONLY content until the machine is ready — i.e. a usable `llama-server` is available AND all required model files are present. The wizard reports each prerequisite independently (`checking | missing | installed | error`), offers a one-click `install_llama.cpp` via `winget` with an in-session re-check (no reload), and shows an actionable error (staying not-set-up) when `winget` is unavailable or the install fails. Once both prerequisites are satisfied, the normal Companion controls (toggle + Teleport tip) replace the wizard.
-- **Model-file acquisition (#2856)**: the wizard's **Model files** step lists the three required companion files individually — model `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, vision `mmproj-BF16.gguf`, and speculative draft `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` — each with its own state (`missing | downloading | present | error`); the filenames/sizes/SHA-256 are pinned to a fixed Hugging Face revision. The user starts acquisition in-app; the in-flight file shows determinate progress and files already present are skipped; a partial set never reads complete and the summary names exactly the missing/truncated file(s); an interrupted transfer resumes from its persisted offset via HTTP `Range` with a bounded retry, and each file is verified by streaming SHA-256. Files land under `<models_dir>/gemma-4-e2b-it-qat/`. The engine (`model_download.rs` + `model_download_state.rs`) is shared by the `download_model` command and the CLI mirror; the legacy in-process engine's two-file set is untouched (additive).
+- **Model-file acquisition (#2856)**: the wizard's **Model files** step lists the three required companion files individually — model `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, vision `mmproj-BF16.gguf`, and speculative draft `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` — each with its own state (`missing | downloading | present | error`); the filenames/sizes/SHA-256 are pinned to a fixed Hugging Face revision. The user starts acquisition in-app; the in-flight file shows determinate progress and files already present are skipped; a partial set never reads complete and the summary names exactly the missing/truncated file(s); an interrupted transfer resumes from its persisted offset via HTTP `Range` with a bounded retry, and each file is verified by streaming SHA-256. Files land under `<models_dir>/gemma-4-e2b-it-qat/`. The engine (`model_download.rs` + `model_download_state.rs`) is shared by the `download_model` command and the CLI mirror.
 - **Presence lifecycle — one Fredo (#2853)**: the companion and the launcher's desktop mascot are mutually exclusive. While the companion is *designated present* (`Fredo_companion_visible` ON and not auto-hidden), the launcher mascot is not rendered; when the companion hides, the desktop mascot returns to its place. After an idle period with no interaction the companion auto-returns (hides) and the mascot comes home — default **60 s**, configurable in **Settings → Companion** (key `Fredo_companion_idle_timeout`, integer seconds, range 5–3600 via `usePersistedSetting`; invalid/cleared/≤0 values fall back to 60, out-of-range values clamp). Any interaction (click/joke, double-click/game, Ctrl+right-click teleport) resets the timer, and an open Tic-Tac-Toe or an active joke stream *suppresses* the return while in use (continuous-interaction gate). Auto-return is transient — it never rewrites the persisted visibility preference. The idle timer is **host-owned** (only the window currently displaying the companion arms it) and transient presence is synced across webview windows via a global `companion-presence` Tauri broadcast, so the main-window mascot stays hidden while the companion is hosted in the terminal window and returns home on the host's idle-settle.
 
 ### Tic-Tac-Toe
@@ -666,7 +671,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 | **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and classifies spans into RTDB rows via the ingest classifier (`rtdb/ingest.rs`), which resolves the canonical op by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`, helpers in `rtdb/attrs.rs`) with generic heuristics and derives row state from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
 | **`fredo emit` CLI** | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich` → RTDB row classifier. Payload-shape conventions in `.opencode/skills/fredo-cli-events/SKILL.md`. |
 | **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
-| **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
+| **LLM feature** | Out-of-process companion inference via a managed `llama-server` child process. `llm_chat` / `llm_chat_with_image` route requests to the server's OpenAI-compatible streaming API and stream tokens back. |
 
 ### Classifier Row-State Mapping
 
@@ -769,8 +774,12 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `download_model` | setup | Download the three required model files with per-file progress, skip-present, HTTP `Range` resume, and streaming SHA-256 verification |
 | `check_companion_readiness` | setup | Report Companion prerequisites (`llama-server` availability + required model files) and overall readiness |
 | `install_llama_cpp` | setup | Install llama.cpp via `winget` off the UI thread; returns a structured result (no launch, no model download) |
-| `llm_chat` | llm | Chat with in-process LLM (streams tokens) |
-| `llm_chat_with_image` | llm | Chat with image (multimodal) |
+| `generate_llama_server_config` | llm_server | Build the `llama-server` launch config from persisted settings and materialize the `.bat` |
+| `launch_llama_server` | llm_server | Resolve/spawn the managed `llama-server`, poll `/health` until ready (bounded), and record it |
+| `stop_llama_server` | llm_server | Stop the managed server and clear its state |
+| `get_llama_server_status` | llm_server | Report running/healthy state, port, PID, config/log paths, and last error |
+| `llm_chat` | llm_server | Chat via the managed server's streaming API (streams tokens) |
+| `llm_chat_with_image` | llm_server | Chat with image (multimodal) via the managed server |
 | `capture_screen_region` | screenshot | Capture screen region as base64 PNG |
 | `feature_store_ensure_table` | storage | Create a typed-column feature namespaced table |
 | `feature_store_insert` | storage | Insert rows into a feature namespaced table |
@@ -789,15 +798,14 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 ## Startup Sequence
 
 1. Initialize `AppStore` (SQLite KV store) — managed via `app.manage()`
-2. Read `llm_model` setting, resolve model paths
-3. Spawn `LlmEngine` loading in `spawn_blocking` task
-4. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
-5. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
-6. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
-7. Start IPC socket server (`tauri::async_runtime::spawn`)
-8. Start OTLP receivers (gRPC :4317 + HTTP :4318)
-9. Register all Tauri command handlers via `generate_handler![]`
-10. Launch Tauri webview window
+2. Manage `LlamaServerState` (the managed out-of-process `llama-server` lifecycle) and run the PID-reuse-guarded startup orphan sweep — no in-process engine load
+3. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
+4. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
+5. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
+6. Start IPC socket server (`tauri::async_runtime::spawn`)
+7. Start OTLP receivers (gRPC :4317 + HTTP :4318)
+8. Register all Tauri command handlers via `generate_handler![]`
+9. Launch Tauri webview window
 
 ---
 
@@ -810,6 +818,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Not yet reimplemented |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` feature |
 | `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP-based ingest classifier (`rtdb/`) |
+| `features/llm` (in-process `LlmEngine` + `llama-cpp-2`) | Direct in-process llama.cpp bindings requiring a CMake/VS native build | Managed out-of-process `llama-server` (`features/llm_server`) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub features | Consolidated into Mission Monitor |
 
 ---

@@ -56,30 +56,49 @@ export class TauriAdapter implements HostAdapter {
     // Set up listeners before invoking so no tokens are missed
     let unlistenToken: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    let settled = false;
+
+    // Complete exactly once. A server failure emits `llm-error` followed by
+    // `llm-done`, so this guard prevents a double `onDone`.
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      unlistenToken?.();
+      unlistenDone?.();
+      unlistenError?.();
+      onDone();
+    };
 
     unlistenToken = await listen<string>('llm-token', (event) => {
       onToken(event.payload);
     });
 
+    // Additive server-error channel: forward one readable line through the
+    // existing token path (the bubble shows it), then complete — never hang.
+    unlistenError = await listen<string>('llm-error', (event) => {
+      onToken(event.payload);
+      finish();
+    });
+
     unlistenDone = await listen<void>('llm-done', () => {
-      unlistenToken?.();
-      unlistenDone?.();
-      onDone();
+      finish();
     });
 
     try {
       await invoke('llm_chat', { messages });
     } catch (err) {
-      unlistenToken?.();
-      unlistenDone?.();
       const msg = String(err);
       if (msg.includes('still loading')) {
+        unlistenToken?.();
+        unlistenDone?.();
+        unlistenError?.();
         console.warn('[TauriAdapter] model still loading, retrying in 3s...');
         onToken('⏳ Loading model...');
         setTimeout(() => this.llmChat(messages, onToken, onDone), 3000);
       } else {
         console.error('[TauriAdapter] llm_chat error:', err);
-        onDone();
+        finish();
       }
     }
   }
@@ -95,24 +114,38 @@ export class TauriAdapter implements HostAdapter {
 
     let unlistenToken: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    let settled = false;
+
+    // Complete exactly once (see llmChat).
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      unlistenToken?.();
+      unlistenDone?.();
+      unlistenError?.();
+      onDone();
+    };
 
     unlistenToken = await listen<string>('llm-token', (event) => {
       onToken(event.payload);
     });
 
+    // Additive server-error channel: one readable line, then complete.
+    unlistenError = await listen<string>('llm-error', (event) => {
+      onToken(event.payload);
+      finish();
+    });
+
     unlistenDone = await listen<void>('llm-done', () => {
-      unlistenToken?.();
-      unlistenDone?.();
-      onDone();
+      finish();
     });
 
     try {
       await invoke('llm_chat_with_image', { messages, imageBase64 });
     } catch (err) {
-      unlistenToken?.();
-      unlistenDone?.();
       console.error('[TauriAdapter] llm_chat_with_image error:', err);
-      onDone();
+      finish();
     }
   }
 }

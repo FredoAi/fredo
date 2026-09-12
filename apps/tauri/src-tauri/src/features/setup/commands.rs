@@ -1,17 +1,20 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::companion::models::{
+    models_subdir, resolve_manifest, resolve_models_dir,
+};
+use crate::infrastructure::companion::resolve_llama_server;
+#[cfg(test)]
+use crate::infrastructure::companion::models::default_manifest;
+#[cfg(test)]
+use crate::infrastructure::companion::resolve_llama_server_order;
 use super::model_download::{
     download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
     ReqwestTransport, SystemClock,
 };
-use super::model_download_state::{
-    default_manifest, is_step_complete, load_manifest, probe_files, FileState, ModelFileStatus,
-    ModelManifest,
-};
+use super::model_download_state::{is_step_complete, probe_files, FileState, ModelFileStatus};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -92,9 +95,6 @@ pub struct SetupStepResult {
 /// `download_model` wire result: the streamed engine outcome, named for the API
 /// contract the UI consumes (additive `files` over the legacy `SetupStepResult`).
 pub type ModelDownloadResult = ModelDownloadOutcome;
-
-/// AppStore key holding an optional whole-manifest JSON override (#2856 test seam).
-const MODEL_MANIFEST_PATH_KEY: &str = "model_manifest_path";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -845,39 +845,6 @@ pub fn configure_otel(app: AppHandle) -> InstallResult {
 
 // ── New Setup Commands ─────────────────────────────────────────────────────────
 
-/// Resolve the configured models_dir from AppStore, falling back to {home}/fredo-models.
-fn resolve_models_dir(app: &AppHandle) -> PathBuf {
-    let store_ref = app.state::<Arc<AppStore>>();
-    let configured = store_ref.get("models_dir").ok().flatten();
-    if let Some(val) = configured {
-        if !val.is_empty() {
-            return PathBuf::from(val);
-        }
-    }
-    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-    home.join("fredo-models")
-}
-
-/// Resolve the acquisition manifest: the AppStore `model_manifest_path` JSON
-/// override when present and valid, else the compiled [`default_manifest`].
-/// An invalid override never breaks the probe — it logs and falls back.
-fn resolve_manifest(app: &AppHandle) -> ModelManifest {
-    let override_json = app
-        .state::<Arc<AppStore>>()
-        .get(MODEL_MANIFEST_PATH_KEY)
-        .ok()
-        .flatten();
-    match load_manifest(override_json.as_deref()) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            tracing::warn!(
-                "invalid {MODEL_MANIFEST_PATH_KEY} override — using the compiled default manifest: {error}"
-            );
-            default_manifest()
-        }
-    }
-}
-
 /// The absolute path of the file with `id` when it exists on disk (legacy
 /// `gguf_path`/`mmproj_path`/`mtp_path` semantics — existence only).
 fn legacy_path(files: &[ModelFileStatus], id: &str) -> Option<String> {
@@ -1081,8 +1048,6 @@ pub async fn download_model(app: AppHandle) -> ModelDownloadResult {
 // returns through its ordered `COMPANION_SETUP_STEPS` registry. #2856 appends a
 // model-download action; #2857 appends a `serverLaunch` prerequisite.
 
-const LLAMA_SERVER_BIN: &str = "llama-server";
-const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
 const WINGET_BIN: &str = "winget";
 #[cfg(target_os = "windows")]
 const WINGET_APP_ID: &str = "ggml.llamacpp";
@@ -1129,76 +1094,6 @@ pub struct LlamaCppInstallResult {
     pub output: String,
     pub error: Option<String>,
     pub code: Option<LlamaCppInstallCode>,
-}
-
-/// Resolve an executable on PATH (first match). Local helper — no cross-feature import.
-fn find_on_path(bin: &str) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let finder = "where";
-    #[cfg(not(target_os = "windows"))]
-    let finder = "which";
-
-    std::process::Command::new(finder)
-        .arg(bin)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
-/// The winget shim location — required because the running process's inherited
-/// PATH does not refresh after `winget install` (keeps AC-3's "no reload" honest).
-#[cfg(target_os = "windows")]
-fn winget_links_shim() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|dir| {
-        PathBuf::from(dir)
-            .join("Microsoft")
-            .join("WinGet")
-            .join("Links")
-            .join(format!("{LLAMA_SERVER_BIN}.exe"))
-    })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn winget_links_shim() -> Option<PathBuf> {
-    None
-}
-
-/// Pure resolution order (unit-tested): configured path → PATH → winget shim.
-/// `on_path` is the already-resolved PATH candidate; `shim` the winget Link.
-fn resolve_llama_server_order(
-    configured: Option<&str>,
-    on_path: Option<PathBuf>,
-    shim: Option<PathBuf>,
-) -> Option<PathBuf> {
-    if let Some(path) = configured {
-        let candidate = PathBuf::from(path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    if let Some(path) = on_path {
-        return Some(path);
-    }
-    shim.filter(|p| p.is_file())
-}
-
-/// Resolve a usable `llama-server` executable. #2855 only DETECTS — never launches.
-/// `Err` means the configured path could not be read (the prerequisite is then
-/// reported as `Error` — "could not determine" — never as `Missing`).
-fn resolve_llama_server(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    let configured = app
-        .state::<Arc<AppStore>>()
-        .get(LLAMA_SERVER_SETTING_KEY)
-        .map_err(|e| e.to_string())?;
-    Ok(resolve_llama_server_order(
-        configured.as_deref(),
-        find_on_path(LLAMA_SERVER_BIN),
-        winget_links_shim(),
-    ))
 }
 
 /// Aggregate the manifest probe into the `modelFiles` prerequisite. Pure — the
@@ -1267,10 +1162,11 @@ pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
     let manifest = resolve_manifest(&app);
     let models_dir = resolve_models_dir(&app);
     let model_files = probe_files(&models_dir, &manifest);
-    let models_subdir = models_dir.join(&manifest.subdir);
     prerequisites.push(model_files_prerequisite(
         &model_files,
-        models_subdir.to_string_lossy().into_owned(),
+        models_subdir(&models_dir, &manifest)
+            .to_string_lossy()
+            .into_owned(),
     ));
 
     let ready = prerequisites

@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod comm;
+pub mod companion;
 pub mod ipc;
 pub mod otlp;
 pub mod rtdb;

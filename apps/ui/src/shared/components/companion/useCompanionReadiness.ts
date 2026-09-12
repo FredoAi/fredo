@@ -19,15 +19,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { adapterBridge } from '../../utils/adapterBridge';
 import { COMPANION_SETUP_STEPS } from './companionSetupSteps';
-import type {
-  CompanionReadiness,
-  LlamaCppInstallResult,
-  ModelDownloadProgress,
-  ModelDownloadResult,
-  ModelFileId,
-  ModelFileState,
-  ModelFilesStatus,
-  PrerequisiteId,
+import {
+  deriveServerLaunchState,
+  llamaServerEndpoint,
+  serverLaunchFailureCopy,
+  type CompanionReadiness,
+  type CompanionServerLaunchInfo,
+  type LlamaCppInstallResult,
+  type LlamaServerLaunchCode,
+  type LlamaServerLaunchResult,
+  type LlamaServerStatus,
+  type LlamaServerStatusEvent,
+  type ModelDownloadProgress,
+  type ModelDownloadResult,
+  type ModelFileId,
+  type ModelFileState,
+  type ModelFilesStatus,
+  type PrerequisiteId,
+  type PrerequisiteReport,
 } from './companionReadiness';
 
 export interface UseCompanionReadinessResult {
@@ -41,6 +50,24 @@ export interface UseCompanionReadinessResult {
   actionError: Partial<Record<PrerequisiteId, string>>;
   /** Per-file model status (model/vision/mtp), merged with live progress. */
   modelFiles: ModelFilesStatus | null;
+  /**
+   * #2857 server launch snapshot — null when the backend status command is
+   * unavailable (then the wizard just renders the backend's own prerequisite set).
+   */
+  serverLaunch: CompanionServerLaunchInfo | null;
+}
+
+/**
+ * Module-scoped one-shot guard (AGENTS.md: refs reset on mount — use module
+ * state for anything that must survive a close/reopen cycle). Once a launch has
+ * been auto-attempted, it is NEVER auto-retried; a failure stays `failed` until
+ * the user presses Retry (no restart loop).
+ */
+let autoLaunchAttempted = false;
+
+/** Test seam for the module-scoped one-shot auto-launch guard. */
+export function resetCompanionAutoLaunchGuard(): void {
+  autoLaunchAttempted = false;
 }
 
 const FAIL_CLOSED_DETAIL =
@@ -134,7 +161,7 @@ function filesFromResult(result: ModelDownloadResult): ModelFilesStatus | null {
 }
 
 export function useCompanionReadiness(): UseCompanionReadinessResult {
-  const [readiness, setReadiness] = useState<CompanionReadiness | null>(null);
+  const [backendReadiness, setBackendReadiness] = useState<CompanionReadiness | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [runningActionId, setRunningActionId] = useState<PrerequisiteId | null>(null);
@@ -145,12 +172,22 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   const [progressByFile, setProgressByFile] = useState<
     Partial<Record<ModelFileId, ModelFileProgress>>
   >({});
+  // #2857 — server launch composition (the backend readiness command stays 2-prereq).
+  const [serverStatus, setServerStatus] = useState<LlamaServerStatus | null>(null);
+  const [serverStatusAvailable, setServerStatusAvailable] = useState(false);
+  const [serverLaunchError, setServerLaunchError] = useState<{
+    code: LlamaServerLaunchCode | null;
+    detail: string | null;
+  } | null>(null);
+  const [serverExited, setServerExited] = useState(false);
 
   // Synchronous re-entrancy guard: a second activation before React re-renders
   // must NOT start a second install/download (REQ-7).
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
   const unlistenRef = useRef<(() => void) | undefined>(undefined);
+  // The exit event is the authoritative "was healthy, now gone" trigger.
+  const wasHealthyRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -173,19 +210,57 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       );
       if (!mountedRef.current) return;
       if (result && Array.isArray(result.prerequisites) && result.prerequisites.length > 0) {
-        setReadiness(result);
+        setBackendReadiness(result);
         setError(null);
       } else {
-        setReadiness(failClosedReadiness(FAIL_CLOSED_DETAIL));
+        setBackendReadiness(failClosedReadiness(FAIL_CLOSED_DETAIL));
         setError(FAIL_CLOSED_DETAIL);
       }
     } catch (err) {
       if (mountedRef.current) {
-        setReadiness(failClosedReadiness(FAIL_CLOSED_DETAIL));
+        setBackendReadiness(failClosedReadiness(FAIL_CLOSED_DETAIL));
         setError(String(err));
       }
     } finally {
       if (mountedRef.current) setChecking(false);
+    }
+  }, []);
+
+  /**
+   * Probe the managed server. A missing/unknown-shaped result (dev host, or a
+   * backend without #2857) leaves `serverLaunch` un-composed so the wizard simply
+   * renders the backend's own prerequisite set — no fabricated health.
+   */
+  const probeServerStatus = useCallback(async () => {
+    try {
+      const status = await adapterBridge.invoke<LlamaServerStatus>(
+        'get_llama_server_status',
+      );
+      if (!mountedRef.current) return;
+      if (
+        status &&
+        typeof status.running === 'boolean' &&
+        typeof status.healthy === 'boolean'
+      ) {
+        setServerStatus(status);
+        setServerStatusAvailable(true);
+        if (status.healthy) {
+          wasHealthyRef.current = true;
+          setServerExited(false);
+          setServerLaunchError(null);
+        } else if (wasHealthyRef.current && !status.running) {
+          // A server that was healthy is no longer running → lifecycle `exited`.
+          setServerExited(true);
+        }
+      } else {
+        setServerStatus(null);
+        setServerStatusAvailable(false);
+      }
+    } catch {
+      if (mountedRef.current) {
+        setServerStatus(null);
+        setServerStatusAvailable(false);
+      }
     }
   }, []);
 
@@ -207,9 +282,13 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
 
   const refreshInternal = useCallback(
     async (showChecking: boolean) => {
-      await Promise.all([probeReadiness(showChecking), probeModelFiles()]);
+      await Promise.all([
+        probeReadiness(showChecking),
+        probeModelFiles(),
+        probeServerStatus(),
+      ]);
     },
-    [probeReadiness, probeModelFiles],
+    [probeReadiness, probeModelFiles, probeServerStatus],
   );
 
   const refresh = useCallback(() => refreshInternal(true), [refreshInternal]);
@@ -217,6 +296,28 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   useEffect(() => {
     void refreshInternal(true);
   }, [refreshInternal]);
+
+  // Exit event (ST-3/ST-7): re-probe immediately when the managed child exits.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const un = await adapterBridge.listen<LlamaServerStatusEvent>(
+        'llama-server-status',
+        () => {
+          if (!mountedRef.current) return;
+          if (wasHealthyRef.current) setServerExited(true);
+          void probeServerStatus();
+        },
+      );
+      if (cancelled) un();
+      else unlisten = un;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [probeServerStatus]);
 
   const stopProgressListener = useCallback(() => {
     unlistenRef.current?.();
@@ -299,13 +400,26 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
             }
           }
           stopProgressListener();
-        } else {
-          // `launch_llama_server` is wired by #2857 — no action this slice.
-          if (mountedRef.current) {
-            setActionError((prev) => ({
-              ...prev,
-              [id]: `${step.action?.label ?? 'This action'} is not available yet.`,
-            }));
+        } else if (step.action.command === 'launch_llama_server') {
+          const result =
+            (await adapterBridge.invoke<LlamaServerLaunchResult>(
+              'launch_llama_server',
+            )) ?? null;
+          if (!result || result.success !== true) {
+            const code = result?.code ?? null;
+            const port = result?.port ?? null;
+            const rawDetail = result?.error ?? result?.detail ?? null;
+            const message = serverLaunchFailureCopy(code, llamaServerEndpoint(port));
+            if (mountedRef.current) {
+              setServerLaunchError({ code, detail: rawDetail ?? message });
+              setActionError((prev) => ({ ...prev, [id]: message }));
+            }
+          } else if (mountedRef.current) {
+            // A successful launch clears any prior failure; the follow-up status
+            // probe confirms `healthy`.
+            setServerLaunchError(null);
+            setServerExited(false);
+            wasHealthyRef.current = true;
           }
         }
       } catch (err) {
@@ -346,6 +460,81 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
     [baseModelFiles, progressByFile],
   );
 
+  // #2857 — compose the third prerequisite from the managed-server status.
+  const serverLaunch = useMemo<CompanionServerLaunchInfo | null>(() => {
+    if (!serverStatusAvailable) return null;
+    const state = deriveServerLaunchState({
+      launching: runningActionId === 'serverLaunch',
+      error: serverLaunchError !== null || actionError.serverLaunch !== undefined,
+      status: serverStatus,
+      exited: serverExited,
+    });
+    return {
+      state,
+      port: serverStatus?.port ?? null,
+      configPath: serverStatus?.configPath ?? null,
+      code: serverLaunchError?.code ?? null,
+      detail: serverLaunchError?.detail ?? serverStatus?.lastError ?? null,
+    };
+  }, [
+    serverStatusAvailable,
+    serverStatus,
+    serverLaunchError,
+    serverExited,
+    runningActionId,
+    actionError,
+  ]);
+
+  // The overall ready gate: backend readiness AND a healthy managed server,
+  // AND never true while a probe/launch is in flight (R-2.2/R-4.2). `checking`
+  // covers a readiness re-probe; an in-flight launch is already folded into
+  // `serverLaunch.state === 'starting'` (which is never `installed`).
+  // When the status command is unavailable the backend's own set is authoritative
+  // (no fabricated server health, no cross-feature import).
+  const readiness = useMemo<CompanionReadiness | null>(() => {
+    if (!backendReadiness) return null;
+    const settled = !checking;
+    if (!serverLaunch) {
+      return { ...backendReadiness, ready: settled && backendReadiness.ready };
+    }
+    const serverState = serverLaunch.state;
+    const report: PrerequisiteReport = {
+      id: 'serverLaunch',
+      state:
+        serverState === 'healthy'
+          ? 'installed'
+          : serverState === 'failed' || serverState === 'exited'
+            ? 'error'
+            : 'missing',
+      detail:
+        serverState === 'healthy'
+          ? (serverLaunch.configPath ?? serverLaunch.detail ?? '')
+          : (serverLaunch.detail ?? ''),
+      resolvedPath: serverLaunch.configPath,
+    };
+    const prerequisites = [
+      ...backendReadiness.prerequisites.filter((p) => p.id !== 'serverLaunch'),
+      report,
+    ];
+    return {
+      ready: settled && backendReadiness.ready && serverState === 'healthy',
+      prerequisites,
+    };
+  }, [backendReadiness, serverLaunch, checking]);
+
+  // Auto-invoke ONCE when both provisioning steps are installed and the server is
+  // not running. The module-scoped guard (survives wizard close/reopen) makes this
+  // a true one-shot: a failure stays `failed` until the user presses Retry.
+  useEffect(() => {
+    if (checking) return;
+    if (runningRef.current) return;
+    if (autoLaunchAttempted) return;
+    if (!backendReadiness?.ready) return;
+    if (!serverLaunch || serverLaunch.state !== 'notRunning') return;
+    autoLaunchAttempted = true;
+    void runAction('serverLaunch');
+  }, [checking, backendReadiness, serverLaunch, runAction]);
+
   return useMemo(
     () => ({
       readiness,
@@ -356,6 +545,7 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       runningActionId,
       actionError,
       modelFiles,
+      serverLaunch,
     }),
     [
       readiness,
@@ -366,6 +556,7 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       runningActionId,
       actionError,
       modelFiles,
+      serverLaunch,
     ],
   );
 }
