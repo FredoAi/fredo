@@ -194,3 +194,40 @@
 - **R-21 PASS (live).** single-click joke, double-click TicTacToe (250 ms discriminator, no stray joke), 208×268 game bubble, legal O moves, `Your turn (X)` status text — unchanged.
 - **R-22 PASS (live).** Companion ON ⇒ one Fredo (`.fredo-companion-avatar`); OFF ⇒ mascot home; toggle + persisted `Fredo_companion_visible` intact.
 - **R-23 PASS (static).** Only issue-refs matched the color grep in the 9 changed files (zero true hex/rgb/hsla); `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` 54/787 passed.
+
+---
+
+## #2864 extension — chrome/theming slice must not change companion behavior
+
+> Issue #2864 is a visual/theming slice. The companion behavior invariants below MUST hold.
+> Run alongside R-1..R-23. Verification policy: live.
+
+## R-24 — Visibility toggle + idle-timeout semantics unchanged
+
+- [ ] R-24: Toggle "Show Fredo Companion" ON/OFF; set a distinct auto-return value via the
+      `NumberInput` (blur / Enter / stepper) and read it back; restart and re-read.
+  **Expected:** the toggle still shows/hides the companion and honors
+      `Fredo_companion_visible`; the idle value still commits on blur/Enter/stepper (never per
+      keystroke), clamps (default 60, range [5, 3600]), and persists. Reference #2850 R-9/#2853
+      R-12/F-23/F-25/F-26.
+  - **Edge:** cleared/non-numeric/out-of-range entry heals; theme change while editing must not
+    corrupt the draft.
+
+## R-25 — Not-ready gate + wizard still gate correctly
+
+- [ ] R-25: On a not-ready backend, open Settings → Companion; run a prerequisite action via the
+      wizard; on ready, confirm the panel swaps to the controls.
+  **Expected:** while not ready the wizard is the ONLY content (no toggle/tip); when readiness
+      flips ready the controls render automatically. Reference #2850 F-12/#2853 and
+      `llama-setup` regression. No orphan section/crash.
+  - **Edge:** checking (first probe) renders per-step `checking`; an action error renders the
+    step's error state.
+
+## R-26 — Token contract for the companion chrome files
+
+- [ ] R-26: Static-grep the audited companion files (F-44 list) for hardcoded colors and
+      `var(--x)NN`; confirm the setting-row surfaces use a resolved token (not the undefined
+      `--hover-bg`).
+  **Expected:** zero true color literals; `tint()`/`var()` only; `--hover-bg` (or its
+      replacement) resolves to a real light+dark value. Reference #2850 R-7/F-15.
+  - **Edge:** comment issue-refs are not literals.
