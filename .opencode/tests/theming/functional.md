@@ -45,16 +45,19 @@
 > feature. Rows map to the QA Plan `Q-3..Q-5`, `Q-12` in `.opencode/tmp/2864/triage.md`.
 > Live policy — computed-style + contrast probes on a running app (plus static grep).
 
-- [ ] **F-11 (Q-3, Q-4 / AC-2): `--hover-bg` is defined in the theming feature (light + dark).**
-      Grep the repo for `var(--hover-bg)` and for its definition (`--hover-bg` set via
-      `root.style.setProperty` or CSS). Then read `getComputedStyle` of a `--hover-bg` consumer
-      (e.g. a `CompanionSettingsPanel` setting row) live in both themes.
-      **Expected:** either the token is added to the theming feature (`theme.ts` … `ThemeProvider`
-      `setProperty('--hover-bg', …)`) with a light AND dark value, or the consumers use an
-      existing defined token. The live computed background is a real color — NOT
-      `rgba(0, 0, 0, 0)`/`transparent`. Currently referenced 9× / defined 0×.
+- [ ] **F-11 (Q-3, Q-4 / AC-2): `--hover-bg` (T1) is derived in the theming feature and resolves per theme.**
+      Grep the repo for `var(--hover-bg)` and for its definition (a `color-mix(...)` set via
+      `root.style.setProperty` in the `ThemeProvider` base pass). Then read `getComputedStyle` of
+      a `--hover-bg` consumer (e.g. a `CompanionSettingsPanel` setting row) live in both themes.
+      **Expected:** T1 is a SINGLE derived `color-mix(in srgb, var(--text-primary) 6%, transparent)`
+      set once in the theming feature — it computes live from the preset/override vars and so
+      resolves per-theme (NOT the `--card-hover-bg` alias, which freezes the classic dark gray on
+      light presets, and NOT two separately declared literal values). The live computed background
+      is a real color — NOT `rgba(0, 0, 0, 0)`/`transparent` — in BOTH dark and light
+      (`≈rgba(255,255,255,0.06)` dark / `≈rgba(12,17,23,0.06)` light). A consumer that computes
+      transparent where a surface is intended is a FAIL.
       **Edge:** any global token addition must not alter existing `--card-hover-bg` consumers;
-      `system.ts` maps new tokens to semantic values.
+      `system.ts` maps the new token to `bg.hover`.
 - [ ] **F-12 (Q-4 / AC-2): Settings chrome re-tints with the live accent.**
       In Settings, switch preset (dark → light → Matrix) and set/clear an `accentPrimary`
       override; read computed styles of the active nav highlight, nav hover, scrollbar thumb,
