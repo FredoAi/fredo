@@ -62,3 +62,17 @@
 - **S-11 PASS (live).** Companion ON, single-click → `thinking` during the wait then `joking` while the joke streamed, returning to rest; screenshots captured; console clean.
 - **S-12 PASS (live).** Companion ON ⇒ exactly one Fredo (`.fredo-companion-avatar` 80×100, shared SVG); OFF ⇒ desktop mascot `.fredo-avatar-idle` (shared SVG, 80×100) renders; screenshots captured; console clean.
 - **S-13 PASS (live).** Joke `happy→idle` after 4998 ms and TicTacToe `happy→idle` after 3993 ms — no lingering status; screenshots captured; console clean.
+
+## #2864 extension — Settings chrome/theming smoke
+
+> Issue #2864 audits Settings → Companion + the shared dialog chrome. Quick paths; the full
+> matrix lives in `functional.md` F-42..F-48 and `.opencode/tests/settings/functional.md`.
+> Live policy — screenshot + console-clean per step.
+
+- [ ] S-14: Settings → Companion renders in dark AND light — the gear opens the dialog; the
+      Companion section shows the toggle/help/auto-return/Teleport-tip (or the not-ready
+      wizard); a screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`.
+- [ ] S-15: Theme/accent switch with Settings open — switch dark↔light and change the accent;
+      the dialog chrome + Companion panel re-tint with no stale color; screenshot succeeds;
+      console clean.
