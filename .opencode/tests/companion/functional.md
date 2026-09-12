@@ -601,3 +601,102 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 - **F-39 PASS (live).** Joke `happy→idle` 4998 ms; TicTacToe `happy→idle` 3993 ms; teleport out 0→460 ms, in 460→920 ms, clamp (400,400)→(360,350); `ANIM_DURATION` unchanged.
 - **F-40 PASS (live+static).** Console: only LOG, no `Error:`/`Uncaught`/`Maximum update depth exceeded`; zero true color literals in the 9 changed files; `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` 54 files / 787 passed.
 - **F-41 PASS (live).** `fredo emit` chat+tool `{"queued":true}`; `telemetry_spans` = 11,750, max(ingested_at)=2026-09-11T05:23:52; `chat_rows` q2854-chat=1; `tool_use_rows` q2854-tool/read_file=1.
+
+---
+
+## #2864 extension — Settings → Companion chrome + theming conformance
+
+> Issue #2864 audits Settings → Companion + the shared Settings dialog chrome in every
+> theme/accent. Rows map 1:1 to the QA Plan `Q-1..Q-13` in `.opencode/tmp/2864/triage.md`
+> `## QA Expert`. **Verification policy: live** — screenshots (raw URLs via `upload-evidence`)
+> + DOM/computed-style/geometry + the mandatory `telemetry_spans` receipt (F-48). The shared
+> dialog-chrome rows live in `.opencode/tests/settings/functional.md`; this file owns the
+> Companion-panel content. Audited companion files: `CompanionSettingsPanel.tsx`,
+> `CompanionSetupWizard.tsx`, `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`,
+> `ServerLaunchStepCard.tsx`.
+
+## F-42 (Q-1 / AC-1) — BEFORE capture: Companion panel across the state × theme matrix
+
+- [ ] F-42: On the pre-dev `spec/2864` tip (= `main`, before any developer commit), with the
+      MCP driver on a running app, open Settings → Companion and screenshot each Companion-panel
+      state: ON (toggle on, tip opacity 1), OFF (toggle off, tip dimmed), auto-return input idle,
+      auto-return input editing (focus/type in `#companion-idle-timeout-seconds`), and the
+      not-ready gate (wizard is the only content). Do each in dark (`classic`) and light
+      (`light-default`), plus the non-default accent (Matrix / `accentPrimary` override).
+  **Expected:** one readable screenshot per state×theme under
+  `.opencode/tmp/2864/e2e/before/`, uploaded via `upload-evidence` (raw URLs recorded); each
+  shows the toggle + help text + auto-return row + Teleport tip (or the wizard in the not-ready
+  cell); ON vs OFF are visually distinct; idle vs editing differ by the input focus ring.
+  Capture-only — no verdict at this stage.
+  - **Edge:** capture at 960×620 AND a narrower window; a state believed unreachable (not-ready)
+    is BLOCKED with a named cause — never silently omitted.
+
+## F-43 (Q-4 / AC-2) — Companion panel follows the live accent; `--hover-bg` resolves
+
+- [ ] F-43: For dark, light, and the non-default accent, read live computed styles of the
+      companion setting rows (`background`), the section labels, the `Switch` track/thumb (ON and
+      OFF), the auto-return `NumberInput` (bg/border/focus ring), the Teleport tip surface, and
+      the `kbd` chip; then change the accent live with Settings open.
+  **Expected:** every color derives from the theming feature (token/CSS var/`tint()`) and the
+      accent-linked surfaces re-tint together with no stale color. **`--hover-bg` must resolve**
+      — `getComputedStyle(row).backgroundColor` is NOT `rgba(0, 0, 0, 0)`/`transparent`
+      (currently referenced 9× and defined 0×; `ThemeProvider.tsx` sets `--card-hover-bg`, never
+      `--hover-bg`). A row that computes transparent where a surface is intended is a FAIL.
+  - **Edge:** switch accent WHILE the NumberInput is focused (no stale border); toggle companion
+    ON/OFF re-tints only the tip opacity/pointerEvents (F-47).
+
+## F-44 (Q-3 / AC-2) — Zero hardcoded color literals in the companion files
+
+- [ ] F-44: Grep the audited companion files (`CompanionSettingsPanel.tsx`,
+      `CompanionSetupWizard.tsx`, `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`,
+      `ServerLaunchStepCard.tsx`) for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`, `hsla(`, and the
+      invalid alpha-append `var\(--[a-z-]+\)[0-9a-fA-F]{2}`.
+  **Expected:** ZERO true color literals (comment issue-refs like `#2864` exempt); translucent
+      surfaces use `tint()` and `var()` only. Any literal left in a listed file is a FAIL; name
+      the file:line.
+  - **Edge:** `transparent`/`inherit`/`currentColor`/`none` are allowed; distinguish the
+      `var(--x)NN` FAIL from a JS-concatenated 8-digit hex (OK).
+
+## F-45 (Q-5, Q-6 / AC-3) — Companion control contrast (AA) + local feedback < 400 ms
+
+- [ ] F-45: From live computed colors, compute contrast for: setting-row title vs its `--hover-bg`
+      surface; help text vs the same surface; the Switch track vs surrounding; NumberInput text
+      vs input bg; the `s` suffix/label; tip body text vs tip surface. Then timestamp
+      click→visible-change for the toggle and the input focus ring.
+  **Expected:** text ≥ 4.5:1 and non-text UI ≥ 3:1 in dark AND light AND the non-default accent;
+      toggle/focus-ring feedback ≤ 400 ms (CSS transition 0.15–0.2 s). Quote the measured ratio
+      and ms. A failing pair is a FAIL naming the ratio.
+  - **Edge:** light theme + a light/desaturated accent preset; the `kbd` chip legibility; rapid
+    repeated toggles.
+
+## F-46 (Q-7 / AC-3) — Companion reading order, single-wizard gate, a11y wiring
+
+- [ ] F-46: DOM/a11y + screenshot the Companion panel and the not-ready wizard. Inspect reading
+      order (section label → setting rows → Teleport tip), grouping/spacing vs sibling sections,
+      keyboard tab order, and the `aria-describedby` link on the idle input.
+  **Expected:** clear reading order with consistent grouping; the not-ready gate renders ONE
+      wizard (no toggle/tip duplication — `CompanionSettingsPanel.tsx:77-104`); keyboard order
+      matches visual order; `#companion-idle-timeout-seconds` is described by
+      `#companion-idle-timeout-help`; the wizard heading/scale matches the Fredo Setup sibling
+      convention (H4: `CompanionSetupWizard.tsx:117-122` vs `SetupWizard.tsx:400-403`).
+  - **Edge:** long help text wrapping; a feature-settings section present in the sidebar.
+
+## F-47 (Q-12 / AC-5) — Teleport-tip + input states do not regress under theme/accent change
+
+- [ ] F-47: Toggle the companion ON/OFF and inspect the Teleport tip computed `opacity` +
+      `pointerEvents`; focus/blur the auto-return input and read its border. Repeat after a theme
+      and accent change.
+  **Expected:** tip `opacity: 1` / `pointerEvents: auto` when visible; `opacity: 0.4` /
+      `pointerEvents: none` when hidden; focus ring uses the live accent; the states survive a
+      theme/accent change with no stale color and no console error.
+  - **Edge:** theme change while OFF; reduced motion (E-29).
+
+## F-48 (Q-13 / LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-48: Same run as F-42..F-47: `fredo emit --event-type chat` + `--event-type tool_use`
+      with distinct session ids; query `telemetry_spans` + row tables (telemetry-query skill);
+      retain screenshot raw URLs + DOM/computed-style/geometry for the companion states.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)`; the
+      emitted events classify into `chat_rows`/`tool_use_rows` under their session ids; a
+      rendered receipt exists for each companion state. A static-only PASS is a **FALSE PASS**.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim.
