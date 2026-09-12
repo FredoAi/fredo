@@ -50,6 +50,13 @@ pub const LLAMA_SERVER_PID_KEY: &str = "llama_server_pid";
 pub const LLAMA_SERVER_STARTED_AT_KEY: &str = "llama_server_started_at";
 /// Absolute path to the server's stdout/stderr log file.
 pub const LLAMA_SERVER_LOG_PATH_KEY: &str = "llama_server_log_path";
+/// Absolute path to the companion artifact directory (holds the generated
+/// launch `.bat` and the server log).
+///
+/// The value is an absolute directory path. A blank or absent value falls back
+/// to the product default `{app_data_dir}/companion`
+/// (`%APPDATA%\com.fredo.app\companion`).
+pub const LLAMA_SERVER_COMPANION_DIR_KEY: &str = "llama_server_companion_dir";
 
 // ── Launch defaults ────────────────────────────────────────────────────────────
 

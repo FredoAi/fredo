@@ -333,13 +333,12 @@ fn executable_or_code(
     }
 }
 
-/// `{app_data_dir}/companion/...` for the config and the log.
+/// Resolve the launch-config and server-log paths under the CONFIGURED
+/// companion dir (default `{app_data_dir}/companion`; override via
+/// `llama_server_companion_dir`).
 fn companion_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve the app data dir: {e}"))?;
-    Ok((process::config_path(&data_dir), process::log_path(&data_dir)))
+    let dir = process::resolve_companion_dir(app)?;
+    Ok((process::config_path(&dir), process::log_path(&dir)))
 }
 
 /// Write `config.to_bat()` to `path` and return the preview. Pure seam — no Tauri.

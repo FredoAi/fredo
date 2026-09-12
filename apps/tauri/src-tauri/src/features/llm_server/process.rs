@@ -17,28 +17,59 @@ use crate::infrastructure::storage::AppStore;
 
 use super::config::LlamaServerConfig;
 use super::state::ManagedServer;
-use super::LLAMA_SERVER_PID_KEY;
+use super::{LLAMA_SERVER_COMPANION_DIR_KEY, LLAMA_SERVER_PID_KEY};
 
-/// Subdirectory under the app data dir that holds generated companion artifacts.
+/// Default subdirectory under the app data dir that holds generated companion
+/// artifacts when no override is configured.
 pub const COMPANION_DIR: &str = "companion";
 /// The generated launch `.bat` filename.
 pub const CONFIG_FILENAME: &str = "llama-server-launch.bat";
 /// The server stdout/stderr log filename.
 pub const LOG_FILENAME: &str = "llama-server.log";
 
-/// The companion artifact directory under the app data dir.
-pub fn companion_dir(app_data_dir: &Path) -> PathBuf {
+/// The DEFAULT companion artifact directory under the app data dir
+/// (`{app_data_dir}/companion`). Used only when the persisted override is
+/// blank/absent — see [`resolve_companion_dir`].
+pub fn default_companion_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(COMPANION_DIR)
 }
 
-/// Absolute path of the generated launch config.
-pub fn config_path(app_data_dir: &Path) -> PathBuf {
-    companion_dir(app_data_dir).join(CONFIG_FILENAME)
+/// Absolute path of the generated launch config inside `companion_dir`.
+pub fn config_path(companion_dir: &Path) -> PathBuf {
+    companion_dir.join(CONFIG_FILENAME)
 }
 
-/// Absolute path of the server log.
-pub fn log_path(app_data_dir: &Path) -> PathBuf {
-    companion_dir(app_data_dir).join(LOG_FILENAME)
+/// Absolute path of the server log inside `companion_dir`.
+pub fn log_path(companion_dir: &Path) -> PathBuf {
+    companion_dir.join(LOG_FILENAME)
+}
+
+/// Pure companion-dir resolution: a non-blank, trimmed override wins; anything
+/// else (absent, empty, whitespace-only) yields `default`.
+pub fn resolve_companion_dir_from(configured: Option<&str>, default: PathBuf) -> PathBuf {
+    match configured {
+        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => default,
+    }
+}
+
+/// Resolve the companion artifact directory from the persisted setting
+/// ([`LLAMA_SERVER_COMPANION_DIR_KEY`]), falling back to the product default
+/// `{app_data_dir}/companion` when the setting is blank/absent.
+pub fn resolve_companion_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let default = default_companion_dir(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve the app data dir: {e}"))?,
+    );
+    let store = app.state::<Arc<AppStore>>();
+    let configured = store
+        .get(LLAMA_SERVER_COMPANION_DIR_KEY)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Ok(resolve_companion_dir_from(configured.as_deref(), default))
 }
 
 // ── Startup orphan sweep (ST-7, R-3.3) ────────────────────────────────────────
@@ -326,12 +357,58 @@ mod tests {
 
     #[test]
     fn config_and_log_paths_live_under_the_companion_dir() {
-        let dir = PathBuf::from(r"C:\data\fredo");
+        // Both helpers now take the companion DIRECTORY and join only their
+        // filename — no implicit `companion` segment is re-appended, so an
+        // override dir is not double-nested.
+        let dir = PathBuf::from(r"C:\data\fredo\companion");
+        assert_eq!(config_path(&dir), dir.join("llama-server-launch.bat"));
+        assert_eq!(log_path(&dir), dir.join("llama-server.log"));
+    }
+
+    #[test]
+    fn default_companion_dir_appends_the_companion_subdir() {
+        let app_data = PathBuf::from(r"C:\data\fredo");
         assert_eq!(
-            config_path(&dir),
-            dir.join("companion").join("llama-server-launch.bat")
+            default_companion_dir(&app_data),
+            app_data.join("companion")
         );
-        assert_eq!(log_path(&dir), dir.join("companion").join("llama-server.log"));
+    }
+
+    #[test]
+    fn resolve_companion_dir_from_prefers_a_non_blank_trimmed_override() {
+        let default = PathBuf::from(r"C:\data\fredo\companion");
+
+        assert_eq!(
+            resolve_companion_dir_from(
+                Some(r"C:\Code\fredo\.runtime\companion\"),
+                default.clone()
+            ),
+            PathBuf::from(r"C:\Code\fredo\.runtime\companion\")
+        );
+        // Surrounding whitespace is trimmed off the override.
+        assert_eq!(
+            resolve_companion_dir_from(Some("  C:\\runtime\\companion  "), default.clone()),
+            PathBuf::from(r"C:\runtime\companion")
+        );
+    }
+
+    #[test]
+    fn resolve_companion_dir_from_falls_back_when_blank_or_absent() {
+        let default = PathBuf::from(r"C:\data\fredo\companion");
+
+        assert_eq!(resolve_companion_dir_from(None, default.clone()), default);
+        assert_eq!(
+            resolve_companion_dir_from(Some(""), default.clone()),
+            default
+        );
+        assert_eq!(
+            resolve_companion_dir_from(Some("   "), default.clone()),
+            default
+        );
+        assert_eq!(
+            resolve_companion_dir_from(Some("\t\n"), default.clone()),
+            default
+        );
     }
 
     #[test]
