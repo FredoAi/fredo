@@ -115,13 +115,19 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
       data-testid="companion-setup-wizard"
     >
       <HStack gap={3}>
-        <Icon as={LuSettings2} boxSize="22px" color="accent.default" aria-hidden />
-        <Heading id="companion-setup-heading" as="h2" size="md" color="fg.default">
+        <Icon as={LuSettings2} boxSize="22px" color="var(--accent-primary)" aria-hidden />
+        <Heading
+          id="companion-setup-heading"
+          as="h2"
+          size="md"
+          color="var(--text-primary)"
+          fontFamily="heading"
+        >
           Set up Fredo Companion
         </Heading>
       </HStack>
 
-      <Text fontSize="sm" color="fg.muted">
+      <Text fontSize="sm" color="var(--text-subtle)">
         Fredo needs llama.cpp + model files before the companion can run.
       </Text>
 

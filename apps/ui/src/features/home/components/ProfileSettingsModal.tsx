@@ -8,6 +8,7 @@ import { ThemingSettings } from '../../theming/components/ThemingSettings';
 import { SetupWizard } from '../../setup/components/SetupWizard';
 import { TelemetrySettings } from './settings/TelemetrySettings';
 import { DockPositionSettings } from './dock/DockPositionSettings';
+import { tint } from '../../../shared/utils/colorTint';
 
 interface ProfileSettingsModalProps {
   isOpen: boolean;
@@ -19,10 +20,10 @@ const thinScrollbar = {
   '&::-webkit-scrollbar': { width: '5px', height: '5px' },
   '&::-webkit-scrollbar-track': { background: 'transparent' },
   '&::-webkit-scrollbar-thumb': {
-    background: 'rgba(255,255,255,0.12)',
+    background: 'var(--scrollbar-thumb)',
     borderRadius: '3px',
   },
-  '&::-webkit-scrollbar-thumb:hover': { background: 'rgba(255,255,255,0.22)' },
+  '&::-webkit-scrollbar-thumb:hover': { background: 'var(--scrollbar-thumb-hover)' },
   '&::-webkit-scrollbar-corner': { background: 'transparent' },
 } as const;
 
@@ -45,16 +46,21 @@ const NavItem: React.FC<NavItemProps> = ({ id, label, icon, activeSection, onCli
       px={5}
       py={2}
       fontWeight={isActive ? '600' : '500'}
-      color={isActive ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-      bg={isActive ? 'rgba(147, 51, 234, 0.12)' : 'transparent'}
-      borderLeft="2px solid"
-      borderColor={isActive ? 'var(--accent-primary)' : 'transparent'}
+      color={isActive ? 'var(--text-primary)' : 'var(--text-secondary)'}
+      bg={isActive ? tint('var(--accent-primary)', 12) : 'transparent'}
+      borderLeft="3px solid"
+      borderColor={isActive ? 'var(--accent-strong)' : 'transparent'}
+      aria-current={isActive ? 'page' : undefined}
       textAlign="left"
       w="100%"
       cursor="pointer"
       transition="all 0.15s"
       onClick={() => onClick(id)}
-      _hover={{ color: 'var(--text-primary)', bg: 'rgba(255,255,255,0.04)' }}
+      _hover={{
+        color: 'var(--text-primary)',
+        bg: isActive ? tint('var(--accent-primary)', 12) : 'var(--hover-bg)',
+      }}
+      _focusVisible={{ outline: '2px solid var(--accent-primary)', outlineOffset: '-2px' }}
     >
       <Icon as={icon as any} boxSize="14px" flexShrink={0} />
       <Text fontSize="sm" fontWeight="inherit" lineHeight="short">
@@ -90,7 +96,7 @@ const SaveFooter: React.FC = () => {
         loading={saving}
         onClick={handleSave}
         background="var(--accent-primary)"
-        color="white"
+        color="var(--accent-contrast)"
         _hover={{ opacity: 0.9 }}
       >
         <LuSave /> Save
@@ -108,14 +114,14 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(e) => !e.open && onClose()}>
-      <Dialog.Backdrop bg="rgba(0, 0, 0, 0.6)" backdropFilter="blur(4px)" />
+      <Dialog.Backdrop bg="var(--overlay-bg)" backdropFilter="blur(4px)" />
       <Dialog.Positioner>
         <Dialog.Content
           bg="var(--card-bg)"
           borderColor="var(--border-color)"
           borderWidth="1px"
           borderRadius="xl"
-          boxShadow="0 24px 80px rgba(0, 0, 0, 0.4)"
+          boxShadow="var(--shadow-dialog)"
           maxW="960px"
           w="960px"
           h="620px"
@@ -138,7 +144,7 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
               >
                 {/* Sidebar header with close button */}
                 <HStack px={5} pt={5} pb={3} flexShrink={0}>
-                  <Text
+                  <Dialog.Title
                     fontSize="xs"
                     fontWeight="700"
                     color="var(--text-secondary)"
@@ -146,22 +152,26 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({ isOp
                     letterSpacing="0.1em"
                   >
                     Settings
-                  </Text>
+                  </Dialog.Title>
                   <Spacer />
                   <IconButton
-                    aria-label="Close"
+                    aria-label="Close settings"
                     size="xs"
+                    variant="ghost"
                     onClick={onClose}
+                    color="var(--text-secondary)"
+                    borderRadius="md"
+                    _hover={{ color: 'var(--text-primary)', bg: 'var(--hover-bg)' }}
+                    _active={{ transform: 'scale(0.95)' }}
+                    _focusVisible={{ outline: '2px solid var(--accent-primary)', outlineOffset: '2px' }}
                     css={{
-                      background: 'var(--status-error)',
-                      color: 'white',
-                      borderRadius: '4px',
                       minWidth: '22px',
                       height: '22px',
                       padding: '0',
-                      '&:hover': { background: 'var(--status-error)', opacity: 0.8, transform: 'scale(1.05)' },
-                      '&:active': { transform: 'scale(0.95)' },
                       transition: 'all 0.2s',
+                      '@media (prefers-reduced-motion: reduce)': {
+                        '&:active': { transform: 'none' },
+                      },
                     }}
                   >
                     <LuX size={12} />
