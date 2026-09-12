@@ -21,8 +21,9 @@
 
 - [ ] **E-12:** **Undefined CSS-var audit.** Grep the audited Settings files (and their shared
       chrome) for every `var(--…)` reference and cross-check each against a `setProperty`/CSS
-      definition. Any token referenced but never defined (like `--hover-bg`) is a finding —
-      record the consumer file:line and the computed fallback.
+      definition. Any token referenced but never defined is a finding — record the consumer
+      file:line and the computed fallback. (The pre-#2864 `--hover-bg` gap is the canonical
+      example; it is resolved by T1, so re-scan for any NEW undeclared `var()`.)
 - [ ] **E-13:** **Global-token light/dark regression sweep.** If a token is added/remapped, switch
       dark↔light and compare computed colors on unrelated surfaces (desktop shell, launcher,
       mission-monitor node chrome). Any surface that shifts unintentionally is a finding.
