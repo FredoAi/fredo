@@ -7,8 +7,12 @@
 //! * HTTP `Range` resume from the on-disk byte count, with a safe from-zero
 //!   restart when the server ignores `Range` (200), returns 416, or the on-disk
 //!   file is longer than expected,
-//! * streaming SHA-256 computed as bytes land (and over the on-disk prefix on
-//!   resume) — a mismatch deletes the file and reports `error`,
+//! * streaming SHA-256, seeded with the on-disk prefix BEFORE the GET on resume
+//!   (so the response body is never left idle) — a mismatch deletes the file and
+//!   reports `error`,
+//! * bounded retry with exponential backoff on a transient mid-stream body error
+//!   or premature body, resuming from the persisted offset; corrupt data and
+//!   HTTP-status responses are never retried,
 //! * per-file error isolation (one file failing never aborts the run),
 //! * throttled per-file progress (`≤ ~10 events/s`) via a caller-supplied sink.
 //!
@@ -246,30 +250,62 @@ async fn hash_prefix(path: &Path, len: u64, hasher: &mut Sha256) -> Result<()> {
     Ok(())
 }
 
-/// Stream a response body to disk from `offset`, hashing as it goes, and verify
-/// the exact byte count plus (when pinned) the SHA-256 before returning.
+/// Why a single download attempt failed. Transient body failures are retried
+/// from the persisted offset; terminal failures surface to the UI immediately.
+enum AttemptError {
+    /// A mid-stream transport/body error or a premature/short body. The bytes on
+    /// disk are a correct prefix, so the caller may re-issue the `Range` GET.
+    Retryable(anyhow::Error),
+    /// Corrupt data (SHA-256 mismatch), an over-long body, or a local write/IO
+    /// failure — retrying cannot help.
+    Fatal(anyhow::Error),
+}
+
+/// The seeded resume state handed to [`stream_and_verify`]: the on-disk offset
+/// and the SHA-256 already hashed over that prefix (ST-2R). Bundling them keeps
+/// the seed→stream hand-off explicit and the argument list bounded.
+struct Resume {
+    offset: u64,
+    hasher: Sha256,
+}
+
+/// Stream a response body to disk from the resume offset, hashing into the
+/// caller-seeded `hasher`, and verify the exact byte count plus (when pinned) the
+/// SHA-256.
+///
+/// **Invariant (ST-2R):** no long-running work may run between the response
+/// headers arriving and the first `body.next()` poll below. The resume prefix is
+/// hashed by the caller BEFORE the GET (see [`acquire_file`]); hashing it here
+/// would leave the response body idle until the server/edge resets the stream —
+/// the deterministic `error decoding response body` observed in round 1.
 async fn stream_and_verify(
     mut body: ByteStream,
     dest: &Path,
-    offset: u64,
+    resume: Resume,
     spec: &ModelFileSpec,
     manifest: &ModelManifest,
     reporter: &dyn ProgressReporter,
     clock: &dyn Clock,
-) -> Result<()> {
-    let mut hasher = Sha256::new();
+) -> Result<(), AttemptError> {
+    let Resume { offset, mut hasher } = resume;
     let (mut file, mut downloaded) = if offset == 0 {
-        let file = tokio::fs::File::create(dest)
-            .await
-            .with_context(|| format!("failed to create {}", dest.display()))?;
+        let file = tokio::fs::File::create(dest).await.map_err(|error| {
+            AttemptError::Fatal(
+                anyhow::Error::from(error).context(format!("failed to create {}", dest.display())),
+            )
+        })?;
         (file, 0u64)
     } else {
-        hash_prefix(dest, offset, &mut hasher).await?;
         let file = tokio::fs::OpenOptions::new()
             .append(true)
             .open(dest)
             .await
-            .with_context(|| format!("failed to open {} for resume", dest.display()))?;
+            .map_err(|error| {
+                AttemptError::Fatal(
+                    anyhow::Error::from(error)
+                        .context(format!("failed to open {} for resume", dest.display())),
+                )
+            })?;
         (file, offset)
     };
 
@@ -283,19 +319,35 @@ async fn stream_and_verify(
         ));
     }
 
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk)
-            .await
-            .with_context(|| format!("failed to write {}", dest.display()))?;
+    while let Some(item) = body.next().await {
+        let chunk = match item {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                // A body error AFTER every expected byte arrived is benign — the
+                // file is byte-complete, so fall through to verification rather
+                // than restarting (which would regress progress).
+                if downloaded == spec.expected_bytes {
+                    break;
+                }
+                // Flush before returning so the persisted on-disk length is exact
+                // for the retry's offset re-derivation.
+                let _ = file.flush().await;
+                return Err(AttemptError::Retryable(error));
+            }
+        };
+        file.write_all(&chunk).await.map_err(|error| {
+            AttemptError::Fatal(
+                anyhow::Error::from(error).context(format!("failed to write {}", dest.display())),
+            )
+        })?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
         if downloaded > spec.expected_bytes {
-            return Err(anyhow!(
+            return Err(AttemptError::Fatal(anyhow!(
                 "server sent more than the expected {} bytes for {}",
                 spec.expected_bytes,
                 spec.id
-            ));
+            )));
         }
         if throttle.due(clock.now(), PROGRESS_MIN_INTERVAL) {
             reporter.report(progress_for(
@@ -307,30 +359,55 @@ async fn stream_and_verify(
         }
     }
 
-    file.flush()
-        .await
-        .with_context(|| format!("failed to flush {}", dest.display()))?;
+    file.flush().await.map_err(|error| {
+        AttemptError::Fatal(
+            anyhow::Error::from(error).context(format!("failed to flush {}", dest.display())),
+        )
+    })?;
     drop(file);
 
     if downloaded != spec.expected_bytes {
-        return Err(anyhow!(
+        return Err(AttemptError::Retryable(anyhow!(
             "incomplete download — {downloaded} of {} bytes",
             spec.expected_bytes
-        ));
+        )));
     }
 
     if let Some(expected) = &spec.sha256 {
         let actual = hex_encode(hasher.finalize().as_slice());
         if !actual.eq_ignore_ascii_case(expected) {
             let _ = tokio::fs::remove_file(dest).await;
-            return Err(anyhow!(
+            return Err(AttemptError::Fatal(anyhow!(
                 "SHA-256 mismatch for {} — expected {expected}, got {actual}",
                 spec.filename()
-            ));
+            )));
         }
     }
 
     Ok(())
+}
+
+/// Bounded budget of `Range` GET attempts per file (ST-2R2). A genuinely
+/// persistent body failure ends in the terminal per-file `Error` after this
+/// many attempts — the AC5 contract is unchanged.
+const MAX_DOWNLOAD_ATTEMPTS: usize = 5;
+
+/// Base retry backoff between attempts; doubled per attempt, capped at
+/// [`RETRY_MAX_DELAY`]. Tests use a 1 ms base so the retry path stays fast.
+#[cfg(not(test))]
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
+
+/// Upper bound for the exponential retry backoff.
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
+
+/// Backoff before the next attempt after `attempt` (1-based) transient failures:
+/// base, 2×, 4×… capped at [`RETRY_MAX_DELAY`].
+fn retry_backoff(attempt: usize) -> Duration {
+    let shift = attempt.saturating_sub(1).min(3) as u32;
+    let millis = RETRY_BASE_DELAY.as_millis() as u64 * (1u64 << shift);
+    Duration::from_millis(millis.min(RETRY_MAX_DELAY.as_millis() as u64))
 }
 
 /// Acquire one file, isolating any failure to that file. Emits the terminal
@@ -379,74 +456,111 @@ async fn acquire_file(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    // Oversize (or exactly-at-expected but not `present` can't happen) => restart
-    // from zero; otherwise resume from the on-disk byte count.
-    let mut offset = if initial.downloaded_bytes < spec.expected_bytes {
-        initial.downloaded_bytes
-    } else {
-        0
-    };
+    // Bounded retry loop (ST-2R2): one attempt = re-derive offset → seed hasher
+    // → GET → stream/verify. Only transient body failures re-enter the loop.
+    let mut last_error: Option<anyhow::Error> = None;
 
-    let mut response = match transport
-        .get(
-            &spec.url,
-            (offset > 0).then_some(HttpRange { start: offset }),
-        )
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
-            return Err(error);
+    for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
+        // Re-derive the offset from the ACTUAL on-disk byte count at the start of
+        // every attempt, so a retry continues from wherever the previous attempt
+        // landed; the final digest still covers the whole file. Oversize (or an
+        // exactly-at-expected unverified length) restarts from zero.
+        let inspected = describe_file(models_dir, manifest, spec);
+        let mut offset = if inspected.downloaded_bytes < spec.expected_bytes {
+            inspected.downloaded_bytes
+        } else {
+            0
+        };
+
+        // ST-2R: seed the resume hasher BEFORE the GET. The ~GB prefix hash must
+        // not sit between the response headers and the first body poll, or the
+        // server/edge resets the idle body.
+        let mut hasher = Sha256::new();
+        if offset > 0 {
+            if let Err(error) = hash_prefix(&dest, offset, &mut hasher).await {
+                reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
+                return Err(error);
+            }
         }
-    };
 
-    if response.status == 416 {
-        // Requested range not satisfiable — retry the whole file.
-        response = match transport.get(&spec.url, None).await {
+        let range = (offset > 0).then_some(HttpRange { start: offset });
+        let mut response = match transport.get(&spec.url, range).await {
             Ok(response) => response,
             Err(error) => {
-                reporter.report(progress_for(spec, manifest, 0, ProgressState::Error));
+                // A GET-level failure is not in the retry class — surface it.
+                reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
                 return Err(error);
             }
         };
-        offset = 0;
-    } else if offset > 0 && response.status != 206 {
-        // Server ignored `Range` (or returned something else) — the body is the
-        // full file, so truncate and write it from zero.
-        offset = 0;
+
+        if response.status == 416 {
+            // Requested range not satisfiable — retry the whole file.
+            response = match transport.get(&spec.url, None).await {
+                Ok(response) => response,
+                Err(error) => {
+                    reporter.report(progress_for(spec, manifest, 0, ProgressState::Error));
+                    return Err(error);
+                }
+            };
+            offset = 0;
+            hasher = Sha256::new();
+        } else if offset > 0 && response.status != 206 {
+            // Server ignored `Range` (or returned something else) — the body is
+            // the full file, so truncate and write it from zero.
+            offset = 0;
+            hasher = Sha256::new();
+        }
+
+        if !response.is_success() {
+            reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
+            return Err(anyhow!("HTTP {} for {}", response.status, spec.url));
+        }
+
+        match stream_and_verify(
+            response.body,
+            &dest,
+            Resume { offset, hasher },
+            spec,
+            manifest,
+            reporter,
+            clock,
+        )
+        .await
+        {
+            Ok(()) => {
+                reporter.report(progress_for(
+                    spec,
+                    manifest,
+                    spec.expected_bytes,
+                    ProgressState::Present,
+                ));
+                return Ok(());
+            }
+            Err(AttemptError::Fatal(error)) => {
+                reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
+                return Err(error);
+            }
+            Err(AttemptError::Retryable(error)) => {
+                last_error = Some(error);
+                if attempt == MAX_DOWNLOAD_ATTEMPTS {
+                    break;
+                }
+                tokio::time::sleep(retry_backoff(attempt)).await;
+            }
+        }
     }
 
-    if !response.is_success() {
-        reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
-        return Err(anyhow!("HTTP {} for {}", response.status, spec.url));
-    }
-
-    match stream_and_verify(
-        response.body,
-        &dest,
-        offset,
+    // ST-2R2 / AC5: budget exhausted — emit the same terminal per-file `Error` as
+    // before (the partial survives for a later resume).
+    let error = last_error.unwrap_or_else(|| anyhow!("download failed for {}", spec.id));
+    let final_offset = describe_file(models_dir, manifest, spec).downloaded_bytes;
+    reporter.report(progress_for(
         spec,
         manifest,
-        reporter,
-        clock,
-    )
-    .await
-    {
-        Ok(()) => {
-            reporter.report(progress_for(
-                spec,
-                manifest,
-                spec.expected_bytes,
-                ProgressState::Present,
-            ));
-            Ok(())
-        }
-        Err(error) => {
-            reporter.report(progress_for(spec, manifest, offset, ProgressState::Error));
-            Err(error)
-        }
-    }
+        final_offset,
+        ProgressState::Error,
+    ));
+    Err(error)
 }
 
 /// Acquire every non-present required file, in manifest order. Per-file failures
@@ -547,6 +661,12 @@ mod tests {
         RangeUnsupported,
         Http(u16),
         FailAfter(usize),
+        /// Honor `Range` (206 + slice from the start) but fail the body on the
+        /// first `attempts` requests — the retry's persisted offset advances.
+        FailFirstAfter {
+            attempts: usize,
+            fail_after: usize,
+        },
     }
 
     #[derive(Clone)]
@@ -604,10 +724,12 @@ mod tests {
             range: Option<HttpRange>,
         ) -> BoxFuture<'a, Result<HttpResponse>> {
             Box::pin(async move {
-                self.requests
-                    .lock()
-                    .expect("lock")
-                    .push((url.to_string(), range.map(|r| r.start)));
+                let attempt_index = {
+                    let mut log = self.requests.lock().expect("lock");
+                    log.push((url.to_string(), range.map(|r| r.start)));
+                    // 1-based: the request just pushed.
+                    log.iter().filter(|(seen, _)| seen == url).count()
+                };
                 let file = self
                     .files
                     .lock()
@@ -640,6 +762,20 @@ mod tests {
                     }
                     FakeMode::Http(code) => (code, Vec::new(), None),
                     FakeMode::FailAfter(n) => (200, file.body.clone(), Some(n)),
+                    FakeMode::FailFirstAfter {
+                        attempts,
+                        fail_after,
+                    } => {
+                        // Honor the Range so the retry's persisted offset advances.
+                        let slice = file
+                            .body
+                            .get(start as usize..)
+                            .unwrap_or(&[])
+                            .to_vec();
+                        let status = if range.is_some() { 206 } else { 200 };
+                        let fail = (attempt_index <= attempts).then_some(fail_after);
+                        (status, slice, fail)
+                    }
                 };
                 let body = chunk_stream(bytes, file.chunk_size.max(1), fail_after);
                 Ok(HttpResponse { status, body })
@@ -933,6 +1069,11 @@ mod tests {
             !file_path(dir.path(), &m, &m.files[0]).exists(),
             "mismatched file must be deleted"
         );
+        assert_eq!(
+            transport.request_log().len(),
+            1,
+            "a SHA-256 mismatch (corrupt data) must not be retried"
+        );
     }
 
     #[tokio::test]
@@ -1075,6 +1216,137 @@ mod tests {
                 .len(),
             8
         );
+    }
+
+    #[tokio::test]
+    async fn mid_stream_body_error_is_retried_from_persisted_offset_until_success() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let full: Vec<u8> = (0..20u8).collect();
+        let m = manifest(vec![spec(
+            "model",
+            "a.bin",
+            "http://stub/a.bin",
+            full.len() as u64,
+            Some(sha256_hex(&full)),
+        )]);
+        let transport = FakeTransport::new();
+        transport.insert(
+            "http://stub/a.bin",
+            FakeFile {
+                body: full.clone(),
+                mode: FakeMode::FailFirstAfter {
+                    attempts: 1,
+                    fail_after: 8,
+                },
+                chunk_size: 4,
+            },
+        );
+        let reporter = RecordingReporter::default();
+        let clock = ManualClock::new();
+
+        let outcome = download_missing_files(&transport, &m, dir.path(), &reporter, &clock).await;
+
+        assert!(outcome.success, "outcome: {outcome:?}");
+        assert_eq!(outcome.files[0].state, FileState::Present);
+        // Attempt 1 has no range (offset 0) and fails after 8 bytes; attempt 2
+        // resumes from the persisted 8-byte offset.
+        assert_eq!(
+            transport.request_log(),
+            vec![
+                ("http://stub/a.bin".to_string(), None),
+                ("http://stub/a.bin".to_string(), Some(8)),
+            ]
+        );
+        assert_eq!(
+            std::fs::read(file_path(dir.path(), &m, &m.files[0])).expect("read"),
+            full
+        );
+        assert!(
+            reporter
+                .events()
+                .iter()
+                .all(|event| event.state != ProgressState::Error),
+            "a retried body error must never surface a per-file Error"
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_retries_surface_terminal_error_and_preserve_partial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body: Vec<u8> = (0..20u8).collect();
+        let m = manifest(vec![spec("model", "a.bin", "http://stub/a.bin", 20, None)]);
+        let transport = FakeTransport::new();
+        transport.insert(
+            "http://stub/a.bin",
+            FakeFile {
+                body: body.clone(),
+                mode: FakeMode::FailAfter(4),
+                chunk_size: 2,
+            },
+        );
+        let reporter = RecordingReporter::default();
+        let clock = ManualClock::new();
+
+        let outcome = download_missing_files(&transport, &m, dir.path(), &reporter, &clock).await;
+
+        assert!(!outcome.success);
+        assert_eq!(outcome.files[0].state, FileState::Error);
+        // The bounded budget caps the attempts; the partial survives for a resume.
+        assert_eq!(
+            transport.request_log().len(),
+            MAX_DOWNLOAD_ATTEMPTS,
+            "the bounded retry budget must cap the attempts"
+        );
+        assert_eq!(
+            std::fs::read(file_path(dir.path(), &m, &m.files[0]))
+                .expect("partial file survives")
+                .len(),
+            4
+        );
+        assert!(reporter
+            .events()
+            .iter()
+            .any(|event| event.state == ProgressState::Error));
+    }
+
+    #[tokio::test]
+    async fn resumed_download_seeds_hasher_with_on_disk_prefix_and_matches_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let full: Vec<u8> = (0..32u8).collect();
+        let expected_sha = sha256_hex(&full);
+        let m = manifest(vec![spec(
+            "vision",
+            "a.bin",
+            "http://stub/a.bin",
+            full.len() as u64,
+            Some(expected_sha.clone()),
+        )]);
+        seed_file(dir.path(), &m, &m.files[0], &full[..12]);
+
+        let transport = FakeTransport::new();
+        transport.insert(
+            "http://stub/a.bin",
+            FakeFile {
+                body: full.clone(),
+                mode: FakeMode::Range,
+                chunk_size: 5,
+            },
+        );
+        let reporter = RecordingReporter::default();
+        let clock = ManualClock::new();
+
+        let outcome = download_missing_files(&transport, &m, dir.path(), &reporter, &clock).await;
+
+        // The request offset equals the seeded prefix length; the final digest
+        // must cover prefix + newly streamed bytes.
+        assert_eq!(
+            transport.request_log(),
+            vec![("http://stub/a.bin".to_string(), Some(12))]
+        );
+        assert!(outcome.success, "outcome: {outcome:?}");
+        let on_disk = std::fs::read(file_path(dir.path(), &m, &m.files[0])).expect("read");
+        assert_eq!(on_disk, full);
+        assert_eq!(sha256_hex(&on_disk), expected_sha);
     }
 
     #[test]
