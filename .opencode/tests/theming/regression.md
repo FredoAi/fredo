@@ -29,10 +29,12 @@
 - [ ] **R-11:** Existing preset selection, per-token override, and "Reset to theme defaults"
       behave exactly as before (F-1..F-4); the override-wins layering
       (`overrides ?? preset ?? base`) is unchanged. Reference F-1..F-5/R-1..R-6.
-- [ ] **R-12:** Any token added or remapped by the slice has BOTH a light and dark value and does
-      not change any existing consumer's computed color (verify a sample: desktop shell, mission
-      monitor node chrome, chat surfaces) before/after. A global token change that shifts an
-      unrelated surface is a FAIL.
+- [ ] **R-12:** Any token added or remapped by the slice resolves correctly in BOTH light and dark
+      (the T1–T4/T6 derived `color-mix` vars compute from the live preset/override
+      `--text-primary`/`--text-secondary`/`--accent-primary` and therefore resolve per theme — NOT
+      two separately declared literal values) and does not change any existing consumer's computed
+      color (verify a sample: desktop shell, mission monitor node chrome, chat surfaces)
+      before/after. A global token change that shifts an unrelated surface is a FAIL.
 - [ ] **R-13:** No `var(--x)NN` alpha-append is introduced; transparent tints use `tint()`. The
       chrome's old literals (`rgba(147,51,234,0.12)`, `rgba(255,255,255,0.04)`,
       `rgba(255,255,255,0.12/0.22)`, `rgba(0,0,0,0.6)`, `rgba(0,0,0,0.4)`) are gone. Reference
