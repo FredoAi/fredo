@@ -189,5 +189,28 @@ Real wizard-driven pull (human directive); `models_dir` = `C:\Code\fredo\models`
 - **E-14 (partially verified):** after 2 interrupts the on-disk file remained a valid prefix
   (resume re-hashed the prefix and continued); no append-onto-garbage observed.
 - **E-15/E-18/E-19/E-20/E-22 (not executed):** disk-full/permission, nested-`MTP` case-variant,
-  Unicode paths, retry-storm concurrency, and listener churn were not probed this round (the
+  Unicode/space paths, retry-storm concurrency, and listener churn were not probed this round (the
   real-pull legs dominated the session).
+- **E-18 (verified round 2):** the `MTP/` nested subpath resolved correctly on Windows — the mtp row
+  showed `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` and its resolved path
+  `C:\Code\fredo\models\gemma-4-e2b-it-qat\MTP/mtp-gemma-4-E2B-it-Q4_0.gguf`; re-check detected its
+  absence and named exactly that path.
+
+## Findings — round 2 (2026-09-12, spec/2856 @ 1bef0ef5)
+
+Fix under test: `acquire_file` seeds the resume SHA-256 hasher BEFORE the GET + bounded retry/backoff
+(`MAX_DOWNLOAD_ATTEMPTS = 5`).
+
+- **E-21 (re-verified after the fix):** the round-1 mid-stream `error decoding response body` reset
+  did **not** recur. The resumed `model` transfer ran continuously from the exact on-disk offset
+  (first event `downloaded: 1304074347`) to `2,620,370,976` B with no `error` state emitted. The
+  round-1 defect (pre-body prefix-hash stall letting the peer reset an idle stream) is closed.
+- **E-16 (re-verified round 2):** the partial file from round 1 was preserved across the app
+  restart and resumed cleanly; `vision`/`mtp` stayed `Present` and emitted `state:"skipped"`.
+- **E-17 (re-verified round 2):** resume started at the persisted offset, never from zero; no
+  append-onto-garbage — final digest covers the whole file.
+- **E-14 (re-verified round 2, indirect):** after the interrupt the on-disk bytes were a valid
+  prefix (resume hashed the prefix and produced the pinned full-file digest).
+- **E-15/E-19/E-20/E-22 (still not executed):** disk-full/permission, Unicode/space models dir,
+  retry-storm concurrency, and listener churn remain unprobed (the banned stub server + manifest
+  override and the real-pull focus make them hard to drive safely).
