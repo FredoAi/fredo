@@ -507,8 +507,12 @@ tester sandbox allowlist; covered by CI `rust-validate` (`cargo test --locked`, 
       `--mmproj`, `--model-draft`, `--spec-type draft-mtp`, `--spec-draft-n-max 2`, `--fit off`,
       `--load-mode none`, `--gpu-layers all`, `--threads 6`, `--threads-batch 12`, `--reasoning on`,
       `--ctx-size 131072`, `--temp 1.0`, `--top-p 0.95`, `--top-k 64`, `--parallel 1`,
-      `--kv-unified 1`, `--log-verbosity 4`, `--alias Gemma-4-E2B` — 18/18, zero missing, zero
-      empty. Paths are RESOLVED absolute on-disk paths, not the `.bat`'s relative `gguf\…`.
+      `--kv-unified` (BARE value-less boolean switch — no value token; `false` emits the bare
+      `--no-kv-unified`; the switch is ALWAYS present, never omitted), `--log-verbosity 4`,
+      `--alias Gemma-4-E2B` — 18/18, zero missing, zero empty. Paths are RESOLVED absolute
+      on-disk paths, not the `.bat`'s relative `gguf\…`.
+      *(Round 3 human-authorized AC1 syntax correction — the round-2 `--kv-unified 1` form was
+      rejected by the binary: `error: invalid argument: 1`.)*
   - **Edge:** a path with spaces is one quoted token; an absent `--model-draft`/`--mmproj` file ⇒
     explicit error, never a dropped flag; restore defaults.
 
@@ -649,3 +653,31 @@ exactly: `1`→`invalid argument: 1`, then `{"kvUnified":false}` → `invalid ar
 `--kv-unified 0|1`; the resolved winget CPU `llama-server` rejects a value on this switch
 (`error: invalid argument: <value>`), so the AC1 argv can never reach `/health` on this host. Requires an
 Architect/PO resolution — the AC1 parameter contract was not modified to force a pass.
+
+## Execution Log — round 3 (2026-09-12, spec/2857 @ c62303d9)
+
+**Fix under test (ST-2-R).** `config.rs` emits the value-less boolean switch via the grouped `arg_groups()`
+builder: `kv_unified:true` → bare `--kv-unified`, `false` → bare `--no-kv-unified`, never a value; the `.bat`
+renderer groups one flag per line so the executable+switch renders `--kv-unified ^` with the next token a flag.
+
+| Case | Result (round 3) | Evidence |
+|------|------------------|----------|
+| F-33 | **PASS** | `.bat` disk read: all 19 AC1 tokens present incl. **`--kv-unified ^` (BARE; next token `--log-verbosity`)**; A/B `{"kvUnified":false}` → `--no-kv-unified ^`, no `0`; other 17 flags unchanged |
+| F-34 | **PASS** | `llama_server_args={"kvUnified":false}` changed exactly the switch; cleared → defaults restored |
+| F-35 | **PASS** | append-tracking: log grew 4 → 587 lines, **only the 4 pre-fix lines 1–4 contain `error:`**; child `build 10901` loaded the model (`llama_context: kv_unified = true`); `llama-server.exe` PID 23244 **child of fredo 6172**; card `starting` → `healthy` (controls render) |
+| F-36 | **PASS** | `GET /health` → `200 {"status":"ok"}`; `GET /v1/models` → `200` (`Gemma-4-E2B`, completion+multimodal); within the 180 s bound |
+| F-37 | **PASS** | webview responsive during the real load; card stayed `starting` (never `failed`); console error-level = 0 |
+| F-38 | **PASS** | SpeechBubble DOM sampler: 9 distinct partial contents + final joke; `llm-token` per delta → `llm-done` |
+| F-39 | **PASS** | product `llm_chat`: 703 `llm-token` deltas / 703 distinct cumulative lengths; TTFT 2830 ms; total 8972 ms (≥300-token criterion met; companion has no free-text input) |
+| F-40 | **PASS** | after `getCurrentWindow().close()`: no `llama-server.exe`, no `fredo.exe`, :8080 no LISTENING (tasklist/netstat via bun) |
+| F-41 | **PASS** | bad `llama_server_path` → `spawnFailed` immediately; card failed surface + actionable copy |
+| F-42 | **PASS** | `llama_server_health_timeout_s=2` → `healthTimeout` at 2931 ms; card health-timeout copy via Retry |
+| F-43 | **PASS** | 0 live refs; residual docs/tests only; `features/llm` + `vendor/llama-cpp-2` absent |
+| F-44 | **PASS** | `fredo::llm`/`LlmEngine`/`llama-cpp` logs newest `2026-09-12T00:40:12Z` (pre-deploy) — none this boot |
+| F-45 | **PASS** | console error-level empty after every leg; `pnpm --filter @fredo/ui build` exit 0; CI all green at `c62303d9` |
+| F-46 | **PASS (LIVE)** | `fredo emit` chat+tool `{"queued":true}`; `chat_rows=1`/`tool_use_rows=1`; `telemetry_spans` 14517 total, newest `2026-09-12T17:57:14.719Z`, 1354 in last 15 min |
+
+**Round-3 headline:** the round-2 argv defect is CLOSED. The spawned child proceeds past argument parse into
+model load and serves `/health` 200 on `127.0.0.1:8080`. The prior "winget CPU build cannot load" (E-13)
+hypothesis is refuted — the winget `ggml.llamacpp` build is a **Vulkan** build on an RTX 3060 (36/36 layers
+offloaded). AC1 was not weakened; only the documented boolean-switch syntax was corrected.
