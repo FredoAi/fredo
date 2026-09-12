@@ -187,12 +187,19 @@ export const CompanionSettingsPanel: React.FC = () => {
               size="md"
             >
               <Switch.HiddenInput aria-label="Show Fredo Companion" />
+              {/* #2864 R1 — non-text contrast (REQ-5). Checked thumb = the computed
+                  on-accent foreground (T5): white on classic purple, near-black on
+                  pale accents (cyan/amber) → 5.4–12.7:1 vs the accent track. The
+                  unchecked thumb keeps `--card-bg`; its track uses `--text-primary`
+                  so the OFF thumb also clears 3:1 in EVERY preset (card-bg vs
+                  border-color is only ~1.3–1.7:1 — a below-AA pair). The live-accent
+                  (checked) track is unchanged. */}
               <Switch.Control
-                bg="var(--border-color)"
+                bg="var(--text-primary)"
                 _checked={{ bg: 'var(--accent-primary)' }}
                 _focusVisible={{ outline: '2px solid var(--accent-primary)', outlineOffset: '2px' }}
               >
-                <Switch.Thumb bg="var(--card-bg)" _checked={{ bg: 'var(--card-bg)' }} />
+                <Switch.Thumb bg="var(--card-bg)" _checked={{ bg: 'var(--accent-contrast)' }} />
               </Switch.Control>
             </Switch.Root>
           </HStack>

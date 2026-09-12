@@ -67,6 +67,26 @@ describe('#2864 ST-5 — Companion surface consumes registered tokens (ST-3/ST-4
     expect(panel).toContain('var(--hover-bg)');
   });
 
+  it('gives the Switch thumb ≥3:1 non-text contrast in BOTH states (R1 / REQ-5)', () => {
+    // R1 FIX: the CHECKED thumb is the computed on-accent foreground (T5 —
+    // white on classic purple, near-black on cyan/amber), not `--card-bg`
+    // (card-bg on the accent track was ~1.9:1 light / ~2.5:1 dark — below AA).
+    expect(panel).toMatch(
+      /<Switch\.Thumb bg="var\(--card-bg\)" _checked=\{\{ bg: 'var\(--accent-contrast\)' \}\}/,
+    );
+    // The old checked thumb color must not return.
+    expect(panel).not.toMatch(
+      /<Switch\.Thumb[^\n]*_checked=\{\{ bg: 'var\(--card-bg\)' \}\}/,
+    );
+    // The unchecked thumb stays `--card-bg`, so the UNCHECKED track uses the
+    // foreground token: card-bg vs `--border-color` is only ~1.3–1.7:1 (below
+    // AA); card-bg vs `--text-primary` is ≥3:1 in every preset.
+    expect(panel).toMatch(/<Switch\.Control\s+bg="var\(--text-primary\)"/);
+    expect(panel).not.toMatch(/<Switch\.Control\s+bg="var\(--border-color\)"/);
+    // The live-accent CHECKED track is unchanged.
+    expect(panel).toMatch(/_checked=\{\{ bg: 'var\(--accent-primary\)' \}\}/);
+  });
+
   it('removes the Teleport-tip dimming entirely (H6 — never dim instructional text)', () => {
     expect(panel).not.toMatch(/opacity=\{isVisible/);
     expect(panel).not.toContain('pointerEvents');
