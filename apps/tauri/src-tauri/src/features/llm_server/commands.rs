@@ -24,6 +24,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::infrastructure::companion::resolve_llama_server;
 use crate::infrastructure::storage::AppStore;
 
+use super::chat::{self, LlmMessage};
 use super::config::LlamaServerConfig;
 use super::health::{self, HealthProbeSource, ReqwestHealthClient};
 use super::process;
@@ -360,9 +361,9 @@ fn lock_state(state: &LlamaServerState) -> MutexGuard<'_, Option<ManagedServer>>
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// `Some((port, pid))` iff a live managed child exists. A child that has exited
-/// is reaped out of the state.
-fn running_snapshot(state: &LlamaServerState) -> Option<(u16, u32)> {
+/// `Some((port, pid, log_path))` iff a live managed child exists. A child that
+/// has exited is reaped out of the state.
+fn running_snapshot(state: &LlamaServerState) -> Option<(u16, u32, PathBuf)> {
     let mut guard = lock_state(state);
     let alive = match guard.as_mut() {
         Some(server) => matches!(server.child.try_wait(), Ok(None)),
@@ -374,7 +375,9 @@ fn running_snapshot(state: &LlamaServerState) -> Option<(u16, u32)> {
         }
         return None;
     }
-    guard.as_ref().map(|server| (server.port, server.pid))
+    guard
+        .as_ref()
+        .map(|server| (server.port, server.pid, server.log_path.clone()))
 }
 
 /// Kill and forget the managed server (used to reclaim an unhealthy slot).
@@ -450,7 +453,7 @@ pub async fn launch_llama_server(app: AppHandle) -> LlamaServerLaunchResult {
         let state = app.state::<LlamaServerState>();
         running_snapshot(state.inner())
     };
-    if let Some((port, pid)) = snapshot {
+    if let Some((port, pid, _log_path)) = snapshot {
         if health_probe_once(&app, port).await {
             set_setting(&app, LLAMA_SERVER_ACTIVE_PORT_KEY, &port.to_string());
             set_setting(&app, LLAMA_SERVER_LAST_ERROR_KEY, "");
@@ -658,9 +661,9 @@ pub async fn get_llama_server_status(
         })
         .unwrap_or_else(|_| (String::new(), String::new()));
 
-    let (running, port, pid) = match running_snapshot(state.inner()) {
-        Some((port, pid)) => (true, Some(port), Some(pid)),
-        None => (false, None, None),
+    let (running, port, pid, managed_log) = match running_snapshot(state.inner()) {
+        Some((port, pid, log_path)) => (true, Some(port), Some(pid), Some(log_path)),
+        None => (false, None, None, None),
     };
     let healthy = if running {
         match port {
@@ -671,6 +674,11 @@ pub async fn get_llama_server_status(
         false
     };
 
+    // Prefer the managed server's actual log path when one is running.
+    let log_path = managed_log
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(log_path);
+
     Ok(LlamaServerStatus {
         running,
         healthy,
@@ -680,6 +688,37 @@ pub async fn get_llama_server_status(
         log_path,
         last_error: get_setting(&app, LLAMA_SERVER_LAST_ERROR_KEY),
     })
+}
+
+// ── Rerouted chat/vision (ST-4) ───────────────────────────────────────────────
+//
+// SAME IPC names + argument shapes as the deleted in-process commands. The
+// command returns immediately and the HTTP streaming happens on a background
+// task: `llm-token` per delta, `llm-done` at the end, and the ADDITIVE
+// `llm-error` readable line before `llm-done` on any failure (R-4, never hangs).
+
+/// Stream a companion chat message through the managed server.
+#[tauri::command]
+pub fn llm_chat(messages: Vec<LlmMessage>, app: AppHandle) -> Result<(), String> {
+    chat::spawn_chat(app, messages, None);
+    Ok(())
+}
+
+/// Stream a companion vision chat: the image is attached to the last user message.
+#[tauri::command]
+pub fn llm_chat_with_image(
+    messages: Vec<LlmMessage>,
+    image_base64: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    chat::spawn_chat(app, messages, Some(image_base64));
+    Ok(())
+}
+
+/// App-exit hook: terminate the managed server tree (Spec #2857, ST-4 owns the
+/// hook mechanism here; ST-7 owns the PID sweep + the kill-on-exit test).
+pub fn stop_llama_server_on_exit(app: &AppHandle) {
+    stop_managed(app);
 }
 
 #[cfg(test)]

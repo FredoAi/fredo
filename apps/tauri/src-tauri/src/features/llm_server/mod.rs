@@ -2,16 +2,12 @@
 //!
 //! ST-2 owns the PURE launch-configuration model ([`config`]) and the AppStore
 //! key constants every other sub-task consumes. ST-3 adds the process lifecycle
-//! ([`state`], [`process`], [`health`], [`commands`]); chat routing lands in
-//! ST-4 and the exit hook in ST-7.
-//!
-//! TEMPORARY while unwired: ST-4 registers the lifecycle commands in `lib.rs`
-//! and manages [`state::LlamaServerState`]. Until that registration exists,
-//! `features` is a private module and rustc's dead-code lint flags the entire
-//! (intentionally unreferenced) surface. Drop this `allow` in ST-4 once the
-//! commands are reachable from `lib.rs` — it is NOT a permanent suppression.
-#![allow(dead_code)]
+//! ([`state`], [`process`], [`health`], [`commands`]); ST-4 adds chat routing
+//! ([`chat`]) and registers the commands in `lib.rs`. The exit hook mechanism
+//! lives in `lib.rs` / [`commands::stop_llama_server_on_exit`]; ST-7 owns the
+//! startup PID sweep and the kill-on-exit test.
 
+pub mod chat;
 pub mod commands;
 pub mod config;
 pub mod health;
@@ -25,6 +21,12 @@ pub mod state;
 // a call site.
 
 /// Absolute path to the resolved `llama-server` executable.
+///
+/// The runtime resolver owns the authoritative key
+/// (`infrastructure::companion::resolver::LLAMA_SERVER_SETTING_KEY`); this
+/// constant exists only so the launch-config key-set test pins the shared
+/// string. Gate it to test builds so production has no dead code.
+#[cfg(test)]
 pub const LLAMA_SERVER_PATH_KEY: &str = "llama_server_path";
 /// Configured (preferred) server port.
 pub const LLAMA_SERVER_PORT_KEY: &str = "llama_server_port";
