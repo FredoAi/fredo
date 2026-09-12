@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::infrastructure::companion::resolve_llama_server;
+#[cfg(test)]
+use crate::infrastructure::companion::resolve_llama_server_order;
 use crate::infrastructure::storage::AppStore;
 use super::model_download::{
     download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
@@ -1081,8 +1084,6 @@ pub async fn download_model(app: AppHandle) -> ModelDownloadResult {
 // returns through its ordered `COMPANION_SETUP_STEPS` registry. #2856 appends a
 // model-download action; #2857 appends a `serverLaunch` prerequisite.
 
-const LLAMA_SERVER_BIN: &str = "llama-server";
-const LLAMA_SERVER_SETTING_KEY: &str = "llama_server_path";
 const WINGET_BIN: &str = "winget";
 #[cfg(target_os = "windows")]
 const WINGET_APP_ID: &str = "ggml.llamacpp";
@@ -1129,76 +1130,6 @@ pub struct LlamaCppInstallResult {
     pub output: String,
     pub error: Option<String>,
     pub code: Option<LlamaCppInstallCode>,
-}
-
-/// Resolve an executable on PATH (first match). Local helper — no cross-feature import.
-fn find_on_path(bin: &str) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let finder = "where";
-    #[cfg(not(target_os = "windows"))]
-    let finder = "which";
-
-    std::process::Command::new(finder)
-        .arg(bin)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
-/// The winget shim location — required because the running process's inherited
-/// PATH does not refresh after `winget install` (keeps AC-3's "no reload" honest).
-#[cfg(target_os = "windows")]
-fn winget_links_shim() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|dir| {
-        PathBuf::from(dir)
-            .join("Microsoft")
-            .join("WinGet")
-            .join("Links")
-            .join(format!("{LLAMA_SERVER_BIN}.exe"))
-    })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn winget_links_shim() -> Option<PathBuf> {
-    None
-}
-
-/// Pure resolution order (unit-tested): configured path → PATH → winget shim.
-/// `on_path` is the already-resolved PATH candidate; `shim` the winget Link.
-fn resolve_llama_server_order(
-    configured: Option<&str>,
-    on_path: Option<PathBuf>,
-    shim: Option<PathBuf>,
-) -> Option<PathBuf> {
-    if let Some(path) = configured {
-        let candidate = PathBuf::from(path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    if let Some(path) = on_path {
-        return Some(path);
-    }
-    shim.filter(|p| p.is_file())
-}
-
-/// Resolve a usable `llama-server` executable. #2855 only DETECTS — never launches.
-/// `Err` means the configured path could not be read (the prerequisite is then
-/// reported as `Error` — "could not determine" — never as `Missing`).
-fn resolve_llama_server(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    let configured = app
-        .state::<Arc<AppStore>>()
-        .get(LLAMA_SERVER_SETTING_KEY)
-        .map_err(|e| e.to_string())?;
-    Ok(resolve_llama_server_order(
-        configured.as_deref(),
-        find_on_path(LLAMA_SERVER_BIN),
-        winget_links_shim(),
-    ))
 }
 
 /// Aggregate the manifest probe into the `modelFiles` prerequisite. Pure — the
