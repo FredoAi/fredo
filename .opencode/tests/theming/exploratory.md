@@ -16,3 +16,16 @@
 - [ ] **E-9 (#2842):** Keyboard-drive the readout chips (Tab to a chip, Enter/Space to open the color picker, arrows). Is each chip focusable with a visible focus ring and an accessible name naming the token? (WCAG 2.1.1/2.1.2/4.1.2.)
 - [ ] **E-10 (#2842):** Apply High Contrast, then Monochrome. Is each swatch distinguishable from its chip border/surface, and is the token label/hex text legible over the chip (≥3:1) rather than swallowed by the swatch color?
 - [ ] **E-11 (#2842):** At the 960px dialog width, apply a preset then layer overrides on all 12 tokens. Does the readout stay within the content area (no horizontal scroll / clipping), and do long hex/font values wrap cleanly?
+
+## #2864 extension — token-derivation probes
+
+- [ ] **E-12:** **Undefined CSS-var audit.** Grep the audited Settings files (and their shared
+      chrome) for every `var(--…)` reference and cross-check each against a `setProperty`/CSS
+      definition. Any token referenced but never defined (like `--hover-bg`) is a finding —
+      record the consumer file:line and the computed fallback.
+- [ ] **E-13:** **Global-token light/dark regression sweep.** If a token is added/remapped, switch
+      dark↔light and compare computed colors on unrelated surfaces (desktop shell, launcher,
+      mission-monitor node chrome). Any surface that shifts unintentionally is a finding.
+- [ ] **E-14:** **Accent override persistence + chrome re-tint.** Set an `accentPrimary` override,
+      reload, and open Settings. Does the chrome re-tint on boot with no flash of the old accent
+      and no stale literal? Any stuck color is a finding (promotes to F-12).
