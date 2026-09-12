@@ -42,7 +42,7 @@ export const CompanionSettingsPanel: React.FC = () => {
   // Readiness gate (#2855): the backend is authoritative. While not ready — and
   // while the first probe is still in flight — the wizard is the ONLY content.
   const {
-    readiness, checking, refresh, runAction, runningActionId, actionError,
+    readiness, checking, refresh, runAction, runningActionId, actionError, modelFiles,
   } = useCompanionReadiness();
 
   // ── Idle auto-return duration (#2853 ST-5) ─────────────────────────────────
@@ -94,6 +94,7 @@ export const CompanionSettingsPanel: React.FC = () => {
         prerequisites={prerequisites}
         runningActionId={runningActionId}
         actionError={actionError}
+        modelFiles={modelFiles}
         onRunAction={(id) => { void runAction(id); }}
         onRecheck={() => { void refresh(); }}
       />

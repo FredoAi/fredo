@@ -1,7 +1,11 @@
 use clap::Parser;
-use futures_util::StreamExt;
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
+
+use crate::features::setup::model_download::{
+    download_missing_files, DownloadProgress, ProgressReporter, ProgressState, ReqwestTransport,
+    SystemClock,
+};
+use crate::features::setup::model_download_state::{default_manifest, probe_files, FileState};
 
 /// Check or perform Fredo setup operations
 ///
@@ -26,12 +30,6 @@ pub struct SetupArgs {
     #[arg(long)]
     pub download_model: bool,
 }
-
-// ── Model constants (must match setup/commands.rs) ────────────────────────────
-
-const MODEL_SUBDIR: &str = "gemma-e2b-it";
-const MODEL_GGUF: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
-const MODEL_MMPROJ: &str = "mmproj-F16.gguf";
 
 // ── CLI helpers ────────────────────────────────────────────────────────────────
 
@@ -71,16 +69,36 @@ fn is_opencode_plugin_installed(home: &Path) -> bool {
     opencode_plugins_dir(home).join("fredo.js").exists()
 }
 
-/// Return the canonical models directory — same location that check_model_files
-/// scans and download_model writes to.  We only use CARGO_MANIFEST_DIR because
-/// models are no longer bundled as Tauri resources.
+/// Return the canonical BASE models directory — the same `{home}/fredo-models`
+/// fallback the app uses. The manifest `subdir` (`gemma-4-e2b-it-qat`) is
+/// appended by the shared engine, keeping the CLI layout identical to the app.
 fn resolve_models_dir() -> PathBuf {
-    home_dir().join("fredo-models").join(MODEL_SUBDIR)
+    home_dir().join("fredo-models")
 }
 
-fn resolve_model_path(subdir: &str, filename: &str) -> Option<PathBuf> {
-    let fb = home_dir().join("fredo-models").join(subdir).join(filename);
-    if fb.exists() { Some(fb) } else { None }
+/// Mirror the in-app `setup:download-progress` lifecycle onto stderr.
+struct CliProgressReporter;
+
+impl ProgressReporter for CliProgressReporter {
+    fn report(&self, progress: DownloadProgress) {
+        match progress.state {
+            ProgressState::Downloading => {
+                eprint!(
+                    "\r[fredo] Downloading {}... {:.1}%",
+                    progress.file, progress.percent
+                );
+            }
+            ProgressState::Present => {
+                eprintln!("\r[fredo] {} ready.", progress.file);
+            }
+            ProgressState::Skipped => {
+                eprintln!("[fredo] {} already present, skipping.", progress.file);
+            }
+            ProgressState::Error => {
+                eprintln!("\r[fredo] {} failed.", progress.file);
+            }
+        }
+    }
 }
 
 fn cli_check_otel_configured() -> bool {
@@ -200,18 +218,35 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
             serde_json::json!({"status": "missing", "detail": "Fredo plugin not installed."})
         };
 
-        // model
-        let gguf_path = resolve_model_path(MODEL_SUBDIR, MODEL_GGUF);
-        let mmproj_path = resolve_model_path(MODEL_SUBDIR, MODEL_MMPROJ);
-        let model = if gguf_path.is_some() && mmproj_path.is_some() {
-            serde_json::json!({"status": "ok", "detail": "Both model files present."})
-        } else if gguf_path.is_some() {
-            serde_json::json!({"status": "missing", "detail": "GGUF model found but mmproj missing."})
-        } else if mmproj_path.is_some() {
-            serde_json::json!({"status": "missing", "detail": "mmproj found but GGUF model missing."})
+        // model — same 3-file manifest + classifier as the in-app path.
+        let manifest = default_manifest();
+        let models_dir = resolve_models_dir();
+        let files = probe_files(&models_dir, &manifest);
+        let total = files.len();
+        let present = files
+            .iter()
+            .filter(|status| status.state == FileState::Present)
+            .count();
+        let complete = total > 0 && present == total;
+        let detail = if complete {
+            "All required model files present.".to_string()
         } else {
-            serde_json::json!({"status": "missing", "detail": "No model files found."})
+            let missing: Vec<&str> = files
+                .iter()
+                .filter(|status| status.state != FileState::Present)
+                .map(|status| status.relative_path.as_str())
+                .collect();
+            format!(
+                "{present} of {total} model files present. Missing: {}",
+                missing.join(", ")
+            )
         };
+        let model = serde_json::json!({
+            "status": if complete { "ok" } else { "missing" },
+            "detail": detail,
+            "complete": complete,
+            "files": files,
+        });
 
         // otel
         let otel = if cli_check_otel_configured() {
@@ -291,48 +326,37 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
     }
 
     if args.download_model {
+        // Delegate to the SAME manifest + streamed engine as the app
+        // (skip-present / Range-resume / streaming SHA-256) — no duplicated URLs.
+        let manifest = default_manifest();
         let models_dir = resolve_models_dir();
-        std::fs::create_dir_all(&models_dir)
+        std::fs::create_dir_all(models_dir.join(&manifest.subdir))
             .map_err(|e| anyhow::anyhow!("Failed to create models directory: {e}"))?;
 
-        let base_url = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main";
-        let files = [MODEL_GGUF, MODEL_MMPROJ];
-        let client = reqwest::Client::new();
+        let transport = ReqwestTransport::new()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize the download client: {e}"))?;
+        let outcome = download_missing_files(
+            &transport,
+            &manifest,
+            &models_dir,
+            &CliProgressReporter,
+            &SystemClock,
+        )
+        .await;
 
-        for &filename in &files {
-            let url = format!("{base_url}/{filename}");
-            let dest = models_dir.join(filename);
-
-            if dest.exists() {
-                tracing::info!(target: "fredo::cli", filename, "file already exists, skipping.");
-                continue;
-            }
-
-            eprint!("[fredo] Downloading {filename}...");
-
-            let response = client.get(&url).send().await
-                .map_err(|e| anyhow::anyhow!("Failed to start download: {e}"))?;
-
-            let total = response.content_length().unwrap_or(0);
-            let mut downloaded: u64 = 0;
-            let mut stream = response.bytes_stream();
-            let mut file = tokio::fs::File::create(&dest).await
-                .map_err(|e| anyhow::anyhow!("Failed to create file: {e}"))?;
-
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = chunk_result.map_err(|e| anyhow::anyhow!("Download failed: {e}"))?;
-                downloaded += chunk.len() as u64;
-                file.write_all(&chunk).await
-                    .map_err(|e| anyhow::anyhow!("Write failed: {e}"))?;
-
-                if total > 0 {
-                    let percent = (downloaded as f64 / total as f64) * 100.0;
-                    eprint!("\r[fredo] Downloading {filename}... {percent:.1}%");
-                }
-            }
-
-            tracing::info!(target: "fredo::cli", filename, path = %dest.display(), "model downloaded");
+        if !outcome.success {
+            let error = outcome
+                .error
+                .clone()
+                .unwrap_or_else(|| outcome.output.clone());
+            anyhow::bail!("{error}");
         }
+
+        tracing::info!(
+            target: "fredo::cli",
+            path = %models_dir.join(&manifest.subdir).display(),
+            "model files ready"
+        );
     }
 
     Ok(())
@@ -352,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_models_dir_contains_fredo_models() {
+    fn resolve_models_dir_is_the_fredo_models_base_dir() {
         let dir = resolve_models_dir();
         let dir_str = dir.to_string_lossy();
         assert!(
@@ -360,17 +384,17 @@ mod tests {
             "models dir should contain 'fredo-models'"
         );
         assert!(
-            dir_str.contains(MODEL_SUBDIR),
-            "models dir should contain the model subdirectory"
+            !dir_str.contains("gemma-4-e2b-it-qat"),
+            "the base dir must not bake in the manifest subdir"
         );
     }
 
     #[test]
-    fn resolve_model_path_returns_none_for_nonexistent_file() {
-        let result = resolve_model_path("nonexistent-subdir", "nonexistent-file.gguf");
-        assert!(
-            result.is_none(),
-            "should return None for a file that does not exist"
-        );
+    fn cli_uses_the_same_three_file_manifest_as_the_engine() {
+        let manifest = default_manifest();
+        let ids: Vec<&str> = manifest.files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["model", "vision", "mtp"]);
+        assert_eq!(manifest.subdir, "gemma-4-e2b-it-qat");
+        assert!(manifest.files[2].path.starts_with("MTP/"));
     }
 }
