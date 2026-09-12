@@ -79,3 +79,13 @@ Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missi
       succeeds.
 - [ ] S-13: No orphan — after exiting Fredo, the process listing shows no surviving
       `llama-server.exe` and the configured port is free.
+
+## Execution Log — round 2 (2026-09-12, spec/2857 @ 61f77d18)
+
+- **S-10 PASS:** `companion-step-server-launch` rendered alongside `companion-step-llama-server` +
+  `companion-step-model-files`, in that order, with `data-state` + `data-server-state`; no console error.
+- **S-11 FAIL:** the launch never reached `data-server-state=healthy`; the real child died at startup
+  (`error: invalid argument: 1`) and the card went `starting` → `failed` at the 180 s bound.
+- **S-12 PASS:** screenshots captured under `.opencode/tmp/2857/e2e/` and uploaded to `.opencode/evidence/2857/`.
+- **S-13 UNVERIFIED:** no server ever ran (AC2 defect), so there is no orphan to check; the tester sandbox
+  exposes no `llama-server.exe` process-lister or :8080 port probe. Named blocker (G-053).
