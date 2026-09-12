@@ -89,6 +89,13 @@ pub fn run() {
             // readiness is the server's own `/health`, gated by the wizard.
             app.manage(features::llm_server::state::LlamaServerState::default());
 
+            // -- Startup orphan sweep (Spec #2857 ST-7) ------------------------
+            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
+            // reclaim a persisted `llama-server` PID on the next launch. The sweep
+            // is PID-reuse guarded (image name) and can never kill an unrelated
+            // process (R-3.3).
+            features::llm_server::process::sweep_orphan(app.handle());
+
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
 

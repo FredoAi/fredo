@@ -1,17 +1,23 @@
-//! Process lifecycle helpers for the managed `llama-server` (Spec #2857, ST-3).
+//! Process lifecycle helpers for the managed `llama-server` (Spec #2857, ST-3;
+//! startup orphan sweep ST-7).
 //!
 //! Owns the pure filesystem layout (companion dir / config / log), the port
 //! selection seam, the `std::process::Command` spawn (no shell, log redirect),
-//! and the process-tree kill. Nothing here performs HTTP — readiness lives in
-//! [`super::health`].
+//! the process-tree kill, and the PID marker + startup orphan sweep (R-3.3).
+//! Nothing here performs HTTP — readiness lives in [`super::health`].
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use tauri::{AppHandle, Manager};
+
+use crate::infrastructure::storage::AppStore;
 
 use super::config::LlamaServerConfig;
 use super::state::ManagedServer;
+use super::LLAMA_SERVER_PID_KEY;
 
 /// Subdirectory under the app data dir that holds generated companion artifacts.
 pub const COMPANION_DIR: &str = "companion";
@@ -33,6 +39,130 @@ pub fn config_path(app_data_dir: &Path) -> PathBuf {
 /// Absolute path of the server log.
 pub fn log_path(app_data_dir: &Path) -> PathBuf {
     companion_dir(app_data_dir).join(LOG_FILENAME)
+}
+
+// ── Startup orphan sweep (ST-7, R-3.3) ────────────────────────────────────────
+//
+// The `RunEvent::Exit` hook (ST-4) cannot run on a hard-kill (SIGKILL/Task
+// Manager), so a `llama-server` child can outlive Fredo. The launch flow
+// persists its PID (`llama_server_pid`); on the next startup we inspect that
+// PID and reclaim it — but ONLY after confirming the live image is our server,
+// so an OS-reused PID is never killed.
+
+/// Image name the managed server process must report for the sweep to treat a
+/// persisted PID as OUR server (the PID-reuse guard's expected value).
+const LLAMA_SERVER_IMAGE: &str = "llama-server.exe";
+
+/// Persist the managed server PID marker; `None` clears it.
+///
+/// AppStore is the single source of truth for the marker — this helper owns the
+/// key so the write and clear paths cannot drift. A failed write is ignored: the
+/// marker is best-effort recovery metadata, never load-bearing state.
+pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
+    let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
+    let _ = store.set(LLAMA_SERVER_PID_KEY, &value);
+}
+
+/// Read the persisted managed server PID marker (blank / malformed => `None`).
+pub fn persisted_pid(store: &AppStore) -> Option<u32> {
+    store
+        .get(LLAMA_SERVER_PID_KEY)
+        .ok()
+        .flatten()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Pure PID-reuse guard: a persisted PID may be swept ONLY when the live process
+/// image is the expected server binary. A reused PID (any other image), an empty
+/// name, or an unreadable image is NEVER killed.
+pub fn is_llama_server_image(image: Option<&str>, expected: &str) -> bool {
+    match image {
+        Some(name) => {
+            let name = name.trim();
+            !name.is_empty() && name.eq_ignore_ascii_case(expected)
+        }
+        None => false,
+    }
+}
+
+/// The OS-reported image name for `pid`, or `None` when the process is gone or
+/// unreadable. Windows queries `tasklist`; other platforms return `None` (the
+/// companion runtime is Windows-only).
+pub fn process_image_name(pid: u32) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_tasklist_image_name(&stdout).map(str::to_string)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// First CSV field of the first `tasklist /FO CSV` data line
+/// (`"image","pid",…`), or `None` for a no-match / info line.
+#[cfg(target_os = "windows")]
+fn parse_tasklist_image_name(output: &str) -> Option<&str> {
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('"'))?;
+    let rest = line.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    let name = &rest[..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Kill a process AND its tree by PID alone (used to reclaim an orphan found by
+/// the startup sweep, for which no `Child` handle exists).
+pub fn kill_pid_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Startup sweep: reclaim a `llama-server` orphaned by a prior hard-kill.
+///
+/// Reads the persisted PID marker; kills that PID ONLY when its live image is
+/// `llama-server.exe` (the PID-reuse guard), then clears the marker. A missing
+/// marker, a gone process, and a reused PID are all safe no-kill paths, so the
+/// sweep can never terminate an unrelated process.
+pub fn sweep_orphan(app: &AppHandle) {
+    let store = app.state::<Arc<AppStore>>();
+    let store: &AppStore = store.inner();
+    let Some(pid) = persisted_pid(store) else {
+        return;
+    };
+    if is_llama_server_image(process_image_name(pid).as_deref(), LLAMA_SERVER_IMAGE) {
+        kill_pid_tree(pid);
+    }
+    // Always clear after inspection — the launch flow rewrites it on the next
+    // successful launch, and a stale marker must not be re-inspected forever.
+    persist_pid(store, None);
 }
 
 /// Choose the port the server binds: `configured` when it is free on `host`,
@@ -102,15 +232,7 @@ pub fn spawn_server(config: &LlamaServerConfig, log_file: &Path) -> Result<Manag
 /// [`std::process::Child::kill`] and reaps the child. Best-effort — a process
 /// already gone is not an error.
 pub fn kill_process_tree(server: &mut ManagedServer) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &server.pid.to_string(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
+    kill_pid_tree(server.pid);
 
     let _ = server.child.kill();
     let _ = server.child.wait();
@@ -138,7 +260,69 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::storage::AppStore;
     use std::net::TcpListener;
+
+    #[test]
+    fn pid_reuse_guard_only_accepts_the_server_image() {
+        // Our own server image (case- and whitespace-insensitive).
+        assert!(is_llama_server_image(
+            Some("llama-server.exe"),
+            LLAMA_SERVER_IMAGE
+        ));
+        assert!(is_llama_server_image(
+            Some("LLAMA-SERVER.EXE"),
+            LLAMA_SERVER_IMAGE
+        ));
+        assert!(is_llama_server_image(
+            Some("  llama-server.exe  "),
+            LLAMA_SERVER_IMAGE
+        ));
+        // A reused PID: any other live image must NEVER be killed.
+        assert!(!is_llama_server_image(Some("chrome.exe"), LLAMA_SERVER_IMAGE));
+        assert!(!is_llama_server_image(
+            Some("llama-server-helper.exe"),
+            LLAMA_SERVER_IMAGE
+        ));
+        assert!(!is_llama_server_image(Some(""), LLAMA_SERVER_IMAGE));
+        // A gone / unreadable process is a safe no-kill path.
+        assert!(!is_llama_server_image(None, LLAMA_SERVER_IMAGE));
+    }
+
+    #[test]
+    fn persist_pid_round_trips_and_clears() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = AppStore::open(dir.path().to_path_buf()).expect("open app store");
+
+        persist_pid(&store, Some(4242));
+        assert_eq!(persisted_pid(&store), Some(4242));
+
+        persist_pid(&store, None);
+        assert_eq!(persisted_pid(&store), None);
+
+        // A blank / malformed marker is not a PID (never parsed as 0).
+        let _ = store.set(
+            crate::features::llm_server::LLAMA_SERVER_PID_KEY,
+            "not-a-pid",
+        );
+        assert_eq!(persisted_pid(&store), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_tasklist_image_name_reads_the_first_csv_field() {
+        let output = "\"llama-server.exe\",\"4242\",\"Console\",\"1\",\"12,345 K\"\r\n";
+        assert_eq!(
+            parse_tasklist_image_name(output),
+            Some("llama-server.exe")
+        );
+        // A no-match / info line is not an image name.
+        assert_eq!(
+            parse_tasklist_image_name("INFO: No tasks are running which match\r\n"),
+            None
+        );
+        assert_eq!(parse_tasklist_image_name(""), None);
+    }
 
     #[test]
     fn config_and_log_paths_live_under_the_companion_dir() {
