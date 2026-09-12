@@ -65,9 +65,6 @@ export type {
 // ── App shell components ──────────────────────────────────────────────────────
 export { Router } from './app/routes/Router';
 
-// ── Feature components ────────────────────────────────────────────────────────
-export { SettingsPanel } from './features/home/components/settings/SettingsPanel';
-
 // ── Session utilities (used by BrowserShell in browser-extension) ─────────────
 export {
   getConversationUrl,
