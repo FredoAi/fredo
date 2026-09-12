@@ -47,9 +47,21 @@ pnpm install
 
 ## Download Models
 
-GGUF model files are **not required to build** — they are only needed at runtime for local AI inference. Models are **not stored in git** (too large). Download them as an optional post-build step:
+GGUF model files are **not required to build** — they are only needed at runtime for local AI inference. Models are **not stored in git** (too large).
 
-### Quick download (recommended)
+The **Companion** (llama.cpp runtime) downloads its three required files in-app. The legacy in-process engine uses a separate two-file set (quick/manual download below).
+
+### In-app download (Companion — recommended)
+
+Open **Settings → Companion** and click **Download model files** in the guided setup wizard's **Model files** step. Fredo fetches the three pinned companion files with per-file progress and verifies each with its SHA-256; already-present files are skipped and an interrupted transfer resumes from where it stopped. They land under `<models_dir>/gemma-4-e2b-it-qat/` (the models directory is the `models_dir` setting; default `~/fredo-models`).
+
+| File | Size | Source ([unsloth/gemma-4-E2B-it-qat-GGUF](https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF)) |
+|------|------|--------|
+| `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf` | ~2.6 GB | model |
+| `mmproj-BF16.gguf` | ~987 MB | vision projector |
+| `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` | ~59 MB | speculative draft (MTP) |
+
+### Quick download (in-process engine, legacy set)
 
 ```powershell
 # From repo root — downloads Gemma 4 E2B model + vision projector (~4 GB total)
@@ -81,7 +93,7 @@ Switch models via Settings → Model Selector in the UI. Changes take effect on 
 The companion's runtime prerequisites are checked in-app. Open **Settings → Companion** on a machine that is not yet set up and the panel shows a setup wizard as its only content:
 
 - **llama.cpp runtime** — a usable `llama-server` (resolved from a configured path, then `PATH`, then the winget Links shim). The wizard offers a one-click **Install llama.cpp** (`winget install --id ggml.llamacpp -e`) and re-checks readiness in place — no app reload.
-- **Model files** — the required GGUF + vision projector under the configured models directory (see [Download Models](#download-models)).
+- **Model files** — the three required files (model + vision projector + MTP speculative draft) under `<models_dir>/gemma-4-e2b-it-qat/`. The step lists them individually (`missing` / `downloading` / `present` / `error`), downloads them in-app with per-file progress, skips files already present, resumes an interrupted transfer via HTTP `Range`, verifies each with its pinned SHA-256, and names exactly which file(s) are missing. See [Download Models](#download-models).
 
 Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once both are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
 

@@ -129,7 +129,9 @@ Open Settings in the UI → Model Selector → choose a model. The change takes 
 
 ### Where do I put model files?
 
-Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`. For example:
+For the **Companion**, you usually don't place them manually: the setup wizard's **Model files** step downloads the three required files (model + vision projector + MTP speculative draft) in-app with per-file progress, skip-present, and SHA-256 verification, landing them under `<models_dir>/gemma-4-e2b-it-qat/` (the models directory is configurable via the `models_dir` setting; default `~/fredo-models`). Correctly-sized files dropped there manually are detected by **Re-check**.
+
+For the legacy in-process engine, place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`. For example:
 ```
 apps/tauri/src-tauri/models/gemma-e2b-it/gemma-e2b-it-q4_k_m.gguf
 ```
@@ -218,7 +220,7 @@ The companion and the launcher's desktop mascot are mutually exclusive — while
 
 ### How do I get the companion ready to use?
 
-Open **Settings → Companion**. If the runtime is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls) that checks two things independently: the **llama.cpp runtime** (`llama-server` availability) and the required **model files**. The llama.cpp step offers a one-click `winget install llama.cpp` and re-checks readiness automatically — no app restart — and shows an actionable message if `winget` is unavailable or the install fails. Once both prerequisites read as installed, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
+Open **Settings → Companion**. If the runtime is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls) that checks its prerequisites independently: the **llama.cpp runtime** (`llama-server` availability) and the required **model files**. The llama.cpp step offers a one-click `winget install llama.cpp` and re-checks readiness automatically — no app restart — and shows an actionable message if `winget` is unavailable or the install fails. The **Model files** step lists the three required files individually, downloads them in-app with per-file progress (skipping files already present), resumes an interrupted transfer, and names exactly which file(s) are missing. Once all prerequisites read as satisfied, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
 
 ### How does the Tic-Tac-Toe AI work?
 
