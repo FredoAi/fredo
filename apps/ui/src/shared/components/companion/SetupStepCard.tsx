@@ -212,7 +212,7 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
                   size="sm"
                   data-testid={`companion-step-${step.testId}-install`}
                   bg="var(--accent-primary)"
-                  color="white"
+                  color="var(--accent-contrast)"
                   disabled={isRunning}
                   aria-busy={isRunning || undefined}
                   onClick={() => onRunAction(step.id)}
