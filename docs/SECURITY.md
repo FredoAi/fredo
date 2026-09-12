@@ -38,6 +38,22 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 
 ---
 
+## Companion `llama-server`
+
+The companion's inference runtime is a managed `llama-server` **child process**, launched by the app from a launch config generated from local settings. It binds to **loopback (`127.0.0.1`) only** on the configured port (default `8080`) — it is not reachable from other machines on the network.
+
+**Protections:**
+- Loopback-only binding prevents external access
+- Spawned and stopped only through the `features/llm_server` commands; the process is never started ad-hoc from other feature code
+- Terminated on app exit (kill-on-exit hook); a PID-reuse-guarded startup sweep reclaims an orphan after a hard-kill, so no stale server survives
+- The generated launch config and model paths come from the local settings DB — no network fetch at launch
+
+**Limitations:**
+- Any process on the same machine can reach the loopback port
+- The server has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
+
+---
+
 ## Tauri Capabilities
 
 Tauri v2 uses a capability system (`capabilities/default.json`) to declare the minimum set of permissions the webview requires. Fredo follows least-privilege:
