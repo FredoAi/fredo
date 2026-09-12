@@ -22,8 +22,9 @@
       otherwise (`SaveFooter` returns null) — the recolor must not change its show/hide semantics.
       The four panels that DO register a save fn (`RunCliSettings.tsx:25`,
       `WorkItemsSettings.tsx:107`, `DiagramSettings.tsx:54`, `ModelStorageSettings.tsx:28`) render
-      their Save button with a label legible on the accent bg under T5 `--accent-contrast`; a
-      `white`-on-pale-accent regression is a FAIL.
+      their Save button with a label legible on the accent bg via the T5 foreground token
+      `var(--accent-contrast)` (never a literal `white`); a literal-`white`/white-on-pale-accent
+      regression is a FAIL.
 - [ ] **R-4 (token contract):** No hardcoded hex/rgba/hsla and no `var(--x)NN` alpha-append is
       introduced in the chrome files; colors use theme tokens/CSS vars/`tint()`. Reference
       `.opencode/tests/theming/` R-7.
