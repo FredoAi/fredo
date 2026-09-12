@@ -1,11 +1,22 @@
 //! Out-of-process companion inference via a managed `llama-server` (Spec #2857).
 //!
 //! ST-2 owns the PURE launch-configuration model ([`config`]) and the AppStore
-//! key constants every other sub-task consumes. Process lifecycle (`state.rs`,
-//! `process.rs`, `health.rs`, `commands.rs`) lands in ST-3; chat routing in
-//! ST-4. Nothing here spawns a process, performs HTTP, or touches Tauri.
+//! key constants every other sub-task consumes. ST-3 adds the process lifecycle
+//! ([`state`], [`process`], [`health`], [`commands`]); chat routing lands in
+//! ST-4 and the exit hook in ST-7.
+//!
+//! TEMPORARY while unwired: ST-4 registers the lifecycle commands in `lib.rs`
+//! and manages [`state::LlamaServerState`]. Until that registration exists,
+//! `features` is a private module and rustc's dead-code lint flags the entire
+//! (intentionally unreferenced) surface. Drop this `allow` in ST-4 once the
+//! commands are reachable from `lib.rs` — it is NOT a permanent suppression.
+#![allow(dead_code)]
 
+pub mod commands;
 pub mod config;
+pub mod health;
+pub mod process;
+pub mod state;
 
 // ── AppStore keys (AppStore remains the single source of truth) ────────────────
 //

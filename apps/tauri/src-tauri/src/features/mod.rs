@@ -1,4 +1,5 @@
 pub mod llm;
+pub mod llm_server;
 pub mod screenshot;
 pub mod settings;
 pub mod setup;
