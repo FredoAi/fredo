@@ -7,8 +7,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { ThemeProvider, useTheme } from '../ThemeProvider';
+import { ThemeProvider, useTheme, resolveAccentContrast } from '../ThemeProvider';
 import { themes, themePresets } from '../../types/theme';
+import { system } from '../../theme/system';
 
 // Mock settingsService (same pattern as usePersistedSetting.test.ts)
 vi.mock('../../../features/settings', () => ({
@@ -283,5 +284,113 @@ describe('ThemeProvider user presets (#2845)', () => {
     expect(readVar('--body-bg')).toBe(themes.classic.colors.bodyBg);
     // The untouched override survives — its CSS var is still the override value.
     expect(readVar('--status-success')).toBe('#333333');
+  });
+});
+
+describe('ThemeProvider ST-1 token foundation (#2864)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.documentElement.removeAttribute('style');
+    document.body.removeAttribute('style');
+  });
+
+  const flush = async () => {
+    await act(async () => {});
+  };
+
+  const readVar = (name: string) => document.documentElement.style.getPropertyValue(name);
+
+  it('registers the derived hover/subtle/scrollbar/accent-strong/overlay/shadow vars', async () => {
+    const getMock = settingsService.get as ReturnType<typeof vi.fn>;
+    getMock.mockImplementation(async (_key: string, defaultValue: unknown) => defaultValue);
+
+    const { result } = renderHook(() => useTheme(), { wrapper: ThemeProvider });
+    await waitFor(() => expect(getMock).toHaveBeenCalled());
+    await flush();
+
+    // T1–T4/T6: single derived `color-mix` vars that resolve live per preset/override.
+    expect(readVar('--hover-bg')).toBe('color-mix(in srgb, var(--text-primary) 6%, transparent)');
+    expect(readVar('--text-subtle')).toBe('color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary) 35%)');
+    expect(readVar('--scrollbar-thumb')).toBe('color-mix(in srgb, var(--text-secondary) 45%, transparent)');
+    expect(readVar('--scrollbar-thumb-hover')).toBe('color-mix(in srgb, var(--text-secondary) 70%, transparent)');
+    expect(readVar('--accent-strong')).toBe('color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)');
+    // T7/T8: base-record-only presentation values.
+    expect(readVar('--overlay-bg')).toBe('rgba(0, 0, 0, 0.6)');
+    expect(readVar('--shadow-dialog')).toBe('0 24px 80px rgba(0, 0, 0, 0.4)');
+    // Non-vacuous: the provider still renders the locked classic base.
+    expect(result.current.currentTheme).toBe('classic');
+  });
+
+  it('computes --accent-contrast from the resolved accent (white on dark, near-black on pale)', async () => {
+    const getMock = settingsService.get as ReturnType<typeof vi.fn>;
+    getMock.mockImplementation(async (_key: string, defaultValue: unknown) => defaultValue);
+
+    const { result } = renderHook(() => useTheme(), { wrapper: ThemeProvider });
+    await waitFor(() => expect(getMock).toHaveBeenCalled());
+    await flush();
+
+    // Classic accent rgb(147,51,234) is dark → white on-accent (≈5.4:1).
+    expect(readVar('--accent-primary')).toBe(themes.classic.colors.accentPrimary);
+    expect(readVar('--accent-contrast')).toBe('#ffffff');
+
+    // Pale cyan preset → near-black on-accent.
+    act(() => result.current.setPreset('light-default'));
+    await flush();
+    expect(readVar('--accent-primary')).toBe('#00d1d1');
+    expect(readVar('--accent-contrast')).toBe('#0c1117');
+
+    // Arbitrary user override wins: black → white, amber → near-black.
+    act(() => result.current.setOverride('accentPrimary', '#000000'));
+    await flush();
+    expect(readVar('--accent-contrast')).toBe('#ffffff');
+    act(() => result.current.setOverride('accentPrimary', '#eab308'));
+    await flush();
+    expect(readVar('--accent-contrast')).toBe('#0c1117');
+
+    // Clearing the override returns to (preset ?? base); here the preset is cleared.
+    act(() => result.current.resetTheme());
+    await flush();
+    expect(readVar('--accent-contrast')).toBe('#ffffff');
+  });
+
+  it('resolveAccentContrast parses hex shorthand, alpha-hex, rgb()/rgba(), and falls back to white', () => {
+    expect(resolveAccentContrast('#000')).toBe('#ffffff');
+    expect(resolveAccentContrast('#ffffffff')).toBe('#0c1117');
+    expect(resolveAccentContrast('rgb(0, 0, 0)')).toBe('#ffffff');
+    expect(resolveAccentContrast('rgba(0, 0, 0, 0.5)')).toBe('#ffffff');
+    // Unparseable input → deterministic white fallback (never crashes).
+    expect(resolveAccentContrast('not-a-color')).toBe('#ffffff');
+  });
+
+  it('exposes the live-accent Chakra colorPalette so colorPalette="accent" resolves to the accent vars', () => {
+    // A `colorPalette="accent"` control (ST-3) reads these Chakra semantic tokens.
+    // Registration: the provider's semantic-token query lists the full palette …
+    const registered = system.query.semanticTokens.search('colors', 'accent');
+    expect(registered).toContain('accent.solid');
+    expect(registered).toContain('accent.contrast');
+    expect(registered).toContain('accent.focusRing');
+    // … and `colorPalette="accent".solid` resolves to the registered token var.
+    expect(system.token('colors.accent.solid')).toBeDefined();
+
+    // The emitted base-layer token CSS proves each token aliases the accent vars
+    // (never a stock Chakra hue). Dotted token paths are emitted with escaped dots.
+    const tokenCss = system.getTokenCss() as Record<string, unknown>;
+    const layer = tokenCss['@layer tokens'] as
+      | Record<string, Record<string, string>>
+      | Array<Record<string, Record<string, string>>>;
+    const layerEntry = Array.isArray(layer) ? layer[0] : layer;
+    const base = layerEntry['&:where(html, .chakra-theme)'];
+
+    expect(base['--chakra-colors-accent\\.solid']).toBe('var(--accent-primary)');
+    expect(base['--chakra-colors-accent\\.contrast']).toBe('var(--accent-contrast)');
+    expect(base['--chakra-colors-accent\\.focus-ring']).toBe('var(--accent-primary)');
+    expect(base['--chakra-colors-accent\\.fg']).toBe('var(--accent-primary)');
+    expect(base['--chakra-colors-accent\\.strong']).toBe('var(--accent-strong)');
+    // The other new audited-surface tokens emit their CSS-var aliases too.
+    expect(base['--chakra-colors-bg\\.hover']).toBe('var(--hover-bg)');
+    expect(base['--chakra-colors-fg\\.subtle']).toBe('var(--text-subtle)');
+    expect(base['--chakra-colors-fg\\.on-accent']).toBe('var(--accent-contrast)');
+    expect(base['--chakra-colors-overlay\\.scrim']).toBe('var(--overlay-bg)');
+    expect(base['--chakra-shadows-shadow\\.dialog']).toBe('var(--shadow-dialog)');
   });
 });
