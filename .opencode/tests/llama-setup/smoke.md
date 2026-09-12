@@ -36,11 +36,11 @@ with per-row state, `companion-controls` query = 0.
 > Quick sanity for the per-file download surface. Use the stub base URL + manifest override;
 > never a real multi-GB download.
 
-- [ ] S-7: On a not-ready machine, the Companion model step renders THREE file rows, each with its
+- [x] S-7: On a not-ready machine, the Companion model step renders THREE file rows, each with its
       own icon+text status ("Missing"), and the step summary reads incomplete.
-- [ ] S-8: Start acquisition against the injected stub manifest + server; the in-flight row enters `downloading` and
+- [x] S-8: Start acquisition against the injected stub manifest + server; the in-flight row enters `downloading` and
       a progress affordance renders (determinate or indeterminate); no console `Error:`/`Uncaught`.
-- [ ] S-9: Screenshot the three-file model step —
+- [x] S-9: Screenshot the three-file model step —
       `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2856/e2e/model-step.jpeg")`
       succeeds.
 
@@ -52,3 +52,12 @@ PASS (3 rows, all `Missing`, summary `0 of 3`, step `data-state=incomplete`); S-
 (screenshots captured under `.opencode/tmp/2856/e2e/` and uploaded to
 `.opencode/evidence/2856/`). Console clean after every interaction (only the pre-existing
 `motion() is deprecated` warning).
+
+## Execution Log — round 2 (2026-09-12, spec/2856 @ 1bef0ef5)
+
+Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missing + detail
+`Incomplete — 1304074347 of 2620370976 bytes`, `vision`/`mtp` Present with resolved paths; step
+`2 of 3 present`; summary names the interrupted file). S-8 PASS (resume click → `model` entered
+`downloading` with determinate `Progress.Root` (`data-value`, `aria-valuetext`); vision/mtp
+`skipped`; no console errors). S-9 PASS (screenshots under `.opencode/tmp/2856/e2e/`, uploaded to
+`.opencode/evidence/2856/`). Console clean after every leg (only pre-existing `motion()` warning).
