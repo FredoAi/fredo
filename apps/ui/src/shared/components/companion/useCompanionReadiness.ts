@@ -485,12 +485,18 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
     actionError,
   ]);
 
-  // The overall ready gate: backend readiness AND a healthy managed server.
+  // The overall ready gate: backend readiness AND a healthy managed server,
+  // AND never true while a probe/launch is in flight (R-2.2/R-4.2). `checking`
+  // covers a readiness re-probe; an in-flight launch is already folded into
+  // `serverLaunch.state === 'starting'` (which is never `installed`).
   // When the status command is unavailable the backend's own set is authoritative
   // (no fabricated server health, no cross-feature import).
   const readiness = useMemo<CompanionReadiness | null>(() => {
     if (!backendReadiness) return null;
-    if (!serverLaunch) return backendReadiness;
+    const settled = !checking;
+    if (!serverLaunch) {
+      return { ...backendReadiness, ready: settled && backendReadiness.ready };
+    }
     const serverState = serverLaunch.state;
     const report: PrerequisiteReport = {
       id: 'serverLaunch',
@@ -511,10 +517,10 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       report,
     ];
     return {
-      ready: backendReadiness.ready && serverState === 'healthy',
+      ready: settled && backendReadiness.ready && serverState === 'healthy',
       prerequisites,
     };
-  }, [backendReadiness, serverLaunch]);
+  }, [backendReadiness, serverLaunch, checking]);
 
   // Auto-invoke ONCE when both provisioning steps are installed and the server is
   // not running. The module-scoped guard (survives wizard close/reopen) makes this

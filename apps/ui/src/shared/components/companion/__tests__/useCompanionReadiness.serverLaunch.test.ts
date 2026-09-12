@@ -232,4 +232,100 @@ describe('useCompanionReadiness serverLaunch composition (#2857)', () => {
     await waitFor(() => expect(result.current.serverLaunch?.state).toBe('exited'));
     expect(result.current.readiness?.ready).toBe(false);
   });
+
+  // ── ST-8: never ready while a launch/health attempt is in flight ───────────
+
+  it('reports `starting` and keeps the ready gate false while a launch is in flight', async () => {
+    let currentStatus = status();
+    let resolveLaunch: ((value: LlamaServerLaunchResult) => void) | null = null;
+    adapterBridge.setInvoke(async (command: string) => {
+      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'get_llama_server_status') return currentStatus;
+      if (command === 'launch_llama_server') {
+        return new Promise<LlamaServerLaunchResult>((resolve) => {
+          resolveLaunch = resolve;
+        });
+      }
+      return undefined;
+    });
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useCompanionReadiness());
+
+    // The auto-launch invoke is held open — the step MUST read `starting`, never
+    // `installed`, and the overall gate MUST be false for the whole attempt.
+    await waitFor(() => expect(result.current.serverLaunch?.state).toBe('starting'));
+    expect(result.current.readiness?.ready).toBe(false);
+    expect(
+      result.current.readiness?.prerequisites.find((p) => p.id === 'serverLaunch')
+        ?.state,
+    ).not.toBe('installed');
+
+    // A still-loading health check never becomes prematurely healthy.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+    expect(result.current.serverLaunch?.state).toBe('starting');
+    expect(result.current.readiness?.ready).toBe(false);
+    expect(
+      result.current.readiness?.prerequisites.find((p) => p.id === 'serverLaunch')
+        ?.state,
+    ).not.toBe('installed');
+
+    // The backend verdict flips it healthy → gate true with no reload.
+    currentStatus = status({ running: true, healthy: true, port: 8080, pid: 1 });
+    await act(async () => {
+      resolveLaunch?.({
+        success: true,
+        state: 'installed',
+        detail: 'llama-server running on http://127.0.0.1:8080 (pid 1).',
+        port: 8080,
+        configPath: currentStatus.configPath,
+        error: null,
+        code: null,
+      });
+    });
+    await waitFor(() => expect(result.current.serverLaunch?.state).toBe('healthy'));
+    expect(result.current.readiness?.ready).toBe(true);
+  });
+
+  it('drops the ready gate while a readiness re-check is in flight', async () => {
+    let currentStatus = status({ running: true, healthy: true, port: 8080, pid: 1 });
+    let holdReadiness = false;
+    let pendingReadiness: ((value: CompanionReadiness) => void) | null = null;
+    adapterBridge.setInvoke(async (command: string) => {
+      if (command === 'check_companion_readiness') {
+        if (holdReadiness) {
+          return new Promise<CompanionReadiness>((resolve) => {
+            pendingReadiness = resolve;
+          });
+        }
+        return bothInstalled;
+      }
+      if (command === 'get_llama_server_status') return currentStatus;
+      return undefined;
+    });
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useCompanionReadiness());
+    await waitFor(() => expect(result.current.readiness?.ready).toBe(true));
+
+    // Re-check with the backend probe held open: `checking` is true and the gate
+    // MUST drop rather than serving stale readiness.
+    holdReadiness = true;
+    let recheck: Promise<void> = Promise.resolve();
+    await act(async () => {
+      recheck = result.current.refresh();
+    });
+    expect(result.current.checking).toBe(true);
+    expect(result.current.readiness?.ready).toBe(false);
+
+    // Settle the in-flight probe → the gate recovers with no reload.
+    await act(async () => {
+      pendingReadiness?.(bothInstalled);
+      await recheck;
+    });
+    await waitFor(() => expect(result.current.checking).toBe(false));
+    expect(result.current.readiness?.ready).toBe(true);
+  });
 });

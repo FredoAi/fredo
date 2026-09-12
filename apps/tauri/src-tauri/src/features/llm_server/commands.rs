@@ -37,8 +37,8 @@ use super::{
     DEFAULT_LLAMA_SERVER_HEALTH_TIMEOUT_S, DEFAULT_LLAMA_SERVER_HOST, DEFAULT_LLAMA_SERVER_PORT,
     LLAMA_SERVER_ACTIVE_PORT_KEY, LLAMA_SERVER_ARGS_KEY, LLAMA_SERVER_HEALTH_TIMEOUT_S_KEY,
     LLAMA_SERVER_HOST_KEY, LLAMA_SERVER_LOG_PATH_KEY, LLAMA_SERVER_MMPROJ_PATH_KEY,
-    LLAMA_SERVER_MODEL_PATH_KEY, LLAMA_SERVER_MTP_PATH_KEY, LLAMA_SERVER_PID_KEY,
-    LLAMA_SERVER_PORT_KEY, LLAMA_SERVER_STARTED_AT_KEY,
+    LLAMA_SERVER_MODEL_PATH_KEY, LLAMA_SERVER_MTP_PATH_KEY, LLAMA_SERVER_PORT_KEY,
+    LLAMA_SERVER_STARTED_AT_KEY,
 };
 
 // ── Internal settings keys ────────────────────────────────────────────────────
@@ -399,6 +399,14 @@ fn stop_managed(app: &AppHandle) {
     }
 }
 
+/// Persist (or clear) the `llama_server_pid` marker through the SINGLE
+/// implementation in [`process::persist_pid`], so the launch WRITE and the stop
+/// CLEAR cannot drift (NFR-6, one implementation per rule).
+fn persist_managed_pid(app: &AppHandle, pid: Option<u32>) {
+    let store = app.state::<Arc<AppStore>>();
+    process::persist_pid(store.inner(), pid);
+}
+
 /// A single bounded health probe (used for idempotency + status).
 async fn health_probe_once(app: &AppHandle, port: u16) -> bool {
     let host = get_setting(app, LLAMA_SERVER_HOST_KEY)
@@ -424,6 +432,43 @@ fn failure(
         port,
         config_path,
         code: Some(code),
+    }
+}
+
+/// Bounded `/health` wait for a freshly spawned server (R-4.2, never hang).
+///
+/// `Ok(())` = the server answered ready. `Err(result)` = the structured
+/// `HealthTimeout` failure: `state: Error` (NEVER `Installed`), `code:
+/// HealthTimeout`, and a detail carrying the bounded-timeout description plus
+/// the server log tail. The function ALWAYS resolves within `timeout`; the
+/// caller owns killing/discarding the child, so a timed-out launch never leaves
+/// a left-running but "pending" server.
+async fn wait_for_health<S: HealthProbeSource + ?Sized>(
+    source: &S,
+    url: &str,
+    timeout: Duration,
+    interval: Duration,
+    config_path: &str,
+    port: u16,
+    log_path: &Path,
+) -> Result<(), LlamaServerLaunchResult> {
+    match health::wait_until_healthy(source, url, timeout, interval).await {
+        Ok(()) => Ok(()),
+        Err(last) => {
+            let log_tail = process::read_log_tail(log_path, LOG_TAIL_CHARS);
+            let detail = if log_tail.is_empty() {
+                format!("llama-server started but {last}")
+            } else {
+                format!("llama-server started but {last}. Server log tail: {log_tail}")
+            };
+            Err(failure(
+                LlamaServerLaunchCode::HealthTimeout,
+                PrerequisiteState::Error,
+                detail,
+                config_path.to_string(),
+                Some(port),
+            ))
+        }
     }
 }
 
@@ -608,29 +653,25 @@ pub async fn launch_llama_server(app: AppHandle) -> LlamaServerLaunchResult {
             );
         }
     };
-    if let Err(last) = health::wait_until_healthy(
+    if let Err(result) = wait_for_health(
         &client,
         &url,
         Duration::from_secs(timeout_s),
         health::DEFAULT_HEALTH_POLL_INTERVAL,
+        &config_path_string,
+        active_port,
+        &log_path,
     )
     .await
     {
+        // On timeout the child is discarded — never a left-running "pending"
+        // server (R-4.2). `result` already carries the `HealthTimeout` code,
+        // `Error` state (never `Installed`), and the log-tail detail.
         process::kill_process_tree(&mut server);
-        let log_tail = process::read_log_tail(&log_path, LOG_TAIL_CHARS);
-        let detail = if log_tail.is_empty() {
-            format!("llama-server started but {last}")
-        } else {
-            format!("llama-server started but {last}. Server log tail: {log_tail}")
-        };
-        set_setting(&app, LLAMA_SERVER_LAST_ERROR_KEY, &detail);
-        return failure(
-            LlamaServerLaunchCode::HealthTimeout,
-            PrerequisiteState::Error,
-            detail,
-            config_path_string,
-            Some(active_port),
-        );
+        if let Some(detail) = &result.error {
+            set_setting(&app, LLAMA_SERVER_LAST_ERROR_KEY, detail);
+        }
+        return result;
     }
 
     // Success — record the managed server + persisted markers.
@@ -639,7 +680,7 @@ pub async fn launch_llama_server(app: AppHandle) -> LlamaServerLaunchResult {
         let mut guard = lock_state(state.inner());
         *guard = Some(server);
     }
-    set_setting(&app, LLAMA_SERVER_PID_KEY, &pid.to_string());
+    persist_managed_pid(&app, Some(pid));
     set_setting(&app, LLAMA_SERVER_STARTED_AT_KEY, &chrono::Utc::now().to_rfc3339());
     set_setting(&app, LLAMA_SERVER_LOG_PATH_KEY, &log_path.to_string_lossy());
     set_setting(&app, LLAMA_SERVER_LAST_ERROR_KEY, "");
@@ -670,11 +711,10 @@ pub fn stop_llama_server(
     }
     drop(guard);
 
-    for key in [
-        LLAMA_SERVER_PID_KEY,
-        LLAMA_SERVER_STARTED_AT_KEY,
-        LLAMA_SERVER_ACTIVE_PORT_KEY,
-    ] {
+    // Clear the PID marker through the SAME single implementation the launch
+    // path writes with (NFR-6), then the remaining launch markers.
+    persist_managed_pid(&app, None);
+    for key in [LLAMA_SERVER_STARTED_AT_KEY, LLAMA_SERVER_ACTIVE_PORT_KEY] {
         set_setting(&app, key, "");
     }
     Ok(())
@@ -969,5 +1009,93 @@ mod tests {
             serde_json::to_string(&PrerequisiteState::Error).expect("serialize"),
             "\"error\""
         );
+    }
+
+    // ── ST-8: bounded health — never hang, never a false `installed` ──────────
+
+    /// A health source that never answers (an unreachable port, or a server that
+    /// never becomes ready). Drives the bounded-timeout path.
+    struct NeverReadyProbe;
+
+    #[async_trait::async_trait]
+    impl HealthProbeSource for NeverReadyProbe {
+        async fn probe(&self, _url: &str) -> health::HealthProbe {
+            health::HealthProbe::Unreachable
+        }
+    }
+
+    #[tokio::test]
+    async fn health_timeout_is_bounded_actionable_and_never_installed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("llama-server.log");
+        std::fs::write(&log, "ggml: loading model weights").expect("write log");
+
+        let started = std::time::Instant::now();
+        let outcome = wait_for_health(
+            &NeverReadyProbe,
+            "http://127.0.0.1:1/health",
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+            "C:\\data\\companion\\llama-server-launch.bat",
+            8080,
+            &log,
+        )
+        .await;
+
+        // Never hangs — resolves within the bound.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the health wait must be bounded"
+        );
+
+        let failed = outcome.expect_err("a never-answering health source must time out");
+        assert!(!failed.success);
+        assert_eq!(failed.code, Some(LlamaServerLaunchCode::HealthTimeout));
+        // Non-`Installed` on timeout is the R-2.2/R-4.2 contract.
+        assert_eq!(failed.state, PrerequisiteState::Error);
+        assert_ne!(failed.state, PrerequisiteState::Installed);
+        assert_eq!(failed.port, Some(8080));
+        assert_eq!(
+            failed.config_path,
+            "C:\\data\\companion\\llama-server-launch.bat"
+        );
+        // Actionable: bounded-timeout description PLUS the server log tail.
+        assert!(
+            failed.detail.contains("health check timed out"),
+            "detail: {}",
+            failed.detail
+        );
+        assert!(
+            failed.detail.contains("ggml: loading model weights"),
+            "detail: {}",
+            failed.detail
+        );
+        assert_eq!(failed.error.as_deref(), Some(failed.detail.as_str()));
+    }
+
+    #[tokio::test]
+    async fn wait_for_health_resolves_ok_when_the_probe_is_ready() {
+        struct ReadyProbe;
+
+        #[async_trait::async_trait]
+        impl HealthProbeSource for ReadyProbe {
+            async fn probe(&self, _url: &str) -> health::HealthProbe {
+                health::HealthProbe::Ready
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("llama-server.log");
+        let outcome = wait_for_health(
+            &ReadyProbe,
+            "http://127.0.0.1:8080/health",
+            Duration::from_secs(1),
+            Duration::from_millis(5),
+            "c.bat",
+            8080,
+            &log,
+        )
+        .await;
+        assert!(outcome.is_ok(), "a ready probe must succeed");
     }
 }
