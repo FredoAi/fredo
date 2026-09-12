@@ -108,3 +108,29 @@
 - [x] **E-24 — theme re-tint mid-status. FINDING — regression-free.** All overlay shapes use `fill="currentColor"` on the root `color="var(--accent-primary)"`; the changed files carry zero color literals, so an accent change re-tints the active expression with no stale color.
 - [ ] **E-25 — latent #2850 teleport-delta visibility. CONFIRMED pre-existing (NOT a #2854 regression).** The teleport eye-bar/sparkle rects still render `currentColor` over the solid eye rects (invisible-in-principle); captured for the #2850 suite. Does not gate #2854.
 - [x] **E-26 — NEW: pre-existing TicTacToe O-move no-op. FINDING (pre-existing, not #2854).** Repro: play TicTacToe until the vision-model O move returns an already-occupied cell. **Observed:** status stays `Companion's turn (O)` while `data-state="idle"` (no O placed) — the game wedges. **Diagnosis:** `triggerCompanionMove` closes over the pre-move `board`; when the model returns the just-played cell, the `board[idx] === null` guard passes but the live `setBoard((prev) => prev[index] !== null ? prev : …)` rejects the move, so the turn never advances. ST-3 only added `onOutcome`; the move loop is unchanged → pre-existing. **Impact on #2854:** the terminal-outcome `happy` render was still reached (X win `XOO.O.XXX` → `happy` 3993 ms) and verified. Recommend a follow-up cleanup (use the functional-updater `prev` board for the occupancy guard).
+
+## #2864 extension — Settings chrome/theme edge probes
+
+> Unscripted probes for issue #2864. A confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note); a confirmed regression-free probe is recorded here.
+
+- [ ] E-27: **Not-ready gate reachability.** Can the not-ready gate be reached WITHOUT running
+      the setup wizard or changing the machine (e.g. stop the managed `llama-server`, seed
+      readiness, or catch the first `checking` probe)? Record the exact repro or a named blocker.
+      If unreachable, the AC-1 not-ready cell is BLOCKED — report it, never skip silently.
+      Reference F-42/F-46.
+- [ ] E-28: **Theme/accent switch mid-edit.** With `#companion-idle-timeout-seconds` focused and a
+      half-typed draft, switch dark→light and change the accent. Does the input keep the draft,
+      re-tint with the live accent, and commit the typed value on blur? Any lost draft, stale
+      border, or console error is a finding (promotes to F-43/F-47).
+- [ ] E-29: **Reduced-motion chrome legibility.** Under `prefers-reduced-motion: reduce`, open
+      Settings → Companion in both themes. Does the chrome stay legible/usable (no
+      motion-only affordance, no `opacity:0` state)? Any state that becomes indistinguishable is
+      a finding. (Driver may not flip the media query — record as a named blocker if so.)
+- [ ] E-30: **Sidebar scrollbar with a short vs overflowing nav list.** With few nav items (no
+      overflow) and many (forced overflow), is the scrollbar thumb visible and legible on BOTH
+      themes? A white-alpha thumb invisible on light is a finding (promotes to F-6/F-7 in the
+      settings suite).
+- [ ] E-31: **Light theme + white-alpha hover.** Hover every nav item in light theme; does any
+      hover/highlight disappear (white-on-white)? Any invisible hover/active affordance is a
+      finding (promotes to F-6/F-7 in the settings suite).
