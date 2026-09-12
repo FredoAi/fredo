@@ -619,14 +619,17 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 
 - [ ] F-42: On the pre-dev `spec/2864` tip (= `main`, before any developer commit), with the
       MCP driver on a running app, open Settings → Companion and screenshot each Companion-panel
-      state: ON (toggle on, tip opacity 1), OFF (toggle off, tip dimmed), auto-return input idle,
+      state: ON (toggle on, tip full-opacity), OFF (toggle off, tip STILL full-opacity — only the
+      toggle position + tip content visibility change, never a dim), auto-return input idle,
       auto-return input editing (focus/type in `#companion-idle-timeout-seconds`), and the
       not-ready gate (wizard is the only content). Do each in dark (`classic`) and light
       (`light-default`), plus the non-default accent (Matrix / `accentPrimary` override).
   **Expected:** one readable screenshot per state×theme under
   `.opencode/tmp/2864/e2e/before/`, uploaded via `upload-evidence` (raw URLs recorded); each
   shows the toggle + help text + auto-return row + Teleport tip (or the wizard in the not-ready
-  cell); ON vs OFF are visually distinct; idle vs editing differ by the input focus ring.
+  cell); ON vs OFF are visually distinct (toggle position + tip content visibility only — the tip
+  keeps `opacity: 1`/full contrast in BOTH states, H6); idle vs editing differ by the input focus
+  ring.
   Capture-only — no verdict at this stage.
   - **Edge:** capture at 960×620 AND a narrower window; a state believed unreachable (not-ready)
     is BLOCKED with a named cause — never silently omitted.
@@ -638,12 +641,16 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
       OFF), the auto-return `NumberInput` (bg/border/focus ring), the Teleport tip surface, and
       the `kbd` chip; then change the accent live with Settings open.
   **Expected:** every color derives from the theming feature (token/CSS var/`tint()`) and the
-      accent-linked surfaces re-tint together with no stale color. **`--hover-bg` must resolve**
-      — `getComputedStyle(row).backgroundColor` is NOT `rgba(0, 0, 0, 0)`/`transparent`
-      (currently referenced 9× and defined 0×; `ThemeProvider.tsx` sets `--card-hover-bg`, never
-      `--hover-bg`). A row that computes transparent where a surface is intended is a FAIL.
-  - **Edge:** switch accent WHILE the NumberInput is focused (no stale border); toggle companion
-    ON/OFF re-tints only the tip opacity/pointerEvents (F-47).
+      accent-linked surfaces re-tint together with no stale color. **`--hover-bg` (T1) must
+      resolve** — `getComputedStyle(row).backgroundColor` is NOT `rgba(0, 0, 0, 0)`/`transparent`
+      (T1 is a single derived `color-mix(in srgb, var(--text-primary) 6%, transparent)` set once in
+      the `ThemeProvider` base pass, so it resolves per-theme — NOT the `--card-hover-bg` alias,
+      which freezes the classic dark gray). A row that computes transparent where a surface is
+      intended is a FAIL.
+  - **Edge:** switch accent WHILE the NumberInput is focused (no stale border); toggling companion
+    ON/OFF changes ONLY the toggle position + tip content visibility — the tip's `opacity` /
+    `pointerEvents` / contrast must NOT change (H6 resolved: always `opacity: 1`,
+    `pointerEvents: auto`; F-47).
 
 ## F-44 (Q-3 / AC-2) — Zero hardcoded color literals in the companion files
 
@@ -672,24 +679,33 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 ## F-46 (Q-7 / AC-3) — Companion reading order, single-wizard gate, a11y wiring
 
 - [ ] F-46: DOM/a11y + screenshot the Companion panel and the not-ready wizard. Inspect reading
-      order (section label → setting rows → Teleport tip), grouping/spacing vs sibling sections,
+      order (section header → setting rows → Teleport tip), grouping/spacing vs sibling sections,
       keyboard tab order, and the `aria-describedby` link on the idle input.
-  **Expected:** clear reading order with consistent grouping; the not-ready gate renders ONE
-      wizard (no toggle/tip duplication — `CompanionSettingsPanel.tsx:77-104`); keyboard order
-      matches visual order; `#companion-idle-timeout-seconds` is described by
-      `#companion-idle-timeout-help`; the wizard heading/scale matches the Fredo Setup sibling
-      convention (H4: `CompanionSetupWizard.tsx:117-122` vs `SetupWizard.tsx:400-403`).
+  **Expected:** clear reading order with consistent grouping; the ready view AND the not-ready
+      gate render the SAME unified section header — `<Heading as="h2">` + 22px accent icon
+      (`var(--accent-primary)`, `aria-hidden`) + `fg.default` title (+ `fg.subtle` description)
+      (H4 resolved: one treatment, no `fg.default`-vs-`var(--text-primary)` conflict and no bare
+      uppercase mini-label standing in for the heading); the not-ready gate renders ONE wizard (no
+      toggle/tip duplication — `CompanionSettingsPanel.tsx:77-104`); keyboard order matches visual
+      order; `#companion-idle-timeout-seconds` is described by `#companion-idle-timeout-help`.
   - **Edge:** long help text wrapping; a feature-settings section present in the sidebar.
 
-## F-47 (Q-12 / AC-5) — Teleport-tip + input states do not regress under theme/accent change
+## F-47 (Q-12 / AC-5) — Teleport-tip is never dimmed; input states do not regress under theme/accent change
 
 - [ ] F-47: Toggle the companion ON/OFF and inspect the Teleport tip computed `opacity` +
-      `pointerEvents`; focus/blur the auto-return input and read its border. Repeat after a theme
-      and accent change.
-  **Expected:** tip `opacity: 1` / `pointerEvents: auto` when visible; `opacity: 0.4` /
-      `pointerEvents: none` when hidden; focus ring uses the live accent; the states survive a
+      `pointerEvents` + foreground/contrast in BOTH states; focus/blur the auto-return input and
+      read its border; type an out-of-range draft. Repeat after a theme and accent change.
+  **Expected:** the tip is NEVER dimmed (H6 resolved) — computed `opacity: 1` /
+      `pointerEvents: auto` and full text contrast (≥4.5:1 body vs tip surface) in BOTH companion
+      ON and OFF; toggling changes only the switch position and the tip's content visibility, never
+      its opacity/pointer-events/contrast. The input's focus ring uses the live accent. An invalid
+      draft (non-numeric or outside 5–3600, e.g. `9999`) shows a `var(--status-error)` border (+ a
+      matching `status.error` focus ring) and swaps the help to the range message ("Enter 5–3600
+      s"); committing it clamps to the valid range and a polite `aria-live` region announces the
+      committed value ("Auto-return set to 3600 s") within 400 ms. The states survive a
       theme/accent change with no stale color and no console error.
-  - **Edge:** theme change while OFF; reduced motion (E-29).
+  - **Edge:** theme change while OFF; theme change mid-edit with a half-typed invalid draft;
+    reduced motion (E-29).
 
 ## F-48 (Q-13 / LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
 
