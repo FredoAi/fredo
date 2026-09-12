@@ -226,8 +226,10 @@
 ## R-26 — Token contract for the companion chrome files
 
 - [ ] R-26: Static-grep the audited companion files (F-44 list) for hardcoded colors and
-      `var(--x)NN`; confirm the setting-row surfaces use a resolved token (not the undefined
-      `--hover-bg`).
-  **Expected:** zero true color literals; `tint()`/`var()` only; `--hover-bg` (or its
-      replacement) resolves to a real light+dark value. Reference #2850 R-7/F-15.
+      `var(--x)NN`; confirm the setting-row/tip surfaces use the resolved derived token T1
+      `--hover-bg` (a `color-mix` set once in the `ThemeProvider` base pass — NOT the
+      `--card-hover-bg` alias).
+  **Expected:** zero true color literals; `tint()`/`var()` only; `--hover-bg` resolves
+      non-transparent in BOTH themes (T1, derived per-theme — a single `color-mix`, not two
+      literal values). Reference #2850 R-7/F-15.
   - **Edge:** comment issue-refs are not literals.
