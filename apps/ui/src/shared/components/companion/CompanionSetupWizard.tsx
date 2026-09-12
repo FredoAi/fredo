@@ -21,8 +21,10 @@ import {
 
 import { SetupStepCard, type SetupStepUiState } from './SetupStepCard';
 import { ModelFilesStepCard } from './ModelFilesStepCard';
+import { ServerLaunchStepCard } from './ServerLaunchStepCard';
 import { COMPANION_SETUP_STEPS, type CompanionSetupStepMeta } from './companionSetupSteps';
 import type {
+  CompanionServerLaunchInfo,
   ModelFilesStatus,
   PrerequisiteId,
   PrerequisiteUiState,
@@ -41,6 +43,8 @@ export interface CompanionSetupWizardProps {
   actionError: Partial<Record<PrerequisiteId, string>>;
   /** Per-file model status from `check_model_files` (#2856). */
   modelFiles?: ModelFilesStatus | null;
+  /** Frontend-composed server launch snapshot (#2857). */
+  serverLaunch?: CompanionServerLaunchInfo | null;
   onRunAction: (id: PrerequisiteId) => void;
   onRecheck: () => void;
 }
@@ -58,6 +62,7 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
   runningActionId,
   actionError,
   modelFiles,
+  serverLaunch,
   onRunAction,
   onRecheck,
 }) => {
@@ -159,6 +164,23 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
                 detail={prerequisite.detail}
                 errorText={errorText}
                 modelFiles={modelFiles ?? null}
+                onRunAction={onRunAction}
+                onRecheck={onRecheck}
+              />
+            );
+          }
+          if (prerequisite.id === 'serverLaunch') {
+            return (
+              <ServerLaunchStepCard
+                key={prerequisite.id}
+                step={meta}
+                uiState={uiState}
+                detail={prerequisite.detail}
+                resolvedPath={prerequisite.resolvedPath}
+                errorText={errorText}
+                serverState={serverLaunch?.state ?? 'notRunning'}
+                serverPort={serverLaunch?.port ?? null}
+                serverCode={serverLaunch?.code ?? null}
                 onRunAction={onRunAction}
                 onRecheck={onRecheck}
               />

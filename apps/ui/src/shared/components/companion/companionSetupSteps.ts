@@ -10,7 +10,7 @@
  */
 
 import type React from 'react';
-import { LuCpu, LuFileArchive } from 'react-icons/lu';
+import { LuCpu, LuFileArchive, LuServer } from 'react-icons/lu';
 
 import type { PrerequisiteId } from './companionReadiness';
 
@@ -58,6 +58,22 @@ export const COMPANION_SETUP_STEPS: CompanionSetupStepMeta[] = [
       label: 'Download model files',
       runningLabel: 'Downloading…',
       kind: 'download',
+    },
+  },
+  {
+    // #2857 — the third step, appended LAST (it depends on the binary + models).
+    // Its state is composed in `useCompanionReadiness` from
+    // `get_llama_server_status` (the backend readiness command stays 2-prereq).
+    id: 'serverLaunch',
+    testId: 'server-launch',
+    label: 'Companion server',
+    description: 'Runs llama-server locally and confirms it is healthy before Fredo can chat.',
+    icon: LuServer,
+    action: {
+      command: 'launch_llama_server',
+      label: 'Start companion server',
+      runningLabel: 'Starting server…',
+      kind: 'launch',
     },
   },
 ];
