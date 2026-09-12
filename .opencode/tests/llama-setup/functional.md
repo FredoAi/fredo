@@ -350,14 +350,18 @@ The AC3 real-install leg was driven from the UI on MS-3 (llama missing, models p
 
 - [ ] **F-25 (R-3, S):** UNVERIFIED (round 1) — named blocker: `cargo` unavailable (see F-19).
 
-- [ ] **F-26 (R-4):** UNVERIFIED with NAMED FINDING (round 1, real) — the real `Range` resume was
-      PROVEN (first event on resume = the exact on-disk partial offset; resumed bytes were a
-      correct prefix; `vision`/`mtp` skipped). However completion of the resumed file could NOT be
-      reached: the app's reqwest stream resets (`error decoding response body`) after ~5–9 MB on
-      every attempt across 3 retries, at offsets 1,281,035,595 / 1,289,973,111 / 1,297,305,495. A
-      direct `bun fetch` of the same `Range: bytes=1297305495-` completed the full 1,323,065,481
-      bytes in 30.9 s, so the endpoint is healthy. The retry loop is non-terminating for a multi-GB
-      file → this is a real robustness FAIL for F-26's "final bytes match the source" leg.
+- [x] **F-26 (R-4):** **PASS (round 2, real)** — on `spec/2856 @ 1bef0ef5` the interrupted `model`
+      file (partial prefix 1,304,074,347 B) resumed via HTTP `Range` and **completed in-session**.
+      The FIRST progress event on resume carried `downloaded: 1304074347` = the exact on-disk
+      offset (Range proof); the stream then ran continuously to `downloaded: 2620370976` (100%) in
+      **40.7 s** for the remaining 1,316,296,629 B (~32.4 MB/s) with **no** `error` state and **no**
+      retry needed (ST-2R removed the pre-body prefix-hash stall). `vision`/`mtp` each emitted
+      `state:"skipped"` (never re-fetched, bytes untouched). Final in-place SHA-256
+      `e5310072…a16889` matches the pinned manifest. Click→complete ≈ 84.5 s (file mtime), of which
+      ~44 s was the debug-build 1.3 GB prefix SHA-256 seed performed BEFORE the GET (by design).
+      Round-1's non-terminating resume defect is CLOSED.
+      *(round 1: UNVERIFIED with the `error decoding response body` reset after ~5–9 MB on 3
+      consecutive attempts — superseded.)*
 
 - [ ] **F-27 (R-4, S):** UNVERIFIED (round 1) — named blocker: `cargo` unavailable (see F-19).
 
@@ -416,3 +420,49 @@ retry/backoff on a mid-stream body-decoding error). Evidence: AC5 screenshot + t
 **Final filesystem state:** `model` file at 1,297,305,495 B (partial, correct prefix); `vision` and
 `mtp` complete and hash-verified. The completed files were hashed at completion BEFORE any
 interrupt; no corruption occurred across interrupts.
+
+## Execution Log — round 2 (2026-09-12, spec/2856 @ 1bef0ef5)
+
+**Retry context:** re-test after the round-1 FAIL on F-26/AC4 (resume-to-completion). Fix on tip:
+`acquire_file` seeds the resume SHA-256 hasher BEFORE the GET + a bounded `MAX_DOWNLOAD_ATTEMPTS=5`
+retry/backoff re-issuing the `Range` GET from the persisted offset. Method unchanged: real dev app,
+real Companion wizard click, real pinned HF endpoint, no manifest override, no stub server. All
+files hashed IN PLACE under `C:\Code\fredo\models\gemma-4-e2b-it-qat\`.
+
+**F-26 resume fixture:** the round-1 partial `model` file, on disk at **1,304,074,347 B** (vision
+2.0 MB larger than the round-1 snapshot because the environment had advanced slightly), vision+mtp
+complete. `models_dir` = `C:\Code\fredo\models`; `model_manifest_path` = unset (compiled default).
+
+**Receipts (all files hashed in place after the run):**
+
+| File | Bytes | SHA-256 | Pinned |
+|------|-------|---------|--------|
+| model | 2,620,370,976 | `e531007218dfab990486a5de7676a6932d6ea8dea233d1f698d7c21cf8a16889` | match |
+| vision | 986,833,728 | `38b33846f56426cd650e0e574d78de125abdfcedf35c0d7f6929f6ffe26efe02` | match |
+| mtp | 59,235,648 | `586f2460b909008640981ec34060aa864e03c144fbabfb3173c4335087e4aae0` | match |
+
+**F-26 resume timing:** first progress event at +43.7 s after click (debug-build prefix SHA-256 seed,
+pre-GET), carrying `downloaded=1,304,074,347`; streamed to 100% at +84.4 s; resumed transfer 40.7 s
+for 1,316,296,629 B ≈ 32.4 MB/s. No `error` state across the whole 408-event run (states observed:
+`downloading`, `present`, `skipped`). `vision`/`mtp` skipped.
+
+**F-20/F-22/F-23/F-24 regression (fresh, round 2):** moved `MTP/…gguf` aside → Re-check → step
+`incomplete`, `2 of 3 present`, summary `Incomplete — missing: MTP/mtp-gemma-4-E2B-it-Q4_0.gguf.`;
+click Download → only `mtp` re-downloaded (determinate progress `0% · 0 B / 56.5 MB` →
+`7% · 3.9 MB / 56.5 MB` → `Present`; `model`/`vision` `skipped`) → `3 of 3 present`. Repeated with
+`vision` moved aside (986,833,728 B re-downloaded in 30.5 s; `model`/`mtp` skipped): step read
+`Downloading 3 of 3…` / summary `Incomplete — downloading: mmproj-BF16.gguf.` throughout and only
+reached `3 of 3 present` / `Complete — all 3 model files are present.` after vision verified.
+
+**F-31 QA-7 live receipt (round 2):** `fredo emit --event-type chat` +
+`--event-type tool_use` both `{"queued":true}`; `chat_rows(e2e-2856-r2-chat)=1`,
+`tool_use_rows(e2e-2856-r2-tool)=1`; `telemetry_spans` total **13,511**, **348** ingested in the
+last 15 min, newest `2026-09-12T00:30:02.742Z`.
+
+**F-25/F-27/F-29 (static) remain UNVERIFIED** — named blocker unchanged: `cargo` is not in the
+tester sandbox allowlist; covered by CI `rust-validate` (`cargo test --locked`, 445 passed incl. the
+3 new round-2 tests) and the developer receipt.
+
+**Final filesystem state:** all three files complete and hash-verified (model 2,620,370,976; vision
+986,833,728; mtp 59,235,648). A pre-existing round-1 leftover `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf.ac4-bak`
+(2,620,370,976 B) remains in the dir (not created by this round; not a manifest file).
