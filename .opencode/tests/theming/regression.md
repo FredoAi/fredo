@@ -20,3 +20,20 @@
 ## Overlapping suites to run alongside
 - `.opencode/tests/mission-monitor/regression.md` — the mission-monitor node/subagent chrome is sourced from base (`--node-bg`, `--edge-gradient`, `--accent-subagent`, `--accent-nested-subagent`), which a light preset does NOT restyle (expected; pending the Architect's open PO question).
 - `.opencode/tests/settings/regression.md` — the settings modal shell / `ProfileSettingsModal` is unchanged by this feature (ThemingSettings is already wired into the static Appearance section).
+
+## #2864 extension — token additions must not regress the theme engine
+
+> Issue #2864 may add a global token (e.g. `--hover-bg`). These invariants MUST hold. Run
+> alongside R-1..R-10.
+
+- [ ] **R-11:** Existing preset selection, per-token override, and "Reset to theme defaults"
+      behave exactly as before (F-1..F-4); the override-wins layering
+      (`overrides ?? preset ?? base`) is unchanged. Reference F-1..F-5/R-1..R-6.
+- [ ] **R-12:** Any token added or remapped by the slice has BOTH a light and dark value and does
+      not change any existing consumer's computed color (verify a sample: desktop shell, mission
+      monitor node chrome, chat surfaces) before/after. A global token change that shifts an
+      unrelated surface is a FAIL.
+- [ ] **R-13:** No `var(--x)NN` alpha-append is introduced; transparent tints use `tint()`. The
+      chrome's old literals (`rgba(147,51,234,0.12)`, `rgba(255,255,255,0.04)`,
+      `rgba(255,255,255,0.12/0.22)`, `rgba(0,0,0,0.6)`, `rgba(0,0,0,0.4)`) are gone. Reference
+      F-5/R-7.
