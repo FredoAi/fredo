@@ -274,3 +274,23 @@ Fix under test: `acquire_file` seeds the resume SHA-256 hasher BEFORE the GET + 
 - [ ] **E-34 — Repeated start/stop cycles (leak).** Start/stop the companion 5–10 times; check for
       accumulated `llama-server.exe` processes, leaked ports, or growing handles/memory.
   - Prompt: process list + memory snapshots across cycles.
+
+## Findings — round 2 (2026-09-12, spec/2857 @ 61f77d18)
+
+Real-path probes on the ST-11 configured companion dir. The blocking finding below is promoted to
+functional F-35/F-36 (AC2 FAIL).
+
+- **E-33 (verified — promoted): the resolved CPU `llama-server` cannot parse the AC1 argv.** The spawned child
+  wrote exactly `error: invalid argument: 1` (28 bytes) and exited. Discrimination: setting
+  `llama_server_args={"ctxSize":4096,"gpuLayers":"0"}` produced the SAME fatal, so it is not ctx/gpu;
+  setting `{"kvUnified":false}` produced `error: invalid argument: 0` — the error value tracks the
+  `--kv-unified` value exactly, proving the flag is emitted with a value the binary rejects. This is a
+  launch-blocking AC2 defect on this host. **No root-cause change to AC1 was attempted.**
+- **E-23/E-24 (not executed):** hard-kill orphan + port-conflict probes could not run — no healthy server
+  was ever produced, and the sandbox lacks a `llama-server.exe` process-lister / port probe.
+- **E-25 (partially observed):** while a launch was in flight the wizard's Start button was disabled +
+  `aria-busy="true"`; a second avatar click during an in-flight companion generation was ignored
+  (`isGenerating: true`), i.e. no duplicate generation started.
+- **E-26 (not executed):** settings-change-while-running requires a running server.
+- **E-29 (not executed):** exit-during-stream requires a streaming server.
+- **E-31 (verified, negative):** killing a mid-stream server was moot — the server never survives startup.
