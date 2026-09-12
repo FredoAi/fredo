@@ -61,3 +61,21 @@ Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missi
 `downloading` with determinate `Progress.Root` (`data-value`, `aria-valuetext`); vision/mtp
 `skipped`; no console errors). S-9 PASS (screenshots under `.opencode/tmp/2856/e2e/`, uploaded to
 `.opencode/evidence/2856/`). Console clean after every leg (only pre-existing `motion()` warning).
+
+## #2857 — Smoke (out-of-process launch)
+
+> Quick sanity for the launch/health/round-trip surface. REAL `llama-server` only — no stub
+> servers, no scratch-dir shortcuts (binding human methodology). A ~2.6 GB CUDA load is heavy;
+> allow the recorded health budget (~60–180 s) before declaring a hang.
+
+- [ ] S-10: Companion surface renders the new launch step alongside the existing
+      prerequisites — `tauri_webview_dom_snapshot` shows `companion-step-server-launch` with a
+      per-step state (`data-state` + `data-server-state`, default `notRunning`) and no console error.
+- [ ] S-11: On a ready machine, start the companion (`-start`) and reach a ready/health-confirmed
+      state without hanging — the card leaves `starting` only after the health probe succeeds
+      (`data-server-state=healthy`).
+- [ ] S-12: Screenshot the launch/ready surface —
+      `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2857/e2e/smoke.jpeg")`
+      succeeds.
+- [ ] S-13: No orphan — after exiting Fredo, the process listing shows no surviving
+      `llama-server.exe` and the configured port is free.
