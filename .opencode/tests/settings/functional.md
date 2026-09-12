@@ -31,7 +31,8 @@
 - [ ] F-2: Locate the vision-capable UI/UX Expert's post-BEFORE artifact (A2A `## UI/UX Expert`
       section / issue evidence). Confirm it Reads EVERY BEFORE image and reports what is
       visually observed — nav highlight color, footer/hover, light-invisible scrollbar, tip
-      dimming, heading/grouping — and lists the AC-1 issues.
+      dimming (a BEFORE-state defect; H6 resolves it, so the AFTER must show the tip undimmed),
+      heading/grouping — and lists the AC-1 issues.
   **Expected:** ONE evaluation per BEFORE image, each naming the file it read. A testid/geometry-
       only artifact, or missing coverage of any BEFORE image, is a FAIL.
   - **Edge:** an evaluation authored from filenames (not the image files) is a FAIL; a re-capture
@@ -60,11 +61,13 @@
       diff for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`, `hsla(`, and
       `var\(--[a-z-]+\)[0-9a-fA-F]{2}`.
   **Expected:** ZERO true color literals in the audited files (comment issue-refs exempt).
-      Expected conversions: nav active bg `rgba(147,51,234,0.12)` → `tint('var(--accent-primary)',
-      12)`/token; nav hover `rgba(255,255,255,0.04)` → token/`tint`; scrollbar thumb
-      `rgba(255,255,255,0.12/0.22)` → token/`tint`; backdrop `rgba(0,0,0,0.6)` + boxShadow
-      `rgba(0,0,0,0.4)` → token/`tint`. `ProfileSettingsModal.tsx:49,57,22-25,111,118` are the
-      known leads. Name any remaining literal by file:line — a FAIL.
+      Expected resolved conversions: nav active bg `rgba(147,51,234,0.12)` →
+      `tint('var(--accent-primary)', 12)` + `var(--accent-strong)` (T6) indicator; nav hover
+      `rgba(255,255,255,0.04)` → `var(--hover-bg)` (T1); scrollbar thumb/hover
+      `rgba(255,255,255,0.12/0.22)` → `var(--scrollbar-thumb)`/`var(--scrollbar-thumb-hover)`
+      (T3/T4); backdrop `rgba(0,0,0,0.6)` → `var(--overlay-bg)` (T7); boxShadow
+      `rgba(0,0,0,0.4)` → `var(--shadow-dialog)` (T8). `ProfileSettingsModal.tsx:49,57,22-25,111,118`
+      are the known leads. Name any remaining literal by file:line — a FAIL.
   - **Edge:** `transparent`/`inherit`/`currentColor`/`none` allowed; distinguish `var(--x)NN`
     (FAIL) from a JS 8-digit hex concat (OK); `theme.ts` token-value data is out of scope unless
     changed.
@@ -88,8 +91,9 @@
       thumb vs track; Save button label vs accent bg.
   **Expected:** text ≥ 4.5:1 and non-text UI ≥ 3:1 in every combination; quote the measured
       ratios. A failing pair is a FAIL naming it.
-  - **Edge:** `white`-on-accent buttons (H7) must still pass on a light accent or use a
-    contrast-safe token; selected-nav label on its highlight.
+  - **Edge:** on-accent buttons (H7) MUST use the T5 foreground token `var(--accent-contrast)`
+    (never a literal `white`) and still pass AA on a light accent; selected-nav label on its
+    highlight.
 
 ## F-8 (Q-6 / AC-3) — Local feedback < 400 ms
 
@@ -140,8 +144,9 @@
 - [ ] F-12: Select presets, set then clear an `accentPrimary` override, toggle dark/light, and
       re-check the audited surface + unrelated surfaces (desktop shell, mission-monitor chrome).
   **Expected:** no theme-engine change beyond a proven-required global token fix; any new token
-      has light+dark values and does not alter existing consumers. Cross-ref
-      `.opencode/tests/theming/` R-11..R-13.
+      resolves correctly in BOTH light and dark (the derived `color-mix` tokens compute from the
+      live preset/override vars — a single per-theme resolution, not two literal values) and does
+      not alter existing consumers. Cross-ref `.opencode/tests/theming/` R-11..R-13.
   - **Edge:** user-preset save/discard; stale `localStorage` preset id clamps.
 
 ## F-13 (Q-13 / LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
