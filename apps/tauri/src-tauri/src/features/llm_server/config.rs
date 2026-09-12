@@ -7,9 +7,10 @@
 //! reads persisted settings and fills [`LlamaServerConfig`] before calling
 //! [`LlamaServerConfig::to_args`] / [`LlamaServerConfig::to_bat`].
 //!
-//! There is exactly ONE argv builder ([`LlamaServerConfig::to_args`]). The `.bat`
-//! text and the spawned process both derive from it, so the two can never drift
-//! (the NFR-6 "one shared builder" rule).
+//! There is exactly ONE grouped builder ([`LlamaServerConfig::arg_groups`]).
+//! [`LlamaServerConfig::to_args`] flattens it for the spawned process and
+//! [`LlamaServerConfig::to_bat`] renders one group per line, so the two can
+//! never drift (the NFR-6 "one shared builder" rule).
 
 use serde::{Deserialize, Serialize};
 
@@ -60,9 +61,10 @@ pub struct LlamaServerConfig {
     pub top_k: u32,
     /// Parallel sequences.
     pub parallel: u32,
-    /// Unified KV cache. `true` emits `--kv-unified 1`; `false` emits
-    /// `--kv-unified 0` (the flag is ALWAYS present so the generated config is
-    /// deterministic and self-describing — never silently omitted).
+    /// Unified KV cache. This is a value-less boolean switch: `true` emits the
+    /// bare `--kv-unified`; `false` emits the bare `--no-kv-unified` (the
+    /// switch is ALWAYS present so the generated config is deterministic and
+    /// self-describing — never silently omitted, and NEVER given a value).
     pub kv_unified: bool,
     /// Log verbosity level.
     pub log_verbosity: u32,
@@ -103,9 +105,9 @@ impl Default for LlamaServerConfig {
 }
 
 impl LlamaServerConfig {
-    /// THE single argv builder.
+    /// THE single argv builder: the flattened form of [`Self::arg_groups`].
     ///
-    /// Emits exactly these flags in a fixed deterministic order, one value per
+    /// Emits exactly these flags in a fixed deterministic order, one token per
     /// element (the flag and its value are SEPARATE elements — no shell
     /// splitting, so a path containing spaces stays one token):
     ///
@@ -115,83 +117,70 @@ impl LlamaServerConfig {
     /// `--kv-unified`, `--log-verbosity`, `--alias`, plus the server binding
     /// `--host` and `--port` appended last.
     ///
-    /// `kv_unified` maps to `--kv-unified 1` when `true` and `--kv-unified 0`
-    /// when `false` (documented above).
+    /// `kv_unified` is a value-less boolean switch (documented above): `true`
+    /// maps to the bare `--kv-unified`; `false` maps to the bare
+    /// `--no-kv-unified`. No value element is ever attached.
     pub fn to_args(&self) -> Vec<String> {
+        self.arg_groups().into_iter().flatten().collect()
+    }
+
+    /// Group the launch parameters, one entry per flag: `[flag, value]` for the
+    /// value-taking flags and a single-element `[switch]` for the value-less
+    /// boolean switch (`--kv-unified` / `--no-kv-unified`).
+    ///
+    /// This is the ONE grouping both the spawned argv ([`Self::to_args`]) and
+    /// the `.bat` text ([`Self::to_bat`]) derive from, so they can never drift
+    /// (NFR-6). Grouping (rather than pairing raw argv tokens) keeps the `.bat`
+    /// renderer aligned now that a bare switch is in the set.
+    fn arg_groups(&self) -> Vec<Vec<String>> {
         vec![
-            "--model".to_string(),
-            self.model.clone(),
-            "--mmproj".to_string(),
-            self.mmproj.clone(),
-            "--model-draft".to_string(),
-            self.model_draft.clone(),
-            "--spec-type".to_string(),
-            self.spec_type.clone(),
-            "--spec-draft-n-max".to_string(),
-            self.spec_draft_n_max.to_string(),
-            "--fit".to_string(),
-            self.fit.clone(),
-            "--load-mode".to_string(),
-            self.load_mode.clone(),
-            "--gpu-layers".to_string(),
-            self.gpu_layers.clone(),
-            "--threads".to_string(),
-            self.threads.to_string(),
-            "--threads-batch".to_string(),
-            self.threads_batch.to_string(),
-            "--reasoning".to_string(),
-            self.reasoning.clone(),
-            "--ctx-size".to_string(),
-            self.ctx_size.to_string(),
-            "--temp".to_string(),
-            format_float(self.temp),
-            "--top-p".to_string(),
-            format_float(self.top_p),
-            "--top-k".to_string(),
-            self.top_k.to_string(),
-            "--parallel".to_string(),
-            self.parallel.to_string(),
-            "--kv-unified".to_string(),
-            if self.kv_unified { "1".to_string() } else { "0".to_string() },
-            "--log-verbosity".to_string(),
-            self.log_verbosity.to_string(),
-            "--alias".to_string(),
-            self.alias.clone(),
-            "--host".to_string(),
-            self.host.clone(),
-            "--port".to_string(),
-            self.port.to_string(),
+            vec!["--model".to_string(), self.model.clone()],
+            vec!["--mmproj".to_string(), self.mmproj.clone()],
+            vec!["--model-draft".to_string(), self.model_draft.clone()],
+            vec!["--spec-type".to_string(), self.spec_type.clone()],
+            vec!["--spec-draft-n-max".to_string(), self.spec_draft_n_max.to_string()],
+            vec!["--fit".to_string(), self.fit.clone()],
+            vec!["--load-mode".to_string(), self.load_mode.clone()],
+            vec!["--gpu-layers".to_string(), self.gpu_layers.clone()],
+            vec!["--threads".to_string(), self.threads.to_string()],
+            vec!["--threads-batch".to_string(), self.threads_batch.to_string()],
+            vec!["--reasoning".to_string(), self.reasoning.clone()],
+            vec!["--ctx-size".to_string(), self.ctx_size.to_string()],
+            vec!["--temp".to_string(), format_float(self.temp)],
+            vec!["--top-p".to_string(), format_float(self.top_p)],
+            vec!["--top-k".to_string(), self.top_k.to_string()],
+            vec!["--parallel".to_string(), self.parallel.to_string()],
+            vec![if self.kv_unified {
+                "--kv-unified".to_string()
+            } else {
+                "--no-kv-unified".to_string()
+            }],
+            vec!["--log-verbosity".to_string(), self.log_verbosity.to_string()],
+            vec!["--alias".to_string(), self.alias.clone()],
+            vec!["--host".to_string(), self.host.clone()],
+            vec!["--port".to_string(), self.port.to_string()],
         ]
     }
 
     /// Render a runnable Windows `.bat` referencing the SAME argv as
     /// [`Self::to_args`].
     ///
-    /// Shape: `@echo off`, then the quoted executable and each `flag value`
-    /// pair, one per line, CRLF-terminated. Every non-final line ends with
-    /// ` ^` (batch line continuation). The executable is ALWAYS quoted and an
-    /// argument is quoted when it contains whitespace, so a path with spaces
-    /// remains a single command token.
+    /// Shape: `@echo off`, then the quoted executable and each flag group
+    /// ([`Self::arg_groups`]) on its own line — a value-taking flag renders as
+    /// `flag value`, the value-less boolean switch renders as the bare token —
+    /// CRLF-terminated. Every non-final line ends with ` ^` (batch line
+    /// continuation). The executable is ALWAYS quoted and an argument is quoted
+    /// when it contains whitespace, so a path with spaces remains a single
+    /// command token.
     pub fn to_bat(&self) -> String {
         let mut lines = vec!["@echo off".to_string()];
 
         // The executable is always quoted so a spaced path is one token.
         let mut command_lines = vec![quote_token(&self.executable)];
 
-        let args = self.to_args();
-        let mut index = 0;
-        while index < args.len() {
-            if index + 1 < args.len() {
-                command_lines.push(format!(
-                    "{} {}",
-                    render_token(&args[index]),
-                    render_token(&args[index + 1])
-                ));
-                index += 2;
-            } else {
-                command_lines.push(render_token(&args[index]));
-                index += 1;
-            }
+        for group in self.arg_groups() {
+            let rendered: Vec<String> = group.iter().map(|token| render_token(token)).collect();
+            command_lines.push(rendered.join(" "));
         }
 
         let last = command_lines.len().saturating_sub(1);
@@ -369,7 +358,6 @@ mod tests {
             "--parallel",
             "1",
             "--kv-unified",
-            "1",
             "--log-verbosity",
             "4",
             "--alias",
@@ -389,12 +377,10 @@ mod tests {
     fn to_args_contains_all_18_ac1_flags_with_non_empty_values() {
         let config = reference_config();
         let args = config.to_args();
-        let pairs: Vec<(&str, &str)> = args
-            .chunks_exact(2)
-            .map(|pair| (pair[0].as_str(), pair[1].as_str()))
-            .collect();
 
-        let expected: [(&str, &str); 18] = [
+        // 17 of the 18 AC1 flags take a value; `--kv-unified` is the one
+        // value-less exception (asserted separately below).
+        let expected: [(&str, &str); 17] = [
             ("--model", config.model.as_str()),
             ("--mmproj", config.mmproj.as_str()),
             ("--model-draft", config.model_draft.as_str()),
@@ -411,32 +397,100 @@ mod tests {
             ("--top-p", "0.95"),
             ("--top-k", "64"),
             ("--parallel", "1"),
-            ("--kv-unified", "1"),
             ("--log-verbosity", "4"),
         ];
 
         for (flag, value) in expected {
-            let found = pairs.iter().find(|(f, _)| *f == flag);
-            assert!(found.is_some(), "missing flag {flag}");
-            let (_, actual) = found.expect("flag present");
+            let index = args
+                .iter()
+                .position(|arg| arg == flag)
+                .unwrap_or_else(|| panic!("missing flag {flag}"));
+            let actual = args
+                .get(index + 1)
+                .unwrap_or_else(|| panic!("flag {flag} has no value token"));
             assert!(!actual.is_empty(), "flag {flag} has an empty value");
-            assert_eq!(*actual, value, "flag {flag} value mismatch");
+            assert_eq!(actual, value, "flag {flag} value mismatch");
         }
 
-        // 21 flag/value pairs total (18 AC-1 flags + --host/--port + --alias).
-        assert_eq!(pairs.len(), 21);
-    }
-
-    #[test]
-    fn kv_unified_false_emits_zero() {
-        let mut config = reference_config();
-        config.kv_unified = false;
-        let args = config.to_args();
+        // The one value-less AC1 flag: present as a bare switch whose successor
+        // is the next flag (`--log-verbosity`), never a value.
         let index = args
             .iter()
             .position(|arg| arg == "--kv-unified")
             .expect("--kv-unified present");
-        assert_eq!(args[index + 1], "0");
+        let next = args
+            .get(index + 1)
+            .expect("token after --kv-unified");
+        assert!(
+            next.starts_with("--"),
+            "--kv-unified must be bare; next token = {next:?}"
+        );
+
+        // 41 argv tokens = 17 AC1 pairs (34) + 1 bare switch + 3 extra pairs
+        // (--alias/--host/--port = 6).
+        assert_eq!(expected.len() + 1, 18, "18 AC1 flags expected");
+        assert_eq!(args.len(), 41);
+    }
+
+    #[test]
+    fn kv_unified_false_emits_the_bare_negated_switch() {
+        let mut config = reference_config();
+        config.kv_unified = false;
+        let args = config.to_args();
+
+        assert!(
+            args.iter().any(|arg| arg == "--no-kv-unified"),
+            "--no-kv-unified present: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--kv-unified"),
+            "--kv-unified must be absent when false: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "0"),
+            "no bare 0 value token: {args:?}"
+        );
+    }
+
+    #[test]
+    fn kv_unified_true_emits_the_bare_supported_switch() {
+        let config = reference_config();
+        let args = config.to_args();
+
+        assert!(
+            args.iter().any(|arg| arg == "--kv-unified"),
+            "--kv-unified present: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--no-kv-unified"),
+            "--no-kv-unified must be absent when true: {args:?}"
+        );
+    }
+
+    #[test]
+    fn to_args_never_attaches_a_value_to_kv_unified() {
+        // Both branches: the boolean switch is a single bare token whose
+        // successor is the next flag, never a value.
+        for kv_unified in [true, false] {
+            let mut config = reference_config();
+            config.kv_unified = kv_unified;
+            let args = config.to_args();
+
+            let switch = if kv_unified { "--kv-unified" } else { "--no-kv-unified" };
+            let index = args
+                .iter()
+                .position(|arg| arg == switch)
+                .unwrap_or_else(|| panic!("missing switch {switch}"));
+            let next = args
+                .get(index + 1)
+                .unwrap_or_else(|| panic!("switch {switch} is the last token"));
+            assert!(
+                next.starts_with("--"),
+                "switch {switch} must not carry a value; next token = {next:?}"
+            );
+            assert_ne!(next, "0", "switch {switch} must not carry 0");
+            assert_ne!(next, "1", "switch {switch} must not carry 1");
+        }
     }
 
     #[test]
