@@ -21,6 +21,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+use crate::infrastructure::companion::models::{
+    file_path, is_step_complete, missing_files, resolve_manifest, resolve_models_dir,
+    ModelManifest,
+};
 use crate::infrastructure::companion::resolve_llama_server;
 use crate::infrastructure::storage::AppStore;
 
@@ -37,23 +41,11 @@ use super::{
     LLAMA_SERVER_PORT_KEY, LLAMA_SERVER_STARTED_AT_KEY,
 };
 
-// ── Internal settings keys + companion default layout ─────────────────────────
+// ── Internal settings keys ────────────────────────────────────────────────────
 
 /// AppStore key for the last launch error, surfaced by `get_llama_server_status`.
 /// Internal to this feature — not part of the persisted-settings contract.
 const LLAMA_SERVER_LAST_ERROR_KEY: &str = "llama_server_last_error";
-
-/// AppStore key holding the user-configurable model base directory.
-const MODELS_DIR_KEY: &str = "models_dir";
-
-/// Companion reference-set layout, mirroring the #2856 acquisition manifest
-/// (`features/setup/model_download_state.rs`). The `models_dir` setting is the
-/// base; the dedicated `llama_server_model_path` / `_mmproj_` / `_mtp_` settings
-/// override each file. File-PRESENCE refusal is owned by ST-9, not here.
-const COMPANION_MODEL_SUBDIR: &str = "gemma-4-e2b-it-qat";
-const DEFAULT_MODEL_RELATIVE: &str = "gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf";
-const DEFAULT_MMPROJ_RELATIVE: &str = "mmproj-BF16.gguf";
-const DEFAULT_MTP_RELATIVE: &str = "MTP/mtp-gemma-4-E2B-it-Q4_0.gguf";
 
 /// Maximum characters of the server log included in a health-timeout error.
 const LOG_TAIL_CHARS: usize = 400;
@@ -144,33 +136,47 @@ fn get_u64(app: &AppHandle, key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// Resolve the configured `models_dir`, falling back to `{home}/fredo-models`
-/// (the same rule `features/setup` applies — kept local to avoid a cross-feature
-/// import).
-fn resolve_models_dir(app: &AppHandle) -> PathBuf {
-    if let Some(configured) = get_setting(app, MODELS_DIR_KEY) {
-        return PathBuf::from(configured);
-    }
-    app.path()
-        .home_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("fredo-models")
-}
-
-/// A persisted override when set, else the `models_dir`-resolved absolute path.
+/// A persisted override when set, else the absolute path derived from the SHARED
+/// #2856 manifest (`<models_dir>/<subdir>/<spec.path>` — NFR-6, one path rule).
+/// `file_id` is the manifest id (`model` | `vision` | `mtp`).
 fn resolve_model_path(
     app: &AppHandle,
     override_key: &str,
     models_dir: &Path,
-    relative: &str,
+    manifest: &ModelManifest,
+    file_id: &str,
 ) -> String {
-    get_setting(app, override_key).unwrap_or_else(|| {
-        models_dir
-            .join(COMPANION_MODEL_SUBDIR)
-            .join(relative)
-            .to_string_lossy()
-            .into_owned()
-    })
+    if let Some(override_path) = get_setting(app, override_key) {
+        return override_path;
+    }
+    manifest
+        .files
+        .iter()
+        .find(|spec| spec.id == file_id)
+        .map(|spec| {
+            file_path(models_dir, manifest, spec)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default()
+}
+
+/// R-1c: a config is never valid/launchable while a required model file is
+/// absent. Uses the SHARED #2856 manifest as the single rule source and NAMES
+/// the missing file(s). `None` means every required file is present.
+fn missing_model_files_detail(models_dir: &Path, manifest: &ModelManifest) -> Option<String> {
+    if is_step_complete(models_dir, manifest) {
+        return None;
+    }
+    let missing: Vec<String> = missing_files(models_dir, manifest)
+        .into_iter()
+        .map(|status| status.relative_path)
+        .collect();
+    if missing.is_empty() {
+        Some("missing model file(s): model manifest declares no required files".to_string())
+    } else {
+        Some(format!("missing model file(s): {}", missing.join(", ")))
+    }
 }
 
 /// The optional persisted parameter subset (`llama_server_args`). Every field is
@@ -272,6 +278,7 @@ fn apply_args_override(base: &mut LlamaServerConfig, json: Option<&str>) -> Resu
 /// reference defaults.
 fn build_launch_config(app: &AppHandle, executable: &Path) -> Result<LlamaServerConfig, String> {
     let models_dir = resolve_models_dir(app);
+    let manifest = resolve_manifest(app);
     let mut config = LlamaServerConfig {
         executable: executable.to_string_lossy().into_owned(),
         host: get_setting(app, LLAMA_SERVER_HOST_KEY)
@@ -281,19 +288,22 @@ fn build_launch_config(app: &AppHandle, executable: &Path) -> Result<LlamaServer
             app,
             LLAMA_SERVER_MODEL_PATH_KEY,
             &models_dir,
-            DEFAULT_MODEL_RELATIVE,
+            &manifest,
+            "model",
         ),
         mmproj: resolve_model_path(
             app,
             LLAMA_SERVER_MMPROJ_PATH_KEY,
             &models_dir,
-            DEFAULT_MMPROJ_RELATIVE,
+            &manifest,
+            "vision",
         ),
         model_draft: resolve_model_path(
             app,
             LLAMA_SERVER_MTP_PATH_KEY,
             &models_dir,
-            DEFAULT_MTP_RELATIVE,
+            &manifest,
+            "mtp",
         ),
         ..LlamaServerConfig::default()
     };
@@ -422,6 +432,14 @@ fn failure(
 /// Build the launch config from persisted settings and materialize the `.bat`.
 #[tauri::command]
 pub fn generate_llama_server_config(app: AppHandle) -> Result<LlamaServerConfigPreview, String> {
+    // R-1c — never produce a "valid" config while a required model file is
+    // absent. Checked first so the refusal is observable even when the
+    // llama-server executable is not installed.
+    if let Some(detail) =
+        missing_model_files_detail(&resolve_models_dir(&app), &resolve_manifest(&app))
+    {
+        return Err(detail);
+    }
     let executable = executable_or_code(resolve_llama_server(&app)).map_err(|(_, detail)| detail)?;
     let config = build_launch_config(&app, &executable)?;
     let (config_path, _log_path) = companion_paths(&app)?;
@@ -447,6 +465,22 @@ pub async fn launch_llama_server(app: AppHandle) -> LlamaServerLaunchResult {
         }
     };
     let config_path_string = config_path.to_string_lossy().into_owned();
+
+    // R-1c — a missing required model file makes any launch doomed. Refuse and
+    // name the missing file(s). Checked BEFORE resolving the executable so the
+    // refusal (a models problem) is not masked by an absent llama-server binary.
+    if let Some(detail) =
+        missing_model_files_detail(&resolve_models_dir(&app), &resolve_manifest(&app))
+    {
+        set_setting(&app, LLAMA_SERVER_LAST_ERROR_KEY, &detail);
+        return failure(
+            LlamaServerLaunchCode::NotConfigured,
+            PrerequisiteState::Missing,
+            detail,
+            config_path_string,
+            None,
+        );
+    }
 
     // Idempotency — an already-healthy managed server wins immediately (R-2).
     let snapshot = {
@@ -724,7 +758,99 @@ pub fn stop_llama_server_on_exit(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::infrastructure::companion::models::ModelFileSpec;
+    use std::path::{Path, PathBuf};
+
+    /// A small KB-scale manifest so tests never touch the 3.67 GB default.
+    fn test_manifest(specs: &[(&str, &str, u64)]) -> ModelManifest {
+        ModelManifest {
+            revision: "test-rev".to_string(),
+            subdir: "gemma-4-e2b-it-qat".to_string(),
+            files: specs
+                .iter()
+                .map(|(id, path, expected)| ModelFileSpec {
+                    id: (*id).to_string(),
+                    path: (*path).to_string(),
+                    url: format!("https://example.invalid/{path}"),
+                    expected_bytes: *expected,
+                    sha256: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn write_sized(path: &Path, len: u64) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dir");
+        }
+        let file = std::fs::File::create(path).expect("create file");
+        file.set_len(len).expect("set file length");
+    }
+
+    // ── ST-9: config refusal names missing model files (R-1c) ────────────────
+
+    #[test]
+    fn missing_model_files_detail_names_every_absent_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(&[
+            ("model", "model.gguf", 4),
+            ("vision", "mmproj.gguf", 5),
+            ("mtp", "MTP/mtp.gguf", 6),
+        ]);
+
+        // No files at all — every required file is named in the refusal.
+        let detail = missing_model_files_detail(dir.path(), &manifest).expect("refusal");
+        assert!(
+            detail.starts_with("missing model file(s): "),
+            "detail: {detail}"
+        );
+        assert!(detail.contains("gemma-4-e2b-it-qat/model.gguf"), "detail: {detail}");
+        assert!(detail.contains("gemma-4-e2b-it-qat/mmproj.gguf"), "detail: {detail}");
+        assert!(
+            detail.contains("gemma-4-e2b-it-qat/MTP/mtp.gguf"),
+            "detail: {detail}"
+        );
+
+        // With every file exactly the expected size the config is launchable.
+        let base = dir.path().join("gemma-4-e2b-it-qat");
+        write_sized(&base.join("model.gguf"), 4);
+        write_sized(&base.join("mmproj.gguf"), 5);
+        write_sized(&base.join("MTP").join("mtp.gguf"), 6);
+        assert!(missing_model_files_detail(dir.path(), &manifest).is_none());
+    }
+
+    #[test]
+    fn missing_model_files_detail_flags_a_truncated_file_and_ignores_present_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(&[
+            ("model", "model.gguf", 4),
+            ("vision", "mmproj.gguf", 5),
+            ("mtp", "MTP/mtp.gguf", 6),
+        ]);
+        let base = dir.path().join("gemma-4-e2b-it-qat");
+        write_sized(&base.join("model.gguf"), 4);
+        write_sized(&base.join("mmproj.gguf"), 5);
+        write_sized(&base.join("MTP").join("mtp.gguf"), 2); // truncated
+
+        let detail = missing_model_files_detail(dir.path(), &manifest).expect("refusal");
+        assert!(detail.contains("gemma-4-e2b-it-qat/MTP/mtp.gguf"), "detail: {detail}");
+        assert!(
+            !detail.contains("gemma-4-e2b-it-qat/model.gguf"),
+            "present model must not be named: {detail}"
+        );
+        assert!(
+            !detail.contains("gemma-4-e2b-it-qat/mmproj.gguf"),
+            "present mmproj must not be named: {detail}"
+        );
+    }
+
+    #[test]
+    fn missing_model_files_detail_refuses_an_empty_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(&[]);
+        let detail = missing_model_files_detail(dir.path(), &manifest).expect("refusal");
+        assert!(detail.contains("missing model file(s)"), "detail: {detail}");
+    }
 
     #[test]
     fn args_override_replaces_only_the_named_fields() {

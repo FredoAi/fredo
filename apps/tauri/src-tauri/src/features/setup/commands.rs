@@ -1,20 +1,20 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::infrastructure::companion::models::{
+    models_subdir, resolve_manifest, resolve_models_dir,
+};
 use crate::infrastructure::companion::resolve_llama_server;
 #[cfg(test)]
+use crate::infrastructure::companion::models::default_manifest;
+#[cfg(test)]
 use crate::infrastructure::companion::resolve_llama_server_order;
-use crate::infrastructure::storage::AppStore;
 use super::model_download::{
     download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
     ReqwestTransport, SystemClock,
 };
-use super::model_download_state::{
-    default_manifest, is_step_complete, load_manifest, probe_files, FileState, ModelFileStatus,
-    ModelManifest,
-};
+use super::model_download_state::{is_step_complete, probe_files, FileState, ModelFileStatus};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -95,9 +95,6 @@ pub struct SetupStepResult {
 /// `download_model` wire result: the streamed engine outcome, named for the API
 /// contract the UI consumes (additive `files` over the legacy `SetupStepResult`).
 pub type ModelDownloadResult = ModelDownloadOutcome;
-
-/// AppStore key holding an optional whole-manifest JSON override (#2856 test seam).
-const MODEL_MANIFEST_PATH_KEY: &str = "model_manifest_path";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -848,39 +845,6 @@ pub fn configure_otel(app: AppHandle) -> InstallResult {
 
 // ── New Setup Commands ─────────────────────────────────────────────────────────
 
-/// Resolve the configured models_dir from AppStore, falling back to {home}/fredo-models.
-fn resolve_models_dir(app: &AppHandle) -> PathBuf {
-    let store_ref = app.state::<Arc<AppStore>>();
-    let configured = store_ref.get("models_dir").ok().flatten();
-    if let Some(val) = configured {
-        if !val.is_empty() {
-            return PathBuf::from(val);
-        }
-    }
-    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-    home.join("fredo-models")
-}
-
-/// Resolve the acquisition manifest: the AppStore `model_manifest_path` JSON
-/// override when present and valid, else the compiled [`default_manifest`].
-/// An invalid override never breaks the probe — it logs and falls back.
-fn resolve_manifest(app: &AppHandle) -> ModelManifest {
-    let override_json = app
-        .state::<Arc<AppStore>>()
-        .get(MODEL_MANIFEST_PATH_KEY)
-        .ok()
-        .flatten();
-    match load_manifest(override_json.as_deref()) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            tracing::warn!(
-                "invalid {MODEL_MANIFEST_PATH_KEY} override — using the compiled default manifest: {error}"
-            );
-            default_manifest()
-        }
-    }
-}
-
 /// The absolute path of the file with `id` when it exists on disk (legacy
 /// `gguf_path`/`mmproj_path`/`mtp_path` semantics — existence only).
 fn legacy_path(files: &[ModelFileStatus], id: &str) -> Option<String> {
@@ -1198,10 +1162,11 @@ pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
     let manifest = resolve_manifest(&app);
     let models_dir = resolve_models_dir(&app);
     let model_files = probe_files(&models_dir, &manifest);
-    let models_subdir = models_dir.join(&manifest.subdir);
     prerequisites.push(model_files_prerequisite(
         &model_files,
-        models_subdir.to_string_lossy().into_owned(),
+        models_subdir(&models_dir, &manifest)
+            .to_string_lossy()
+            .into_owned(),
     ));
 
     let ready = prerequisites
