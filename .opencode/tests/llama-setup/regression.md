@@ -99,7 +99,7 @@ invariants still hold; the change is a single constant + unit test, so no baseli
 > Added at Spec #2856. The model step gains per-file acquisition; these invariants pin the
 > surfaces it must not disturb. Run alongside R-1..R-7 above.
 
-- [ ] **R-8 (`check_model_files` legacy contract preserved):** the command still returns
+- [x] **R-8 (`check_model_files` legacy contract preserved):** the command still returns
       `{ gguf_exists, mmproj_exists, gguf_path, mmproj_path }` (`commands.rs:969`) for the
       standalone `SetupWizard` model step (`SetupWizard.tsx:131`). #2856 EXTENDS the response
       (`complete`, `files`, additive `mtp_*`) — it does not rename/remove the legacy fields.
@@ -108,31 +108,31 @@ invariants still hold; the change is a single constant + unit test, so no baseli
     2-of-3 set must NOT read done. `SetupWizard.test.tsx` may be updated for ST-7, but the
     legacy field names must not change.
 
-- [ ] **R-9 (#2855 wizard shell untouched):** gating (wizard-only while not ready), the
+- [x] **R-9 (#2855 wizard shell untouched):** gating (wizard-only while not ready), the
       `llama-server` install step + in-place re-check, `COMPANION_SETUP_STEPS` ordering, the
       `companion-step-*` testids, and `useCompanionReadiness` fail-closed behavior are unchanged
       — F-01..F-17 + R-1..R-7 above still hold.
 
-- [ ] **R-10 (`download_model` consumers + progress event):** the standalone `SetupWizard` model
+- [x] **R-10 (`download_model` consumers + progress event):** the standalone `SetupWizard` model
       step (`SetupWizard.tsx:242`) and its `setup:download-progress` listener contract
       (`{ file, total, downloaded, percent }`) are preserved — or migrated with the consumer in
       the same slice. No dangling listener / event rename.
 
-- [ ] **R-11 (models-dir resolution + fixed placement):** `resolve_models_dir` order (configured
+- [x] **R-11 (models-dir resolution + fixed placement):** `resolve_models_dir` order (configured
       `models_dir` → `~/fredo-models`) and the fixed `<models_dir>/<MODEL_SUBDIR>/` placement
       (`commands.rs:838`) hold, so the #2857 launch slice can reference the files deterministically.
 
-- [ ] **R-12 (CLI setup mirror coherent):** `infrastructure/cli/commands/setup.rs`
+- [x] **R-12 (CLI setup mirror coherent):** `infrastructure/cli/commands/setup.rs`
       (`resolve_models_dir` / the model block) stays consistent with the app's model path/filenames.
 
-- [ ] **R-13 (token + companion overlay):** no hardcoded hex/rgba or `var(--x)NN` alpha-append in
+- [x] **R-13 (token + companion overlay):** no hardcoded hex/rgba or `var(--x)NN` alpha-append in
       the new rows/progress/error UI (`.opencode/tests/theming/`); the companion overlay/controls
       (`.opencode/tests/companion/`) are untouched.
 
-- [ ] **R-14 (build gates):** `pnpm --filter @fredo/ui build` exit 0 (zero TS errors);
+- [x] **R-14 (build gates):** `pnpm --filter @fredo/ui build` exit 0 (zero TS errors);
       `cargo check` zero warnings and `cargo test` green if Rust is touched.
 
-- [ ] **R-15 (legacy in-process engine lookup untouched):** `lib.rs:137-148` still resolves the
+- [x] **R-15 (legacy in-process engine lookup untouched):** `lib.rs:137-148` still resolves the
       legacy `gemma-e2b-it` layout (`gemma-4-E2B-it-Q4_K_M.gguf` + `mmproj-F16.gguf`); this slice
       must not repoint or delete it (the deletion slice owns it). The new `gemma-4-e2b-it-qat`
       subfolder is ADDITIVE.
@@ -168,3 +168,29 @@ Real wizard-driven pull (human directive); `models_dir` = `C:\Code\fredo\models`
 - `.opencode/tests/theming/` — the token→var→theme flow the wizard must use for its colors.
 - `.opencode/tests/launcher/` — the launcher/mascot slot is affected by companion visibility
   (R-16/R-20/R-22..R-25) — gating must not leave a blank mascot slot.
+
+## Execution Log — round 2 (2026-09-12, spec/2856 @ 1bef0ef5)
+
+Re-sweep after the round-2 AC4 resume fix (`model_download.rs` only). All R-8..R-15 invariants hold;
+the change is confined to the ST-2 acquisition engine, so no #2856 UI/contract baseline moved.
+- **R-8** PASS: legacy `check_model_files` shape still consumed — the panel rendered the per-file
+  rows (model/vision/mtp); the model step's `Download model files` button unmounts only at
+  `3 of 3 present`. No wire rename observed.
+- **R-9** PASS: single wizard preserved. Companion settings rendered the `llama.cpp runtime` row
+  (`Not installed`, `Install llama.cpp` + Re-check) alongside the model-files step throughout every
+  leg; gating held (wizard-only while not ready); `companion-controls` never rendered.
+- **R-10** PASS: the pull was driven by the wizard `download_model`; the
+  `setup:download-progress` listener received the additive payload
+  (`fileId`/`file`/`relativePath`/`total`/`downloaded`/`percent`/`state`) — 408 events captured on
+  the resume leg, 307 on the vision leg, with `skipped` states for present files.
+- **R-11** PASS: all files landed under `<models_dir>/gemma-4-e2b-it-qat/` with the nested `MTP/`
+  segment; UI paths read `C:\Code\fredo\models\gemma-4-e2b-it-qat\…`.
+- **R-12** PASS (static): the CLI setup mirror was not touched by the round-2 diff (engine-only
+  change is shared, so the CLI inherits the fix); not driven live this round.
+- **R-13** PASS: no new hardcoded hex/rgba or `var(--x)NN`; the round-2 diff changes only Rust
+  (`model_download.rs`); companion overlay untouched.
+- **R-14** PASS (UI): no UI file changed in round 2; `cargo check`/`clippy`/`test` green per the
+  developer receipt (445 passed, incl. the 3 new retry tests). `cargo` is not runnable in the tester
+  sandbox (named tool-access gap) — covered by CI `rust-validate`.
+- **R-15** PASS: additive only — `model_download.rs` does not touch the legacy `gemma-e2b-it`
+  in-process engine lookup.
