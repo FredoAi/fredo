@@ -2560,6 +2560,14 @@ struct ActionArgs {
     branch: Option<String>,
     commits: Option<u64>,
     root_cause: Option<String>,
+    /// `transition --human-authorized` (SI hardening): a binding human directive
+    /// may add scope to a feature whose testing entry was aborted before any
+    /// tester verdict, requiring the dev work to precede testing. The normal
+    /// rework exit (a tester FAIL verdict) cannot exist yet, so the standard
+    /// `has_evidence` guard would strand the directive. This flag — valid ONLY
+    /// for `testing -> implementation`, and ONLY with a non-empty `--reason` —
+    /// bypasses that one exit guard and records a `human.authorization` event.
+    human_authorized: bool,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -3105,7 +3113,23 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if to == Phase::Testing {
                 serving_currency_ok(issue)?;
             }
-            let (ok, reason) = if phase == Phase::Implementation && to == Phase::Planning {
+            // Human-authorized pre-verdict rework (SI hardening). A binding human
+            // directive may add scope to a feature whose testing entry was aborted
+            // before any tester verdict and require the dev work to precede
+            // testing. The rework leg's normal precondition is a tester FAIL
+            // verdict, which cannot exist yet, so the standard `has_evidence`
+            // guard would strand the directive. Allow ONLY `testing ->
+            // implementation`, ONLY when `--human-authorized` is passed together
+            // with a non-empty `--reason`; the authorization is recorded as an
+            // auditable `human.authorization` event. Every other leg keeps its
+            // normal exit guard.
+            let human_authorized_rework = phase == Phase::Testing
+                && to == Phase::Implementation
+                && a.human_authorized
+                && a.reason.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false);
+            let (ok, reason) = if (phase == Phase::Implementation && to == Phase::Planning)
+                || human_authorized_rework
+            {
                 (true, String::new())
             } else {
                 exit_guard_passes(phase, issue)
@@ -3114,6 +3138,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            if human_authorized_rework {
+                append_event(issue, "human.authorization", &a.actor, phase.as_str(), "success",
+                    &format!("human-authorized rework {} -> {}: {}", phase.as_str(), to.as_str(),
+                        a.reason.as_deref().unwrap_or("").trim()))?;
+                println!("HUMAN-AUTHORIZED REWORK: {} -> {} (bypasses the tester-evidence exit guard; reason recorded)",
+                    phase.as_str(), to.as_str());
             }
             // Testing → audit requires the FULL verification (verdict PASS + live
             // evidence per the plan's policy, fail-closed) — a FAIL verdict may
@@ -4861,6 +4892,7 @@ fn parse_args() -> ActionArgs {
         gitargs: val("--gitargs"),
         branch: val("--branch"),
         commits: val("--commits").and_then(|s| s.parse().ok()),
+        human_authorized: args.iter().any(|a| a == "--human-authorized"),
     }
 }
 
