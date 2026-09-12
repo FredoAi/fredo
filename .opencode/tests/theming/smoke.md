@@ -16,5 +16,5 @@
       the dialog chrome (nav highlight, hover, scrollbar, borders) re-tints with no stale color;
       screenshot succeeds; console clean.
 - [ ] **S-8:** `--hover-bg` consumers (Companion setting rows / tip) render a non-transparent
-      surface in both themes; `tauri_webview_execute_js` computed `backgroundColor` is a real
-      color; console clean.
+      surface in both themes (T1's single derived `color-mix` resolves per theme — not two literal
+      values); `tauri_webview_execute_js` computed `backgroundColor` is a real color; console clean.
