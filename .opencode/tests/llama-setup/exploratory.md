@@ -294,3 +294,18 @@ functional F-35/F-36 (AC2 FAIL).
 - **E-26 (not executed):** settings-change-while-running requires a running server.
 - **E-29 (not executed):** exit-during-stream requires a streaming server.
 - **E-31 (verified, negative):** killing a mid-stream server was moot — the server never survives startup.
+
+## Findings — round 3 (2026-09-12, spec/2857 @ c62303d9)
+
+- **E-33 (resolved / root-caused):** the round-2 launch-blocking finding is closed. `--kv-unified` is a
+  value-less boolean switch in llama.cpp; `config.rs` now emits the bare `--kv-unified` (true) /
+  `--no-kv-unified` (false) via the grouped `arg_groups()` builder. The real child now proceeds past argv
+  parse (`build 10901`, model load, `llama_context: kv_unified = true`) and `/health` returns 200 on
+  `127.0.0.1:8080`. The earlier "CPU build (E-13) cannot load" suspicion was **refuted** — the installed
+  winget `ggml.llamacpp` build is a Vulkan build on an RTX 3060 (36/36 layers offloaded). No AC1 value was
+  changed; only the switch syntax was corrected under the human authorization.
+- **E-23 (verified, clean-exit variant):** closing Fredo with a healthy server running terminated the child
+  (`RunEvent::Exit` → `stop_llama_server_on_exit`): zero `llama-server.exe`, :8080 free. The hard-kill
+  (Task Manager) path remains covered by the ST-7 startup PID sweep (CI unit-tested) — not re-driven live.
+- **E-29 (partially verified):** an exit during an in-flight/just-completed generation left no orphan; the
+  true mid-stream exit was not re-driven (the F-39 long leg completed in ~9 s).
