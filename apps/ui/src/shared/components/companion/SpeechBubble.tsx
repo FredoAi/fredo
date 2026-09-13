@@ -1,5 +1,5 @@
 import React from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Box, Text } from '@chakra-ui/react';
 import { AVATAR_SM } from '../fredo-avatar';
 import { tint } from '../../utils/colorTint';
@@ -68,6 +68,10 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   positioning = 'fixed',
   children,
 }) => {
+  // Reduced motion: the bubble entry/exit degrades to fade-only (opacity) with no
+  // scale/translate transform. The 4 s auto-hide timing and the seat anchor are
+  // unaffected — only the entrance/exit variant changes.
+  const reduceMotion = useReducedMotion() ?? false;
   const hasGame = Boolean(children);
   const bw = hasGame ? GAME_W : BUBBLE_W;
   const bh = hasGame ? GAME_H : BUBBLE_H;
@@ -122,10 +126,14 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
           // Key is stable while the bubble is open — only changes on open/close.
           // Using a static key prevents re-mounting (and jank) on every token.
           key="speech-bubble"
-          initial={{ opacity: 0, scale: 0.88, y: initDelta }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.88, y: initDelta }}
-          transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, y: initDelta }}
+          animate={reduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.88, y: initDelta }}
+          transition={
+            reduceMotion
+              ? { duration: 0.2, ease: 'easeOut' as const }
+              : { type: 'spring' as const, stiffness: 380, damping: 30 }
+          }
           style={
             isAbsolute
               ? {
