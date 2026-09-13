@@ -362,3 +362,13 @@
       (the seat renders `EmptySeat`), and it remains ACTIVE at home after an idle auto-return
       (`isAutoHidden` does not gate the interactive seat).
   - **Edge:** away while hosted in `run-cli-terminal`; a stale away flag; auto-return then send.
+
+### #2871 testing round 1 (spec/2871 @ e5fa7612) — results
+
+- **R-37 PASS (live).** Single-click joke, double-click TicTacToe (`Your turn (X)`, 208×268 game
+  bubble), Ctrl+right-click teleport (overlay `position:fixed` + seat placeholder 80×100), bubble
+  240×120 `position:absolute` above the slot, frozen 58 base rects — all unchanged. A bar send
+  streams the same `thinking`→`joking`→`happy` flow; no stray joke.
+- **R-38 PASS (live).** ON/OFF toggled live (`Fredo_companion_visible` true→false→true); OFF and
+  away → no `llmChat`/bubble, seat placeholder/mascot per #2870; after >60 s idle (auto-return) a
+  bar send streamed a reply → chat remains ACTIVE at home (`isVisible && !isAway`).
