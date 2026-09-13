@@ -593,3 +593,32 @@
   - **Edge:** substring-only hit with the companion active → send; game bubble open → `Finish the
     game to chat`; error copy + 8 s hold; reduced-motion flip is a named blocker if the driver
     cannot flip `matchMedia` (static CSS + product-unit pin). Reference UI/UX §1/§2/§4/§5 + REQ-14..16.
+
+### #2871 testing round 1 (spec/2871 @ e5fa7612) — results
+
+Live (real managed `llama-server`, `/health` 200 :8080). Verdict **FAIL** (12/16 REQs pass).
+Evidence: `.opencode/tmp/2871/tests-runs.md` / `## Tests Runs (round 1)`.
+
+- **F-51 PASS (live).** `Mission Monitor` + Enter → Mission Monitor window opened, no `llmChat`;
+  non-tile phrase → single-shot chat. Substring `set` stays a SEND.
+- **F-52 PASS (live).** 70 ms recorder: **4 distinct partial contents** (thinking + 3 incremental);
+  seat bubble `position:absolute` 240×120 above the slot; `thinking`→`joking`→`happy`.
+- **F-53 FAIL (live).** (a) On `llm-done` `data-streaming` + cursor clear, BUT the bar `aria-busy`
+  + dot linger through the ~5 s `happy` hold (streaming cleared t=7907, aria-busy t=14578) — the bar
+  is not "usable again" until the hold ends. (b) The error surfaced as the RAW backend string
+  `failed to start C:\…\bad-llama-server.exe: spawn …` (not the curated copy), and the flow rendered
+  `happy` (no false-happy rule). Repro: `stop_llama_server` + `llama_server_path` → a real
+  non-executable file → Enter. A nonexistent path does NOT error (PATH fallback).
+- **F-54 PASS (live).** OFF + away → no chat, filter/launch unchanged; after >60 s idle the
+  companion was home and a bar send streamed a reply (resolved predicate holds live).
+- **F-55 PASS (live).** 8 generations, each exactly one `llm-done`; Enter-spam never started a
+  2nd stream. (The extra Enter fell through to `openSelected()` — see F-58 FAIL.)
+- **F-56 PASS (live+static).** Console error-level empty; zero color literals in the changed files.
+- **F-57 PASS (live).** `telemetry_spans` 23,165, newest `2026-09-13T21:02:29.608Z`;
+  `chat_rows(e2e-2871-chat)=1`; `tool_use_rows(e2e-2871-tool/read_file)=1`.
+- **F-58 FAIL (live+static).** **REQ-14:** during busy the bar shows NO `Fredo is replying…`
+  placeholder/chip, the input is NOT `readOnly`, and Enter during busy LAUNCHES the selected tile
+  (window opened mid-stream). **REQ-16:** `Fredo-cursor-blink` is not motion-gated
+  (`companion.css:142-145` has no reduced-motion rule) → under reduced motion the cursor still
+  blinks. **REQ-15:** the single reply live region did not announce the error event. REQ-12 + the
+  REQ-14 exact/non-match chip + `aria-describedby` mirror PASS.
