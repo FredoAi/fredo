@@ -205,3 +205,30 @@
 
 - [ ] R-32: The companion is OUT of scope and UNCHANGED: `.fredo-companion-avatar` stays `offsetWidth = 80`/`offsetHeight = 100`; the 58-rect set, the `fredo-idle-bob`/`fredo-idle-glow` 2.4 s idle, the talk/teleport states, the click/teleport gestures and the clamp/bubble-anchor math (AVATAR_SM) are byte/behaviour-identical to the pre-#2852 render. git diff shows NO companion file change. Reference companion R-11 + `.opencode/tests/companion/`.
   - **Edge:** a shared-size refactor must not alter `AVATAR_SM` (80×100); the launcher adopting sm must not introduce a second/duplicated size literal.
+
+---
+
+## #2868 extension — the Settings tile changes the grid set only (G-136)
+
+> Issue #2868 adds the Settings app to `SHOWABLE_FEATURES` and retires the floating gear.
+> **G-136:** R-2's frozen live grid set (`4 showable features`) is SUPERSEDED — the grid now has
+> 5 (Settings added); the shell/search/keyboard/window-kernel invariants remain in force.
+> Historical records above preserved. Live policy.
+
+## R-33 — Grid set grows by exactly the Settings tile; shell invariants unchanged
+
+- [ ] R-33: The engaged grid tile set = `SHOWABLE_FEATURES.map(f => f.name)` (now includes
+      "Settings"); the query filter, keyboard nav (↑↓/←→, Enter/Space), empty-grid no-op, and
+      `dedupeByFeatureId` behavior are unchanged; the command bar/avatar/hints/clock-LED chrome is
+      unchanged. Reference #2868 functional F-48/F-49 + launcher R-2/R-7.
+  - **Edge:** typing "set" filters to the Settings tile; no index gaps from the added tile.
+
+## R-34 — Window-kernel contract + no gear regression
+
+- [ ] R-34: The Settings tile routes through `onOpenFeature → Home.openFeatureWindow → openWindow`
+      (not raw `openWindow`); re-invoke de-dupes (one window id); the own-kernel store/actions are
+      unchanged. NO floating gear (`IconButton[aria-label="Settings"]`) renders in any state — the
+      retired entry leaves no residual layer, and the launcher chrome (clock + single top-right LED)
+      is unchanged. Reference #2868 functional F-50 + launcher R-3/R-8 + desktop-chrome R-21.
+  - **Edge:** Ctrl+Space over the maximized Settings window still re-raises the grid; no re-render
+    loop (console clean of `Maximum update depth exceeded`).
