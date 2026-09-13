@@ -495,4 +495,29 @@
       re-tints token-native from the live accent, no stale color, text ≥4.5:1 / non-text ≥3:1, and
       no `var(--x)NN` alpha-append. Cross-ref `.opencode/tests/theming/`.
   - **Edge:** accent changed while a section is mid-edit; light preset + pale accent; the
-    window-chrome header/controls re-tint with the live accent.
+      window-chrome header/controls re-tint with the live accent.
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — results
+
+> Verdict: **PASS** (5/5 ACs). Full detail + raw evidence URLs in `.opencode/tmp/2868/tests-runs.md`
+> (posted as `## Tests Runs (round 1)`). Live renders on the running dev app (MCP driver
+> `com.fredo.app`); rendered-webview receipt per G-108 — NO `telemetry_spans` leg (not applicable).
+
+- **F-21 PASS (live).** Launcher grid `#fredo-launcher-grid[role="grid"][aria-label="Apps"]` renders 5 tiles incl. `[role="button"][aria-label="Settings"]` by default (no install step). Clicking opens `div[role="group"][aria-label="Settings"]` with `header.fredo-window__header` title "Settings" + section nav.
+- **F-22 PASS (live).** Tile label exactly "Settings"; window frame `aria-label="Settings"`; same tile treatment as siblings (gear glyph).
+- **F-23 PASS (live).** Chrome controls `Minimize Settings` / `Restore Settings` / `Maximize Settings` / `Close Settings`; opens maximized (1920×1017); Restore → 480×320 + 8 grips; Maximize re-fills; Minimize hides the surface while the dock entry `[aria-label="Settings (minimized)"]` stays; Close removes frame + entry; re-open works.
+- **F-24 PASS (live).** Floating 480×320 with 8 `.fredo-window__grip--*`; geometry from `getBoundingClientRect`.
+- **F-25 PASS (live).** No settings `role="dialog"`/`aria-modal`/backdrop; surface is `div[role="group"]`; focus not trapped (launcher searchbox receives focus while the window stays open).
+- **F-26 PASS (live).** A second feature window (Stepper Probe) opened independently while Settings was open — two coexisting frames.
+- **F-27 PASS (live).** Re-invoke from the grid kept `settingsWindows === 1`; minimized → re-invoke restored + focused; grid collapsed.
+- **F-28 PASS (live).** Exactly one Settings window entry/frame across repeated re-invokes.
+- **F-29 PASS (live).** Companion, Appearance, Fredo Setup, Telemetry + discovered Run CLI / My Work Items / Infrastructure Diagram / Model Storage under "Features"; each rendered real content.
+- **F-30 PASS (live).** Section switching (Companion → Appearance → Fredo Setup → Telemetry → Run CLI) rendered each with no stale/blank content.
+- **F-31 PASS (live).** Save footer only where a panel registers (`Run CLI saveButtons:1`, `--accent-contrast` white on `--accent-primary`); absent on the 4 static sections (`saveButtons:0`).
+- **F-32 PASS (static/live).** The four registering panels delegate to the unified footer; no standalone inline Save replaced it.
+- **F-33 PASS (component test + live ≥1).** `SettingsSurface.zeroSections.test.tsx` 2/2 asserts the "Features" label absent with zero discovered sections; live leg renders group + items. Live zero-section state structurally unreachable (G-138).
+- **F-34 PASS (static/live).** Discovery filter `hasSettings && typeof renderSettings === 'function'`; Settings itself is `hasSettings=false` (no self-recursion).
+- **F-35/F-36 PASS (live + component test).** Probe-in-flight/not-ready → wizard ONLY (`companion-setup-wizard`, `companion-step-*`); ready → `companion-controls` swap in place, no reload. `SettingsSurface.companionGate.test.tsx` 3/3.
+- **F-37/F-38/F-39 PASS (live + static).** Both files deleted; zero source refs; running app shows no gear/modal; launcher tile is the sole entry; capability not lost.
+- **F-40 PASS (live + static).** Dark classic ↔ Light Default + pale `#7dd3fc` accent re-tint token-native; active-nav label vs header 16.33:1; zero hex/rgba/`var(--x)NN` in `features/settings-app/**`.
+- **Console:** clean after every interaction (`tauri_read_logs`); one MCP-bridge wedge on the Telemetry section (pre-existing #2864 E-3 tooling issue) recovered by driver stop/start.
