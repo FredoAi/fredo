@@ -134,3 +134,11 @@
 - [ ] E-31: **Light theme + white-alpha hover.** Hover every nav item in light theme; does any
       hover/highlight disappear (white-on-white)? Any invisible hover/active affordance is a
       finding (promotes to F-6/F-7 in the settings suite).
+
+### #2864 testing round 1 (spec/2864 @ f2c8923) — findings
+
+- **E-27 FINDING — reachable (regression-free).** The not-ready gate is reachable deterministically without touching the machine setup: `window.__TAURI__.core.invoke('stop_llama_server')` → `get_llama_server_status` `{running:false, healthy:false}` → section remount renders the wizard ONLY (`companion-setup-wizard` present, `companion-controls`/switch absent). Restore with `launch_llama_server` → `{running:true, healthy:true, port:8080}`.
+- **E-28 FINDING (partial).** An out-of-range draft (`9999`) survived a section round-trip and an accent switch with no lost draft/stale border; committed to `3600` on Enter. Full "type half-draft then immediately theme-switch" was approximated.
+- **E-29 NOT DRIVEN — named blocker.** The MCP driver cannot flip `prefers-reduced-motion`; no motion-only affordance exists in the audited chrome (transitions are opacity/border only), and the close-button scale transform is inside a `prefers-reduced-motion` guard (`ProfileSettingsModal.tsx:172-174`).
+- **E-30 FINDING — regression-free.** Scrollbar thumb visible in both themes (derived T3/T4); content-pane overflow in the AFTER set.
+- **E-31 FINDING — regression-free.** Nav hover uses `var(--hover-bg)` (derived, non-white-alpha) → visible in light; active item uses the accent tint.
