@@ -89,3 +89,30 @@ Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missi
 - **S-12 PASS:** screenshots captured under `.opencode/tmp/2857/e2e/` and uploaded to `.opencode/evidence/2857/`.
 - **S-13 UNVERIFIED:** no server ever ran (AC2 defect), so there is no orphan to check; the tester sandbox
   exposes no `llama-server.exe` process-lister or :8080 port probe. Named blocker (G-053).
+
+## #2865 — Smoke (wizard UX visual audit)
+
+> Quick paths for the visual audit. Live policy — screenshot + console-clean per step. Distinct
+> BEFORE/AFTER evidence names (G-135).
+
+- [ ] S-14: Wizard reachable in BOTH themes — `stop_llama_server` → open Settings → Companion; the
+      wizard renders (`companion-setup-wizard` + summary + step cards) in dark `classic` AND light
+      `light-default`; `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+- [ ] S-15: State quick path — with the wizard open, drive one step to `running` (install/download)
+      and the server to `starting`; each shows an icon+text status and a moving affordance with no
+      console error; screenshot succeeds.
+
+- [ ] S-16: Error quick path — force a step failure (bad `llama_server_path` / broken install); the
+      card shows `error` with actionable copy + a Retry control (never a raw stack/IPC string);
+      screenshot succeeds; console clean.
+
+- [ ] S-17: BEFORE/AFTER screenshots exist under DISTINCT names — `.opencode/tmp/2865/e2e/before/`
+      `before-*` and `.opencode/tmp/2865/e2e/after/` `after-*`; no BEFORE frame overwritten by the
+      AFTER re-capture; `upload-evidence` raw URLs recorded.
+
+- [ ] S-18: UI/UX visual artifacts exist — `.opencode/tmp/2865/visual-eval-before.md` (reads every
+      BEFORE image) and `.opencode/tmp/2865/before-after-verdict.md` (pairs + dispositions);
+      `pnpm --filter @fredo/ui build` exit 0; frozen hooks (`companion-setup-wizard`,
+      `data-state`, `data-server-state`) still present.
