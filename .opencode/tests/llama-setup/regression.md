@@ -335,3 +335,12 @@ The round's new defect is in AC2's launch argv (see functional F-35/F-36); it do
       import introduced.
   - **Edge:** a bar send while the server is `starting` → actionable not-ready, never a silent
     loss/duplicate; the terminal window open (cross-window presence) does not change the route.
+
+### #2871 testing round 1 (spec/2871 @ e5fa7612) — results
+
+- **R-29 PASS (live).** The bar path reuses `llm_chat` → `llm-token`/`llm-done` (+ additive
+  `llm-error`) with NO new fallback extraction path and no new persisted key; `ensure_healthy`
+  launches the same managed server (`/health` 200 :8080); `resolve_llama_server_order` unchanged.
+  A bar send while the server was cold launched + loaded it, then streamed (11.4 s TTFT, no loss).
+  **Observation:** the `llm-error` payload is forwarded verbatim into the bubble (companion F-71
+  FAIL) — the transport contract is unchanged, the readability mapping is absent.
