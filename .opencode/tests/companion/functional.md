@@ -1120,3 +1120,31 @@ Live (real managed `llama-server`). Verdict **FAIL** (REQ-6/REQ-14/REQ-15/REQ-16
   (~700 ms; no hang).
 - **F-72 PASS (live).** Enter-spam / click during a stream never started a 2nd generation; the
   `isGeneratingRef` + `generationRef` guards hold. (The extra Enter launched a tile — launcher F-58.)
+
+### #2871 testing round 2 (spec/2871 @ bd168ee) — results
+
+Verdict: the round-1 F-71 defect is **FIXED**. Live (real managed `llama-server`, `/health` 200
+:8080). Full live evidence + per-AC screenshots in the issue's `## Tests Runs (round 2)`.
+
+- **F-69 PASS (live).** Bar sends stream the reply into the SAME seat-anchored 240×120
+  `SpeechBubble` (`Fira Mono` text node), single-shot. G-130 over-satisfied: a long closure prompt
+  produced **11 distinct partial contents** (recorder `__rec2871`, 70 ms cadence; the 1,000-word
+  prompt reached 2,638 chars). Control tokens stripped; no second reply surface.
+- **F-70 PASS (live).** `thinking` (wait, `data-streaming="true"`) → `joking` (first token) →
+  `happy` (on done, existing ~5 s hold) → `idle`; recorder showed the busy window opens at send and
+  the bar `aria-busy`/`readOnly`/chip clear at `llm-done` (the ST-1r up-front `setState('idle')`).
+  A send resets the idle timer (a message is an interaction).
+- **F-71 PASS (live — was FAIL round 1).** With the managed server stopped and
+  `llama_server_path` set to a REAL non-executable file
+  (`C:\Code\fredo\.opencode\tmp\2871\bad-llama-server.exe`), a bar send surfaced EXACTLY the
+  curated generic sentence `Fredo couldn't reply just now. Try again in a moment.` in the bubble
+  (`<p>` Fira Mono text) — NOT the raw `failed to start …: spawn …` string. Recorder: `thinking`
+  → `idle` with ZERO `happy` samples across BOTH error legs (`happyCount:0`); the single
+  `role="status" aria-live="polite"` region (`data-testid="fredo-companion-live-region"`)
+  announced the same readable sentence once; the bar returned to `search or command` /
+  `readOnly=false` / `aria-busy` absent. Path restored to the real winget binary + relaunched
+  (`healthy:true`). Cross-ref launcher F-53/F-56.
+- **F-72 PASS (live).** Three REAL Enter keydowns were instrumented; during an in-flight stream an
+  Enter landed with `streamingAtKeydown="true"`, `busyAtKeydown="true"`, `roAtKeydown=true` and
+  `winsAtKeydown` unchanged — no second generation (`runGeneration` count unchanged) and no window
+  opened. Console: one `runGeneration` + one `llm-done` per send across 12+ sends.
