@@ -21,7 +21,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { CompanionProvider } from '@/shared/contexts/CompanionContext';
+import { CompanionProvider, useCompanion, WELCOME_TEXT } from '@/shared/contexts/CompanionContext';
 import { CompanionSettingsPanel } from '@/shared/components/companion/CompanionSettingsPanel';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type {
@@ -58,6 +58,22 @@ function renderPanel() {
     <CompanionProvider>
       <CompanionSettingsPanel />
     </CompanionProvider>,
+  );
+}
+
+/**
+ * #2870 ST-1: observable companion context surface used by the turn-on test —
+ * the real settings Switch is the user control that drives `setVisible(true)`.
+ */
+function CompanionStateProbe() {
+  const { state } = useCompanion();
+  return (
+    <div
+      data-testid="companion-state-probe"
+      data-visible={String(state.isVisible)}
+      data-away={String(state.isAway)}
+      data-message={state.message ?? ''}
+    />
   );
 }
 
@@ -189,5 +205,36 @@ describe('CompanionSettingsPanel readiness gate (#2855)', () => {
     });
     expect(screen.queryByTestId('companion-setup-wizard')).toBeNull();
     expect(screen.getByText('Show Fredo Companion')).toBeInTheDocument();
+  });
+});
+
+// ── #2870 ST-1: the real turn-on control drives the welcome (R-2) ─────────────
+
+describe('CompanionSettingsPanel turn-on → canonical context (#2870 ST-1)', () => {
+  it('toggling the real Switch ON fires WELCOME_TEXT and leaves Fredo home', async () => {
+    adapterBridge.setInvoke(async (command: string) => {
+      if (command === 'check_companion_readiness') return bothInstalled;
+      return undefined;
+    });
+
+    renderWithChakra(
+      <CompanionProvider>
+        <CompanionSettingsPanel />
+        <CompanionStateProbe />
+      </CompanionProvider>,
+    );
+
+    const toggle = await screen.findByLabelText('Show Fredo Companion');
+    // Persisted preference starts OFF — no greeting before the user turns it on.
+    expect(screen.getByTestId('companion-state-probe').getAttribute('data-message')).toBe('');
+    expect(screen.getByTestId('companion-state-probe').getAttribute('data-visible')).toBe('false');
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-state-probe').getAttribute('data-message')).toBe(WELCOME_TEXT);
+    });
+    expect(screen.getByTestId('companion-state-probe').getAttribute('data-visible')).toBe('true');
+    expect(screen.getByTestId('companion-state-probe').getAttribute('data-away')).toBe('false');
   });
 });
