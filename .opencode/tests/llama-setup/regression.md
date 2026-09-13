@@ -344,3 +344,14 @@ The round's new defect is in AC2's launch argv (see functional F-35/F-36); it do
   A bar send while the server was cold launched + loaded it, then streamed (11.4 s TTFT, no loss).
   **Observation:** the `llm-error` payload is forwarded verbatim into the bubble (companion F-71
   FAIL) — the transport contract is unchanged, the readability mapping is absent.
+
+### #2871 testing round 2 (spec/2871 @ bd168ee) — results
+
+- **R-29 PASS (live).** Multi-send / long-stream / error legs all reused the SAME managed
+  transport (`llm_chat` → `llm-token`/`llm-done`, additive `llm-error`); `get_llama_server_status`
+  read `{healthy:true, port:8080}` before the chat legs. The round-2 ST-1r typed `onError` channel
+  is an adapter-port addition only — no new fallback extraction path, no new persisted key, no
+  Rust/`tokio::spawn`/cross-feature change (`git diff --stat main HEAD` shows only `apps/ui`
+  sources + tests). Error leg (real non-executable `llama_server_path`) now surfaces the CURATED
+  generic sentence (companion F-71 round 2 PASS), resolving the round-1 observation. `onError`
+  rejects are still `llm-error`-shaped; the resolver order is untouched.
