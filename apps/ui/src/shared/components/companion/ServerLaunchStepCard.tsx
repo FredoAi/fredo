@@ -313,7 +313,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
                   size="sm"
                   data-testid={`companion-step-${step.testId}${isFailed ? '-retry' : '-start'}`}
                   bg="var(--accent-primary)"
-                  color="white"
+                  color="var(--accent-contrast)"
                   disabled={isStarting}
                   aria-busy={isStarting || undefined}
                   onClick={() => onRunAction(step.id)}

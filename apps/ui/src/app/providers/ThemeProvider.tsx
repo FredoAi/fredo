@@ -45,6 +45,81 @@ export const useTheme = () => {
   return context;
 };
 
+/**
+ * #2864 ST-1 (T5) — on-accent foreground colors. `#ffffff` is
+ * `ACCENT_CONTRAST_LIGHT`; `#0c1117` the near-black `ACCENT_CONTRAST_DARK`.
+ */
+const ACCENT_CONTRAST_LIGHT = '#ffffff';
+const ACCENT_CONTRAST_DARK = '#0c1117';
+const ACCENT_CONTRAST_DARK_RGB: [number, number, number] = [12, 17, 23];
+
+/**
+ * Parse a CSS color (hex or rgb/rgba) into 0-255 RGB channels. Returns null for
+ * anything unparseable so the caller can fall back deterministically.
+ */
+function parseAccentRgb(color: string): [number, number, number] | null {
+  const value = color.trim().toLowerCase();
+  let r: number;
+  let g: number;
+  let b: number;
+  if (value.startsWith('#')) {
+    const hex = value.slice(1);
+    const expanded = hex.length === 3 || hex.length === 4;
+    const rrggbb = expanded
+      ? hex.slice(0, 3).split('').map((c) => c + c).join('')
+      : hex.slice(0, 6);
+    if (rrggbb.length !== 6) return null;
+    r = parseInt(rrggbb.slice(0, 2), 16);
+    g = parseInt(rrggbb.slice(2, 4), 16);
+    b = parseInt(rrggbb.slice(4, 6), 16);
+  } else {
+    const fn = value.match(/^rgba?\(([^)]+)\)$/);
+    if (!fn) return null;
+    const parts = fn[1].split(/[\s,/]+/).filter(Boolean).slice(0, 3).map(Number);
+    if (parts.length !== 3) return null;
+    [r, g, b] = parts;
+  }
+  return [r, g, b].every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255)
+    ? [r, g, b]
+    : null;
+}
+
+/** sRGB gamma-decoded channel (WCAG 2.x definition). */
+function srgbToLinear(channel: number): number {
+  const s = channel / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+
+/** WCAG relative luminance (0 = black, 1 = white). */
+function relativeLuminance(rgb: [number, number, number]): number {
+  return (
+    0.2126 * srgbToLinear(rgb[0]) +
+    0.7152 * srgbToLinear(rgb[1]) +
+    0.0722 * srgbToLinear(rgb[2])
+  );
+}
+
+/** WCAG contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  const lighter = Math.max(a, b);
+  const darker = Math.min(a, b);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * #2864 ST-1 (T5) — pick the on-accent foreground (`#ffffff` vs `#0c1117`) that
+ * yields the higher WCAG contrast against `accent`. A tie resolves to `#ffffff`.
+ * An unparseable accent falls back to `#ffffff` (the safe classic-accent choice).
+ */
+export function resolveAccentContrast(accent: string): string {
+  const rgb = parseAccentRgb(accent);
+  if (!rgb) return ACCENT_CONTRAST_LIGHT;
+  const accentLuminance = relativeLuminance(rgb);
+  const againstWhite = contrastRatio(1, accentLuminance);
+  const againstDark = contrastRatio(relativeLuminance(ACCENT_CONTRAST_DARK_RGB), accentLuminance);
+  return againstWhite >= againstDark ? ACCENT_CONTRAST_LIGHT : ACCENT_CONTRAST_DARK;
+}
+
 interface ThemeProviderProps {
   children: ReactNode;
 }
@@ -159,6 +234,20 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     root.style.setProperty('--font-primary', theme.colors.fontPrimary);
     root.style.setProperty('--font-secondary', theme.colors.fontSecondary);
     root.style.setProperty('--font-base', theme.colors.fontBase);
+
+    // --- #2864 ST-1 derived presentation vars (set ONCE in the base pass) ---
+    // These are `color-mix()` expressions over the live theme vars, so they resolve
+    // against whatever the preset/override passes put on --text-primary /
+    // --text-secondary / --accent-primary later — no per-preset values needed.
+    root.style.setProperty('--hover-bg', 'color-mix(in srgb, var(--text-primary) 6%, transparent)'); // T1
+    root.style.setProperty('--text-subtle', 'color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary) 35%)'); // T2
+    root.style.setProperty('--scrollbar-thumb', 'color-mix(in srgb, var(--text-secondary) 45%, transparent)'); // T3
+    root.style.setProperty('--scrollbar-thumb-hover', 'color-mix(in srgb, var(--text-secondary) 70%, transparent)'); // T4
+    root.style.setProperty('--accent-strong', 'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)'); // T6
+    // T7/T8 — base-record-only presentation values (never part of the override contract).
+    root.style.setProperty('--overlay-bg', theme.colors.overlayBg);
+    root.style.setProperty('--shadow-dialog', theme.colors.shadowDialog);
+
     document.body.style.background = theme.colors.bodyBg;
     document.body.style.color = theme.colors.textPrimary;
     document.body.style.fontFamily = theme.colors.fontFamily;
@@ -232,6 +321,13 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       root.style.setProperty('--font-family', overrides.fontBase);
       document.body.style.fontFamily = overrides.fontBase;
     }
+
+    // --- #2864 ST-1 (T5): on-accent foreground ---
+    // Computed in JS from the RESOLVED accent (base → preset → override) — WCAG
+    // relative luminance has no sufficient CSS equivalent. Reading the applied
+    // inline value guarantees arbitrary user accentPrimary overrides are covered.
+    const resolvedAccent = root.style.getPropertyValue('--accent-primary') || theme.colors.accentPrimary;
+    root.style.setProperty('--accent-contrast', resolveAccentContrast(resolvedAccent));
   }, [activeTheme, overrides, activePreset]);
 
   const setOverride = (key: keyof ThemeOverrides, value: string) => {

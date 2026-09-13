@@ -607,7 +607,7 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                 size="sm"
                 data-testid={`companion-step-${step.testId}-download`}
                 bg="var(--accent-primary)"
-                color="white"
+                color="var(--accent-contrast)"
                 disabled={isDownloading}
                 aria-busy={isDownloading || undefined}
                 onClick={() => onRunAction(step.id)}
