@@ -53,3 +53,30 @@
 - **R-4 PASS (static).** No hardcoded hex/rgba/hsla and no `var(--x)NN` introduced in the chrome files.
 - **R-5 PASS (static).** No existing assertion weakened/disabled/deleted; ST-5 is ADD-only (33 tests green).
 - **R-6 PASS (live).** No `Maximum update depth exceeded`/`Uncaught`/`Error:` across open/close/section-switch/theme-switch (one tester-introduced transient-probe error, excluded).
+
+---
+
+## #2865 extension — the dialog shell + sibling sections must not change
+
+> Issue #2865 is a VISUAL/UX audit of the Companion not-ready wizard rendered inside this dialog.
+> Run alongside R-1..R-6. The shell, nav order/labels, geometry, section content, SaveFooter
+> contract, and token contract must be unchanged by the wizard visual refactor.
+
+- [ ] **R-7 (dialog shell / nav unchanged):** the gear still opens the 960×620 dialog; sidebar nav
+      order/labels (Companion, Appearance, Fredo Setup, Telemetry + Features) unchanged; the
+      section-switch remount via `SettingsSaveProvider key={activeSection}` intact; no orphan nav
+      item. Reference R-1 + functional F-19.
+  - **Edge:** open/close + rapid section churn; the modal open across the wizard→controls swap.
+
+- [ ] **R-8 (sibling sections unchanged + wizard content contract):** Appearance / Fredo Setup /
+      Telemetry content is functionally unchanged; the not-ready gate still renders ONE wizard
+      (no toggle/tip duplication); the frozen `data-testid`/`data-state` hooks retained
+      (`companion-setup-wizard`, `companion-step-*`, `data-server-state`). A dropped hook / second
+      wizard / orphan section = FAIL.
+  - **Edge:** the wizard's visual treatment may change; its behavior/state vocabulary and the
+    sibling sections' behavior must not.
+
+- [ ] **R-9 (token contract + build gates + no test weakening):** no hardcoded hex/rgba/hsla and no
+      `var(--x)NN` introduced in the slice diff; `pnpm --filter @fredo/ui build` exit 0; `pnpm
+      --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (any
+      refreshed assertion owned per G-125). Reference R-4/R-5 + functional F-17/F-20.
