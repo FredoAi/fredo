@@ -30,3 +30,14 @@
       (`viewBox="0 0 1014 1264"`, 58 crisp rects, accent fill) renders above the command bar at
       132 × 165; `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update
       depth exceeded`; a screenshot succeeds.
+
+> **#2852 note:** S-8's `132 × 165 md` expectation is SUPERSEDED — the shell mascot now renders at the
+> shared `sm` size (80×100) with idle bob+glow; the historical record is preserved. Reference
+> `.opencode/tests/launcher/smoke.md` S-12.
+
+## #2870 extension — home-seat shell smoke
+
+> Issue #2870 keeps Fredo at the shell's centre seat when the companion is enabled; the launcher bar never
+> shifts. Live policy — screenshot + console-clean.
+
+- [ ] S-9: The shell boots with the companion ON — the centre seat renders the interactive Fredo (not a corner Fredo, not the decorative mascot), the command-bar `getBoundingClientRect().y` is within ±1 px of the OFF baseline, and `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`; a screenshot succeeds.
