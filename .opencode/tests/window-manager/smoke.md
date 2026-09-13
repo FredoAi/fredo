@@ -68,3 +68,7 @@
       tile restores the SAME single window id (no duplicate, no focus trap). `tauri_read_logs`
       clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference
       `.opencode/tests/settings/` F-23/F-25/F-27 + window-manager R-7.
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — result
+
+- **S-11 PASS (live).** Opened from the launcher tile; full own-kernel lifecycle — maximize (1920×1017) → Restore (480×320, 8 grips) → Maximize → Minimize (surface hidden, dock entry `Settings (minimized)` stays) → restore via the tile (focused, count 1) → Close (frame + entry gone) → re-open. No special-case modal layer, no focus trap; `tauri_read_logs` clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
