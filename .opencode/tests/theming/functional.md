@@ -93,3 +93,61 @@
       makes the not-ready-gate dark card body/path text 1.53:1 (residual R3). Pre-existing; follow-up scope.
   - **Edge:** a component that uses a token NAME (`color="fg.muted"`) instead of `var(--text-secondary)` is
     the failure surface; `var(...)`-direct consumers are unaffected. Reference exploratory E-12.
+
+---
+
+## #2865 extension — semantic-token bridge must resolve (R3 residual now IN SCOPE)
+
+> Issue #2865 requires the not-ready wizard's colors to derive from the theming feature. Rows map to
+> the QA Plan `R-3.1/R-3.2/R-3.3/R-3.5` + `R-5.3` in `.opencode/tmp/2865/triage.md`.
+> **G-136 reconciliation:** F-14's closing phrase "Pre-existing; follow-up scope." is SUPERSEDED for
+> this spec — the backlog brings the R3 residual in scope, so the semantic-token bridge resolving
+> correctly is now a required outcome, not a follow-up. The historical F-14 record is preserved.
+> **Verification policy: live** — the bridge is only provable by reading computed styles on the
+> running app (plus the static literal grep).
+
+- [ ] **F-15 (R-3.2 / AC3):** On the running app read
+      `getComputedStyle(document.documentElement)` and assert the `system.ts` semantic-token CSS vars
+      resolve to the Fredo vars: `--chakra-colors-fg-muted` → `var(--text-secondary)`,
+      `--chakra-colors-fg-subtle` → `var(--text-subtle)`, `--chakra-colors-bg-hover` →
+      `var(--hover-bg)`, `--chakra-colors-fg-on-accent` → `var(--accent-contrast)`, and
+      `--chakra-colors-fg-default` resolves (not empty). Then measure the wizard card body/path text
+      vs its tinted card in dark + light + accent.
+  **Expected:** each semantic token resolves to the mapped Fredo var (or its computed value) — NO
+      stock-Chakra fallback (`fg.muted` ≠ `#52525b`, `fg.subtle` ≠ `#a1a1aa`), NO empty token; the
+      wizard card text ≥4.5:1 (or ≥3:1 large/bold) in every combination; the BEFORE dark 1.53:1
+      (`rgb(82,82,91)` on `rgb(42,59,53)`, 12px) is RESOLVED and the AFTER ratio reported. A token
+      still resolving to stock/empty, or a pair < AA = FAIL naming it.
+  - **Edge:** either fix is acceptable — repair the bridge OR migrate the wizard to direct
+    `var(--text-secondary)` — but a literal fallback introduced to mask it is a FAIL (F-16).
+
+- [ ] **F-16 (R-3.1 / AC3):** Static grep the audited wizard files (`CompanionSetupWizard.tsx`,
+      `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`, `ServerLaunchStepCard.tsx`) + the slice diff for
+      hex/rgba/rgb/hsla and the invalid `var(--x)NN` alpha-append.
+  **Expected:** ZERO true color literals (comment issue-refs exempt); theme token → CSS var +
+      `tint()` only; no literal fallback introduced to work around a broken semantic token. Any
+      literal = FAIL naming file:line.
+  - **Edge:** `transparent`/`inherit`/`currentColor`/`none` allowed; distinguish `var(--x)NN` from a
+    JS 8-digit hex concat.
+
+- [ ] **F-17 (R-3.3/R-3.5 / AC3, H1/H8/G-137):** From live computed colors, measure the wizard's
+      retry/error affordances and the accent-linked surfaces (running card, install button) in dark
+      + light + a non-default accent; specifically an accent-filled control thumb vs its accent
+      track.
+  **Expected:** retry/error text ≥4.5:1, non-text UI ≥3:1, all combinations; every accent-linked
+      surface re-tints with no stale color; the thumb contrasts its accent track ≥3:1 (G-137). Quote
+      the measured ratios; a failing pair = FAIL naming it.
+  - **Edge:** a light/desaturated accent keeps the on-accent label ≥4.5:1; the error card border vs
+    its fill ≥3:1.
+
+- [ ] **F-18 (R-2.4 / AC2):** Switch theme/accent with the wizard open in checking/missing/running/
+      error/installed; confirm no `Maximum update depth exceeded` and every state re-tints live.
+  **Expected:** no stale color, no console error; status remains icon+text after the re-tint.
+  - **Edge:** switch mid-download/mid-error; switch at the gate (not-ready).
+
+- [ ] **F-19 (R-5.3 / AC5):** Any token added/remapped by the slice resolves correctly in BOTH light
+      and dark and does not shift an unrelated surface (desktop shell, mission-monitor node chrome,
+      chat surfaces); `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** per-theme resolution (a single derived `color-mix`, not two literal values); existing
+      consumers unchanged; build exit 0; suite green. Reference R-11..R-13.
+  - **Edge:** clear the accent override → revert; `var(--x)NN` still absent.
