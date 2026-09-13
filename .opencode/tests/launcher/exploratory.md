@@ -225,3 +225,31 @@
 2. **Reduced-motion cursor gap (promoted → F-58 / REQ-16 FAIL).** `Fredo-cursor-blink`
    (`companion.css:142-145`) has no `@media (prefers-reduced-motion: reduce)` gate, so the
    streaming cursor still blinks under reduced motion.
+
+### Promoted findings resolution — #2871 round 2 (spec/2871 @ bd168ee)
+
+- **Finding 1 (busy-state divergence) — RESOLVED.** F-58 round 2 PASS: the busy bar shows
+  `Fredo is replying…` placeholder + chip, `readOnly`, `aria-busy="true"`; a REAL Enter with
+  `streamingAtKeydown="true"`/`busyAtKeydown="true"` is a global no-op (window count unchanged,
+  no second generation). The `—` minimize clicked mid-stream did not abort the stream.
+- **Finding 2 (reduced-motion cursor) — RESOLVED statically.** `.fredo-cursor { animation: none
+  !important; }` inside the `@media (prefers-reduced-motion: reduce)` block + the product pin
+  `companion.cursorReducedMotion.test.ts` (2/2). Non-reduced cursor still
+  `animationName="Fredo-cursor-blink"` during streaming. Live `matchMedia` flip remains a NAMED
+  BLOCKER (driver cannot flip it — G-053/G-148).
+
+### New round-2 probes
+
+- [x] **E-39 (mid-stream real Enter) — regression-free.** A REAL `Enter` keydown instrumented at
+      the top of the busy window (`streamingAtKeydown="true"`, `busyAtKeydown="true"`,
+      `roAtKeydown=true`) did NOT launch a tile and did NOT start a second generation
+      (`runGeneration` count unchanged). Reference F-58.
+- [x] **E-40 (`—` minimize during busy) — regression-free.** Clicking `button[aria-label="Minimize
+      launcher"]` while `data-streaming="true"` did not abort the generation; the reply completed
+      (2,709 chars) and the busy state cleared. `—` stays operable in state 5.
+- [x] **E-41 (persona split) — regression-free.** A general prompt (`Write one short sentence about
+      cats.`) now returns a DIRECT answer ("Cats are graceful, independent, and wonderfully curious
+      companions."), NOT a programming joke; the single-click avatar path still returns a joke
+      (`FREDO_PERSONA` retained). Reference companion F-71/F-69.
+- [ ] **E-42 (IME/CJK composition in the command bar) — still NOT drivable** (no IME emulation in
+      the MCP driver; named blocker, carried over from round 1 E-38).
