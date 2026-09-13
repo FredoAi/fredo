@@ -240,3 +240,259 @@
   **Expected:** build exit 0 / zero TS errors; suite green; any refreshed assertion explicitly owned
       per G-125. A silently relaxed test = FAIL. Reference R-5.
   - **Edge:** no dangling import/stale literal test; console clean.
+
+---
+
+## #2868 extension — Settings becomes a first-class feature window (launcher app)
+
+> Issue #2868 retires the Chakra modal (`ProfileSettingsModal` + `FloatingSettingsButton`) and
+> ships Settings as a `FredoFeatureClass` app opened from the launcher grid — exactly like Mission
+> Monitor. Frontend-only (`apps/ui`), no backend change. Binding human decisions 2026-09-12:
+> modal retired with no fallback; normal non-blocking feature window; launcher-grid SOLE entry;
+> pre-registered + shown by default (NO install/uninstall; NO readiness gating of availability);
+> ALL settings content preserved verbatim; reference = Mission Monitor + `shared/window-system`.
+> **Verification policy: live** — pure-rendering; the live-evidence gate is satisfied by a
+> rendered-webview receipt (G-108): a screenshot raw URL via `upload-evidence --base spec/2868`
+> under `.opencode/evidence/2868/`, a live `tauri_webview_*` receipt, or a live
+> `getBoundingClientRect`/computed-style read. NO `telemetry_spans` leg is required and one MUST
+> NOT be fabricated; it may be included only as corroboration.
+> **G-136 reconciliation:** F-1/F-15 (gear → modal BEFORE/AFTER) and R-1/R-7 ("gear opens the
+> 960×620 dialog") pin the RETIRED container — SUPERSEDED as live expectations by F-21..F-40 and
+> R-10..R-16. Historical PASS/FAIL records are preserved, never deleted. F-5..F-13 (token /
+> contrast / feedback / non-Desktop-only) remain in force for the migrated content.
+
+## F-21 (REQ-1 / AC-1) — Settings tile present in the launcher grid by default; opens a real feature window
+
+- [ ] F-21: On the running `spec/2868` build (fresh profile, NO install/onboarding step), reveal the
+      launcher grid (focus `input[role="searchbox"]` or press Ctrl+Space) and
+      `tauri_webview_dom_snapshot(type="structure")` the grid. Real-click the Settings tile
+      (`[role="gridcell"] [role="button"][aria-label="Settings"]`).
+  **Expected:** a tile with accessible name AND visible label "Settings" exists in
+      `#fredo-launcher-grid[role="grid"][aria-label="Apps"]` with NO install step; clicking it opens
+      a feature-window surface `div[role="group"][aria-label="Settings"]` whose
+      `header.fredo-window__header` title reads "Settings"; the section nav
+      (Companion/Appearance/Fredo Setup/Telemetry) renders inside. Screenshot + DOM receipt.
+  - **Edge:** present after app reload; present with an empty/fresh settings store; no duplicate
+    tile (the grid is `dedupeByFeatureId`); the launcher sinks below the opened window and is
+    re-revealed on close.
+
+## F-22 (REQ-1 / AC-1) — Tile icon is the `LuSettings` gear; title exactly "Settings"
+
+- [ ] F-22: Inspect the Settings tile's icon node and the window title text; compare against the
+      Mission Monitor tile/window treatment.
+  **Expected:** the tile renders the `LuSettings` gear glyph (react-icons `lu`, same 32px tile icon
+      size as siblings) and the label text is exactly "Settings"; the window header icon tile
+      carries the same gear; the header title is exactly "Settings" (window frame
+      `aria-label="Settings"`). A wrong/blank icon or a different label ⇒ FAIL.
+  - **Edge:** title not "Profile Settings"/"Preferences"; icon survives theme re-tint (token-native).
+
+## F-23 (REQ-2 / AC-1) — Window maximizes, minimizes, and closes like Mission Monitor
+
+- [ ] F-23: With the Settings window open, DOM-snapshot the frame header; then exercise
+      `[aria-label="Restore Settings"]` (un-maximize), `[aria-label="Maximize Settings"]`
+      (re-maximize), `[aria-label="Minimize Settings"]`, and `[aria-label="Close Settings"]`.
+      Compare the control vocabulary/labels against an open Mission Monitor window.
+  **Expected:** the header renders the standard chrome controls — Minimize/Restore(or Maximize)/
+      Close — with the `… Settings` accessible names; the window opens maximized (as all feature
+      windows do), Restore drops it to the default floating geometry (480×320) with 8 resize grips
+      present, Maximize re-fills; Minimize hides the surface (`display:none`) while the entry stays
+      in `useWindows()` (the app dock lists it); Close removes the frame and its `useWindows()`
+      entry; re-open works. Same affordances as Mission Monitor.
+  - **Edge:** double-click the header toggles maximize; minimize → re-invoke restores; close is
+    idempotent (no crash/focus trap); console clean of `Error:`/`Uncaught`.
+
+## F-24 (REQ-2 / AC-1) — Float geometry is real (movable + resizable)
+
+- [ ] F-24: Restore the Settings window, `getBoundingClientRect` it, drag it by
+      `header.fredo-window__header` to a new desktop position, then resize it with a corner grip;
+      re-measure.
+  **Expected:** the window is a real floating window — `x`/`y` change on header drag (kept ≥24px
+      on screen), width/height change on grip resize (min 320×200), and the window content reflows
+      inside. A draggable/resizable Settings surface is the explicit contrast with the retired
+      fixed 960×620 modal (which could not move).
+  - **Edge:** drag/resize while focused; drag a second window and re-focus Settings; geometry resets
+    only on close (local state), not on focus change.
+
+## F-25 (REQ-3 / AC-1) — Non-blocking, NON-modal: the desktop is not inert
+
+- [ ] F-25: Open Settings; DOM/computed-check for a modal contract (`role="dialog"`,
+      `aria-modal="true"`, `Dialog.Backdrop`, focus trap); then with Settings present, interact
+      with the desktop/launcher outside the window (minimize or un-maximize first).
+  **Expected:** NO settings `role="dialog"`/`aria-modal="true"`/backdrop element exists anywhere;
+      the Settings surface is a `div[role="group"]` window frame; focus is NOT trapped (Tab can
+      leave the window content to the desktop/launcher affordances); the launcher command bar and
+      tiles are reachable when the window is minimized/un-maximized. This is the explicit
+      retirement of the blocking modal (which rendered a blurred backdrop + fixed dialog).
+  - **Edge:** with Settings open, Ctrl+Space still raises the launcher over it; a second feature
+    window (Mission Monitor) opens and both coexist.
+
+## F-26 (REQ-3 / AC-1) — Two feature windows coexist; no focus/draw-order regression
+
+- [ ] F-26: Open Settings, then open Mission Monitor from the grid. Bring each to focus; minimize
+      one and restore it; check the app dock entry set.
+  **Expected:** both windows render independently (two feature-window surfaces), focus/z-order
+  follows the own-kernel `focusWindow` semantics, minimize/restore round-trips, the dock lists both
+  by title, and closing one leaves the other intact. Settings behaves exactly like any other app
+  window (no special-case modal layer). Console clean.
+  - **Edge:** open Settings twice from the grid while Mission Monitor is open — still ONE Settings
+    window; close both → clean desktop.
+
+## F-27 (REQ-4 / AC-2) — Launcher re-invoke focuses/restores the SAME window; no duplicate
+
+- [ ] F-27: Open Settings from the launcher. Press Ctrl+Space to raise the grid over the (maximized)
+      Settings window, then click the Settings tile again. Read `useWindows()` (via the app dock /
+      DOM) and count `div[role="group"][aria-label="Settings"]`.
+  **Expected:** the SAME single window id ("Settings") is restored/focused + raised — count stays
+      **1**; no second frame is created; if minimized, the re-invoke restores it from minimize; the
+      grid collapses again. (WindowStore `openWindow` spawn semantics: existing id re-applies base
+      fields, `isMinimized:false`, `focused:true`, top z.)
+  - **Edge:** re-invoke while maximized (stays maximized, just focused); re-invoke while closed
+    (opens fresh); rapid double re-invoke; keyboard Enter on the tile.
+
+## F-28 (REQ-4 / AC-2) — No duplicate window id in the kernel store
+
+- [ ] F-28: After F-27, read the open-window list (`useWindows()` via the dock / `tauri_webview_execute_js`
+      or the dock entries) and grep the DOM for `[aria-label="Settings"]` feature surfaces.
+  **Expected:** exactly ONE Settings entry in the window store and exactly ONE Settings window
+      frame; the app-dock shows one Settings entry (not two); closing removes the single entry.
+  - **Edge:** re-invoke from Ctrl+Space grid AND from a keyboard-open path in one session; the
+    entry stays singular across both.
+
+## F-29 (REQ-5 / AC-3) — Every existing section is present (static + feature-discovered)
+
+- [ ] F-29: With Settings open, DOM-snapshot the section nav; click each nav item and describe its
+      rendered content. Compare against the pre-change `ProfileSettingsModal` section set on the
+      tested tip.
+  **Expected:** the nav contains Companion, Appearance, Fredo Setup, Telemetry, and every feature
+      whose `hasSettings === true && typeof renderSettings === 'function'` (on the tested tip:
+      Run CLI, My Work Items, Infrastructure Diagram, Model Storage) under the "Features" group;
+      each renders its real content — `CompanionSettingsPanel`; `ThemingSettings` + `DockPositionSettings`;
+      `SetupWizard`; `TelemetrySettings`; each feature's `renderSettings()`. No missing section, no
+      orphan nav item, no blank content.
+  - **Edge:** open each after a theme switch; long feature labels wrap; nav order matches the
+    original (Companion, Appearance, Fredo Setup, Telemetry, then Features).
+
+## F-30 (REQ-5 / AC-3) — Section switching + feature icon rendering
+
+- [ ] F-30: Rapidly switch Companion → Appearance → Fredo Setup → Telemetry → a feature section
+      and back; capture each.
+  **Expected:** each section mounts cleanly with its header/content, the feature nav item shows the
+      feature's own icon, the active nav item gets the accent highlight, and no section flashes
+      stale/blank content. No crash / orphan.
+  - **Edge:** rapid churn; switching while a section is mid-edit; console clean of
+    `Maximum update depth exceeded`.
+
+## F-31 (REQ-6 / AC-3) — Unified Save footer still shows/hides and delegates
+
+- [ ] F-31: Visit the four save-registering panels (`RunCliSettings`, `WorkItemsSettings`,
+      `DiagramSettings`, `ModelStorageSettings`) and then the non-registering static sections;
+      observe the unified Save button (`LuSave`); press it on a registering panel and verify the
+      panel's save executes.
+  **Expected:** the single Save footer renders ONLY where a panel calls `useSettingsSave(fn)` and
+      is absent on Companion/Appearance/Fredo Setup/Telemetry (no `saveFn`); pressing Save invokes
+      the registered fn (observable persistence — e.g. reload/read-back); the button label uses
+      `var(--accent-contrast)` on the accent bg and is legible in light + dark. Identical behavior
+      to the retired modal.
+  - **Edge:** switching sections resets the provider (`SettingsSaveProvider key={activeSection}`)
+    so a stale saveFn never persists; Save while saving shows the loading state; rapid section
+    churn + Save.
+
+## F-32 (REQ-6 / AC-3) — No direct per-panel Save button replaces the footer
+
+- [ ] F-32: Inspect each save-registering settings panel for its own standalone Save button.
+  **Expected:** the four panels delegate to the unified Settings Save footer (via
+      `useSettingsSave`), not a duplicated inline Save; the single Save affordance in the window is
+      the footer. Cross-ref the settings regression R-12.
+  - **Edge:** Appearance dock-position write-through (no Save gating) unchanged; a panel registering
+    a conditional fn hides the footer when the fn is null.
+
+## F-33 (REQ-7 / AC-3) — Zero discovered feature sections: no empty "Features" grouping
+
+- [ ] F-33: (static) grep the settings content component for the "Features" header guard
+      (`featureSettingsTabs.length > 0`). (component/product test) render the Settings content with
+      an empty features list (a feature list where no entry has `hasSettings && renderSettings`)
+      and assert the DOM. (live) with the real registry (≥1 section) confirm the group renders.
+  **Expected:** the "Features" label text node is ABSENT when there are zero discovered sections
+      (the guard suppresses the header); the four static sections still render; in the live ≥1 case
+      the "Features" group + its items render. A rendered empty "Features" header with no items
+      under it ⇒ FAIL.
+  - **Edge:** a feature with `hasSettings === true` but NO `renderSettings` function must NOT create
+    a nav item; a feature whose `hasSettings` is false is excluded. **Reachability (G-138):** the
+    zero-section LIVE state is structurally unreachable in the shipped app (the static + discovered
+    set is always registered); the zero case is verified by the component/product test, the live
+    leg covers ≥1. See the QA Discussion point.
+
+## F-34 (REQ-7 / AC-3) — Discovered-section filter is `hasSettings && renderSettings`
+
+- [ ] F-34: (static + unit) read the discovery filter and confirm both predicates; (live) confirm
+      every nav item maps to a feature that satisfies BOTH.
+  **Expected:** only features satisfying `f.hasSettings && typeof f.renderSettings === 'function'`
+      appear; a feature with the flag but no renderer is omitted (no empty nav item/blank pane).
+  - **Edge:** a feature registering `hasSettings` late / toggling it off drops its nav item without
+    an orphan; the Settings feature itself must not recurse into its own nav.
+
+## F-35 (REQ-8 / AC-4) — Companion readiness gate: not-ready → wizard ONLY
+
+- [ ] F-35: With the backend NOT ready (managed `llama-server` stopped), open Settings → Companion;
+      DOM-snapshot + screenshot in dark `classic` and a light preset.
+  **Expected:** the section renders ONLY the setup wizard (`[data-testid="companion-setup-wizard"]`,
+      `companion-step-*`) — NEVER the visibility toggle, the auto-return input, or the Teleport tip;
+      the static sections + nav still render in the window; no orphan/crash. Cross-ref companion
+      R-25/R-27 + llama-setup.
+  - **Edge:** the wizard fits the window content pane (no clipping); theme switch while gated
+    re-tints; console clean.
+
+## F-36 (REQ-8 / AC-4) — First readiness probe in flight → wizard ONLY; swap is in-place
+
+- [ ] F-36: Open Settings → Companion immediately after app boot (first readiness probe in flight /
+      `checking`), then let readiness resolve ready (launch the managed server).
+  **Expected:** while checking, the wizard is the only Companion content (per-step `checking`); when
+      readiness flips ready the normal controls render automatically in place — NO reload, no manual
+      refresh. An error state renders the step's error treatment. No orphan/crash.
+  - **Edge:** rapid gate↔controls flip across the swap; open/close the window during the swap;
+    console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## F-37 (REQ-9 / AC-5) — `ProfileSettingsModal` + `FloatingSettingsButton` deleted (codebase AND running app)
+
+- [ ] F-37: (static) glob/grep `apps/ui/src` for `ProfileSettingsModal` and
+      `FloatingSettingsButton`; confirm both FILES do not exist and no import/render reference
+      remains (`Home.tsx` in particular). (live) scan the running app for a floating gear
+      `IconButton[aria-label="Settings"]` at bottom-right and for a settings
+      `chakra-dialog__content` modal.
+  **Expected:** the two files are DELETED and both names appear in ZERO source references; the
+      running app renders NO floating gear and NO settings modal (`role="dialog"`); the modal path
+      is fully retired with no fallback/dual path. `git diff` shows both deletions.
+  - **Edge:** no dangling import breaks the build; no test still imports the deleted modules; the
+    settings capability is NOT lost (F-29/F-31/F-35 pass).
+
+## F-38 (REQ-9 / AC-5) — Retiring the modal removes no settings capability
+
+- [ ] F-38: Cross-check F-29 (section parity), F-31 (unified Save), F-35/F-36 (companion gate),
+      and the theming regression (R-11/R-17) against the new container.
+  **Expected:** every capability the modal provided is reachable in the Settings window: all
+      sections, unified Save, dock-position write-through, companion wizard gate, theme/accent
+      controls. A capability lost with the modal ⇒ FAIL.
+  - **Edge:** Appearance theme controls still persist across restart; dock position still applies.
+
+## F-39 (REQ-10 / AC-1 / AC-2) — No other Settings entry point (gear gone; launcher-grid only)
+
+- [ ] F-39: On a clean desktop (no window open) and over a maximized window, scan the DOM /
+      `elementFromPoint` for any Settings opener other than the launcher grid tile — floating gear,
+      toolbar item, menu entry, keyboard shortcut.
+  **Expected:** the launcher app-grid tile `[role="button"][aria-label="Settings"]` is the ONLY
+      entry point; NO floating gear renders (covered or uncovered); no other route/shortcut opens
+      Settings. Cross-ref window-manager/smoke S-4 + desktop-chrome regression R-21.
+  - **Edge:** no gear over a maximized window; no gear on the resting desktop; Ctrl+Space grid is
+    the sole path; no residual gear z-layer.
+
+## F-40 (REQ-11 / AC-5) — Migrated theming regression stays green in the new container
+
+- [ ] F-40: In the Settings window → Appearance, switch dark `classic` ↔ a light preset via
+      `select[aria-label="Theme presets"]` and set a pale/hue-distinct accent override; read live
+      computed styles of the window chrome (header bg, nav active bg via `tint()`, borders,
+      `--scrollbar-thumb`, the Save button) and measure text/non-text contrast.
+  **Expected:** the theming suite (F-1..F-19, R-1..R-17) stays green: every Settings surface
+      re-tints token-native from the live accent, no stale color, text ≥4.5:1 / non-text ≥3:1, and
+      no `var(--x)NN` alpha-append. Cross-ref `.opencode/tests/theming/`.
+  - **Edge:** accent changed while a section is mid-edit; light preset + pale accent; the
+    window-chrome header/controls re-tint with the live accent.
