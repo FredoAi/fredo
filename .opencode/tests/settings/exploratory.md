@@ -31,3 +31,26 @@
 - **E-3 FINDING — regression-free.** Rapid section churn (Companion → Appearance → Fredo Setup → Telemetry → Run CLI) rendered each section with no stale chrome, crash, or `Maximum update depth exceeded`. NOTE: the Telemetry section wedges the MCP bridge for `html2canvas` full-viewport screenshots (tooling; a `maxWidth 900` capture succeeds) — environment, not product.
 - **E-4 NOT DRIVEN.** Narrow-window clipping sub-case not exercised (dialog geometry is fixed 960×620; no window resize driven).
 - **E-5 FINDING — regression-free.** Dock position + theme/accent interplay leaves the Appearance content token-native and unshifted.
+
+## #2865 extension — wizard-in-dialog probes
+
+> Unscripted visual/a11y probes for the #2865 wizard audit inside the shared dialog. A confirmed
+> finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
+
+- [ ] **E-6 — Wizard content width with long paths.** With the wizard open and a long resolved
+      path/filename, does the content stay within the dialog content pane (no horizontal scroll /
+      clipping / Retry pushed off-card) at 960×620 and narrower? Any overflow is a finding
+      (promotes to F-16).
+
+- [ ] **E-7 — Wizard-vs-sibling drift.** Flip between the Companion wizard and Fredo Setup several
+      times; do heading scale, card padding/radii, control heights, and body text match (no
+      visible jump/drift)? Any divergence is a finding (promotes to F-16; H4/H5).
+
+- [ ] **E-8 — Semantic-token resolution inside the dialog.** Read `getComputedStyle` for
+      `--chakra-colors-fg-muted`/`-fg-subtle`/`-fg-default`/`-bg-hover`/`-fg-onAccent`/
+      `-accent-solid` vs `--text-secondary`/`--text-subtle`/`--hover-bg`/`--accent-contrast`. Any
+      token still stock/empty is a finding (promotes to F-16; the R3 root cause).
+
+- [ ] **E-9 — Theme/accent switch mid-wizard-work.** Switch dark↔light and change the accent while a
+      step is running/downloading and while an error is shown; does the wizard re-tint with no
+      stale color and stay legible? Any stale color is a finding (promotes to F-16/F-18).
