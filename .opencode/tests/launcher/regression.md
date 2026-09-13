@@ -303,3 +303,18 @@
   cycles). 8 `runGeneration called` / 8 `llm-done received` — one completion per generation, no
   duplicate tokens, no listener accumulation. One non-error `[TAURI] Couldn't find callback id`
   WARN on the `llm-error` path (callback lifecycle, not an AC error signature).
+
+### #2871 testing round 2 (spec/2871 @ bd168ee) — results
+
+- **R-37 PASS (live).** OFF and away → non-tile Enter takes NO chat (no generation, no bubble; bar
+  `aria-label="Search or command"`, no chip). ACTIVE: exact `Settings` launches (surfaces 1→2),
+  substring `set` is a send, tile click launches, non-exact Enter chats and never mis-launches.
+- **R-38 PASS (live).** Command-bar `y` = 485.765625 with the companion ON-home and through
+  streaming; seat-slot WRAPPER 80×100 + `margin-bottom:16px`, `.fredo-companion-avatar` 80×100,
+  `scrollHeight == clientHeight` (no scrollbar). No layout change from the chat path.
+- **R-39 PASS (live).** 12+ sends: exactly one `runGeneration` and one `llm-done` per send (error
+  legs log no `llm-done` by design — the ST-1r `onDone` early-return). A REAL Enter during
+  in-flight streaming was a no-op (`streamingAtKeydown="true"`, `wins` unchanged) — the round-1
+  fall-through to `openSelected()` is CLOSED. Console error-level: one `[MCP][BRIDGE]`
+  instrumentation artifact from a tester synthetic `document` event (not product code); no
+  `Maximum update depth exceeded`.
