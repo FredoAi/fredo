@@ -897,7 +897,7 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 > **zero Fredos, stuck until a companion toggle**. Promoted to a durable functional row (#2870
 > round 3). Reference F-22/F-26/F-65 + window-manager S-12.
 
-- [ ] F-68: Set idle timeout 5 s (Settings → Companion) with the companion ON. Let the idle
+- [x] F-68: Set idle timeout 5 s (Settings → Companion) with the companion ON. Let the idle
       auto-return settle (Fredo home; `isAutoHidden=true`). Then teleport away (recipe a —
       Ctrl+right-click in main; or the sanctioned recipe c — MCP `tauri_ipc_emit_event` on
       `companion-teleport`). In the SAME `tauri_webview_execute_js` task / after the settle, sample:
@@ -921,3 +921,66 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
   - **Round-3 pin:** this row is the durable pin for the `isAutoHidden`-vs-`TELEPORT` interaction;
     a post-auto-return teleport that yields zero interactive Fredos (or never re-arms the idle
     gate) is a FAIL.
+
+### #2870 round 3 (spec/2870 @ e27ff0a9) — results
+
+Verdict: **PASS** — round-2's two defects are fixed: the seat/placeholder footprint is exactly
+80×100 (Chakra CSS-px strings, `AVATAR_SM_CSS`/`toCssPx` in `fredoAvatarSizes.ts`) and the
+`TELEPORT`/`MARK_AWAY` transitions clear the stale `isAutoHidden`/`isAutoReturning` (F-68).
+
+- **F-59 PASS (live).** ON-home seat: `.fredo-companion-avatar` = 1 at the centre seat, seat-slot
+  WRAPPER `offsetWidth`=80 / `offsetHeight`=100, wrapper centre-x 960 == centred-column centre-x
+  960 (Δ0), 0 `position:fixed` wrappers. Single-click → real joke stream (`[companion] llm-token:`
+  …, state `joking` → `happy`); double-click → TicTacToe 208×268 with 9 cells. Screenshot
+  `after-r3-01-ac1-on-home.png`, `.opencode/tmp/2870/tests-runs.md`.
+- **F-60 PASS (live + static).** OFF ⇒ `.fredo-avatar-idle` (64 rects incl. the `thinking`
+  desktopState expression) at the SAME seat, WRAPPER 80×100, centre-x 960; persisted
+  `Fredo_companion_visible="false"`. Grep `apps/ui/src/shared` for the old corner default
+  (`innerWidth - 120` / `innerHeight - 160`) → ZERO; no corner wrapper node at settle.
+  Screenshot `after-r3-02-ac1-off-mascot.png`.
+- **F-61 PASS (live).** Same-task OFF→ON capture: bubble text exactly `At your service. How can I
+  help?`, `position:absolute`, rect left 841.6 / top 217.2 / w 236.8 / h 118.4 / centre-x 960
+  anchored above the seat slot (bottom 335.6 ≤ seat top 345.8), hold 4382–4387 ms (two runs;
+  4000 ±500). `speechSynthesis.speaking=false`, `audio` elements 0, no audio/TTS source.
+  Screenshot `after-r3-03-ac2-welcome-bubble.png`.
+- **F-62 PASS (live).** Away (recipe a) placeholder `offsetWidth`=80 / `offsetHeight`=100,
+  `data-state="away"`, `role="img"`, `aria-label="Fredo is away"`, not focusable
+  (`tabindex` null); seat-slot wrapper 80×100 + `margin-bottom:16px`; centre-x Δ0. Away at
+  700×900 also 80×100. Screenshot `after-r3-06-ac3-away-empty-seat.png`.
+- **F-63 PASS (live).** home+ON ⇒ interactive entity; home+OFF ⇒ mascot; placeholder absent while
+  home; ON+away ⇒ placeholder; ON+away+auto-hidden (MCP `companion-presence {away:true,
+  autoHidden:true}`) ⇒ placeholder STILL at the seat (0 interactive); preference OFF + remote
+  `companion-presence {away:true}` ⇒ mascot, NOT the placeholder.
+- **F-64 PASS (live).** Command-bar `getBoundingClientRect().y`: OFF 485.77, ON-home 485.77,
+  ON-away 485.77, through the welcome bubble show/hide 485.8, after the 5 s idle auto-return
+  485.77 → |Δ| = 0 ≤ 1 px in every state (the seat slot never unmounts).
+- **F-65 PASS (live).** `run-cli-terminal` opened via the Run CLI launcher tile; Ctrl+right-click
+  INSIDE the terminal (recipe b) → aligned 80 ms samplers: main `away` (0 interactive) 791207→
+  796622 while terminal `.fredo-companion-avatar`=1 791176→796591 — global interactive count
+  == 1, never 2; the 5 s host idle auto-return re-occupied the main seat. Both consoles
+  error-free. Screenshots `after-r3-07-*`, `after-r3-08-*`.
+- **F-66 PASS / reduced-motion finding (live + static).** Zero true color literals in
+  `EmptySeat.tsx` + the seat region of `LauncherShell.tsx` (only comment issue-refs); no
+  `var(--x)NN` alpha-append; EmptySeat STATIC (no keyframes/transition). 700×900: seat 80×100,
+  centre-x == column centre-x, `scrollHeight == clientHeight` (no scrollbar), no H-scroll, seat
+  + bar fully visible in ON-home and ON-away. Light preset (`light-default`) outline
+  `color(srgb .2586 .2961 .3425)` on `--card-bg` `#f7f8fa` ≈ **8.3:1** (≥3:1); dark base
+  outline `srgb(.6267)` on the dark card ≥3:1; fill = `tint(var(--accent-primary),5)` re-tints.
+  Console clean (no `Maximum update depth exceeded`); listeners registered once per window
+  (stable-deps effects). **Finding (not an AC):** `matchMedia reduce=false` (driver cannot flip
+  it — named blocker) so the reduced-motion leg is static-verified; the welcome bubble's
+  framer-motion entry spring (`SpeechBubble.tsx:125-128`) is NOT gated by `useReducedMotion`
+  (scale/translate, not fade-only) — the seat/companion CSS (`companion.css:112-129`) IS
+  reduced-motion-safe and EmptySeat is static. Screenshots `after-r3-11-*`, `after-r3-09-*`,
+  `after-r3-10-*`.
+- **F-67 PASS (live).** `fredo emit --event-type chat` (session `q17-r3-chat-2870`) +
+  `--event-type tool_use` (session `q17-r3-tool-2870`, `read_file`) → both `{"queued":true}`;
+  `telemetry_spans` = **21,930**, `max(ingested_at)` = 2026-09-13T19:15:40Z; `chat_rows`
+  `q17-r3-chat-2870` = 1; `tool_use_rows` `q17-r3-tool-2870` = 1. Rendered receipts = the
+  round-3 screenshots/DOM under `.opencode/tmp/2870/`.
+- **F-68 PASS (live — the round-2 defect is fixed).** Controlled in-page lifecycle sampler
+  (`window.__f68`, 100 ms): start ON-home(1) → teleport-1 @308 ms → ON-away @805 ms
+  (interactive=1) → idle auto-return settle @6303 ms → ON-home(1) → **teleport-2 @7608 ms (the
+  post-auto-return trigger) → ON-away @8108 ms with interactive=1** → auto-return AGAIN @13610 ms
+  (idle gate re-armed). `interactive==0` samples = **0** across the whole run, max = 1. The
+  auto-hidden away state also renders the placeholder (F-63).
