@@ -113,3 +113,7 @@
 - [ ] S-21: Companion OFF ⇒ decorative mascot at the seat — toggle OFF; `.fredo-avatar-idle` (58 rects) renders at the SAME centre seat and the interactive seat entity is gone (NOT the placeholder); persisted `Fredo_companion_visible="false"`; screenshot succeeds; console clean.
 - [ ] S-22: Turn-on welcome bubble — toggle ON; the welcome bubble appears at the seat and auto-hides at ~4 s (same-task capture per G-140); screenshot succeeds; console clean.
 - [ ] S-23: Away ⇒ empty seat — Ctrl+right-click in main (recipe a); the centre slot shows the 80×100 placeholder (not Fredo, not a corner Fredo); screenshot succeeds; console clean.
+
+### Round 1 (spec/2870 @ dd0026e1) — results
+
+> **S-20..S-23 FAIL (blocking boot defect).** The tested tip does not boot — `EmptySeat.tsx:4-5`'s `@/` imports fail under `apps/tauri/vite.config.ts` (`@` → `apps/tauri/src`, no `shared/`). Both `main` and `run-cli-terminal` render empty `#root` + the Vite import-analysis overlay; no seat/mascot/placeholder/bubble is reachable. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
