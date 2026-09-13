@@ -232,3 +232,8 @@
       is unchanged. Reference #2868 functional F-50 + launcher R-3/R-8 + desktop-chrome R-21.
   - **Edge:** Ctrl+Space over the maximized Settings window still re-raises the grid; no re-render
     loop (console clean of `Maximum update depth exceeded`).
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — results
+
+- **R-33 PASS (live).** Grid set = `["Mission Monitor","Query Viewer","Run CLI","Settings","Stepper Probe"]` (Settings added, prior 4 intact); keyboard ↑↓/←→ + Enter navigation worked; window-kernel/launcher chrome unchanged.
+- **R-34 PASS (live).** Settings routed through `onOpenFeature → openFeatureWindow → openWindow`; re-invoke de-duped to one window id; no floating gear in any state; Ctrl+Space over the open (maximized) Settings window re-raised the launcher; console clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
