@@ -68,3 +68,26 @@
 - [ ] **R-16 (build gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
       `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted
       (any refreshed assertion owned per G-125). Reference R-9/F-19.
+
+---
+
+## #2868 extension — the theming surface migrates to the Settings app window (G-136)
+
+> Issue #2868 retires `ProfileSettingsModal` and moves the Appearance/theming section into the
+> Settings `FredoFeatureClass` window opened from the launcher grid. **G-136:** the overlapping-
+> suite note above ("the settings modal shell / `ProfileSettingsModal` is unchanged by this
+> feature") is SUPERSEDED — the container is now the Settings window. The theming engine,
+> token→var→theme flow, preset/override layering, and Appearance content are unchanged and must
+> stay green. Historical records above preserved. Live policy.
+
+- [ ] **R-17 (theming engine + Appearance content unchanged by the container swap):** R-1..R-16
+      hold with the Appearance section reached via the Settings window (launcher tile → Appearance):
+      preset selection, per-token override, "Reset to theme defaults", the `overrides ?? preset ??
+      base` layering, the readout, and light/dark + non-default-accent resolution all behave as
+      before; the Settings window chrome (header, nav active bg via `tint()`, borders,
+      `--scrollbar-thumb`, Save button) re-tints token-native with the live accent, no stale color,
+      text ≥4.5:1 / non-text ≥3:1, and no `var(--x)NN` alpha-append. Reference theming F-1..F-19 +
+      `.opencode/tests/settings/` F-40.
+  - **Edge:** accent changed while the Settings window is open and a section is mid-edit; a light
+    preset + pale accent; the deleted `FloatingSettingsButton` must not orphan any theming consumer
+    (e.g. `--hover-bg` consumers).
