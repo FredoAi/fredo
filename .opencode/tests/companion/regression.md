@@ -295,3 +295,8 @@
       hooks are retained. Reference R-24/R-28/R-30.
   - **Edge:** a settings-section list with zero discovered sections must not break the Companion
     section; the modal-only Escape/backdrop behavior is gone (window close semantics).
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — results
+
+- **R-31 PASS (live + component test).** With the readiness probe in flight/not ready, Settings → Companion rendered the wizard ONLY (`companion-setup-wizard`, `companion-step-*`); on ready the controls (`companion-controls`) swapped in place with no reload. `SettingsSurface.companionGate.test.tsx` 3/3.
+- **R-32 PASS (live).** Reached via the launcher grid (not the gear): the visibility toggle ("Show Fredo Companion"), the idle-timeout control (`valuenow=3600`), and the Teleport tip all render; window-close semantics replaced modal Escape/backdrop. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
