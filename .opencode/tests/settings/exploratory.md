@@ -23,3 +23,11 @@
 - [ ] E-5: **Dock position + theme interplay (Appearance).** Change the Dock position and switch
       theme/accent; does the Appearance content remain token-native and unshifted? Any regression
       is a finding (promotes to F-10; cross-ref app-dock).
+
+### #2864 testing round 1 (spec/2864 @ f2c8923) — findings
+
+- **E-1 FINDING — regression-free.** Theme/accent switch with Settings open re-tints the chrome with no stale color; an out-of-range draft (`9999`, `aria-invalid=true`, red border/help) preserved its text across a theme change and healed to `3600` on commit (live region `Auto-return set to 3600 s`).
+- **E-2 FINDING — regression-free.** Sidebar nav + `FEATURES` group render; the `--scrollbar-thumb` derived thumb is visible in both themes (after set + `scrollbar-{dark,light}.png`).
+- **E-3 FINDING — regression-free.** Rapid section churn (Companion → Appearance → Fredo Setup → Telemetry → Run CLI) rendered each section with no stale chrome, crash, or `Maximum update depth exceeded`. NOTE: the Telemetry section wedges the MCP bridge for `html2canvas` full-viewport screenshots (tooling; a `maxWidth 900` capture succeeds) — environment, not product.
+- **E-4 NOT DRIVEN.** Narrow-window clipping sub-case not exercised (dialog geometry is fixed 960×620; no window resize driven).
+- **E-5 FINDING — regression-free.** Dock position + theme/accent interplay leaves the Appearance content token-native and unshifted.
