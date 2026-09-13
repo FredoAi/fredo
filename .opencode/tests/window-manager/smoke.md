@@ -72,3 +72,11 @@
 ### #2868 testing round 1 (spec/2868 @ 90da8de) — result
 
 - **S-11 PASS (live).** Opened from the launcher tile; full own-kernel lifecycle — maximize (1920×1017) → Restore (480×320, 8 grips) → Maximize → Minimize (surface hidden, dock entry `Settings (minimized)` stays) → restore via the tile (focused, count 1) → Close (frame + entry gone) → re-open. No special-case modal layer, no focus trap; `tauri_read_logs` clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+## #2870 extension — cross-window away ⇒ main empty seat (G-136 reconciliation of S-10)
+
+> **G-136:** S-10's "the companion leaves main (teleport-out then hidden)" wording is SUPERSEDED — after
+> #2870 the main seat renders the empty-seat placeholder (never a second Fredo). The "visible in exactly
+> ONE window" invariant remains. Historical record above preserved. Live policy.
+
+- [ ] S-12: With the Run CLI terminal window open (`tauri_manage_window(action="list")` = main + `run-cli-terminal`), Ctrl+right-click INSIDE the terminal window. EXPECTED: the terminal hosts the single interactive Fredo (teleport-in then idle at the clamped point); the MAIN desktop renders the empty-seat placeholder (80×100) at the centre slot and NO second Fredo — global interactive-Fredo count == 1 at every settle; a 5 s idle auto-return returns Fredo to the main seat; `tauri_read_logs(source="console")` on BOTH windows is clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
