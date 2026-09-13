@@ -100,3 +100,16 @@
 - [ ] S-19: Visual artifacts + gates — BEFORE/AFTER frames exist under DISTINCT `before-*`/`after-*`
       names; `.opencode/tmp/2865/visual-eval-before.md` + `before-after-verdict.md` exist;
       `pnpm --filter @fredo/ui build` exit 0; frozen hooks present.
+
+## #2870 extension — one-Fredo-at-home smoke (supersedes the !companionPresent gate)
+
+> Issue #2870 keeps Fredo AT the centre seat when the companion is enabled (no corner move), renders an
+> empty seat when he is away, and greets on every turn-on. **G-136 supersede:** S-8/S-9/S-12 asserted the
+> removed "companion ON ⇒ launcher mascot not rendered" gate (and S-10's "return" wording) — now SUPERSEDED
+> by S-20..S-23 below; the historical PASS records above are preserved. Live policy — screenshot +
+> console-clean per step.
+
+- [ ] S-20: Companion ON ⇒ Fredo at the centre seat — toggle ON (Settings → Companion); `execute_js` shows the interactive seat entity in the centre slot (role active in place), NO corner `position:fixed` wrapper, and the command-bar `getBoundingClientRect().y` unchanged (≤1 px) vs OFF; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-21: Companion OFF ⇒ decorative mascot at the seat — toggle OFF; `.fredo-avatar-idle` (58 rects) renders at the SAME centre seat and the interactive seat entity is gone (NOT the placeholder); persisted `Fredo_companion_visible="false"`; screenshot succeeds; console clean.
+- [ ] S-22: Turn-on welcome bubble — toggle ON; the welcome bubble appears at the seat and auto-hides at ~4 s (same-task capture per G-140); screenshot succeeds; console clean.
+- [ ] S-23: Away ⇒ empty seat — Ctrl+right-click in main (recipe a); the centre slot shows the 80×100 placeholder (not Fredo, not a corner Fredo); screenshot succeeds; console clean.
