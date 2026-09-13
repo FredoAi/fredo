@@ -158,10 +158,18 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       return { ...state, isVisible: action.payload, isAway: false, isAutoHidden: false, isAutoReturning: false };
     case 'TELEPORT':
       // #2870 ST-1: the ONLY relocation mechanism — any teleport leaves the seat.
-      return { ...state, position: action.payload, isAway: true };
+      // #2870 F-68: a relocation MUST clear any prior hide state so the relocated
+      // Fredo is present at its new location. A stale `isAutoHidden` (left by a
+      // prior idle auto-return) otherwise gates the away overlay off AND keeps the
+      // host idle gate disarmed → zero Fredos, stuck until an OFF/ON toggle.
+      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false };
     case 'MARK_AWAY':
       // #2870 ST-1: idempotent local away (cross-window leave).
-      return state.isAway ? state : { ...state, isAway: true };
+      // #2870 F-68: clear any prior hide state on relocation too (idempotent when
+      // already away AND already un-hidden — no state churn).
+      return state.isAway && !state.isAutoHidden
+        ? state
+        : { ...state, isAway: true, isAutoHidden: false };
     case 'AUTO_RETURN_REQUESTED':
       return state.isAutoReturning ? state : { ...state, isAutoReturning: true };
     case 'AUTO_RETURN_SETTLED':
@@ -309,8 +317,11 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     notifyInteraction();
     // #2870 ST-1: a teleport is the ONLY relocation mechanism — Fredo leaves the
     // home seat, so mark him away locally AND broadcast the new location.
+    // #2870 F-68: the broadcast also carries `autoHidden:false` so remote windows
+    // clear a stale hide flag instead of retaining it (which would hide the
+    // relocated Fredo there too).
     dispatch({ type: 'TELEPORT', payload: { x, y } });
-    emitPresence({ reason: 'teleport', away: true });
+    emitPresence({ reason: 'teleport', away: true, autoHidden: false });
   }, [notifyInteraction, emitPresence]);
 
   const markAway = useCallback(() => {

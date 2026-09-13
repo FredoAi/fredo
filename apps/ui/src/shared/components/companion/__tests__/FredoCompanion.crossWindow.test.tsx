@@ -107,6 +107,15 @@ function HostingProbe() {
   return <div data-testid="hosting-probe" data-hosting={String(state.isHosting)} data-away={String(state.isAway)} />;
 }
 
+type CompanionApi = ReturnType<typeof useCompanion>;
+let api: CompanionApi;
+
+/** Captures the live context API so a test can drive lifecycle transitions directly. */
+function ApiProbe() {
+  api = useCompanion();
+  return null;
+}
+
 const avatar = (c: HTMLElement): HTMLElement => {
   const el = c.querySelector<HTMLElement>('.fredo-companion-avatar');
   expect(el).not.toBeNull();
@@ -128,6 +137,7 @@ async function renderCompanion() {
       <SeatSlot />
       <HostingProbe />
       <FredoCompanion />
+      <ApiProbe />
     </CompanionProvider>,
   );
   await waitFor(() => expect(view.container.querySelectorAll('.fredo-companion-avatar')).toHaveLength(1));
@@ -229,6 +239,27 @@ describe('FredoCompanion cross-window companion-teleport listener (#2870 ST-2c)'
     });
     expect(avatar(container).getAttribute('data-state')).toBe('idle');
     expect(getByTestId('hosting-probe').getAttribute('data-hosting')).toBe('true');
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  // #2870 F-68: an idle auto-return followed by a teleport must leave exactly ONE
+  // Fredo (the away overlay). A stale `isAutoHidden` previously gated the overlay
+  // off while the seat was already gone — zero Fredos until an OFF/ON toggle.
+  it('auto-return settle → teleport leaves exactly ONE Fredo (the overlay) (F-68)', async () => {
+    const { container } = await renderCompanion();
+
+    // Settle an idle auto-return: Fredo returns home (the seat) while auto-hidden.
+    act(() => { api.confirmAutoReturn(); });
+    expect(container.querySelectorAll('.fredo-companion-avatar')).toHaveLength(1);
+
+    // The next relocation must clear that stale hide state and mount the overlay.
+    act(() => { api.teleport(320, 240); });
+
+    const avatars = container.querySelectorAll('.fredo-companion-avatar');
+    expect(avatars).toHaveLength(1);
+    expect(avatars[0].style.position).toBe('fixed');
+    expect(avatars[0].style.left).toBe('320px');
+    expect(avatars[0].style.top).toBe('240px');
     expect(consoleError).not.toHaveBeenCalled();
   });
 });

@@ -548,6 +548,43 @@ describe('CompanionProvider — canonical location isAway (#2870 ST-1)', () => {
     });
   });
 
+  // ── #2870 F-68: a relocation must clear any prior hide state ────────────────
+  // After an idle auto-return the stale `isAutoHidden` must be cleared by the
+  // next relocation, or the away overlay stays gated off AND the host idle gate
+  // never re-arms → zero Fredos, stuck until a manual OFF/ON toggle.
+  it('teleport after confirmAutoReturn clears isAutoHidden and the idle gate re-arms (F-68)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.setHosting(true); });
+    act(() => { vi.advanceTimersByTime(5_000); });
+    act(() => { api.confirmAutoReturn(); });
+    expect(presence().away).toBe(false);
+    expect(presence().autoHidden).toBe(true);
+
+    act(() => { api.teleport(300, 300); });
+    expect(presence().away).toBe(true, 'teleport leaves the home seat');
+    expect(presence().autoHidden).toBe(false, 'a relocation clears the prior hide state');
+    expect(presence().autoReturning).toBe(false);
+
+    // The host idle gate re-armed: a full quiet period requests the return again.
+    act(() => { vi.advanceTimersByTime(5_000); });
+    expect(presence().autoReturning).toBe(true, 'the idle gate re-armed after the relocation');
+  });
+
+  it('teleport broadcast carries autoHidden:false so remote windows clear a stale hide (F-68)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+
+    act(() => { api.teleport(123, 456); });
+
+    await waitFor(() => {
+      expect(tauriEvent.emit).toHaveBeenCalledWith(
+        'companion-presence',
+        expect.objectContaining({ reason: 'teleport', away: true, autoHidden: false }),
+      );
+    });
+  });
+
   it('markAway marks Fredo away locally without persisting or broadcasting', async () => {
     await mountProvider({ visible: true, timeoutS: 5 });
     const setSpy = vi.spyOn(settingsService, 'set');
