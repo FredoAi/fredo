@@ -29,28 +29,45 @@ const config = defineConfig({
     },
     semanticTokens: {
       colors: {
+        // #2865 R-3.2 — these namespaces MUST be defined in the SAME NESTED shape
+        // as Chakra's `defaultConfig` (NOT flat dotted keys). `defaultConfig`
+        // declares `bg`/`fg`/`border` as nested objects, which emit dash custom
+        // properties (`--chakra-colors-fg-muted`) and WIN the `colors.<path>`
+        // resolution; the same names as flat dotted keys emit escaped-dot
+        // properties (`--chakra-colors-fg\.muted`) that no consumer resolves, so
+        // the stock Chakra default survived (fg.muted rendered #52525b, bg.subtle a
+        // stock near-white). Nested keys merge over the defaults, so the Fredo vars
+        // win for every token-name consumer (F-14/F-15).
+        //
         // Backgrounds
-        'bg.canvas': { value: 'var(--body-bg)' },
-        'bg.surface': { value: 'var(--card-bg)' },
-        'bg.subtle': { value: 'var(--header-bg)' },
-        'bg.muted': { value: 'var(--card-hover-bg)' },
-        // #2864 ST-1 (T1): derived row/nav hover fill — `color-mix` from the live
-        // text color so it stays legible in light AND dark with no per-preset value.
-        'bg.hover': { value: 'var(--hover-bg)' },
+        bg: {
+          canvas: { value: 'var(--body-bg)' },
+          surface: { value: 'var(--card-bg)' },
+          subtle: { value: 'var(--header-bg)' },
+          muted: { value: 'var(--card-hover-bg)' },
+          // #2864 ST-1 (T1): derived row/nav hover fill — `color-mix` from the live
+          // text color so it stays legible in light AND dark with no per-preset value.
+          hover: { value: 'var(--hover-bg)' },
+        },
 
         // Foreground
-        'fg.default': { value: 'var(--text-primary)' },
-        'fg.muted': { value: 'var(--text-secondary)' },
-        // #2864 ST-1 (T2): xs help/caption text — derived toward `--text-primary`
-        // so 12px help clears WCAG AA on dark surfaces.
-        'fg.subtle': { value: 'var(--text-subtle)' },
-        // #2864 ST-1 (T5): the foreground ON an accent-filled control, computed in
-        // ThemeProvider from the RESOLVED accent's WCAG luminance.
-        'fg.onAccent': { value: 'var(--accent-contrast)' },
+        fg: {
+          default: { value: 'var(--text-primary)' },
+          muted: { value: 'var(--text-secondary)' },
+          // #2864 ST-1 (T2): xs help/caption text — derived toward `--text-primary`
+          // so 12px help clears WCAG AA on dark surfaces.
+          subtle: { value: 'var(--text-subtle)' },
+          // #2864 ST-1 (T5): the foreground ON an accent-filled control, computed in
+          // ThemeProvider from the RESOLVED accent's WCAG luminance.
+          // (nested key emits `--chakra-colors-fg-on-accent`)
+          onAccent: { value: 'var(--accent-contrast)' },
+        },
 
         // Borders
-        'border.default': { value: 'var(--border-color)' },
-        'border.subtle': { value: 'var(--border-color)' },
+        border: {
+          default: { value: 'var(--border-color)' },
+          subtle: { value: 'var(--border-color)' },
+        },
 
         // Overlay
         // #2864 ST-1 (T7): dialog backdrop scrim (base-record only).
