@@ -45,3 +45,26 @@
 - **R-11 PASS (live).** Preset select/reset, per-token accent override set/clear, and `overrides ?? preset ?? base` layering behave as before.
 - **R-12 PASS (live).** New derived tokens resolve per theme (`--hover-bg`, `--text-subtle`, `--accent-strong`, `--scrollbar-thumb`); existing consumers unchanged (`--card-hover-bg` #3a3a3a, `--node-bg` #2d2d2d, `--accent-subagent` #6366f1).
 - **R-13 PASS (static).** No `var(--x)NN`; the chrome literals (`rgba(147,51,234,0.12)`, `rgba(255,255,255,0.04/0.12/0.22)`, `rgba(0,0,0,0.6/0.4)`) are gone from the audited component files.
+
+---
+
+## #2865 extension — the semantic-token bridge fix must not regress the theme engine
+
+> Issue #2865 may repair the `system.ts` semantic-token bridge (the R3 root cause) or migrate the
+> wizard to direct `var(--…)` consumers. Run alongside R-1..R-13. **G-136:** the F-14 "follow-up
+> scope" disposition is superseded — the bridge resolving correctly is now required.
+
+- [ ] **R-14 (existing token consumers unchanged):** after the fix, existing consumers of these
+      token names (`fg.muted`, `fg.subtle`, `fg.default`, `bg.subtle`, `bg.hover`, `accent.default`,
+      `status.*`) still render as before on their surfaces (settings chrome, launcher, desktop
+      shell, mission-monitor). A global bridge change that shifts an unrelated surface is a FAIL.
+  - **Edge:** compare computed colors before/after on a sample of unrelated surfaces; dark AND light.
+
+- [ ] **R-15 (per-theme resolution + no literal fallback):** any token added/remapped resolves per
+      theme (a single derived `color-mix`, not two literal values) and no hardcoded literal is
+      introduced as a fallback to work around an unresolved token. Reference F-15/F-16.
+  - **Edge:** light + dark + accent override; `var(--x)NN` still absent.
+
+- [ ] **R-16 (build gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
+      `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted
+      (any refreshed assertion owned per G-125). Reference R-9/F-19.
