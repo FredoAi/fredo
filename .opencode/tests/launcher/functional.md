@@ -622,3 +622,45 @@ Evidence: `.opencode/tmp/2871/tests-runs.md` / `## Tests Runs (round 1)`.
   (`companion.css:142-145` has no reduced-motion rule) → under reduced motion the cursor still
   blinks. **REQ-15:** the single reply live region did not announce the error event. REQ-12 + the
   REQ-14 exact/non-match chip + `aria-describedby` mirror PASS.
+
+### #2871 testing round 2 (spec/2871 @ bd168ee) — results
+
+Verdict: round-1 REQ-6/REQ-14/REQ-15/REQ-16 **all FIXED**. Live (real managed `llama-server`,
+`/health` 200 :8080). One screenshot per AC + the full receipt in the issue's `## Tests Runs (round 2)`.
+
+- **F-51 PASS (live, regression).** White-box runtime still one dispatch path: a bar send added
+  exactly ONE `[companion] runGeneration called` + one `llm-done`; `Settings` (exact) opened the
+  Settings window (`div[role="group"][aria-label="Settings"]`, surfaces 1→2) with NO generation
+  added. Substring `set` → chip `↵ send to Fredo` + speech glyph, never a launch.
+- **F-52 PASS (live, G-130).** Long prompt → reply in the SAME seat bubble; recorder captured
+  **11 distinct partial contents**; `thinking`(wait) → `joking`(first token); control tokens
+  stripped. Screen `req3-bubble-streaming.png`.
+- **F-53 PASS (live — was FAIL).** (a) On `llm-done` `data-streaming` clears AND the bar
+  `aria-busy`/`readOnly`/chip clear at completion (ST-1r `setState('idle')` up-front); a 2nd send
+  re-enters busy. (b) The error leg showed the curated `Fredo couldn't reply just now. Try again in
+  a moment.` — no raw `failed to start … spawn …`, no `happy`, bar usable. Screen `req6-error-bubble2.png`.
+- **F-54 PASS (live).** OFF (`Fredo_companion_visible=false`) + away (MCP recipe c) → non-tile
+  Enter takes no chat (no generation, no bubble); active → `set` filters + tile click launches +
+  non-exact Enter chats. Screen `req8-filter-active.png`.
+- **F-55 PASS (live).** 12+ sends, each exactly one `runGeneration`/`llm-done`; a REAL Enter during
+  an in-flight stream (`streamingAtKeydown="true"`, `busyAtKeydown="true"`, `ro=true`) did NOT
+  start a second generation and did NOT open a window. No listener accumulation.
+- **F-56 PASS (live+static).** Console error-level across the whole run = ONE `[MCP][BRIDGE]`
+  instrumentation artifact from a tester-dispatched synthetic `document` event (`e.target.getAttribute`
+  on a non-Element target); normal interaction legs are clean, no `Maximum update depth exceeded`.
+  Changed launcher files carry ZERO color literals; busy dot computed `rgb(147,51,234)` =
+  `--accent-primary` (token-native); no `var(--x)NN`. Reduced-motion CSS + pin (F-58).
+- **F-57 PASS (live).** `telemetry_spans` 23,735, max(ingested_at) `2026-09-13T21:46:52.331Z`;
+  `chat_rows(e2e-2871-r2-chat)=1`; `tool_use_rows(e2e-2871-r2-tool)=1`.
+- **F-58 PASS (live+static — was FAIL).** **REQ-14:** atomic busy-frame DOM (`data-streaming="true"`,
+  `state=thinking`) showed placeholder `Fredo is replying…`, `readonly=""`, `aria-busy="true"`,
+  chip `Fredo is replying…` (`data-testid="launcher-command-hint"`), SR mirror
+  (`fredo-command-hint-sr`) identical, 6×6 px accent busy dot, `—` minimize present as the last
+  end child; a REAL Enter with `streamingAtKeydown="true"` was a global no-op (maxWins unchanged);
+  minimize clicked mid-stream did NOT abort the generation. **REQ-15:** exactly 2 live-region
+  changes per generation (send → complete); the error leg announced the readable sentence once;
+  no per-token spam. **REQ-16:** `companion.css` `.fredo-cursor { animation: none !important; }`
+  sits INSIDE `@media (prefers-reduced-motion: reduce)`; the non-reduced cursor computed
+  `animationName="Fredo-cursor-blink"` during streaming; product pins
+  `companion.cursorReducedMotion.test.ts` 2/2 + `companionReplyErrorCopy.test.ts` 4/4 green.
+  Screens `req14-busy-atomic.png`, `req4-busy-streaming.png`.
