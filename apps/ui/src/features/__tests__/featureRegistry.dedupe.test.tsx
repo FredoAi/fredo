@@ -39,7 +39,7 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 // above) so the shell renders standalone — the presence gate itself is covered
 // by the companion suite. No assertion in this file is changed or weakened.
 vi.mock('@/shared/contexts/CompanionContext', () => ({
-  useCompanion: () => ({ state: { isVisible: false, isAutoHidden: false } }),
+  useCompanion: () => ({ state: { isVisible: false, isAway: false, isAutoHidden: false } }),
 }));
 
 // ── Fixture feature ──────────────────────────────────────────────────────────
