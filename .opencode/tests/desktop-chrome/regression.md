@@ -141,3 +141,14 @@ Overlapping suites to run alongside: `window-manager` (window lifecycle + rail F
 ### #2868 testing round 1 (spec/2868 @ 90da8de) — result
 
 - **R-21 PASS (live).** NO floating gear (`button[aria-label="Settings"]` count 0) in the resting desktop OR while a Settings window was open; the chrome band/dock were unchanged; the window min/max/close controls stay reachable (`Restore Settings`/`Maximize Settings`/`Close Settings` all dispatched). New Settings feature/chrome files carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN`. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2872 extension — corner-padding: no-regression invariants (G-136)
+
+> Issue #2872 moves the cluster inset to the binding ASYMMETRIC **top 20px / right 24px** (rendered).
+> F-17/S-8's `top:16/right:16` expectation is SUPERSEDED (historical records preserved). The clock/LED
+> contract, band z-model, rail disjointness and token-native rules must hold unchanged.
+
+- [ ] R-22: The cluster's NEW rendered inset (top 20 / right 24) holds while the clock+LED contract is untouched: EXACTLY ONE top-right status LED, advancing clock, band z 1200 uncovered ↔ 0 covered (R-17/R-9); cluster rect DISJOINT from the left-edge dock rail (R-20) with the new geometry; `windows-buttons-time-overlap.png` / `led-overlay.png` do NOT recur.
+- [ ] R-23: No layout shift — the FREDO notch, `>` command bar, side-tick rulers, dot-grid, keyboard-hints row and the dock rail rects are unchanged (±1px); ONLY the cluster box moves. Changed files token-native (zero colour literals / zero `var(--x)NN`); `pnpm --filter @fredo/ui build` exit 0 + `test:run` green; console clean.
