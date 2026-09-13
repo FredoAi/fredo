@@ -174,6 +174,25 @@ webview window min/max/close controls). Seeded from issue #2825.
 ## F-23 (live gate) — `telemetry_spans` live-query reference for the live policy
 
 - [x] F-23: Reference `telemetry_spans` as the live span-store proof (desktop-shell F-14 pattern): `SELECT COUNT(*) FROM telemetry_spans` returns a non-zero count with a recent `max(timestamp)`. **NOTE:** the rail/clock/LED are NOT row-driven — no `fredo emit` injection is needed; `telemetry_spans` is the live-store reference, not a row-equality assertion.
+
+---
+
+## #2868 extension — the floating settings button is retired (G-136)
+
+> Issue #2868 deletes `FloatingSettingsButton` and moves Settings to the launcher app grid.
+> **G-136:** F-19 ("settings button center → click → `ProfileSettingsModal` opens") and S-8's
+> floating-gear-present check are SUPERSEDED — there is NO floating gear anymore; the Settings
+> entry is the launcher grid tile. Historical PASS records above preserved. Live policy.
+
+- [ ] F-24 (AC-1 / #2868): On a clean desktop (all windows minimized) AND with a maximized window,
+      scan the bottom-right region and the whole chrome for the retired floating settings button
+      (`IconButton[aria-label="Settings"]`, `position:fixed`, `right:24 bottom:24`). EXPECTED: NO
+      floating gear renders in either state — the chrome band, clock/single-LED cluster, and app
+      dock are unchanged; the launcher `[role="button"][aria-label="Settings"]` tile is the SOLE
+      Settings entry (open it → `div[role="group"][aria-label="Settings"]`). A residual gear
+      (z≈1250 uncovered / 0 covered) is a FAIL. Cross-ref `.opencode/tests/settings/` F-37/F-39 +
+      `.opencode/tests/launcher/` F-50. Edge: no gear over the window min/max/close controls; no
+      residual gear z-layer in any theme; console clean.
   - **PASS (spec/2841 @ 0852210f, round 1):** `SELECT COUNT(*) AS total_spans, MAX(ingested_at) AS newest, datetime(MAX(start_time_ns)/1e9,'unixepoch') AS newest_start FROM telemetry_spans` → **4672 spans** (non-zero), `MAX(ingested_at) = 2026-09-08T17:15:23Z` (recent, same round), `newest_start = 2026-09-08 17:15:22`. The live span-store is non-empty and current — the live-policy gate reference is satisfied. The rail/clock/LED are NOT row-driven (they exercise `useWindows()` store, not `telemetry_spans`), so this is the required live-store proof per the QA plan's Verification policy.
 
 ## F-28 blockable-edge note (≥6 windows — component-test contingency)
