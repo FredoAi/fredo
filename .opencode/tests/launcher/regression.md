@@ -253,4 +253,40 @@
   - **#2870 round 3 (spec/2870 @ e27ff0a9) — R-35 PASS (live).** Seat-slot WRAPPER `offsetWidth`=80 / `offsetHeight`=100 (`margin-bottom:16px`) in **all three** states: OFF (content `.fredo-avatar-idle`), ON-home (content `.fredo-companion-avatar`), ON-away (content `[data-state="away"]`). Wrapper `centreX` == centred-column `centreX` in every state (Δ0 at default 960/960 and at 700×900 350/350). Command-bar `getBoundingClientRect().y` = 485.77 (OFF / ON-home / ON-away / through the bubble / post-auto-return) at default, and 446 at 700×900 in ON-home AND ON-away — |Δ| = 0 ≤ 1 px. `mb="4"` preserved (16px). At 700×900 `scrollHeight == clientHeight` (no scrollbar), no H-scroll, seat + bar fully visible. The round-2 defect (wrapper 320×100 from the `sizes.80` token; Fredo ~120 px off-axis) is FIXED — `AVATAR_SM_CSS`/`toCssPx` (`fredoAvatarSizes.ts`) now emit `"80px"`/`"100px"` to both seat consumers. Evidence: `.opencode/tmp/2870/tests-runs.md` / `## Tests Runs (round 3)`; screenshots `after-r3-01-*`, `after-r3-02-*`, `after-r3-06-*`, `after-r3-09-*`, `after-r3-10-*`.
   - **#2870 round 4 (spec/2870 @ 7fddf3ab) — R-35 PASS (live, regression).** Re-verified after the SpeechBubble reduced-motion change (which does not touch the seat geometry): WRAPPER `offsetWidth`=80 / `offsetHeight`=100 + `margin-bottom:16px` in OFF (`.fredo-avatar-idle`), ON-home (`.fredo-companion-avatar` relative), and ON-away (`[data-state="away"]`); wrapper centre-x 960 == column centre-x 960 (Δ0) at default and 350/350 at 700×900. Command-bar `y` = 485.77 in OFF / ON-home / ON-away and 485.77 after the host idle auto-return (Δ0); 446 at 700×900 in ON-home and ON-away. No scrollbar/overflow at 700×900. Evidence: `.opencode/tmp/2870/tests-runs.md` / `## Tests Runs (round 4)`; screenshots `after-r4-01-*`, `after-r4-04-*`, `after-r4-06-*`, `after-r4-07-*`, `after-r4-08-*`.
 - [ ] R-36: The launcher chrome beyond the seat is unchanged — FREDO notch, command bar, app grid + keyboard nav, keyboard-hints row, ESC keycap, clock/LED chrome, side ticks, dot-grid, rounded frame, and the open/close lifecycle behave as before with the companion ON and OFF; the Settings tile/`SHOWABLE_FEATURES` grid set and `dedupeByFeatureId` are unchanged. Reference R-26..R-34 + #2868 R-33/R-34.
-  - **#2870 round 3 (spec/2870 @ e27ff0a9) — R-36 PASS (live).** Launcher chrome unchanged with the companion ON/OFF: notch, command bar, app grid + keyboard nav, hints row, ESC keycap, clock/single-LED chrome all render as before; the Settings tile still opens the Settings app via `onOpenFeature → openFeatureWindow → openWindow`; no floating gear; console clean of `Maximum update depth exceeded`. Reference R-26..R-34 + #2868 R-33/R-34.
+   - **#2870 round 3 (spec/2870 @ e27ff0a9) — R-36 PASS (live).** Launcher chrome unchanged with the companion ON/OFF: notch, command bar, app grid + keyboard nav, hints row, ESC keycap, clock/single-LED chrome all render as before; the Settings tile still opens the Settings app via `onOpenFeature → openFeatureWindow → openWindow`; no floating gear; console clean of `Maximum update depth exceeded`. Reference R-26..R-34 + #2868 R-33/R-34.
+
+---
+
+## #2871 extension — smart-Enter / companion-chat invariants (G-136)
+
+> Issue #2871 adds a companion-chat path to the command bar while the companion is ACTIVE.
+> **G-136:** R-7's frozen "Enter/Space open" (the query is a grid filter only) is EXTENDED —
+> Enter is now smart (exact tile name ⇒ launch; otherwise ⇒ chat) but ONLY while the companion
+> is active; the inactive behavior is unchanged. R-7/R-35/R-36 remain in force. Historical
+> records preserved. Live policy.
+
+## R-37 — Inactive command-bar behavior unchanged; active smart-Enter never mis-launches
+
+- [ ] R-37: With the companion OFF and away, type a non-tile phrase + Enter → no `llmChat`, no
+      launch, the grid filters as before. With it ACTIVE (incl. home after an idle auto-return),
+      Enter on a non-exact query chats and NEVER launches a tile; Enter on an exact tile name
+      launches it.
+  **Expected:** the filter (`filteredEntries`), the keyboard nav (↑↓/←→ clamp, no wrap), the
+      empty-grid no-op, and the tile `aria-label`s = `SHOWABLE_FEATURES` names are unchanged;
+      Enter never opens a tile the text did not exactly name. Reference R-7 + F-51/F-54.
+
+## R-38 — Launcher layout / seat geometry unchanged by the chat path
+
+- [ ] R-38: Measure the command-bar `getBoundingClientRect().y` with the companion OFF,
+      ON-home, ON-away, and while a reply streams; `scrollHeight`/overflow at 700×900.
+  **Expected:** `y` constant within ±1 px in every state; no new scrollbar/overflow/clip; the
+      seat slot (80×100 + `mb="4"`) never unmounts. Reference R-35/R-36 + #2870 R-35.
+
+## R-39 — Console clean, listeners once, no re-render loop from the chat state
+
+- [ ] R-39: Read the console after every leg incl. repeated sends + an error; inspect the new
+      chat-state code for effect/memo deps on array `.length`/fresh refs; count listener
+      registrations across cycles.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop
+      (AGENTS.md #523); the `llm-token`/`llm-done`/`llm-error` listeners register per generation
+      and unlisten on settle — no accumulation. Reference R-13/R-21.
