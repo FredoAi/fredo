@@ -239,3 +239,34 @@
 - **R-24 PASS (live).** Toggle shows/hides the companion and honors `Fredo_companion_visible`; the idle value commits on blur/Enter/stepper, clamps (default 60, [5,3600]), persists (`#companion-idle-timeout-seconds` committed 9999→3600).
 - **R-25 PASS (live).** Managed `llama-server` stopped → gate renders the wizard ONLY (no toggle/tip); server relaunched → controls render automatically (`get_llama_server_status` running/healthy). No orphan/crash.
 - **R-26 PASS (static).** Zero true color literals; no `var(--x)NN`; the setting-row/tip surfaces resolve `--hover-bg` non-transparent in BOTH themes (`color(srgb .8 .8 .8/.06)` dark / `color(srgb .047 .067 .090/.06)` light).
+
+---
+
+## #2865 extension — the wizard UX visual audit must not change behavior
+
+> Issue #2865 is a VISUAL/UX audit of the not-ready wizard. Run alongside R-1..R-26. The prior
+> "accepted residual R3" disposition (recorded in the #2864 rows/logs above) is SUPERSEDED for
+> this spec — the residual is an explicit requirement — but no historical record is deleted.
+
+- [ ] **R-27 (gate semantics unchanged):** `stop_llama_server` → the Companion section renders the
+      wizard ONLY (no toggle/tip/auto-return); `launch_llama_server` → the controls render
+      automatically in place, no reload. Reference R-25/F-56.
+  - **Edge:** partial readiness never reads complete; the swap works with the modal open.
+
+- [ ] **R-28 (configured Companion controls unchanged after the swap):** once ready, the visibility
+      toggle honors `Fredo_companion_visible`, the idle-timeout control commits/clamps/persists,
+      and the teleport tip is present/undimmed. Reference R-24/#2853 R-12.
+  - **Edge:** a visual-only diff must not alter the control semantics or persistence keys.
+
+- [ ] **R-29 (token contract + semantic-token bridge):** no hardcoded hex/rgba/hsla or `var(--x)NN`
+      is introduced in the audited wizard files; the R3 root cause (`fg.muted`/`fg.subtle`/
+      `fg.default`/`bg-hover`/`fg-onAccent`/`accent-solid` not resolving to Fredo vars) is
+      resolved at the token layer — no literal fallback is introduced to mask it.
+  - **Edge:** a direct `var(--text-secondary)` migration is acceptable; leaving `fg.muted` as stock
+    Chakra is a FAIL (F-55).
+
+- [ ] **R-30 (no test weakening / build gates):** no existing assertion weakened/disabled/deleted;
+      a hook that must move is refreshed in the same scope and named (G-125);
+      `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` green.
+  - **Edge:** frozen hooks (`companion-setup-wizard`, `companion-step-*`, `data-state`,
+    `data-server-state`) retained — a silently dropped hook is a FAIL.
