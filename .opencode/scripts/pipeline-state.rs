@@ -4347,10 +4347,31 @@ fn parse_root_cause_class(body: &str) -> Option<&'static str> {
     None
 }
 
-/// Tiny first-match capture helper for the plan's Effort line (avoids pulling a
-/// regex crate dependency into rust-script for one call site): finds the literal
-/// `**Effort:**` marker, skips non-digits, captures the first digit run.
+/// Tiny capture helper for the plan's Effort line (avoids pulling a regex crate
+/// dependency into rust-script for one call site). Prefers the CANONICAL
+/// `- **Effort:** N story points` line (marker immediately followed by the digit
+/// run and then `story point(s)`), then falls back to the first `**Effort:**`
+/// digit run for backward compatibility. The canonical-first preference is
+/// load-bearing: the Architect's decomposition also writes
+/// `**Effort:** ST-1 3 + ST-2 5 + ST-3 3 = **11 story points**`, and the old
+/// first-marker behavior captured `1` from `ST-1` (observed #2870: an 11-point
+/// spec was recorded as 1, corrupting size normalization).
 fn regex_lite_find(haystack: &str) -> Option<String> {
+    const CANONICAL: &str = "**effort:**";
+    for line in haystack.lines() {
+        let lower = line.to_lowercase();
+        let pos = match lower.find(CANONICAL) {
+            Some(p) => p,
+            None => continue,
+        };
+        let rest = line[pos + CANONICAL.len()..].trim_start();
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let after = rest[digits.len()..].trim_start().to_lowercase();
+        if !digits.is_empty() && after.starts_with("story point") {
+            return Some(digits);
+        }
+    }
+    // Fallback: the original first-marker digit run.
     let marker = "**Effort:**";
     let idx = haystack.find(marker)?;
     let rest = &haystack[idx + marker.len()..];

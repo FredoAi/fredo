@@ -1090,6 +1090,40 @@ Test-Script "audit-record success records spec size from the plan's Effort line"
   }
 }
 
+# Regression (observed #2870): the Architect's decomposition line
+# `**Effort:** ST-1 3 + ... = **11 story points**` can appear BEFORE the canonical
+# Staffing Plan line; the parser must read the canonical `- **Effort:** N story
+# points` value, not the `1` in `ST-1`.
+Test-Script "audit-record spec size prefers the canonical Staffing Plan Effort line" {
+  $url = Mock-IssueCreate "temp: spec size canonical" "spec-size canonical scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $plan = Join-Path $env:TEMP "fredo-spec-size-canonical.md"
+    $planBody = "## Triage Plan`n`n## Software Architect`n`n### Sub-issue Decomposition + Effort Estimates`n`n- [ ] **ST-1** intent`n`n**Effort:** ST-1 3 + ST-2 5 + ST-3 3 = **11 story points**.`n`n## Staffing Plan`n`n- **Effort:** 11 story points (ST-1 3 + ST-2 5 + ST-3 3).`n"
+    [System.IO.File]::WriteAllText($plan, $planBody, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC SIZE RECORDED: 11 story points") { throw "Expected SPEC SIZE RECORDED: 11, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if ($ev.attributes.storyPoints -ne "11") { throw "expected storyPoints=11, got: $($ev.attributes.storyPoints)" }
+    return "canonical Effort line wins (11 pts) on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Single-writer permissions (opencode.json) ---
 Write-Host "Permissions (opencode.json):" -ForegroundColor Cyan
 
