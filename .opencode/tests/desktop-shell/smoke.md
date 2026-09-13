@@ -45,3 +45,7 @@
 ### Round 1 (spec/2870 @ dd0026e1) — results
 
 > **S-9 FAIL / UNVERIFIED (blocking boot defect).** The shell never mounts — `EmptySeat.tsx:4-5`'s `@/` imports are unresolved under `apps/tauri/vite.config.ts` (`@` → `apps/tauri/src`, no `shared/`); the window renders empty `#root` + the Vite import-analysis overlay. No seat/mascot/command bar is observable. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
+
+### Round 2 (spec/2870 @ 6474a5fe) — results
+
+- **S-9 PASS (live).** Shell boots with the companion ON: the centre seat renders the interactive entity (`position: relative`, 80×100), not a corner Fredo, not the decorative mascot; command-bar `y` = 485.77 == the OFF baseline; consoles show no `Error:`/`Uncaught`/`Maximum update depth exceeded`; screenshot succeeds. *Regression note: the seat content renders 120 px left of the shell axis (320 px seat wrapper) — see `functional.md` F-62/F-66.*
