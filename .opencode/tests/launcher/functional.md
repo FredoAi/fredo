@@ -462,3 +462,9 @@
       entry; the clock/LED cluster + app dock are unchanged. Cross-ref
       `.opencode/tests/settings/` F-37/F-39 + `.opencode/tests/desktop-chrome/` R-21.
   - **Edge:** no gear over a maximized window; no residual gear z-layer; console clean.
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — results
+
+- **F-48 PASS (live).** Engaged grid rendered 5 tiles — Mission Monitor, Query Viewer, Run CLI, **Settings**, Stepper Probe — with no install/onboarding step and no duplicate.
+- **F-49 PASS (live).** Settings tile → `div[role="group"][aria-label="Settings"]` (title "Settings", not the retired modal); the launcher sank below and re-revealed on close; re-invoke focused/restored the SAME window (count stayed 1). Keyboard: ArrowLeft moved the active tile to `tile-3` (Settings) and Enter opened it.
+- **F-50 PASS (live).** No floating gear in the resting or engaged desktop, or with a maximized window (`button[aria-label="Settings"]` count 0). Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
