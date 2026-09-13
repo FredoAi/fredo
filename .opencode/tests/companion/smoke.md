@@ -120,3 +120,7 @@
       streams into the seat `SpeechBubble` with the busy cursor, completes, and returns to rest;
       `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
       depth exceeded`.
+  - **#2871 round 1 (spec/2871 @ e5fa7612) — PARTIAL.** Reply streamed into the seat bubble
+    (`data-streaming="true"`, `thinking`→`joking`), screenshot succeeded, console clean. Busy
+    clear is delayed to the end of the ~5 s `happy` hold; the error path shows a raw backend
+    string + false `happy` (F-71 FAIL).
