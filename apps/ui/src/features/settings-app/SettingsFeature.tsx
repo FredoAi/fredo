@@ -8,9 +8,8 @@ import { SettingsSurface } from './components/SettingsSurface';
 /**
  * SettingsFeature — Settings as a first-class Fredo app (Spec #2868 ST-1).
  *
- * Settings used to be a modal mounted by the floating gear
- * (`ProfileSettingsModal` + `FloatingSettingsButton`). It is now registered like
- * every other app — a `showable` singleton opened in Fredo's own window kernel
+ * Settings used to be a modal mounted by the floating gear. It is now registered
+ * like every other app — a `showable` singleton opened in Fredo's own window kernel
  * exactly like Mission Monitor. The shell (sidebar nav + static/auto-discovered
  * sections + unified Save footer) lives in feature-owned `SettingsSurface`.
  *

@@ -12,7 +12,7 @@ import { tint } from '../../../shared/utils/colorTint';
 /**
  * SettingsSurface — the inner Settings shell (Spec #2868 ST-1).
  *
- * Moved verbatim from `ProfileSettingsModal.tsx`'s inner container (sidebar nav,
+ * Moved verbatim from the retired modal's inner container (sidebar nav,
  * section composition, keyed Save provider, unified footer), MINUS the
  * `<Dialog.*>` chrome / `Dialog.Title` / internal close button — the feature
  * window frame now owns the title, icon, and min/max/close controls. Section
