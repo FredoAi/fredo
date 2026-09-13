@@ -250,3 +250,7 @@
 
 - [ ] R-35: The launcher centre seat slot renders UNCONDITIONALLY — measure the centred-column height + the command-bar `getBoundingClientRect().y` with the companion OFF, ON-at-home, and ON-away, plus after a 5 s idle auto-return. Height and `y` are constant within ±1 px in every state; no new scrollbar/overflow/clip at default AND 700×900. The mascot/slot size (80×100, `AVATAR_SM`) is unchanged, and the `mb="4"` spacing is preserved. Reference launcher S-14 + #2852 R-29.
 - [ ] R-36: The launcher chrome beyond the seat is unchanged — FREDO notch, command bar, app grid + keyboard nav, keyboard-hints row, ESC keycap, clock/LED chrome, side ticks, dot-grid, rounded frame, and the open/close lifecycle behave as before with the companion ON and OFF; the Settings tile/`SHOWABLE_FEATURES` grid set and `dedupeByFeatureId` are unchanged. Reference R-26..R-34 + #2868 R-33/R-34.
+
+### Round 1 (spec/2870 @ dd0026e1) — results
+
+> **R-35/R-36 FAIL / UNVERIFIED (blocking boot defect).** The tested tip does not boot (`EmptySeat.tsx:4-5` `@/` imports unresolved under the Tauri Vite alias), so no launcher geometry or chrome invariant is observable. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
