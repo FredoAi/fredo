@@ -69,3 +69,7 @@
       settings `chakra-dialog__content` render; `tauri_webview_screenshot` succeeds; console clean
       of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
+### #2868 testing round 1 (spec/2868 @ 90da8de) — result
+
+- **S-13 PASS (live).** Engaged grid: `[role="button"][aria-label="Settings"]` present; click opens `div[role="group"][aria-label="Settings"]` with header title "Settings". Clean desktop: floating gear count 0, `chakra-dialog__content` count 0; screenshot succeeded; console clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
