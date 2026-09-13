@@ -124,3 +124,16 @@
     (`data-streaming="true"`, `thinking`→`joking`), screenshot succeeded, console clean. Busy
     clear is delayed to the end of the ~5 s `happy` hold; the error path shows a raw backend
     string + false `happy` (F-71 FAIL).
+  - **#2871 round 2 (spec/2871 @ bd168ee) — PASS.** Reply streamed into the seat bubble; the bar
+    busy state (`Fredo is replying…` placeholder + chip, `aria-busy`, `readOnly`) cleared at
+    `llm-done` (not ~5 s later); the error leg showed the curated generic sentence with no false
+    `happy`; console error-level only the `[MCP][BRIDGE]` instrumentation artifact from a tester
+    synthetic event (no product error). Screenshots `req1-send-streaming.png`, `req5-completion-cleared.png`.
+
+## #2871 round-2 error-path quick check (S-24b)
+
+- [ ] S-24b: With the companion ON, stop the managed server and point `llama_server_path` at a real
+      non-executable file; send from the bar. **Expected:** the bubble shows a readable curated
+      sentence, no raw backend string, no `happy`, the bar returns usable. Restore the path + relaunch.
+  - **#2871 round 2 (spec/2871 @ bd168ee) — PASS.** See functional F-71 round 2 + launcher F-53;
+    screenshot `req6-error-bubble2.png`.
