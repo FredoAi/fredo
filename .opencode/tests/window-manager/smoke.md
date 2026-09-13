@@ -84,3 +84,8 @@
 ### Round 1 (spec/2870 @ dd0026e1) — results
 
 > **S-12 FAIL / UNVERIFIED (blocking boot defect).** The `run-cli-terminal` window IS created (`open_run_cli` → `success:true`; window list = main + run-cli-terminal), but both windows load the SAME broken bundle: `EmptySeat.tsx:4-5`'s `@/` imports are unresolved under `apps/tauri/vite.config.ts` (`@` → `apps/tauri/src`, no `shared/`), so each renders empty `#root` + the Vite import-analysis overlay. Neither the hosted Fredo nor the main empty seat can render. Evidence: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
+
+### Round 2 (spec/2870 @ 6474a5fe) — results
+
+- **S-12 PASS for the core cross-window invariant (live); FAIL for the exact 80×100 placeholder.** Both windows boot (`#root` populated). With `run-cli-terminal` open, Ctrl+right-click INSIDE the terminal → the terminal hosts the single interactive Fredo (`position:fixed`, 80×100, at the clamped target); the main seat renders the placeholder and NO second Fredo (global interactive-Fredo count = 1); a 5 s host idle auto-return re-occupies the main seat; `tauri_read_logs` clean in BOTH windows. **Placeholder width = 320, not 80** (see companion F-62). **Also reproduced here:** the promoted defect F-68 — after the host's idle auto-return, a subsequent teleport leaves Fredo unrendered in the destination and never auto-returns (stale `isAutoHidden`).
+- **Observation (unscored):** on the first cross-window attempt of the round, main did not transition to the empty seat; a repeated attempt and the MCP-bridge `companion-teleport` emit both propagated correctly. Recorded as a mount/timing anomaly for investigation.
