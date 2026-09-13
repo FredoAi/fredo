@@ -76,3 +76,8 @@
 - [ ] S-15: Theme/accent switch with Settings open — switch dark↔light and change the accent;
       the dialog chrome + Companion panel re-tint with no stale color; screenshot succeeds;
       console clean.
+
+### #2864 testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **S-14 PASS (live).** Companion renders in dark + light (ready controls) and the wizard gate (managed `llama-server` stopped via `stop_llama_server`). Screenshots `tester-dark-ready.png`, `tester-companion-accent.png`, `tester-not-ready-gate-accent.png`.
+- **S-15 PASS (live).** dark↔light + `accentPrimary` override with Settings open re-tints the chrome + panel (nav fill, Switch, buttons) with no stale color; console clean.
