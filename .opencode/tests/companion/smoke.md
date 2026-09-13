@@ -113,3 +113,10 @@
 - [ ] S-21: Companion OFF ⇒ decorative mascot at the seat — toggle OFF; `.fredo-avatar-idle` (58 rects) renders at the SAME centre seat and the interactive seat entity is gone (NOT the placeholder); persisted `Fredo_companion_visible="false"`; screenshot succeeds; console clean.
 - [ ] S-22: Turn-on welcome bubble — toggle ON; the welcome bubble appears at the seat and auto-hides at ~4 s (same-task capture per G-140); screenshot succeeds; console clean.
 - [ ] S-23: Away ⇒ empty seat — Ctrl+right-click in main (recipe a); the centre slot shows the 80×100 placeholder (not Fredo, not a corner Fredo); screenshot succeeds; console clean.
+
+## #2871 extension — command-bar chat smoke
+
+- [ ] S-24: Companion ON at the seat; send a message from the launcher command bar → the reply
+      streams into the seat `SpeechBubble` with the busy cursor, completes, and returns to rest;
+      `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`.
