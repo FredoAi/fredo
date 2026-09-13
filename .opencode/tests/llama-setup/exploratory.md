@@ -361,3 +361,10 @@ functional F-35/F-36 (AC2 FAIL).
       change announced once (no duplicate announcement), and does the error group's
       `aria-label` match the failed step? Any missing/duplicated announcement is a finding
       (promotes to F-49/F-50).
+
+## #2871 extension — bar-chat / server probes
+
+- [ ] E-45: Probe a bar send while the server is `starting` (not yet healthy) — is the not-ready
+      state readable and non-hanging, with the bar usable again?
+- [ ] E-46: Probe killing the server mid-bar-stream — does the `llm-error` line surface and the
+      companion recover to rest (no stuck status)?
