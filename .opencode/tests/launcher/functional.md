@@ -468,3 +468,128 @@
 - **F-48 PASS (live).** Engaged grid rendered 5 tiles — Mission Monitor, Query Viewer, Run CLI, **Settings**, Stepper Probe — with no install/onboarding step and no duplicate.
 - **F-49 PASS (live).** Settings tile → `div[role="group"][aria-label="Settings"]` (title "Settings", not the retired modal); the launcher sank below and re-revealed on close; re-invoke focused/restored the SAME window (count stayed 1). Keyboard: ArrowLeft moved the active tile to `tile-3` (Settings) and Enter opened it.
 - **F-50 PASS (live).** No floating gear in the resting or engaged desktop, or with a maximized window (`button[aria-label="Settings"]` count 0). Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2871 extension — command-bar companion chat (smart-Enter); G-136 reconciliation
+
+> Issue #2871 — while the companion is ACTIVE, the launcher command bar also accepts a message
+> for Fredo: the typed text (trimmed, case-insensitive) EXACTLY matching a `SHOWABLE_FEATURES`
+> name launches/filters as today, otherwise Enter sends it to the companion LLM; the reply streams
+> into the companion's existing `SpeechBubble` (`showMessage()`); single-shot; active-only.
+> **G-136 reconciliation:** the prior resolution pinned in F-25's note / exploratory E-1 /
+> regression R-7 ("the command-bar query is a grid filter only") is **SUPERSEDED for the
+> ACTIVE-companion state** — Enter is now smart. Historical records above are preserved, not
+> rewritten; R-7 is extended (not deleted) by R-37. The command-bar READ path (a non-exact query
+> with the companion inactive) is unchanged.
+> **Verification policy: live** — `tauri_webview_keyboard` type+Enter, `tauri_webview_execute_js`
+> sync streaming samples, `tauri_webview_dom_snapshot`/`screenshot` → `upload-evidence --base
+> spec/2871`, `tauri_read_logs(source="console")`, and the mandatory `telemetry_spans` receipt
+> (F-57). Map 1:1 to `.opencode/tmp/2871/triage.md` `## QA Expert` REQ-1..REQ-13.
+
+## F-51 (REQ-1/REQ-2) — Smart-Enter: exact tile name launches, otherwise it chats
+
+- [ ] F-51: Companion ACTIVE at the home seat. With `input[role="searchbox"]` focused, type the
+      exact tile name `Mission Monitor`, press Enter; then repeat with a non-tile phrase
+      (`tell me a joke about regex`). `tauri_webview_dom_snapshot` after each Enter.
+  **Expected:** exact (trimmed, case-insensitive) full-name match → the existing launch path
+      (`onOpenFeature` → `Home.openFeatureWindow`) and NO `llmChat`; the non-tile phrase → a
+      single-shot `adapterBridge.llmChat` → `llm_chat` (no window opens). The match is the WHOLE
+      string, never a substring.
+  - **Edge:** trailing whitespace; lowercase `mission monitor`; `Settings`; a substring matching
+    ≥2 tiles (`run`) that equals none → chat; empty query Enter → filter-only no-op. Reference
+    REQ-2 + companion F-69.
+
+## F-52 (REQ-3/REQ-4) — A sent message streams a reply into the companion bubble (G-130)
+
+- [ ] F-52: Companion ACTIVE; send `Tell me a short programming joke about regex` via the bar.
+      Sync-sample the `SpeechBubble` text node + the wrapper `data-state`/`data-streaming` at t0
+      and ~every 250 ms until end; screenshot mid-stream; upload the screenshot.
+  **Expected:** the reply renders in the companion's existing seat-anchored 240×120 bubble and
+      grows token-by-token — **≥3 DISTINCT partial contents** across the samples (G-130, never a
+      single final block); `data-streaming="true"` + the 2×14 px `Fredo-cursor-blink` cursor
+      during the stream; expression `thinking` on the wait → `joking` on the first token; the
+      final text matches the completed generation (control tokens stripped).
+  - **Edge:** TTFT >1 s (thinking observable); long reply wraps in the fixed-height bubble (no
+    resize); bubble re-anchors above the seat (tail down). Reference companion F-69/F-70 +
+    llama-setup F-64.
+
+## F-53 (REQ-5/REQ-6) — Completion clears; error/not-ready is readable and the bar recovers
+
+- [ ] F-53: (a) Wait for `llm-done` after F-52; sample `data-streaming`/cursor/bubble, then send
+      a 2nd message. (b) `stop_llama_server` (or a bad `llama_server_path`) while ACTIVE, send a
+      message; separately kill the server mid-stream. Read the bubble + console after each.
+  **Expected:** (a) `llm-done` clears the busy state (cursor hidden, `data-streaming` gone), the
+      bubble holds ~5 s then hides, the bar is usable, and a 2nd message re-enters the busy path —
+      no stuck indicator. (b) a READABLE line surfaces via the existing `llm-error` /
+      `⏳ Loading model...` path; the busy state clears and the bar returns usable within a bounded
+      window; NEVER a hang / stuck spinner; no raw stack/IPC dump.
+  - **Edge:** server stopped before send; killed after partial tokens; repeated send after error;
+    `llm-error`+`llm-done` completes ONCE. Reference REQ-6 + companion F-71 + llama-setup R-29.
+
+## F-54 (REQ-7/REQ-8) — Inactive ⇒ filter/launch unchanged; active ⇒ launch still reachable
+
+- [ ] F-54: (a) With the companion OFF (`Fredo_companion_visible=false`) and away
+      (Ctrl+right-click), type a non-tile phrase + Enter each time. Separately, after an idle
+      auto-return (5 s timeout) Fredo is home — send there. (b) With it ACTIVE, type `set`
+      and observe the grid; click the Settings tile; then Enter with a non-exact query.
+  **Expected:** (a) OFF/away → NO `llmChat`, no bubble — the bar behaves exactly as today
+      (filters tiles; Enter launches only an exact/selected tile). Home-after-auto-return → the
+      chat path REMAINS ACTIVE (resolved predicate `isVisible && !isAway`). (b) the grid still
+      filters; CLICKING a tile launches its window; exact-name Enter launches; non-exact Enter chats.
+  - **Edge:** away while hosted in `run-cli-terminal`; toggle OFF then Enter immediately;
+    auto-return then immediate send; click while a generation streams; empty-match query Enter → chat.
+
+## F-55 (REQ-9/REQ-10) — One in-flight generation; no listener leak across repeated sends
+
+- [ ] F-55: Send a long message; press Enter 2-3× while it streams. Then run ≥5 send→receive
+      cycles incl. one error cycle; watch the bubble/tokens.
+  **Expected:** at most ONE generation in flight; extra submits ignored (default) — never 2
+      interleaved streams or duplicate `llm_chat`; a late token from generation A never appends to
+      a later bubble; every generation completes exactly ONCE (`TauriAdapter.ts:60-71`); no
+      accumulated/duplicated listeners, no duplicate tokens, no double busy-clear.
+  - **Edge:** rapid double-Enter; Enter during error; Enter right after done; retry-on-`still
+    loading` re-entry; unmount mid-stream. Reference companion F-72.
+
+## F-56 (REQ-11/REQ-12) — Console clean, token-native, reduced motion
+
+- [ ] F-56: After every leg read `tauri_read_logs(source="console")`. Static-grep the changed
+      files for `#[0-9a-fA-F]{3,8}`/`rgba(`/`rgb(`/`var(--x)NN`. Re-theme light↔dark + a
+      non-default accent while the bubble/busy affordance is visible. Drive a reduced-motion pass
+      if the driver can flip `matchMedia`.
+  **Expected:** NO `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (#523);
+      token-native only, NO `var(--x)NN` alpha-append; the bubble chrome + busy affordance re-tint
+      live with no stale color; reduced motion keeps the entry fade-only.
+  - **Edge:** reduced-motion emulation is a named blocker today (driver cannot flip `matchMedia`)
+    → static CSS + a product-unit pin (the #2870 F-66 precedent); comment issue-refs are not
+    literals.
+
+## F-57 (REQ-LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-57: Same run as F-51..F-56: `fredo emit --event-type chat --session-id e2e-2871-chat` +
+      `--event-type tool_use --session-id e2e-2871-tool`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows` (telemetry-query skill); keep the per-AC `upload-evidence` raw
+      URLs + DOM snapshots + streaming samples.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; the
+      injected events classify into `chat_rows`/`tool_use_rows` under their session ids; a
+      rendered-webview receipt exists for the chat + busy + error states. **A static-only PASS is
+      a FALSE PASS** (G-108/G-102). Do not depend on `tauri_ipc_monitor` capturing `llm_chat`
+      (G-058).
+  - **Edge:** re-run the receipt on the tested tip; keep the emit + query output verbatim.
+
+## F-58 (REQ-14/REQ-15/REQ-16) — Bar mode affordances, a11y, reduced-motion static cursor
+
+- [ ] F-58: With the companion ACTIVE, compare the bar across: empty query; exact tile name;
+      non-tile text; busy. Read the prefix glyph, the right-side hint chip text, the placeholder,
+      `aria-label`/`aria-describedby`/`aria-busy`, and the single live region. Static-grep the
+      changed files + read the cursor computed `animationName` under reduced motion.
+  **Expected:** exact → `↵ open <Tile>` chip + `>` chevron; non-match → `↵ send to Fredo` + a
+      speech glyph; empty/inactive → chip hidden; busy → placeholder/chip `Fredo is replying…`,
+      `aria-busy="true"`, input READ-ONLY (Enter no-op), `—` still operable. role stays
+      `searchbox`; `aria-describedby` → `#fredo-command-hint`; ONE `role="status" aria-live="polite"`
+      region announces once per event (never per token); the bubble stays `aria-hidden`. ZERO
+      hardcoded color / `var(--x)NN`; busy geometry uses CSS unit strings; under reduced motion the
+      streaming cursor is a static 2px bar (no blink).
+  - **Edge:** substring-only hit with the companion active → send; game bubble open → `Finish the
+    game to chat`; error copy + 8 s hold; reduced-motion flip is a named blocker if the driver
+    cannot flip `matchMedia` (static CSS + product-unit pin). Reference UI/UX §1/§2/§4/§5 + REQ-14..16.
