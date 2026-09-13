@@ -290,3 +290,16 @@
   **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop
       (AGENTS.md #523); the `llm-token`/`llm-done`/`llm-error` listeners register per generation
       and unlisten on settle — no accumulation. Reference R-13/R-21.
+
+### #2871 testing round 1 (spec/2871 @ e5fa7612) — results
+
+- **R-37 PASS (live).** OFF (`Fredo_companion_visible=false`) and away (Ctrl+right-click) → no
+  `llmChat`/bubble; non-tile + Enter no-op, `set` + Enter launched Settings. ACTIVE incl.
+  home-after-auto-return → non-exact Enter chats, exact name launches, never a mis-launch.
+- **R-38 PASS (live).** Command-bar `y`=485.77 with the companion OFF / ON-home / ON-away and
+  through streaming; seat wrapper 80×100 + `mb:16px`, centre-x 960; `scrollHeight==clientHeight`
+  (no scrollbar). No layout change from the chat path.
+- **R-39 PASS (live).** Console error-level empty after every leg (incl. repeated sends + 3 error
+  cycles). 8 `runGeneration called` / 8 `llm-done received` — one completion per generation, no
+  duplicate tokens, no listener accumulation. One non-error `[TAURI] Couldn't find callback id`
+  WARN on the `llm-error` path (callback lifecycle, not an AC error signature).

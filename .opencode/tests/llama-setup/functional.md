@@ -886,3 +886,13 @@ offloaded). AC1 was not weakened; only the documented boolean-switch syntax was 
       classify into `chat_rows`/`tool_use_rows` under their session ids; the managed `/health`
       probe returned 200 before the first chat. A static-only PASS is a FALSE PASS.
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim.
+
+### #2871 testing round 1 (spec/2871 @ e5fa7612) — results
+
+- **F-64 PASS (live).** A long bar prompt streamed from the SAME managed `llama-server`
+  (`get_llama_server_status` → `healthy:true, port:8080`; 3 incremental content partials + thinking);
+  no new command/model/window. Cold-start leg: server launched by `ensure_healthy`, 11.4 s TTFT,
+  then a full stream. Error leg (non-executable `llama_server_path`) returns a readable-shaped but
+  RAW backend string + false `happy` (cross-ref companion F-71 FAIL).
+- **F-65 PASS (live).** `fredo emit` chat+tool both `{"queued":true}`; `telemetry_spans` **23,165**,
+  newest `2026-09-13T21:02:29.608Z`; `chat_rows(e2e-2871-chat)=1`; `tool_use_rows(e2e-2871-tool/read_file)=1`.

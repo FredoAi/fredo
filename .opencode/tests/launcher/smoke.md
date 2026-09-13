@@ -87,4 +87,8 @@
       The reply streams into the companion's seat bubble (`data-streaming` + cursor observed), the
       busy state clears on completion, and `tauri_webview_screenshot` succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **#2871 round 1 (spec/2871 @ e5fa7612) — PARTIAL.** Reply streamed into the seat bubble
+    (`data-streaming="true"`); screenshot succeeded; console clean. Busy (bar `aria-busy` + dot)
+    clears only at the end of the ~5 s `happy` hold, not on `llm-done`; during busy the input is
+    not read-only and Enter launches a tile (REQ-14 FAIL).
 

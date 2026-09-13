@@ -1103,3 +1103,20 @@ preserved in both). The shared component changed, so the full Q-1..Q-17 matrix w
       guard) rather than interleaving; the in-flight bubble is not clobbered by a second stream.
   - **Edge:** click first then Enter; rapid alternation; a stale token from the first stream never
     lands in a later bubble. Reference F-7 + R-2.
+
+### #2871 testing round 1 (spec/2871 @ e5fa7612) — results
+
+Live (real managed `llama-server`). Verdict **FAIL** (REQ-6/REQ-14/REQ-15/REQ-16).
+
+- **F-69 PASS (live).** Bar prompt → reply in the SAME seat-anchored 240×120 `SpeechBubble`
+  (`position:absolute`, above the slot, tail down); 3 incremental content partials + thinking = 4
+  distinct (G-130). Single-shot; no second surface.
+- **F-70 PASS (live).** `thinking` (wait, `data-streaming=true`) → `joking` (first token) →
+  `happy` (on done, existing ~5 s hold) → `idle`; the send resets the idle timer.
+- **F-71 FAIL (live).** Error/not-ready is NOT readable-as-curated: the `llm-error` payload is
+  forwarded verbatim (`TauriAdapter.ts:79-82`) and the bubble shows the RAW backend string
+  (`failed to start C:\…\bad-llama-server.exe: spawn …`); the flow renders **`happy`** on error
+  (F-71 expects no false `happy`); the error is not announced in the live region. Recovery is fast
+  (~700 ms; no hang).
+- **F-72 PASS (live).** Enter-spam / click during a stream never started a 2nd generation; the
+  `isGeneratingRef` + `generationRef` guards hold. (The extra Enter launched a tile — launcher F-58.)
