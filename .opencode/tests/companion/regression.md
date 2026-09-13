@@ -300,3 +300,35 @@
 
 - **R-31 PASS (live + component test).** With the readiness probe in flight/not ready, Settings → Companion rendered the wizard ONLY (`companion-setup-wizard`, `companion-step-*`); on ready the controls (`companion-controls`) swapped in place with no reload. `SettingsSurface.companionGate.test.tsx` 3/3.
 - **R-32 PASS (live).** Reached via the launcher grid (not the gear): the visibility toggle ("Show Fredo Companion"), the idle-timeout control (`valuenow=3600`), and the Teleport tip all render; window-close semantics replaced modal Escape/backdrop. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2870 extension — one-Fredo-at-home invariants (must-not-change)
+
+> Issue #2870 gives Fredo a home/away location: enabling the companion keeps him AT the centre seat; away
+> shows an empty-seat placeholder; every turn-on greets. **G-136 supersedes:** R-12's "companion ON ⇒
+> mascot yields / OFF ⇒ mascot shown", R-14's "mascot presence gated by companion visibility", and
+> R-16/R-22's "main mascot suppressed" wording all pin the REMOVED `!companionPresent` gate — they are
+> superseded by the rows below (historical PASS records above are preserved, not deleted). R-24's control
+> semantics remain in force. Run alongside R-1..R-32. Live policy.
+
+## R-33 — Teleport choreography + joke/game/bubble/avatar behaviors unchanged after the entity extraction
+
+- [ ] R-33: Exercise a same-window and a cross-window teleport (timing), single-click joke, double-click TicTacToe (250 ms discriminator), and the speech-bubble side-choosing/anchoring; probe the avatar's 80×100 geometry + the 58-rect set.
+  **Expected:** the extraction of `CompanionEntity` does not alter R-1..R-5 / R-13 / R-19..R-21 — teleport out ≈400 ms / in ≈400 ms + ~50 ms settle, the `isTeleportingRef` guard, the joke/vision flows, the 240×120 bubble + 208×268 game bubble, the `above > right > left > below` ranking, the frozen 58 base rects, and the `AVATAR_SM` clamp/anchor math are byte/behaviour-identical. Reference F-59/F-60 + #2853 R-13 + #2854 R-19..R-21.
+  - **Edge:** a status/teleport mid-joke; the seat and overlay both consume the same entity without double-firing the joke/game.
+
+## R-34 — Persisted keys/ranges untouched (`Fredo_companion_visible`, `Fredo_companion_idle_timeout`)
+
+- [ ] R-34: Toggle the companion ON/OFF and set a distinct idle value; read the persisted keys before/after and after a relaunch. Probe that `isAway` is NOT persisted.
+  **Expected:** `Fredo_companion_visible` is honored on boot and updated only by the toggle; `Fredo_companion_idle_timeout` keeps its default 60 / range [5, 3600] and its commit/clamp/persist semantics; `isAway` is a transient context flag only — never written to localStorage/AppStore; no new persisted key is introduced. Reference #2853 R-12/R-15/R-24 + the SI mechanism decision (G-023).
+
+## R-35 — Seat slot always present ⇒ launcher column height constant (no CLS)
+
+- [ ] R-35: Measure the centred-column height + command-bar `getBoundingClientRect().y` in all three states — OFF, ON-home, ON-away — and after an auto-return settle, at default and 700×900 widths.
+  **Expected:** the seat slot (80×100 + `mb="4"`) is rendered UNCONDITIONALLY; the column height and the command-bar `y` are constant (≤1 px) across OFF / ON-home / ON-away / post-auto-return; no new scrollbar/overflow/clip. Reference F-64 + #2852 R-29.
+
+## R-36 — Token-native + console clean / no re-render loop after the location state
+
+- [ ] R-36: Static-grep the changed files for hardcoded colors/`var(--x)NN`; read the console in every leg/window; inspect the new `isAway`/`markAway`/`SYNC_PRESENCE` code for effect/memo deps and listener registration.
+  **Expected:** zero color literals in the changed files (EmptySeat/seat chrome token-native); no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window; the new location state introduces no re-render loop (no dep on array `.length`/fresh objects); the cross-window listeners are registered once per window. Reference R-7/R-8/R-17 + #2850 F-15/F-19.
