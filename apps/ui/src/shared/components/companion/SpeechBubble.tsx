@@ -12,6 +12,13 @@ interface SpeechBubbleProps {
   companionHeight?: number;
   color?: string;
   isStreaming?: boolean;
+  /**
+   * Anchoring mode. `'fixed'` (default) is the legacy viewport-relative bubble
+   * positioned by the `chooseSide` math. `'absolute'` anchors the bubble above
+   * its parent slot (tail pointing down) and expects the consumer to supply a
+   * `position: relative` wrapper — it takes no part in document flow.
+   */
+  positioning?: 'fixed' | 'absolute';
   children?: React.ReactNode;
 }
 
@@ -58,6 +65,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   companionHeight = AVATAR_SM.height,
   color = 'var(--accent-primary)',
   isStreaming = false,
+  positioning = 'fixed',
   children,
 }) => {
   const hasGame = Boolean(children);
@@ -68,7 +76,11 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   const cw = companionWidth;
   const ch = companionHeight;
 
-  const side = chooseSide(cx, cy, cw, ch, bw, bh);
+  const isAbsolute = positioning === 'absolute';
+  // In `absolute` mode the bubble always sits above its parent slot with the
+  // tail pointing down, irrespective of viewport space — force the 'above'
+  // geometry so the tail + entrance animation match that anchor.
+  const side: Side = isAbsolute ? 'above' : chooseSide(cx, cy, cw, ch, bw, bh);
 
   let bubbleLeft = 0;
   let bubbleTop  = 0;
@@ -114,15 +126,33 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.88, y: initDelta }}
           transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-          style={{
-            position: 'fixed',
-            left: bubbleLeft,
-            top: bubbleTop,
-            width: bw,
-            height: bh,
-            zIndex: 101,
-            pointerEvents: hasGame ? 'auto' : 'none',
-          }}
+          style={
+            isAbsolute
+              ? {
+                  // Anchored above the (position: relative) parent slot, centred.
+                  position: 'absolute',
+                  bottom: `calc(100% + ${TAIL}px)`,
+                  left: '50%',
+                  // framer-motion owns this element's transform (it animates
+                  // y/scale), so the centering translate is expressed as its `x`
+                  // motion value — it composes to `translateX(-50%)` in the
+                  // generated transform instead of being clobbered.
+                  x: '-50%',
+                  width: bw,
+                  height: bh,
+                  zIndex: 101,
+                  pointerEvents: hasGame ? 'auto' : 'none',
+                }
+              : {
+                  position: 'fixed',
+                  left: bubbleLeft,
+                  top: bubbleTop,
+                  width: bw,
+                  height: bh,
+                  zIndex: 101,
+                  pointerEvents: hasGame ? 'auto' : 'none',
+                }
+          }
         >
           <Box
             background="var(--card-bg)"
@@ -165,7 +195,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
             )}
 
             {side === 'above' && (
-              <Box position="absolute" bottom={`-${TAIL}px`} left={`${tailOffsetX}px`} transform="translateX(-50%)"
+              <Box position="absolute" bottom={`-${TAIL}px`} left={isAbsolute ? '50%' : `${tailOffsetX}px`} transform="translateX(-50%)"
                 width="0" height="0"
                 borderTop={`${TAIL}px solid ${color}`}
                 borderLeft={`${TAIL}px solid transparent`}
