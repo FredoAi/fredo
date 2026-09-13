@@ -91,4 +91,10 @@
     (`data-streaming="true"`); screenshot succeeded; console clean. Busy (bar `aria-busy` + dot)
     clears only at the end of the ~5 s `happy` hold, not on `llm-done`; during busy the input is
     not read-only and Enter launches a tile (REQ-14 FAIL).
+  - **#2871 round 2 (spec/2871 @ bd168ee) — PASS.** Reply streamed into the seat bubble with the
+    blinking cursor; the bar showed the state-5 busy affordance (`Fredo is replying…`
+    placeholder + chip, `readOnly`, `aria-busy="true"`) and cleared at `llm-done`; Enter during
+    busy was a global no-op. Screenshot succeeded; console error-level only the `[MCP][BRIDGE]`
+    instrumentation artifact from a tester synthetic event. Screens `req1-send-streaming.png`,
+    `req14-busy-atomic.png`, `req5-completion-cleared.png`.
 
