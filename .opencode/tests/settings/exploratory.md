@@ -92,3 +92,13 @@
       behind two other windows, then restore it from the dock; does it return focused at the top
       with its content intact and its single window id? Any stale frame/duplicate/geometry reset is
       a finding (promotes to F-23/F-26).
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — findings
+
+- **E-10 FINDING — regression-free.** Closing/reopening the Settings window remounts `SettingsSurface` (fresh `activeSection='companion'`) and `SettingsSaveProvider` resets; no phantom save, no stale value.
+- **E-11 FINDING — regression-free.** Theme/accent switch with the window open re-tints the chrome token-native (header/active-nav/`--hover-bg`); no stale color, no re-render error.
+- **E-12 FINDING — regression-free.** Rapid launcher re-invoke + keyboard activation never produced a second Settings window (`settingsWindows` held at 1); the launcher collapses.
+- **E-13 FINDING — regression-free.** Companion gate flipped wizard → controls in place; reopening re-rendered consistently (controls when ready).
+- **E-14 NOT DRIVEN (live).** Zero-discovered-section live state is structurally unreachable (G-138); covered by the owned component test `SettingsSurface.zeroSections.test.tsx` (2/2).
+- **E-15 FINDING — regression-free.** Minimize keeps the single dock entry `Settings (minimized)`; restore re-raises the same window with content intact.
+- **E-16 (ENV) — Telemetry section wedges the MCP bridge.** Selecting Settings → Telemetry caused a `tauri_webview_execute_js` + `read_logs` timeout (already known from #2864 E-3: Telemetry's full-viewport capture wedges html2canvas/the bridge). Recovered by driver-session stop/start (G-067); no product error in the console. Environment/tooling, not a Settings-as-app defect.
