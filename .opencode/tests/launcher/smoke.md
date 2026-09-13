@@ -71,5 +71,13 @@
 
 ### #2868 testing round 1 (spec/2868 @ 90da8de) — result
 
-- **S-13 PASS (live).** Engaged grid: `[role="button"][aria-label="Settings"]` present; click opens `div[role="group"][aria-label="Settings"]` with header title "Settings". Clean desktop: floating gear count 0, `chakra-dialog__content` count 0; screenshot succeeded; console clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+  - **S-13 PASS (live).** Engaged grid: `[role="button"][aria-label="Settings"]` present; click opens `div[role="group"][aria-label="Settings"]` with header title "Settings". Clean desktop: floating gear count 0, `chakra-dialog__content` count 0; screenshot succeeded; console clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+## #2870 extension — home-seat stability smoke (G-136)
+
+> Issue #2870 keeps Fredo at the centre seat when the companion is enabled and reserves the seat slot so the
+> command bar never shifts. S-12 still describes the role-OFF seat (decorative sm mascot + idle motion) and
+> remains in force for that state. Live policy.
+
+- [ ] S-14: Seat stability across ON/OFF — open the launcher; record the command bar `getBoundingClientRect().y` with the companion OFF, then ON, then OFF again (and after a 5 s idle auto-return). `y` stays within ±1 px in every state; the 80×100 seat slot is present in all states (never unmounts); `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
