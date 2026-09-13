@@ -58,3 +58,14 @@
 
 - [ ] S-12: The launcher renders the sm mascot with its idle animation — open the launcher; the mascot SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) appears above the command bar at `offsetWidth`=80/`offsetHeight`=100, its wrapper carries a running `fredo-idle-bob` + `fredo-idle-glow` 2.4 s animation, and `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
+## #2868 extension — Settings tile in the grid smoke
+
+> Issue #2868 adds the Settings app tile and retires the floating gear. **G-136:** S-4 ("gear/nav
+> opens the settings dialog") is SUPERSEDED by S-13 below; the historical PASS is preserved.
+
+- [ ] S-13: The engaged grid includes a `[role="button"][aria-label="Settings"]` tile; clicking it
+      opens the Settings feature window (`div[role="group"][aria-label="Settings"]`, header title
+      "Settings"); on a clean desktop NO floating gear (`IconButton[aria-label="Settings"]`) and no
+      settings `chakra-dialog__content` render; `tauri_webview_screenshot` succeeds; console clean
+      of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
