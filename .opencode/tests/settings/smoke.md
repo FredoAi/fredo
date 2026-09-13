@@ -62,3 +62,12 @@
 - [ ] S-13: Companion gate quick path in the window — with the backend not ready, open Settings →
       Companion; assert `[data-testid="companion-setup-wizard"]` renders ONLY (no toggle/auto-return/
       tip); screenshot succeeds; console clean.
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — results
+
+> Verdict: **PASS**. Detail in `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+- **S-10 PASS (live).** Ctrl+Space / searchbox focus reveals the grid; clicking the Settings tile opens `div[role="group"][aria-label="Settings"]` with title "Settings" + nav; screenshot succeeded; console clean.
+- **S-11 PASS (live).** No floating gear (`button[aria-label="Settings"]` = 0) and no settings `chakra-dialog__content`; the launcher tile is the sole entry.
+- **S-12 PASS (live).** Minimize → restore via the launcher tile (same single window) → Close (frame + `useWindows()` entry gone) → re-open works; console clean.
+- **S-13 PASS (live).** On first open (probe in flight) the Companion section rendered `companion-setup-wizard` ONLY; on ready it swapped to `companion-controls`; console clean.
