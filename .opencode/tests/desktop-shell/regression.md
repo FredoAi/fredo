@@ -91,3 +91,7 @@
 
 - [ ] R-13: Boot the shell (companion OFF and ON) and inspect the FREDO notch, command bar, app grid, keyboard hints, clock/LED chrome, side ticks, dot-grid, rounded frame, and the centre seat slot. Then toggle the companion ON/OFF, teleport him away (Ctrl+right-click), and re-inspect.
   **Expected:** the shell chrome is visually/behaviourally unchanged; the centre seat slot is present in ALL states (never unmounts) and the command-bar `y` is constant within ±1 px across OFF / ON-home / ON-away; no corner Fredo appears; when OFF the seat shows the decorative mascot (not an empty seat). The row-pipeline (R-3) and the token contract (R-8) still hold. Reference launcher R-35 + companion F-64/F-66.
+
+### Round 1 (spec/2870 @ dd0026e1) — results
+
+> **R-13 FAIL / UNVERIFIED (blocking boot defect).** The shell never mounts (`EmptySeat.tsx:4-5` `@/` imports unresolved under the Tauri Vite alias), so no shell chrome or seat-slot invariant is observable. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
