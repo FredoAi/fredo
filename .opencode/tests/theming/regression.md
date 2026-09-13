@@ -39,3 +39,9 @@
       chrome's old literals (`rgba(147,51,234,0.12)`, `rgba(255,255,255,0.04)`,
       `rgba(255,255,255,0.12/0.22)`, `rgba(0,0,0,0.6)`, `rgba(0,0,0,0.4)`) are gone. Reference
       F-5/R-7.
+
+### #2864 testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **R-11 PASS (live).** Preset select/reset, per-token accent override set/clear, and `overrides ?? preset ?? base` layering behave as before.
+- **R-12 PASS (live).** New derived tokens resolve per theme (`--hover-bg`, `--text-subtle`, `--accent-strong`, `--scrollbar-thumb`); existing consumers unchanged (`--card-hover-bg` #3a3a3a, `--node-bg` #2d2d2d, `--accent-subagent` #6366f1).
+- **R-13 PASS (static).** No `var(--x)NN`; the chrome literals (`rgba(147,51,234,0.12)`, `rgba(255,255,255,0.04/0.12/0.22)`, `rgba(0,0,0,0.6/0.4)`) are gone from the audited component files.
