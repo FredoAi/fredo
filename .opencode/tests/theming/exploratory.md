@@ -36,3 +36,34 @@
 - **E-12 CONFIRMED FINDING (promotes to functional F-14) — semantic-token runtime resolution gap.** The audited wizard cards style text with Chakra semantic tokens (`fg.muted` at `SetupStepCard.tsx:178,204`, `ModelFilesStepCard.tsx:383,461,484,637`, etc.). At runtime those resolve to **stock Chakra** values, not the Fredo CSS vars `system.ts` maps: `getComputedStyle(document.documentElement).getPropertyValue('--chakra-colors-fg-muted')` = **`#52525b`** (stock `gray.600`) and `--chakra-colors-fg-subtle` = **`#a1a1aa`** (stock `gray.400`), while `--text-secondary` = `#888888` / `--text-subtle` = `color-mix(#888 65%, #ccc 35%)`. `--chakra-colors-fg-default` and `--chakra-colors-bg-hover`/`--chakra-colors-fg-onAccent`/`--chakra-colors-accent-solid` are **empty**. Consequence: the not-ready-gate dark card body/path text (`fg.muted` → `#52525b`) computes **1.53:1** on the success-tinted card (`rgb(42,59,53)`) — far below AA. **Pre-existing** (the wizard card token usage is unchanged by #2864; ST-4 touched only header/buttons/hover) and recorded as accepted residual R3; flagged for a follow-up (the custom `system` semanticToken bridge is not applied to these token names at runtime).
 - **E-13 FINDING — regression-free.** `--card-hover-bg` (#3a3a3a), `--node-bg` (#2d2d2d), `--accent-subagent` (#6366f1) unchanged dark↔light; new derived tokens resolve per theme.
 - **E-14 FINDING — regression-free.** An `accentPrimary` override set via the shipped Appearance color picker re-tints the Settings chrome immediately, persists, and clears via "Reset to theme defaults" with no stale color.
+
+## #2865 extension — semantic-token bridge probes (R3 residual in scope)
+
+> Unscripted probes for issue #2865. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). **G-136 reconciliation:** E-12's confirmed finding above was
+> dispositioned "Pre-existing; follow-up scope" — #2865 brings it IN SCOPE, so these probes now
+> gate the slice. The historical E-12 record is preserved; it is not deleted.
+
+- [ ] **E-15 — Semantic-token resolution re-scan.** After the fix, read
+      `getComputedStyle(document.documentElement)` for `--chakra-colors-fg-muted`/`-fg-subtle`/
+      `-fg-default`/`-bg-hover`/`-fg-onAccent`/`-accent-solid` and compare with
+      `--text-secondary`/`--text-subtle`/`--hover-bg`/`--accent-contrast`. Any token still resolving
+      to a stock Chakra value or empty is a finding (promotes to F-15).
+
+- [ ] **E-16 — Token-name vs direct-var consumer audit.** Grep the repo for remaining consumers of
+      the previously-broken token names. If the bridge is repaired, they should now resolve; if a
+      consumer was migrated to `var(--…)`, confirm no half-migrated surface renders a stale color.
+      Any inconsistent consumer is a finding (promotes to F-15/R-14).
+
+- [ ] **E-17 — Unrelated-surface sweep after a bridge change.** If `system.ts` changes, re-read
+      computed colors on unrelated surfaces (desktop shell, launcher, mission-monitor node chrome,
+      settings nav) dark↔light. Any surface that shifts unintentionally is a finding (promotes to
+      R-14).
+
+- [ ] **E-18 — Light-theme wizard error card.** In light theme + the non-default accent, force a
+      step error; is the error card border/fill/text legible (≥4.5:1 text, ≥3:1 non-text) and does
+      the Retry affordance stay distinct? Any failure is a finding (promotes to F-17).
+
+- [ ] **E-19 — Accent override + wizard re-tint.** Set/clear an `accentPrimary` override with the
+      wizard open (running + error states); does every accent-linked surface re-tint live with no
+      stale color and no console error? Any stale color is a finding (promotes to F-17/F-18).
