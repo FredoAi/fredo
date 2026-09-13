@@ -79,3 +79,15 @@
       exceeded` appears from the wrapper or the companion mount. Reference #2817 R-4 + launcher
       R-28 + companion R-7/R-8.
   - **PASS (static + live console).** Grep `shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(` → zero true literals (only comment issue-refs); the shared avatar is `color="var(--accent-primary)"` + `fill="currentColor"` exactly as the launcher avatar was. No `Maximum update depth exceeded`/`Uncaught`/`Error:` in the console across the whole run (companion mount + wrapper + teleport). Console clean of the three error signatures.
+
+---
+
+## #2870 extension — shell home-seat invariants (must-not-change)
+
+> Issue #2870 keeps the single Fredo at the shell's centre seat instead of relocating him to a corner when
+> the companion is enabled. Run alongside R-1..R-12. Live policy.
+
+## R-13 — Shell chrome + seat slot unchanged by the home-seat model
+
+- [ ] R-13: Boot the shell (companion OFF and ON) and inspect the FREDO notch, command bar, app grid, keyboard hints, clock/LED chrome, side ticks, dot-grid, rounded frame, and the centre seat slot. Then toggle the companion ON/OFF, teleport him away (Ctrl+right-click), and re-inspect.
+  **Expected:** the shell chrome is visually/behaviourally unchanged; the centre seat slot is present in ALL states (never unmounts) and the command-bar `y` is constant within ±1 px across OFF / ON-home / ON-away; no corner Fredo appears; when OFF the seat shows the decorative mascot (not an empty seat). The row-pipeline (R-3) and the token contract (R-8) still hold. Reference launcher R-35 + companion F-64/F-66.
