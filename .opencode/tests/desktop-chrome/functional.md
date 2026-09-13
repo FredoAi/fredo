@@ -210,3 +210,24 @@ webview window min/max/close controls). Seeded from issue #2825.
 ### #2868 testing round 1 (spec/2868 @ 90da8de) — result
 
 - **F-24 PASS (live).** Clean resting desktop (all Settings windows closed) AND while the Settings window was open: `document.querySelectorAll('button[aria-label="Settings"]').length === 0` — NO floating gear in either state; no residual gear z-layer. The chrome band/clock/LED/dock were unchanged. The launcher `[role="button"][aria-label="Settings"]` tile is the sole Settings entry and opens `div[role="group"][aria-label="Settings"]`. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2872 extension — top-right clock/status-LED cluster corner padding (G-136)
+
+> Issue #2872 — the human reports the consolidated clock + single status-LED cluster crowding/touching
+> the window corner. **BINDING PO AMENDMENT:** the target inset is FIXED and ASYMMETRIC — **top 20px /
+> right 24px** — asserted on the **rendered** `getBoundingClientRect`, NEVER the source constant.
+> **G-136:** F-17 (pinned `top:16/right:16`, tolerated `|topMargin-rightMargin| ≤ 6px`) is SUPERSEDED by
+> this extension; its historical PASS record above is preserved and is NO LONGER the current expectation.
+> Live policy. Distinct BEFORE/AFTER evidence dirs + filename prefixes per G-135.
+> Source: `LauncherChrome.tsx:68` (symmetric `CLOCK_CORNER_INSET_PX = 16`) → `:373-374`.
+
+- [ ] F-25 (REQ-1 / AC1, PO-amended): Rendered geometry of the top-right cluster (`<time aria-label="HH:MM, online|offline">` wrapper) on a clean desktop (all feature windows minimized; launcher at rest). Capture BEFORE on the pre-fix rendered tip (`main`) and AFTER on `spec/2872`: `topMargin = rect.top`, `rightMargin = viewport.width - rect.right`. **Expected:** AFTER `topMargin == 20px` AND `rightMargin == 24px` (±1px), fixed ASYMMETRIC (not symmetric, not 16/16); BEFORE records the ACTUAL rendered value verbatim (the diagnostic — do NOT assume 16; if it already reads 20/24 the defect is visual and the spec must state it, not a code change). **FAIL:** any deviation from 20/24, or a code-only change whose rendered value is unchanged.
+  - **Edge:** 1920×1080 / 1366×768 / 900×600 narrow; light + dark; online + offline; 1- vs 2-digit hour; re-read after a preset switch (no re-flow). Evidence (G-135): `.opencode/tmp/2872/e2e/before/before-*.jpeg` + `.opencode/tmp/2872/e2e/after/after-*.jpeg`.
+- [ ] F-26 (REQ-2 / AC2): LED x-centre == clock x-centre (within 2px, LED under the clock); EXACTLY ONE `role="status"` LED (no bottom-centre LEDs / no second status surface); clock HH:MM advances on the 60s timer.
+  - **Edge:** minute boundary; light + dark; `prefers-reduced-motion` (clock still advances); offline = documented-partial (not live-toggleable, #2830 precedent).
+- [ ] F-27 (REQ-3 / AC3, G-106): With a maximized window, force the chrome overlay `style.pointerEvents='auto'` then `elementFromPoint` at each Minimize / Maximize‑Restore / Close centre — returns the WINDOW CONTROL, never the cluster; band z sinks to 0 under the z=1 window stack; 900×600 no clip; legible light + dark (`windows-buttons-time-overlap.png` / `led-overlay.png` must NOT reproduce). Probe only via G-106 method a/c — NEVER a bare `elementFromPoint`.
+  - **Edge:** maximized full-bleed; floating window under the cluster; 2 windows; no window open; theme switch while maximized; Settings modal CLOSED before probing.
+- [ ] F-28 (REQ-4 / AC4): Cluster rect DISJOINT from the #2838 dock rail rect (`[data-testid="app-dock"]`) — both resting-visible (≥1 minimized) and covered/peek (maximized).
+- [ ] F-29 (NFR-1/2/3): `pnpm --filter @fredo/ui build` exit 0 + `pnpm --filter @fredo/ui test:run` green; no layout shift of the notch / `>` command bar / side ticks / dot-grid / hints (±1px); changed files token-native (zero colour literals, zero `var(--x)NN`); `telemetry_spans` live-store reference (`COUNT(*) > 0`, recent `MAX(ingested_at)`).
