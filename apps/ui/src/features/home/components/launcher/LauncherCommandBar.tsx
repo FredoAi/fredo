@@ -19,12 +19,18 @@
  *   • `enterMode` swaps the prefix glyph: `>` chevron for launch/filter, a small
  *     speech-bubble outline for send (both `aria-hidden`).
  *   • `hintLabel` renders inside the existing `endElement` slot as a flex row
- *     `[hint chip][vertical divider][— minimize]`; the chip is hidden when
- *     `chatAvailable` is false, `enterMode === 'none'`, or `hintLabel` is absent.
- *     The `—` MINIMIZE control stays the LAST item in every state (its existing
- *     `borderLeft` is the vertical divider) and is never replaced. When the chip
- *     shows, the `Input` reserves `paddingEnd` so the typed text never runs under
- *     it.
+ *     `[hint chip][vertical divider][— minimize]`; the chip is hidden only when
+ *     `chatAvailable` is false or `hintLabel` is absent. The host derives the
+ *     label per state (#2871 ST-2r: `launch`/`send` when idle, `Fredo is
+ *     replying…` while busy), so the visibility rule is label-driven rather than
+ *     `enterMode`-driven — state 5 (busy) has no pending Enter action yet still
+ *     shows the chip. The `—` MINIMIZE control stays the LAST item in every state
+ *     (its existing `borderLeft` is the vertical divider) and is never replaced.
+ *     When the chip shows, the `Input` reserves `paddingEnd` so the typed text
+ *     never runs under it.
+ *   • State 5 (busy, UI/UX §1): the `Input` becomes `readOnly` and shows the
+ *     `Fredo is replying…` placeholder; `aria-busy` + the accent indicator stay
+ *     on for the whole stream.
  *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
  * today's rendering (`chatAvailable=false` / `enterMode='launch'` / no
@@ -142,9 +148,13 @@ export function LauncherCommandBar({
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => onQueryChange(e.target.value);
 
   // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
+  // Label-driven visibility (#2871 ST-3r state 5): the host omits the label when
+  // no chip should render, so busy still shows the host-supplied `Fredo is
+  // replying…` label; while non-busy only `launch`/`send` yield a label, so that
+  // behavior is unchanged.
   const showHint = useMemo(
-    () => chatAvailable && enterMode !== 'none' && Boolean(hintLabel),
-    [chatAvailable, enterMode, hintLabel],
+    () => chatAvailable && Boolean(hintLabel),
+    [chatAvailable, hintLabel],
   );
 
   return (
@@ -233,7 +243,8 @@ export function LauncherCommandBar({
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
           aria-describedby={showHint ? ariaDescribedBy : undefined}
-          placeholder="search or command"
+          placeholder={busy ? 'Fredo is replying…' : 'search or command'}
+          readOnly={busy}
           value={query}
           onChange={handleChange}
           onFocus={onFocus}

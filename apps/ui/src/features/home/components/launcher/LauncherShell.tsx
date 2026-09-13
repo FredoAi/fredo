@@ -287,6 +287,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     enterMode: LauncherEnterMode;
     hintLabel: string | undefined;
   }>(() => {
+    // #2871 ST-2r — busy-first (UI/UX §1 state 5): while a companion generation
+    // is in flight the bar shows the `Fredo is replying…` chip regardless of the
+    // query (a send clears it, so a query-derived label would never appear).
+    // Enter is gated to a no-op in the keydown handler above.
+    if (companionBusy) return { exact: null, enterMode: 'none', hintLabel: 'Fredo is replying…' };
     const q = query.trim();
     if (q === '') return { exact: null, enterMode: 'none', hintLabel: undefined };
     const lower = q.toLowerCase();
@@ -294,7 +299,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (exact) return { exact, enterMode: 'launch', hintLabel: `↵ open ${exact.name}` };
     if (companionActive) return { exact: null, enterMode: 'send', hintLabel: '↵ send to Fredo' };
     return { exact: null, enterMode: 'none', hintLabel: undefined };
-  }, [query, showableFeatures, companionActive]);
+  }, [query, showableFeatures, companionActive, companionBusy]);
 
   // Responsive column count — MUST mirror LauncherAppGrid's
   // `SimpleGrid columns={{ base: 2, sm: 3, md: 4, lg: 6 }}` so ↑↓ leaps a full row.
@@ -458,9 +463,17 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       //   active + non-match  → send the message to Fredo (dispatch through the
       //                         per-window registry), then clear + collapse while
       //                         KEEPING focus in the bar (never blur).
-      //   inactive / busy     → today's launch path; never a chat send (R-4.1).
+      //   inactive            → today's launch path; never a chat send (R-4.1).
+      //   busy (#2871 ST-2r)  → GLOBAL no-op (UI/UX §1 state 5); never launch and
+      //                         never a second send.
       if (e.key === 'Enter') {
         e.preventDefault();
+        // #2871 ST-2r — Enter is a GLOBAL no-op while a companion generation is in
+        // flight (UI/UX §1 state 5). A send clears the query (`setQuery('')`), so
+        // without this guard the old empty-query branch would launch filtered tile
+        // index 0 mid-stream; it must never reach `openSelected()` and never start a
+        // second generation.
+        if (companionBusy) return;
         const q = query.trim();
         if (q === '') {
           openSelected();
