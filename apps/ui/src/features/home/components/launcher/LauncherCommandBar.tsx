@@ -1,5 +1,5 @@
 /**
- * Fredo launcher command bar (Spec #2808 ST-3).
+ * Fredo launcher command bar (Spec #2808 ST-3; #2871 ST-3 chat affordances).
  *
  * The `>` search-or-command input (desktop-light.png): a centered, ~560px
  * max-width native-capable Chakra text input with an accent `>` chevron prefix
@@ -12,15 +12,39 @@
  * Chakra `Input` (never `NativeSelect`). `onFocus`/`onBlur` report the
  * reached/left-engaged signals to the host (#2819).
  *
+ * #2871 ST-3 — chat affordances (presentational/controlled; the host derives).
+ *   • `busy` holds `aria-busy` on the input group plus a static accent indicator
+ *     next to the prefix glyph for the WHOLE stream (reduced-motion-safe — no
+ *     required animation).
+ *   • `enterMode` swaps the prefix glyph: `>` chevron for launch/filter, a small
+ *     speech-bubble outline for send (both `aria-hidden`).
+ *   • `hintLabel` renders inside the existing `endElement` slot as a flex row
+ *     `[hint chip][vertical divider][— minimize]`; the chip is hidden when
+ *     `chatAvailable` is false, `enterMode === 'none'`, or `hintLabel` is absent.
+ *     The `—` MINIMIZE control stays the LAST item in every state (its existing
+ *     `borderLeft` is the vertical divider) and is never replaced. When the chip
+ *     shows, the `Input` reserves `paddingEnd` so the typed text never runs under
+ *     it.
+ *
+ * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
+ * today's rendering (`chatAvailable=false` / `enterMode='launch'` / no
+ * `hintLabel` / `busy=false`) — no chip, no glyph swap, no reserved padding, and
+ * `aria-busy` is omitted (not rendered as `"false"`), so the inactive bar is
+ * byte-identical to before this change.
+ *
  * Token-native contract (AC5): every color is a theme CSS var referenced
  * directly (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`),
- * a Chakra semantic token (`accent.default`, `fg.default`, `fg.muted`), or a
- * shared `tint()` color-mix. There is NO hardcoded hex/rgba and NO
- * `var(--x)NN` alpha-append anywhere in this file.
+ * a Chakra semantic token (`accent.default`, `accent.subtle`, `fg.default`,
+ * `fg.muted`), or a shared `tint()` color-mix. There is NO hardcoded hex/rgba and
+ * NO `var(--x)NN` alpha-append anywhere in this file.
  */
 
+import { useMemo } from 'react';
 import type { ChangeEvent } from 'react';
 import { Box, Input, InputGroup } from '@chakra-ui/react';
+
+/** Pending Enter action, derived by the host (UI/UX §1); presentational only. */
+export type LauncherEnterMode = 'launch' | 'send' | 'none';
 
 export interface LauncherCommandBarProps {
   /** Live query string (controlled by the host). */
@@ -37,9 +61,26 @@ export interface LauncherCommandBarProps {
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   /** The `—` minimize control was clicked (#2819 — host collapses the shell to bare chrome). */
   onMinimize?: () => void;
+  /** #2871: companion active in THIS window (host-derived; gates the hint chip). */
+  chatAvailable?: boolean;
+  /** #2871: pending Enter action — drives the prefix glyph swap. Defaults to `'launch'`. */
+  enterMode?: LauncherEnterMode;
+  /** #2871: full hint-chip text (host-derived); absent/empty → no chip. */
+  hintLabel?: string;
+  /** #2871: generation in flight — holds `aria-busy` + the accent indicator. */
+  busy?: boolean;
 }
 
-/** Accent `>` chevron prefix (monoweight, currentColor). */
+/**
+ * Reserved right gutter while the hint chip shows: the chip's max width
+ * (`HINT_CHIP_MAX_WIDTH_PX`) plus the end-slot chrome to its right — the
+ * minimize control's left margin/border/padding and its 12px `—` glyph.
+ * A CSS unit string (G-146) so it is pixels, never a Chakra size token.
+ */
+const HINT_CHIP_MAX_WIDTH_PX = 184;
+const HINT_PADDING_END = `${HINT_CHIP_MAX_WIDTH_PX + 44}px`;
+
+/** Accent `>` chevron prefix (monoweight, currentColor) — launch/filter mode. */
 function ChevronGlyph() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -47,6 +88,21 @@ function ChevronGlyph() {
         d="M4.5 2.5 8 6l-3.5 3.5"
         stroke="currentColor"
         strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Speech-bubble outline prefix (currentColor) — send-to-Fredo mode. */
+function SpeechGlyph() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path
+        d="M3.5 9.5H3a1.5 1.5 0 0 1-1.5-1.5V3.5A1.5 1.5 0 0 1 3 2h6a1.5 1.5 0 0 1 1.5 1.5V8a1.5 1.5 0 0 1-1.5 1.5H6L4 11Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -69,40 +125,95 @@ export function LauncherCommandBar({
   onFocus,
   onBlur,
   onMinimize,
+  chatAvailable = false,
+  enterMode = 'launch',
+  hintLabel,
+  busy = false,
 }: LauncherCommandBarProps) {
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => onQueryChange(e.target.value);
+
+  // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
+  const showHint = useMemo(
+    () => chatAvailable && enterMode !== 'none' && Boolean(hintLabel),
+    [chatAvailable, enterMode, hintLabel],
+  );
 
   return (
     <Box display="flex" justifyContent="center" w="100%" px="4">
       <InputGroup
         width="100%"
         maxWidth="560px"
+        // `aria-busy` is omitted (not `"false"`) when idle so the inactive bar
+        // stays byte-identical to today (AC4).
+        aria-busy={busy || undefined}
         startElement={
-          <Box as="span" color="accent.default" display="flex" alignItems="center" aria-hidden="true">
-            <ChevronGlyph />
+          <Box
+            as="span"
+            color="accent.default"
+            display="flex"
+            alignItems="center"
+            gap={busy ? '6px' : undefined}
+            aria-hidden="true"
+          >
+            {enterMode === 'send' ? <SpeechGlyph /> : <ChevronGlyph />}
+            {busy && (
+              <Box
+                as="span"
+                data-testid="launcher-command-busy"
+                width="6px"
+                height="6px"
+                borderRadius="full"
+                bg="accent.default"
+                flexShrink={0}
+              />
+            )}
           </Box>
         }
         endElement={
-          <Box
-            as="button"
-            aria-label="Minimize launcher"
-            onClick={onMinimize}
-            onMouseDown={(e) => e.preventDefault()}
-            display="flex"
-            alignItems="center"
-            height="100%"
-            pl="10px"
-            ml="10px"
-            borderLeft="1px solid"
-            borderLeftColor="var(--border-color)"
-            color="var(--text-secondary)"
-            cursor={onMinimize ? 'pointer' : 'default'}
-            _hover={onMinimize ? { color: 'accent.default' } : undefined}
-            css={{
-              '&:focus-visible': { outline: '2px solid var(--accent-primary)', outlineOffset: '2px' },
-            }}
-          >
-            <MinusGlyph />
+          <Box display="flex" alignItems="center" height="100%">
+            {showHint && (
+              <Box
+                as="span"
+                data-testid="launcher-command-hint"
+                display="block"
+                maxWidth={`${HINT_CHIP_MAX_WIDTH_PX}px`}
+                height="24px"
+                lineHeight="24px"
+                px="8px"
+                borderRadius="4px"
+                bg="accent.subtle"
+                color="fg.default"
+                fontFamily="var(--font-primary)"
+                fontSize="12px"
+                whiteSpace="nowrap"
+                overflow="hidden"
+                textOverflow="ellipsis"
+                flexShrink={0}
+              >
+                {hintLabel}
+              </Box>
+            )}
+            <Box
+              as="button"
+              aria-label="Minimize launcher"
+              onClick={onMinimize}
+              onMouseDown={(e) => e.preventDefault()}
+              display="flex"
+              alignItems="center"
+              height="100%"
+              pl="10px"
+              ml="10px"
+              borderLeft="1px solid"
+              borderLeftColor="var(--border-color)"
+              color="var(--text-secondary)"
+              cursor={onMinimize ? 'pointer' : 'default'}
+              _hover={onMinimize ? { color: 'accent.default' } : undefined}
+              css={{
+                '&:focus-visible': { outline: '2px solid var(--accent-primary)', outlineOffset: '2px' },
+              }}
+            >
+              <MinusGlyph />
+            </Box>
           </Box>
         }
       >
@@ -117,6 +228,7 @@ export function LauncherCommandBar({
           onChange={handleChange}
           onFocus={onFocus}
           onBlur={onBlur}
+          paddingEnd={showHint ? HINT_PADDING_END : undefined}
           bg="var(--card-bg)"
           border="1px solid"
           borderColor="var(--border-color)"
