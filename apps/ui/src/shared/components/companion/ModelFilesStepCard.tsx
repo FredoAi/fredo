@@ -33,9 +33,11 @@ import {
   LuCircleX,
   LuDownload,
   LuRefreshCw,
+  LuTriangleAlert,
 } from 'react-icons/lu';
 
 import { tint } from '../../utils/colorTint';
+import { errorCopyFor } from './companionReadiness';
 import type {
   ModelFileId,
   ModelFileState,
@@ -160,6 +162,19 @@ function fileRowColors(state: ModelFileState): RowColors {
   }
 }
 
+/** Warning tint for a partially-downloaded ("interrupted") file row (#2865 V-B-14). */
+function interruptedRowColors(): RowColors {
+  return {
+    bg: tint('var(--status-warning)', 10),
+    borderColor: tint('var(--status-warning)', 30),
+  };
+}
+
+/** Small-text color for a card/row surface (neutral vs status-tinted). */
+function textOnSurface(tinted: boolean): string {
+  return tinted ? 'var(--text-primary)' : 'var(--text-subtle)';
+}
+
 interface SummaryPart {
   text: string;
   mono?: boolean;
@@ -276,14 +291,17 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
   const colors = cardColors(toCardState(stepState));
   const totalCount = displayFiles.length;
   const summary = useMemo(() => buildSummaryParts(displayFiles), [displayFiles]);
+  // Status-tinted card surfaces need `var(--text-primary)` for small text.
+  const tintedSurface =
+    stepState === 'complete' || stepState === 'downloading' || stepState === 'error';
 
   const chip = (() => {
     switch (stepState) {
       case 'checking':
         return (
           <>
-            <Spinner size="xs" color="fg.muted" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="fg.muted">
+            <Spinner size="xs" color="var(--text-subtle)" aria-hidden />
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               Checking…
             </Text>
           </>
@@ -301,8 +319,8 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
         return (
           <>
             <Spinner size="xs" color="accent.default" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="accent.default">
-              Downloading {presentCount + downloadingCount} of {totalCount}…
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
+              Downloading {presentCount + downloadingCount} of {totalCount} files…
             </Text>
           </>
         );
@@ -310,7 +328,7 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
         return (
           <>
             <Icon as={LuCircleX} boxSize="16px" color="status.error" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="status.error">
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               Download failed
             </Text>
           </>
@@ -352,23 +370,23 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
       data-state={stepState}
     >
       <Box
-        borderRadius="md"
+        borderRadius="lg"
         border="1px solid"
         bg={colors.bg}
         borderColor={colors.borderColor}
-        p={3}
-        opacity={isChecking ? 0.6 : 1}
-        transition="opacity 0.2s, background 0.2s, border-color 0.2s"
+        p={4}
+        transition="background 0.2s, border-color 0.2s"
+        _motionReduce={{ transition: 'none' }}
       >
         <VStack align="stretch" gap={3}>
           <HStack gap={3} align="flex-start">
             <Box pt="1px" flexShrink={0}>
-              <Icon as={step.icon} boxSize="20px" color="fg.default" aria-hidden />
+              <Icon as={step.icon} boxSize="20px" color="var(--text-primary)" aria-hidden />
             </Box>
 
             <VStack align="stretch" gap={2} flex={1} minW="0">
               <HStack gap={3} align="center" wrap="wrap">
-                <Text fontSize="sm" fontWeight="600" color="fg.default">
+                <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
                   {step.label}
                 </Text>
                 <HStack
@@ -380,7 +398,7 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                 </HStack>
               </HStack>
 
-              <Text fontSize="xs" color="fg.muted">
+              <Text fontSize="xs" color={textOnSurface(tintedSurface)}>
                 {step.description}
               </Text>
 
@@ -424,13 +442,23 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
             {displayFiles.map((file) => {
               const entry = rosterEntry(file.id);
               const state = file.state;
-              const rowColors = fileRowColors(state);
               const expected = file.expectedBytes;
               const downloaded = file.downloadedBytes;
               const percent =
                 expected > 0 ? clampPercent((downloaded / expected) * 100) : 0;
               const displayPercent = Math.round(percent);
               const isFileError = state === 'error';
+              // Interrupted = `missing` with bytes on disk. Deliberately NOT a fifth
+              // wire state (frozen contract); distinguish it visually from a
+              // never-started file with a warning tint + "Interrupted" chip (#2865 V-B-14).
+              const isInterrupted = state === 'missing' && downloaded > 0;
+              const rowTinted = isInterrupted || state !== 'missing';
+              const rowColors = isInterrupted
+                ? interruptedRowColors()
+                : fileRowColors(state);
+              const errorCopy = isFileError
+                ? errorCopyFor('modelFiles', null, file.detail ?? errorText ?? null)
+                : null;
               return (
                 <Box
                   key={entry.id}
@@ -442,23 +470,23 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                   aria-label={isFileError ? `${entry.role} download error` : undefined}
                   data-testid={`companion-model-file-${entry.id}`}
                   data-state={state}
-                  borderRadius="sm"
+                  borderRadius="md"
                   border="1px solid"
                   bg={rowColors.bg}
                   borderColor={rowColors.borderColor}
-                  p={2}
+                  p={3}
                   outline="none"
                   _focusVisible={{ boxShadow: '0 0 0 2px var(--accent-primary)' }}
                 >
                   <HStack gap={3} align="flex-start">
                     <VStack align="stretch" gap={1} flex={1} minW="0">
-                      <Text fontSize="xs" fontWeight="600" color="fg.default">
+                      <Text fontSize="xs" fontWeight="600" color={textOnSurface(rowTinted)}>
                         {entry.role}
                       </Text>
                       <Text
                         fontSize="11px"
                         fontFamily="mono"
-                        color="fg.muted"
+                        color={textOnSurface(rowTinted)}
                         wordBreak="break-all"
                       >
                         {entry.filename}
@@ -481,31 +509,66 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                               <Progress.Range />
                             </Progress.Track>
                           </Progress.Root>
-                          <Text mt={1} fontSize="11px" color="fg.muted">
+                          <Text mt={1} fontSize="11px" color={textOnSurface(rowTinted)}>
                             {displayPercent}% · {formatBytes(downloaded)} /{' '}
                             {formatBytes(expected)}
                           </Text>
                         </Box>
                       )}
 
-                      {isFileError && (
+                      {/* Curated actionable copy is the primary sentence; the raw
+                          backend detail is demoted to a labelled mono line (#2865 H3). */}
+                      {isFileError && errorCopy && (
+                        <Box mt={1}>
+                          <Text
+                            fontSize="11px"
+                            color={textOnSurface(true)}
+                            wordBreak="break-all"
+                          >
+                            {errorCopy.message}
+                          </Text>
+                          {errorCopy.technicalDetail && (
+                            <HStack gap={1} align="flex-start" mt={1}>
+                              <Text
+                                as="span"
+                                fontSize="11px"
+                                color={textOnSurface(true)}
+                                flexShrink={0}
+                              >
+                                Technical details:
+                              </Text>
+                              <Text
+                                as="span"
+                                fontSize="11px"
+                                fontFamily="mono"
+                                color={textOnSurface(true)}
+                                wordBreak="break-all"
+                              >
+                                {errorCopy.technicalDetail}
+                              </Text>
+                            </HStack>
+                          )}
+                        </Box>
+                      )}
+
+                      {isInterrupted && (
                         <Text
                           mt={1}
                           fontSize="11px"
-                          color="status.error"
+                          color={textOnSurface(true)}
                           wordBreak="break-all"
                         >
-                          {file.detail ??
-                            errorText ??
-                            'Download failed — choose Retry.'}
+                          Interrupted — this download finished partially (
+                          {formatBytes(downloaded)} of {formatBytes(expected)}). Choose
+                          Download to resume.
                         </Text>
                       )}
 
-                      {state === 'missing' && file.detail && (
+                      {state === 'missing' && !isInterrupted && file.detail && (
                         <Text
                           mt={1}
                           fontSize="11px"
-                          color="fg.muted"
+                          color={textOnSurface(false)}
                           wordBreak="break-all"
                         >
                           {file.detail}
@@ -517,7 +580,7 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                           mt={1}
                           fontSize="11px"
                           fontFamily="mono"
-                          color="fg.muted"
+                          color={textOnSurface(true)}
                           wordBreak="break-all"
                         >
                           {file.path}
@@ -547,7 +610,7 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                       {state === 'downloading' && (
                         <>
                           <Spinner size="xs" color="accent.default" aria-hidden />
-                          <Text fontSize="xs" fontWeight="600" color="accent.default">
+                          <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
                             Downloading
                           </Text>
                         </>
@@ -560,12 +623,25 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                             color="status.error"
                             aria-hidden
                           />
-                          <Text fontSize="xs" fontWeight="600" color="status.error">
+                          <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
                             Error
                           </Text>
                         </>
                       )}
-                      {state === 'missing' && (
+                      {isInterrupted && (
+                        <>
+                          <Icon
+                            as={LuTriangleAlert}
+                            boxSize="15px"
+                            color="status.warning"
+                            aria-hidden
+                          />
+                          <Text fontSize="xs" fontWeight="600" color="status.warning">
+                            Interrupted
+                          </Text>
+                        </>
+                      )}
+                      {state === 'missing' && !isInterrupted && (
                         <>
                           <Icon
                             as={LuCircleDashed}
@@ -583,12 +659,12 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                     {isFileError && (
                       <Button
                         size="xs"
-                        variant="outline"
                         data-testid={`companion-model-file-${entry.id}-retry`}
-                        color="status.error"
+                        bg="var(--accent-primary)"
+                        color="var(--accent-contrast)"
                         aria-label={`Retry ${entry.role} download`}
                         onClick={() => onRunAction(step.id)}
-                        _hover={{ bg: 'var(--hover-bg)' }}
+                        _hover={{ opacity: 0.9 }}
                         flexShrink={0}
                       >
                         <Icon as={LuRefreshCw} boxSize="13px" mr={1} aria-hidden />
@@ -625,7 +701,9 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
                 size="sm"
                 variant="outline"
                 data-testid={`companion-step-${step.testId}-recheck`}
+                color="var(--text-primary)"
                 onClick={onRecheck}
+                _hover={{ bg: 'var(--hover-bg)' }}
               >
                 <Icon as={LuRefreshCw} boxSize="14px" mr={1} aria-hidden />
                 Re-check
@@ -634,7 +712,12 @@ export const ModelFilesStepCard: React.FC<ModelFilesStepCardProps> = ({
           </HStack>
 
           {stepState === 'complete' && detail && (
-            <Text fontSize="11px" fontFamily="mono" color="fg.muted" wordBreak="break-all">
+            <Text
+              fontSize="11px"
+              fontFamily="mono"
+              color={textOnSurface(true)}
+              wordBreak="break-all"
+            >
               {detail}
             </Text>
           )}

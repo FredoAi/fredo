@@ -112,6 +112,36 @@ describe('#2864 ST-5 — Companion surface consumes registered tokens (ST-3/ST-4
       expect(source).not.toMatch(/var\(--[a-z0-9-]+\)[0-9a-fA-F]{2}/);
     }
   });
+
+  it('#2865 — removes the checking dim, honors reduced motion, and uses one radius vocabulary', () => {
+    const cards: Array<[string, string]> = [
+      ['SetupStepCard', setupCard],
+      ['ModelFilesStepCard', modelCard],
+      ['ServerLaunchStepCard', serverCard],
+    ];
+    for (const [name, source] of cards) {
+      // The card-wide 0.6 checking dim was an AA failure (#2865 H2) — never return.
+      expect(source, `${name}: checking must not be dimmed`).not.toMatch(
+        /opacity=\{isChecking \? 0\.6/,
+      );
+      expect(source, `${name}: reduced motion must be honored`).toContain('_motionReduce');
+      // Outer step cards adopt the sibling `lg` radius (#2865 H5).
+      expect(source, `${name}: outer step card radius`).toContain('borderRadius="lg"');
+    }
+    // The recovery action is the accent-filled primary (#2865 H1), not outline-red.
+    expect(setupCard).toMatch(
+      /data-testid=\{`companion-step-\$\{step\.testId\}-retry`\}\s+bg="var\(--accent-primary\)"/,
+    );
+    expect(modelCard).toMatch(
+      /data-testid=\{`companion-model-file-\$\{entry\.id\}-retry`\}\s+bg="var\(--accent-primary\)"/,
+    );
+    // The summary is a status banner tinted from the live status var — not the
+    // off-brand `bg.subtle` box (#2865 V-B-01/H4).
+    expect(wizard).not.toContain('bg="bg.subtle"');
+    expect(wizard).toMatch(
+      /data-testid="companion-setup-summary"[\s\S]{0,400}bg=\{tint\(summary\.statusVar, 10\)\}/,
+    );
+  });
 });
 
 describe('#2864 ST-5 — Companion ready view DOM regression', () => {

@@ -5,7 +5,7 @@
  * `-recheck` / `-retry` descendants.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -29,6 +29,20 @@ import type { PrerequisiteId, PrerequisiteUiState } from './companionReadiness';
 import type { CompanionSetupStepMeta } from './companionSetupSteps';
 
 export type SetupStepUiState = PrerequisiteUiState | 'running';
+
+/**
+ * Install narration phases (#2865 §2.5) — the unknown-duration install step gets
+ * the same live-narration affordance the server launch already has, so the
+ * screen is never static while work is in flight. Progressive-disclosure timers.
+ */
+export const INSTALL_PHASE_VERIFY_MS = 1_500;
+export const INSTALL_PHASE_REGISTER_MS = 3_000;
+const INSTALL_PHASES = ['Downloading runtime…', 'Verifying…', 'Registering…'] as const;
+
+/** Small-text color for the card surface (neutral vs status-tinted). */
+function textOnSurface(tinted: boolean): string {
+  return tinted ? 'var(--text-primary)' : 'var(--text-subtle)';
+}
 
 export interface SetupStepCardProps {
   step: CompanionSetupStepMeta;
@@ -77,17 +91,37 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
   onRecheck,
 }) => {
   const rowRef = useRef<HTMLDivElement | null>(null);
+  const [installPhase, setInstallPhase] = useState(0);
 
   const isChecking = uiState === 'checking';
   const isRunning = uiState === 'running';
   const isMissing = uiState === 'missing';
   const isInstalled = uiState === 'installed';
   const isError = uiState === 'error';
+  const isInstall = step.action?.kind === 'install';
+  // Status-tinted surfaces need `var(--text-primary)` for 11-12px text; neutral
+  // surfaces use `var(--text-subtle)` (never `--text-secondary`/`fg.muted`).
+  const tintedSurface = isRunning || isInstalled || isError;
 
   // Move focus to the error row after a failed install (keyboard recovery).
   useEffect(() => {
     if (errorText) rowRef.current?.focus();
   }, [errorText]);
+
+  // Live install narration while work is in flight (never a static screen).
+  useEffect(() => {
+    if (!isRunning || !isInstall) {
+      setInstallPhase(0);
+      return undefined;
+    }
+    setInstallPhase(0);
+    const toVerify = setTimeout(() => setInstallPhase(1), INSTALL_PHASE_VERIFY_MS);
+    const toRegister = setTimeout(() => setInstallPhase(2), INSTALL_PHASE_REGISTER_MS);
+    return () => {
+      clearTimeout(toVerify);
+      clearTimeout(toRegister);
+    };
+  }, [isRunning, isInstall]);
 
   const colors = cardColors(uiState);
 
@@ -96,8 +130,8 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
       case 'checking':
         return (
           <>
-            <Spinner size="xs" color="fg.muted" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="fg.muted">
+            <Spinner size="xs" color="var(--text-subtle)" aria-hidden />
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               Checking…
             </Text>
           </>
@@ -106,7 +140,7 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
         return (
           <>
             <Spinner size="xs" color="accent.default" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="fg.default">
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               {step.action?.runningLabel ?? 'Working…'}
             </Text>
           </>
@@ -124,7 +158,7 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
         return (
           <>
             <Icon as={LuCircleX} boxSize="16px" color="status.error" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="status.error">
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               Failed
             </Text>
           </>
@@ -150,24 +184,24 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
         tabIndex={errorText ? -1 : undefined}
         role={isError ? 'group' : undefined}
         aria-label={isError ? `${step.label} installation error` : undefined}
-        borderRadius="md"
+        borderRadius="lg"
         border="1px solid"
         bg={colors.bg}
         borderColor={colors.borderColor}
-        p={3}
-        opacity={isChecking ? 0.6 : 1}
-        transition="opacity 0.2s, background 0.2s, border-color 0.2s"
+        p={4}
+        transition="background 0.2s, border-color 0.2s"
+        _motionReduce={{ transition: 'none' }}
         outline="none"
         _focusVisible={{ boxShadow: '0 0 0 2px var(--accent-primary)' }}
       >
         <HStack gap={3} align="flex-start">
           <Box pt="1px" flexShrink={0}>
-            <Icon as={step.icon} boxSize="20px" color="fg.default" aria-hidden />
+            <Icon as={step.icon} boxSize="20px" color="var(--text-primary)" aria-hidden />
           </Box>
 
           <VStack align="stretch" gap={2} flex={1} minW="0">
             <HStack gap={3} align="center" wrap="wrap">
-              <Text fontSize="sm" fontWeight="600" color="fg.default">
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
                 {step.label}
               </Text>
               <HStack gap={1} align="center" data-testid={`companion-step-${step.testId}-status`}>
@@ -175,25 +209,39 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
               </HStack>
             </HStack>
 
-            <Text fontSize="xs" color="fg.muted">
+            <Text fontSize="xs" color={textOnSurface(tintedSurface)}>
               {step.description}
             </Text>
 
             {isRunning && (
-              <Box>
-                <Progress.Root value={null} size="xs">
-                  <Progress.Track>
-                    <Progress.Range />
-                  </Progress.Track>
-                </Progress.Root>
-              </Box>
+              <VStack align="stretch" gap={1}>
+                <Box aria-busy="true">
+                  <Progress.Root value={null} size="xs">
+                    <Progress.Track>
+                      <Progress.Range />
+                    </Progress.Track>
+                  </Progress.Root>
+                </Box>
+                {isInstall && (
+                  <Text
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                    data-testid={`companion-step-${step.testId}-phase`}
+                    fontSize="xs"
+                    color="var(--text-primary)"
+                  >
+                    {INSTALL_PHASES[installPhase]}
+                  </Text>
+                )}
+              </VStack>
             )}
 
             {detailText && !isRunning && (
               <Text
                 fontSize="11px"
                 fontFamily="mono"
-                color={isError ? 'status.error' : 'fg.muted'}
+                color={textOnSurface(tintedSurface)}
                 wordBreak="break-all"
               >
                 {detailText}
@@ -201,7 +249,12 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
             )}
 
             {isInstalled && resolvedPath && !detailText && (
-              <Text fontSize="11px" fontFamily="mono" color="fg.muted" wordBreak="break-all">
+              <Text
+                fontSize="11px"
+                fontFamily="mono"
+                color={textOnSurface(tintedSurface)}
+                wordBreak="break-all"
+              >
                 {resolvedPath}
               </Text>
             )}
@@ -226,11 +279,11 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
               {step.action && isError && (
                 <Button
                   size="sm"
-                  variant="outline"
                   data-testid={`companion-step-${step.testId}-retry`}
-                  color="status.error"
+                  bg="var(--accent-primary)"
+                  color="var(--accent-contrast)"
                   onClick={() => onRunAction(step.id)}
-                  _hover={{ bg: 'var(--hover-bg)' }}
+                  _hover={{ opacity: 0.9 }}
                 >
                   <Icon as={LuRefreshCw} boxSize="14px" mr={1} aria-hidden />
                   Retry
@@ -242,7 +295,9 @@ export const SetupStepCard: React.FC<SetupStepCardProps> = ({
                   size="sm"
                   variant="outline"
                   data-testid={`companion-step-${step.testId}-recheck`}
+                  color="var(--text-primary)"
                   onClick={onRecheck}
+                  _hover={{ bg: 'var(--hover-bg)' }}
                 >
                   <Icon as={LuRefreshCw} boxSize="14px" mr={1} aria-hidden />
                   Re-check

@@ -233,3 +233,94 @@ export const SERVER_EXITED_COPY =
 /** Wait affordance copy — shown after the client watchdog; NEVER an AC4 failure. */
 export const SERVER_WATCHDOG_COPY =
   'The server is taking longer than expected. You can keep waiting, or choose Retry.';
+
+// ── Curated failure copy (#2865 ST-2/H3) ─────────────────────────────────────
+//
+// The action handlers capture RAW backend/IPC strings (`result.error`, a thrown
+// `String(err)`). Those must never be the primary user-facing error sentence
+// (R-2.2). `errorCopyFor` maps a step + optional backend code to a curated,
+// actionable sentence naming cause + next step, and returns the raw string as a
+// secondary `technicalDetail` (rendered as a labelled mono line, or omitted).
+
+export interface ErrorCopy {
+  /** Curated, actionable primary sentence — never a raw backend/IPC string. */
+  message: string;
+  /** Raw backend/IPC detail, demoted to a labelled "Technical details" line. */
+  technicalDetail: string | null;
+}
+
+/** Human name for each step, used by the generic fallback sentence. */
+const STEP_ERROR_LABEL: Record<PrerequisiteId, string> = {
+  llamaServer: 'the llama.cpp install',
+  modelFiles: 'the model download',
+  serverLaunch: 'the server launch',
+};
+
+/** Curated install-failure copy keyed by the backend's typed install code. */
+const INSTALL_ERROR_COPY: Record<LlamaCppInstallCode, string> = {
+  wingetUnavailable:
+    "Couldn't install llama.cpp — winget isn't available. Install llama.cpp manually, then choose Re-check.",
+  installFailed:
+    "The llama.cpp installation didn't finish. Check your network connection, then choose Retry.",
+  spawnFailed:
+    "The llama.cpp installer couldn't start. Close other installers, then choose Retry.",
+};
+
+/**
+ * Cause-naming copy for download failures, keyed on the backend detail (the
+ * download path carries no typed code). First match wins; no match → generic.
+ */
+const DOWNLOAD_CAUSE_COPY: ReadonlyArray<{ re: RegExp; message: string }> = [
+  {
+    re: /space|storage|enospc|disk full/i,
+    message:
+      'Not enough disk space to download the model files. Free space on the models drive, then choose Retry.',
+  },
+  {
+    re: /permission|denied|read-?only|access|create|write|folder|directory/i,
+    message:
+      "Couldn't write the model files to disk. Check the models folder is writable and has free space, then choose Retry.",
+  },
+  {
+    re: /network|connection|reset|timed?\s?out|offline|dns|econn|socket|tls|certificate|unreachable/i,
+    message:
+      'The download lost its connection. Check your network connection, then choose Retry.',
+  },
+];
+
+function genericErrorCopy(id: PrerequisiteId): string {
+  return `Something went wrong during ${STEP_ERROR_LABEL[id]}. Choose Retry; if it persists, re-check.`;
+}
+
+/**
+ * Normalize a raw step/file failure into curated primary copy + optional raw
+ * technical detail. `code` is the backend's typed failure code when available;
+ * `errorText` is the raw backend/IPC string captured by the action handler.
+ */
+export function errorCopyFor(
+  id: PrerequisiteId,
+  code?: string | null,
+  errorText?: string | null,
+): ErrorCopy {
+  const raw =
+    typeof errorText === 'string' && errorText.trim().length > 0
+      ? errorText.trim()
+      : null;
+
+  let message: string;
+  if (id === 'serverLaunch') {
+    message = serverLaunchFailureCopy(
+      (code as LlamaServerLaunchCode | null | undefined) ?? null,
+      llamaServerEndpoint(null),
+    );
+  } else if (id === 'llamaServer' && code && code in INSTALL_ERROR_COPY) {
+    message = INSTALL_ERROR_COPY[code as LlamaCppInstallCode];
+  } else if (id === 'modelFiles' && raw) {
+    const cause = DOWNLOAD_CAUSE_COPY.find((entry) => entry.re.test(raw));
+    message = cause?.message ?? genericErrorCopy(id);
+  } else {
+    message = genericErrorCopy(id);
+  }
+
+  return { message, technicalDetail: raw && raw !== message ? raw : null };
+}
