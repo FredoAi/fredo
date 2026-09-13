@@ -122,3 +122,8 @@ Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missi
 - [ ] S-19: On a ready host, send a message from the launcher command bar → the reply streams and
       completes; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
       exceeded`.
+  - **#2871 round 2 (spec/2871 @ bd168ee) — PASS.** Ready host (`healthy:true, port:8080`); bar
+    sends streamed and completed (single `runGeneration` → single `llm-done` per send; 1000-word
+    prompt streamed 2,638 chars). Console error-level: only ONE `[MCP][BRIDGE]` instrumentation
+    artifact from a tester-dispatched synthetic `document` event — no product error. Screenshot
+    `req8-filter-active.png` / `req1-send-streaming.png`.
