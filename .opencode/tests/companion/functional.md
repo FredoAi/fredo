@@ -887,3 +887,37 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 - [ ] F-67: Same run as F-59..F-66: `fredo emit --event-type chat` + `--event-type tool_use` with distinct session ids; query `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill); retain DOM + screenshot receipts (BEFORE/AFTER dirs).
   **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; the injected events classify into `chat_rows`/`tool_use_rows` under their session ids; a rendered-webview receipt (DOM snapshot / screenshot / measured geometry) of the seat states exists. **A static-only PASS with no `telemetry_spans` receipt is a FALSE PASS.**
   - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit + query output verbatim.
+
+## F-68 (R-NF / lifecycle — promoted from the round-2 exploratory finding, defect F-68) — Auto-return settle → teleport MUST re-arm the away overlay and the idle gate (no stuck zero-Fredo)
+
+> **Origin (promoted exploratory).** Round-2 exploratory finding (defect **F-68**, SI observations
+> 2026-09-13, root-cause class `defect`): after `AUTO_RETURN_SETTLED` set `isAutoHidden=true`, a
+> subsequent `TELEPORT` set `isAway=true` WITHOUT clearing `isAutoHidden`, so the away overlay's
+> gate (`isVisible && !isAutoHidden && isHosting`) hid it and the idle gate never re-armed →
+> **zero Fredos, stuck until a companion toggle**. Promoted to a durable functional row (#2870
+> round 3). Reference F-22/F-26/F-65 + window-manager S-12.
+
+- [ ] F-68: Set idle timeout 5 s (Settings → Companion) with the companion ON. Let the idle
+      auto-return settle (Fredo home; `isAutoHidden=true`). Then teleport away (recipe a —
+      Ctrl+right-click in main; or the sanctioned recipe c — MCP `tauri_ipc_emit_event` on
+      `companion-teleport`). In the SAME `tauri_webview_execute_js` task / after the settle, sample:
+      the global interactive-Fredo count (`.fredo-companion-avatar` across every window), the main
+      seat content (`.fredo-avatar-idle` | `[data-state="away"]` | `.fredo-companion-avatar`), the
+      seat-slot wrapper geometry, and `tauri_read_logs(source="console")`. Then stay quiet for a full
+      idle period and re-probe.
+  **Expected:** the teleport transition CLEARS the transient `isAutoHidden` flag as well as setting
+      `isAway=true`; after the teleport settles there is **exactly ONE interactive Fredo present —
+      the away overlay** (`.fredo-companion-avatar` count == 1, in the destination/host window),
+      the main seat renders the `EmptySeat` placeholder (`data-state="away"`), and the global
+      interactive-Fredo count is NEVER left at 0; the idle gate RE-ARMS for the away host, so after
+      a full quiet period `AUTO_RETURN_SETTLED` returns Fredo home (seat re-occupied by the seat
+      entity, no placeholder) — i.e. the state machine recovers WITHOUT a companion toggle.
+      Console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge (the F-68 signature):** after the auto-return settle, the FIRST teleport is the
+    regression trigger — assert count == 1 (never 0) after it; a subsequent auto-return must
+    re-arm the timer (repeat the settle→teleport→settle cycle and confirm it recovers every time,
+    no drift/stuck). Auto-hidden away (`isVisible && isAway && isAutoHidden`) still shows the
+    placeholder at the main seat (F-63).
+  - **Round-3 pin:** this row is the durable pin for the `isAutoHidden`-vs-`TELEPORT` interaction;
+    a post-auto-return teleport that yields zero interactive Fredos (or never re-arms the idle
+    gate) is a FAIL.
