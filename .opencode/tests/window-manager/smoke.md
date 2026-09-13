@@ -51,3 +51,20 @@
       the clamped point; the companion is visible in exactly ONE window at every settle;
       `tauri_read_logs(source="console")` on BOTH windows is clean of `Error:`/`Uncaught`/
       `Maximum update depth exceeded`.
+
+## #2868 extension — Settings is a normal feature window (G-136 reconciliation)
+
+> Issue #2868 converts Settings from the retired modal into a `FredoFeatureClass` window opened
+> from the launcher grid. **G-136:** S-4 ("gear/nav opens the settings dialog") is SUPERSEDED by
+> S-11 below — the window-kernel lifecycle is the canonical Settings path now. Historical PASS
+> records above preserved. Live policy.
+
+- [ ] S-11: Open the Settings window from the launcher tile; exercise the full own-kernel lifecycle
+      — maximize → minimize → restore → close — and re-open. EXPECTED: the Settings window behaves
+      EXACTLY like any other feature window (no special-case modal): the controls
+      `[aria-label="Minimize Settings"]`/`[aria-label="Restore Settings"|"Maximize Settings"]`/
+      `[aria-label="Close Settings"]` dispatch to the kernel; minimize hides the surface while the
+      entry stays in `useWindows()`; restore returns it focused; close removes it; re-open from the
+      tile restores the SAME single window id (no duplicate, no focus trap). `tauri_read_logs`
+      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference
+      `.opencode/tests/settings/` F-23/F-25/F-27 + window-manager R-7.
