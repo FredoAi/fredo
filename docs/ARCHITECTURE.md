@@ -433,7 +433,8 @@ apps/ui/src/
 |   +-- run-cli/                    — xterm.js terminal (PTY output)
 |   +-- query-viewer/               — SQL query result display (multi-instance)
 |   +-- my-workitems/               — Azure DevOps work items
-|   +-- settings/                   — Settings persistence service (settings live in the modal)
+|   +-- settings/                   — Settings persistence service (settingsService + SettingsSaveContext)
+|   +-- settings-app/               — Settings app (first-class feature; sidebar nav + auto-discovered feature sections + unified Save)
 |   +-- setup/                      — SetupWizard (OTel config, CLI detection)
 |   +-- mission-monitor/            — Real-time agent activity graph
 |   +-- dev-mode/                   — Dev tools + OTLP inspector
@@ -469,7 +470,7 @@ apps/ui/src/
 | run-cli | ✓ | — | xterm.js terminal (PTY output from Rust) |
 | query-viewer | ✓ | (dynamic) | SQL query result display (multi-instance) |
 | my-workitems | ✓ | — | Azure DevOps work items |
-| settings | ✓ | — | App settings + model selection |
+| settings | ✓ | — | Settings app — Companion, Appearance, Fredo Setup, Telemetry + auto-discovered feature settings (unified Save) |
 | setup | ✗ | — | OTel configuration, CLI detection |
 | mission-monitor | ✓ | RTDB Chat/ToolUse rows | Row-driven agent activity graph (ReactFlow; height-aware chat chain, recursive per-subagent delegation tree with per-subagent tool ownership) |
 | dev-mode | ✗ | RTDB row-mutation log | Dev tools + live row-mutation inspector |
