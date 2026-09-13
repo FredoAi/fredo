@@ -116,3 +116,9 @@ Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missi
       BEFORE image) and `.opencode/tmp/2865/before-after-verdict.md` (pairs + dispositions);
       `pnpm --filter @fredo/ui build` exit 0; frozen hooks (`companion-setup-wizard`,
       `data-state`, `data-server-state`) still present.
+
+## #2871 extension — bar-chat quick path
+
+- [ ] S-19: On a ready host, send a message from the launcher command bar → the reply streams and
+      completes; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`.
