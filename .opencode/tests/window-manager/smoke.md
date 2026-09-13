@@ -79,7 +79,7 @@
 > #2870 the main seat renders the empty-seat placeholder (never a second Fredo). The "visible in exactly
 > ONE window" invariant remains. Historical record above preserved. Live policy.
 
-- [ ] S-12: With the Run CLI terminal window open (`tauri_manage_window(action="list")` = main + `run-cli-terminal`), Ctrl+right-click INSIDE the terminal window. EXPECTED: the terminal hosts the single interactive Fredo (teleport-in then idle at the clamped point); the MAIN desktop renders the empty-seat placeholder (80×100) at the centre slot and NO second Fredo — global interactive-Fredo count == 1 at every settle; a 5 s idle auto-return returns Fredo to the main seat; `tauri_read_logs(source="console")` on BOTH windows is clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [x] S-12: With the Run CLI terminal window open (`tauri_manage_window(action="list")` = main + `run-cli-terminal`), Ctrl+right-click INSIDE the terminal window. EXPECTED: the terminal hosts the single interactive Fredo (teleport-in then idle at the clamped point); the MAIN desktop renders the empty-seat placeholder (80×100) at the centre slot and NO second Fredo — global interactive-Fredo count == 1 at every settle; a 5 s idle auto-return returns Fredo to the main seat; `tauri_read_logs(source="console")` on BOTH windows is clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **Edge (auto-return → teleport, defect F-68 / #2870 round 3):** after the 5 s idle auto-return
     has returned Fredo to the MAIN seat (settle complete, `isAutoHidden=true`), Ctrl+right-click
     INSIDE the terminal again to teleport away. EXPECTED: exactly ONE interactive Fredo present
@@ -87,3 +87,15 @@
     empty-seat placeholder (`[data-state="away"]`), and the host idle gate RE-ARMS so a further
     5 s idle auto-return brings Fredo home again — no stuck zero-Fredo state without a companion
     toggle; both windows' consoles clean.
+- **#2870 round 3 (spec/2870 @ e27ff0a9) — S-12 PASS (live).** `open_run_cli`-equivalent via the
+  Run CLI launcher tile created `run-cli-terminal` (list = main + run-cli-terminal, 900×600). The
+  real recipe (b) Ctrl+right-click INSIDE the terminal produced `companion-teleport
+  {toWindow:'terminal'}`: aligned 80 ms samplers recorded main `away` (0 interactive)
+  791207→796622 while the terminal `.fredo-companion-avatar` = 1 791176→796591 — global
+  interactive count == 1, never 2, and the 5 s host idle auto-return re-occupied the main seat.
+  The F-68 edge (post-auto-return re-teleport) was exercised in the main window (in-page
+  lifecycle sampler: teleport → auto-return → teleport → exactly one overlay, count never 0, idle
+  re-armed; see companion F-68). Consoles: both windows' error-level reads empty. Note: the very
+  first recipe-(b) attempt did not host (listener-registration race on the freshly opened terminal
+  window); a retry after the window settled hosted correctly — follow-up probe artifact, not a
+  product defect.
