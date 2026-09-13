@@ -896,3 +896,18 @@ offloaded). AC1 was not weakened; only the documented boolean-switch syntax was 
   RAW backend string + false `happy` (cross-ref companion F-71 FAIL).
 - **F-65 PASS (live).** `fredo emit` chat+tool both `{"queued":true}`; `telemetry_spans` **23,165**,
   newest `2026-09-13T21:02:29.608Z`; `chat_rows(e2e-2871-chat)=1`; `tool_use_rows(e2e-2871-tool/read_file)=1`.
+
+### #2871 testing round 2 (spec/2871 @ bd168ee) — results
+
+- **F-64 PASS (live).** The bar chat still uses the SAME managed `llama-server`
+  (`get_llama_server_status` → `healthy:true, port:8080, pid:11744` after `launch_llama_server`;
+  the round-1 cold-start auto-launch reproduced the same `ensure_healthy` path). Multiple bar sends
+  streamed the real class: `/companion/` console showed `runGeneration` → per-delta `llm-token` →
+  exactly one `llm-done` per send; a 1,000-word prompt streamed 2,638 chars (G-130). Error leg on a
+  real non-executable `llama_server_path` returned the CURATED generic sentence (no raw
+  `failed to start … spawn …`) — cross-ref companion F-71 round 2. No new command/model/window.
+- **F-65 PASS (live).** `fredo emit --event-type chat --session-id e2e-2871-r2-chat` +
+  `--event-type tool_use --session-id e2e-2871-r2-tool --tool-name read_file` → both
+  `{"queued":true}`; `telemetry_spans` = **23,735**, `MAX(ingested_at)` =
+  `2026-09-13T21:46:52.331Z`; `chat_rows(e2e-2871-r2-chat)=1`;
+  `tool_use_rows(e2e-2871-r2-tool)=1`. Managed `/health` returned 200 (:8080) before the chat.
