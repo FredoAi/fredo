@@ -73,3 +73,23 @@
       **Expected:** text ≥ 4.5:1, non-text UI ≥ 3:1 in every combination. Quote the measured
       ratios; a failing pair is a FAIL naming it.
       **Edge:** light theme + a light preset; the selected-nav label on its tinted highlight.
+
+### Testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **F-11 PASS (live+static).** `--hover-bg` (T1) is a SINGLE derived `color-mix(in srgb, var(--text-primary) 6%, transparent)` set once in the `ThemeProvider` base pass — live computed row backgrounds `color(srgb .8 .8 .8/.06)` dark / `color(srgb .047 .067 .090/.06)` light (NOT `--card-hover-bg` #3a3a3a, NOT transparent). `system.ts` maps `bg.hover` → `var(--hover-bg)`.
+- **F-12 PASS (live).** Active-nav bg re-tints purple→cyan→amber with the live accent; left border = `--accent-strong`; scrollbar thumb = `--scrollbar-thumb`; Save button foreground `--accent-contrast` (white dark 5.38:1 / #0c1117 light 9.96:1).
+- **F-13 PASS with named residuals (live).** All measured pairs meet AA except two pre-existing/untouched residuals: inactive-nav label on the dark header **4.05:1** and not-ready-gate dark card body/path text **1.53:1** (R3). Both recorded accepted-with-reason in the verdict.
+
+## F-14 (promoted from exploratory E-12 / #2864) — Chakra semantic-token bridge resolves to Fredo vars
+
+- [ ] **F-14:** Read `getComputedStyle(document.documentElement)` and assert the `system.ts` semantic-token
+      CSS vars resolve to the Fredo theme vars, not stock Chakra values: `--chakra-colors-fg-muted` →
+      `var(--text-secondary)`, `--chakra-colors-fg-subtle` → `var(--text-subtle)`,
+      `--chakra-colors-bg-hover` → `var(--hover-bg)`, `--chakra-colors-fg-onAccent` → `var(--accent-contrast)`.
+  **Expected:** each semantic token resolves to the mapped Fredo var (or its computed value), so token-name
+      consumers in the audited files inherit the live theme. **Observed (spec/2864 @ 5c0fb5b):**
+      `--chakra-colors-fg-muted` = `#52525b` (stock `gray.600`) and `--chakra-colors-fg-subtle` = `#a1a1aa`
+      (stock `gray.400`); `--chakra-colors-fg-default`/`bg-hover`/`fg-onAccent`/`accent-solid` empty. This
+      makes the not-ready-gate dark card body/path text 1.53:1 (residual R3). Pre-existing; follow-up scope.
+  - **Edge:** a component that uses a token NAME (`color="fg.muted"`) instead of `var(--text-secondary)` is
+    the failure surface; `var(...)`-direct consumers are unaffected. Reference exploratory E-12.
