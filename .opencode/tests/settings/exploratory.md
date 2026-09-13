@@ -54,3 +54,41 @@
 - [ ] **E-9 — Theme/accent switch mid-wizard-work.** Switch dark↔light and change the accent while a
       step is running/downloading and while an error is shown; does the wizard re-tint with no
       stale color and stay legible? Any stale color is a finding (promotes to F-16/F-18).
+
+---
+
+## #2868 extension — Settings-as-app-window probes
+
+> Unscripted edge/failure probes for the retired-modal → feature-window container swap. A confirmed
+> finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Live policy.
+
+- [ ] **E-10 — Window close/reopen with a dirty section.** Half-edit a setting that registers a Save
+      fn (e.g. Run CLI) and/or the companion idle-timeout draft, then close the Settings window
+      without saving and reopen it. Is the in-progress edit lost cleanly (no stale/ghost value), and
+      does `SettingsSaveProvider` reset so a stale `saveFn` cannot fire? Any phantom save, stale
+      content, or console error is a finding (promotes to F-31/F-32).
+
+- [ ] **E-11 — Theme/accent switch with the Settings window open + section mid-edit.** Switch
+      dark↔light and set a non-default accent while a section is focused/half-edited. Does the
+      window chrome re-tint with no stale color, and is the edit preserved? Any stale color, lost
+      edit, or `Maximum update depth exceeded` is a finding (promotes to F-40).
+
+- [ ] **E-12 — Rapid launcher re-invoke.** Click the Settings tile several times in quick
+      succession (Ctrl+Space between tries) and via keyboard Enter. Does `useWindows()` ever gain a
+      second "Settings" entry / duplicate frame, or does the first window flicker/lose content? Any
+      duplicate or focus steal is a finding (promotes to F-27/F-28).
+
+- [ ] **E-13 — Companion gate flips across the window open/close.** Open Settings → Companion while
+      not ready, close the window, make the backend ready, reopen Settings → Companion. Does the
+      section swap to the controls in place with no orphan/reload, and does re-opening mid-swap
+      leave a consistent state? Any stuck wizard/orphan is a finding (promotes to F-35/F-36).
+
+- [ ] **E-14 — Zero/again-discovered feature sections.** What happens if a feature's settings
+      section errors while rendering, or if the discovered list is empty/only one? Does the window
+      degrade gracefully (no crash/blank pane/empty "Features" header)? Any orphan grouping or
+      unhandled error is a finding (promotes to F-33/F-34).
+
+- [ ] **E-15 — Minimize to the app dock and restore from a different z-position.** Minimize Settings
+      behind two other windows, then restore it from the dock; does it return focused at the top
+      with its content intact and its single window id? Any stale frame/duplicate/geometry reset is
+      a finding (promotes to F-23/F-26).
