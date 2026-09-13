@@ -1051,5 +1051,55 @@ preserved in both). The shared component changed, so the full Q-1..Q-17 matrix w
 - **F-68 PASS (live — regression).** After a host idle auto-return settled Fredo home, a subsequent
   Ctrl+right-click teleport yielded exactly ONE interactive Fredo (the fixed overlay; 0 → never) plus
   the main `[data-state="away"]` placeholder (80×100). Code unchanged this round; the round-3
-  full lifecycle cycle (teleport → auto-return → teleport → auto-return, `interactive==0` samples 0)
-  remains the durable pin.
+   full lifecycle cycle (teleport → auto-return → teleport → auto-return, `interactive==0` samples 0)
+   remains the durable pin.
+
+---
+
+## #2871 extension — the command bar as a second companion message source
+
+> Issue #2871 sends a launcher-bar message to the companion LLM while the companion is ACTIVE;
+> the reply MUST use the companion's existing bubble/stream machinery (binding #2). These rows
+> map to `.opencode/tmp/2871/triage.md` `## QA Expert` REQ-1..REQ-13 and REUSE the #2850/#2854
+> streaming evidence approach. Live policy. **G-136:** no prior companion resolution is
+> superseded — F-7/F-8/F-24 + R-33/R-34 remain in force; these are additive.
+
+## F-69 (REQ-3) — Bar-sent message streams into the existing SpeechBubble (single-shot)
+
+- [ ] F-69: Companion ON at the seat; send a real prompt from the launcher command bar; sync-sample
+      the `SpeechBubble` `p` text + the wrapper state.
+  **Expected:** the reply renders in the SAME seat-anchored 240×120 `SpeechBubble` used by the
+      joke path (via `showMessage()`/the streaming state), growing token-by-token; ≥3 distinct
+      partial contents (G-130); the request is single-shot (no prior transcript); no second
+      bubble/surface is introduced.
+  - **Edge:** long reply wraps without resize; control tokens stripped; a second send starts a
+    fresh independent reply.
+
+## F-70 (REQ-4/REQ-5) — Bar-sent generation drives the SAME busy/status flow + idle reset
+
+- [ ] F-70: During a bar-sent stream sample the wrapper `data-state`/`data-streaming`; after
+      `llm-done` sample the return; with a 5 s idle timeout, send a message near the deadline.
+  **Expected:** the SAME flow as the joke path — `thinking` (wait) → `joking` (first token) →
+      `happy` (on done, existing hold) → idle; the busy marker (`data-streaming`) clears on done;
+      the send RESETS the idle auto-return timer (a message is an interaction, #2853 F-24).
+  - **Edge:** send at the idle boundary; send while the welcome bubble is up; send right after an
+    auto-return (with a fresh ACTIVE toggle).
+
+## F-71 (REQ-6) — Bar-sent error/not-ready is readable and recovers to rest
+
+- [ ] F-71: Stop the managed server (or set a bad `llama_server_path`) while the companion is ON;
+      send from the bar. Separately kill it mid-stream. Read the bubble + console.
+  **Expected:** the readable `llm-error` / `⏳ Loading model...` line surfaces in the bubble; the
+      flow leaves `thinking`/`joking` cleanly (no false `happy`), returns to rest, and the idle
+      timer re-arms; no stuck cursor/status; console clean.
+  - **Edge:** error before any token; error after partial tokens; repeated error sends; the
+    `llm-error`+`llm-done` pair completes once.
+
+## F-72 (REQ-9) — One in-flight generation across BOTH sources (bar + click)
+
+- [ ] F-72: Start a bar-sent stream; while it runs, single-click the avatar (joke trigger) and
+      press Enter again in the bar; sample the bubble/state.
+  **Expected:** at most ONE generation in flight — the click/2nd Enter is ignored (`isGenerating`
+      guard) rather than interleaving; the in-flight bubble is not clobbered by a second stream.
+  - **Edge:** click first then Enter; rapid alternation; a stale token from the first stream never
+    lands in a later bubble. Reference F-7 + R-2.
