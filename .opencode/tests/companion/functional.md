@@ -726,3 +726,90 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 - **F-46 PASS (live).** Ready view renders the unified `<h2>` + 22px `var(--accent-primary)` icon + `--text-subtle` description; section `aria-labelledby`; ONE wizard in the gate (`companion-controls` absent); `#companion-idle-timeout-seconds` described by `#companion-idle-timeout-help`; tab order = visual order.
 - **F-47 PASS (live).** Teleport tip has NO opacity/pointer-events dimming (full-opacity in ON and OFF). Invalid draft `9999` → `aria-invalid="true"`, border + focus ring `rgb(239,68,68)`, help "Enter 5–3600 s"; Enter commit clamps + announces **`Auto-return set to 3600 s`** via the `role=status aria-live=polite` region (transient 2500 ms). Survives theme/accent change; console clean.
 - **F-48 PASS (live).** `telemetry_spans` 17,236, `max(ingested_at)` 2026-09-13T00:28:33.795Z; `chat_rows` q13-2864-chat=1; `tool_use_rows` q13-2864-tool/read_file=1.
+
+---
+
+## #2865 extension — Companion-section wizard UX visual audit
+
+> Issue #2865 audits the not-ready wizard content that renders INSIDE the Companion settings
+> section. These rows own the Companion-section context + the R3-residual card contrast; the full
+> wizard state matrix / copy / progress / a11y rows live in `.opencode/tests/llama-setup/`
+> `#2865` F-47..F-63. Rows map to the QA Plan `R-1..R-5` in `.opencode/tmp/2865/triage.md`.
+> **Verification policy: live.** The UI/UX-authored visual evaluation/verdict are the AC1/AC4
+> evidence; a testid/geometry-only check is a FAIL. **G-136 reconciliation:** F-45's round-1
+> "gate body 1.53:1 dark (R3)" is now an explicit requirement (F-55), superseding the
+> accepted-residual disposition — the historical record is kept, not deleted.
+
+- [ ] **F-49 (R-1.1/R-1.2 / AC1):** From the PRE-FIX tip (G-110), `stop_llama_server` → open
+      Settings → Companion and capture the not-ready wizard in dark + light + one non-default
+      accent into `.opencode/tmp/2865/e2e/before/` (`before-*` names); confirm the UI/UX Expert's
+      `.opencode/tmp/2865/visual-eval-before.md` READS every frame.
+  **Expected:** the Companion section renders the wizard as its ONLY content (no toggle/tip/
+      auto-return) in every frame; the visual evaluation is observation-based and names the files
+      it read. A testid/geometry-only artifact = FAIL.
+  - **Edge:** unreachable `checking` frame → BLOCKED-with-cause; re-capture invalidates the pair.
+
+- [ ] **F-50 (R-2.4/R-2.6 / AC2):** In each wizard state read the Companion section's summary +
+      step status; screenshot and repeat desaturated.
+  **Expected:** every state communicates with icon + text (summary checking / partial /
+      all-installed; per-step label); states are distinguishable at a glance without color. A
+      color-only state = FAIL. Cross-ref llama-setup F-49/F-52.
+  - **Edge:** the `checking` summary and per-step `Checking…` both visible; no blank first paint.
+
+- [ ] **F-51 (R-2.2 / AC2, H3):** Force a step failure and a server `failed`/`exited`; read every
+      visible detail + console.
+  **Expected:** actionable copy naming the cause + next step with Retry; ZERO raw stack/IPC
+      strings visible (no `at …`, `.rs:`, raw `Error:`/JSON envelope/`invoke`). Cross-ref
+      llama-setup F-50.
+  - **Edge:** an error after partial progress still actionable; error state visually distinct.
+
+- [ ] **F-52 (R-2.1/R-2.3 / AC2, H6):** During a per-file download read the determinate progress; during
+      install/server-starting sample the caption.
+  **Expected:** determinate progress advances with real bytes; unknown-duration work shows a moving
+      affordance + changing phase narration, never a frozen screen. Cross-ref llama-setup F-51.
+  - **Edge:** the watchdog wait has its own narration; a static caption during work = FAIL.
+
+- [ ] **F-53 (R-3.4 / AC3, H4/H5):** Compare the wizard content against Settings → Fredo Setup in
+      the SAME dialog (typography/spacing/radii/heading treatment); screenshot side-by-side +
+      computed values, dark and light.
+  **Expected:** same tokens/typography/spacing/radii family; name every divergence with its delta.
+      The `bg.subtle` summary bar (`CompanionSetupWizard.tsx:145`) is a named H4 target. Any
+      off-brand divergence = FAIL naming it.
+  - **Edge:** the dialog chrome is #2864 scope (out of scope here); only the wizard content.
+
+- [ ] **F-54 (R-3.1 / AC3):** Static grep the wizard files hosted in the Companion section
+      (`CompanionSetupWizard.tsx`, `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`,
+      `ServerLaunchStepCard.tsx`) for hex/rgba/rgb/hsla + `var(--x)NN`.
+  **Expected:** ZERO true color literals; token/CSS-var/`tint()` only. Any literal = FAIL file:line.
+  - **Edge:** comment issue-refs exempt; distinguish `var(--x)NN` from a JS 8-digit hex concat.
+
+- [ ] **F-55 (R-3.2 / AC3, H3/H9 — supersedes the F-45 residual):** Measure the not-ready-gate
+      card body/path/detail text vs its tinted card in dark + light + accent, specifically
+      `rgb(82,82,91)` on the success-tinted card `rgb(42,59,53)`, 12px (**1.53:1** BEFORE).
+  **Expected:** ≥4.5:1 (or ≥3:1 for large/bold); the BEFORE 1.53:1 is RESOLVED and the AFTER ratio
+      reported. Root cause: `fg.muted`/`fg.subtle`/`fg.default` semantic-token bridge not
+      resolving to Fredo vars (theming E-12/R3). Any pair < AA = FAIL naming it.
+  - **Edge:** measure dark classic AND dark+amber plus light and the accent override; the
+    before/after ratio pair is required evidence.
+
+- [ ] **F-56 (R-5.1/R-5.2 / AC5):** Confirm the gate still shows the wizard ONLY while not ready and
+      swaps to the controls in place; verify the frozen Companion hooks still present; run
+      `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** no reload on swap (timeOrigin/nav unchanged); hooks retained
+      (`companion-setup-wizard`, `companion-step-*`, `data-state`, `data-server-state`); build exit
+      0; suite green; no assertion weakened (G-125). A dropped hook / weakened test = FAIL.
+  - **Edge:** a moved hook with an owned refresh named per G-125 is acceptable.
+
+- [ ] **F-57 (R-4.1/R-4.2 / AC4):** Capture the AFTER wizard frames into
+      `.opencode/tmp/2865/e2e/after/` (`after-*`, distinct from BEFORE per G-135); confirm the
+      UI/UX Expert's `.opencode/tmp/2865/before-after-verdict.md` pairs them and dispositions every
+      AC-1 issue.
+  **Expected:** every BEFORE cell has a comparable AFTER; the verdict names improvements +
+      regressions and gives each issue exactly one disposition. A testid-derived verdict = FAIL.
+  - **Edge:** re-run on the tested tip; keep BEFORE frames untouched.
+
+- [ ] **F-58 (R-5.4 / LIVE):** Same run: `fredo emit` chat + tool_use; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`; keep screenshots + the receipt.
+  **Expected:** `telemetry_spans` NON-ZERO with a recent `max(ingested_at)`; rows classify under the
+      session ids. A static-only PASS is a **FALSE PASS**.
+  - **Edge:** re-run on the tested tip; keep the output verbatim.
