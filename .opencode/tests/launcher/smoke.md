@@ -81,11 +81,3 @@
 
 - [ ] S-14: Seat stability across ON/OFF — open the launcher; record the command bar `getBoundingClientRect().y` with the companion OFF, then ON, then OFF again (and after a 5 s idle auto-return). `y` stays within ±1 px in every state; the 80×100 seat slot is present in all states (never unmounts); `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
-### Round 1 (spec/2870 @ dd0026e1) — results
-
-> **S-14 FAIL / UNVERIFIED (blocking boot defect).** The tested tip does not boot — `EmptySeat.tsx:4-5`'s `@/` imports are unresolved under `apps/tauri/vite.config.ts` (`@` → `apps/tauri/src`, no `shared/`), so the launcher/command bar never mount and no `y` can be measured. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
-
-### Round 2 (spec/2870 @ 6474a5fe) — results
-
-- **S-14 PASS for `y` invariance (live); FAIL for the 80×100 slot.** Command-bar `getBoundingClientRect().y` = **485.77** with the companion OFF, ON-home, ON-away, and after the 5 s idle auto-return (|Δ| = 0 px); at 700×900 = 446.0 across ON-home/away; the seat slot never unmounts; screenshots succeeded; consoles clean. **But the seat slot measures 320 px wide** (Chakra `sizes.80` token mis-resolution — `LauncherShell.tsx:568` `width={AVATAR_SM.width}`), not the required 80 px; the mascot/entity renders at the slot's left edge (centre ≈840 vs launcher axis 960). See `functional.md` F-62/F-66.
-
