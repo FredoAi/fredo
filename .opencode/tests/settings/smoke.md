@@ -19,3 +19,17 @@
 - **S-4 PASS.** Companion renders the ready controls or the not-ready wizard — no orphan section.
 - **S-5 PASS.** Screenshots captured (`tester-*.png`, uploaded).
 - **S-6 PASS.** dark↔light re-tint with the dialog open; no stale color; console clean.
+
+## #2865 extension — wizard-in-dialog smoke
+
+- [ ] S-7: Gate quick path — with the backend not ready, open Settings → Companion; the dialog
+      renders the wizard ONLY (no toggle/tip/auto-return) in dark `classic` AND light
+      `light-default`; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+- [ ] S-8: Sibling quick path — with the wizard open, switch to Fredo Setup and back; both sections
+      render correctly in the same dialog with no orphan section/crash; screenshot succeeds.
+
+- [ ] S-9: Visual artifacts + gates — `.opencode/tmp/2865/visual-eval-before.md` +
+      `before-after-verdict.md` exist; BEFORE/AFTER frames use DISTINCT `before-*`/`after-*` names;
+      `pnpm --filter @fredo/ui build` exit 0; the frozen `companion-setup-wizard` hook is present.
