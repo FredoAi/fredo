@@ -81,3 +81,10 @@
 
 - [ ] S-14: Seat stability across ON/OFF — open the launcher; record the command bar `getBoundingClientRect().y` with the companion OFF, then ON, then OFF again (and after a 5 s idle auto-return). `y` stays within ±1 px in every state; the 80×100 seat slot is present in all states (never unmounts); `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
+## #2871 extension — command-bar companion chat smoke
+
+- [ ] S-15: Companion ACTIVE; type a non-tile phrase into `input[role="searchbox"]`, press Enter.
+      The reply streams into the companion's seat bubble (`data-streaming` + cursor observed), the
+      busy state clears on completion, and `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
