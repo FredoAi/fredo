@@ -332,14 +332,3 @@
 
 - [ ] R-36: Static-grep the changed files for hardcoded colors/`var(--x)NN`; read the console in every leg/window; inspect the new `isAway`/`markAway`/`SYNC_PRESENCE` code for effect/memo deps and listener registration.
   **Expected:** zero color literals in the changed files (EmptySeat/seat chrome token-native); no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window; the new location state introduces no re-render loop (no dep on array `.length`/fresh objects); the cross-window listeners are registered once per window. Reference R-7/R-8/R-17 + #2850 F-15/F-19.
-
-### Round 1 (spec/2870 @ dd0026e1) — results
-
-> **R-33..R-36 FAIL / UNVERIFIED (blocking boot defect).** The tested tip does not boot (`EmptySeat.tsx:4-5` `@/` imports unresolved under the Tauri Vite config `@` → `apps/tauri/src`), so no companion behavior (teleport/joke/game/bubble), persisted-key, layout-shift, token, or console invariant is observable live. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
-
-### Round 2 (spec/2870 @ 6474a5fe) — results
-
-- **R-33 PASS (live, partial).** The seat entity is interactive (single-click → joke stream → `happy`); the overlay teleport plays (fixed 80×100 at the clamped target); same-window teleport choreography ran. Full TicTacToe/bubble-side/58-rect parity was not re-driven this round (bounded round; the extraction's own unit suites are green in the developer receipts).
-- **R-34 PASS (live).** `Fredo_companion_visible` toggled `true`/`false`; `Fredo_companion_idle_timeout` accepted 5 and 3600 within range; `isAway` was never written to localStorage (only the two keys present).
-- **R-35 PASS (live, geometry).** Command-bar `y` = 485.77 constant across OFF / ON-home / ON-away / post-auto-return; 446.0 at 700×900; no new scrollbar/clip. **But the seat SLOT is 320 px wide, not 80 px** (same token bug as F-62), so the seat content is 120 px off-centre — the `AVATAR_SM` footprint requirement is not met.
-- **R-36 PASS with findings (live + static).** Zero color literals / `var(--x)NN` in the changed files; consoles clean in both windows; no `Maximum update depth exceeded`. **Finding:** the post-auto-return teleport leaves Fredo unrendered and the idle timer disarmed (F-68) — a lifecycle regression, not a re-render loop.
