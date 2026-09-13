@@ -178,3 +178,65 @@
 - **F-11 PASS (static/build).** `pnpm --filter @fredo/ui build` exit 0, zero TS errors (only the pre-existing chunk-size warning); `pnpm --filter @fredo/ui test:run` = 59 files / **832 passed / 0 failed**; ST-5 files 33/33.
 - **F-12 PASS (live).** Preset select/reset + accent override set/clear work; `--card-hover-bg`/`--node-bg`/`--accent-subagent` unchanged; new derived tokens resolve per theme (`--hover-bg` = color-mix(#cccccc 6%,transparent) dark → `color(srgb .8 .8 .8/.06)`; color-mix(#0c1117 6%,transparent) light). No `var(--x)NN`.
 - **F-13 PASS (live).** `fredo emit --event-type chat --session-id q13-2864-chat` + `--event-type tool_use --session-id q13-2864-tool --tool-name read_file` both `{"queued":true}`; `telemetry_spans` = 17,236, `max(ingested_at)` = 2026-09-13T00:28:33.795Z; `chat_rows` q13-2864-chat = 1; `tool_use_rows` q13-2864-tool/read_file = 1.
+
+---
+
+## #2865 extension — the wizard inside the shared Settings dialog (sibling conformance)
+
+> Issue #2865 audits the Companion not-ready wizard, which renders inside the shared dialog shell.
+> These rows own the dialog-context capture + the SIBLING-SECTION conformance check (the wizard vs
+> Fredo Setup); the full wizard state matrix lives in `.opencode/tests/llama-setup/` `#2865`
+> F-47..F-63. Rows map to the QA Plan `R-1..R-5` in `.opencode/tmp/2865/triage.md`.
+> **G-136 reconciliation:** F-7's round-1 named residual "not-ready-gate dark card body/path text
+> **1.53:1** (R3)" is now an explicit requirement (see F-16/F-18 + llama-setup F-57) — the
+> accepted-residual disposition is superseded for this spec; the historical record is preserved.
+
+- [ ] **F-15 (R-1.1 / AC1):** From the PRE-FIX tip (G-110), open Settings (`[aria-label="Settings"]`)
+      → Companion with the backend not ready and capture the dialog+wizard frames in dark + light +
+      one non-default accent into `.opencode/tmp/2865/e2e/before/` (`before-*`); confirm the UI/UX
+      Expert's `.opencode/tmp/2865/visual-eval-before.md` reads every frame.
+  **Expected:** the full dialog is in frame (sidebar nav + wizard content); the wizard is the only
+      Companion content; the visual evaluation is observation-based and names each file read.
+      Capture-only — no verdict here.
+  - **Edge:** 960×620 AND a narrower window; the not-ready cell is BLOCKED-with-cause if
+    unreachable; a testid/geometry-only evaluation = FAIL.
+
+- [ ] **F-16 (R-3.2/R-3.4 / AC3 — H4/H5):** With the wizard open, compare its typography/
+      spacing/radii/heading treatment against the sibling Fredo Setup section (same dialog, same
+      theme); read computed values + screenshot side-by-side, dark and light. Specifically measure
+      the wizard summary bar (`bg="bg.subtle"`, `CompanionSetupWizard.tsx:145`) and the not-ready
+      card text contrast (the former 1.53:1 residual).
+  **Expected:** the wizard matches the sibling family; the summary bar is not off-brand; the card
+      body/path text ≥4.5:1 (or ≥3:1 large/bold) with the measured ratio quoted; any divergence is
+      a FAIL naming it. Reference F-7 + the theming suite (now in scope).
+  - **Edge:** the dialog chrome itself is #2864 scope; a light theme + pale accent must stay legible.
+
+- [ ] **F-17 (R-3.1 / AC3):** Static grep `ProfileSettingsModal.tsx`, `system.ts`, the wizard files
+      (`CompanionSetupWizard.tsx`, `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`,
+      `ServerLaunchStepCard.tsx`) and every `apps/ui` file in the slice diff for hex/rgba/rgb/hsla
+      + `var(--x)NN`.
+  **Expected:** ZERO true color literals (comment issue-refs exempt); token/CSS-var/`tint()` only.
+      Any literal = FAIL naming file:line.
+  - **Edge:** `transparent`/`inherit`/`currentColor`/`none` allowed; distinguish `var(--x)NN` from a
+    JS 8-digit hex concat; `system.ts` `color-mix()` is not a literal.
+
+- [ ] **F-18 (R-4.1/R-4.2 / AC4):** On the fixed tip repeat F-15 into `.opencode/tmp/2865/e2e/after/`
+      (`after-*`, distinct per G-135); confirm `.opencode/tmp/2865/before-after-verdict.md` pairs
+      each frame and dispositions every AC-1 issue.
+  **Expected:** every BEFORE cell has a comparable AFTER at the same viewport/theme; improvements +
+      regressions named; each issue exactly one disposition. A testid-derived verdict = FAIL.
+  - **Edge:** re-run on the tested tip; BEFORE frames untouched; the Tester carries the verdict
+    verbatim-in-substance with attribution into `## Tests Runs`.
+
+- [ ] **F-19 (R-5.1 / AC5):** Open the dialog, switch sections (Companion → Fredo Setup →
+      Appearance → Telemetry), and confirm the not-ready gate still renders the wizard ONLY and
+      swaps to the controls in place.
+  **Expected:** dialog opens from the gear; nav order/labels unchanged; no orphan section/crash; the
+      gate swap needs no reload. Reference regression R-1/R-2/R-7.
+  - **Edge:** rapid section churn; the modal open across the swap; console clean.
+
+- [ ] **F-20 (R-5.3 / AC5):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`;
+      confirm no existing assertion is weakened/disabled/deleted.
+  **Expected:** build exit 0 / zero TS errors; suite green; any refreshed assertion explicitly owned
+      per G-125. A silently relaxed test = FAIL. Reference R-5.
+  - **Edge:** no dangling import/stale literal test; console clean.
