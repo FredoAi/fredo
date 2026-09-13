@@ -107,6 +107,24 @@ Overlapping suites to run alongside: `mission-monitor` (opens feature windows vi
 ## R-20 — Corner cluster cleanup: no clock/LED overlap regressions remain
 
 - [x] R-20: The clock/LED cluster centering change does NOT reintroduce any overlap of the cluster or the rail with the window titlebar min/max/close controls (`windows-buttons-time-overlap.png` class bug must NOT recur), and the cluster stays DISJOINT from the left-edge rail (`getBoundingClientRect` disjointness holds).
+
+---
+
+## #2868 extension — no floating gear; chrome band unchanged (G-136)
+
+> Issue #2868 retires `FloatingSettingsButton`. **G-136:** R-18's changed-files list (which includes
+> `settings/FloatingSettingsButton.tsx`) and any expectation that a floating gear renders are
+> SUPERSEDED — the file is DELETED and no gear renders. Historical records above preserved. Live
+> policy.
+
+- [ ] R-21: The chrome band (clock + single top-right LED + FREDO notch + frame/ticks/dot-grid) and
+      its z-model (1200 uncovered / 0 covered) are unchanged; the app-dock rail is unchanged; NO
+      floating gear (`IconButton[aria-label="Settings"]`) renders in any state (uncovered or under a
+      maximized window). The changed files (new Settings feature/chrome files, `Home.tsx`) carry
+      ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append; Chakra v3 only. Reference
+      #2868 functional F-24 + R-18/R-19 + `.opencode/tests/settings/` R-14.
+  - **Edge:** the deleted gear leaves no orphan import; window min/max/close controls stay unoccluded
+    (R-9/R-20 hold); console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **Edge:** maximized full-bleed; window dragged under the cluster; rail revealed vs hidden; light + dark; narrow viewport.
   - **PASS (spec/2841 @ 0852210f, round 1):** With a maximized window, `elementFromPoint` at Min/Max/Close centers returns the window control (isControl:true) — `windows-buttons-time-overlap.png` does NOT recur (F-18). Cluster DISJOINT from the rail: rail x:0..52, cluster box x:1874+ (top-right), LED x:1878 — no overlap. Verified light + dark + narrow viewport.
 
