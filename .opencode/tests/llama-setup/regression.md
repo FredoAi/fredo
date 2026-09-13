@@ -317,3 +317,21 @@ The round's new defect is in AC2's launch argv (see functional F-35/F-36); it do
       companion behaviors — visibility toggle + `Fredo_companion_visible`, idle-timeout
       commit/clamp/persist, teleport, joke/TicTacToe, bubble geometry, single-Fredo presence.
       Reference `.opencode/tests/companion/` F-1..F-48 / R-1..R-26 + functional F-62.
+
+---
+
+## #2871 extension — the bar-chat must not change the managed server / chat contract (G-136)
+
+> Issue #2871 adds a launcher-bar message source. R-1..R-28 remain in force. Live policy.
+
+## R-29 — Chat contract + managed-server readiness unchanged for the bar path
+
+- [ ] R-29: Send from the launcher command bar on a ready host; inspect the transport contract and
+      the resolver/readiness path.
+  **Expected:** the reply still lands through `llm_chat` → `llm-token`/`llm-done` with the
+      additive `llm-error`, with NO new frontend fallback extraction path (R-17); the
+      `resolve_llama_server_order` + `resolve_models_dir` order, the managed `/health` readiness,
+      and the wizard gating are unchanged; no new persisted key; no `tokio::spawn`/cross-feature
+      import introduced.
+  - **Edge:** a bar send while the server is `starting` → actionable not-ready, never a silent
+    loss/duplicate; the terminal window open (cross-window presence) does not change the route.
