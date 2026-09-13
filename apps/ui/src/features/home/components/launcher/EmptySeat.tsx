@@ -1,8 +1,8 @@
 import React from 'react';
 import { Box } from '@chakra-ui/react';
 
-import { AVATAR_SM } from '@/shared/components/fredo-avatar';
-import { tint } from '@/shared/utils/colorTint';
+import { AVATAR_SM } from '../../../../shared/components/fredo-avatar';
+import { tint } from '../../../../shared/utils/colorTint';
 
 /**
  * EmptySeat — the away placeholder for the launcher's reserved home seat
