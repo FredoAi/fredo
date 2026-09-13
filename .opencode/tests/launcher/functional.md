@@ -419,3 +419,46 @@
 - [ ] F-47: Read the launcher SVG's full `<rect>` set (x/y/width/height, in document order) at several animation frames, in a light preset and the dark base, and under reduced motion; diff it against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)` AND against the companion sm avatar's rect set. Then measure `.fredo-companion-avatar` (`offsetWidth`/`offsetHeight`) and read its idle `animation-name`.
   **Expected:** the launcher SVG carries exactly the 58 base rects, byte-identical to the shared source and to the companion `sm` set, invariant across frames/themes/reduced-motion; `#fredo-expression` is ABSENT (idle); no `<rect>` carries an animation/transform (the frozen geometry is never animated). The companion `.fredo-companion-avatar` remains `offsetWidth = 80` / `offsetHeight = 100`, its 58-rect set and its `fredo-idle-bob`/`fredo-idle-glow` 2.4 s idle UNCHANGED by this spec.
   - **Edge:** compare both surfaces in the SAME theme (rect sets identical); the geometry suite `fredoAvatarGeometry.test.ts` passes UNMODIFIED in `test:run`; launcher open/close cycles do not mutate the rect set; the companion is byte/visually identical to its pre-#2852 render. Reference #2850 R-26/R-28 + companion R-10.
+
+---
+
+## #2868 extension — the app grid gains the Settings tile (G-136 reconciliation)
+
+> Issue #2868 registers Settings as a first-class `FredoFeatureClass` app (showable, no install
+> step) so the launcher grid gains a "Settings" tile and the floating gear is retired.
+> **G-136:** F-2's frozen tile set (`["Mission Monitor","Query Viewer","Run CLI","Stepper Probe"]`)
+> and S-4 ("gear opens the settings dialog") are SUPERSEDED — the launcher grid now includes
+> Settings and the gear is gone. Historical PASS records above are preserved. Live policy.
+> **Feature tests:** settings (this extension's cross-suite rows F-21/F-39 own the details).
+
+## F-48 (AC-1 / #2868) — The grid tile set includes Settings; no install/onboarding step
+
+- [ ] F-48: Reveal the engaged grid (`input[role="searchbox"]` focus / Ctrl+Space) and
+      `tauri_webview_dom_snapshot(type="structure")` it. Compare the tile `aria-label` set against
+      `SHOWABLE_FEATURES.map(f => f.name)` for the `spec/2868` tip.
+  **Expected:** the rendered tiles include `"Settings"` in addition to the prior showable features
+      (`["Mission Monitor","Query Viewer","Run CLI","Stepper Probe","Settings"]` on the tested tip);
+      the Settings tile is present with NO install/uninstall or onboarding step; non-showable
+      features remain absent; no duplicate tile (`dedupeByFeatureId`).
+  - **Edge:** present after app reload and with an empty/fresh store; the query filter matches
+    "settings"; deleted/closed Settings re-opens from the tile.
+
+## F-49 (AC-2 / #2868) — Settings tile opens the feature window through the own-kernel opener
+
+- [ ] F-49: Click the Settings tile; DOM-snapshot the resulting surface.
+  **Expected:** the tile routes through `onOpenFeature("settings", feature)` → `Home.openFeatureWindow`
+      → own-kernel `openWindow`, producing `div[role="group"][aria-label="Settings"]` with
+      `header.fredo-window__header` title "Settings" (not the retired modal). The launcher sinks
+      below it (`coveredByWindow`) and re-reveals on close. Re-invoke focuses/restores the SAME
+      window (no duplicate). Cross-ref `.opencode/tests/settings/` F-21/F-27.
+  - **Edge:** keyboard nav (arrows + Enter) opens it; Ctrl+Space raises the grid over the maximized
+    Settings window for the re-invoke.
+
+## F-50 (AC-1 / #2868) — No floating gear on the launcher surface
+
+- [ ] F-50: On a clean desktop (resting and engaged) and with a maximized window open, scan for the
+      retired floating settings button (`IconButton[aria-label="Settings"]`, bottom-right, z≈1250).
+  **Expected:** NO floating gear renders in any state — the launcher grid is the sole Settings
+      entry; the clock/LED cluster + app dock are unchanged. Cross-ref
+      `.opencode/tests/settings/` F-37/F-39 + `.opencode/tests/desktop-chrome/` R-21.
+  - **Edge:** no gear over a maximized window; no residual gear z-layer; console clean.
