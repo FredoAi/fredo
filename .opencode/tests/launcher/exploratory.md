@@ -194,11 +194,34 @@
 
 ## #2871 extension — smart-Enter / bar-chat probes
 
-- [ ] E-35: Probe a partial-match Enter (`set` filters tiles but equals none) — does Enter chat
+- [x] E-35: Probe a partial-match Enter (`set` filters tiles but equals none) — does Enter chat
       while the grid still shows/launches Settings by click, with no double action?
-- [ ] E-36: Probe a send while a generation is already streaming (Enter spam) — any interleaved
-      stream, duplicated token, or double busy-clear?
-- [ ] E-37: Probe a theme/accent switch mid-stream and while the bubble holds — stale color,
-      lost partial text, or console error?
-- [ ] E-38: Probe an IME/CJK composition in the command bar — does Enter commit the composed text
-      without sending a partial composition to the LLM?
+  - **Observed (PASS, no double action).** ACTIVE companion; `set` filtered the grid to the single
+    Settings tile with the chip `↵ send to Fredo`; clicking the tile launched Settings (no chat);
+    Enter with `set` would chat (non-exact). No double action. No finding.
+- [x] E-36: Probe a send while a generation is already streaming (Enter spam) — any interleaved
+    stream, duplicated token, or double busy-clear?
+  - **Finding (confirmed, promoted to F-53/F-58 FAIL).** Enter during an in-flight generation did
+    NOT start a second stream (single-in-flight holds) — but it did **not** no-op either: the send
+    gate `companionActive && !companionBusy` fell through to `openSelected()` and **launched the
+    selected tile mid-stream** (recorder `wins:0→1` at t=14507 while `aria-busy="true"`). The plan's
+    busy contract (UI/UX §1 state 5) requires READ-ONLY + Enter no-op. Promoted into the F-58 /
+    REQ-14 verdict.
+- [x] E-37: Probe a theme/accent switch mid-stream and while the bubble holds — stale color,
+    lost partial text, or console error?
+  - **Not driven this round (time-box, G-092).** Static token-native verification passed
+    (zero color literals in the changed files); no contrary evidence. Named blocker: round time-box.
+- [x] E-38: Probe an IME/CJK composition in the command bar — does Enter commit the composed text
+    without sending a partial composition to the LLM?
+  - **Not drivable in this automation round.** The MCP keyboard driver does not expose IME
+    composition state; named blocker (no IME emulation). The Enter handler reads the controlled
+    `query` value, so a committed composition would send the committed text — static reasoning only.
+
+### Promoted findings (#2871 round 1)
+
+1. **Busy-state divergence (promoted → F-53/F-58 / REQ-14 FAIL).** During generation the bar has no
+   `Fredo is replying…` placeholder/chip, the input is not `readOnly`, and Enter during busy
+   launches a tile instead of no-op'ing.
+2. **Reduced-motion cursor gap (promoted → F-58 / REQ-16 FAIL).** `Fredo-cursor-blink`
+   (`companion.css:142-145`) has no `@media (prefers-reduced-motion: reduce)` gate, so the
+   streaming cursor still blinks under reduced motion.
