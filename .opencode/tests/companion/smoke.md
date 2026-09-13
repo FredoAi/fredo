@@ -81,3 +81,22 @@
 
 - **S-14 PASS (live).** Companion renders in dark + light (ready controls) and the wizard gate (managed `llama-server` stopped via `stop_llama_server`). Screenshots `tester-dark-ready.png`, `tester-companion-accent.png`, `tester-not-ready-gate-accent.png`.
 - **S-15 PASS (live).** dark↔light + `accentPrimary` override with Settings open re-tints the chrome + panel (nav fill, Switch, buttons) with no stale color; console clean.
+
+## #2865 extension — wizard UX visual smoke
+
+> Quick paths for the not-ready wizard visual audit. Live policy — screenshot + console-clean.
+
+- [ ] S-16: Gate renders in both themes — `stop_llama_server` → Settings → Companion shows the
+      wizard ONLY (no toggle/tip/auto-return) in dark `classic` AND light `light-default`;
+      `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+- [ ] S-17: Error quick path — force a step failure; the card shows `error` with actionable copy +
+      a Retry control, never a raw stack/IPC string; screenshot succeeds; console clean.
+
+- [ ] S-18: Progress quick path — start a download/install; a moving affordance + status text is
+      visible (determinate per-file, indeterminate+narration otherwise); screenshot succeeds.
+
+- [ ] S-19: Visual artifacts + gates — BEFORE/AFTER frames exist under DISTINCT `before-*`/`after-*`
+      names; `.opencode/tmp/2865/visual-eval-before.md` + `before-after-verdict.md` exist;
+      `pnpm --filter @fredo/ui build` exit 0; frozen hooks present.
