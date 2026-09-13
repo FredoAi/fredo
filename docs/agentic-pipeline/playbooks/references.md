@@ -35,6 +35,14 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 
 
 
+### G-141: docs_sync_must_fast_forward_on_prefetched_main
+- **activation_date:** 2026-09-12
+- **observed:** #2865 — the SI's guardrail/doc-sync commit was made on a LOCAL `main` ref that predated the spec PR's squash merge (the PR was merged earlier in the same run, but the remote-tracking ref was not re-fetched). The first `git push origin main` was rejected non-fast-forward; to land the guardrails the SI fetched and merged the origin tip by SHA, which introduced a MERGE COMMIT into `main` and triggered the remote's "must not contain merge commits / changes via PR / required status check" rule violations (bypassed, but the intended linear write was violated).
+- **target_failure:** the SI commits the doc-sync/guardrail change on a stale local `main`, the push is rejected, and the recovery (merging the remote into `main`) writes a merge commit to the protected branch instead of a linear fast-forward.
+- **guardrail:** Before the doc-sync/guardrail write, the SI MUST `git fetch origin` and base on the CURRENT `origin/main` tip FIRST (reset the local ref to the fetched tip before applying/committing the doc change), so `git push origin main` is a true fast-forward (one linear commit) — never `git merge` the remote into `main`. If a push is rejected non-fast-forward, do NOT merge the origin tip; re-fetch, move the pending doc change onto a `main` reset to the fetched origin tip (worktree-independent ref update), re-commit linearly, push.
+- **home:** playbooks/self-improver.md (doc-sync step) + github.md (single-writer exception) + references.md (this record)
+- **effectiveness:** Pending (first observed #2865; the linear re-commit path is the candidate remedy)
+
 ### G-134: post_implementation_design_verdict_routing
 - **activation_date:** 2026-09-12
 - **observed:** #2864 (and re-validated by #2865) — a UX-audit spec requires a design-role visual verdict AFTER implementation, but the pipeline has no phase for a post-implementation design pass; the SI must route the design role back outside the phase model, and the verdict is not a timeline artifact of its own. #2864 flagged the gap; #2865 executed the routing: the SI dispatched the vision-capable UI/UX Expert twice (a BEFORE visual evaluation after the pre-fix capture, and a before-vs-after verdict after the fixed-tip capture), the tester carried the design verdict verbatim-in-substance with attribution into the single `## Tests Runs` comment, and the audit adjudicated AC-1/AC-4 from that carried evidence.
