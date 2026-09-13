@@ -80,3 +80,54 @@
       `var(--x)NN` introduced in the slice diff; `pnpm --filter @fredo/ui build` exit 0; `pnpm
       --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (any
       refreshed assertion owned per G-125). Reference R-4/R-5 + functional F-17/F-20.
+
+---
+
+## #2868 extension — the retired modal shell must not take settings capability with it (G-136)
+
+> Issue #2868 deletes `ProfileSettingsModal` + `FloatingSettingsButton` and moves Settings into a
+> `FredoFeatureClass` window opened from the launcher grid. **G-136 reconciliation:** R-1 ("dialog
+> still opens from the gear") and R-7 ("gear still opens the 960×620 dialog") pin the RETIRED
+> container — their live expectations are SUPERSEDED by R-10..R-16. Historical records above are
+> preserved verbatim. R-2..R-6 (content / Save contract / token contract / build) remain in force
+> for the migrated content. Verification policy: live (rendered-webview receipt per G-108; NO
+> fabricated `telemetry_spans`).
+
+- [ ] **R-10 (SUPERSEDES R-1/R-7 — the entry is the launcher grid, not the gear):** Settings is
+      reachable ONLY via the launcher tile (`[role="button"][aria-label="Settings"]`) and opens a
+      `div[role="group"][aria-label="Settings"]` feature window. The floating `IconButton`
+      `aria-label="Settings"` and the `ProfileSettingsModal` (`role="dialog"`, 960×620) are GONE
+      from the running app and the codebase. Reference functional F-21/F-37/F-39.
+  - **Edge:** no gear over a maximized window; no residual modal `chakra-dialog__content`; the
+    launcher grid is the sole entry.
+
+- [ ] **R-11 (section content unchanged by the container swap):** Companion
+      (`CompanionSettingsPanel`), Appearance (`ThemingSettings` + `DockPositionSettings`), Fredo
+      Setup (`SetupWizard`), Telemetry (`TelemetrySettings`), and every discovered
+      `f.hasSettings && f.renderSettings` section render functionally unchanged in the new window.
+      Reference functional F-29/F-30; cross-ref `.opencode/tests/theming/`.
+
+- [ ] **R-12 (SaveFooter contract preserved):** the unified Save footer still shows only when a
+      panel registers a save fn (`useSettingsSave` / `SettingsSaveContext.saveFn`) and hides
+      otherwise; the four registering panels (`RunCliSettings`, `WorkItemsSettings`,
+      `DiagramSettings`, `ModelStorageSettings`) keep their `var(--accent-contrast)` label; the
+      per-section provider reset (`SettingsSaveProvider key={activeSection}`) is retained.
+      Reference functional F-31/F-32.
+
+- [ ] **R-13 (companion readiness gate preserved):** while not ready OR the first readiness probe is
+      in flight, Companion renders the wizard ONLY and never the normal controls; on ready the
+      controls swap in place. Reference functional F-35/F-36 + companion R-25/R-27 + llama-setup.
+
+- [ ] **R-14 (token contract for the new container):** the new Settings feature/chrome files carry
+      ZERO hardcoded hex/`rgba(`/`rgb(`/`hsla(` and NO `var(--x)NN` alpha-append; colors use theme
+      tokens / CSS vars / `tint()`. Cross-ref R-4 + functional F-40.
+
+- [ ] **R-15 (no re-render loop / console clean):** opening/closing the Settings window, switching
+      sections, and switching theme/accent introduce no `Maximum update depth exceeded` /
+      `Uncaught` / `Error:`. Cross-ref R-6 + functional F-30/F-36.
+
+- [ ] **R-16 (no test weakening / build gates):** `pnpm --filter @fredo/ui build` exit 0 zero TS
+      errors; `pnpm --filter @fredo/ui test:run` green; no existing assertion
+      weakened/disabled/deleted (a refreshed assertion owned per G-125). Tests referencing the
+      deleted `ProfileSettingsModal`/`FloatingSettingsButton` are updated in the same scope and
+      named. Reference R-5 + functional F-37.
