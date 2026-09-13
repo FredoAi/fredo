@@ -80,3 +80,10 @@
 > ONE window" invariant remains. Historical record above preserved. Live policy.
 
 - [ ] S-12: With the Run CLI terminal window open (`tauri_manage_window(action="list")` = main + `run-cli-terminal`), Ctrl+right-click INSIDE the terminal window. EXPECTED: the terminal hosts the single interactive Fredo (teleport-in then idle at the clamped point); the MAIN desktop renders the empty-seat placeholder (80×100) at the centre slot and NO second Fredo — global interactive-Fredo count == 1 at every settle; a 5 s idle auto-return returns Fredo to the main seat; `tauri_read_logs(source="console")` on BOTH windows is clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge (auto-return → teleport, defect F-68 / #2870 round 3):** after the 5 s idle auto-return
+    has returned Fredo to the MAIN seat (settle complete, `isAutoHidden=true`), Ctrl+right-click
+    INSIDE the terminal again to teleport away. EXPECTED: exactly ONE interactive Fredo present
+    (the away overlay in the terminal — count == 1, never zero), the main seat renders the
+    empty-seat placeholder (`[data-state="away"]`), and the host idle gate RE-ARMS so a further
+    5 s idle auto-return brings Fredo home again — no stuck zero-Fredo state without a companion
+    toggle; both windows' consoles clean.
