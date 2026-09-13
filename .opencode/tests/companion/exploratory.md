@@ -177,3 +177,12 @@
 - [ ] **E-38 — BEFORE/AFTER re-capture collision (G-135).** Re-run the AFTER capture and confirm
       the BEFORE frames/names survive (distinct `before-*` vs `after-*`). Any BEFORE frame
       overwritten by the AFTER pass is a finding (promotes to F-57).
+
+## #2871 extension — bar-chat probes
+
+- [ ] E-39: Probe a bar send vs an avatar click in the same tick — any double generation or
+      stray joke?
+- [ ] E-40: Probe a bar send then a Ctrl+right-click teleport mid-stream — does the stream hand
+      off cleanly (no stuck status/bubble in the wrong window)?
+- [ ] E-41: Probe a mid-stream error (kill the server) — does the bubble show the readable line
+      and recover to rest without a stuck cursor?
