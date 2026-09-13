@@ -309,3 +309,55 @@ functional F-35/F-36 (AC2 FAIL).
   (Task Manager) path remains covered by the ST-7 startup PID sweep (CI unit-tested) — not re-driven live.
 - **E-29 (partially verified):** an exit during an in-flight/just-completed generation left no orphan; the
   true mid-stream exit was not re-driven (the F-39 long leg completed in ~9 s).
+
+## Probes — #2865 (wizard UX visual audit)
+
+> Unscripted visual/a11y edge probes for issue #2865. A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note). Reach states through the real product
+> (`stop_llama_server`, the wizard's buttons, the settings seams) — never a stub.
+
+- [ ] **E-35 — Grayscale / color-blind distinguishability.** Desaturate a screenshot (or read the
+      states grayscale) across missing/running/error/installed and the server trio. Are the states
+      still distinguishable by icon + text alone? Any state distinguishable only by hue is a
+      finding (promotes to F-52).
+
+- [ ] **E-36 — Pale-accent live switch mid-work.** While a per-file download or server `starting`
+      is in flight, switch to a light/desaturated accent preset. Does every accent-linked surface
+      re-tint live with no stale color, and does the progress/phase narration stay readable? Any
+      stale color / illegible accent surface is a finding (promotes to F-56).
+
+- [ ] **E-37 — Rapid theme churn in an error state.** Toggle dark↔light and change the accent
+      repeatedly while a step is in `error`. Does the error copy/retry affordance re-tint with no
+      stale border and stay legible? Any stale color is a finding (promotes to F-55/F-56).
+
+- [ ] **E-38 — Reduced motion.** Under `prefers-reduced-motion: reduce`, does every wizard state
+      stay legible and does no affordance become motion-only (no `opacity:0` work indicator)? The
+      driver may not flip the media query — record a named blocker if so, and verify the state
+      semantics statically (promotes to F-49/F-51).
+
+- [ ] **E-39 — Long error copy wrapping.** Force a long failure message (long path / long winget
+      output tail). Does the error text wrap inside the card without overflowing or truncating the
+      Retry affordance, in both themes? Any clipped/overflowing error is a finding (promotes to
+      F-50/F-55).
+
+- [ ] **E-40 — Long resolved path in the detail line.** With a very long/spaced path present or
+      resolved, does the mono detail line wrap (`wordBreak`) without breaking the card layout?
+      Any overflow is a finding (promotes to F-53).
+
+- [ ] **E-41 — Narrow window / long filenames.** At a narrow window and with the longest model
+      filename (`gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf` / `MTP/…gguf`), do the rows stay usable and
+      untruncated in both themes? Any clipped control is a finding (promotes to F-53).
+
+- [ ] **E-42 — Focus visibility after failure.** Trigger a step error; confirm focus moved to the
+      error row and that the focus ring is visible on both themes and under the non-default accent.
+      An invisible focus ring is a finding (promotes to F-55).
+
+- [ ] **E-43 — Keyboard-only walk.** Tab through the whole wizard (steps, install, retry, re-check)
+      in each state; is the order logical and every control reachable/activatable? Any focus trap
+      or unreachable Retry is a finding (promotes to F-60).
+
+- [ ] **E-44 — Screen-reader state announcements.** Watch the `role=status aria-live=polite`
+      summary across a state transition (checking → missing → running → installed/error); is the
+      change announced once (no duplicate announcement), and does the error group's
+      `aria-label` match the failed step? Any missing/duplicated announcement is a finding
+      (promotes to F-49/F-50).
