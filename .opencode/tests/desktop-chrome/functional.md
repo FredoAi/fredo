@@ -206,3 +206,7 @@ webview window min/max/close controls). Seeded from issue #2825.
 > `pointermove` to reveal the rail — review whether it needs updating for the new
 > resting-visible rest state (if the rail no longer requires the edge gesture to be
 > visible, the helper is a behavioral regression trap on AC1).
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — result
+
+- **F-24 PASS (live).** Clean resting desktop (all Settings windows closed) AND while the Settings window was open: `document.querySelectorAll('button[aria-label="Settings"]').length === 0` — NO floating gear in either state; no residual gear z-layer. The chrome band/clock/LED/dock were unchanged. The launcher `[role="button"][aria-label="Settings"]` tile is the sole Settings entry and opens `div[role="group"][aria-label="Settings"]`. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
