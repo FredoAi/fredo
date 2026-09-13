@@ -151,6 +151,8 @@ Remediation ladder when `ref` is false:
 
 Never loop implementation rounds on this signature — it is tooling state, not a product defect.
 
+**Settings → Telemetry wedge (G-145, observed #2868):** navigating to the Settings Telemetry section can wedge the bridge — `execute_js`/`read_logs` time out with no product error in the console, matching the pre-existing full-viewport Telemetry capture quirk (#2864 E-3). Recover with a driver-session stop/start (the G-067 ladder), re-verify the section rendered, and do not report the timeout as a product defect.
+
 ### Structured telemetry (error spans, traces, metrics)
 
 For runtime errors, traces, and performance data from the Rust tracing subsystem, use the **telemetry-query** skill:
