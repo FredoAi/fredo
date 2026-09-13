@@ -237,3 +237,16 @@
 
 - **R-33 PASS (live).** Grid set = `["Mission Monitor","Query Viewer","Run CLI","Settings","Stepper Probe"]` (Settings added, prior 4 intact); keyboard ↑↓/←→ + Enter navigation worked; window-kernel/launcher chrome unchanged.
 - **R-34 PASS (live).** Settings routed through `onOpenFeature → openFeatureWindow → openWindow`; re-invoke de-duped to one window id; no floating gear in any state; Ctrl+Space over the open (maximized) Settings window re-raised the launcher; console clean. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2870 extension — home-seat + no-shift invariants (G-136)
+
+> Issue #2870 reserves the launcher centre seat slot (80×100 + `mb="4"`) unconditionally and renders Fredo or
+> an empty seat in it. **G-136 supersedes/extends:** R-29's launcher-layout baseline is EXTENDED (the seat
+> slot no longer unmounts on the companion flip); R-32's "companion surface unchanged / git diff shows NO
+> companion file change" is SUPERSEDED — #2870 deliberately changes companion files (entity extraction).
+> Historical PASS records above are preserved. R-22..R-28 remain in force. Live policy.
+
+- [ ] R-35: The launcher centre seat slot renders UNCONDITIONALLY — measure the centred-column height + the command-bar `getBoundingClientRect().y` with the companion OFF, ON-at-home, and ON-away, plus after a 5 s idle auto-return. Height and `y` are constant within ±1 px in every state; no new scrollbar/overflow/clip at default AND 700×900. The mascot/slot size (80×100, `AVATAR_SM`) is unchanged, and the `mb="4"` spacing is preserved. Reference launcher S-14 + #2852 R-29.
+- [ ] R-36: The launcher chrome beyond the seat is unchanged — FREDO notch, command bar, app grid + keyboard nav, keyboard-hints row, ESC keycap, clock/LED chrome, side ticks, dot-grid, rounded frame, and the open/close lifecycle behave as before with the companion ON and OFF; the Settings tile/`SHOWABLE_FEATURES` grid set and `dedupeByFeatureId` are unchanged. Reference R-26..R-34 + #2868 R-33/R-34.
