@@ -31,6 +31,13 @@ export const clampIdleTimeout = (s: number): number => {
   return Math.min(Math.max(Math.round(s), MIN_IDLE_TIMEOUT_S), MAX_IDLE_TIMEOUT_S);
 };
 
+// ── Welcome-on-turn-on (#2870 ST-1 / R-2) ─────────────────────────────────────
+// Exact copy (deterministic — no random variant) shown through `showMessage`
+// with an explicit 4000 ms duration on every OFF→ON turn-on. On-screen only;
+// no audio / TTS anywhere.
+
+export const WELCOME_TEXT = 'At your service. How can I help?';
+
 // ── Cross-window presence coordination (#2853 ST-2) ──────────────────────────
 // Each Tauri WebviewWindow loads this same bundle; distinguish them by ?view=.
 // Mirrors the window identity + Tauri guard in FredoCompanion (the component is
@@ -43,9 +50,13 @@ const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in windo
 /** Global broadcast payload — every window's CompanionProvider listens. */
 interface CompanionPresencePayload {
   from: string;
-  reason: 'idle-settle' | 'show' | 'hide';
+  // #2870 ST-1: `teleport` added — emitted by the destination window when a
+  // teleport lands, so every other window learns Fredo left the home seat.
+  reason: 'idle-settle' | 'show' | 'hide' | 'teleport';
   autoHidden?: boolean;
   visible?: boolean;
+  // #2870 ST-1: canonical home/away location — transient, never persisted.
+  away?: boolean;
 }
 
 interface CompanionContextState {
@@ -53,6 +64,11 @@ interface CompanionContextState {
   message: string | null;
   messageDuration: number;
   isVisible: boolean;
+  // #2870 ST-1: ONE canonical location for the single Fredo. `false` = he is at
+  // the launcher's home seat; `true` = he has left it (teleported within a
+  // window, or hosted/teleported in another window). Transient — NEVER
+  // persisted; synced cross-window through `companion-presence {away}`.
+  isAway: boolean;
   position: CompanionPosition;
   // Transient presence flags — NEVER persisted; `isAutoHidden` is cross-window
   // synced, `isAutoReturning`/`isHosting`/`isInUse` are host-window-local.
@@ -71,12 +87,16 @@ type CompanionAction =
   | { type: 'HIDE_MESSAGE' }
   | { type: 'SET_VISIBLE'; payload: boolean }
   | { type: 'TELEPORT'; payload: CompanionPosition }
+  // #2870 ST-1: the leaving window marks Fredo away LOCALLY on a cross-window
+  // leave, so it never transiently renders a second Fredo at the seat before the
+  // destination's `companion-presence {away:true}` broadcast lands.
+  | { type: 'MARK_AWAY' }
   | { type: 'AUTO_RETURN_REQUESTED' }
   | { type: 'AUTO_RETURN_SETTLED' }
   | { type: 'CANCEL_AUTO_RETURN' }
   | { type: 'SET_HOSTING'; payload: boolean }
   | { type: 'SET_IN_USE'; payload: boolean }
-  | { type: 'SYNC_PRESENCE'; payload: { visible?: boolean; autoHidden?: boolean } };
+  | { type: 'SYNC_PRESENCE'; payload: { visible?: boolean; autoHidden?: boolean; away?: boolean } };
 
 interface CompanionContextValue {
   state: CompanionContextState;
@@ -85,6 +105,13 @@ interface CompanionContextValue {
   hideMessage: () => void;
   setVisible: (visible: boolean) => void;
   teleport: (x: number, y: number) => void;
+  /**
+   * #2870 ST-1: mark Fredo away from the home seat in THIS window without a
+   * broadcast — the leaving window calls it with the cross-window gesture so no
+   * transient second Fredo renders before the destination's broadcast lands.
+   * Within-window teleports get the same flag from `teleport(x, y)`.
+   */
+  markAway: () => void;
   /** (Re)arm the host idle timer — any companion interaction; cancels an in-flight return. */
   notifyInteraction: () => void;
   idleTimeoutSeconds: number;
@@ -104,7 +131,11 @@ const initialState: CompanionContextState = {
   message: null,
   messageDuration: 4000,
   isVisible: false,
-  position: { x: window.innerWidth - 120, y: window.innerHeight - 160 },
+  isAway: false,
+  // #2870 ST-2b: there is NO bottom-right corner default. Fredo renders at the
+  // home seat (its own flow position) until a teleport moves him; the away
+  // overlay's real coordinates come ONLY from a teleport target / gesture.
+  position: { x: 0, y: 0 },
   isAutoHidden: false,
   isAutoReturning: false,
   isHosting: false,
@@ -122,13 +153,28 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
     case 'SET_VISIBLE':
       // Showing (or hiding by preference) clears any transient auto-return so the
       // companion is designated present again — without touching the persisted key.
-      return { ...state, isVisible: action.payload, isAutoHidden: false, isAutoReturning: false };
+      // #2870 ST-1: a role change also returns Fredo HOME (R-3 — OFF renders the
+      // decorative mascot at the seat; ON renders the companion in place).
+      return { ...state, isVisible: action.payload, isAway: false, isAutoHidden: false, isAutoReturning: false };
     case 'TELEPORT':
-      return { ...state, position: action.payload };
+      // #2870 ST-1: the ONLY relocation mechanism — any teleport leaves the seat.
+      // #2870 F-68: a relocation MUST clear any prior hide state so the relocated
+      // Fredo is present at its new location. A stale `isAutoHidden` (left by a
+      // prior idle auto-return) otherwise gates the away overlay off AND keeps the
+      // host idle gate disarmed → zero Fredos, stuck until an OFF/ON toggle.
+      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false };
+    case 'MARK_AWAY':
+      // #2870 ST-1: idempotent local away (cross-window leave).
+      // #2870 F-68: clear any prior hide state on relocation too (idempotent when
+      // already away AND already un-hidden — no state churn).
+      return state.isAway && !state.isAutoHidden
+        ? state
+        : { ...state, isAway: true, isAutoHidden: false };
     case 'AUTO_RETURN_REQUESTED':
       return state.isAutoReturning ? state : { ...state, isAutoReturning: true };
     case 'AUTO_RETURN_SETTLED':
-      return { ...state, isAutoHidden: true, isAutoReturning: false };
+      // #2870 ST-1: the idle auto-return is a RETURN to the home seat (R-3/R-5).
+      return { ...state, isAway: false, isAutoHidden: true, isAutoReturning: false };
     case 'CANCEL_AUTO_RETURN':
       return state.isAutoReturning ? { ...state, isAutoReturning: false } : state;
     case 'SET_HOSTING':
@@ -140,10 +186,24 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       // in-flight return. Never persists (setVisible is the only persisted writer).
       const nextVisible = action.payload.visible === undefined ? state.isVisible : action.payload.visible;
       const nextAutoHidden = action.payload.autoHidden === undefined ? state.isAutoHidden : action.payload.autoHidden;
-      if (nextVisible === state.isVisible && nextAutoHidden === state.isAutoHidden && !state.isAutoReturning) {
+      // #2870 ST-1: the canonical home/away location is synced too (a remote
+      // teleport marks Fredo away; a remote idle-settle/show brings him home).
+      const nextAway = action.payload.away === undefined ? state.isAway : action.payload.away;
+      if (
+        nextVisible === state.isVisible
+        && nextAutoHidden === state.isAutoHidden
+        && nextAway === state.isAway
+        && !state.isAutoReturning
+      ) {
         return state; // idempotent — prevents a self-echo broadcast from looping
       }
-      return { ...state, isVisible: nextVisible, isAutoHidden: nextAutoHidden, isAutoReturning: false };
+      return {
+        ...state,
+        isVisible: nextVisible,
+        isAway: nextAway,
+        isAutoHidden: nextAutoHidden,
+        isAutoReturning: false,
+      };
     }
     default:
       return state;
@@ -240,23 +300,40 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, []);
 
   const setVisible = useCallback((visible: boolean) => {
+    // #2870 ST-1 (R-2): fire the welcome bubble on the OFF→ON transition only
+    // (expressed as `visible && was not visible`). The persisted-load effect
+    // dispatches SET_VISIBLE directly, so a restored preference never greets.
+    const wasVisible = stateRef.current.isVisible;
     // Apply locally FIRST, then broadcast — the host companion unmounts before
     // any other window's mascot mounts (never two Fredos).
     dispatch({ type: 'SET_VISIBLE', payload: visible });
     setPersistedVisible(visible);
-    emitPresence({ reason: visible ? 'show' : 'hide', visible, autoHidden: false });
-  }, [setPersistedVisible, emitPresence]);
+    emitPresence({ reason: visible ? 'show' : 'hide', visible, autoHidden: false, away: false });
+    if (visible && !wasVisible) showMessage(WELCOME_TEXT, 4000);
+  }, [setPersistedVisible, emitPresence, showMessage]);
 
   const teleport = useCallback((x: number, y: number) => {
     // #2853 ST-3: a teleport is a companion interaction — reset the idle timer.
     notifyInteraction();
+    // #2870 ST-1: a teleport is the ONLY relocation mechanism — Fredo leaves the
+    // home seat, so mark him away locally AND broadcast the new location.
+    // #2870 F-68: the broadcast also carries `autoHidden:false` so remote windows
+    // clear a stale hide flag instead of retaining it (which would hide the
+    // relocated Fredo there too).
     dispatch({ type: 'TELEPORT', payload: { x, y } });
-  }, [notifyInteraction]);
+    emitPresence({ reason: 'teleport', away: true, autoHidden: false });
+  }, [notifyInteraction, emitPresence]);
+
+  const markAway = useCallback(() => {
+    // #2870 ST-1: local-only away for the leaving window (no broadcast — the
+    // destination's `teleport` broadcast is authoritative for other windows).
+    dispatch({ type: 'MARK_AWAY' });
+  }, []);
 
   const confirmAutoReturn = useCallback(() => {
     // Settle locally FIRST, then broadcast the global presence.
     dispatch({ type: 'AUTO_RETURN_SETTLED' });
-    emitPresence({ reason: 'idle-settle', autoHidden: true });
+    emitPresence({ reason: 'idle-settle', autoHidden: true, away: false });
   }, [emitPresence]);
 
   const setHosting = useCallback((hosting: boolean) => {
@@ -280,8 +357,8 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<CompanionPresencePayload>('companion-presence', (ev) => {
-        const { visible, autoHidden } = ev.payload;
-        dispatch({ type: 'SYNC_PRESENCE', payload: { visible, autoHidden } });
+        const { visible, autoHidden, away } = ev.payload;
+        dispatch({ type: 'SYNC_PRESENCE', payload: { visible, autoHidden, away } });
       }).then((fn) => {
         if (cancelled) { fn(); return; }
         unlisten = fn;
@@ -308,11 +385,11 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => () => clearIdleTimer(), [clearIdleTimer]);
 
   const value = useMemo<CompanionContextValue>(() => ({
-    state, setState, showMessage, hideMessage, setVisible, teleport,
+    state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse,
   }), [
-    state, setState, showMessage, hideMessage, setVisible, teleport,
+    state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse,
   ]);

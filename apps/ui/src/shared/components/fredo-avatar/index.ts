@@ -7,5 +7,5 @@ export {
   expandFredoRects,
 } from './fredoAvatarGeometry';
 export type { FredoRect, FredoAvatarSourceRect } from './fredoAvatarGeometry';
-export { AVATAR_SM, AVATAR_MD, AVATAR_SIZE } from './fredoAvatarSizes';
+export { AVATAR_SM, AVATAR_MD, AVATAR_SIZE, AVATAR_SM_CSS, toCssPx } from './fredoAvatarSizes';
 export type { FredoAvatarSize } from './fredoAvatarSizes';

@@ -13,7 +13,9 @@ import { tint } from '../../../../shared/utils/colorTint';
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
 import { LauncherCommandBar } from './LauncherCommandBar';
-import { FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
+import { EmptySeat } from './EmptySeat';
+import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
+import { CompanionEntity } from '../../../../shared/components/companion';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
 
 /**
@@ -121,14 +123,20 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const { isConnected } = useConnectionStatus();
   const { state: companion } = useCompanion();
 
-  // #2853 ST-4: exactly ONE Fredo globally — the desktop mascot yields to the
-  // companion whenever the companion is designated present. `isVisible` is the
-  // persisted preference; `isAutoHidden` is the cross-window-synced transient
-  // flag (ST-2), so the main-window mascot stays hidden while the companion is
-  // hosted in another webview and reappears after an idle auto-return (or when
-  // the preference is toggled off). Deliberately INDEPENDENT of `isInThisWindow`:
+  // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
+  // band (the wrapper below owns the size + `mb="4"`), so the command bar's
+  // geometry is identical across every state. The slot CONTENT is chosen from
+  // the two transient presence booleans — primitive reads only (never an object
+  // identity / array `.length`, AGENTS.md #523):
+  //   OFF  (`!isVisible`)                  → the decorative idle mascot (unchanged)
+  //   ON + at home (`isVisible && !isAway`) → the interactive companion in the seat
+  //   ON + away (`isVisible && isAway`)     → the static EmptySeat placeholder
+  // `isAway` is the canonical location flag (#2870 ST-1): a teleport (within a
+  // window, or a cross-window hand-off) leaves the seat; a role change / idle
+  // auto-return brings Fredo home. Deliberately INDEPENDENT of `isInThisWindow`:
   // the companion may live in the terminal window while the mascot lives here.
-  const companionPresent = companion.isVisible && !companion.isAutoHidden;
+  const companionVisible = companion.isVisible;
+  const companionAway = companion.isVisible && companion.isAway;
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -552,17 +560,27 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             '&::-webkit-scrollbar-track': { background: 'transparent' },
           }}
         >
-          {/* #2853 ST-4: the decorative desktop mascot renders ONLY when the
-              companion is NOT designated present, so exactly one Fredo shows at
-              a time. It stays purely decorative — no role/tabIndex/click, and
-              the SVG keeps its own `aria-hidden="true"` (FredoAvatar). #2854 ST-4
-              wires only the mascot's INTERNAL expression (`data-state` + avatar
-              `state`): thinking/happy/playful/idle — surface-local, never context. */}
-          {!companionPresent && (
-            <Box mb="4" className="fredo-avatar-idle" data-state={desktopState}>
-              <FredoAvatar size="sm" state={desktopState} />
-            </Box>
-          )}
+          {/* #2870 ST-3: the seat slot is rendered UNCONDITIONALLY — the wrapper
+              owns the exact 80×100 footprint + the `mb="4"` band, so turning the
+              companion on/off (or Fredo teleporting away) never changes the
+              command bar's geometry. Exactly one of the three states renders
+              inside it (see the predicate above). */}
+          <Box position="relative" width={AVATAR_SM_CSS.width} height={AVATAR_SM_CSS.height} mb="4">
+            {/* OFF: decorative desktop mascot — unchanged markup (no role/tabIndex/
+                click; the SVG keeps its own `aria-hidden="true"`), only the
+                wrapper-owned `mb="4"` moved up to the seat frame. #2854 ST-4 wires
+                only the mascot's INTERNAL expression (`data-state` + avatar
+                `state`): thinking/happy/playful/idle — surface-local, never context. */}
+            {!companionVisible && (
+              <Box className="fredo-avatar-idle" data-state={desktopState}>
+                <FredoAvatar size="sm" state={desktopState} />
+              </Box>
+            )}
+            {/* ON + away: the static vacated-seat placeholder (no motion, inert). */}
+            {companionAway && <EmptySeat />}
+            {/* ON + at home: the interactive companion occupying the seat. */}
+            {companionVisible && !companionAway && <CompanionEntity surface="seat" />}
+          </Box>
           <LauncherCommandBar
             query={query}
             onQueryChange={handleQueryChange}

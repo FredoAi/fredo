@@ -43,6 +43,7 @@ import {
   MIN_IDLE_TIMEOUT_S,
   MAX_IDLE_TIMEOUT_S,
   IDLE_TIMEOUT_SETTING_KEY,
+  WELCOME_TEXT,
 } from '@/shared/contexts/CompanionContext';
 import { settingsService } from '@/features/settings';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -88,16 +89,19 @@ let api: CompanionApi;
 
 function PresenceProbe() {
   api = useCompanion();
-  const { isVisible, isAutoHidden, isAutoReturning, isHosting, isInUse } = api.state;
+  const { isVisible, isAway, isAutoHidden, isAutoReturning, isHosting, isInUse, message, messageDuration } = api.state;
   return (
     <div
       data-testid="presence"
       data-visible={String(isVisible)}
+      data-away={String(isAway)}
       data-autohidden={String(isAutoHidden)}
       data-autoreturning={String(isAutoReturning)}
       data-hosting={String(isHosting)}
       data-inuse={String(isInUse)}
       data-present={String(isVisible && !isAutoHidden)}
+      data-message={message ?? ''}
+      data-message-duration={String(messageDuration)}
       data-idle-timeout={String(api.idleTimeoutSeconds)}
     />
   );
@@ -107,11 +111,14 @@ function presence() {
   const el = screen.getByTestId('presence');
   return {
     visible: el.getAttribute('data-visible') === 'true',
+    away: el.getAttribute('data-away') === 'true',
     autoHidden: el.getAttribute('data-autohidden') === 'true',
     autoReturning: el.getAttribute('data-autoreturning') === 'true',
     hosting: el.getAttribute('data-hosting') === 'true',
     inUse: el.getAttribute('data-inuse') === 'true',
     present: el.getAttribute('data-present') === 'true',
+    message: el.getAttribute('data-message') ?? '',
+    messageDuration: Number(el.getAttribute('data-message-duration')),
   };
 }
 
@@ -520,5 +527,228 @@ describe('CompanionProvider — continuous "in use" suppression (#2853 ST-3 roun
     expect(presence().inUse).toBe(false);
     expect(setSpy).not.toHaveBeenCalled();
     setSpy.mockRestore();
+  });
+});
+
+// ── 8. Canonical home/away location state (#2870 ST-1) ────────────────────────
+
+describe('CompanionProvider — canonical location isAway (#2870 ST-1)', () => {
+  it('teleport marks Fredo away and broadcasts companion-presence {reason: teleport, away: true}', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    expect(presence().away).toBe(false);
+
+    act(() => { api.teleport(123, 456); });
+
+    expect(presence().away).toBe(true);
+    await waitFor(() => {
+      expect(tauriEvent.emit).toHaveBeenCalledWith(
+        'companion-presence',
+        expect.objectContaining({ reason: 'teleport', away: true }),
+      );
+    });
+  });
+
+  // ── #2870 F-68: a relocation must clear any prior hide state ────────────────
+  // After an idle auto-return the stale `isAutoHidden` must be cleared by the
+  // next relocation, or the away overlay stays gated off AND the host idle gate
+  // never re-arms → zero Fredos, stuck until a manual OFF/ON toggle.
+  it('teleport after confirmAutoReturn clears isAutoHidden and the idle gate re-arms (F-68)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.setHosting(true); });
+    act(() => { vi.advanceTimersByTime(5_000); });
+    act(() => { api.confirmAutoReturn(); });
+    expect(presence().away).toBe(false);
+    expect(presence().autoHidden).toBe(true);
+
+    act(() => { api.teleport(300, 300); });
+    expect(presence().away).toBe(true, 'teleport leaves the home seat');
+    expect(presence().autoHidden).toBe(false, 'a relocation clears the prior hide state');
+    expect(presence().autoReturning).toBe(false);
+
+    // The host idle gate re-armed: a full quiet period requests the return again.
+    act(() => { vi.advanceTimersByTime(5_000); });
+    expect(presence().autoReturning).toBe(true, 'the idle gate re-armed after the relocation');
+  });
+
+  it('teleport broadcast carries autoHidden:false so remote windows clear a stale hide (F-68)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+
+    act(() => { api.teleport(123, 456); });
+
+    await waitFor(() => {
+      expect(tauriEvent.emit).toHaveBeenCalledWith(
+        'companion-presence',
+        expect.objectContaining({ reason: 'teleport', away: true, autoHidden: false }),
+      );
+    });
+  });
+
+  it('markAway marks Fredo away locally without persisting or broadcasting', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+    tauriEvent.emit.mockClear();
+
+    act(() => { api.markAway(); });
+
+    expect(presence().away).toBe(true);
+    expect(setSpy).not.toHaveBeenCalled();
+    await act(async () => {});
+    expect(tauriEvent.emit).not.toHaveBeenCalled();
+    setSpy.mockRestore();
+  });
+
+  it('markAway is idempotent (no state churn when already away)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    act(() => { api.markAway(); });
+    const first = api.state;
+    act(() => { api.markAway(); });
+    expect(presence().away).toBe(true);
+    expect(api.state).toBe(first, 'a redundant MARK_AWAY returns the same state object');
+  });
+
+  it('setVisible(true) brings Fredo home (SET_VISIBLE clears isAway)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    act(() => { api.teleport(300, 300); });
+    expect(presence().away).toBe(true);
+
+    act(() => { api.setVisible(true); });
+    expect(presence().away).toBe(false);
+  });
+
+  it('setVisible(false) also clears isAway (role change returns him home)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    act(() => { api.teleport(300, 300); });
+    expect(presence().away).toBe(true);
+
+    act(() => { api.setVisible(false); });
+    expect(presence().away).toBe(false);
+    expect(presence().visible).toBe(false);
+  });
+
+  it('AUTO_RETURN_SETTLED returns Fredo home while auto-hidden (R-3/R-5)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.teleport(300, 300); });
+    expect(presence().away).toBe(true);
+    act(() => { api.setHosting(true); });
+    act(() => { vi.advanceTimersByTime(5_000); });
+    expect(presence().autoReturning).toBe(true);
+
+    act(() => { api.confirmAutoReturn(); });
+    expect(presence().away).toBe(false, 'the idle auto-return is a return to the seat');
+    expect(presence().autoHidden).toBe(true);
+    expect(presence().visible).toBe(true, 'the persisted preference stays ON');
+  });
+
+  it('broadcasts away:false on idle-settle so other windows re-occupy the seat', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+
+    act(() => { api.confirmAutoReturn(); });
+
+    await waitFor(() => {
+      expect(tauriEvent.emit).toHaveBeenCalledWith(
+        'companion-presence',
+        expect.objectContaining({ reason: 'idle-settle', autoHidden: true, away: false }),
+      );
+    });
+  });
+
+  it('SYNC_PRESENCE applies a remote away/visible/autoHidden without persisting', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    deliverPresence({ from: 'terminal', reason: 'teleport', away: true });
+    expect(presence().away).toBe(true);
+    expect(presence().visible).toBe(true, 'a remote teleport leaves the local preference untouched');
+
+    deliverPresence({ from: 'terminal', reason: 'idle-settle', autoHidden: true, away: false });
+    expect(presence().away).toBe(false);
+    expect(presence().autoHidden).toBe(true);
+    expect(setSpy).not.toHaveBeenCalled(); // no persist / echo loop
+    setSpy.mockRestore();
+  });
+
+  it('isAway is transient — a remote away never writes a persisted key', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    deliverPresence({ from: 'terminal', reason: 'teleport', away: true });
+    deliverPresence({ from: 'terminal', reason: 'show', visible: true, autoHidden: false, away: false });
+
+    expect(setSpy).not.toHaveBeenCalled();
+    setSpy.mockRestore();
+  });
+});
+
+// ── 8b. Neutral position — no bottom-right corner default (#2870 ST-2b) ───────
+
+describe('CompanionProvider — neutral position, no corner default (#2870 ST-2b)', () => {
+  it('initializes position neutral (the bottom-right corner default is removed)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    expect(api.state.position).toEqual({ x: 0, y: 0 });
+  });
+
+  it('teleport is the only relocation source — it carries the supplied coordinates', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+
+    act(() => { api.teleport(321, 234); });
+
+    expect(api.state.position).toEqual({ x: 321, y: 234 });
+    expect(presence().away).toBe(true);
+  });
+});
+
+// ── 9. Welcome on OFF→ON turn-on (#2870 ST-1 / R-2) ──────────────────────────
+
+describe('CompanionProvider — welcome on turn-on (#2870 ST-1 / R-2)', () => {
+  it('shows WELCOME_TEXT for an explicit 4000 ms on the OFF→ON transition', async () => {
+    await mountProvider({ visible: false, timeoutS: 5 });
+    vi.useFakeTimers();
+    expect(presence().message).toBe('');
+
+    act(() => { api.setVisible(true); });
+
+    expect(presence().message).toBe(WELCOME_TEXT);
+    expect(presence().messageDuration).toBe(4000);
+    expect(presence().visible).toBe(true);
+    expect(presence().away).toBe(false);
+
+    // Auto-hide only at the explicit 4 s duration (the single dismissTimerRef).
+    act(() => { vi.advanceTimersByTime(3_999); });
+    expect(presence().message).toBe(WELCOME_TEXT);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(presence().message).toBe('');
+  });
+
+  it('does not greet when a persisted ON preference is restored on mount', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    expect(presence().message).toBe('');
+  });
+
+  it('does not re-fire when setVisible(true) re-affirms an already-ON preference', async () => {
+    await mountProvider({ visible: false, timeoutS: 5 });
+    vi.useFakeTimers();
+
+    act(() => { api.setVisible(true); });
+    expect(presence().message).toBe(WELCOME_TEXT);
+    act(() => { vi.advanceTimersByTime(4_000); });
+    expect(presence().message).toBe('');
+
+    act(() => { api.setVisible(true); });
+    expect(presence().message).toBe('', 'no second bubble on a re-affirmed ON');
+  });
+
+  it('produces no audio/TTS on turn-on (visual-only greeting)', async () => {
+    const synth = (window as unknown as { speechSynthesis?: { speak: (u: unknown) => void } }).speechSynthesis;
+    const speakSpy = synth ? vi.spyOn(synth, 'speak') : null;
+
+    await mountProvider({ visible: false, timeoutS: 5 });
+    act(() => { api.setVisible(true); });
+
+    if (speakSpy) expect(speakSpy).not.toHaveBeenCalled();
+    expect(presence().message).toBe(WELCOME_TEXT);
   });
 });
