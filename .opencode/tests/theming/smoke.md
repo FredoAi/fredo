@@ -23,3 +23,17 @@
 
 - **S-7 PASS (live).** dark→light→accent switch with Settings open re-tints the chrome (nav highlight, borders) with no stale color.
 - **S-8 PASS (live).** `--hover-bg` consumers compute `color(srgb .8 .8 .8/.06)` (dark) / `color(srgb .047 .067 .090/.06)` (light) — real colors, never transparent.
+
+## #2865 extension — semantic-token bridge smoke
+
+- [ ] S-9: Bridge quick path — `tauri_webview_execute_js` reads `--chakra-colors-fg-muted` vs
+      `--text-secondary` (and `-fg-subtle`/`-bg-hover`); they resolve to the Fredo values (not stock
+      `#52525b`/`#a1a1aa`, not empty); console clean.
+
+- [ ] S-10: Wizard re-tint quick path — with the wizard open, switch dark↔light and change the
+      accent; every state re-tints with no stale color; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+- [ ] S-11: Visual artifacts + gates — `.opencode/tmp/2865/visual-eval-before.md` +
+      `before-after-verdict.md` exist; BEFORE/AFTER frames use DISTINCT `before-*`/`after-*` names;
+      `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` green.
