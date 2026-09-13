@@ -268,3 +268,52 @@ The round's new defect is in AC2's launch argv (see functional F-35/F-36); it do
   `var(--x)NN` alpha-append); the companion overlay was untouched by the round-2 diff.
 - **R-22 PASS (static):** no cross-feature import introduced; row emission still only via
   `EventBus.emit_row_delivery_batch`; no `tokio::spawn`; process supervision stays in the owning feature.
+
+---
+
+## #2865 — Must NOT change (wizard UX visual audit)
+
+> Added at Spec #2865. This is a VISUAL/UX audit of the wizard — behavior, contracts, state
+> vocabulary, and hooks must not move. Run alongside R-1..R-22. **Visual changes only.** The prior
+> "accepted residual R3" gate-contrast disposition is SUPERSEDED for this spec (the residual is now
+> an explicit requirement); no historical PASS/FAIL record is deleted.
+
+- [ ] **R-23 (wizard gating + handoff unchanged):** while not ready the wizard is the ONLY content;
+      when readiness flips ready the normal companion controls render IN PLACE with no reload
+      (`performance.timeOrigin`/nav unchanged). Reference F-01..F-11 above + functional F-60.
+  - **Edge:** partial readiness never reads complete; the transition works with the modal open; an
+    action error renders the step's error state.
+
+- [ ] **R-24 (frozen QA hooks retained):** the `data-testid`/`data-state` hooks the existing suites
+      depend on survive the visual refactor verbatim: `companion-setup-wizard`,
+      `companion-setup-summary`, `companion-step-<testId>` + `-status`/`-install`/`-retry`/`-recheck`
+      (and the model/server descendants `-summary`/`-download`/`-phase`/`-detail`),
+      `companion-model-file-<slot>` + `-status`/`-progress`/`-retry`, `data-state`,
+      `data-server-state`. A hook moved without an owned suite refresh (G-125) is a FAIL.
+  - **Edge:** a renamed hook AND the affected suite refreshed in the same scope is acceptable when
+    named; a silently dropped hook is a FAIL.
+
+- [ ] **R-25 (behavior contracts untouched):** `check_companion_readiness`, `check_model_files`,
+      `get_llama_server_status`, the install/download/launch actions, the four-state per-file
+      vocabulary (`missing | downloading | present | error`, truncated = missing + interrupted
+      detail), and the server vocabulary (`notRunning | starting | healthy | exited | failed`) are
+      unchanged — this spec does not add a Cancel control, a new acquisition capability, or re-scope
+      the backend readiness contracts.
+  - **Edge:** the watchdog wait surface may gain copy/treatment but not a new state machine;
+    overlay/avatar/speech-bubble and the configured Companion panel are out of scope (#2864).
+
+- [ ] **R-26 (token contract):** no hardcoded hex/rgba/hsla and no `var(--x)NN` alpha-append in the
+      changed wizard files; semantic tokens resolve to Fredo vars (the E-12/R3 bridge fix) or a
+      direct `var(--…)` is used; no literal fallback is introduced to work around the bridge.
+      Reference F-54/F-57 + `.opencode/tests/theming/`.
+
+- [ ] **R-27 (build gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0 (zero TS
+      errors); `pnpm --filter @fredo/ui test:run` green; `cargo check` zero warnings / `cargo test`
+      green if Rust is touched (CI `rust-validate` — the tester shell has no `cargo`). No existing
+      assertion weakened/disabled/deleted; any refreshed assertion explicitly owned per G-125.
+      Reference F-61.
+
+- [ ] **R-28 (companion functional baseline green):** the wizard's host surface does not regress the
+      companion behaviors — visibility toggle + `Fredo_companion_visible`, idle-timeout
+      commit/clamp/persist, teleport, joke/TicTacToe, bubble geometry, single-Fredo presence.
+      Reference `.opencode/tests/companion/` F-1..F-48 / R-1..R-26 + functional F-62.
