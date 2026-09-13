@@ -270,3 +270,28 @@
       `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` green.
   - **Edge:** frozen hooks (`companion-setup-wizard`, `companion-step-*`, `data-state`,
     `data-server-state`) retained — a silently dropped hook is a FAIL.
+
+---
+
+## #2868 extension — the Companion settings section now hosts inside the Settings app window (G-136)
+
+> Issue #2868 moves the Companion settings section out of the retired `ProfileSettingsModal` into
+> the Settings `FredoFeatureClass` window. **G-136:** R-9's parenthetical "the settings modal
+> (`ProfileSettingsModal` Companion nav item) still mounts `CompanionSettingsPanel`" is SUPERSEDED
+> — the host is now the Settings feature window (launcher-grid entry). The Companion panel
+> behavior/state vocabulary and the readiness gate are unchanged. Historical records above
+> preserved. Live policy.
+
+- [ ] **R-31 (gate semantics unchanged in the new host):** with the backend not ready, the Settings
+      window → Companion renders the wizard ONLY (`[data-testid="companion-setup-wizard"]`,
+      `companion-step-*`, `data-server-state`) — no toggle/tip/auto-return; on ready the controls
+      swap in place with no reload. Reference R-25/R-27 + `.opencode/tests/settings/` F-35/F-36.
+  - **Edge:** the first readiness probe in flight renders `checking` per-step; open/close the
+    Settings window during the swap leaves a consistent state; no orphan/crash.
+
+- [ ] **R-32 (Companion panel content contract survives the host swap):** the visibility toggle
+      honors `Fredo_companion_visible`, the idle-timeout control commits/clamps/persists, and the
+      Teleport tip is present/undimmed — reached via the launcher grid, not the gear. The frozen
+      hooks are retained. Reference R-24/R-28/R-30.
+  - **Edge:** a settings-section list with zero discovered sections must not break the Companion
+    section; the modal-only Escape/backdrop behavior is gone (window close semantics).
