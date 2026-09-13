@@ -95,3 +95,7 @@
 ### Round 1 (spec/2870 @ dd0026e1) — results
 
 > **R-13 FAIL / UNVERIFIED (blocking boot defect).** The shell never mounts (`EmptySeat.tsx:4-5` `@/` imports unresolved under the Tauri Vite alias), so no shell chrome or seat-slot invariant is observable. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
+
+### Round 2 (spec/2870 @ 6474a5fe) — results
+
+- **R-13 PASS for chrome + `y`; FAIL for the seat-slot footprint.** FREDO notch, command bar, app grid, keyboard hints, clock/LED, side ticks, dot-grid, rounded frame all unchanged; seat slot present in ALL states (never unmounts); command-bar `y` constant (485.77 default / 446.0 at 700×900) across OFF / ON-home / ON-away; no corner Fredo; OFF ⇒ decorative mascot (not an empty seat); row-pipeline + tokens unaffected. **Seat slot layout width = 320 px, not 80 px** (Chakra `sizes.80` token; `LauncherShell.tsx:568`) — the `AVATAR_SM` centre-seat contract is not met. See launcher R-35 + companion F-62/F-66.
