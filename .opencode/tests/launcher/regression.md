@@ -254,3 +254,8 @@
 ### Round 1 (spec/2870 @ dd0026e1) — results
 
 > **R-35/R-36 FAIL / UNVERIFIED (blocking boot defect).** The tested tip does not boot (`EmptySeat.tsx:4-5` `@/` imports unresolved under the Tauri Vite alias), so no launcher geometry or chrome invariant is observable. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
+
+### Round 2 (spec/2870 @ 6474a5fe) — results
+
+- **R-35 PASS for `y`/CLS; FAIL for the slot size.** `y` constant at 485.77 (default) / 446.0 (700×900) across OFF, ON-home, ON-away, post-auto-return; no new scrollbar/clip. **The seat slot's layout width is 320 px, not 80 px** (Chakra `sizes.80` token; `LauncherShell.tsx:568`), so the `AVATAR_SM` footprint + centred-seat contract is not met. The `mb="4"` (**16 px**) margin is preserved.
+- **R-36 PASS (live).** FREDO notch, command bar, app grid (5 tiles incl. Settings), keyboard nav, clock/LED, side ticks, dot-grid, frame unchanged; `Fredo_companion_visible` persisted; settings-grid set unchanged.
