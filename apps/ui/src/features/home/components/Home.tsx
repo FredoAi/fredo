@@ -5,7 +5,6 @@ import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
 import { AppDock } from './dock/AppDock';
-import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
@@ -23,7 +22,7 @@ const ALL_FEATURES = getFeatures();
 // grid and its keyboard-nav indices are index-aligned BY CONSTRUCTION — one tile
 // per distinct id (no ghost tiles, no nav-sequence gaps), robust to double
 // registration. ALL_FEATURES stays un-deduped for the open-callback registration
-// loop (line 41) and the settings button (line 190).
+// loop below.
 const SHOWABLE_FEATURES = dedupeByFeatureId(ALL_FEATURES.filter((feature) => feature.showable));
 
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
@@ -190,7 +189,6 @@ export const Home: React.FC = () => {
                 <WindowManager />
                 <HomeDesktop registerOpenFeature={registerOpenFeature} />
                 <AppDock />
-                <FloatingSettingsButton features={ALL_FEATURES} />
               </Box>
               <LauncherShell
                 showableFeatures={SHOWABLE_FEATURES}

@@ -4,8 +4,8 @@
  *
  * The dock-position preference must be shared across separately-mounted
  * consumers: `AppDock` (rendered inside `WindowSystemProvider` at
- * `Home.tsx:192`, mounted only while ≥1 window is open) and the Settings →
- * Appearance control (`ProfileSettingsModal`, a sibling tree). A per-instance
+ * `Home.tsx:191`, mounted only while ≥1 window is open) and the Settings →
+ * Appearance control (the Settings app shell, a sibling tree). A per-instance
  * `usePersistedSetting`/`useState` would diverge across those trees, so — per
  * the AGENTS module-scoped-state rule — the position lives at MODULE scope
  * (mirroring the `windowStore.ts:19-47` pattern) and both consumers reach it

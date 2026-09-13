@@ -1,5 +1,6 @@
 /**
- * #2864 ST-5 — Settings dialog chrome theming regression (REQ-9 / REQ-10).
+ * #2868 ST-3 — Settings app chrome theming regression (migrated from #2864 ST-5,
+ * REQ-9 / REQ-10).
  *
  * The audited surface must stay 100% token-driven: every rendered color derives
  * from the theming feature (semantic token, CSS var, or the shared `tint()`
@@ -8,6 +9,15 @@
  *
  * This is the durable enforcement behind AC-2's "0 literals": a drive-by literal
  * now fails the suite instead of surviving to a manual grep.
+ *
+ * MIGRATION (#2868 ST-2 retired the modal): the audit moves from the retired
+ * home/components modal to the Settings app shell (`SettingsFeature` +
+ * `SettingsSurface`). The retired modal's `<Dialog.*>` chrome (backdrop
+ * `var(--overlay-bg)`, elevation `var(--shadow-dialog)`) no longer exists; the
+ * live window-frame chrome it carried instead (sidebar `var(--header-bg)`,
+ * `var(--border-color)` dividers, `var(--card-bg)` footer) is asserted in its
+ * place. Every still-applicable token assertion is preserved verbatim — the
+ * guard is relocated and refreshed, never weakened.
  *
  * Exemptions (matching QA Q-3): comment issue refs (`#<issue-number>`, e.g.
  * `#2864`) are stripped before scanning, and the allowed CSS keywords
@@ -21,7 +31,8 @@ import { resolve } from 'node:path';
 
 /** The exact files the #2864 audit covers (paths relative to `apps/ui`). */
 const AUDITED_FILES = [
-  'src/features/home/components/ProfileSettingsModal.tsx',
+  'src/features/settings-app/components/SettingsSurface.tsx',
+  'src/features/settings-app/SettingsFeature.tsx',
   'src/shared/components/companion/CompanionSettingsPanel.tsx',
   'src/shared/components/companion/CompanionSetupWizard.tsx',
   'src/shared/components/companion/SetupStepCard.tsx',
@@ -106,8 +117,8 @@ describe('#2864 ST-5 literal guard — audited component files', () => {
   });
 });
 
-describe('#2864 ST-5 — ProfileSettingsModal chrome consumes registered tokens (ST-2)', () => {
-  const source = readSource('src/features/home/components/ProfileSettingsModal.tsx');
+describe('#2868 ST-3 — SettingsSurface chrome consumes registered tokens (migrated)', () => {
+  const source = readSource('src/features/settings-app/components/SettingsSurface.tsx');
 
   it('routes every chrome value through its theme token', () => {
     // Scrollbar thumb + hover (T3/T4).
@@ -116,11 +127,17 @@ describe('#2864 ST-5 — ProfileSettingsModal chrome consumes registered tokens 
     // Active-nav fill + indicator (T6, live accent).
     expect(source).toContain("tint('var(--accent-primary)', 12)");
     expect(source).toContain('var(--accent-strong)');
-    // Nav hover + close-button hover (T1).
+    // Nav hover + focus (T1).
     expect(source).toContain('var(--hover-bg)');
-    // Dialog backdrop + elevation (T7/T8).
-    expect(source).toContain('var(--overlay-bg)');
-    expect(source).toContain('var(--shadow-dialog)');
+    // Live window-frame chrome: sidebar header surface, content/sidebar
+    // dividers, and the save footer surface. Replaces the retired dialog's
+    // `var(--overlay-bg)` backdrop + `var(--shadow-dialog)` elevation.
+    expect(source).toContain('var(--header-bg)');
+    expect(source).toContain('var(--border-color)');
+    expect(source).toContain('var(--card-bg)');
+    // Nav text states.
+    expect(source).toContain('var(--text-primary)');
+    expect(source).toContain('var(--text-secondary)');
     // Save button foreground (T5).
     expect(source).toContain('var(--accent-contrast)');
   });
