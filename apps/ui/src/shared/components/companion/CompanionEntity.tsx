@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useCompanion } from '../../contexts/CompanionContext';
 import type { CompanionPosition, CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
@@ -63,6 +63,45 @@ export const MY_WINDOW = new URLSearchParams(window.location.search).get('view')
   : 'main';
 export const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+// ── Active-entity registry (#2870 ST-2c) ─────────────────────────────────────
+// Exactly ONE companion entity is mounted per window at a time: the home SEAT
+// while Fredo is home, the away OVERLAY while he is away. The host
+// (FredoCompanion) owns the single window-level listener set (Ctrl+right-click +
+// companion-teleport); this module-scoped registry is how those listeners reach
+// whichever surface is currently active — the seat and the overlay live in
+// different React subtrees, so a surface-specific ref held by the host cannot
+// see the seat. No listener is ever registered per surface.
+let activeCompanionEntity: CompanionEntityHandle | null = null;
+
+/** The companion entity currently mounted in THIS window, if any. */
+export function getActiveCompanionEntity(): CompanionEntityHandle | null {
+  return activeCompanionEntity;
+}
+
+function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => void {
+  activeCompanionEntity = handle;
+  return () => {
+    if (activeCompanionEntity === handle) activeCompanionEntity = null;
+  };
+}
+
+/**
+ * Clamp a Ctrl+right-click point so the FULL avatar box stays on-screen. Shared
+ * by the entity (its measured rendered box) and the host's no-entity fallback
+ * (the exact declared `AVATAR_SM` box) so the clamp math has ONE source.
+ */
+export function computeTeleportTarget(
+  clientX: number,
+  clientY: number,
+  size: { width: number; height: number } = AVATAR_SM,
+): CompanionPosition {
+  const { width, height } = size;
+  return {
+    x: Math.max(0, Math.min(clientX - width / 2, window.innerWidth - width)),
+    y: Math.max(0, Math.min(clientY - height / 2, window.innerHeight - height)),
+  };
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export interface CompanionEntityProps {
@@ -79,12 +118,16 @@ export interface CompanionEntityProps {
 }
 
 /**
- * Imperative surface the overlay host uses to drive the entity's teleport
+ * Imperative surface the window host uses to drive the entity's teleport
  * choreography and to dispatch a Ctrl+right-click teleport request. The window
  * listeners themselves are registered once per window by the host (never per
- * surface); this handle is how those host-level listeners reach the entity.
+ * surface); the host reaches whichever surface is currently mounted through the
+ * module-scoped registry (`getActiveCompanionEntity`), which every entity
+ * registers into — a surface-specific ref cannot see the seat.
  */
 export interface CompanionEntityHandle {
+  /** Which surface this handle belongs to (`'seat'` at home, `'overlay'` away). */
+  surface: CompanionEntityProps['surface'];
   /** Ctrl+right-click request: clamp to the avatar box and dispatch to THIS window. */
   requestTeleport: (clientX: number, clientY: number) => void;
   /** Same-window teleport: play out → in at `dest`. */
@@ -289,28 +332,35 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       notifyInteraction();
       // Clamp using the avatar's REAL rendered width AND height (never the old
       // 80x80 frame) so the full sm figure stays on-screen at every edge.
-      const { width, height } = getAvatarSize();
-      const targetX = Math.max(0, Math.min(clientX - width / 2, window.innerWidth - width));
-      const targetY = Math.max(0, Math.min(clientY - height / 2, window.innerHeight - height));
+      const target = computeTeleportTarget(clientX, clientY, getAvatarSize());
 
       if (IS_TAURI) {
         // Broadcast to all webview windows (including this one)
         import('@tauri-apps/api/event').then(({ emit }) => {
-          emit('companion-teleport', { toWindow: MY_WINDOW, x: targetX, y: targetY });
+          emit('companion-teleport', { toWindow: MY_WINDOW, x: target.x, y: target.y });
         });
       } else {
         // Dev mode: local-only teleport
-        startTeleportOut({ x: targetX, y: targetY });
+        startTeleportOut(target);
       }
     }, [startTeleportOut, getAvatarSize, notifyInteraction]);
 
-    useImperativeHandle(ref, () => ({
+    const handle = useMemo<CompanionEntityHandle>(() => ({
+      surface,
       requestTeleport,
       teleportTo: startTeleportOut,
       arrive,
       leaveWindow,
       playLeave,
-    }), [requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave]);
+    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave]);
+
+    useImperativeHandle(ref, () => handle, [handle]);
+
+    // Register this surface as THIS window's active entity so the host's
+    // window-level listeners dispatch to it. Cleanup unregisters only if this
+    // handle is still the active one (so a seat→overlay swap cannot be undone by
+    // the departing surface's unmount).
+    useEffect(() => registerActiveCompanionEntity(handle), [handle]);
 
     useEffect(() => () => {
       clearTimer();
