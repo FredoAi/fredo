@@ -21,6 +21,7 @@ import { adapterBridge } from '../../utils/adapterBridge';
 import { COMPANION_SETUP_STEPS } from './companionSetupSteps';
 import {
   deriveServerLaunchState,
+  errorCopyFor,
   llamaServerEndpoint,
   serverLaunchFailureCopy,
   type CompanionReadiness,
@@ -375,11 +376,11 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
           );
           if (!result || result.success !== true) {
             if (mountedRef.current) {
+              // Curated actionable copy is the primary message; a raw backend
+              // string is never the user-facing sentence (R-2.2 / #2865 H3).
               setActionError((prev) => ({
                 ...prev,
-                [id]:
-                  result?.error ??
-                  'The install did not complete. Choose Retry or Re-check.',
+                [id]: errorCopyFor(id, result?.code ?? null, result?.error ?? null).message,
               }));
             }
           }
@@ -393,9 +394,7 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
             if (mountedRef.current) {
               setActionError((prev) => ({
                 ...prev,
-                [id]:
-                  modelResult?.error ??
-                  'The download did not complete. Choose Retry or Re-check.',
+                [id]: errorCopyFor(id, null, modelResult?.error ?? null).message,
               }));
             }
           }
@@ -424,7 +423,11 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         }
       } catch (err) {
         if (mountedRef.current) {
-          setActionError((prev) => ({ ...prev, [id]: String(err) }));
+          // Never surface a raw IPC/stack string as the primary error sentence.
+          setActionError((prev) => ({
+            ...prev,
+            [id]: errorCopyFor(id, null, String(err)).message,
+          }));
         }
         stopProgressListener();
       } finally {

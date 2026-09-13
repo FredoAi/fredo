@@ -15,9 +15,12 @@ import { Box, HStack, Heading, Icon, Text, VStack } from '@chakra-ui/react';
 import {
   LuCircleCheck,
   LuFileArchive,
+  LuRefreshCw,
   LuSettings2,
   LuTriangleAlert,
 } from 'react-icons/lu';
+
+import { tint } from '../../utils/colorTint';
 
 import { SetupStepCard, type SetupStepUiState } from './SetupStepCard';
 import { ModelFilesStepCard } from './ModelFilesStepCard';
@@ -79,27 +82,27 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
   const summary = useMemo(() => {
     if (isChecking) {
       return {
-        color: 'var(--text-secondary)',
+        statusVar: 'var(--text-subtle)',
         icon: LuSettings2,
         text: 'Checking prerequisites…',
       };
     }
     if (total > 0 && installed === total) {
       return {
-        color: 'var(--status-success)',
+        statusVar: 'var(--status-success)',
         icon: LuCircleCheck,
         text: 'All prerequisites installed',
       };
     }
     if (installed > 0) {
       return {
-        color: 'var(--status-warning)',
+        statusVar: 'var(--status-warning)',
         icon: LuTriangleAlert,
         text: `${installed} of ${total} prerequisites ready — setup required`,
       };
     }
     return {
-      color: 'var(--status-warning)',
+      statusVar: 'var(--status-warning)',
       icon: LuTriangleAlert,
       text: `${total} prerequisites need attention`,
     };
@@ -131,23 +134,30 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
         Fredo needs llama.cpp + model files before the companion can run.
       </Text>
 
+      {/* Status banner (H4/H9): tinted from the LIVE status var so it re-tints
+          with the user's accent/theme, with a real AA-legible contrast pair. */}
       <HStack
         role="status"
         aria-live="polite"
         aria-atomic="true"
         data-testid="companion-setup-summary"
-        gap={2}
+        gap={3}
         align="center"
-        p={3}
-        borderRadius="md"
+        p={4}
+        borderRadius="lg"
         border="1px solid"
-        borderColor="border.default"
-        bg="bg.subtle"
+        borderColor={tint(summary.statusVar, 30)}
+        bg={tint(summary.statusVar, 10)}
       >
-        <Icon as={summary.icon} boxSize="16px" color={summary.color} aria-hidden />
-        <Text fontSize="sm" fontWeight="600" color={summary.color}>
+        <Icon as={summary.icon} boxSize="18px" color={summary.statusVar} aria-hidden />
+        <Text fontSize="sm" fontWeight="600" color="var(--text-primary)" flex={1}>
           {summary.text}
         </Text>
+        {!isChecking && total > 0 && (
+          <Text fontSize="xs" fontWeight="600" color="var(--text-subtle)" flexShrink={0}>
+            {installed}/{total}
+          </Text>
+        )}
       </HStack>
 
       <Box as="ol" m={0} p={0} display="flex" flexDirection="column" gap={3}>
@@ -207,10 +217,22 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
         })}
       </Box>
 
-      <Text fontSize="xs" color="fg.muted">
-        After every step reads Installed, this screen is replaced by your Companion
-        controls automatically.
-      </Text>
+      {/* Handoff callout (H7/§2.10) — informational, visually separated, full
+          contrast; it is not a control. */}
+      <HStack
+        gap={2}
+        align="center"
+        borderTop="1px solid"
+        borderColor="var(--border-color)"
+        pt={3}
+        data-testid="companion-setup-handoff"
+      >
+        <Icon as={LuRefreshCw} boxSize="15px" color="var(--accent-primary)" aria-hidden />
+        <Text fontSize="sm" color="var(--text-subtle)">
+          When every step shows Installed, this view hands off to your Companion
+          controls automatically — nothing else to do here.
+        </Text>
+      </HStack>
     </VStack>
   );
 };
