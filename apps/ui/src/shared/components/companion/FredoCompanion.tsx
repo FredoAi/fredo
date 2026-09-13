@@ -6,8 +6,8 @@ import type { CompanionEntityHandle } from './CompanionEntity';
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, confirmAutoReturn, setHosting } = useCompanion();
-  const { isAutoReturning, position } = state;
+  const { state, confirmAutoReturn, setHosting, markAway } = useCompanion();
+  const { isAway, isAutoHidden, isAutoReturning, position } = state;
 
   // The interactive body lives in CompanionEntity. The host keeps every
   // window-level concern exactly once per window (never per surface): the
@@ -26,9 +26,12 @@ export const FredoCompanion: React.FC = () => {
   // observed from `isAutoReturning`, cleared on cancel/unmount.
   const autoReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // #2853 ST-2: report host identity to the context so ONLY the webview that
-  // currently displays the companion arms the host-owned idle auto-return timer.
-  useEffect(() => { setHosting(isInThisWindow); }, [isInThisWindow, setHosting]);
+  // #2853 ST-2 / #2870 ST-2b: report host identity to the context so ONLY the
+  // webview that currently displays the companion arms the host-owned idle
+  // auto-return timer. Hosting now also requires Fredo to be AWAY from the home
+  // seat, so the #2853 timer arms only for an out Fredo (never while he sits at
+  // the seat).
+  useEffect(() => { setHosting(isAway && isInThisWindow); }, [isAway, isInThisWindow, setHosting]);
 
   // Once this window becomes active (cross-window arrival), fire the queued teleport-in
   useEffect(() => {
@@ -61,13 +64,17 @@ export const FredoCompanion: React.FC = () => {
         } else if (isInThisWindowRef.current) {
           // Companion is leaving this window — play teleport-out, THEN hide
           isInThisWindowRef.current = false;
+          // #2870 ST-2b: mark Fredo away LOCALLY (no broadcast) so this window
+          // immediately drops the home seat before the destination's
+          // `companion-presence {away:true}` broadcast lands — never two Fredos.
+          markAway();
           entityRef.current?.leaveWindow(() => setIsInThisWindow(false));
         }
       }).then(fn => { unlisten = fn; });
     });
 
     return () => { unlisten?.(); };
-  }, []);
+  }, [markAway]);
 
   // ── Idle auto-return (host-initiated, distinct from teleport) ──────────────
   // The context requests the return when the host idle timer fires. Play the
@@ -114,6 +121,11 @@ export const FredoCompanion: React.FC = () => {
   useEffect(() => () => {
     if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
   }, []);
+
+  // #2870 ST-2b: the overlay is the AWAY representation only. Render it when
+  // Fredo is away, this window hosts him, and he is not auto-hidden. At home the
+  // launcher renders the seat (`CompanionEntity surface="seat"`).
+  if (!isAway || !isInThisWindow || isAutoHidden) return null;
 
   return (
     <CompanionEntity

@@ -41,12 +41,12 @@
  * Product code is UNTOUCHED — this is an evidence-only test file (git diff = 1 file).
  */
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { CompanionProvider } from '@/shared/contexts/CompanionContext';
+import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
 import { FredoCompanion } from '@/shared/components/companion';
 import { DevAdapter } from '@/app/adapters/DevAdapter';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -148,10 +148,31 @@ Object.defineProperty(window, 'innerHeight', { configurable: true, writable: tru
 // load (CompanionContext.tsx:70-79 + usePersistedSetting.ts:28-37) to dispatch
 // SET_VISIBLE(true). Fake timers are installed AFTER the mount so the mount effects
 // (the async load) complete on real timers.
-async function renderVisibleCompanion() {
+//
+// #2870 ST-2b removed the bottom-right corner default and scoped the overlay to
+// the AWAY location: the away overlay mounts only when `isAway` is true. In dev
+// (no Tauri) the context `teleport` is the only relocation source — seed it
+// AFTER the persisted `visible` load, because SET_VISIBLE(true) clears isAway.
+const SEED_POS = { x: 300, y: 200 };
+
+/** Puts Fredo AWAY once the persisted `visible` preference has loaded. */
+function AwaySeeder() {
+  const { state, teleport } = useCompanion();
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (state.isVisible && !seeded.current) {
+      seeded.current = true;
+      teleport(SEED_POS.x, SEED_POS.y);
+    }
+  }, [state.isVisible, teleport]);
+  return null;
+}
+
+async function renderAwayCompanion() {
   localStorage.setItem('Fredo_companion_visible', 'true');
   const view = renderWithChakra(
     <CompanionProvider>
+      <AwaySeeder />
       <FredoCompanion />
     </CompanionProvider>,
   );
@@ -208,17 +229,9 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
   it('renders the sm avatar idle with the frozen 58-rect geometry and reads the persisted visible key', async () => {
     // isVisible defaults false — the persisted `Fredo_companion_visible` key
     // (CompanionContext.tsx:70-79 + usePersistedSetting.ts:28-37) flips visibility
-    // after the async settingsService/localStorage load.
-    localStorage.setItem('Fredo_companion_visible', 'true');
-    const { container } = renderWithChakra(
-      <CompanionProvider>
-        <FredoCompanion />
-      </CompanionProvider>,
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector('.fredo-companion-avatar')).not.toBeNull();
-    });
+    // after the async settingsService/localStorage load; the seed then puts Fredo
+    // away so the #2870 ST-2b away overlay mounts.
+    const { container } = await renderAwayCompanion();
 
     const el = avatar(container);
     expect(el.getAttribute('data-state')).toBe('idle');
@@ -248,7 +261,7 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
   it('streams a DevAdapter mock joke token-by-token on single click and returns to idle', async () => {
     // Deterministic DevAdapter mock — mock[0] is picked for Math.random() === 0.
     vi.spyOn(Math, 'random').mockReturnValue(0);
-    const { container } = await renderVisibleCompanion();
+    const { container } = await renderAwayCompanion();
 
     // Mount completes on real timers; switch to fake timers for the interaction.
     vi.useFakeTimers();
@@ -316,13 +329,14 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
   });
 
   it('teleports locally on Ctrl+right-click with zero companion-teleport emit (guarded import never fires)', async () => {
-    const { container } = await renderVisibleCompanion();
+    const { container } = await renderAwayCompanion();
 
     const start = avatar(container);
     expect(start.getAttribute('data-state')).toBe('idle');
-    // Initial placement from the context default (1024 − 120, 768 − 160).
-    expect(start.style.left).toBe('904px');
-    expect(start.style.top).toBe('608px');
+    // Initial placement comes from the away-seed teleport — NOT a corner default
+    // (the old {innerWidth−120, innerHeight−160} default was removed, #2870 ST-2b).
+    expect(start.style.left).toBe('300px');
+    expect(start.style.top).toBe('200px');
 
     // Ctrl+right-click at (500,400) — handleMouseDown (FredoCompanion.tsx:200-208)
     // takes the ELSE (dev) branch: local startTeleportOut, no emit.
@@ -334,8 +348,8 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
     });
     expect(avatar(container).getAttribute('data-state')).toBe('teleport-out');
     // Position is unchanged during teleport-out.
-    expect(avatar(container).style.left).toBe('904px');
-    expect(avatar(container).style.top).toBe('608px');
+    expect(avatar(container).style.left).toBe('300px');
+    expect(avatar(container).style.top).toBe('200px');
 
     // Out (400 + 50) → teleport-in at the clamped point (sm 80×100 box):
     // x = clamp(500 − 40, 0, 1024 − 80) = 460; y = clamp(400 − 50, 0, 768 − 100) = 350.
@@ -361,7 +375,7 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
   });
 
   it('opens TicTacToe on double-click and Fredo answers in a legal empty cell via the dev capture no-op', async () => {
-    const { container } = await renderVisibleCompanion();
+    const { container } = await renderAwayCompanion();
 
     vi.useFakeTimers();
     act(() => {
@@ -412,7 +426,7 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
       if (command === 'capture_screen_region') return 'data:image/png;base64,AAAA';
       return undefined;
     });
-    const { container } = await renderVisibleCompanion();
+    const { container } = await renderAwayCompanion();
 
     vi.useFakeTimers();
     act(() => {

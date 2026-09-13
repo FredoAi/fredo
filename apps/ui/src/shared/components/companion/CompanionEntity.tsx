@@ -401,15 +401,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       }, 250);
     }, [askForJoke, showTicTacToe, notifyInteraction]);
 
-    // Hide when companion is not in this window, but keep mounted during teleport-out
-    // so the leaving animation can still play. The auto-return gate keys on the
-    // SETTLED `isAutoHidden` only, so the leave-motion frames stay mounted while
-    // `isAutoReturning` is in flight (#2853 ST-2). `isHosting` is the host's
-    // report of `isInThisWindow` (FredoCompanion's hosting report); the entity
-    // stays MOUNTED while hidden so its Ctrl+right-click request dispatch still
-    // works in a window that is not currently hosting Fredo.
-    if (!isVisible || isAutoHidden) return null;
-    if (!isHosting && !isTeleportingRef.current) return null;
+    // ── Surface-scoped render gate (#2870 ST-2b) ──────────────────────────────
+    // `overlay` is the AWAY overlay: it renders only in the window that hosts
+    // Fredo, only while the role is ON (`isVisible`) and he is not auto-hidden.
+    // `seat` is the home seat — its consumer (the launcher slice) owns when to
+    // render it, so this surface is never gated by `isHosting`, `isAutoHidden`,
+    // or away.
+    if (surface === 'overlay') {
+      if (!isVisible || isAutoHidden || !isHosting) return null;
+    }
 
     // Prefer the live streaming message; fall back to context message.
     // Strip any model control tokens that may leak through (e.g. <end_of_turn>).

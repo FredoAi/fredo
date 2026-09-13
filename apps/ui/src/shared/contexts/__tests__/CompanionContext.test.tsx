@@ -646,6 +646,24 @@ describe('CompanionProvider — canonical location isAway (#2870 ST-1)', () => {
   });
 });
 
+// ── 8b. Neutral position — no bottom-right corner default (#2870 ST-2b) ───────
+
+describe('CompanionProvider — neutral position, no corner default (#2870 ST-2b)', () => {
+  it('initializes position neutral (the bottom-right corner default is removed)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    expect(api.state.position).toEqual({ x: 0, y: 0 });
+  });
+
+  it('teleport is the only relocation source — it carries the supplied coordinates', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+
+    act(() => { api.teleport(321, 234); });
+
+    expect(api.state.position).toEqual({ x: 321, y: 234 });
+    expect(presence().away).toBe(true);
+  });
+});
+
 // ── 9. Welcome on OFF→ON turn-on (#2870 ST-1 / R-2) ──────────────────────────
 
 describe('CompanionProvider — welcome on turn-on (#2870 ST-1 / R-2)', () => {

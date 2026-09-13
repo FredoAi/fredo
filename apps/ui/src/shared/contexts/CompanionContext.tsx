@@ -132,7 +132,10 @@ const initialState: CompanionContextState = {
   messageDuration: 4000,
   isVisible: false,
   isAway: false,
-  position: { x: window.innerWidth - 120, y: window.innerHeight - 160 },
+  // #2870 ST-2b: there is NO bottom-right corner default. Fredo renders at the
+  // home seat (its own flow position) until a teleport moves him; the away
+  // overlay's real coordinates come ONLY from a teleport target / gesture.
+  position: { x: 0, y: 0 },
   isAutoHidden: false,
   isAutoReturning: false,
   isHosting: false,
