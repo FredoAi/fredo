@@ -80,3 +80,7 @@
 > ONE window" invariant remains. Historical record above preserved. Live policy.
 
 - [ ] S-12: With the Run CLI terminal window open (`tauri_manage_window(action="list")` = main + `run-cli-terminal`), Ctrl+right-click INSIDE the terminal window. EXPECTED: the terminal hosts the single interactive Fredo (teleport-in then idle at the clamped point); the MAIN desktop renders the empty-seat placeholder (80×100) at the centre slot and NO second Fredo — global interactive-Fredo count == 1 at every settle; a 5 s idle auto-return returns Fredo to the main seat; `tauri_read_logs(source="console")` on BOTH windows is clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+### Round 1 (spec/2870 @ dd0026e1) — results
+
+> **S-12 FAIL / UNVERIFIED (blocking boot defect).** The `run-cli-terminal` window IS created (`open_run_cli` → `success:true`; window list = main + run-cli-terminal), but both windows load the SAME broken bundle: `EmptySeat.tsx:4-5`'s `@/` imports are unresolved under `apps/tauri/vite.config.ts` (`@` → `apps/tauri/src`, no `shared/`), so each renders empty `#root` + the Vite import-analysis overlay. Neither the hosted Fredo nor the main empty seat can render. Evidence: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
