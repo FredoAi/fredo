@@ -18,3 +18,8 @@
 - [ ] **S-8:** `--hover-bg` consumers (Companion setting rows / tip) render a non-transparent
       surface in both themes (T1's single derived `color-mix` resolves per theme — not two literal
       values); `tauri_webview_execute_js` computed `backgroundColor` is a real color; console clean.
+
+### #2864 testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **S-7 PASS (live).** dark→light→accent switch with Settings open re-tints the chrome (nav highlight, borders) with no stale color.
+- **S-8 PASS (live).** `--hover-bg` consumers compute `color(srgb .8 .8 .8/.06)` (dark) / `color(srgb .047 .067 .090/.06)` (light) — real colors, never transparent.
