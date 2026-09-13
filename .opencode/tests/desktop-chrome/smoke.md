@@ -16,3 +16,11 @@
 ## #2841 extension — desktop chrome polish smoke
 
 - [x] S-8: On a clean desktop (all feature windows minimized), the THREE polished surfaces render simultaneously WITHOUT any pointer gesture: (1) the app-dock rail (`[data-testid="app-dock"]` / `role="region" aria-label="Open applications"`) is resting-visible at the left edge; (2) the clock/LED cluster is visually centered in the top-right corner; (3) the floating settings button (`IconButton` `aria-label="Settings"`) is visible. `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. **Edge:** 0 windows — the rail is absent (empty gate) but the clock/LED + settings button still render. **PASS (spec/2841 @ 0852210f, round 1):** Clean desktop w/ 1 minimized window — rail `visibility:visible` x:0, cluster `top:16/right:16` centered, settings wrapper z:1250 (`svgIsInsideButton:true`); all three present with NO pointer gesture. Screenshot `ac-final-clean-desktop-all-three.jpeg`; console clean (only benign `motion() is deprecated` + transient React Flow WARNs). 0-window edge: rail absent (`dockPresent:false`), clock/LED + settings still render (z:1250).
+
+## #2872 extension — corner-padding smoke (G-136)
+
+> Issue #2872 sets the cluster inset to the binding ASYMMETRIC **top 20px / right 24px** (rendered).
+> S-8's `top:16/right:16` record is SUPERSEDED — historical PASS preserved above, no longer the
+> current expectation.
+
+- [ ] S-9: On a clean desktop, `getBoundingClientRect` the top-right cluster: rendered `topMargin == 20px` AND `rightMargin == 24px` (±1px, asymmetric). Clock + single LED still render; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. **Edge:** light + dark; 900×600 narrow (no clip).
