@@ -716,3 +716,13 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
       emitted events classify into `chat_rows`/`tool_use_rows` under their session ids; a
       rendered receipt exists for each companion state. A static-only PASS is a **FALSE PASS**.
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim.
+
+### Testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **F-42 PASS (live).** The 21-frame BEFORE matrix was captured and read by the UI/UX Expert (`visual-eval-before.md`, 21/21). Representative frames re-uploaded (see `.opencode/tests/settings/functional.md` F-1).
+- **F-43 PASS (live).** Setting rows / tip compute `background: var(--hover-bg)` = `color(srgb .8 .8 .8/.06)` (dark) / `color(srgb .047 .067 .090/.06)` (light) — real fills, NOT `rgba(0,0,0,0)`. Switch checked track = live accent (`rgb(147,51,234)` / `rgb(0,209,209)` / `rgb(234,179,8)`), checked thumb = `--accent-contrast` (`rgb(255,255,255)` dark, `rgb(12,17,23)` light/accent). NumberInput bg `--card-bg`, border `--border-color`.
+- **F-44 PASS (static).** Zero true color literals in `CompanionSettingsPanel.tsx`, `CompanionSetupWizard.tsx`, `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`, `ServerLaunchStepCard.tsx` (only comment issue-refs); no `var(--x)NN` alpha-append.
+- **F-45 PASS with named residuals (live).** Text pairs ≥4.5:1 in dark+light+accent (help `fg.subtle` 4.57/7.31:1; row titles 13.01:1 dark); Switch non-text 5.38/9.96/9.88:1. Toggle DOM change 1.2 ms + 0.15 s transition; input focus ring instant. Residuals (pre-existing): inactive-nav 4.05:1 dark; gate body 1.53:1 dark (R3).
+- **F-46 PASS (live).** Ready view renders the unified `<h2>` + 22px `var(--accent-primary)` icon + `--text-subtle` description; section `aria-labelledby`; ONE wizard in the gate (`companion-controls` absent); `#companion-idle-timeout-seconds` described by `#companion-idle-timeout-help`; tab order = visual order.
+- **F-47 PASS (live).** Teleport tip has NO opacity/pointer-events dimming (full-opacity in ON and OFF). Invalid draft `9999` → `aria-invalid="true"`, border + focus ring `rgb(239,68,68)`, help "Enter 5–3600 s"; Enter commit clamps + announces **`Auto-return set to 3600 s`** via the `role=status aria-live=polite` region (transient 2500 ms). Survives theme/accent change; console clean.
+- **F-48 PASS (live).** `telemetry_spans` 17,236, `max(ingested_at)` 2026-09-13T00:28:33.795Z; `chat_rows` q13-2864-chat=1; `tool_use_rows` q13-2864-tool/read_file=1.
