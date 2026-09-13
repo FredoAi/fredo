@@ -66,3 +66,12 @@ Unscripted probes beyond the functional cases. A confirmed finding here PROMOTES
 ## E-18 — Narrow viewport — rail + cluster + settings button together
 
 - [ ] E-18: Resize the window narrow/small on a clean desktop — do the resting-visible rail (left), the centered clock/LED cluster (top-right), and the settings button (bottom-right) all remain visible and non-overlapping? Does any surface clip/scale off-screen at the smallest supported viewport?
+
+---
+
+## #2872 extension — corner-padding probes (G-136)
+
+> Issue #2872 sets the cluster inset to the binding ASYMMETRIC **top 20px / right 24px** (rendered).
+
+- [ ] E-19: Change the WebView2/OS zoom (80% / 125% / 150%) with the cluster visible — does the rendered `topMargin`/`rightMargin` scale proportionally and still read as a clear gap from the frame rule, or does it clip/drift? Record the cluster rect + `innerWidth` at each zoom.
+- [ ] E-20: Rapidly switch theme presets with a maximized window under the cluster (band sunk to z=0) — does the cluster ever paint above the titlebar min/max/close controls during the transition, or flicker at the new inset? Any console error is a finding.
