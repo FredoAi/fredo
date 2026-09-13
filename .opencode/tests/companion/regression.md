@@ -233,3 +233,9 @@
       non-transparent in BOTH themes (T1, derived per-theme — a single `color-mix`, not two
       literal values). Reference #2850 R-7/F-15.
   - **Edge:** comment issue-refs are not literals.
+
+### #2864 testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **R-24 PASS (live).** Toggle shows/hides the companion and honors `Fredo_companion_visible`; the idle value commits on blur/Enter/stepper, clamps (default 60, [5,3600]), persists (`#companion-idle-timeout-seconds` committed 9999→3600).
+- **R-25 PASS (live).** Managed `llama-server` stopped → gate renders the wizard ONLY (no toggle/tip); server relaunched → controls render automatically (`get_llama_server_status` running/healthy). No orphan/crash.
+- **R-26 PASS (static).** Zero true color literals; no `var(--x)NN`; the setting-row/tip surfaces resolve `--hover-bg` non-transparent in BOTH themes (`color(srgb .8 .8 .8/.06)` dark / `color(srgb .047 .067 .090/.06)` light).
