@@ -332,3 +332,7 @@
 
 - [ ] R-36: Static-grep the changed files for hardcoded colors/`var(--x)NN`; read the console in every leg/window; inspect the new `isAway`/`markAway`/`SYNC_PRESENCE` code for effect/memo deps and listener registration.
   **Expected:** zero color literals in the changed files (EmptySeat/seat chrome token-native); no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window; the new location state introduces no re-render loop (no dep on array `.length`/fresh objects); the cross-window listeners are registered once per window. Reference R-7/R-8/R-17 + #2850 F-15/F-19.
+
+### Round 1 (spec/2870 @ dd0026e1) — results
+
+> **R-33..R-36 FAIL / UNVERIFIED (blocking boot defect).** The tested tip does not boot (`EmptySeat.tsx:4-5` `@/` imports unresolved under the Tauri Vite config `@` → `apps/tauri/src`), so no companion behavior (teleport/joke/game/bubble), persisted-key, layout-shift, token, or console invariant is observable live. Evidence + root cause: `.opencode/tmp/2870/tests-runs.md` (`## Tests Runs (round 1)`, Verdict **FAIL**). Re-run after the fix.
