@@ -681,3 +681,178 @@ renderer groups one flag per line so the executable+switch renders `--kv-unified
 model load and serves `/health` 200 on `127.0.0.1:8080`. The prior "winget CPU build cannot load" (E-13)
 hypothesis is refuted — the winget `ggml.llamacpp` build is a **Vulkan** build on an RTX 3060 (36/36 layers
 offloaded). AC1 was not weakened; only the documented boolean-switch syntax was corrected.
+
+---
+
+## #2865 extension — Companion setup wizard UX audit (states, copy, progress, a11y, contrast)
+
+> Issue #2865 audits the SAME wizard that #2855/#2856/#2857 built. The wizard was verified for
+> behavior/DOM geometry but NEVER visually evaluated as a whole. Rows F-47..F-63 map 1:1 to the QA
+> Plan `R-1..R-5` (AC1..AC5) in `.opencode/tmp/2865/triage.md` `## QA Expert`.
+> **Verification policy: live** — the ACs are provable only by observing the running artifact. The
+> UI/UX-authored **visual** evaluation (F-48) and **before-vs-after visual verdict** (F-59) are the
+> evidence for AC1/AC4; a testid/geometry-only check does NOT satisfy them. The mandatory live
+> receipt is F-63. **G-135:** BEFORE uses `before-*` names under `.opencode/tmp/2865/e2e/before/`;
+> AFTER uses distinct `after-*` names under `.../after/` — never overwrite the BEFORE frames.
+> **G-110 baseline:** BEFORE is captured from `spec/2865`'s initial pre-fix tip via
+> `dev-env.ps1 -Action Up -Spec 2865` (or `-At <pre-fix-sha>`), never a hand-rolled runner / `main`
+> checkout. Audited files: `CompanionSetupWizard.tsx`, `SetupStepCard.tsx`, `ModelFilesStepCard.tsx`,
+> `ServerLaunchStepCard.tsx` (+ any file in the slice diff).
+
+- [ ] **F-47 (R-1.1 / AC1):** On the PRE-FIX tip, capture one real screenshot per matrix cell into
+      `.opencode/tmp/2865/e2e/before/` as `before-<state>-<theme>.png`, then `upload-evidence` the
+      set (raw URLs recorded). States: {first-probe `checking`; all-missing; partial (1 of N); step
+      `running` (install, download, launch); per-file model {missing, downloading+determinate,
+      present, error, interrupted}; server {notRunning, starting+phase narration, healthy, exited,
+      failed}; watchdog wait; all-installed} × {dark `classic`, light `light-default`} + one
+      non-default accent (Matrix / `accentPrimary` override).
+  **Expected:** every declared cell present as a readable frame; the reach instructions in the triage
+      `#### State matrix` are used (`stop_llama_server` for the gate; the wizard's own buttons for
+      running; the `models_dir`/`llama_server_path` seams for missing/partial). Capture-only — no
+      verdict at this stage.
+  - **Edge:** an unreachable state is BLOCKED-with-cause (G-130/G-131/G-053) with the attempted
+    repro — never omitted; the `checking` first-paint race is captured on the first mutation
+    (MutationObserver/rAF) or recorded BLOCKED; re-capture if the branch moves before dev starts.
+
+- [ ] **F-48 (R-1.2 / AC1):** Locate the vision-capable UI/UX Expert's
+      `.opencode/tmp/2865/visual-eval-before.md` (A2A `## UI/UX Expert` / issue evidence).
+  **Expected:** ONE observation-based evaluation per BEFORE image, each naming the file it READ and
+      reporting what is visually observed (summary-bar treatment, card radii/padding, retry
+      affordance, error copy, progress, contrast); it lists the AC-1 issues. A testid/geometry-only
+      artifact, an evaluation authored from filenames, or coverage < the captured set = FAIL.
+  - **Edge:** a re-capture invalidates the pair; the evaluation must cover the R3-residual card,
+    the retry affordance, the summary bar, and any raw-error copy it sees.
+
+- [ ] **F-49 (R-2.4 / AC2):** For each captured state, read the visible status/summary text (DOM +
+      screenshot): `companion-setup-summary` + each step's `-status`.
+  **Expected:** every state communicates what is happening with **icon + text** — the summary states
+      checking / partial / all-installed and each step's label; no state renders a blank or
+      ambiguous card while work is in progress. A state whose meaning is only a color change = FAIL.
+  - **Edge:** the `checking` summary ("Checking prerequisites…") AND the per-step `Checking…` both
+    visible; a transient empty first paint is a FAIL (no flash of nothing).
+
+- [ ] **F-50 (R-2.2 / AC2, H3):** Drive each failure path — step install error, per-file download
+      transport error, server `failed`, server `exited`, watchdog timeout — and read every visible
+      `-detail`/`-status`/summary + console.
+  **Expected:** each failure shows a human-actionable sentence naming the cause and the next step
+      (e.g. "…Choose Retry or Re-check.") with a Retry affordance. PASS = ZERO raw stack/IPC strings
+      user-visible: no `at …` stack frames, no `.rs:`/Rust panic, no raw `Error:`/`TypeError`, no
+      serialized JSON envelope, no `invoke`/command-name leakage. Any raw string visible = FAIL
+      naming it.
+  - **Edge:** a `winget`-unavailable / binary-missing / held-port cause must be named; an error
+    after partial progress still actionable; the error state is visually distinct from idle-missing.
+
+- [ ] **F-51 (R-2.1/R-2.3 / AC2, H6):** During per-file download read
+      `companion-model-file-<slot>-progress` `data-value`/`aria-valuetext` + screenshot; during
+      install / server `starting` / first probe sample the caption every ~250 ms.
+  **Expected:** determinate when known — the per-file progressbar advances with real bytes (≥2
+      distinct sampled values). Unknown duration — install-running / server-starting / first-probe
+      show a moving affordance (animated indeterminate progress/spinner) **plus phase narration
+      that changes over time** (≥2 distinct captions sampled). Never a frozen/static screen during
+      work.
+  - **Edge:** a determinate bar that never moves = FAIL; an unknown-duration phase with one static
+    caption = FAIL; the watchdog wait state shows its own distinct narration.
+
+- [ ] **F-52 (R-2.4/R-2.6 / AC2, H2):** For missing / running / error / installed / checking record the
+      icon element + text label and a screenshot; repeat with a grayscale/desaturated read. Repeat
+      for server states {notRunning, starting, healthy, exited, failed}.
+  **Expected:** every state renders an icon AND a text label (never color-only); at sm/desaturated
+      the five step states and the per-file states are distinguishable; the healthy/exited/failed
+      trio reads differently without color. A pair distinguishable only by hue = FAIL.
+  - **Edge:** no state relies on the card tint alone; the Retry button text/icon is present in the
+    error state.
+
+- [ ] **F-53 (R-3.4 / AC3, H4/H5):** Compare the wizard against Settings → Fredo Setup live —
+      heading treatment, typography scale, spacing rhythm, card radii/padding, control sizes. Read
+      computed values + geometry and screenshot side-by-side (dark AND light).
+  **Expected:** same tokens/typography/spacing/radii family as the sibling Settings sections (esp.
+      Fredo Setup); name every unintended divergence with its computed delta. The `bg.subtle`
+      summary bar (`CompanionSetupWizard.tsx:145`) is a named H4 target — it must match the sibling
+      treatment. Any off-brand divergence is a FAIL naming it.
+  - **Edge:** compare in both themes; dialog chrome is out of scope; only the wizard's own content
+    treatment is audited.
+
+- [ ] **F-54 (R-3.1 / AC3):** Static grep the audited files for hex `#…`, `rgba(`, `rgb(`, `hsla(`,
+      and the invalid `var(--x)NN` alpha-append.
+  **Expected:** ZERO true color literals (comment issue-refs like `#2865` exempt); theme token →
+      CSS var + `tint()` only. Any literal left = FAIL naming file:line.
+  - **Edge:** `transparent`/`inherit`/`currentColor`/`none` allowed; distinguish `var(--x)NN` (FAIL)
+    from a JS-concatenated 8-digit hex (OK).
+
+- [ ] **F-55 (R-3.3 / AC3, H1):** From live computed colors measure the retry/error button label vs
+      its surface, the error icon/message vs its card, the Retry border vs the card bg — in dark
+      AND light.
+  **Expected:** retry/error affordances visibly distinct from the normal/missing state AND legible:
+      text ≥4.5:1, non-text UI ≥3:1, both themes. Quote the measured ratio and the pair; a failing
+      pair = FAIL naming it.
+  - **Edge:** the error card border vs error card fill (≥3:1); the Retry focus ring; a
+    `colorPalette="red"` outline button must render red in BOTH themes (AGENTS.md global
+    outline-border override).
+
+- [ ] **F-56 (R-3.5 / AC3, H8/G-137):** Switch to a non-default accent (Matrix / `accentPrimary`
+      override) with the wizard open in each state; read every accent-linked surface (running card
+      border/bg, install button bg/label, focus ring), and specifically an accent-filled control
+      thumb vs its accent track.
+  **Expected:** every accent-linked surface re-tints with the live accent, NO stale color; the
+      accent-filled control thumb contrasts its accent track ≥3:1 (G-137). Quote the measured ratio.
+  - **Edge:** a light/desaturated accent preset keeps the on-accent label legible (≥4.5:1); the
+    wait state under a pale accent stays readable.
+
+- [ ] **F-57 (R-3.2 / AC3, H3/H9 — IN SCOPE):** Measure the wizard card body/path/detail text
+      against its tinted card in dark + light + accent; specifically the not-ready-gate card text
+      (`rgb(82,82,91)` on the success-tinted card `rgb(42,59,53)`, 12px = **1.53:1** BEFORE).
+  **Expected:** text ≥4.5:1 (AA normal) — or ≥3:1 for ≥18.66px / ≥14px-bold; the BEFORE 1.53:1 dark
+      measurement is RESOLVED and the AFTER ratio is reported. Root cause: wizard card text uses
+      Chakra token NAMES (`fg.muted`→stock `#52525b`, `fg.subtle`→`#a1a1aa`,
+      `fg.default`/`bg-hover`/`fg-onAccent`/`accent-solid` empty at runtime — theming E-12/R3); the
+      fix must make the semantic-token bridge resolve to Fredo vars. Any pair < AA = FAIL naming it.
+  - **Edge:** measure the same card in dark classic AND dark+amber plus light and the accent
+    override; the before/after ratio pair is required evidence. (Supersedes the prior "accepted
+    residual R3" annotations in the companion/settings suites — see the triage Discussion.)
+
+- [ ] **F-58 (R-4.1 / AC4):** From `spec/2865` at the fixed tip repeat the F-47 matrix at the same
+      window size/viewport, theme/accent, and state set into `.opencode/tmp/2865/e2e/after/` as
+      distinct `after-<state>-<theme>.png`, uploaded via `upload-evidence`.
+  **Expected:** one AFTER frame per BEFORE cell, matched so each pair is comparable side-by-side;
+      every BEFORE cell has an AFTER counterpart (G-135 distinct names).
+  - **Edge:** re-run on the tested tip if the branch moved; an unreachable state is recorded as a
+    blocker, never silently substituted.
+
+- [ ] **F-59 (R-4.2 / AC4):** Locate `.opencode/tmp/2865/before-after-verdict.md`.
+  **Expected:** a VISUAL verdict reading BEFORE+AFTER pairs side-by-side, naming improvements AND
+      regressions, and giving every AC-1 issue exactly ONE disposition (fixed /
+      accepted-with-reason / out-of-scope). A testid/geometry-derived verdict is a FAIL. The Tester
+      carries it verbatim-in-substance WITH attribution into `## Tests Runs` (routing orchestrated
+      by the SI per G-134).
+  - **Edge:** every AC-1 issue from F-48 appears exactly once; no regression omitted; a re-capture
+    invalidates the pair.
+
+- [ ] **F-60 (R-5.1 / AC5, H7):** On a not-ready backend open Settings → Companion; run a
+      prerequisite action; on ready confirm the swap; read `performance.timeOrigin` + nav count.
+  **Expected:** while not ready the wizard is the ONLY content (0 matches for "Show Fredo
+      Companion", the teleport tip, the auto-return input); when readiness flips ready the controls
+      render IN PLACE (no reload, timeOrigin/nav unchanged); no orphan section/crash.
+  - **Edge:** partial readiness never reads complete; the transition works with the modal open.
+
+- [ ] **F-61 (R-5.2 / AC5):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`;
+      grep the audited files for the frozen hooks.
+  **Expected:** build exit 0 / zero TS errors; UI suite green; frozen hooks retained verbatim
+      (`companion-setup-wizard`, `companion-setup-summary`, `companion-step-*` with
+      `-status`/`-install`/`-retry`/`-recheck`/`-phase`/`-detail`, `companion-model-file-<slot>`
+      with `-status`/`-progress`/`-retry`, `data-state`, `data-server-state`); NO existing
+      assertion weakened/disabled/deleted (any refreshed assertion owned per G-125).
+  - **Edge:** a moved hook is an owned refresh named per G-125; a deleted hook is a FAIL.
+
+- [ ] **F-62 (R-5.3 / AC5):** Run the existing companion + llama-setup cases touching the wizard
+      surface.
+  **Expected:** existing cases remain green — visibility toggle + `Fredo_companion_visible`,
+      idle-timeout commit/clamp/persist, teleport, joke/TicTacToi, bubble geometry, single-Fredo
+      presence, avatar geometry. A behavior change hidden behind a visual refactor = FAIL.
+  - **Edge:** ref companion F-1..F-48 / R-1..R-26; a visual-only diff must not alter any behavior.
+
+- [ ] **F-63 (R-5.4 / LIVE):** Same run as the live legs: `fredo emit --event-type chat` +
+      `--event-type tool_use` with distinct session ids; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`.
+  **Expected:** both `{"queued":true}` and classify under the injected session ids; `telemetry_spans`
+      NON-ZERO count with a recent `max(ingested_at)`. A static-only PASS is a **FALSE PASS**.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim in `## Tests Runs`.
