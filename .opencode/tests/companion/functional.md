@@ -984,3 +984,72 @@ Verdict: **PASS** — round-2's two defects are fixed: the seat/placeholder foot
   post-auto-return trigger) → ON-away @8108 ms with interactive=1** → auto-return AGAIN @13610 ms
   (idle gate re-armed). `interactive==0` samples = **0** across the whole run, max = 1. The
   auto-hidden away state also renders the placeholder (F-63).
+
+### #2870 round 4 (spec/2870 @ 7fddf3ab) — results
+
+Verdict: **PASS** — round-3's reduced-motion finding is fixed: `SpeechBubble` now branches its
+`motion.div` props on framer-motion `useReducedMotion()` (fade-only `opacity 0→1→0`, non-spring
+`duration 0.2s easeOut` under reduced motion; the original spring `scale 0.88 / y initDelta` with
+`type:'spring' stiffness 380 damping 30` otherwise; the absolute seat anchor `left:50% x:'-50%'` is
+preserved in both). The shared component changed, so the full Q-1..Q-17 matrix was re-run live.
+
+- **F-59 PASS (live).** ON-home: `.fredo-companion-avatar` = 1 at the centre seat, seat-frame WRAPPER
+  `offsetWidth`=80 / `offsetHeight`=100, `margin-bottom:16px`, centre-x 960 == column centre-x 960
+  (Δ0), 0 overlay `position:fixed` entities. Single-click → a real joke streamed from the companion
+  LLM ("Why did the programmer quit their job? Because they didn't get enough recursion!") with the
+  seat-anchored 240×120 bubble — role active in place, no corner. Screenshots
+  `after-r4-01-ac1-on-home.png`, `after-r4-01b-ac1-seat-joke.png`.
+- **F-60 PASS (live + static).** OFF ⇒ `.fredo-avatar-idle` mascot at the SAME seat (80×100, centre-x
+  960), interactive entity gone, persisted `Fredo_companion_visible="false"`. Grep of
+  `apps/ui/src/shared` for the removed corner default (`innerWidth - 120` / `innerHeight - 160`) →
+  ZERO.
+- **F-61 PASS (live — the round-4 shared-bubble regression).** Same-task OFF→ON sampler (50 ms):
+  bubble text exactly `At your service. How can I help?`, `position:absolute`, rect x840 / y215.8 /
+  w240 / h120 / bottom 335.8 / centre-x 960 (seat top 345.8 → 10 px tail gap), hold **4508 ms**
+  (4000 ±500; hide recorded 4561 ms after the click). Non-reduced entry is the SPRING: transform
+  `matrix(0.898→0.947→0.989→0.998→1.002 overshoot→1, …, translateX(-120))` with y `5.11→0` — the
+  bubble still animates. `speechSynthesis.speaking=false`, `<audio>` count 0. DOM receipts: the
+  `tauri_webview_dom_snapshot` structure tree (`div.css-dmjht2 > div [motion] > div.css-ql5g4s >
+  p.css-y1403h` + tail `div.css-1mt6uv2`) and the accessibility snapshot
+  (`paragraph → text: "At your service. How can I help?"`, entity `Fredo companion -- talk`), plus
+  the bubble `outerHTML` (`style="position:absolute; bottom:calc(100% + 10px); left:50%; width:240px;
+  height:120px; z-index:101; pointer-events:none; opacity:1; transform:translateX(-50%)"`).
+  Screenshot `after-r4-02-ac2-welcome-bubble.png`.
+- **F-62 PASS (live).** Away (recipe a) placeholder `offsetWidth`=80 / `offsetHeight`=100,
+  `data-state="away"`, `role="img"`, `aria-label="Fredo is away"`, not focusable, `pointer-events:none`;
+  wrapper 80×100 + `margin-bottom:16px`, centre-x Δ0; command-bar `y` unchanged.
+- **F-63 PASS (live).** home+ON ⇒ interactive entity; home+OFF ⇒ mascot; ON+away ⇒ placeholder
+  (never a second interactive Fredo in main); OFF is never the placeholder.
+- **F-64 PASS (live).** Command-bar `getBoundingClientRect().y`: OFF 485.77, ON-home 485.77,
+  ON-away 485.77, post-host-auto-return 485.77 → |Δ| = 0 ≤ 1 px in every state.
+- **F-65 PASS (live).** `run-cli-terminal` opened via the Run CLI launcher tile (windows = main +
+  run-cli-terminal 900×600); Ctrl+right-click INSIDE the terminal → main placeholder + 0 interactive,
+  terminal `.fredo-companion-avatar`=1 at the clamped point. Aligned 100 ms samplers across the
+  terminal→main leg: terminal 1→0 @t and main 0→1 @t+43 ms — globally never 2 (a sub-sample 0 gap at
+  the hand-off, destination arrives the next sample); at every settle global == 1. The host idle
+  auto-return re-occupied the main seat. Screenshots `after-r4-05a-*`, `after-r4-05b-*`,
+  `after-r4-06-*`.
+- **F-66 PASS (live + static + product-unit).** Zero true color literals in `EmptySeat.tsx` +
+  the seat region of `LauncherShell.tsx` + `SpeechBubble.tsx` (only comment issue-refs); no
+  `var(--x)NN` alpha-append. EmptySeat STATIC; computed outline `border-style:dashed`, border
+  `color(srgb 0.626667 …)` on `--card-bg`, fill `color(srgb 0.576 0.2 0.917 / 0.05)` (accent tint
+  5%, re-tints). 700×900: seat 80×100, centre-x 350 == column centre-x, `scrollHeight == clientHeight`
+  (no scrollbar), no H-overflow, seat + bar fully visible in ON-home and ON-away; console free of
+  `Maximum update depth exceeded`; listeners once per window. Screenshots `after-r4-07-*`,
+  `after-r4-08-*`. **Reduced motion (the round-4 fix):** the live leg is still NOT drivable — the
+  driver cannot flip `matchMedia` (#2850 F-19 / #2854 F-38); a manual `window.matchMedia` override
+  was attempted (reporting `matches:true` for `prefers-reduced-motion: reduce`) and the bubble STILL
+  rendered the spring (`matrix(0.91→1.002→1, translateX(-120))`), confirming framer-motion caches
+  the media query. **NAMED BLOCKER** for the live leg; the verification is the product-unit pin
+  `SpeechBubble.reducedMotion.test.tsx` (reduced → opacity-only, no `scale`/`y`, non-spring;
+  motion-enabled → scale 0.88/y6 + spring; absolute anchor preserved) — **6/6 PASS** on the tip, and
+  the companion-focused regression suite **13 files / 109 tests PASS**.
+- **F-67 PASS (live).** `fredo emit --event-type chat` (session `q17-r4-chat-2870`) +
+  `--event-type tool_use` (session `q17-r4-tool-2870`, `read_file`) → both `{"queued":true}`;
+  `telemetry_spans` = **22,637**, `max(ingested_at)` = 2026-09-13T19:49:26Z; `chat_rows`
+  `q17-r4-chat-2870` = 1; `tool_use_rows` `q17-r4-tool-2870` = 1.
+- **F-68 PASS (live — regression).** After a host idle auto-return settled Fredo home, a subsequent
+  Ctrl+right-click teleport yielded exactly ONE interactive Fredo (the fixed overlay; 0 → never) plus
+  the main `[data-state="away"]` placeholder (80×100). Code unchanged this round; the round-3
+  full lifecycle cycle (teleport → auto-return → teleport → auto-return, `interactive==0` samples 0)
+  remains the durable pin.
