@@ -99,3 +99,15 @@
   first recipe-(b) attempt did not host (listener-registration race on the freshly opened terminal
   window); a retry after the window settled hosted correctly — follow-up probe artifact, not a
   product defect.
+- **#2870 round 4 (spec/2870 @ 7fddf3ab) — S-12 PASS (live, regression + re-captured proof).**
+  Re-ran recipe (b) after the SpeechBubble reduced-motion change (which does not touch teleport):
+  Run CLI terminal opened (list = main + `run-cli-terminal` 900×600); Ctrl+right-click INSIDE the
+  terminal → DOM check BEFORE capture: main `[data-state="away"]` placeholder 80×100 + 0
+  interactive; terminal `.fredo-companion-avatar` = 1 fixed at the clamped point. Captured BOTH
+  windows in that same state — main empty seat (`after-r4-05a-*`) and the terminal frame CLEARLY
+  showing the single Fredo at the top-right over the opencode TUI (`after-r4-05b-*`). Aligned
+  100 ms samplers on a terminal→main leg: at every sampled instant the GLOBAL interactive count
+  == 1 (never 2); terminal 1→0 and main 0→1 hand off ~43 ms apart. The host idle auto-return
+  re-occupied the main seat (`after-r4-06-*`). Both windows' error-level console reads empty
+  (terminal shows only benign `[ghostty-vt]` LOG-level warnings). Evidence:
+  `.opencode/tmp/2870/tests-runs.md` / `## Tests Runs (round 4)`.
