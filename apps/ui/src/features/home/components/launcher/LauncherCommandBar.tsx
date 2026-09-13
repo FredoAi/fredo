@@ -69,6 +69,13 @@ export interface LauncherCommandBarProps {
   hintLabel?: string;
   /** #2871: generation in flight — holds `aria-busy` + the accent indicator. */
   busy?: boolean;
+  /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
+  ariaLabel?: string;
+  /**
+   * #2871 a11y (REQ-15/DR-6): id of the visually-hidden hint mirror referenced by
+   * the searchbox `aria-describedby`. The element mirrors the visible chip text.
+   */
+  ariaDescribedBy?: string;
 }
 
 /**
@@ -129,6 +136,8 @@ export function LauncherCommandBar({
   enterMode = 'launch',
   hintLabel,
   busy = false,
+  ariaLabel,
+  ariaDescribedBy,
 }: LauncherCommandBarProps) {
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => onQueryChange(e.target.value);
 
@@ -219,10 +228,11 @@ export function LauncherCommandBar({
       >
         <Input
           role="searchbox"
-          aria-label="Search or command"
+          aria-label={ariaLabel ?? 'Search or command'}
           aria-expanded={gridOpen}
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
+          aria-describedby={showHint ? ariaDescribedBy : undefined}
           placeholder="search or command"
           value={query}
           onChange={handleChange}
@@ -253,6 +263,27 @@ export function LauncherCommandBar({
           }}
         />
       </InputGroup>
+      {/* #2871 a11y (REQ-15/DR-6) — the visually-hidden mirror the searchbox
+          `aria-describedby` points at; it mirrors the visible chip text exactly
+          so AT gets the pending-Enter action without a second live region.
+          Rendered only while the chip shows (no chip → no description). */}
+      {showHint && ariaDescribedBy && (
+        <Box
+          id={ariaDescribedBy}
+          data-testid="fredo-command-hint-sr"
+          position="absolute"
+          width="1px"
+          height="1px"
+          padding="0"
+          margin="-1px"
+          overflow="hidden"
+          clipPath="inset(50%)"
+          whiteSpace="nowrap"
+          borderWidth="0"
+        >
+          {hintLabel}
+        </Box>
+      )}
     </Box>
   );
 }
