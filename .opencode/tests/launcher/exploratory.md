@@ -191,3 +191,14 @@
 ## E-34 — Glow re-tint across presets while animating
 
 - [ ] E-34: Re-theme through shipped presets (light + dark + a non-cyan accent such as Matrix) while the mascot's idle glow is running. Does the glow (the `drop-shadow` filter) re-tint token-native to the live `var(--accent-primary)` with no stale color, no hardcoded fallback, and no animation interruption? Any stale/off-token glow is a finding. Reference F-45 + E-26.
+
+## #2871 extension — smart-Enter / bar-chat probes
+
+- [ ] E-35: Probe a partial-match Enter (`set` filters tiles but equals none) — does Enter chat
+      while the grid still shows/launches Settings by click, with no double action?
+- [ ] E-36: Probe a send while a generation is already streaming (Enter spam) — any interleaved
+      stream, duplicated token, or double busy-clear?
+- [ ] E-37: Probe a theme/accent switch mid-stream and while the bubble holds — stale color,
+      lost partial text, or console error?
+- [ ] E-38: Probe an IME/CJK composition in the command bar — does Enter commit the composed text
+      without sending a partial composition to the LLM?
