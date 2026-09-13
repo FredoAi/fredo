@@ -142,3 +142,38 @@
 - **E-29 NOT DRIVEN — named blocker.** The MCP driver cannot flip `prefers-reduced-motion`; no motion-only affordance exists in the audited chrome (transitions are opacity/border only), and the close-button scale transform is inside a `prefers-reduced-motion` guard (`ProfileSettingsModal.tsx:172-174`).
 - **E-30 FINDING — regression-free.** Scrollbar thumb visible in both themes (derived T3/T4); content-pane overflow in the AFTER set.
 - **E-31 FINDING — regression-free.** Nav hover uses `var(--hover-bg)` (derived, non-white-alpha) → visible in light; active item uses the accent tint.
+
+## #2865 extension — wizard UX visual probes
+
+> Unscripted visual/a11y probes for issue #2865. A confirmed finding PROMOTES to `functional.md`
+> as a new `F-` row (keep the origin note). Reach states through the real product.
+
+- [ ] **E-32 — Grayscale distinguishability of the wizard summary/steps.** Desaturate the captured
+      frames across checking/missing/running/error/installed. Any pair distinguishable only by hue
+      is a finding (promotes to F-50).
+
+- [ ] **E-33 — Semantic-token resolution sweep.** Read `getComputedStyle(document.documentElement)`
+      for `--chakra-colors-fg-muted`/`-fg-subtle`/`-fg-default`/`-bg-hover`/`-fg-onAccent`/
+      `-accent-solid` and compare with `--text-secondary`/`--text-subtle`/`--hover-bg`/
+      `--accent-contrast`. Any token still resolving to a stock Chakra value or empty is a finding
+      (promotes to F-55; the R3 root cause).
+
+- [ ] **E-34 — Wizard content width at the narrow dialog.** At the fixed 960×620 dialog with the
+      longest filenames/paths, does the wizard content stay within the content pane (no horizontal
+      scroll / clipping / wrapped Retry off-card)? Any overflow is a finding (promotes to F-53).
+
+- [ ] **E-35 — Reduced motion in the wizard.** Under `prefers-reduced-motion: reduce`, do the
+      states stay legible and no work affordance become motion-only (no `opacity:0` spinner)? The
+      driver may not flip the media query — record a named blocker if so (promotes to F-52).
+
+- [ ] **E-36 — Sibling-section drift.** Compare the wizard's typography/spacing/radii against
+      Fredo Setup side-by-side at the same zoom. Any unintended divergence (heading scale, card
+      padding, control height) is a finding (promotes to F-53; H4/H5).
+
+- [ ] **E-37 — Error recovery visual continuity.** After a failure and a successful Retry, does the
+      card transition error→running→installed with no stale error tint/copy and no flash of a
+      blank state? Any stale error affordance is a finding (promotes to F-51/F-55).
+
+- [ ] **E-38 — BEFORE/AFTER re-capture collision (G-135).** Re-run the AFTER capture and confirm
+      the BEFORE frames/names survive (distinct `before-*` vs `after-*`). Any BEFORE frame
+      overwritten by the AFTER pass is a finding (promotes to F-57).
