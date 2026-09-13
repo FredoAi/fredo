@@ -91,3 +91,7 @@
   - **Edge:** accent changed while the Settings window is open and a section is mid-edit; a light
     preset + pale accent; the deleted `FloatingSettingsButton` must not orphan any theming consumer
     (e.g. `--hover-bg` consumers).
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — result
+
+- **R-17 PASS (live).** Appearance reached via the Settings window (launcher tile → Appearance). Dark classic → Light Default re-tints the window chrome (header `rgb(42,42,42)`→`rgb(238,238,238)`; active-nav text `rgb(204,204,204)`→`rgb(12,17,23)`; `--hover-bg` `color-mix(#cccccc 6%)`→`color-mix(#0c1117 6%)`). Pale accent `#7dd3fc` override re-tints the active-nav bg to `color(srgb 0.49 0.827 0.988 / 0.12)` via `tint()` + derived `--accent-strong`; active-nav label vs header contrast **16.33:1**. No `var(--x)NN` alpha-append; the deleted gear left no orphan theming consumer. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
