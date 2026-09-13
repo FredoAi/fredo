@@ -35,6 +35,7 @@ import {
   LuPlay,
   LuRefreshCw,
   LuRotateCw,
+  LuTriangleAlert,
 } from 'react-icons/lu';
 
 import { tint } from '../../utils/colorTint';
@@ -146,7 +147,10 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
       : phaseIndex === 1
         ? 'Starting llama-server…'
         : `Waiting for health check on ${endpoint}…`;
-  const livePhaseCaption = watchdogFired ? SERVER_WATCHDOG_COPY : phaseCaption;
+  // Detail on an error/healthy (tinted) surface needs full-contrast text; the
+  // notRunning/checking detail sits on a neutral surface.
+  const detailColor =
+    isError || isHealthy ? 'var(--text-primary)' : 'var(--text-subtle)';
 
   const detailText: string | null = (() => {
     if (isFailed) return serverLaunchFailureCopy(serverCode, endpoint);
@@ -163,8 +167,8 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
       case 'checking':
         return (
           <>
-            <Spinner size="xs" color="fg.muted" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="fg.muted">
+            <Spinner size="xs" color="var(--text-subtle)" aria-hidden />
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               Checking…
             </Text>
           </>
@@ -182,7 +186,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
         return (
           <>
             <Spinner size="xs" color="accent.default" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="accent.default">
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               Starting…
             </Text>
           </>
@@ -191,7 +195,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
         return (
           <>
             <Icon as={LuCircleX} boxSize="16px" color="status.error" aria-hidden />
-            <Text fontSize="xs" fontWeight="600" color="status.error">
+            <Text fontSize="xs" fontWeight="600" color="var(--text-primary)">
               {isExited ? 'Server stopped' : 'Failed to start'}
             </Text>
           </>
@@ -236,25 +240,24 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
         role={isError ? 'group' : undefined}
         aria-label={isError ? 'Companion server error' : undefined}
         aria-busy={isStarting || undefined}
-        borderRadius="md"
+        borderRadius="lg"
         border="1px solid"
         bg={colors.bg}
         borderColor={colors.borderColor}
-        p={3}
-        opacity={isChecking ? 0.6 : 1}
-        transition="opacity 0.2s, background 0.2s, border-color 0.2s"
+        p={4}
+        transition="background 0.2s, border-color 0.2s"
         _motionReduce={{ transition: 'none' }}
         outline="none"
         _focusVisible={{ boxShadow: '0 0 0 2px var(--accent-primary)' }}
       >
         <HStack gap={3} align="flex-start">
           <Box pt="1px" flexShrink={0}>
-            <Icon as={step.icon} boxSize="20px" color="fg.default" aria-hidden />
+            <Icon as={step.icon} boxSize="20px" color="var(--text-primary)" aria-hidden />
           </Box>
 
           <VStack align="stretch" gap={2} flex={1} minW="0">
             <HStack gap={3} align="center" wrap="wrap">
-              <Text fontSize="sm" fontWeight="600" color="fg.default">
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
                 {step.label}
               </Text>
               <HStack
@@ -266,7 +269,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
               </HStack>
             </HStack>
 
-            <Text fontSize="xs" color="fg.muted">
+            <Text fontSize="xs" color={isError || isHealthy || isStarting ? 'var(--text-primary)' : 'var(--text-subtle)'}>
               {step.description}
             </Text>
 
@@ -288,10 +291,38 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
                   aria-live="polite"
                   aria-atomic="true"
                   fontSize="xs"
-                  color={watchdogFired ? 'status.warning' : 'accent.default'}
+                  color="var(--text-primary)"
                 >
-                  {livePhaseCaption}
+                  {phaseCaption}
                 </Text>
+                {/* Watchdog wait = a visible EVENT (change blindness fix, §2.9):
+                    warning-tinted inline notice with icon + full-contrast copy. */}
+                {watchdogFired && (
+                  <HStack
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                    gap={1}
+                    align="flex-start"
+                    p={2}
+                    borderRadius="md"
+                    bg={tint('var(--status-warning)', 10)}
+                    border="1px solid"
+                    borderColor={tint('var(--status-warning)', 30)}
+                  >
+                    <Icon
+                      as={LuTriangleAlert}
+                      boxSize="14px"
+                      color="status.warning"
+                      aria-hidden
+                      mt="1px"
+                      flexShrink={0}
+                    />
+                    <Text fontSize="xs" color="var(--text-primary)">
+                      {SERVER_WATCHDOG_COPY}
+                    </Text>
+                  </HStack>
+                )}
               </VStack>
             )}
 
@@ -300,7 +331,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
                 data-testid={`companion-step-${step.testId}-detail`}
                 fontSize="11px"
                 fontFamily="mono"
-                color={isError ? 'status.error' : 'fg.muted'}
+                color={detailColor}
                 wordBreak="break-all"
               >
                 {detailText}
@@ -329,11 +360,11 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
               {isStarting && watchdogFired && (
                 <Button
                   size="sm"
-                  variant="outline"
                   data-testid={`companion-step-${step.testId}-retry`}
-                  color="accent.default"
+                  bg="var(--accent-primary)"
+                  color="var(--accent-contrast)"
                   onClick={() => onRunAction(step.id)}
-                  _hover={{ bg: 'var(--hover-bg)' }}
+                  _hover={{ opacity: 0.9 }}
                 >
                   <Icon as={LuRefreshCw} boxSize="14px" mr={1} aria-hidden />
                   Retry
@@ -345,6 +376,7 @@ export const ServerLaunchStepCard: React.FC<ServerLaunchStepCardProps> = ({
                   size="sm"
                   variant="outline"
                   data-testid={`companion-step-${step.testId}-recheck`}
+                  color="var(--text-primary)"
                   onClick={onRecheck}
                   _hover={{ bg: 'var(--hover-bg)' }}
                 >

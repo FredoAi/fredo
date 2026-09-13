@@ -209,4 +209,56 @@ describe('ModelFilesStepCard (#2856)', () => {
     // Acquisition is still offered — the backend remains the source of truth.
     expect(screen.getByTestId('companion-step-model-files-download')).toBeInTheDocument();
   });
+
+  it('distinguishes an interrupted download row from a never-started Missing row (#2865 V-B-14)', () => {
+    renderCard(
+      status([
+        file('model', {
+          state: 'missing',
+          downloadedBytes: 34,
+          expectedBytes: 2620370976,
+          detail: 'Incomplete — 34 of 2620370976 bytes',
+        }),
+        file('vision'),
+        file('mtp'),
+      ]),
+    );
+
+    // Frozen contract: an interrupted file is still `missing` (no fifth state).
+    const interrupted = screen.getByTestId('companion-model-file-model');
+    expect(interrupted).toHaveAttribute('data-state', 'missing');
+    // But it is distinguishable by label + copy from a never-started file.
+    expect(screen.getByTestId('companion-model-file-model-status')).toHaveTextContent(
+      'Interrupted',
+    );
+    expect(interrupted).toHaveTextContent(
+      'Interrupted — this download finished partially',
+    );
+    expect(interrupted).toHaveTextContent('Choose Download to resume.');
+    // The never-started rows still read Missing.
+    expect(screen.getByTestId('companion-model-file-vision-status')).toHaveTextContent(
+      'Missing',
+    );
+    expect(screen.getByTestId('companion-model-file-mtp-status')).toHaveTextContent(
+      'Missing',
+    );
+  });
+
+  it('demotes a raw per-file backend error to "Technical details" and never uses it as the primary sentence (#2865 H3)', () => {
+    const raw = 'failed to create C:\\Code\\fredo\\fixture-unwritable\\gemma-4-e2b-it-qat';
+    renderCard(
+      status([
+        file('model', { state: 'present', downloadedBytes: 1000 }),
+        file('vision', { state: 'error', detail: raw }),
+        file('mtp'),
+      ]),
+      'error',
+    );
+
+    const row = screen.getByTestId('companion-model-file-vision');
+    expect(row).toHaveTextContent('Technical details:');
+    expect(row).toHaveTextContent(raw);
+    // The curated actionable sentence is present and does NOT contain the raw path.
+    expect(row).toHaveTextContent('Couldn\'t write the model files to disk');
+  });
 });

@@ -387,9 +387,12 @@ describe('ThemeProvider ST-1 token foundation (#2864)', () => {
     expect(base['--chakra-colors-accent\\.fg']).toBe('var(--accent-primary)');
     expect(base['--chakra-colors-accent\\.strong']).toBe('var(--accent-strong)');
     // The other new audited-surface tokens emit their CSS-var aliases too.
-    expect(base['--chakra-colors-bg\\.hover']).toBe('var(--hover-bg)');
-    expect(base['--chakra-colors-fg\\.subtle']).toBe('var(--text-subtle)');
-    expect(base['--chakra-colors-fg\\.on-accent']).toBe('var(--accent-contrast)');
+    // #2865 ST-3a: `bg`/`fg` are now declared in the NESTED shape that Chakra's
+    // `defaultConfig` uses, so they emit DASH custom properties (the escaped-dot
+    // form was unreachable and let the stock default win the resolution).
+    expect(base['--chakra-colors-bg-hover']).toBe('var(--hover-bg)');
+    expect(base['--chakra-colors-fg-subtle']).toBe('var(--text-subtle)');
+    expect(base['--chakra-colors-fg-on-accent']).toBe('var(--accent-contrast)');
     expect(base['--chakra-colors-overlay\\.scrim']).toBe('var(--overlay-bg)');
     expect(base['--chakra-shadows-shadow\\.dialog']).toBe('var(--shadow-dialog)');
   });
