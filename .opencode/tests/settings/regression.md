@@ -131,3 +131,15 @@
       weakened/disabled/deleted (a refreshed assertion owned per G-125). Tests referencing the
       deleted `ProfileSettingsModal`/`FloatingSettingsButton` are updated in the same scope and
       named. Reference R-5 + functional F-37.
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — results
+
+> Verdict: **PASS**. Detail in `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+- **R-10 PASS (live).** Settings reachable ONLY via the launcher tile → `div[role="group"][aria-label="Settings"]`; no floating gear; no `ProfileSettingsModal`/960×620 dialog.
+- **R-11 PASS (live).** Companion / Appearance / Fredo Setup / Telemetry + every discovered section render functionally unchanged in the new window.
+- **R-12 PASS (live).** Save footer shows only for registering panels; Run CLI label uses `--accent-contrast`; per-section provider reset retained.
+- **R-13 PASS (live + component test).** Readiness gate preserved: probe-in-flight/not-ready → wizard only; ready → controls in place.
+- **R-14 PASS (static).** New Settings feature/chrome files carry zero hex/`rgba(`/`rgb(`/`hsla(` and no `var(--x)NN`; `tint()`/CSS vars only (only comment issue-refs matched).
+- **R-15 PASS (live).** Open/close, section churn, theme/accent switch → no `Maximum update depth exceeded`/`Uncaught`/`Error:`.
+- **R-16 PASS (static/build).** `pnpm --filter @fredo/ui build` 0 TS errors/warnings; `pnpm --filter @fredo/ui test:run` 65 files / 863 tests / 0 failed; no assertion weakened; the retired-modal theming guard migrated to `SettingsSurface.theming.test.tsx` (11 tests).
