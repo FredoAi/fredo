@@ -44,3 +44,12 @@
 - `.opencode/tests/app-dock/` — Appearance section + Dock position (F-1, S-6).
 - `.opencode/tests/desktop-chrome/` — settings gear entry + chrome z-order (F-19).
 - `.opencode/tests/llama-setup/` — the Companion not-ready wizard prerequisite actions.
+
+### #2864 testing round 1 (spec/2864 @ f2c8923, product 5c0fb5b) — results
+
+- **R-1 PASS (live).** Gear opens the dialog; sidebar nav (Companion/Appearance/Fredo Setup/Telemetry + Features) renders; 960×620 content; close button present; section remount via `SettingsSaveProvider key={activeSection}` intact.
+- **R-2 PASS (live).** Appearance (ThemingSettings + DockPositionSettings), Fredo Setup, Telemetry render light+dark; no functional change observed.
+- **R-3 PASS (live).** `SaveFooter` shows only for the four panels that register a save fn; the Run CLI Save button uses `--accent-contrast` (white on purple 5.38:1 dark; #0c1117 on cyan 9.96:1 light) — no literal `white` regression.
+- **R-4 PASS (static).** No hardcoded hex/rgba/hsla and no `var(--x)NN` introduced in the chrome files.
+- **R-5 PASS (static).** No existing assertion weakened/disabled/deleted; ST-5 is ADD-only (33 tests green).
+- **R-6 PASS (live).** No `Maximum update depth exceeded`/`Uncaught`/`Error:` across open/close/section-switch/theme-switch (one tester-introduced transient-probe error, excluded).
