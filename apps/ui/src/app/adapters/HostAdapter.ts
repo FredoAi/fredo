@@ -21,11 +21,18 @@ export interface HostAdapter {
    * Calls the local model with the given messages and streams the response
    * token-by-token via `onToken`, then calls `onDone` when generation is complete.
    * Domain-agnostic — callers supply their own system prompt.
+   *
+   * `onError` (#2871) is the additive typed error channel: when a server/transport
+   * failure occurs, the RAW backend/IPC detail is delivered here (never mixed into
+   * the token stream) so the caller can map it to readable copy. It is optional —
+   * a caller that omits it keeps the legacy behavior (the error text arrives via
+   * `onToken`).
    */
   llmChat(
     messages: LlmMessage[],
     onToken: (token: string) => void,
     onDone: () => void,
+    onError?: (message: string) => void,
   ): Promise<void>;
 
   /**

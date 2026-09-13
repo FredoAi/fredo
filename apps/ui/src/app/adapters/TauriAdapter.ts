@@ -49,6 +49,7 @@ export class TauriAdapter implements HostAdapter {
     messages: LlmMessage[],
     onToken: (token: string) => void,
     onDone: () => void,
+    onError?: (message: string) => void,
   ): Promise<void> {
     const { listen } = await import('@tauri-apps/api/event');
     const { invoke } = await import('@tauri-apps/api/core');
@@ -74,10 +75,13 @@ export class TauriAdapter implements HostAdapter {
       onToken(event.payload);
     });
 
-    // Additive server-error channel: forward one readable line through the
-    // existing token path (the bubble shows it), then complete — never hang.
+    // Additive server-error channel: route ONE raw failure line through the typed
+    // `onError` channel when the caller provides it, then complete — never hang.
+    // Callers without `onError` keep the legacy behavior (the line arrives via
+    // `onToken`).
     unlistenError = await listen<string>('llm-error', (event) => {
-      onToken(event.payload);
+      if (onError) onError(event.payload);
+      else onToken(event.payload);
       finish();
     });
 
@@ -95,9 +99,10 @@ export class TauriAdapter implements HostAdapter {
         unlistenError?.();
         console.warn('[TauriAdapter] model still loading, retrying in 3s...');
         onToken('⏳ Loading model...');
-        setTimeout(() => this.llmChat(messages, onToken, onDone), 3000);
+        setTimeout(() => this.llmChat(messages, onToken, onDone, onError), 3000);
       } else {
         console.error('[TauriAdapter] llm_chat error:', err);
+        onError?.(msg);
         finish();
       }
     }

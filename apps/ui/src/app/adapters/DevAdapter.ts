@@ -41,6 +41,9 @@ export class DevAdapter implements HostAdapter {
     messages: LlmMessage[],
     onToken: (token: string) => void,
     onDone: () => void,
+    // #2871 ST-1r — typed error channel. The dev mock never fails, so this is
+    // accepted for interface parity and intentionally ignored.
+    _onError?: (message: string) => void,
   ): Promise<void> {
     // Pick a mock response based on the last user message so dev mode shows variety
     const userMsg = [...messages].reverse().find((m: LlmMessage) => m.role === 'user')?.content ?? '';

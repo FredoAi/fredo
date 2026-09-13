@@ -9,6 +9,7 @@ import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
+import { companionReplyErrorCopy } from './companionReadiness';
 
 // ── Animation timing (preserved from the sprite era — do NOT change) ────────
 export const ANIM_DURATION: Record<CompanionState, number> = {
@@ -23,6 +24,9 @@ export const ANIM_DURATION: Record<CompanionState, number> = {
 // expression changes, never the timing.
 const HAPPY_HOLD_MS = 5000;
 const TALK_HOLD_MS = 4000;
+// #2871 ST-1r — how long the readable reply-error sentence stays in the bubble
+// before the bubble clears (the error expression returns to idle immediately).
+const ERROR_HOLD_MS = 8000;
 // AC4 "no state sticks": any LLM-bound status (thinking/joking) that never
 // receives its first token / completion falls back to idle after this bound.
 const SAFETY_TIMEOUT_MS = 15000;
@@ -34,9 +38,9 @@ const JOKE_TOPICS = [
   'async/await', 'memory leaks', 'Docker', 'databases',
 ];
 
-// #2871 — the companion's persona/system prompt is shared by EVERY generation
-// entry point (the avatar-click joke and the launcher command bar's `ask`): one
-// constant, one voice. Extracted verbatim from the former `buildJokeMessages`.
+// #2871 — the JOKE persona/system prompt. Used ONLY by the avatar-click joke
+// path (`askForJoke`/`buildJokeMessages`); the launcher command bar's `ask`
+// uses `FREDO_CHAT_PERSONA` below (a general assistant — no joke instruction).
 export const FREDO_PERSONA =
   'You are Fredo, a friendly and enthusiastic little robot companion who loves programming. ' +
   'You have a playful personality and enjoy making developers smile. ' +
@@ -46,6 +50,14 @@ export const FREDO_PERSONA =
   'To win you try to get three O\'s in a row; you also block X from completing a row of three. ' +
   'When asked to make a move you reply with only a single digit 0-8. ' +
   'For everything else, reply with a single short funny programming joke — no intro, no "sure!", just the joke itself.';
+
+// #2871 ST-1r — the launcher command bar's chat persona. A general, concise
+// desktop assistant: answer the user's message directly; do not default to a
+// joke (the joke voice is `FREDO_PERSONA`, reserved for the avatar-click path).
+export const FREDO_CHAT_PERSONA =
+  'You are Fredo, a friendly, concise desktop assistant. ' +
+  'Answer the user\'s message directly and helpfully in a warm but brief voice. ' +
+  'Do not reply with a joke unless the user explicitly asks for one.';
 
 function buildJokeMessages(): LlmMessage[] {
   const topic = JOKE_TOPICS[Math.floor(Math.random() * JOKE_TOPICS.length)];
@@ -188,6 +200,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [a11yAnnouncement, setA11yAnnouncement] = useState('');
     // Latest accumulated generation text (a ref, so capturing it costs no render).
     const generationTextRef = useRef('');
+    // #2871 ST-1r (REQ-15) — the LIVE accumulated reply text, maintained
+    // SYNCHRONOUSLY in `onToken` (never inside a React state updater). A state
+    // updater runs at render/commit time, so the back-to-back `llm-error` →
+    // `llm-done` path would read a stale/empty ref when it settles. `onToken`
+    // computes `next` from this ref and assigns both refs before `setStreamingMessage`.
+    const streamingTextRef = useRef('💭 Thinking...');
+    // #2871 ST-1r — set true by the typed error path; `onDone` (the transport's
+    // follow-up `finish()`) early-returns on it so an error can NEVER re-play the
+    // success `happy` beat. Reset at the start of every generation.
+    const generationErroredRef = useRef(false);
     // True while the CURRENT generation was started by the bar's `ask` path —
     // only that path announces (the avatar-click joke stays silent).
     const announceGenerationRef = useRef(false);
@@ -403,6 +425,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       // #2871 a11y — reset the captured reply text and announce the send ONCE
       // (never per token) when this generation came from the bar's `ask` path.
       generationTextRef.current = '';
+      streamingTextRef.current = '💭 Thinking...';
+      generationErroredRef.current = false;
       if (announceGenerationRef.current) setA11yAnnouncement('Message sent to Fredo');
       firstTokenRef.current = false;
       setStreamingMessage('💭 Thinking...');
@@ -432,35 +456,44 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               playAnim('joking');
             }
           }
-          setStreamingMessage((prev) => {
-            // #2871 — BOTH status placeholders are replaced by the first real
-            // content token. The retry path emits `⏳ Loading model...` through
-            // this same channel, so it must REPLACE `💭 Thinking...`, never append
-            // to it.
-            const next = prev === '💭 Thinking...' || prev === '⏳ Loading model...'
-              ? token
-              : (prev ?? '') + token;
-            // #2871 a11y — capture the accumulated reply for the onDone announcement
-            // (a ref assignment costs no render — the live region is only updated at
-            // send/done, never per token).
-            generationTextRef.current = next;
-            return next;
-          });
+          // #2871 ST-1r (REQ-15) — accumulate SYNCHRONOUSLY off `streamingTextRef`,
+          // never inside a `setStreamingMessage` updater. Both status placeholders
+          // are replaced by the first real content token; the retry path emits
+          // `⏳ Loading model...` through this same channel. Assigning the refs here
+          // (before the state set) guarantees `onDone`/`onError` — which may run on
+          // the same tick, e.g. `llm-error` → `finish()` — read a populated ref.
+          const prev = streamingTextRef.current;
+          const next = prev === '💭 Thinking...' || prev === '⏳ Loading model...'
+            ? token
+            : prev + token;
+          streamingTextRef.current = next;
+          generationTextRef.current = next;
+          setStreamingMessage(next);
         },
         () => {
           // #2871 R-5.1 — a superseded generation's completion must not settle
           // the current one.
           if (gen !== generationRef.current) return;
+          // #2871 ST-1r — the transport routes an `llm-error`/invoke rejection to
+          // `onError` and THEN calls `finish()` → this callback. That follow-up
+          // must not settle again: doing so would re-play the success `happy` beat
+          // after the error path already returned to idle.
+          if (generationErroredRef.current) return;
           console.log('[companion] llm-done received');
           isGeneratingRef.current = false;
           // #2871 a11y (REQ-15 / DR-6) — announce the SETTLED reply ONCE, never per
-          // token. An `llm-error` line arrives through `onToken` and then completes,
-          // so the readable error sentence is announced here exactly once too.
+          // token. `generationTextRef` is populated synchronously by `onToken`, so
+          // the settle always reads the full reply (no updater-timing gap).
           if (announceGenerationRef.current && generationTextRef.current) {
             setA11yAnnouncement(generationTextRef.current);
           }
           setIsStreaming(false);
           clearWatchdog();
+          // #2871 ST-1r — clear the presence/busy marker UP-FRONT (the bar's
+          // `isInUse` = talk || streaming) so the busy affordance clears on
+          // completion rather than ~5 s later at the end of the happy hold. The
+          // expression stays flow-owned, so the idle sync cannot clobber `happy`.
+          setState('idle');
           // #2854 R-3a — completion renders `happy` through the EXISTING 5 s hold
           // (HAPPY_HOLD_MS; timing unchanged — only the expression changes), then
           // returns to idle. `flowOwns` is released on that return.
@@ -474,6 +507,34 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             hideMessage();
           }, HAPPY_HOLD_MS);
         },
+        // #2871 ST-1r — the typed error channel (distinct from success). Map the
+        // RAW backend/IPC detail to a readable sentence, return the expression to
+        // idle PROMPTLY (never a `happy` beat), announce the readable sentence once
+        // (bar path only), then hold it briefly before clearing.
+        (raw) => {
+          if (gen !== generationRef.current) return;
+          const readable = companionReplyErrorCopy(raw);
+          isGeneratingRef.current = false;
+          generationErroredRef.current = true;
+          clearWatchdog();
+          setIsStreaming(false);
+          // Both refs are assigned synchronously so the (follow-up) `onDone` and
+          // any immediate read see the readable sentence, never the raw string.
+          streamingTextRef.current = readable;
+          generationTextRef.current = readable;
+          setStreamingMessage(readable);
+          if (announceGenerationRef.current) setA11yAnnouncement(readable);
+          flowOwnsExpressionRef.current = false;
+          playFlowAnim('idle');
+          setState('idle');
+          timerRef.current = setTimeout(() => {
+            // A newer generation (a subsequent send) owns the bubble now — the
+            // stale error hold must never clear it.
+            if (gen !== generationRef.current) return;
+            setStreamingMessage(null);
+            hideMessage();
+          }, ERROR_HOLD_MS);
+        },
       );
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog]);
 
@@ -484,15 +545,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       runGeneration(buildJokeMessages());
     }, [runGeneration]);
 
-    // #2871 R-1.1 — the launcher command bar's single-shot message. Same persona,
-    // ONE fresh user turn (no transcript/memory), streamed into THIS entity's
+    // #2871 R-1.1 — the launcher command bar's single-shot message. Uses the
+    // general assistant persona (`FREDO_CHAT_PERSONA` — no joke instruction), ONE
+    // fresh user turn (no transcript/memory), streamed into THIS entity's
     // SpeechBubble. A no-op while a generation is already in flight (R-5.1).
     const ask = useCallback((text: string) => {
       // #2871 a11y — mark this generation as the bar-send path so it announces
       // "Message sent to Fredo" + the settled reply in the live region.
       announceGenerationRef.current = true;
       runGeneration([
-        { role: 'system', content: FREDO_PERSONA },
+        { role: 'system', content: FREDO_CHAT_PERSONA },
         { role: 'user', content: text },
       ]);
     }, [runGeneration]);

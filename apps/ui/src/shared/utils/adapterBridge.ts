@@ -13,6 +13,7 @@ type LlmChatFn = (
   messages: LlmMessage[],
   onToken: (token: string) => void,
   onDone: () => void,
+  onError?: (message: string) => void,
 ) => Promise<void>;
 type LlmChatWithImageFn = (
   messages: LlmMessage[],
@@ -83,12 +84,17 @@ export const adapterBridge = {
     messages: LlmMessage[],
     onToken: (token: string) => void,
     onDone: () => void,
+    onError?: (message: string) => void,
   ): Promise<void> {
     if (!_llmChat) {
       console.warn('[adapterBridge] llmChat called before adapter registered');
       onDone();
       return;
     }
+    // #2871 ST-1r — forward the optional error channel only when the caller
+    // actually supplies it, so callers without one keep the exact 3-arg
+    // invocation contract (the existing `adapterBridge` test pins it).
+    if (onError) return _llmChat(messages, onToken, onDone, onError);
     return _llmChat(messages, onToken, onDone);
   },
 
