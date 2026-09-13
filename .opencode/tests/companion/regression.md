@@ -372,3 +372,21 @@
 - **R-38 PASS (live).** ON/OFF toggled live (`Fredo_companion_visible` true→false→true); OFF and
   away → no `llmChat`/bubble, seat placeholder/mascot per #2870; after >60 s idle (auto-return) a
   bar send streamed a reply → chat remains ACTIVE at home (`isVisible && !isAway`).
+
+### #2871 testing round 2 (spec/2871 @ bd168ee) — results
+
+- **R-37 PASS (live).** Single-click → real joke streamed (`playful`→`idle`→`thinking`→`happy`;
+  "Why did the programmer quit debugging? Because they couldn't find the bug in their *heart*"),
+  and the joke did NOT announce in the live region (correct — only bar sends announce).
+  Double-click → TicTacToe ("Your turn (X)", `.tictactoe` node). Seat slot WRAPPER 80×100 +
+  `margin-bottom:16px`, `.fredo-companion-avatar` 80×100 `position:relative`, command-bar
+  `getBoundingClientRect().y` = 485.765625, `scrollHeight == clientHeight` (no scrollbar). Bar send
+  resets the idle timer; the persona split did NOT break the joke path (`FREDO_PERSONA` retained
+  for `askForJoke`).
+- **R-38 PASS (live).** Toggled OFF via the Settings Companion switch → `.fredo-companion-avatar`=0,
+  decorative mascot=1 at the seat, bar `aria-label="Search or command"`, no chip, persisted
+  `Fredo_companion_visible="false"`; a non-tile Enter took NO chat path (no new generation, no
+  bubble). Away (MCP `companion-teleport` recipe c) → `[data-state="away"]` placeholder 80×100
+  `aria-label="Fredo is away"`, bar inactive, Enter no chat. Home-after-auto-return behaviour
+  unchanged from round 1. Persisted keys `Fredo_companion_visible`/`Fredo_companion_idle_timeout`
+  intact; `isAway` not persisted.
