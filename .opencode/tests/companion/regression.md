@@ -332,3 +332,33 @@
 
 - [ ] R-36: Static-grep the changed files for hardcoded colors/`var(--x)NN`; read the console in every leg/window; inspect the new `isAway`/`markAway`/`SYNC_PRESENCE` code for effect/memo deps and listener registration.
   **Expected:** zero color literals in the changed files (EmptySeat/seat chrome token-native); no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window; the new location state introduces no re-render loop (no dep on array `.length`/fresh objects); the cross-window listeners are registered once per window. Reference R-7/R-8/R-17 + #2850 F-15/F-19.
+
+---
+
+## #2871 extension — bar-chat source must not change the companion (G-136)
+
+> Issue #2871 adds the launcher command bar as a second message source. R-1..R-36 remain in
+> force (no companion resolution superseded). Live policy.
+
+## R-37 — Joke / TicTacToe / teleport / bubble geometry unchanged; a send is an interaction
+
+- [ ] R-37: With the companion ON, exercise single-click joke, double-click TicTacToe (250 ms
+      discriminator), Ctrl+right-click teleport, and the speech-bubble side-choosing/anchoring;
+      then send a bar message and re-check the idle timer.
+  **Expected:** R-1/R-2/R-3/R-4/R-33 still hold — the 240×120 / 208×268 bubbles, the
+      `above > right > left > below` ranking, the streaming cursor, the joke/vision flows, the
+      teleport timing, and the frozen 58 base rects are unchanged. A bar send resets the idle
+      timer as an interaction and never fires a stray joke.
+  - **Edge:** bar send in flight then click the avatar; teleport mid-bar-stream; the 5 s idle
+    deadline at/around a bar send.
+
+## R-38 — #2870 presence / persisted keys unchanged; chat is active-only
+
+- [ ] R-38: Toggle the companion ON/OFF and away; read `Fredo_companion_visible` +
+      `Fredo_companion_idle_timeout`; confirm `isAway` is not persisted. With the companion OFF
+      and away, send a bar message; then let an idle auto-return settle and send again.
+  **Expected:** the #2870 home/away model + persisted keys are unchanged (R-34/R-35/R-36); the
+      bar chat path exists when `isVisible && !isAway` — no `llm_chat`/bubble when OFF or away
+      (the seat renders `EmptySeat`), and it remains ACTIVE at home after an idle auto-return
+      (`isAutoHidden` does not gate the interactive seat).
+  - **Edge:** away while hosted in `run-cli-terminal`; a stale away flag; auto-return then send.
