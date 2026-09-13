@@ -34,21 +34,23 @@ const JOKE_TOPICS = [
   'async/await', 'memory leaks', 'Docker', 'databases',
 ];
 
+// #2871 — the companion's persona/system prompt is shared by EVERY generation
+// entry point (the avatar-click joke and the launcher command bar's `ask`): one
+// constant, one voice. Extracted verbatim from the former `buildJokeMessages`.
+export const FREDO_PERSONA =
+  'You are Fredo, a friendly and enthusiastic little robot companion who loves programming. ' +
+  'You have a playful personality and enjoy making developers smile. ' +
+  'You love telling clever programming jokes and playing Tic-Tac-Toe. ' +
+  'In Tic-Tac-Toe you always play as O against the human\'s X — the board has 9 cells numbered 0-8 ' +
+  '(row 0: 0,1,2 | row 1: 3,4,5 | row 2: 6,7,8). ' +
+  'To win you try to get three O\'s in a row; you also block X from completing a row of three. ' +
+  'When asked to make a move you reply with only a single digit 0-8. ' +
+  'For everything else, reply with a single short funny programming joke — no intro, no "sure!", just the joke itself.';
+
 function buildJokeMessages(): LlmMessage[] {
   const topic = JOKE_TOPICS[Math.floor(Math.random() * JOKE_TOPICS.length)];
   return [
-    {
-      role: 'system',
-      content:
-        'You are Fredo, a friendly and enthusiastic little robot companion who loves programming. ' +
-        'You have a playful personality and enjoy making developers smile. ' +
-        'You love telling clever programming jokes and playing Tic-Tac-Toe. ' +
-        'In Tic-Tac-Toe you always play as O against the human\'s X — the board has 9 cells numbered 0-8 ' +
-        '(row 0: 0,1,2 | row 1: 3,4,5 | row 2: 6,7,8). ' +
-        'To win you try to get three O\'s in a row; you also block X from completing a row of three. ' +
-        'When asked to make a move you reply with only a single digit 0-8. ' +
-        'For everything else, reply with a single short funny programming joke — no intro, no "sure!", just the joke itself.',
-    },
+    { role: 'system', content: FREDO_PERSONA },
     { role: 'user', content: `Tell me a short joke about ${topic}.` },
   ];
 }
@@ -83,6 +85,25 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
   return () => {
     if (activeCompanionEntity === handle) activeCompanionEntity = null;
   };
+}
+
+/**
+ * #2871 — dispatch a single-shot user message to THIS window's active companion
+ * entity (the home seat at home, the away overlay while away — whichever is
+ * mounted). The entity's `ask` streams the reply into its own SpeechBubble.
+ *
+ * Returns `true` iff this window has an active registered entity that accepted
+ * the message; `false` when no companion is mounted in this window, which the
+ * caller (the launcher command bar) treats as "companion inactive" and keeps
+ * today's filter/launch behavior. This is the ONE dispatch path (G-149) — both
+ * surfaces register the same handle into this registry; never add a second,
+ * surface-specific route.
+ */
+export function askActiveCompanion(text: string): boolean {
+  const entity = activeCompanionEntity;
+  if (!entity) return false;
+  entity.ask(text);
+  return true;
 }
 
 /**
@@ -138,6 +159,12 @@ export interface CompanionEntityHandle {
   leaveWindow: (onSettled: () => void) => void;
   /** Auto-return leave motion (no re-entry, no context state change — the host owns the settle timer). */
   playLeave: () => void;
+  /**
+   * #2871 — single-shot user message: runs one fresh generation (shared persona
+   * + this one user turn) and streams the reply into THIS entity's SpeechBubble.
+   * A no-op while this entity already has a generation in flight (R-5.1).
+   */
+  ask: (text: string) => void;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
@@ -149,6 +176,11 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [streamingMessage, setStreamingMessage] = useState<string | null>(null);
     const [isStreaming, setIsStreaming] = useState(false);
     const isGeneratingRef = useRef(false);
+    // #2871 R-5.1 — monotonic per-generation id. A start stamps this generation;
+    // every token/done callback carries the id it was started with and is dropped
+    // when that id is stale (a superseded generation), so a late callback can
+    // never mutate the bubble of the current generation.
+    const generationRef = useRef(0);
     const [showTicTacToe, setShowTicTacToe] = useState(false);
     const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -345,33 +377,19 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       }
     }, [startTeleportOut, getAvatarSize, notifyInteraction]);
 
-    const handle = useMemo<CompanionEntityHandle>(() => ({
-      surface,
-      requestTeleport,
-      teleportTo: startTeleportOut,
-      arrive,
-      leaveWindow,
-      playLeave,
-    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave]);
-
-    useImperativeHandle(ref, () => handle, [handle]);
-
-    // Register this surface as THIS window's active entity so the host's
-    // window-level listeners dispatch to it. Cleanup unregisters only if this
-    // handle is still the active one (so a seat→overlay swap cannot be undone by
-    // the departing surface's unmount).
-    useEffect(() => registerActiveCompanionEntity(handle), [handle]);
-
-    useEffect(() => () => {
-      clearTimer();
-      clearWatchdog();
-    }, [clearWatchdog]);
-
-    // ── LLM joke generation ───────────────────────────────────────────────────
-    const askForJoke = useCallback(() => {
-      console.log('[companion] askForJoke called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
+    // ── LLM generation core (joke + command-bar ask) ──────────────────────────
+    // #2871 — ONE shared streaming lifecycle for every entry point: the
+    // avatar-click joke and the launcher command bar's `ask(text)`. It owns the
+    // single-in-flight guard, the stale-token counter, the thinking→joking
+    // expression flow, the 15 s watchdog, and the happy-hold settle. Extracted
+    // from the former `askForJoke` so the joke path is behavior-identical.
+    const runGeneration = useCallback((messages: LlmMessage[]) => {
+      console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
       isGeneratingRef.current = true;
+      // #2871 R-5.1 — stamp THIS generation. Any token/done from an earlier
+      // generation carries a stale id and is dropped by the guards below.
+      const gen = ++generationRef.current;
       firstTokenRef.current = false;
       setStreamingMessage('💭 Thinking...');
       setIsStreaming(true);
@@ -385,8 +403,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
       console.log('[companion] calling adapterBridge.llmChat');
       adapterBridge.llmChat(
-        buildJokeMessages(),
+        messages,
         (token) => {
+          // #2871 R-5.1 — a superseded generation's token must never be applied.
+          if (gen !== generationRef.current) return;
           console.log('[companion] llm-token:', token.slice(0, 40));
           // #2854 R-2b — the first REAL token promotes the flow to `joking`; the
           // context state is intentionally untouched. (Empty/zero-token responses
@@ -399,12 +419,18 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             }
           }
           setStreamingMessage((prev) => {
-            // Clear the placeholder on the first real token
+            // #2871 — BOTH status placeholders are replaced by the first real
+            // content token. The retry path emits `⏳ Loading model...` through
+            // this same channel, so it must REPLACE `💭 Thinking...`, never append
+            // to it.
             if (prev === '💭 Thinking...' || prev === '⏳ Loading model...') return token;
             return (prev ?? '') + token;
           });
         },
         () => {
+          // #2871 R-5.1 — a superseded generation's completion must not settle
+          // the current one.
+          if (gen !== generationRef.current) return;
           console.log('[companion] llm-done received');
           isGeneratingRef.current = false;
           setIsStreaming(false);
@@ -424,6 +450,44 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         },
       );
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog]);
+
+    // #2871 — avatar-click joke: shared persona + a random topic prompt.
+    const askForJoke = useCallback(() => {
+      runGeneration(buildJokeMessages());
+    }, [runGeneration]);
+
+    // #2871 R-1.1 — the launcher command bar's single-shot message. Same persona,
+    // ONE fresh user turn (no transcript/memory), streamed into THIS entity's
+    // SpeechBubble. A no-op while a generation is already in flight (R-5.1).
+    const ask = useCallback((text: string) => {
+      runGeneration([
+        { role: 'system', content: FREDO_PERSONA },
+        { role: 'user', content: text },
+      ]);
+    }, [runGeneration]);
+
+    const handle = useMemo<CompanionEntityHandle>(() => ({
+      surface,
+      requestTeleport,
+      teleportTo: startTeleportOut,
+      arrive,
+      leaveWindow,
+      playLeave,
+      ask,
+    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave, ask]);
+
+    useImperativeHandle(ref, () => handle, [handle]);
+
+    // Register this surface as THIS window's active entity so the host's
+    // window-level listeners dispatch to it. Cleanup unregisters only if this
+    // handle is still the active one (so a seat→overlay swap cannot be undone by
+    // the departing surface's unmount).
+    useEffect(() => registerActiveCompanionEntity(handle), [handle]);
+
+    useEffect(() => () => {
+      clearTimer();
+      clearWatchdog();
+    }, [clearWatchdog]);
 
     // ── Click / double-click on avatar ─────────────────────────────────────────
     // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
