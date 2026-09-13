@@ -813,3 +813,77 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
   **Expected:** `telemetry_spans` NON-ZERO with a recent `max(ingested_at)`; rows classify under the
       session ids. A static-only PASS is a **FALSE PASS**.
   - **Edge:** re-run on the tested tip; keep the output verbatim.
+
+---
+
+## #2870 extension — one Fredo at home: in-place companion, empty seat, welcome bubble, no-shift
+
+> **Binding corrected intent (human directive 2026-09-12):** one Fredo; companion enabling does NOT
+> relocate him (home = desktop centre, always); teleport is the only relocation; NO drag; when he is
+> away the centre renders an empty-seat placeholder at the exact 80×100 `AVATAR_SM` footprint so the
+> launcher bar never shifts; every turn-on shows a ~4 s welcome bubble (no TTS); no corner state.
+> **G-136 supersede:** F-21's "companion ON ⇒ desktop mascot not rendered / OFF ⇒ mascot shown" gate is
+> SUPERSEDED — enabling the companion now keeps Fredo AT the centre seat (role active in place). The
+> historical PASS record above is preserved, not deleted.
+> **Verification policy: live** — evidence per case: `tauri_webview_execute_js` DOM/geometry probes +
+> `tauri_webview_screenshot` (distinct BEFORE/AFTER dirs, G-134/G-135) + `tauri_read_logs(source="console")`
+> in BOTH windows. The mandatory live receipt is F-67; a static-only PASS is a FALSE PASS.
+> **Serving checkout:** spec branch on a running Fredo desktop app (MCP driver `com.fredo.app`); LLM model +
+> mmproj loaded for F-59 interactivity; Run CLI terminal for F-65; idle timeout 5 s for the auto-return legs.
+> **Reach recipes (G-138):** (a) away-within-main = Ctrl+right-click in main; (b) hosted-in-terminal =
+> Ctrl+right-click inside the `run-cli-terminal` window; (c) auto-return = 5 s idle timeout in Settings →
+> Companion (or MCP `tauri_ipc_emit_event` on `companion-teleport`).
+
+## F-59 (R-1a / AC1, Q-1) — Companion ON keeps Fredo at the centre home seat, role active in place
+
+- [ ] F-59: Toggle the companion ON (Settings → Companion Switch). Probe the launcher centre column: seat-slot DOM, the seat entity's role, its bounding box, and screenshot.
+  **Expected:** Fredo renders AT the centre home seat (the interactive seat entity inside the always-present seat box in `LauncherShell`'s centred column); the role is active IN PLACE — single-click streams a joke with the talk/joking expression, double-click opens TicTacToe (208×268); NO `position:fixed` bottom-right/corner wrapper appears; the seat box did NOT unmount on the flip. Screenshot shows Fredo centred, not in a corner.
+  - **Edge:** toggle ON with the terminal window open; ON while a joke stream is live; rapid ON/OFF settles to exactly one entity; ON at 700×900. Reference #2850 F-7/F-8 (joke/game behavior).
+
+## F-60 (R-1b/R-1c / AC1, Q-2/Q-3) — OFF ⇒ decorative mascot at the SAME seat; no corner state anywhere
+
+- [ ] F-60: Toggle the companion OFF; probe the seat. Then, after both an ON and an OFF, probe for any bottom-right/corner position state (DOM + grep the changed companion files for the removed corner default).
+  **Expected:** OFF ⇒ the decorative mascot (`.fredo-avatar-idle`, `<FredoAvatar size="sm">`, 58 rects) renders at the SAME centre home seat; the interactive seat entity is gone; persisted `Fredo_companion_visible="false"`. No component reads/writes a bottom-right default position (the old `{x: innerWidth−120, y: innerHeight−160}` corner default is REMOVED, not merely unused); no corner wrapper node exists at settle; the centre-seat x/y is the slot's flow position, not fixed corner coords.
+  - **Edge:** OFF with the terminal open; OFF immediately after an auto-return; OFF while a game bubble is open (bubble cleaned); grep the changed files for the corner default.
+
+## F-61 (R-2a/R-2b/R-2c / AC2, Q-4/Q-5/Q-6) — Turn-on welcome bubble, ~4 s auto-hide, no TTS (G-140 transient capture)
+
+- [ ] F-61: Transition OFF→ON via the settings Switch and capture the bubble in the SAME `execute_js` task (G-140): poll ≤100 ms until the bubble node appears, return `{bubbleText, present, t: performance.now()}`, screenshot immediately; then sample presence every 250 ms until it disappears and compute the hold duration. Inspect the path for audio/TTS.
+  **Expected:** a welcome bubble appears at the seat immediately on turn-on (`showMessage(WELCOME_TEXT, 4000)`) anchored ABOVE the slot (tail down, 240×120, `position:absolute` → zero layout participation) with the exact copy `At your service. How can I help?`; it auto-hides at ≈4 s (4000 ms ±500 ms), governed by the single cleared `dismissTimerRef` `setTimeout`; NO audio element/`speechSynthesis`/TTS call is made (visual only). If the async screenshot lands after the hide, the DOM capture + timestamped duration sampling is the evidence.
+  - **Edge:** toggle OFF and ON again mid-bubble (timer cleared, new bubble re-armed); bubble at the narrow window stays on-screen; reduced motion does not remove the bubble (only motion). Reference #2850 F-7 (bubble) + the `Home.tsx` greeting precedent.
+
+## F-62 (R-3a / AC3, Q-7) — Away ⇒ empty-seat placeholder at the exact 80×100 footprint
+
+- [ ] F-62: Reach away-within-main (recipe a) and away-in-terminal (recipe b). Probe the main seat slot: placeholder `offsetWidth`/`offsetHeight` (G-040), the seat box's `mb`/margin, and the command-bar `getBoundingClientRect().y`.
+  **Expected:** WHILE away, the launcher centre column renders the empty-seat placeholder at EXACTLY `AVATAR_SM` 80×100 (`offsetWidth`=80, `offsetHeight`=100) at the SAME slot INCLUDING the existing `mb="4"` spacing (column height unchanged from the home states); the placeholder is token-native and visually distinguishable from Fredo; observable hooks `data-state="away"`, `role="img"`, `aria-label="Fredo is away"` (not focusable, not a button).
+  - **Edge:** away at default AND 700×900; placeholder when the away overlay is itself auto-hidden (still shows at the main seat); reset then re-probe for determinism.
+
+## F-63 (R-3b/R-3c / AC3, Q-8/Q-9) — Home ⇒ Fredo (interactive ON / decorative OFF), never placeholder; OFF is NOT the placeholder
+
+- [ ] F-63: At home, probe the seat with role ON and role OFF. Then probe preference OFF vs role-ON-away vs role-ON-away-auto-hidden.
+  **Expected:** home + ON ⇒ interactive Fredo at the seat; home + OFF ⇒ the decorative mascot at the seat; the placeholder is NEVER rendered while home. Preference OFF ⇒ the decorative mascot at the seat, NOT the placeholder (**SI CONFIRMED**); the placeholder renders ONLY when the role is ON AND Fredo is away; an auto-hidden away Fredo still shows the placeholder at the main seat.
+  - **Edge:** OFF with a stale away flag in the context (SET_VISIBLE ⇒ `isAway=false`); a remote `companion-presence {away:true}` while OFF must not render the placeholder; alternate ON/OFF at home.
+
+## F-64 (R-4a/R-4b / AC4, Q-10/Q-11) — Launcher command-bar `y` invariant across ON/OFF and idle auto-return
+
+- [ ] F-64: Measure `LauncherCommandBar` `getBoundingClientRect().y` with companion ON vs OFF (same window/size). Then set the idle timeout to 5 s, let auto-return settle, and re-measure.
+  **Expected:** |y_ON − y_OFF| ≤ 1 px; the `mb="4"` slot margin and the centred-column height are constant in both states (the seat box is rendered unconditionally). After the #2853 idle-auto-return settle the command-bar `y` is unchanged (≤1 px) vs both the pre-return ON state and the OFF baseline — the seat slot never unmounts across the return.
+  - **Edge:** rapid ON/OFF 5×; ON/OFF with the grid engaged; auto-return while the launcher is covered by a window (assert geometry, NOT Z-order, per the #2853 PO note); repeat at 700×900. Reference launcher R-35.
+
+## F-65 (R-5a/R-5b/R-5c / AC5, Q-12/Q-13/Q-14) — Cross-window: main shows the empty seat, never a second Fredo; auto-return re-occupies it
+
+- [ ] F-65: `open_run_cli` → `run-cli-terminal`; confirm both windows (`tauri_manage_window(action="list")`). Ctrl+right-click INSIDE the terminal. Probe main + terminal in the same sampling task: interactive-Fredo count per window, main seat state. Then set idle timeout 5 s, let the host auto-return settle, and re-probe main. Read `tauri_read_logs(source="console")` on BOTH windows after every leg.
+  **Expected:** WHILE hosted in the terminal, the main desktop renders the EMPTY SEAT at the centre slot and does NOT render a second Fredo — global interactive-Fredo count == 1 (terminal hosts it; main = 0 interactive + 1 placeholder), with no transient second Fredo (the leaving window's `markAway()` sets `isAway` locally before the broadcast lands). WHEN the host idle auto-return settles, the main seat is RE-OCCUPIED by Fredo via `companion-presence {idle-settle}`. Both windows' consoles are free of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge:** teleport mid-joke/game; two rapid cross-window teleports (no ghost); close the terminal mid-transit (main recovers); auto-return with the main window unfocused; **environment note:** if Run CLI cannot launch, mark F-65 BLOCKED-environment — never downgrade to a same-window PASS. Reference window-manager S-12 + #2850 F-10/R-4.
+
+## F-66 (R-NF, Q-15/Q-16) — Token-native + reduced-motion + CLS/no-shift + no re-render loop
+
+- [ ] F-66: Static-grep the changed files for `#[0-9a-fA-F]{3,8}`/`rgba(`/`rgb(`/`hsla(`/`var(--x)NN`; drive a reduced-motion pass and read the placeholder/seat computed `animation-name`; probe `scrollHeight`/scrollbar/overflow in OFF, ON-home, ON-away at default AND 700×900; inspect the location-state code for effect/memo deps; count window listeners.
+  **Expected:** EmptySeat + seat chrome are token-native (outline `var(--text-subtle)` + fill `tint('var(--accent-primary)', 5)`) — ZERO color literals, NO `var(--x)NN` alpha-append (#2770); EmptySeat is STATIC (no animation → reduced motion trivially satisfied; any future motion must be opacity/transform-only + `animation:none` under reduced motion); the welcome bubble's entry spring is fade-only under reduced motion; the outline resolves ≥3:1 vs `--card-bg` in light AND dark, accent-independent; re-theming re-tints with no stale color. No new scrollbar/overflow/clip in any state at either width (reserved slot); no effect/memo depends on array `.length` or freshly-created objects (AGENTS.md #523); console shows no `Maximum update depth exceeded`; window listeners (`mousedown`, `companion-teleport`, `companion-presence`) are registered once per window, never per surface.
+  - **Edge:** comment issue-refs are not literals; reduced-motion emulation is a named blocker if the driver cannot flip `matchMedia` → static-CSS verification + a findings note; accent light/purple/amber; many re-renders during a bubble/teleport.
+
+## F-67 (R-LIVE, Q-17) — Mandatory live telemetry + rendered-webview receipt
+
+- [ ] F-67: Same run as F-59..F-66: `fredo emit --event-type chat` + `--event-type tool_use` with distinct session ids; query `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill); retain DOM + screenshot receipts (BEFORE/AFTER dirs).
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; the injected events classify into `chat_rows`/`tool_use_rows` under their session ids; a rendered-webview receipt (DOM snapshot / screenshot / measured geometry) of the seat states exists. **A static-only PASS with no `telemetry_spans` receipt is a FALSE PASS.**
+  - **Edge:** re-run the receipt on the tested tip (the branch may move); keep the emit + query output verbatim.
