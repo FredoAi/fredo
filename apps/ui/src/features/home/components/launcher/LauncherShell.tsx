@@ -13,9 +13,10 @@ import { tint } from '../../../../shared/utils/colorTint';
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
 import { LauncherCommandBar } from './LauncherCommandBar';
+import type { LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
-import { CompanionEntity } from '../../../../shared/components/companion';
+import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
 
 /**
@@ -137,6 +138,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // the companion may live in the terminal window while the mascot lives here.
   const companionVisible = companion.isVisible;
   const companionAway = companion.isVisible && companion.isAway;
+  // #2871 ST-2 (binding predicate — the #2870 seat render gate): the companion
+  // is ACTIVE in THIS window iff he is designated present and NOT away. `isAway`
+  // alone is the seat-render gate; `!isAutoHidden` is deliberately NOT included
+  // (after an idle auto-return the reducer sets `isAway:false, isAutoHidden:true`
+  // while the interactive seat still renders, so gating on it would dead-lock
+  // chat after the first idle return). Home-after-auto-return is ACTIVE.
+  const companionActive = companion.isVisible && !companion.isAway;
+  // #2871 ST-3 continuous busy primitive (AGENTS.md #523 — primitive read only).
+  const companionBusy = companion.isInUse;
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -263,6 +273,34 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     return showableFeatures.filter((feature) => feature.name.toLowerCase().includes(q));
   }, [showableFeatures, query]);
 
+  // #2871 ST-2 — smart-Enter mode derivation (the presentational contract for the
+  // bar; UI/UX §1). One memo off primitives + the feature list (AGENTS.md #523):
+  //   empty query              → no action (`none`), no chip; Enter launches today.
+  //   exact full-name match    → launch that tile (`launch`) + `↵ open <Tile>`;
+  //                              launch WINS over chat (R-1.3 / R-4.2).
+  //   non-match + active       → send to Fredo (`send`) + `↵ send to Fredo` (R-1.1).
+  //   non-match + inactive     → no chip (`none`); Enter launches today (R-4.1).
+  // Exact match is FULL-NAME equality over `showableFeatures` — never the
+  // substring `filteredEntries` (a substring-only hit is a send while active).
+  const commandBar = useMemo<{
+    exact: FredoFeatureClass | null;
+    enterMode: LauncherEnterMode;
+    hintLabel: string | undefined;
+  }>(() => {
+    // #2871 ST-2r — busy-first (UI/UX §1 state 5): while a companion generation
+    // is in flight the bar shows the `Fredo is replying…` chip regardless of the
+    // query (a send clears it, so a query-derived label would never appear).
+    // Enter is gated to a no-op in the keydown handler above.
+    if (companionBusy) return { exact: null, enterMode: 'none', hintLabel: 'Fredo is replying…' };
+    const q = query.trim();
+    if (q === '') return { exact: null, enterMode: 'none', hintLabel: undefined };
+    const lower = q.toLowerCase();
+    const exact = showableFeatures.find((f) => f.name.trim().toLowerCase() === lower) ?? null;
+    if (exact) return { exact, enterMode: 'launch', hintLabel: `↵ open ${exact.name}` };
+    if (companionActive) return { exact: null, enterMode: 'send', hintLabel: '↵ send to Fredo' };
+    return { exact: null, enterMode: 'none', hintLabel: undefined };
+  }, [query, showableFeatures, companionActive, companionBusy]);
+
   // Responsive column count — MUST mirror LauncherAppGrid's
   // `SimpleGrid columns={{ base: 2, sm: 3, md: 4, lg: 6 }}` so ↑↓ leaps a full row.
   const columns = useBreakpointValue({ base: 2, sm: 3, md: 4, lg: 6 }) ?? 2;
@@ -350,27 +388,34 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     });
   }, [closeSurface]);
 
-  const openSelected = useCallback(() => {
-    const feature = filteredEntries[safeSelectedIndex];
-    if (!feature) return;
-    // #2823: routing a tile through the own-kernel opener closes the overlay so the
-    // freshly opened window is never obscured by a raised launcher surface.
-    closeSurface();
-    // #2854 ST-4: a tile open is the mascot's `happy` trigger (bounded beat).
-    triggerDesktopHappy();
-    onOpenFeature(feature.id, feature);
-  }, [filteredEntries, safeSelectedIndex, onOpenFeature, closeSurface, triggerDesktopHappy]);
-
-  const handleSelect = useCallback(
-    (index: number) => {
-      const feature = filteredEntries[index];
-      if (!feature) return;
+  // #2871 ST-2 — the ONE tile-open path (close overlay → mascot happy beat →
+  // full-lifecycle opener). Shared by the filtered selection, a grid click, and
+  // the smart-Enter exact-name launch so all three stay behavior-identical.
+  const launchFeature = useCallback(
+    (feature: FredoFeatureClass) => {
+      // #2823: routing a tile through the own-kernel opener closes the overlay so the
+      // freshly opened window is never obscured by a raised launcher surface.
       closeSurface();
       // #2854 ST-4: a tile open is the mascot's `happy` trigger (bounded beat).
       triggerDesktopHappy();
       onOpenFeature(feature.id, feature);
     },
-    [filteredEntries, onOpenFeature, closeSurface, triggerDesktopHappy],
+    [closeSurface, triggerDesktopHappy, onOpenFeature],
+  );
+
+  const openSelected = useCallback(() => {
+    const feature = filteredEntries[safeSelectedIndex];
+    if (!feature) return;
+    launchFeature(feature);
+  }, [filteredEntries, safeSelectedIndex, launchFeature]);
+
+  const handleSelect = useCallback(
+    (index: number) => {
+      const feature = filteredEntries[index];
+      if (!feature) return;
+      launchFeature(feature);
+    },
+    [filteredEntries, launchFeature],
   );
 
   const handleQueryChange = useCallback((q: string) => {
@@ -408,11 +453,55 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         return;
       }
 
-      // AC4: an empty / fully-filtered grid has no openable target — arrows,
-      // Enter and Space are NO-OPs (keyboard never opens a tile that does not exist).
-      if (entryCount === 0) return;
-
       const isFromInput = (e.target as HTMLElement).tagName === 'INPUT';
+
+      // #2871 ST-2 — smart Enter, evaluated BEFORE the empty-grid guard so a chat
+      // send still works when the query filters every tile out (R-1.1). Escape
+      // stays first; arrows/Space keep the empty-grid no-op below. Rule (binding):
+      //   empty query         → today's launch of the selected tile; never a send.
+      //   exact full-name hit → today's launch path (launch WINS over chat).
+      //   active + non-match  → send the message to Fredo (dispatch through the
+      //                         per-window registry), then clear + collapse while
+      //                         KEEPING focus in the bar (never blur).
+      //   inactive            → today's launch path; never a chat send (R-4.1).
+      //   busy (#2871 ST-2r)  → GLOBAL no-op (UI/UX §1 state 5); never launch and
+      //                         never a second send.
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        // #2871 ST-2r — Enter is a GLOBAL no-op while a companion generation is in
+        // flight (UI/UX §1 state 5). A send clears the query (`setQuery('')`), so
+        // without this guard the old empty-query branch would launch filtered tile
+        // index 0 mid-stream; it must never reach `openSelected()` and never start a
+        // second generation.
+        if (companionBusy) return;
+        const q = query.trim();
+        if (q === '') {
+          openSelected();
+          return;
+        }
+        if (commandBar.exact) {
+          launchFeature(commandBar.exact);
+          return;
+        }
+        if (companionActive && !companionBusy) {
+          // Returns true iff this window has an active entity that accepted the
+          // message; `false` falls through to today's launch path so a missing
+          // entity can never swallow the query.
+          if (askActiveCompanion(q)) {
+            setQuery('');
+            setEngaged(false);
+          } else {
+            openSelected();
+          }
+          return;
+        }
+        openSelected();
+        return;
+      }
+
+      // AC4: an empty / fully-filtered grid has no openable target — arrows and
+      // Space are NO-OPs (keyboard never opens a tile that does not exist).
+      if (entryCount === 0) return;
 
       switch (e.key) {
         case 'ArrowDown':
@@ -431,10 +520,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           e.preventDefault();
           setSelectedIndex((i) => clampIndex(i - 1, entryCount));
           break;
-        case 'Enter':
-          e.preventDefault();
-          openSelected();
-          break;
+        // Enter is handled ABOVE (before the empty-grid guard) — smart-Enter.
         case ' ':
           // Space opens only when a tile is focused (not while typing a query), AND
           // only when unmodified. Ctrl+Space is the global launcher toggle (handled by
@@ -447,7 +533,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           break;
       }
     },
-    [columns, entryCount, openSelected, open, closeOverlay],
+    [
+      columns,
+      entryCount,
+      openSelected,
+      launchFeature,
+      commandBar,
+      companionActive,
+      companionBusy,
+      query,
+      open,
+      closeOverlay,
+    ],
   );
 
   // #2823: the global Ctrl+Space shortcut — a bubble-phase `document` keydown
@@ -589,6 +686,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             onFocus={handleBarFocus}
             onBlur={handleSurfaceBlur}
             onMinimize={handleMinimize}
+            chatAvailable={companionActive}
+            enterMode={commandBar.enterMode}
+            hintLabel={commandBar.hintLabel}
+            busy={companionBusy}
+            ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
+            ariaDescribedBy="fredo-command-hint"
           />
           {engaged && (
             <LauncherAppGrid

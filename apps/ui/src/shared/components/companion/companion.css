@@ -126,6 +126,14 @@
   .fredo-companion-avatar[data-state='teleport-in'] {
     animation: fredo-teleport-in-fade 400ms ease-out 1 forwards;
   }
+
+  /* #2871 ST-3r (UI/UX §4 DR-7 gap): the streaming cursor degrades to a STATIC
+     2px bar. `!important` is required — the cursor Box carries a normal inline
+     `animation` (SpeechBubble.tsx), and only an important author rule beats a
+     normal inline declaration. This is a user accessibility preference. */
+  .fredo-cursor {
+    animation: none !important;
+  }
 }
 
 @keyframes fredo-teleport-out-fade {

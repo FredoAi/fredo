@@ -9,6 +9,7 @@ import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
+import { companionReplyErrorCopy } from './companionReadiness';
 
 // ── Animation timing (preserved from the sprite era — do NOT change) ────────
 export const ANIM_DURATION: Record<CompanionState, number> = {
@@ -23,6 +24,9 @@ export const ANIM_DURATION: Record<CompanionState, number> = {
 // expression changes, never the timing.
 const HAPPY_HOLD_MS = 5000;
 const TALK_HOLD_MS = 4000;
+// #2871 ST-1r — how long the readable reply-error sentence stays in the bubble
+// before the bubble clears (the error expression returns to idle immediately).
+const ERROR_HOLD_MS = 8000;
 // AC4 "no state sticks": any LLM-bound status (thinking/joking) that never
 // receives its first token / completion falls back to idle after this bound.
 const SAFETY_TIMEOUT_MS = 15000;
@@ -34,21 +38,31 @@ const JOKE_TOPICS = [
   'async/await', 'memory leaks', 'Docker', 'databases',
 ];
 
+// #2871 — the JOKE persona/system prompt. Used ONLY by the avatar-click joke
+// path (`askForJoke`/`buildJokeMessages`); the launcher command bar's `ask`
+// uses `FREDO_CHAT_PERSONA` below (a general assistant — no joke instruction).
+export const FREDO_PERSONA =
+  'You are Fredo, a friendly and enthusiastic little robot companion who loves programming. ' +
+  'You have a playful personality and enjoy making developers smile. ' +
+  'You love telling clever programming jokes and playing Tic-Tac-Toe. ' +
+  'In Tic-Tac-Toe you always play as O against the human\'s X — the board has 9 cells numbered 0-8 ' +
+  '(row 0: 0,1,2 | row 1: 3,4,5 | row 2: 6,7,8). ' +
+  'To win you try to get three O\'s in a row; you also block X from completing a row of three. ' +
+  'When asked to make a move you reply with only a single digit 0-8. ' +
+  'For everything else, reply with a single short funny programming joke — no intro, no "sure!", just the joke itself.';
+
+// #2871 ST-1r — the launcher command bar's chat persona. A general, concise
+// desktop assistant: answer the user's message directly; do not default to a
+// joke (the joke voice is `FREDO_PERSONA`, reserved for the avatar-click path).
+export const FREDO_CHAT_PERSONA =
+  'You are Fredo, a friendly, concise desktop assistant. ' +
+  'Answer the user\'s message directly and helpfully in a warm but brief voice. ' +
+  'Do not reply with a joke unless the user explicitly asks for one.';
+
 function buildJokeMessages(): LlmMessage[] {
   const topic = JOKE_TOPICS[Math.floor(Math.random() * JOKE_TOPICS.length)];
   return [
-    {
-      role: 'system',
-      content:
-        'You are Fredo, a friendly and enthusiastic little robot companion who loves programming. ' +
-        'You have a playful personality and enjoy making developers smile. ' +
-        'You love telling clever programming jokes and playing Tic-Tac-Toe. ' +
-        'In Tic-Tac-Toe you always play as O against the human\'s X — the board has 9 cells numbered 0-8 ' +
-        '(row 0: 0,1,2 | row 1: 3,4,5 | row 2: 6,7,8). ' +
-        'To win you try to get three O\'s in a row; you also block X from completing a row of three. ' +
-        'When asked to make a move you reply with only a single digit 0-8. ' +
-        'For everything else, reply with a single short funny programming joke — no intro, no "sure!", just the joke itself.',
-    },
+    { role: 'system', content: FREDO_PERSONA },
     { role: 'user', content: `Tell me a short joke about ${topic}.` },
   ];
 }
@@ -83,6 +97,25 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
   return () => {
     if (activeCompanionEntity === handle) activeCompanionEntity = null;
   };
+}
+
+/**
+ * #2871 — dispatch a single-shot user message to THIS window's active companion
+ * entity (the home seat at home, the away overlay while away — whichever is
+ * mounted). The entity's `ask` streams the reply into its own SpeechBubble.
+ *
+ * Returns `true` iff this window has an active registered entity that accepted
+ * the message; `false` when no companion is mounted in this window, which the
+ * caller (the launcher command bar) treats as "companion inactive" and keeps
+ * today's filter/launch behavior. This is the ONE dispatch path (G-149) — both
+ * surfaces register the same handle into this registry; never add a second,
+ * surface-specific route.
+ */
+export function askActiveCompanion(text: string): boolean {
+  const entity = activeCompanionEntity;
+  if (!entity) return false;
+  entity.ask(text);
+  return true;
 }
 
 /**
@@ -138,6 +171,12 @@ export interface CompanionEntityHandle {
   leaveWindow: (onSettled: () => void) => void;
   /** Auto-return leave motion (no re-entry, no context state change — the host owns the settle timer). */
   playLeave: () => void;
+  /**
+   * #2871 — single-shot user message: runs one fresh generation (shared persona
+   * + this one user turn) and streams the reply into THIS entity's SpeechBubble.
+   * A no-op while this entity already has a generation in flight (R-5.1).
+   */
+  ask: (text: string) => void;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
@@ -149,6 +188,31 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [streamingMessage, setStreamingMessage] = useState<string | null>(null);
     const [isStreaming, setIsStreaming] = useState(false);
     const isGeneratingRef = useRef(false);
+    // #2871 R-5.1 — monotonic per-generation id. A start stamps this generation;
+    // every token/done callback carries the id it was started with and is dropped
+    // when that id is stale (a superseded generation), so a late callback can
+    // never mutate the bubble of the current generation.
+    const generationRef = useRef(0);
+    // #2871 a11y (REQ-15 / DR-6) — the SINGLE polite live region for companion
+    // replies. It holds a DISCRETE announcement (send / settled reply / error),
+    // NEVER the streaming text, so tokens can never spam the AT. The bubble is
+    // `aria-hidden` (decorative) so nothing double-announces.
+    const [a11yAnnouncement, setA11yAnnouncement] = useState('');
+    // Latest accumulated generation text (a ref, so capturing it costs no render).
+    const generationTextRef = useRef('');
+    // #2871 ST-1r (REQ-15) — the LIVE accumulated reply text, maintained
+    // SYNCHRONOUSLY in `onToken` (never inside a React state updater). A state
+    // updater runs at render/commit time, so the back-to-back `llm-error` →
+    // `llm-done` path would read a stale/empty ref when it settles. `onToken`
+    // computes `next` from this ref and assigns both refs before `setStreamingMessage`.
+    const streamingTextRef = useRef('💭 Thinking...');
+    // #2871 ST-1r — set true by the typed error path; `onDone` (the transport's
+    // follow-up `finish()`) early-returns on it so an error can NEVER re-play the
+    // success `happy` beat. Reset at the start of every generation.
+    const generationErroredRef = useRef(false);
+    // True while the CURRENT generation was started by the bar's `ask` path —
+    // only that path announces (the avatar-click joke stays silent).
+    const announceGenerationRef = useRef(false);
     const [showTicTacToe, setShowTicTacToe] = useState(false);
     const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -345,33 +409,25 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       }
     }, [startTeleportOut, getAvatarSize, notifyInteraction]);
 
-    const handle = useMemo<CompanionEntityHandle>(() => ({
-      surface,
-      requestTeleport,
-      teleportTo: startTeleportOut,
-      arrive,
-      leaveWindow,
-      playLeave,
-    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave]);
-
-    useImperativeHandle(ref, () => handle, [handle]);
-
-    // Register this surface as THIS window's active entity so the host's
-    // window-level listeners dispatch to it. Cleanup unregisters only if this
-    // handle is still the active one (so a seat→overlay swap cannot be undone by
-    // the departing surface's unmount).
-    useEffect(() => registerActiveCompanionEntity(handle), [handle]);
-
-    useEffect(() => () => {
-      clearTimer();
-      clearWatchdog();
-    }, [clearWatchdog]);
-
-    // ── LLM joke generation ───────────────────────────────────────────────────
-    const askForJoke = useCallback(() => {
-      console.log('[companion] askForJoke called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
+    // ── LLM generation core (joke + command-bar ask) ──────────────────────────
+    // #2871 — ONE shared streaming lifecycle for every entry point: the
+    // avatar-click joke and the launcher command bar's `ask(text)`. It owns the
+    // single-in-flight guard, the stale-token counter, the thinking→joking
+    // expression flow, the 15 s watchdog, and the happy-hold settle. Extracted
+    // from the former `askForJoke` so the joke path is behavior-identical.
+    const runGeneration = useCallback((messages: LlmMessage[]) => {
+      console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
       isGeneratingRef.current = true;
+      // #2871 R-5.1 — stamp THIS generation. Any token/done from an earlier
+      // generation carries a stale id and is dropped by the guards below.
+      const gen = ++generationRef.current;
+      // #2871 a11y — reset the captured reply text and announce the send ONCE
+      // (never per token) when this generation came from the bar's `ask` path.
+      generationTextRef.current = '';
+      streamingTextRef.current = '💭 Thinking...';
+      generationErroredRef.current = false;
+      if (announceGenerationRef.current) setA11yAnnouncement('Message sent to Fredo');
       firstTokenRef.current = false;
       setStreamingMessage('💭 Thinking...');
       setIsStreaming(true);
@@ -385,8 +441,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
       console.log('[companion] calling adapterBridge.llmChat');
       adapterBridge.llmChat(
-        buildJokeMessages(),
+        messages,
         (token) => {
+          // #2871 R-5.1 — a superseded generation's token must never be applied.
+          if (gen !== generationRef.current) return;
           console.log('[companion] llm-token:', token.slice(0, 40));
           // #2854 R-2b — the first REAL token promotes the flow to `joking`; the
           // context state is intentionally untouched. (Empty/zero-token responses
@@ -398,17 +456,44 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               playAnim('joking');
             }
           }
-          setStreamingMessage((prev) => {
-            // Clear the placeholder on the first real token
-            if (prev === '💭 Thinking...' || prev === '⏳ Loading model...') return token;
-            return (prev ?? '') + token;
-          });
+          // #2871 ST-1r (REQ-15) — accumulate SYNCHRONOUSLY off `streamingTextRef`,
+          // never inside a `setStreamingMessage` updater. Both status placeholders
+          // are replaced by the first real content token; the retry path emits
+          // `⏳ Loading model...` through this same channel. Assigning the refs here
+          // (before the state set) guarantees `onDone`/`onError` — which may run on
+          // the same tick, e.g. `llm-error` → `finish()` — read a populated ref.
+          const prev = streamingTextRef.current;
+          const next = prev === '💭 Thinking...' || prev === '⏳ Loading model...'
+            ? token
+            : prev + token;
+          streamingTextRef.current = next;
+          generationTextRef.current = next;
+          setStreamingMessage(next);
         },
         () => {
+          // #2871 R-5.1 — a superseded generation's completion must not settle
+          // the current one.
+          if (gen !== generationRef.current) return;
+          // #2871 ST-1r — the transport routes an `llm-error`/invoke rejection to
+          // `onError` and THEN calls `finish()` → this callback. That follow-up
+          // must not settle again: doing so would re-play the success `happy` beat
+          // after the error path already returned to idle.
+          if (generationErroredRef.current) return;
           console.log('[companion] llm-done received');
           isGeneratingRef.current = false;
+          // #2871 a11y (REQ-15 / DR-6) — announce the SETTLED reply ONCE, never per
+          // token. `generationTextRef` is populated synchronously by `onToken`, so
+          // the settle always reads the full reply (no updater-timing gap).
+          if (announceGenerationRef.current && generationTextRef.current) {
+            setA11yAnnouncement(generationTextRef.current);
+          }
           setIsStreaming(false);
           clearWatchdog();
+          // #2871 ST-1r — clear the presence/busy marker UP-FRONT (the bar's
+          // `isInUse` = talk || streaming) so the busy affordance clears on
+          // completion rather than ~5 s later at the end of the happy hold. The
+          // expression stays flow-owned, so the idle sync cannot clobber `happy`.
+          setState('idle');
           // #2854 R-3a — completion renders `happy` through the EXISTING 5 s hold
           // (HAPPY_HOLD_MS; timing unchanged — only the expression changes), then
           // returns to idle. `flowOwns` is released on that return.
@@ -422,8 +507,80 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             hideMessage();
           }, HAPPY_HOLD_MS);
         },
+        // #2871 ST-1r — the typed error channel (distinct from success). Map the
+        // RAW backend/IPC detail to a readable sentence, return the expression to
+        // idle PROMPTLY (never a `happy` beat), announce the readable sentence once
+        // (bar path only), then hold it briefly before clearing.
+        (raw) => {
+          if (gen !== generationRef.current) return;
+          const readable = companionReplyErrorCopy(raw);
+          isGeneratingRef.current = false;
+          generationErroredRef.current = true;
+          clearWatchdog();
+          setIsStreaming(false);
+          // Both refs are assigned synchronously so the (follow-up) `onDone` and
+          // any immediate read see the readable sentence, never the raw string.
+          streamingTextRef.current = readable;
+          generationTextRef.current = readable;
+          setStreamingMessage(readable);
+          if (announceGenerationRef.current) setA11yAnnouncement(readable);
+          flowOwnsExpressionRef.current = false;
+          playFlowAnim('idle');
+          setState('idle');
+          timerRef.current = setTimeout(() => {
+            // A newer generation (a subsequent send) owns the bubble now — the
+            // stale error hold must never clear it.
+            if (gen !== generationRef.current) return;
+            setStreamingMessage(null);
+            hideMessage();
+          }, ERROR_HOLD_MS);
+        },
       );
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog]);
+
+    // #2871 — avatar-click joke: shared persona + a random topic prompt. It does
+    // NOT announce into the live region (only a bar send does).
+    const askForJoke = useCallback(() => {
+      announceGenerationRef.current = false;
+      runGeneration(buildJokeMessages());
+    }, [runGeneration]);
+
+    // #2871 R-1.1 — the launcher command bar's single-shot message. Uses the
+    // general assistant persona (`FREDO_CHAT_PERSONA` — no joke instruction), ONE
+    // fresh user turn (no transcript/memory), streamed into THIS entity's
+    // SpeechBubble. A no-op while a generation is already in flight (R-5.1).
+    const ask = useCallback((text: string) => {
+      // #2871 a11y — mark this generation as the bar-send path so it announces
+      // "Message sent to Fredo" + the settled reply in the live region.
+      announceGenerationRef.current = true;
+      runGeneration([
+        { role: 'system', content: FREDO_CHAT_PERSONA },
+        { role: 'user', content: text },
+      ]);
+    }, [runGeneration]);
+
+    const handle = useMemo<CompanionEntityHandle>(() => ({
+      surface,
+      requestTeleport,
+      teleportTo: startTeleportOut,
+      arrive,
+      leaveWindow,
+      playLeave,
+      ask,
+    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave, ask]);
+
+    useImperativeHandle(ref, () => handle, [handle]);
+
+    // Register this surface as THIS window's active entity so the host's
+    // window-level listeners dispatch to it. Cleanup unregisters only if this
+    // handle is still the active one (so a seat→overlay swap cannot be undone by
+    // the departing surface's unmount).
+    useEffect(() => registerActiveCompanionEntity(handle), [handle]);
+
+    useEffect(() => () => {
+      clearTimer();
+      clearWatchdog();
+    }, [clearWatchdog]);
 
     // ── Click / double-click on avatar ─────────────────────────────────────────
     // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
@@ -472,67 +629,98 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
     return (
       <>
-        <SpeechBubble
-          positioning={surface === 'seat' ? 'absolute' : 'fixed'}
-          message={showTicTacToe ? null : displayMessage}
-          companionX={displayPos.x}
-          companionY={displayPos.y}
-          companionWidth={avatarWidth}
-          companionHeight={avatarHeight}
-          isStreaming={isStreaming && !showTicTacToe}
+        {/* #2871 a11y (REQ-15 / DR-6): the bubble is DECORATIVE to assistive tech —
+            its streamed text is announced through the single polite live region
+            below, so the reply can never double-announce per token. The wrapper is
+            static (the seat bubble still positions against the consumer's
+            `position: relative` slot) and drops `aria-hidden` only while the
+            interactive TicTacToe board is open so the game stays AT-reachable. */}
+        <div aria-hidden={showTicTacToe ? undefined : 'true'}>
+          <SpeechBubble
+            positioning={surface === 'seat' ? 'absolute' : 'fixed'}
+            message={showTicTacToe ? null : displayMessage}
+            companionX={displayPos.x}
+            companionY={displayPos.y}
+            companionWidth={avatarWidth}
+            companionHeight={avatarHeight}
+            isStreaming={isStreaming && !showTicTacToe}
+          >
+            {showTicTacToe && (
+              <TicTacToe
+                onStreamingMessage={(msg) => {
+                  // #2853 ST-3: game cells/streaming are companion interactions.
+                  notifyInteraction();
+                  setStreamingMessage(msg);
+                }}
+                onStartStreaming={() => {
+                  notifyInteraction();
+                  setIsStreaming(true);
+                  // #2854 R-2c — the TicTacToe LLM wait renders `thinking`; `talk`
+                  // stays the presence/busy marker (#2853 `isInUse`).
+                  flowOwnsExpressionRef.current = true;
+                  playFlowAnim('thinking');
+                  setState('talk');
+                  startWatchdog();
+                }}
+                onDoneStreaming={() => {
+                  notifyInteraction();
+                  setIsStreaming(false);
+                  clearWatchdog();
+                  // Preserved 4 s hold; the expression is whatever the flow set (a
+                  // terminal outcome replaces this hold with `happy` via onOutcome).
+                  timerRef.current = setTimeout(() => {
+                    flowOwnsExpressionRef.current = false;
+                    setStreamingMessage(null);
+                    playAnim('idle');
+                    setState('idle');
+                  }, TALK_HOLD_MS);
+                }}
+                onOutcome={() => {
+                  // #2854 R-3b — ANY terminal outcome (X win / O win / draw) renders
+                  // `happy` for the existing 4 s window, then idle. A teleport owns
+                  // the expression while in flight — never cancel its timer or
+                  // clobber its motion with the outcome hold.
+                  notifyInteraction();
+                  if (isTeleportingRef.current) return;
+                  // Clear the pending onDoneStreaming hold so the two never fight.
+                  clearTimer();
+                  clearWatchdog();
+                  flowOwnsExpressionRef.current = true;
+                  playFlowAnim('happy');
+                  timerRef.current = setTimeout(() => {
+                    flowOwnsExpressionRef.current = false;
+                    setStreamingMessage(null);
+                    playAnim('idle');
+                    setState('idle');
+                  }, TALK_HOLD_MS);
+                }}
+              />
+            )}
+          </SpeechBubble>
+        </div>
+
+        {/* #2871 a11y — the ONE `role="status" aria-live="polite"` region for the
+            companion reply (visually hidden). It holds a DISCRETE announcement set
+            on send and on completion/error, never the per-token stream, so it can
+            announce ONCE per event and never spam. */}
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="fredo-companion-live-region"
+          style={{
+            position: 'absolute',
+            width: '1px',
+            height: '1px',
+            padding: 0,
+            margin: '-1px',
+            overflow: 'hidden',
+            clipPath: 'inset(50%)',
+            whiteSpace: 'nowrap',
+            borderWidth: 0,
+          }}
         >
-          {showTicTacToe && (
-            <TicTacToe
-              onStreamingMessage={(msg) => {
-                // #2853 ST-3: game cells/streaming are companion interactions.
-                notifyInteraction();
-                setStreamingMessage(msg);
-              }}
-              onStartStreaming={() => {
-                notifyInteraction();
-                setIsStreaming(true);
-                // #2854 R-2c — the TicTacToe LLM wait renders `thinking`; `talk`
-                // stays the presence/busy marker (#2853 `isInUse`).
-                flowOwnsExpressionRef.current = true;
-                playFlowAnim('thinking');
-                setState('talk');
-                startWatchdog();
-              }}
-              onDoneStreaming={() => {
-                notifyInteraction();
-                setIsStreaming(false);
-                clearWatchdog();
-                // Preserved 4 s hold; the expression is whatever the flow set (a
-                // terminal outcome replaces this hold with `happy` via onOutcome).
-                timerRef.current = setTimeout(() => {
-                  flowOwnsExpressionRef.current = false;
-                  setStreamingMessage(null);
-                  playAnim('idle');
-                  setState('idle');
-                }, TALK_HOLD_MS);
-              }}
-              onOutcome={() => {
-                // #2854 R-3b — ANY terminal outcome (X win / O win / draw) renders
-                // `happy` for the existing 4 s window, then idle. A teleport owns
-                // the expression while in flight — never cancel its timer or
-                // clobber its motion with the outcome hold.
-                notifyInteraction();
-                if (isTeleportingRef.current) return;
-                // Clear the pending onDoneStreaming hold so the two never fight.
-                clearTimer();
-                clearWatchdog();
-                flowOwnsExpressionRef.current = true;
-                playFlowAnim('happy');
-                timerRef.current = setTimeout(() => {
-                  flowOwnsExpressionRef.current = false;
-                  setStreamingMessage(null);
-                  playAnim('idle');
-                  setState('idle');
-                }, TALK_HOLD_MS);
-              }}
-            />
-          )}
-        </SpeechBubble>
+          {a11yAnnouncement}
+        </div>
 
         {/* Interactive avatar wrapper — real click box is the avatar's layout
             width AND height (sm = 80 wide x 100 tall). The wrapper carries the

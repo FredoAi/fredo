@@ -324,3 +324,36 @@ export function errorCopyFor(
 
   return { message, technicalDetail: raw && raw !== message ? raw : null };
 }
+
+// ── Companion reply failure copy (#2871 ST-1r) ───────────────────────────────
+//
+// The companion's `llm-error` channel (and a non-`still loading` `llm_chat`
+// invoke rejection) carries a RAW backend/IPC string — e.g. the verbatim
+// `failed to start …: spawn …` detail. That string must NEVER be the primary
+// sentence the user reads in the reply bubble; this maps it to one of two
+// curated sentences. Pure + unit-pinned (`companionReplyErrorCopy.test.ts`).
+
+/** The model is still loading / not ready — actionable next step. */
+export const COMPANION_REPLY_NOT_READY_COPY =
+  "Fredo's model isn't ready yet — open Companion setup to finish loading it.";
+
+/** Any other generation failure — safe, transient, retryable. */
+export const COMPANION_REPLY_GENERIC_COPY =
+  "Fredo couldn't reply just now. Try again in a moment.";
+
+/**
+ * Not-ready / still-loading signatures (the `⏳ Loading model...` retry path and
+ * the managed server's startup states). First match wins; no match → generic.
+ */
+const COMPANION_NOT_READY_RE =
+  /still loading|not ready|isn'?t ready|loading the model|model .*(not|isn'?t).*(ready|loaded)/i;
+
+/**
+ * Map a raw `llm-error` / invoke-rejection string to the readable companion
+ * reply sentence. The raw backend/IPC string is never returned.
+ */
+export function companionReplyErrorCopy(raw: string): string {
+  return COMPANION_NOT_READY_RE.test(raw)
+    ? COMPANION_REPLY_NOT_READY_COPY
+    : COMPANION_REPLY_GENERIC_COPY;
+}

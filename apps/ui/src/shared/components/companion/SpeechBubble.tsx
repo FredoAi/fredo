@@ -189,6 +189,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
                   {isStreaming && (
                     <Box
                       as="span"
+                      className="fredo-cursor"
                       display="inline-block"
                       width="2px"
                       height="14px"

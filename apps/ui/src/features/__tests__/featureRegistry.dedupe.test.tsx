@@ -38,8 +38,14 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 // isolated harness either. Stub the hook (same idiom as the StreamContext mock
 // above) so the shell renders standalone — the presence gate itself is covered
 // by the companion suite. No assertion in this file is changed or weakened.
+// #2871 ST-2 (G-125): the in-slice state must carry the new reads LauncherShell
+// derives — `isInUse` (the command-bar busy primitive) alongside the presence
+// flags. The companion is inactive here, so the smart-Enter chat path stays off
+// and this file's dedupe/nav assertions are unaffected.
 vi.mock('@/shared/contexts/CompanionContext', () => ({
-  useCompanion: () => ({ state: { isVisible: false, isAway: false, isAutoHidden: false } }),
+  useCompanion: () => ({
+    state: { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
+  }),
 }));
 
 // ── Fixture feature ──────────────────────────────────────────────────────────
