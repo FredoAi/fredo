@@ -14,7 +14,7 @@ import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
 import { LauncherCommandBar } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
-import { AVATAR_SM, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
+import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import { CompanionEntity } from '../../../../shared/components/companion';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
 
@@ -565,7 +565,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               companion on/off (or Fredo teleporting away) never changes the
               command bar's geometry. Exactly one of the three states renders
               inside it (see the predicate above). */}
-          <Box position="relative" width={AVATAR_SM.width} height={AVATAR_SM.height} mb="4">
+          <Box position="relative" width={AVATAR_SM_CSS.width} height={AVATAR_SM_CSS.height} mb="4">
             {/* OFF: decorative desktop mascot — unchanged markup (no role/tabIndex/
                 click; the SVG keeps its own `aria-hidden="true"`), only the
                 wrapper-owned `mb="4"` moved up to the seat frame. #2854 ST-4 wires

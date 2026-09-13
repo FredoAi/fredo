@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box } from '@chakra-ui/react';
 
-import { AVATAR_SM } from '../../../../shared/components/fredo-avatar';
+import { AVATAR_SM_CSS } from '../../../../shared/components/fredo-avatar';
 import { tint } from '../../../../shared/utils/colorTint';
 
 /**
@@ -30,8 +30,8 @@ export const EmptySeat: React.FC = () => (
     role="img"
     aria-label="Fredo is away"
     data-state="away"
-    width={AVATAR_SM.width}
-    height={AVATAR_SM.height}
+    width={AVATAR_SM_CSS.width}
+    height={AVATAR_SM_CSS.height}
     boxSizing="border-box"
     borderRadius="14px"
     border="1.5px dashed var(--text-subtle)"
