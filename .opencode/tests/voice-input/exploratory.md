@@ -72,3 +72,10 @@
 > Confirmed probes promoted to `functional.md` are listed here with their `F-<n>` target.
 
 - **E-15 → F-15 (round 1, 2026-09-14):** engine start with a **size-valid / content-invalid** model (byte-exact garbage encoder) produced an unrecoverable MCP-bridge hang + a native abort in the dev log (`Rust cannot catch foreign exceptions` / `STATUS_STACK_BUFFER_OVERRUN`) instead of a typed `engineStartFailed`. The size gate passes it (only SHA would catch it); the probe deliberately does not re-read SHA. Promoted to `F-15`.
+
+## Run log — round 2 (2026-09-14, `spec/2876` @ `84ff1ac`, fix `d9a9f8d`)
+
+- **E-15 RESOLVED (round 2).** The ST-7.1 content-integrity gate makes the same size-exact garbage encoder return typed `modelCorrupt` in ~2 s with the app responsive; the ST-7.2 no-join removes the wedge path. The round-1 native-abort symptom did not reproduce. (Confirmed; F-15 now PASS.)
+- **E-10 observed (silent input).** The only capture device is the silent virtual `Micrófono (Iriun Webcam)`; across several listening sessions the bar stayed `""` and **no phantom/partial text** was produced from silence — no hallucinated partial, no runaway bar mutation. (Environment-limited: this is a no-audio observation, not a real-speech probe.)
+- **E-3 observed (model file changed under the running engine).** The content gate runs before `OnlineRecognizer::create`, so a model replaced between gate and load would still reach native code — the **TOCTOU residual** is documented by the developer as out of spike scope (#2877). Not re-probed live this round.
+- **E-4 / E-2 / E-1 / E-5 / E-6 / E-7 / E-9 / E-11 / E-12 / E-13 / E-14** — not driven this round (environment levers: real mic / network block / OS permission; or no UI re-drive required for the fix delta). Same named blockers as round 1 (G-053).
