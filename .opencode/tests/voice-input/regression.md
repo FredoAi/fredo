@@ -78,3 +78,13 @@
 - **R-6 PASS (static)** — no new remote surface at rest; voice module has zero remote clients; model download is setup-gated only.
 - **R-7 PASS** — `pnpm --filter @fredo/ui build` clean; `cargo clippy --locked -D warnings` zero warnings; `cargo test --locked` ST-6a 10/10.
 - **R-8 PASS** — Settings nav unchanged; no voice/STT/autosend section added (voice group lives in Companion).
+
+## Run log — round 2 (2026-09-14, `spec/2876` @ `84ff1ac`, fix `d9a9f8d`)
+
+- **R-9 PASS (live, promoted round 1)** — a size-valid / content-invalid encoder now returns typed `modelCorrupt` (SHA gate, 2073 ms) with the app responsive; no bridge drop, no native abort (`STATUS_STACK_BUFFER_OVERRUN` / `0xc0000409` zero hits), and the normal start/stop path still works after restore. See `functional.md` round-2 F-15.
+- **R-1 PASS (regression)** — the bar is controlled normally (`placeholder="search or command"`, plain input) when not listening; the DR-1 cue appears only while `listening`.
+- **R-4 PASS (regression)** — `stt_cancel` discarded the in-flight partial and left the bar in place (`value=""`, resting placeholder); Escape keypress accepted.
+- **R-5 PASS (regression)** — app booted and stayed alive with the silent virtual device through all legs (6 `stt_start`/`stop` cycles, 4 failure-mode perturbations).
+- **R-6 PASS (static)** — unchanged; no remote client on the audio→text path.
+- **R-7 PASS (regression)** — `cargo test --locked` 502 passed / 1 ignored; `cargo clippy --locked -- -D warnings` zero warnings; `pnpm --filter @fredo/ui build` N/A (no UI file touched by the fix).
+- **R-2/R-3/R-8** — unchanged from round 1 (Ctrl+Space focus automation limit / settings not re-driven); see round-1 notes.
