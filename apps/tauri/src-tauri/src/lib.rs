@@ -344,6 +344,8 @@ pub fn run() {
             // RTDB (Spec #2788 P2.3)
             infrastructure::rtdb::commands::subscribe_events,
             infrastructure::rtdb::commands::unsubscribe_events,
+            // Voice / STT (Spec #2876 ST-2)
+            infrastructure::voice::commands::stt_check_model,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
@@ -365,6 +367,7 @@ pub fn run() {
             features::setup::commands::run_setup_step,
             features::setup::commands::check_model_files,
             features::setup::commands::download_model,
+            features::setup::commands::download_stt_model,
             features::setup::commands::check_companion_readiness,
             features::setup::commands::install_llama_cpp,
             // Companion llama-server (Spec #2857 ST-4): rerouted chat/vision +
