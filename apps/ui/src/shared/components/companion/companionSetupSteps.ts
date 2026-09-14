@@ -10,12 +10,16 @@
  */
 
 import type React from 'react';
-import { LuCpu, LuFileArchive, LuServer } from 'react-icons/lu';
+import { LuCpu, LuFileArchive, LuMic, LuServer } from 'react-icons/lu';
 
 import type { PrerequisiteId } from './companionReadiness';
 
 export interface CompanionSetupStepAction {
-  command: 'install_llama_cpp' | 'download_model' | 'launch_llama_server';
+  command:
+    | 'install_llama_cpp'
+    | 'download_model'
+    | 'launch_llama_server'
+    | 'download_stt_model';
   label: string;
   runningLabel: string;
   kind: 'install' | 'download' | 'launch';
@@ -30,6 +34,13 @@ export interface CompanionSetupStepMeta {
   icon: React.ElementType;
   /** undefined = detect-only step this slice. */
   action?: CompanionSetupStepAction;
+  /**
+   * #2876 ST-5 — an OPTIONAL step. Optional steps are rendered in a separate
+   * group and are EXCLUDED from the wizard's `installed/total` summary and from
+   * the `CompanionReadiness.ready` gate. Installing/removing one can never
+   * block or unblock companion chat.
+   */
+  optional?: boolean;
 }
 
 /** ONE ordered registry — the single place future slices add steps/actions. */
@@ -74,6 +85,25 @@ export const COMPANION_SETUP_STEPS: CompanionSetupStepMeta[] = [
       label: 'Start companion server',
       runningLabel: 'Starting server…',
       kind: 'launch',
+    },
+  },
+  {
+    // #2876 ST-5 — the OPTIONAL voice-input model, appended LAST. Its state is
+    // composed in `useCompanionReadiness` from `stt_check_model`; acquisition
+    // reuses the SAME streamed download + SHA-256 verify engine. It is excluded
+    // from the `installed/total` summary and NEVER gates companion chat.
+    id: 'sttModel',
+    testId: 'stt-model',
+    label: 'Voice input model',
+    description:
+      'Optional. The local speech-to-text model for voice input. Not required for companion chat.',
+    icon: LuMic,
+    optional: true,
+    action: {
+      command: 'download_stt_model',
+      label: 'Download voice model',
+      runningLabel: 'Downloading voice model…',
+      kind: 'download',
     },
   },
 ];

@@ -20,6 +20,15 @@ export const DEFAULT_IDLE_TIMEOUT_S = 60;
 export const MIN_IDLE_TIMEOUT_S = 5;
 export const MAX_IDLE_TIMEOUT_S = 3600;
 
+// ── Voice input (persisted setting, opt-in) ──────────────────────────────────
+// #2876 ST-5: `Fredo_companion_voice_enabled`, boolean, DEFAULT false
+// (privacy-first opt-in). It is a sibling preference under Companion settings —
+// `setVisible` remains the ONLY writer of the visibility key, and this flag
+// NEVER gates companion chat.
+
+export const VOICE_ENABLED_SETTING_KEY = 'Fredo_companion_voice_enabled';
+export const DEFAULT_VOICE_ENABLED = false;
+
 /**
  * Resolve a (possibly corrupt) configured idle timeout to a usable value.
  * `!Number.isFinite(s) || s <= 0` → default; otherwise round then clamp to
@@ -116,6 +125,13 @@ interface CompanionContextValue {
   notifyInteraction: () => void;
   idleTimeoutSeconds: number;
   setIdleTimeoutSeconds: (s: number) => void;
+  /**
+   * #2876 ST-5: opt-in voice input. Persisted as `Fredo_companion_voice_enabled`
+   * (DEFAULT false, privacy-first). Toggled only by the Companion settings control
+   * and NEVER a precondition for companion chat.
+   */
+  voiceEnabled: boolean;
+  setVoiceEnabled: (enabled: boolean) => void;
   /** Called by FredoCompanion on leave-motion settle; settles hidden + broadcasts. */
   confirmAutoReturn: () => void;
   /** FredoCompanion reports whether this webview currently displays the companion. */
@@ -226,6 +242,14 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     IDLE_TIMEOUT_SETTING_KEY, DEFAULT_IDLE_TIMEOUT_S,
     (v) => String(v),
     (r) => clampIdleTimeout(Number(r)),
+  );
+
+  // #2876 ST-5 — opt-in voice input (DEFAULT false). Only the settings toggle
+  // writes this key; it is never touched by the visibility/presence plumbing.
+  const [voiceEnabled, setVoiceEnabled] = usePersistedSetting<boolean>(
+    VOICE_ENABLED_SETTING_KEY, DEFAULT_VOICE_ENABLED,
+    (v) => String(v),
+    (r) => r === 'true',
   );
 
   const [state, dispatch] = useReducer(reducer, {
@@ -387,11 +411,11 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const value = useMemo<CompanionContextValue>(() => ({
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
-    confirmAutoReturn, setHosting, setInUse,
+    confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
-    confirmAutoReturn, setHosting, setInUse,
+    confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
   ]);
 
   return (

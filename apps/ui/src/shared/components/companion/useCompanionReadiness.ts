@@ -24,6 +24,7 @@ import {
   errorCopyFor,
   llamaServerEndpoint,
   serverLaunchFailureCopy,
+  STT_MODEL_FILE_IDS,
   type CompanionReadiness,
   type CompanionServerLaunchInfo,
   type LlamaCppInstallResult,
@@ -38,6 +39,7 @@ import {
   type ModelFilesStatus,
   type PrerequisiteId,
   type PrerequisiteReport,
+  type SttModelStatus,
 } from './companionReadiness';
 
 export interface UseCompanionReadinessResult {
@@ -56,6 +58,11 @@ export interface UseCompanionReadinessResult {
    * unavailable (then the wizard just renders the backend's own prerequisite set).
    */
   serverLaunch: CompanionServerLaunchInfo | null;
+  /**
+   * #2876 ST-5 voice-input model status (merged with live progress). null when
+   * `stt_check_model` is unavailable. NEVER contributes to `readiness.ready`.
+   */
+  sttModel: SttModelStatus | null;
 }
 
 /**
@@ -87,7 +94,12 @@ function failClosedReadiness(detail: string): CompanionReadiness {
   };
 }
 
-const MODEL_FILE_IDS: readonly ModelFileId[] = ['model', 'vision', 'mtp'];
+const MODEL_FILE_IDS: readonly ModelFileId[] = [
+  'model',
+  'vision',
+  'mtp',
+  ...STT_MODEL_FILE_IDS,
+];
 
 function isModelFileId(value: unknown): value is ModelFileId {
   return typeof value === 'string' && (MODEL_FILE_IDS as readonly string[]).includes(value);
@@ -161,6 +173,48 @@ function filesFromResult(result: ModelDownloadResult): ModelFilesStatus | null {
   };
 }
 
+/**
+ * #2876 ST-5 — merge live progress onto the STT per-file status. `ready` is
+ * re-derived from the merged files so an in-flight set can never read ready.
+ * Progress keys for companion files are ignored here (and vice versa), so one
+ * shared progress map serves both downloads.
+ */
+function mergeSttModel(
+  base: SttModelStatus | null,
+  progress: Partial<Record<ModelFileId, ModelFileProgress>>,
+): SttModelStatus | null {
+  if (!base) return null;
+  const files = base.files.map((file) => {
+    const live = progress[file.id];
+    if (!live) return file;
+    switch (live.state) {
+      case 'downloading':
+        return {
+          ...file,
+          state: 'downloading' as const,
+          downloadedBytes: live.downloadedBytes,
+          expectedBytes: live.expectedBytes > 0 ? live.expectedBytes : file.expectedBytes,
+        };
+      case 'present':
+        return {
+          ...file,
+          state: 'present' as const,
+          downloadedBytes: live.expectedBytes > 0 ? live.expectedBytes : file.expectedBytes,
+        };
+      case 'error':
+        return {
+          ...file,
+          state: 'error' as const,
+          detail: file.detail ?? 'Download failed — choose Retry.',
+        };
+      default:
+        return { ...file, state: 'present' as const };
+    }
+  });
+  const ready = files.length > 0 && files.every((file) => file.state === 'present');
+  return { ready, files };
+}
+
 export function useCompanionReadiness(): UseCompanionReadinessResult {
   const [backendReadiness, setBackendReadiness] = useState<CompanionReadiness | null>(null);
   const [checking, setChecking] = useState(true);
@@ -170,6 +224,8 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
     {},
   );
   const [baseModelFiles, setBaseModelFiles] = useState<ModelFilesStatus | null>(null);
+  // #2876 ST-5 — the OPTIONAL voice-input model status (never a chat gate).
+  const [baseSttModel, setBaseSttModel] = useState<SttModelStatus | null>(null);
   const [progressByFile, setProgressByFile] = useState<
     Partial<Record<ModelFileId, ModelFileProgress>>
   >({});
@@ -281,15 +337,36 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
     }
   }, []);
 
+  /**
+   * #2876 ST-5 — probe the OPTIONAL voice-input model. A missing/unknown-shaped
+   * result leaves `sttModel` null so the backend's own prerequisite set stays
+   * authoritative (no fabricated model state). This probe NEVER feeds the
+   * companion-chat `ready` gate.
+   */
+  const probeSttModel = useCallback(async () => {
+    try {
+      const status = await adapterBridge.invoke<SttModelStatus>('stt_check_model');
+      if (!mountedRef.current) return;
+      if (status && Array.isArray(status.files) && status.files.length > 0) {
+        setBaseSttModel({ ready: status.ready === true, files: status.files });
+      } else {
+        setBaseSttModel(null);
+      }
+    } catch {
+      if (mountedRef.current) setBaseSttModel(null);
+    }
+  }, []);
+
   const refreshInternal = useCallback(
     async (showChecking: boolean) => {
       await Promise.all([
         probeReadiness(showChecking),
         probeModelFiles(),
         probeServerStatus(),
+        probeSttModel(),
       ]);
     },
-    [probeReadiness, probeModelFiles, probeServerStatus],
+    [probeReadiness, probeModelFiles, probeServerStatus, probeSttModel],
   );
 
   const refresh = useCallback(() => refreshInternal(true), [refreshInternal]);
@@ -368,6 +445,8 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       });
 
       let modelResult: ModelDownloadResult | null = null;
+      // #2876 ST-5 — the optional voice-model download (never a chat gate).
+      let sttResult: ModelDownloadResult | null = null;
 
       try {
         if (step.action.command === 'install_llama_cpp') {
@@ -395,6 +474,22 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
               setActionError((prev) => ({
                 ...prev,
                 [id]: errorCopyFor(id, null, modelResult?.error ?? null).message,
+              }));
+            }
+          }
+          stopProgressListener();
+        } else if (step.action.command === 'download_stt_model') {
+          // #2876 ST-5 — the OPTIONAL voice model. Same streamed engine/engine
+          // progress channel; the shared listener records its fileIds too.
+          setProgressByFile({});
+          await startProgressListener();
+          sttResult =
+            (await adapterBridge.invoke<ModelDownloadResult>('download_stt_model')) ?? null;
+          if (!sttResult || sttResult.success !== true) {
+            if (mountedRef.current) {
+              setActionError((prev) => ({
+                ...prev,
+                [id]: errorCopyFor(id, null, sttResult?.error ?? null).message,
               }));
             }
           }
@@ -445,6 +540,17 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
           } else {
             await refreshInternal(false);
           }
+        } else if (sttResult) {
+          // #2876 ST-5 — the download result is authoritative for the STT files;
+          // it never touches the companion readiness gate.
+          const nextStt = filesFromResult(sttResult);
+          if (mountedRef.current) {
+            setBaseSttModel(
+              nextStt ? { ready: nextStt.complete, files: nextStt.files } : null,
+            );
+            setProgressByFile({});
+          }
+          if (!nextStt) await probeSttModel();
         } else {
           // Re-probe in place (AC-3) while the row keeps its running state, so a
           // successful action flips state with no reload.
@@ -455,12 +561,18 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         if (mountedRef.current) setRunningActionId(null);
       }
     },
-    [refreshInternal, probeReadiness, startProgressListener, stopProgressListener],
+    [refreshInternal, probeReadiness, probeSttModel, startProgressListener, stopProgressListener],
   );
 
   const modelFiles = useMemo(
     () => mergeModelFiles(baseModelFiles, progressByFile),
     [baseModelFiles, progressByFile],
+  );
+
+  // #2876 ST-5 — the OPTIONAL voice-input model, merged with live progress.
+  const sttModel = useMemo(
+    () => mergeSttModel(baseSttModel, progressByFile),
+    [baseSttModel, progressByFile],
   );
 
   // #2857 — compose the third prerequisite from the managed-server status.
@@ -494,36 +606,61 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   // `serverLaunch.state === 'starting'` (which is never `installed`).
   // When the status command is unavailable the backend's own set is authoritative
   // (no fabricated server health, no cross-feature import).
+  //
+  // #2876 ST-5 — the OPTIONAL `sttModel` step is appended to `prerequisites` but
+  // NEVER contributes to `ready`: installing/removing the voice model can never
+  // block or unblock companion chat.
   const readiness = useMemo<CompanionReadiness | null>(() => {
     if (!backendReadiness) return null;
     const settled = !checking;
-    if (!serverLaunch) {
-      return { ...backendReadiness, ready: settled && backendReadiness.ready };
+
+    const serverReport: PrerequisiteReport | null = serverLaunch
+      ? {
+          id: 'serverLaunch',
+          state:
+            serverLaunch.state === 'healthy'
+              ? 'installed'
+              : serverLaunch.state === 'failed' || serverLaunch.state === 'exited'
+                ? 'error'
+                : 'missing',
+          detail:
+            serverLaunch.state === 'healthy'
+              ? (serverLaunch.configPath ?? serverLaunch.detail ?? '')
+              : (serverLaunch.detail ?? ''),
+          resolvedPath: serverLaunch.configPath,
+        }
+      : null;
+
+    const sttReport: PrerequisiteReport | null = sttModel
+      ? {
+          id: 'sttModel',
+          state: sttModel.ready ? 'installed' : 'missing',
+          detail: sttModel.ready
+            ? 'Voice input model files are present.'
+            : `${sttModel.files.filter((file) => file.state === 'present').length} of ${
+                sttModel.files.length
+              } voice input model files present.`,
+          resolvedPath: null,
+        }
+      : null;
+
+    let prerequisites = backendReadiness.prerequisites;
+    if (serverReport) {
+      prerequisites = [
+        ...prerequisites.filter((p) => p.id !== 'serverLaunch'),
+        serverReport,
+      ];
     }
-    const serverState = serverLaunch.state;
-    const report: PrerequisiteReport = {
-      id: 'serverLaunch',
-      state:
-        serverState === 'healthy'
-          ? 'installed'
-          : serverState === 'failed' || serverState === 'exited'
-            ? 'error'
-            : 'missing',
-      detail:
-        serverState === 'healthy'
-          ? (serverLaunch.configPath ?? serverLaunch.detail ?? '')
-          : (serverLaunch.detail ?? ''),
-      resolvedPath: serverLaunch.configPath,
-    };
-    const prerequisites = [
-      ...backendReadiness.prerequisites.filter((p) => p.id !== 'serverLaunch'),
-      report,
-    ];
-    return {
-      ready: settled && backendReadiness.ready && serverState === 'healthy',
-      prerequisites,
-    };
-  }, [backendReadiness, serverLaunch, checking]);
+    if (sttReport) {
+      prerequisites = [...prerequisites.filter((p) => p.id !== 'sttModel'), sttReport];
+    }
+
+    const ready = serverLaunch
+      ? settled && backendReadiness.ready && serverLaunch.state === 'healthy'
+      : settled && backendReadiness.ready;
+
+    return { ready, prerequisites };
+  }, [backendReadiness, serverLaunch, sttModel, checking]);
 
   // Auto-invoke ONCE when both provisioning steps are installed and the server is
   // not running. The module-scoped guard (survives wizard close/reopen) makes this
@@ -549,6 +686,7 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       actionError,
       modelFiles,
       serverLaunch,
+      sttModel,
     }),
     [
       readiness,
@@ -560,6 +698,7 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       actionError,
       modelFiles,
       serverLaunch,
+      sttModel,
     ],
   );
 }

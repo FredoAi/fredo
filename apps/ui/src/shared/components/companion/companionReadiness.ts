@@ -5,9 +5,12 @@
  * The backend owns the prerequisite SET; these ids are the stable join key
  * between the backend reports and the ordered `COMPANION_SETUP_STEPS` registry.
  * #2857 appends `'serverLaunch'` here and to the registry.
+ * #2876 ST-5 appends `'sttModel'` — an explicitly OPTIONAL step that NEVER gates
+ * companion chat (it is excluded from the wizard's `installed/total` summary and
+ * from `CompanionReadiness.ready`).
  */
 
-export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch';
+export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch' | 'sttModel';
 
 /** Determined states returned by the backend. */
 export type PrerequisiteState = 'missing' | 'installed' | 'error';
@@ -50,8 +53,29 @@ export interface LlamaCppInstallResult {
 // streamed over the EXISTING `setup:download-progress` channel with an additive
 // `fileId` + `state` pair joined to each per-file row.
 
-/** The three required model files, in fixed display/acquisition order. */
-export type ModelFileId = 'model' | 'vision' | 'mtp';
+/**
+ * The companion's three required model files (fixed display/acquisition order),
+ * plus the four OPTIONAL STT (voice input) files appended by #2876 ST-5. The id
+ * is the join key between the backend reports and the live
+ * `setup:download-progress` stream; widening the union is additive — the
+ * companion ids never change.
+ */
+export type ModelFileId =
+  | 'model'
+  | 'vision'
+  | 'mtp'
+  | 'sttTokens'
+  | 'sttEncoder'
+  | 'sttDecoder'
+  | 'sttJoiner';
+
+/** The four STT (voice input) model file ids, in fixed order (#2876 ST-2/ST-5). */
+export const STT_MODEL_FILE_IDS: readonly ModelFileId[] = [
+  'sttTokens',
+  'sttEncoder',
+  'sttDecoder',
+  'sttJoiner',
+];
 
 /**
  * Per-file state vocabulary. A truncated/partial file stays `missing` (with a
@@ -92,6 +116,22 @@ export interface ModelDownloadResult {
   success: boolean;
   output?: string;
   error?: string;
+  files: ModelFileStatus[];
+}
+
+// ── STT (voice input) model — #2876 ST-2/ST-5 ────────────────────────────────
+//
+// `stt_check_model` probes the four pinned streaming-Zipformer files with the
+// SAME exact-size gate as the companion model set (`probe_files`). Acquisition
+// reuses the SAME streamed engine (`download_stt_model`). This step is OPTIONAL:
+// `ready` here NEVER contributes to `CompanionReadiness.ready` — installing or
+// removing the voice model can never block or unblock companion chat.
+
+/** `stt_check_model` result (camelCase, IPC). */
+export interface SttModelStatus {
+  /** true iff EVERY pinned STT file is present-and-complete. */
+  ready: boolean;
+  /** Per-file status, ordered tokens → encoder → decoder → joiner. */
   files: ModelFileStatus[];
 }
 
@@ -254,6 +294,7 @@ const STEP_ERROR_LABEL: Record<PrerequisiteId, string> = {
   llamaServer: 'the llama.cpp install',
   modelFiles: 'the model download',
   serverLaunch: 'the server launch',
+  sttModel: 'the voice input model download',
 };
 
 /** Curated install-failure copy keyed by the backend's typed install code. */
@@ -315,7 +356,7 @@ export function errorCopyFor(
     );
   } else if (id === 'llamaServer' && code && code in INSTALL_ERROR_COPY) {
     message = INSTALL_ERROR_COPY[code as LlamaCppInstallCode];
-  } else if (id === 'modelFiles' && raw) {
+  } else if ((id === 'modelFiles' || id === 'sttModel') && raw) {
     const cause = DOWNLOAD_CAUSE_COPY.find((entry) => entry.re.test(raw));
     message = cause?.message ?? genericErrorCopy(id);
   } else {
