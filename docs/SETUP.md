@@ -83,6 +83,8 @@ The companion's runtime prerequisites are checked in-app. Open **Settings → Co
 
 Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once all prerequisites are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
 
+A separate **Voice input model** step is **optional and non-gating** — it is rendered under an explicit *Optional / Not required for companion chat* group, excluded from the wizard's `installed/total` summary, and installing or removing it never changes Companion readiness. It downloads the four-file sherpa-onnx English model (~72.7 MB) through the same streamed download + per-file SHA-256 verification path as the GGUF set. Voice input is opt-in (Companion settings → **Voice input**, default off); production voice-input UX is owned by the follow-up implementation specs.
+
 ## OTLP Configuration
 
 Fredo includes local OTLP receivers for agent telemetry. Configure OpenCode to send OTLP data:
@@ -147,6 +149,8 @@ window.__devAdapter.emit({
 ```bash
 pnpm build:tauri
 ```
+
+> **Native STT dependency (spike #2876 POC):** the Rust workspace carries a `sherpa-onnx` dependency for the local speech-to-text proof-of-concept. On Windows, `sherpa-onnx-sys` fetches a prebuilt static x64 archive during `cargo build` unless `SHERPA_ONNX_LIB_DIR` points at a local library directory. The follow-up implementation specs either keep or deliberately revert this dependency.
 
 A local build produces an installer for your current OS in `apps/tauri/src-tauri/target/release/bundle/`:
 

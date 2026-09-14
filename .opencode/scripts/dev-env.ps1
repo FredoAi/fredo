@@ -358,7 +358,7 @@ switch ($Action) {
     }
 
     # Kill any stale instance from a previous (possibly mismatched) run.
-    foreach ($port in @($McpPort, $VitePort)) {
+    foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
       $stalePid = Get-PidByPort $port
       if ($stalePid) {
         Write-Log "Killing stale instance PID $stalePid (port :$port)..."
@@ -366,6 +366,11 @@ switch ($Action) {
         Start-Sleep -Seconds 1
       }
     }
+    # A terminating fredo.exe can hold its ports and its log handles while
+    # being absent from Win32_Process enumeration (observed #2876: a
+    # native-abort instance survived /PID kills and kept :9223/:4318 plus
+    # dev-env-stdout.log). /IM reaches it by image name regardless.
+    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
 
     Write-Log "Starting pnpm dev:tauri (repo root on spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length))))..."
 
@@ -377,6 +382,21 @@ switch ($Action) {
 
     if (-not (Test-Path $LogDir)) {
       New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    }
+
+    # If a wedged previous instance still holds the primary log file handle,
+    # the cmd `>` redirect below would fail to open it and the launch would die
+    # silently (observed #2876: a stuck instance held dev-env-stdout.log while
+    # :9223/:4318 stayed bound and Vite never came up). Fall back to a
+    # per-launch log so a stale handle can never block a cold start.
+    try {
+      $probe = [System.IO.File]::Open($Stdout, 'Append', 'Write', 'None')
+      $probe.Close()
+    } catch {
+      $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+      $Stdout = Join-Path $LogDir "dev-env-stdout-$stamp.log"
+      $Stderr = Join-Path $LogDir "dev-env-stderr-$stamp.log"
+      Write-Log "Primary dev logs are locked by a wedged instance -- falling back to $Stdout" -Level WARN
     }
 
     # Telemetry prerequisites (G-046): force the OPENCODE_* OTEL vars into the
@@ -426,7 +446,7 @@ switch ($Action) {
   "Down" {
     $killed = $false
 
-    foreach ($port in @($McpPort, $VitePort)) {
+    foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
       $targetPid = Get-PidByPort $port
       if ($targetPid) {
         Write-Log "Found process $targetPid on port $port. Killing..."
@@ -435,10 +455,26 @@ switch ($Action) {
       }
     }
 
+    # Terminating fredo.exe instances can hold ports/log handles while being
+    # absent from Win32_Process enumeration; /IM reaches them by image name
+    # (observed #2876: a native-abort instance survived port-owner /PID kills).
+    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
+
     if (-not $killed) {
       Write-Log "No dev:tauri instance found on ports $VitePort / $McpPort"
     } else {
       Write-Log "dev:tauri stopped"
+    }
+
+    # Verify the app ports actually released. A lingering listener owned by an
+    # absent PID is an OS-level wedge that only a reboot clears -- surface it
+    # loudly instead of leaving the next Up to fail confusingly.
+    Start-Sleep -Seconds 1
+    foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
+      if (Test-Port $port) {
+        $owner = Get-PidByPort $port
+        Write-Log "WARNING: port $port still listening (reported owner PID $owner) after Down -- lingering socket from a wedged instance; a reboot may be required." -Level WARN
+      }
     }
   }
 
