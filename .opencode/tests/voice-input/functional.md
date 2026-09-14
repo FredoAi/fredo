@@ -104,3 +104,118 @@
 - **F-3(a) UNVERIFIED (G-053)** — real mic: the only input device is the silent virtual `Micrófono (Iriun Webcam)`; the bar stayed `""` across the listening sessions. Do NOT read the fixture leg as a substitute.
 - **F-1/F-4/F-5/F-11/F-12 PASS (static re-confirm).** `git diff df47d4f 84ff1ac` touches only `voice/{engine,manifest,session}.rs` + evidence + suites — the AC1 artifact and AC4 wiring/provisioning sources are unchanged from the round-1 PASS.
 - **F-13 PASS (regression).** `cargo test --locked` → **502 passed / 0 failed / 1 ignored** (was 499/1; +3 ST-7.1 tests); `voice::session::tests` 10/10; `cargo clippy --locked -- -D warnings` → zero warnings.
+
+---
+
+## #2877 extension — local STT foundation (enable/persist, verified model setup, on-device transcription, lifecycle, edge/NFR)
+
+> Issue #2877 production-hardens the #2876 spike into Fredo's local STT foundation. Rows F-16..F-37
+> map 1:1 to the QA Plan `REQ-1.1..REQ-NF6` in `.opencode/tmp/2877/triage.md` `## QA Expert`.
+> **Verification policy: live** — native capture, settings/WebView2 rendering, and a real ~69 MiB
+> model transfer are only provable on a running app. Evidence per case: `tauri_webview_dom_snapshot`
+> / `tauri_webview_find_element` / `tauri_webview_execute_js` / `tauri_webview_screenshot` /
+> `tauri_ipc_monitor` + `tauri_read_logs(source="console")`, plus the mandatory LIVE receipt
+> (F-37: `telemetry_spans` + rendered-webview receipts). A static-only PASS is a FALSE PASS.
+>
+> **SUPERSESSION (from #2877):** the spike-era phrasing that pins "NO voice/STT/autosend section in
+> the Settings surface" (this file's F-11 context, `regression.md` R-8, `smoke.md` S-4) is
+> **SUPERSEDED** by the PO amendment — voice/STT (and the autosend setting) now live **inside the
+> Companion settings section**, hosted in the Settings app window. Historical PASS/FAIL records
+> above are preserved; do NOT re-run the old "no voice section" assertion as a FAIL.
+> **MOVED to #2878:** F-8 (context-dependent Ctrl+Space branch cascade live-driving) and F-9/F-10
+> (transcript → launcher bar input / start-stop surface) are #2878's surface wiring. This spec keeps
+> only the disabled-chord gate (F-18). Do NOT re-run the moved rows as FAIL here.
+>
+> **Test data:** pinned manifest revision `672fbf1b30579d6585301139bb363f42a0ad4a24` (4 files,
+> 72,654,782 B: encoder 71,083,163 B; decoder 1,307,236 B; joiner 259,335 B; tokens 5,048 B);
+> states MS-V0..MS-V5 (plan's G-138 matrix); the deterministic 16 kHz mono WAV fixture (ST-6); a
+> process-scoped network block + control fetch. **NEVER reference `C:\Users\pktro\fredo-models` —
+> it does not exist.**
+
+- [ ] F-16 (REQ-1.1 / AC1): **Master enable control + engine/model status under Companion; no dedicated Voice section.** Open the Settings app window → Companion; DOM snapshot + `find_element` for the voice enable control and the engine/model status row; enumerate every settings nav item and section title.
+  - **Expected:** a master voice enable control AND a current engine/model status (engine name + model state `missing`/`ready` + resolved location) render INSIDE the Companion section; ZERO nav item or section titled "Voice"; receipt = DOM snapshot + screenshot.
+  - **Edge:** the wizard-only not-ready state still shows the voice status additively (non-gating, F-23); second settings window open; both themes.
+
+- [ ] F-17 (REQ-1.2 / AC1): **Default OFF + persists across an app restart.** Fresh profile → read the control + `Fredo_companion_voice_enabled` via `get_setting`/localStorage; toggle ON; re-read; restart the app; reopen Companion and re-read.
+  - **Expected:** fresh default is OFF/false (opt-in); the toggled value persists byte-exactly across the restart; the control reflects the persisted value.
+  - **Edge:** seeded legacy/malformed values (`"yes"`, `"1"`, `""`, `null`) heal to false with no crash; toggle then kill the app while listening; webview reload instead of full restart.
+
+- [ ] F-18 (REQ-1.3 / AC1, PO): **Disabled voice never starts listening.** With voice DISABLED press Ctrl+Space in the launcher context; then invoke `stt_start` directly.
+  - **Expected:** no listening state and no `stt:transcript`; the #2823 show/focus behavior still fires; the direct invoke returns `{started:false, code:"disabled"}`; no capture handle created.
+  - **Edge:** synthetic Ctrl+Space may not land focus under automation (`launcher` F-19 / `desktop-chrome` R-12) → fallback lever = direct `stt_start` invoke + the unit-pinned chord selection; record which lever was used. Disable WHILE listening must stop + release (F-28).
+
+- [ ] F-19 (REQ-1.4 / PO, setting-only): **Autosend setting present + persisted (send behavior is #2878).** Companion settings → locate the autosend control; read default; toggle; restart; re-read.
+  - **Expected:** an autosend control exists under Companion and its value persists across restart. This row exercises SETTING presence + persistence ONLY — transcript→bar / auto-send behavior is a #2878 non-goal and is NOT claimed here.
+  - **Edge:** the default value must match the PO decision (Architect to bind it); a missing control is a FAIL against the PO decision, never a silent drop.
+
+- [ ] F-20 (REQ-2.1 / AC2): **One-action verified model setup.** Model-absent state MS-V0 → Companion; locate the `sttModel` step; click its single acquire action; `tauri_ipc_monitor` the `download_stt_model` invoke.
+  - **Expected:** exactly ONE user action acquires the model; `download_stt_model` is invoked and delegates to `download_missing_files`; the 4 pinned files land; zero manual CLI steps; the step is registered in `COMPANION_SETUP_STEPS` and EXCLUDED from the gating `installed/total` summary.
+  - **Edge:** 2-of-4 partial state; double-click does not fire concurrent downloads; action absent when already ready; click while a companion GGUF download is running.
+
+- [ ] F-21 (REQ-2.2 / AC2): **Skip-present by exact size + streamed SHA-256 verify + progress + ready/location state.** Real pull from the pinned HF revision; sample `setup:download-progress`; read the terminal state and the resolved location.
+  - **Expected:** skip-present by EXACT pinned size; each file's streamed SHA-256 verified (mismatch ⇒ delete + error); total 72,654,782 B; determinate progress events; the ready state names the resolved absolute model directory; a mismatch/truncation NEVER reports ready.
+  - **Edge:** present-but-truncated re-downloads; size-exact/content-invalid file yields an error, not a hang; path containing spaces; partially-populated model dir.
+
+- [ ] F-22 (REQ-2.3 / AC2, G-130 — real transfer class): **(a) real full transfer + (b) deliberately idle/slow resume at a realistic offset.** (a) Real transfer of the full pinned 4-file set, 72,654,782 B, from the pinned revision. (b) Deliver the encoder (71,083,163 B of the 72.6 MB set) to ~35,000,000 B on disk, then deliver ZERO bytes for >= 20 s (deliberate idle), then resume via HTTP `Range` from the persisted offset to 100%.
+  - **Expected:** (a) delivered bytes = 72,654,782, wall clock recorded, per-file SHA matches the pins. (b) the resume's first progress event carries the exact on-disk partial offset; the transfer completes in-session to the exact byte count with an in-place SHA match; states observed are `downloading`/`present`/`skipped` with no `error`. A fast KB-scale stub alone is NOT evidence.
+  - **Edge:** partial at the EXACT pinned size but wrong content (the size gate is blind by design — the SHA gate must catch it); interrupt immediately before completion; bounded retry across a mid-stream reset.
+
+- [ ] F-23 (REQ-2.4 / AC2 non-gating): **STT model never gates companion readiness (counts stay GGUF-only).** With the STT model absent, exercise companion chat + readiness; compare the `CompanionReadiness.ready` inputs to the pre-spec definition.
+  - **Expected:** `ready` keeps exactly today's inputs (`settled && backendReadiness.ready && serverState === 'healthy'`); companion chat remains usable with the STT model absent; the wizard's gating counts cover only the GGUF prerequisites (n of 3), never `sttModel`.
+  - **Edge:** STT present vs absent changes nothing in chat readiness; the not-ready gate still renders the wizard ONLY with the optional `sttModel` row additive. Cross-ref `.opencode/tests/llama-setup/` R-30.
+
+- [ ] F-24 (REQ-3.1 / AC3): **On-device transcription: >= 2 distinct partials then a final.** Enable voice, `stt_start`, speak a distinctive multi-word phrase, sample `stt:transcript`.
+  - **Expected:** >= 2 DISTINCT cumulative partial strings observed while the utterance continues, then an endpoint with `is_final: true` carrying the full segment text; `revision` strictly monotonic; `latencyMs` present; receipt = captures + a description of what changed between partials.
+  - **Edge:** fixture WAV leg through the SAME capture path; silent input (no partials, no crash); multiple segments; very short utterance; a partial identical to the previous one is NOT distinct.
+
+- [ ] F-25 (REQ-3.2 / AC3 hard NFR, G-148): **Local-only — transcribe with the network blocked + static/unit pin.** (live) Apply a process-scoped outbound block, PROVE it with a control fetch that FAILS, then transcribe; block mid-session. (static/unit) Grep `infrastructure/voice/**` + the stt setup path for remote clients.
+  - **Expected:** a transcript is produced while the block is proven; no outbound connection during transcription; ZERO remote endpoints and ZERO cloud-fallback branches on the audio→text path; the ONLY network use is model acquisition, setup-gated (`voice_local_only_no_remote_clients` pin).
+  - **Edge:** block mid-session must not crash. If the live block is undrivable (firewall rule needs elevation; adapter disable unavailable) → a NAMED blocker recorded ALONGSIDE the pin — never the pin alone as a PASS, never fabricated.
+
+- [ ] F-26 (REQ-3.3 / AC3 real-mic leg): **Explicit real-mic attempt, with the ST-6 WAV pin as the named fallback (never a substitute).** Attempt the REAL-MIC leg live through the product path (start listening → speak → capture transcript). If the host mic is silent/absent, run the deterministic ST-6 WAV session pin.
+  - **Expected:** the real-mic attempt is recorded with the resolved device name + sample rate, and a real transcript is the primary evidence. If the host mic is silent → a NAMED blocker naming the device (the host's only input is the virtual `Iriun Webcam` mic) PLUS the ST-6 pin PASS; the fixture leg is NEVER recorded as a substitute.
+  - **Edge:** device switch mid-session; 48 kHz device resampled to 16 kHz; no default input device.
+
+- [ ] F-27 (REQ-4.1 / AC4): **Idempotent start/stop.** Call start twice; call stop when not listening; call stop twice; rapid start/stop x5.
+  - **Expected:** 2nd start returns `{started:false, code:"alreadyListening"}` with no second session; stop when idle is a no-op with no error; after stop `listening:false`; no leaked handle.
+  - **Edge:** start during the engine-start window; stop from an error state; start/stop across window focus changes.
+
+- [ ] F-28 (REQ-4.2 / AC4): **Microphone released on stop or voice-disable.** Start → stop; start → disable voice; observe release and a subsequent re-open; unit-pin the session/capture handle.
+  - **Expected:** no capture stream remains after stop or voice-disable (the OS microphone-in-use indicator clears); a subsequent start re-opens cleanly; the session/capture handle is dropped.
+  - **Edge:** stop while the engine is still starting; disable during an error state; 10 cycles show no handle or thread leak.
+
+- [ ] F-29 (REQ-4.3 / AC4): **Five typed failure modes, one session, no crash / no leaked handle.** Drive, in ONE session and sequentially: missing model, corrupt model, vanished device, permission denied, engine-start failure; read each code/detail; then re-check responsiveness and `stt_status`.
+  - **Expected:** each returns a typed code (`modelMissing` / `modelCorrupt` / `noDevice` / `permissionDenied` / `engineStartFailed`) with an actionable detail; the process stays alive and responsive; no panic/abort; no unhandled console `Error:`; recovery between modes; no leaked capture handle.
+  - **Edge:** size-exact/content-invalid encoder (71,083,163 B of garbage) → typed `modelCorrupt` via the SHA gate and MUST NOT hang or native-abort (the spike's round-1 `STATUS_STACK_BUFFER_OVERRUN` / `0xc0000409` regression must stay dead — cross-ref prior F-15/R-9); `OnlineRecognizer::create() == None` → `engineStartFailed`; device unplugged mid-session.
+
+- [ ] F-30 (REQ-5.1 / AC5): **Permission denied / no device → non-blocking actionable, voice stays disabled, app usable.** Construct permission-denied and no-input-device states; attempt to enable/listen; then use the launcher, settings, and companion chat.
+  - **Expected:** an inline NON-BLOCKING actionable state names the cause + next step; the persisted voice preference stays false (never silently flipped to enabled); no modal trap; launcher/settings/chat stay fully usable.
+  - **Edge:** denial while enabled + listening → typed state, no crash; recovery after granting permission; no device at boot.
+
+- [ ] F-31 (REQ-5.2 / AC5): **No silent capture — visible active-capture indicator.** Start listening → DOM probe for a visible active-capture indicator; stop → re-probe.
+  - **Expected:** a visible indicator exists exactly while `listening: true` and is absent when not; no capture runs without the indicator; receipt = DOM snapshot + measured geometry.
+  - **Edge:** indicator across window/theme; the sub-second on/off transient at the start/stop boundary (G-140) requires <= 50 ms sampling.
+
+- [ ] F-32 (REQ-NF1 / budgets, G-148): **Measured budgets.** Measure partial-update latency (audio-chunk → emit) p50/p95 over >= 20 partials; sample fredo working set pre-engine and at steady state; sample idle CPU while NOT listening; run the `stt_engine_created_lazily` pin.
+  - **Expected:** p50 <= 300 ms AND p95 <= 600 ms; RAM delta on model load <= 350 MB; no measurable idle CPU while not listening (recognizer created on first `stt_start`, never at launch). Every number carries its method; adjectives instead of numbers FAIL.
+  - **Edge:** measure after warm-up, not the first-token spike; a metric not measurable on this host → named blocker + the unit pin; note host sleep/foreign load.
+
+- [ ] F-33 (REQ-NF2 / STT-only): **No TTS / no voice-command routing.** Static + live: assert no TTS/audio playback surface and no voice-command/intent routing was added.
+  - **Expected:** STT-only — no synthesized audio, no final-text-triggered action or command execution.
+  - **Edge:** any voice action/intent router present FAILs.
+
+- [ ] F-34 (REQ-NF3 / build hygiene + POC removal): **Build gates green + the POC is gone (no dual paths).** `cargo check --locked`, `cargo test --locked`, `cargo clippy --locked -- -D warnings`; `pnpm --filter @fredo/ui build`; grep for POC remnants.
+  - **Expected:** zero Rust warnings/errors; UI TS clean; CI green; ZERO `// SPIKE #2876 — THROWAWAY POC` remnants and no dual poc+prod paths (deleted or replaced, never coexisting).
+  - **Edge:** pre-existing unrelated CI red reported separately; a POC-only allow attribute FAILs.
+
+- [ ] F-35 (REQ-NF4 / ST-6 pins ported, regression): **Hermetic session pins live in production and stay green.** Run the ported session-pin suite at its production path.
+  - **Expected:** the 7 typed failure codes, partial→partial→final, and revision monotonicity are all green AND live in the production module (ported, not deleted with the POC); counts recorded.
+  - **Edge:** the POC module is removed — the pins MUST exist at the new production path; a deleted pin is a FAIL. (Supersedes the spike's "PASS by hermetic pin (ST-6a)" location note.)
+
+- [ ] F-36 (REQ-NF5 / no-panic pin, G-148): **No panic on the capture/engine/failure paths.** Grep those paths for `unwrap()` / `expect()` / `panic!` / `unreachable!`; run the `stt_start` failure-path unit tests.
+  - **Expected:** zero panic-capable calls on those paths; `stt_start` returns a typed result on every failure; no path panics.
+  - **Edge:** `?` propagation and `unwrap_or*` are fine; a panic on a `Drop`/thread-join path FAILs.
+
+- [ ] F-37 (REQ-NF6 / LIVE-EVIDENCE LEG, G-108): **Mandatory live receipts (telemetry + rendered webview), same run as F-16..F-36.** `fredo emit --event-type chat` + `--event-type tool_use` with distinct session ids; query the RTDB row tables + `telemetry_spans`; upload each UI capture.
+  - **Expected:** both events return `{"queued":true}` and classify into their row tables; `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; every UI leg's capture is uploaded to `.opencode/evidence/2877/` with its raw URL + a textual description embedded in `## Tests Runs`. A static-only PASS is a FALSE PASS.
+  - **Edge:** re-run on the tested tip; a screenshot-only leg with no description is not evidence; a local path never uploaded is not evidence.
