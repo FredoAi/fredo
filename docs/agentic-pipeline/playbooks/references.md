@@ -45,6 +45,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-156: on_the_go_improvement
+- **activation_date:** 2026-09-14
+- **observed:** #2876 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** A known-flaky unrelated CI test has no in-sandbox recovery at merge time: pr_merge_guard blocks any non-exempt failing check (only sub-10s runner-provisioning failures are exempt) and the sandbox denies gh run rerun to the SI and tester, so FredoCompanion.seatTeleport (already documented in references.md as a re-run-passes flake) hard-blocked testing to audit despite rust-validate passing and the flake passing locally twice. Recovery applied: commit a real spec artifact (the references.md STT candidate-research section) to the spec branch to re-trigger the workflow on the same tree, which then passed. Proposed to the human: allowlist a scoped gh run rerun for the SI, or add a bounded one-shot flake retry to pr_merge_guard.
+- **home:** references.md (G-156)
+- **effectiveness:** Pending
+
 ### G-155: on_the_go_improvement
 - **activation_date:** 2026-09-14
 - **observed:** #2876 round 2
