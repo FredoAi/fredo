@@ -282,6 +282,11 @@ pub fn run() {
             app.manage(rtdb);
             app.manage(classifier);
 
+            // Voice / STT POC session state (Spec #2876 ST-3 — THROWAWAY).
+            // Holds the ONE active listening session; the engine + capture stream
+            // are created lazily on the first `stt_start`, never at launch.
+            app.manage(infrastructure::voice::session::VoiceState::new());
+
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
             tauri::async_runtime::spawn(async move {
@@ -344,8 +349,12 @@ pub fn run() {
             // RTDB (Spec #2788 P2.3)
             infrastructure::rtdb::commands::subscribe_events,
             infrastructure::rtdb::commands::unsubscribe_events,
-            // Voice / STT (Spec #2876 ST-2)
+            // Voice / STT (Spec #2876 ST-2/ST-3 — THROWAWAY POC)
             infrastructure::voice::commands::stt_check_model,
+            infrastructure::voice::commands::stt_start,
+            infrastructure::voice::commands::stt_stop,
+            infrastructure::voice::commands::stt_cancel,
+            infrastructure::voice::commands::stt_status,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
