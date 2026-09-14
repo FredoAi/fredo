@@ -70,4 +70,5 @@
 ## Promoted findings
 
 > Confirmed probes promoted to `functional.md` are listed here with their `F-<n>` target.
-> None yet.
+
+- **E-15 → F-15 (round 1, 2026-09-14):** engine start with a **size-valid / content-invalid** model (byte-exact garbage encoder) produced an unrecoverable MCP-bridge hang + a native abort in the dev log (`Rust cannot catch foreign exceptions` / `STATUS_STACK_BUFFER_OVERRUN`) instead of a typed `engineStartFailed`. The size gate passes it (only SHA would catch it); the probe deliberately does not re-read SHA. Promoted to `F-15`.
