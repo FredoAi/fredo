@@ -15,6 +15,7 @@ import { Box, HStack, Heading, Icon, Text, VStack } from '@chakra-ui/react';
 import {
   LuCircleCheck,
   LuFileArchive,
+  LuMic,
   LuRefreshCw,
   LuSettings2,
   LuTriangleAlert,
@@ -75,8 +76,21 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
     return map;
   }, []);
 
-  const total = prerequisites.length;
-  const installed = prerequisites.filter((p) => p.uiState === 'installed').length;
+  // #2876 ST-5 — OPTIONAL steps (voice input) are rendered in their own group and
+  // are EXCLUDED from the `installed/total` summary. Only required steps can make
+  // the wizard read incomplete, so an optional step never blocks companion chat.
+  const optionalStepIds = useMemo(
+    () =>
+      new Set(
+        COMPANION_SETUP_STEPS.filter((step) => step.optional).map((step) => step.id),
+      ),
+    [],
+  );
+  const requiredPrerequisites = prerequisites.filter((p) => !optionalStepIds.has(p.id));
+  const optionalPrerequisites = prerequisites.filter((p) => optionalStepIds.has(p.id));
+
+  const total = requiredPrerequisites.length;
+  const installed = requiredPrerequisites.filter((p) => p.uiState === 'installed').length;
   const isChecking = prerequisites.some((p) => p.uiState === 'checking');
 
   const summary = useMemo(() => {
@@ -107,6 +121,58 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
       text: `${total} prerequisites need attention`,
     };
   }, [isChecking, installed, total]);
+
+  const renderStep = (prerequisite: CompanionSetupWizardPrerequisite) => {
+    const meta = metaById.get(prerequisite.id) ?? FALLBACK_META(prerequisite.id);
+    const errorText = actionError[prerequisite.id];
+    const baseState: PrerequisiteUiState = isChecking ? 'checking' : prerequisite.uiState;
+    const uiState: SetupStepUiState =
+      runningActionId === prerequisite.id
+        ? 'running'
+        : errorText && baseState !== 'installed'
+          ? 'error'
+          : baseState;
+    if (prerequisite.id === 'modelFiles') {
+      return (
+        <ModelFilesStepCard
+          step={meta}
+          uiState={uiState}
+          detail={prerequisite.detail}
+          errorText={errorText}
+          modelFiles={modelFiles ?? null}
+          onRunAction={onRunAction}
+          onRecheck={onRecheck}
+        />
+      );
+    }
+    if (prerequisite.id === 'serverLaunch') {
+      return (
+        <ServerLaunchStepCard
+          step={meta}
+          uiState={uiState}
+          detail={prerequisite.detail}
+          resolvedPath={prerequisite.resolvedPath}
+          errorText={errorText}
+          serverState={serverLaunch?.state ?? 'notRunning'}
+          serverPort={serverLaunch?.port ?? null}
+          serverCode={serverLaunch?.code ?? null}
+          onRunAction={onRunAction}
+          onRecheck={onRecheck}
+        />
+      );
+    }
+    return (
+      <SetupStepCard
+        step={meta}
+        uiState={uiState}
+        detail={prerequisite.detail}
+        resolvedPath={prerequisite.resolvedPath}
+        errorText={errorText}
+        onRunAction={onRunAction}
+        onRecheck={onRecheck}
+      />
+    );
+  };
 
   return (
     <VStack
@@ -161,61 +227,46 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
       </HStack>
 
       <Box as="ol" m={0} p={0} display="flex" flexDirection="column" gap={3}>
-        {prerequisites.map((prerequisite) => {
-          const meta = metaById.get(prerequisite.id) ?? FALLBACK_META(prerequisite.id);
-          const errorText = actionError[prerequisite.id];
-          const baseState: PrerequisiteUiState = isChecking ? 'checking' : prerequisite.uiState;
-          const uiState: SetupStepUiState =
-            runningActionId === prerequisite.id
-              ? 'running'
-              : errorText && baseState !== 'installed'
-                ? 'error'
-                : baseState;
-          if (prerequisite.id === 'modelFiles') {
-            return (
-              <ModelFilesStepCard
-                key={prerequisite.id}
-                step={meta}
-                uiState={uiState}
-                detail={prerequisite.detail}
-                errorText={errorText}
-                modelFiles={modelFiles ?? null}
-                onRunAction={onRunAction}
-                onRecheck={onRecheck}
-              />
-            );
-          }
-          if (prerequisite.id === 'serverLaunch') {
-            return (
-              <ServerLaunchStepCard
-                key={prerequisite.id}
-                step={meta}
-                uiState={uiState}
-                detail={prerequisite.detail}
-                resolvedPath={prerequisite.resolvedPath}
-                errorText={errorText}
-                serverState={serverLaunch?.state ?? 'notRunning'}
-                serverPort={serverLaunch?.port ?? null}
-                serverCode={serverLaunch?.code ?? null}
-                onRunAction={onRunAction}
-                onRecheck={onRecheck}
-              />
-            );
-          }
-          return (
-            <SetupStepCard
-              key={prerequisite.id}
-              step={meta}
-              uiState={uiState}
-              detail={prerequisite.detail}
-              resolvedPath={prerequisite.resolvedPath}
-              errorText={errorText}
-              onRunAction={onRunAction}
-              onRecheck={onRecheck}
-            />
-          );
-        })}
+        {requiredPrerequisites.map((prerequisite) => (
+          <React.Fragment key={prerequisite.id}>
+            {renderStep(prerequisite)}
+          </React.Fragment>
+        ))}
       </Box>
+
+      {/* #2876 ST-5 — the OPTIONAL group. Visually separated, excluded from the
+          `installed/total` summary, and never a companion-chat gate. */}
+      {optionalPrerequisites.length > 0 && (
+        <Box
+          data-testid="companion-setup-optional"
+          borderTop="1px solid"
+          borderColor="var(--border-color)"
+          pt={4}
+        >
+          <HStack gap={2} align="center" mb={1}>
+            <Icon as={LuMic} boxSize="15px" color="var(--text-subtle)" aria-hidden />
+            <Text
+              fontSize="xs"
+              fontWeight="700"
+              color="var(--text-subtle)"
+              letterSpacing="wider"
+              textTransform="uppercase"
+            >
+              Optional
+            </Text>
+          </HStack>
+          <Text fontSize="xs" color="var(--text-subtle)" mb={3}>
+            Not required for companion chat.
+          </Text>
+          <Box as="ol" m={0} p={0} display="flex" flexDirection="column" gap={3}>
+            {optionalPrerequisites.map((prerequisite) => (
+              <React.Fragment key={prerequisite.id}>
+                {renderStep(prerequisite)}
+              </React.Fragment>
+            ))}
+          </Box>
+        </Box>
+      )}
 
       {/* Handoff callout (H7/§2.10) — informational, visually separated, full
           contrast; it is not a control. */}

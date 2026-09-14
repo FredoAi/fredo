@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, HStack, Heading, Icon, Text, VStack, Switch, NumberInput,
+  Box, Button, HStack, Heading, Icon, Text, VStack, Switch, NumberInput,
 } from '@chakra-ui/react';
-import { LuBot } from 'react-icons/lu';
+import { LuBot, LuDownload } from 'react-icons/lu';
 import {
   useCompanion, MIN_IDLE_TIMEOUT_S, MAX_IDLE_TIMEOUT_S, clampIdleTimeout,
 } from '../../contexts/CompanionContext';
@@ -42,6 +42,7 @@ const IDLE_COMMIT_CONFIRMATION_MS = 2500;
 export const CompanionSettingsPanel: React.FC = () => {
   const {
     state, setVisible, idleTimeoutSeconds, setIdleTimeoutSeconds,
+    voiceEnabled, setVoiceEnabled,
   } = useCompanion();
   const { isVisible } = state;
 
@@ -49,7 +50,7 @@ export const CompanionSettingsPanel: React.FC = () => {
   // while the first probe is still in flight — the wizard is the ONLY content.
   const {
     readiness, checking, refresh, runAction, runningActionId, actionError, modelFiles,
-    serverLaunch,
+    serverLaunch, sttModel,
   } = useCompanionReadiness();
 
   // ── Idle auto-return duration (#2853 ST-5) ─────────────────────────────────
@@ -102,6 +103,24 @@ export const CompanionSettingsPanel: React.FC = () => {
     || parsedIdleDraft > MAX_IDLE_TIMEOUT_S;
   const idleBorderColor = isIdleDraftInvalid ? 'var(--status-error)' : 'var(--border-color)';
   const idleHighlightColor = isIdleDraftInvalid ? 'var(--status-error)' : 'var(--accent-primary)';
+
+  // ── Voice input (#2876 ST-5) ────────────────────────────────────────────────
+  // The model row is informational: it NEVER gates this panel (the readiness gate
+  // above is fed by the backend + serverLaunch only). `sttModel` is optional —
+  // null when the probe is unavailable.
+  const sttRunning = runningActionId === 'sttModel';
+  const sttReady = sttModel?.ready === true;
+  const sttPresent = sttModel
+    ? sttModel.files.filter((file) => file.state === 'present').length
+    : 0;
+  const sttTotal = sttModel ? sttModel.files.length : 0;
+  const sttSummary = sttRunning
+    ? 'Downloading…'
+    : !sttModel
+      ? 'Not checked — the Fredo backend is unavailable.'
+      : sttReady
+        ? 'Installed — voice input is ready.'
+        : `${sttPresent} of ${sttTotal} files present.`;
 
   if (!isReady) {
     // While checking (or not ready), render ONLY the wizard — never the toggle
@@ -271,6 +290,84 @@ export const CompanionSettingsPanel: React.FC = () => {
           >
             {idleCommitMessage}
           </Text>
+        </VStack>
+      </Box>
+
+      {/* Voice input group (#2876 ST-5) — opt-in toggle + optional model row. */}
+      <Box>
+        {sectionLabel('Voice input')}
+        <VStack align="stretch" gap={2}>
+          <HStack
+            justify="space-between"
+            p={3}
+            borderRadius="md"
+            background="var(--hover-bg)"
+            border="1px solid var(--border-color)"
+          >
+            <VStack align="start" gap={0}>
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+                Dictate with Ctrl+Space
+              </Text>
+              <Text fontSize="xs" color="var(--text-subtle)">
+                Transcribe your voice locally — nothing leaves this machine.
+              </Text>
+            </VStack>
+            <Switch.Root
+              checked={voiceEnabled}
+              onCheckedChange={(e) => setVoiceEnabled(e.checked)}
+              colorPalette="accent"
+              size="md"
+            >
+              <Switch.HiddenInput aria-label="Enable voice input" />
+              <Switch.Control
+                bg="var(--text-primary)"
+                _checked={{ bg: 'var(--accent-primary)' }}
+                _focusVisible={{ outline: '2px solid var(--accent-primary)', outlineOffset: '2px' }}
+              >
+                <Switch.Thumb bg="var(--card-bg)" _checked={{ bg: 'var(--accent-contrast)' }} />
+              </Switch.Control>
+            </Switch.Root>
+          </HStack>
+
+          <HStack
+            justify="space-between"
+            p={3}
+            borderRadius="md"
+            background="var(--hover-bg)"
+            border="1px solid var(--border-color)"
+          >
+            <VStack align="start" gap={0}>
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+                Voice input model
+              </Text>
+              <Text
+                fontSize="xs"
+                color={sttReady ? 'var(--status-success)' : 'var(--text-subtle)'}
+              >
+                {sttSummary}
+              </Text>
+            </VStack>
+            <Button
+              size="sm"
+              data-testid="companion-voice-model-download"
+              bg="var(--accent-primary)"
+              color="var(--accent-contrast)"
+              disabled={sttRunning || sttReady}
+              aria-busy={sttRunning || undefined}
+              onClick={() => { void runAction('sttModel'); }}
+              _hover={{ opacity: 0.9 }}
+              flexShrink={0}
+            >
+              <Icon as={LuDownload} boxSize="14px" mr={1} aria-hidden />
+              {sttRunning ? 'Downloading…' : sttReady ? 'Installed' : 'Download'}
+            </Button>
+          </HStack>
+
+          {actionError.sttModel && (
+            <Text role="alert" fontSize="xs" color="var(--status-error)">
+              {actionError.sttModel}
+            </Text>
+          )}
         </VStack>
       </Box>
 

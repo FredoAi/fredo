@@ -6,6 +6,7 @@ use crate::infrastructure::companion::models::{
     models_subdir, resolve_manifest, resolve_models_dir,
 };
 use crate::infrastructure::companion::resolve_llama_server;
+use crate::infrastructure::voice::manifest::resolve_stt_manifest;
 #[cfg(test)]
 use crate::infrastructure::companion::models::default_manifest;
 #[cfg(test)]
@@ -1023,6 +1024,32 @@ impl ProgressReporter for AppHandleProgressReporter {
 #[tauri::command]
 pub async fn download_model(app: AppHandle) -> ModelDownloadResult {
     let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
+
+    let transport = match ReqwestTransport::new() {
+        Ok(transport) => transport,
+        Err(error) => {
+            return ModelDownloadResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Failed to initialize the download client: {error}")),
+                files: Vec::new(),
+            };
+        }
+    };
+
+    let reporter = AppHandleProgressReporter { app: app.clone() };
+    download_missing_files(&transport, &manifest, &models_dir, &reporter, &SystemClock).await
+}
+
+/// Acquire the pinned STT model files (Spec #2876, ST-2). Delegates to the SAME
+/// streamed engine as `download_model` (skip-present / Range-resume / streaming
+/// SHA-256 verify) — no duplicate acquisition logic. Per-file progress lands on
+/// the existing `setup:download-progress` channel with `fileId` ∈
+/// {sttTokens, sttEncoder, sttDecoder, sttJoiner}.
+#[tauri::command]
+pub async fn download_stt_model(app: AppHandle) -> ModelDownloadResult {
+    let manifest = resolve_stt_manifest();
     let models_dir = resolve_models_dir(&app);
 
     let transport = match ReqwestTransport::new() {
