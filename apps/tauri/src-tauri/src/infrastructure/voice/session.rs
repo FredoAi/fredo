@@ -221,17 +221,27 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     };
 
     // 5. Await readiness off the main thread (engine load is the slow part).
-    let outcome = match tokio::time::timeout(START_TIMEOUT, outcome_rx).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_recv)) => Err(VoiceError::internal(
-            "the voice worker exited before reporting readiness",
-        )),
+    // `worker_reported` distinguishes the paths on which the worker has already
+    // reported/returned (safe to join) from the timeout path, where the worker
+    // may still be blocked inside the native `OnlineRecognizer::create` FFI frame
+    // — which no `Cancel` can interrupt (ST-7.2 / F-15).
+    let (outcome, worker_reported) = match tokio::time::timeout(START_TIMEOUT, outcome_rx).await {
+        Ok(Ok(result)) => (result, true),
+        Ok(Err(_recv)) => (
+            Err(VoiceError::internal(
+                "the voice worker exited before reporting readiness",
+            )),
+            true,
+        ),
         Err(_elapsed) => {
             let _ = tx.send(AudioMsg::Cancel);
-            Err(VoiceError::new(
-                SttErrorCode::EngineStartFailed,
-                "timed out while loading the STT engine",
-            ))
+            (
+                Err(VoiceError::new(
+                    SttErrorCode::EngineStartFailed,
+                    "timed out while loading the STT engine",
+                )),
+                false,
+            )
         }
     };
 
@@ -263,7 +273,18 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
             }
         }
         Err(error) => {
-            let _ = worker.join();
+            // ST-7.2: never join a worker that never reported readiness. A worker
+            // blocked inside the native `create` cannot be interrupted, so joining
+            // it would hang `stt_start` (the round-1 F-15 wedge) instead of
+            // returning the typed failure immediately (R-5.5: app stays
+            // responsive). Dropping the handle detaches the worker; the `Cancel`
+            // sent above makes it self-terminate if the FFI call ever returns
+            // (`outcome_tx.send(..).is_err()` → early return in `worker_main`).
+            if worker_reported {
+                let _ = worker.join();
+            } else {
+                drop(worker);
+            }
             emit_state(app, &state_event_error(&error, Some(origin)));
             error.into_start_result()
         }

@@ -7,14 +7,17 @@
 //! API verified live by ST-0 (docs.rs sherpa-onnx 1.13.8 + the official
 //! `rust-api-examples/examples/streaming_zipformer_microphone.rs`).
 
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
 use sherpa_onnx::{
     OnlineModelConfig, OnlineRecognizer, OnlineRecognizerConfig, OnlineStream,
     OnlineTransducerModelConfig,
 };
 
-use crate::infrastructure::companion::models::file_path;
+use crate::infrastructure::companion::models::{file_path, ModelManifest};
 
 use super::manifest::resolve_stt_manifest;
 use super::state::{SttErrorCode, VoiceError};
@@ -122,9 +125,78 @@ fn recognizer_config(models_dir: &Path) -> OnlineRecognizerConfig {
     }
 }
 
+/// Stream a file through SHA-256 in ~64 KiB chunks, returning the lowercase hex
+/// digest. `voice/` is `infrastructure/` and MUST NOT import `features/setup`'s
+/// private `hex_encode` (no cross-feature import), so the hex helper is local.
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_lowercase(hasher.finalize().as_slice()))
+}
+
+fn hex_lowercase(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Content-integrity gate (ST-7.1 / F-15): run BEFORE `OnlineRecognizer::create`
+/// so a size-valid / content-invalid model yields a typed `modelCorrupt` instead
+/// of reaching the native parser (which aborts: "Rust cannot catch foreign
+/// exceptions"). Walks the manifest in order and verifies every file whose
+/// `sha256` is `Some`; `sha256: None` ⇒ skipped (`ModelFileSpec::sha256`
+/// contract). Strictly read-only — never writes, deletes, or repairs a file.
+pub(crate) fn verify_model_content(
+    models_dir: &Path,
+    manifest: &ModelManifest,
+) -> Option<VoiceError> {
+    for spec in &manifest.files {
+        let Some(expected) = spec.sha256.as_deref() else {
+            continue;
+        };
+        let path = file_path(models_dir, manifest, spec);
+        let actual = match sha256_file(&path) {
+            Ok(actual) => actual,
+            Err(error) => {
+                return Some(VoiceError::model_corrupt(format!(
+                    "{} could not be read for SHA-256 verification: {error}",
+                    spec.filename()
+                )))
+            }
+        };
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Some(VoiceError::model_corrupt(format!(
+                "{} failed SHA-256 verification (expected {}, got {})",
+                spec.filename(),
+                expected,
+                actual
+            )));
+        }
+    }
+    None
+}
+
 /// Lazily load the engine. `OnlineRecognizer::create` returning `None` is the
-/// typed `engineStartFailed` failure (R-5.5) — never a panic.
+/// typed `engineStartFailed` failure (R-5.5) — never a panic. The
+/// content-integrity gate (ST-7.1) runs FIRST: unverified bytes must never reach
+/// the native parser.
 pub fn load_recognizer(models_dir: &Path) -> Result<Box<dyn Recognizer>, VoiceError> {
+    let manifest = resolve_stt_manifest();
+    if let Some(error) = verify_model_content(models_dir, &manifest) {
+        return Err(error);
+    }
     let config = recognizer_config(models_dir);
     let recognizer = OnlineRecognizer::create(&config).ok_or_else(|| {
         VoiceError::new(
@@ -161,6 +233,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
+    use crate::infrastructure::companion::models::{file_path, ModelFileSpec, ModelManifest};
     use crate::infrastructure::voice::capture::AudioMsg;
     use crate::infrastructure::voice::session::{run_recognition, TranscriptSink};
     use crate::infrastructure::voice::state::{SttStateEvent, SttTranscriptEvent};
@@ -253,6 +326,15 @@ mod tests {
         }
     }
 
+    /// Nearest-rank percentile over an ASCENDING slice (`pct` in 1..=100).
+    fn percentile(sorted: &[u64], pct: usize) -> u64 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let rank = (sorted.len() * pct).div_ceil(100);
+        sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+    }
+
     #[test]
     #[ignore = "requires a real STT model + a 16 kHz mono WAV supplied at run time (env vars)"]
     fn real_engine_wav_fixture_emits_partials_then_final() {
@@ -297,10 +379,27 @@ mod tests {
         let events = sink.transcripts.lock().expect("sink lock").clone();
         for event in &events {
             eprintln!(
-                "  rev={} seg={} final={} text={:?}",
-                event.revision, event.segment_id, event.is_final, event.text
+                "  rev={} seg={} final={} latencyMs={} text={:?}",
+                event.revision, event.segment_id, event.is_final, event.latency_ms, event.text
             );
         }
+
+        // ST-7.3 (AC2): the AC2 latency numbers over the NON-final events — a
+        // final's `latency_ms` is measured from `input_finished` (a different
+        // quantity), so finals are excluded from the percentile set.
+        let mut latencies: Vec<u64> = events
+            .iter()
+            .filter(|event| !event.is_final)
+            .map(|event| event.latency_ms)
+            .collect();
+        latencies.sort_unstable();
+        eprintln!(
+            "latency: n={} p50={} p95={} max={} (method: chunk dequeue -> stt:transcript emit, from SttTranscriptEvent.latencyMs; fixture fed as fast as the loop accepts audio)",
+            latencies.len(),
+            percentile(&latencies, 50),
+            percentile(&latencies, 95),
+            latencies.last().copied().unwrap_or(0),
+        );
 
         let first_final = events
             .iter()
@@ -321,5 +420,69 @@ mod tests {
             partials_before_final.len() >= 2,
             "expected >=2 DISTINCT partials before the final, got {partials_before_final:?}"
         );
+    }
+
+    /// SHA-256 of the ASCII bytes `hello world` — a fixed, independent pin.
+    const SHA_HELLO_WORLD: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+    fn content_manifest(path: &str, expected_bytes: u64, sha256: Option<&str>) -> ModelManifest {
+        ModelManifest {
+            revision: "test".to_string(),
+            subdir: "stt-test".to_string(),
+            files: vec![ModelFileSpec {
+                id: path.to_string(),
+                path: path.to_string(),
+                url: format!("https://example.invalid/{path}"),
+                expected_bytes,
+                sha256: sha256.map(str::to_string),
+            }],
+        }
+    }
+
+    fn write_model_content(dir: &Path, manifest: &ModelManifest, bytes: &[u8]) {
+        let spec = &manifest.files[0];
+        let path = file_path(dir, manifest, spec);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, bytes).expect("write model content");
+    }
+
+    #[test]
+    fn verify_model_content_accepts_matching_pinned_content() {
+        let manifest = content_manifest("model.onnx", 11, Some(SHA_HELLO_WORLD));
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_model_content(dir.path(), &manifest, b"hello world");
+        assert!(verify_model_content(dir.path(), &manifest).is_none());
+    }
+
+    /// The F-15 shape: a size-valid file whose CONTENT is wrong must never reach
+    /// the native parser — the gate names the file and the check.
+    #[test]
+    fn verify_model_content_flags_same_size_different_bytes() {
+        let manifest = content_manifest("model.onnx", 11, Some(SHA_HELLO_WORLD));
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Same byte COUNT, one byte different.
+        write_model_content(dir.path(), &manifest, b"hellp world");
+        let error = verify_model_content(dir.path(), &manifest).expect("mismatch must be typed");
+        assert_eq!(error.code, SttErrorCode::ModelCorrupt);
+        assert!(
+            error.detail.contains("model.onnx"),
+            "detail must name the file: {}",
+            error.detail
+        );
+        assert!(
+            error.detail.contains("SHA-256"),
+            "detail must name the check: {}",
+            error.detail
+        );
+    }
+
+    #[test]
+    fn verify_model_content_skips_files_without_a_pin() {
+        // `sha256: None` ⇒ size-only contract (`ModelFileSpec`) — never hashed.
+        let manifest = content_manifest("model.onnx", 23, None);
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_model_content(dir.path(), &manifest, b"totally different bytes");
+        assert!(verify_model_content(dir.path(), &manifest).is_none());
     }
 }

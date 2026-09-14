@@ -1,3 +1,4 @@
+// SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
 //! STT (speech-to-text) model manifest (Spec #2876, ST-2).
 //!
 //! Reuses the shared [`ModelFileSpec`] / [`ModelManifest`] vocabulary from
