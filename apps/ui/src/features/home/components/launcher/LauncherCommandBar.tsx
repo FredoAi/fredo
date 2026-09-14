@@ -49,6 +49,8 @@ import { useMemo } from 'react';
 import type { ChangeEvent } from 'react';
 import { Box, Input, InputGroup } from '@chakra-ui/react';
 
+import { tint } from '../../../../shared/utils/colorTint';
+
 /** Pending Enter action, derived by the host (UI/UX §1); presentational only. */
 export type LauncherEnterMode = 'launch' | 'send' | 'none';
 
@@ -75,6 +77,14 @@ export interface LauncherCommandBarProps {
   hintLabel?: string;
   /** #2871: generation in flight — holds `aria-busy` + the accent indicator. */
   busy?: boolean;
+  /**
+   * SPIKE #2876 ST-4 (DR-1) — THROWAWAY listening cue. `true` while a dictation
+   * session owns the bar: swaps the placeholder to `Listening…`, tints the
+   * border with `tint('var(--accent-primary)', …)` (token-native, no hardcoded
+   * color) and shows the transient indicator. Defaults to `false`, in which case
+   * the bar renders EXACTLY as before (inactive-companion invariance).
+   */
+  listening?: boolean;
   /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
   ariaLabel?: string;
   /**
@@ -142,6 +152,7 @@ export function LauncherCommandBar({
   enterMode = 'launch',
   hintLabel,
   busy = false,
+  listening = false,
   ariaLabel,
   ariaDescribedBy,
 }: LauncherCommandBarProps) {
@@ -171,7 +182,7 @@ export function LauncherCommandBar({
             color="accent.default"
             display="flex"
             alignItems="center"
-            gap={busy ? '6px' : undefined}
+            gap={busy || listening ? '6px' : undefined}
             aria-hidden="true"
           >
             {enterMode === 'send' ? <SpeechGlyph /> : <ChevronGlyph />}
@@ -179,6 +190,18 @@ export function LauncherCommandBar({
               <Box
                 as="span"
                 data-testid="launcher-command-busy"
+                width="6px"
+                height="6px"
+                borderRadius="full"
+                bg="accent.default"
+                flexShrink={0}
+              />
+            )}
+            {/* SPIKE #2876 ST-4 (DR-1) — transient listening indicator. */}
+            {listening && (
+              <Box
+                as="span"
+                data-testid="launcher-command-listening"
                 width="6px"
                 height="6px"
                 borderRadius="full"
@@ -243,7 +266,7 @@ export function LauncherCommandBar({
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
           aria-describedby={showHint ? ariaDescribedBy : undefined}
-          placeholder={busy ? 'Fredo is replying…' : 'search or command'}
+          placeholder={busy ? 'Fredo is replying…' : listening ? 'Listening…' : 'search or command'}
           readOnly={busy}
           value={query}
           onChange={handleChange}
@@ -252,7 +275,7 @@ export function LauncherCommandBar({
           paddingEnd={showHint ? HINT_PADDING_END : undefined}
           bg="var(--card-bg)"
           border="1px solid"
-          borderColor="var(--border-color)"
+          borderColor={listening ? tint('var(--accent-primary)', 30) : 'var(--border-color)'}
           borderRadius="8px"
           height="48px"
           fontFamily="var(--font-primary)"

@@ -18,6 +18,8 @@ import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
+// SPIKE #2876 ST-4 — THROWAWAY POC. Live dictation into the existing bar input.
+import { useVoiceDictation } from '../../../../shared/hooks/useVoiceDictation';
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -107,6 +109,40 @@ const isFocusable = (el: HTMLElement | null): boolean =>
   !(el as HTMLInputElement).disabled &&
   el.getAttribute('aria-disabled') !== 'true';
 
+/**
+ * SPIKE #2876 ST-4 — THROWAWAY POC. The binding context-dependent Ctrl+Space
+ * cascade, extracted PURE so every branch + the priority order is unit-pinned.
+ *
+ * `companionAway` is the file's `companion.isVisible && companion.isAway`
+ * predicate — the PO case 1 state ("companion ACTIVE and AWAY FROM ITS SEAT").
+ * It pre-empts the bar-focused branch, exactly as the binding amendment
+ * requires. `pass` means "do not act and do not swallow the chord" (#2823 AC3).
+ */
+export type CtrlSpaceAction =
+  | 'companion-listen'
+  | 'launcher-listen'
+  | 'launcher-cancel'
+  | 'open'
+  | 'pass';
+
+export interface CtrlSpaceContext {
+  activeIsTextControl: boolean;
+  activeInLauncher: boolean;
+  listening: boolean;
+  companionAway: boolean;
+}
+
+export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
+  // 1. #2823 AC3 carve-out — typing in a text control OUTSIDE the launcher.
+  if (ctx.activeIsTextControl && !ctx.activeInLauncher) return 'pass';
+  // 2. PO case 1 — companion active but away from its seat → companion listening.
+  if (ctx.companionAway) return 'companion-listen';
+  // 3. PO case 2 — the launcher bar already has focus → toggle listening.
+  if (ctx.activeInLauncher) return ctx.listening ? 'launcher-cancel' : 'launcher-listen';
+  // 4. PO case 3 — default: show/focus the bar (#2823); it NEVER starts listening.
+  return 'open';
+}
+
 /** Subtle dot/tick grid texture (Asset 1.7) — faint border-color color-mix
  *  lines, token-native, behind every window (the overlay is z-gated below the
  *  window stack when covered). */
@@ -147,6 +183,16 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const companionActive = companion.isVisible && !companion.isAway;
   // #2871 ST-3 continuous busy primitive (AGENTS.md #523 — primitive read only).
   const companionBusy = companion.isInUse;
+
+  // SPIKE #2876 ST-4 — THROWAWAY POC. Live dictation (context-dependent Ctrl+Space).
+  // `start`/`cancel` are stable useCallbacks, so the document listener below can
+  // keep a stable identity and be mounted exactly once.
+  const voice = useVoiceDictation();
+  const { start: startVoice, cancel: cancelVoice } = voice;
+  // Latest-value refs for the mounted-once listener (mirrors `openRef` :185): the
+  // handler identity is stable, so any non-ref read inside it would be stale.
+  const companionAwayRef = useRef(companionAway);
+  const listeningRef = useRef(voice.listening);
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -426,10 +472,34 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (q.trim() !== '') setEngaged(true);
   }, []);
 
+  // SPIKE #2876 ST-4 — keep the mounted-once listener's ref mirrors current.
+  useEffect(() => {
+    companionAwayRef.current = companionAway;
+  }, [companionAway]);
+  useEffect(() => {
+    listeningRef.current = voice.listening;
+  }, [voice.listening]);
+
+  // SPIKE #2876 ST-4 — live transcript → the EXISTING controlled bar input,
+  // LAUNCHER-origin sessions only. Writes `committed + partial` through the one
+  // `handleQueryChange` path (never a second input, never a submit, never grid
+  // navigation). Companion-origin dictation never writes into the bar.
+  useEffect(() => {
+    if (voice.origin !== 'launcher') return;
+    handleQueryChange(voice.liveText);
+  }, [voice.origin, voice.liveText, handleQueryChange]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // SPIKE #2876 ST-4 — a live dictation session cancels FIRST; otherwise
+        // Escape keeps today's exact behavior (shortcut-open → closeOverlay with
+        // focus-origin restore; non-shortcut → idle collapse).
+        if (listeningRef.current) {
+          void cancelVoice();
+          return;
+        }
         if (open) {
           // #2823: ESC on a shortcut-opened overlay closes the overlay (AC2) and
           // restores focus to the pre-open element (REQ-5). This is the ONLY action
@@ -544,6 +614,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       query,
       open,
       closeOverlay,
+      cancelVoice,
     ],
   );
 
@@ -563,29 +634,40 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         return;
       }
 
-      // AC3: typing in a text-editing control OUTSIDE the launcher surface → the
-      // shortcut must NOT fire and MUST NOT steal focus (typing uninterrupted).
+      // SPIKE #2876 ST-4 — the binding context-dependent Ctrl+Space cascade
+      // (pure `selectCtrlSpaceAction`). Ctrl+Space NEVER closes the launcher any
+      // more; close moved to Escape. Every read comes from a ref because the
+      // listener is mounted once with a stable handler identity.
       const active = document.activeElement as HTMLElement | null;
       const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
-      if (isTextControl(active) && !activeInLauncher) return;
+      const action = selectCtrlSpaceAction({
+        activeIsTextControl: isTextControl(active),
+        activeInLauncher,
+        listening: listeningRef.current,
+        companionAway: companionAwayRef.current,
+      });
 
-      // AC4: only swallow the keydown when the launcher toggle actually fires.
+      // #2823 AC3/AC4: a pass neither acts nor swallows the chord.
+      if (action === 'pass') return;
       e.preventDefault();
       e.stopPropagation();
 
-      // Toggle. "Active" = shortcut-open OR the launcher's own searchbox holds focus
-      // (NFR-7 — the launcher input is a valid toggle target, so it is never the
-      // AC3 "another input"). `openRef` is kept synchronous (no render lag).
-      const searchbox = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
-      const launcherActive = openRef.current || (!!searchbox && document.activeElement === searchbox);
-
-      if (launcherActive) {
-        closeOverlay();
-      } else {
-        openOverlay();
+      switch (action) {
+        case 'companion-listen':
+          void startVoice('companion');
+          break;
+        case 'launcher-listen':
+          void startVoice('launcher');
+          break;
+        case 'launcher-cancel':
+          void cancelVoice();
+          break;
+        case 'open':
+          openOverlay();
+          break;
       }
     },
-    [closeOverlay, openOverlay],
+    [openOverlay, startVoice, cancelVoice],
   );
 
   // #2823: mount exactly ONE document listener (NFR-2). A ref-based guard keeps the
@@ -690,6 +772,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             enterMode={commandBar.enterMode}
             hintLabel={commandBar.hintLabel}
             busy={companionBusy}
+            listening={voice.listening}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"
           />
