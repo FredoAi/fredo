@@ -355,3 +355,18 @@ The round's new defect is in AC2's launch argv (see functional F-35/F-36); it do
   sources + tests). Error leg (real non-executable `llama_server_path`) now surfaces the CURATED
   generic sentence (companion F-71 round 2 PASS), resolving the round-1 observation. `onError`
   rejects are still `llm-error`-shaped; the resolver order is untouched.
+
+---
+
+## #2877 extension — the optional `sttModel` step must not change the gating counts
+
+> Added at Spec #2877. Run alongside R-1..R-29. **SUPERSEDES the count expectations of F-05/F-06
+> ("n of 2 / n of 3") to GGUF-only** — historical records above are preserved, not rewritten.
+> #2877 adds a non-gating `sttModel` step (4 files; reuses `download_missing_files`). Live policy.
+> Cross-ref `.opencode/tests/voice-input/` functional F-23 (REQ-2.4) + regression R-12.
+
+## R-30 — `sttModel` is non-gating: counts + readiness unchanged
+
+- [ ] R-30: On a machine with all 3 GGUF files present, open Settings → Companion and read the wizard summary + step states; then (a) make the STT model absent (empty scratch `models_dir`, or remove the STT subdir) and (b) place it present; read `installed/total` and `CompanionReadiness.ready` in both cases.
+  **Expected:** the summary counts cover the GGUF prerequisites ONLY (`3 of 3` / `Complete`) and NEVER include `sttModel`; `CompanionReadiness.ready` keeps exactly today's inputs (`settled && backendReadiness.ready && serverState === 'healthy'`); companion chat is usable with the STT model absent; the `sttModel` step renders in the wizard's Optional group as additive content; `download_missing_files`'s companion-manifest semantics are untouched.
+  - **Edge:** all 3 GGUF present + STT absent ⇒ still `ready` (not blocked, no false "incomplete" count); STT present + a GGUF missing ⇒ NOT ready (the GGUF gate still owns readiness); a partial STT set (e.g. 2 of 4) never reads `Complete`; a companion GGUF download and an STT download do not corrupt each other's per-file state.
