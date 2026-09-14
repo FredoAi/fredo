@@ -458,3 +458,467 @@ pub(crate) fn run_recognition(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
+    //!
+    //! Hermetic session pins (ST-6a): the recognition loop's state machine runs
+    //! against a scripted [`FakeStep`]-driven [`FakeRecognizer`] — no model, no
+    //! mic, no network, no `AppHandle`. The pure gates (`parse_enabled`,
+    //! `model_error`) and the full typed failure vocabulary are pinned here too.
+
+    use super::*;
+
+    use std::collections::VecDeque;
+
+    use crate::infrastructure::companion::models::{file_path, ModelFileSpec};
+
+    /// One decoded step the fake yields: the cumulative hypothesis it would
+    /// report (`None` = no hypothesis yet) and whether the segment ended.
+    #[derive(Clone, Copy, Debug)]
+    struct FakeStep {
+        text: Option<&'static str>,
+        endpoint: bool,
+    }
+
+    impl FakeStep {
+        const fn partial(text: &'static str) -> Self {
+            Self {
+                text: Some(text),
+                endpoint: false,
+            }
+        }
+
+        const fn final_step(text: &'static str) -> Self {
+            Self {
+                text: Some(text),
+                endpoint: true,
+            }
+        }
+
+        const fn empty() -> Self {
+            Self {
+                text: None,
+                endpoint: false,
+            }
+        }
+    }
+
+    /// Deterministic [`Recognizer`] seam: one scripted step list per accepted
+    /// chunk, drained by the recognition loop's `decode` calls. `tail` is what
+    /// `input_finished` releases (the trailing flush on Stop).
+    struct FakeRecognizer {
+        chunks: VecDeque<Vec<FakeStep>>,
+        pending: VecDeque<FakeStep>,
+        tail: Option<FakeStep>,
+        text: Option<String>,
+        endpoint: bool,
+        accepted_chunks: u32,
+        decode_calls: u32,
+        reset_calls: u32,
+        input_finished_calls: u32,
+    }
+
+    impl FakeRecognizer {
+        fn new(chunks: Vec<Vec<FakeStep>>, tail: Option<FakeStep>) -> Self {
+            Self {
+                chunks: chunks.into(),
+                pending: VecDeque::new(),
+                tail,
+                text: None,
+                endpoint: false,
+                accepted_chunks: 0,
+                decode_calls: 0,
+                reset_calls: 0,
+                input_finished_calls: 0,
+            }
+        }
+    }
+
+    impl Recognizer for FakeRecognizer {
+        fn accept_waveform(&mut self, _samples: &[f32]) {
+            self.accepted_chunks += 1;
+            self.pending = self.chunks.pop_front().unwrap_or_default().into();
+        }
+
+        fn is_ready(&self) -> bool {
+            !self.pending.is_empty()
+        }
+
+        fn decode(&mut self) {
+            self.decode_calls += 1;
+            if let Some(step) = self.pending.pop_front() {
+                self.text = step.text.map(str::to_string);
+                self.endpoint = step.endpoint;
+            }
+        }
+
+        fn result_text(&self) -> Option<String> {
+            self.text.clone().filter(|text| !text.is_empty())
+        }
+
+        fn is_endpoint(&self) -> bool {
+            self.endpoint
+        }
+
+        fn reset(&mut self) {
+            self.reset_calls += 1;
+            self.text = None;
+            self.endpoint = false;
+            self.pending.clear();
+        }
+
+        fn input_finished(&mut self) {
+            self.input_finished_calls += 1;
+            // The trailing flush becomes one more decodable step, so the loop's
+            // `while is_ready { decode }` drains it and then stops.
+            if let Some(step) = self.tail.take() {
+                self.pending.push_back(step);
+            }
+        }
+    }
+
+    /// Records every emit so ordering / monotonicity can be asserted.
+    #[derive(Default)]
+    struct RecordingSink {
+        transcripts: Mutex<Vec<SttTranscriptEvent>>,
+        states: Mutex<Vec<SttStateEvent>>,
+    }
+
+    impl RecordingSink {
+        fn transcripts(&self) -> Vec<SttTranscriptEvent> {
+            self.transcripts.lock().expect("sink lock").clone()
+        }
+
+        fn states(&self) -> Vec<SttStateEvent> {
+            self.states.lock().expect("sink lock").clone()
+        }
+    }
+
+    impl TranscriptSink for RecordingSink {
+        fn transcript(&self, event: SttTranscriptEvent) {
+            self.transcripts.lock().expect("sink lock").push(event);
+        }
+
+        fn state(&self, event: SttStateEvent) {
+            self.states.lock().expect("sink lock").push(event);
+        }
+    }
+
+    /// Drive `run_recognition` with the pre-filled channel dropped before the
+    /// call, so `recv()` ends deterministically.
+    fn drive(recognizer: &mut FakeRecognizer, messages: Vec<AudioMsg>) -> RecordingSink {
+        let sink = RecordingSink::default();
+        let (tx, rx) = mpsc::channel::<AudioMsg>();
+        for message in messages {
+            tx.send(message).expect("channel send");
+        }
+        drop(tx);
+        run_recognition(&sink, "sess-1", recognizer, &rx);
+        sink
+    }
+
+    fn assert_strictly_increasing_revisions(events: &[SttTranscriptEvent]) {
+        assert!(!events.is_empty(), "expected at least one transcript event");
+        for pair in events.windows(2) {
+            assert!(
+                pair[1].revision > pair[0].revision,
+                "revision must strictly increase: {} then {}",
+                pair[0].revision,
+                pair[1].revision
+            );
+        }
+    }
+
+    #[test]
+    fn recognition_emits_partial_partial_final_with_increasing_revisions() {
+        let mut recognizer = FakeRecognizer::new(
+            vec![vec![
+                FakeStep::partial("hello"),
+                FakeStep::partial("hello world"),
+                FakeStep::final_step("hello world"),
+            ]],
+            None,
+        );
+        let sink = drive(
+            &mut recognizer,
+            vec![AudioMsg::Samples(vec![0.0_f32; 4]), AudioMsg::Stop],
+        );
+
+        let events = sink.transcripts();
+        assert_eq!(events.len(), 3, "two partials then one final");
+        assert!(!events[0].is_final);
+        assert_eq!(events[0].text, "hello");
+        assert!(!events[1].is_final);
+        assert_eq!(events[1].text, "hello world");
+        assert!(events[2].is_final);
+        assert_eq!(events[2].text, "hello world");
+        assert_eq!(events[0].revision, 1);
+        for event in &events {
+            assert_eq!(event.session_id, "sess-1");
+            assert_eq!(event.segment_id, 0);
+        }
+        assert_strictly_increasing_revisions(&events);
+
+        assert_eq!(recognizer.accepted_chunks, 1);
+        assert_eq!(recognizer.decode_calls, 3);
+        assert_eq!(recognizer.reset_calls, 1);
+        assert_eq!(recognizer.input_finished_calls, 1);
+    }
+
+    #[test]
+    fn recognition_advances_segment_id_on_each_endpoint() {
+        let mut recognizer = FakeRecognizer::new(
+            vec![
+                vec![FakeStep::partial("first"), FakeStep::final_step("first")],
+                vec![FakeStep::partial("second"), FakeStep::final_step("second")],
+            ],
+            None,
+        );
+        let sink = drive(
+            &mut recognizer,
+            vec![
+                AudioMsg::Samples(vec![0.0_f32; 4]),
+                AudioMsg::Samples(vec![0.0_f32; 4]),
+                AudioMsg::Stop,
+            ],
+        );
+
+        let events = sink.transcripts();
+        let segments: Vec<u32> = events.iter().map(|event| event.segment_id).collect();
+        assert_eq!(segments, vec![0, 0, 1, 1]);
+        let finals: Vec<bool> = events.iter().map(|event| event.is_final).collect();
+        assert_eq!(finals, vec![false, true, false, true]);
+        assert_strictly_increasing_revisions(&events);
+        assert_eq!(recognizer.reset_calls, 2);
+    }
+
+    #[test]
+    fn cancel_discards_the_in_flight_partial_without_a_final() {
+        let mut recognizer =
+            FakeRecognizer::new(vec![vec![FakeStep::partial("half a thought")]], None);
+        let sink = drive(
+            &mut recognizer,
+            vec![AudioMsg::Samples(vec![0.0_f32; 4]), AudioMsg::Cancel],
+        );
+
+        let events = sink.transcripts();
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].is_final);
+        assert_eq!(events[0].text, "half a thought");
+        assert_eq!(recognizer.input_finished_calls, 0, "cancel never flushes");
+        assert!(sink.states().is_empty(), "run_recognition is state-free");
+    }
+
+    #[test]
+    fn stop_commits_the_pending_partial_as_the_final() {
+        let mut recognizer =
+            FakeRecognizer::new(vec![vec![FakeStep::partial("never ended")]], None);
+        let sink = drive(
+            &mut recognizer,
+            vec![AudioMsg::Samples(vec![0.0_f32; 4]), AudioMsg::Stop],
+        );
+
+        let events = sink.transcripts();
+        assert_eq!(events.len(), 2);
+        assert!(!events[0].is_final);
+        assert!(events[1].is_final);
+        assert_eq!(events[1].text, "never ended");
+        assert_strictly_increasing_revisions(&events);
+    }
+
+    #[test]
+    fn stop_flushes_the_trailing_tail_released_by_input_finished() {
+        let mut recognizer = FakeRecognizer::new(
+            vec![vec![FakeStep::partial("the quick brown")]],
+            Some(FakeStep::partial("the quick brown fox")),
+        );
+        let sink = drive(
+            &mut recognizer,
+            vec![AudioMsg::Samples(vec![0.0_f32; 4]), AudioMsg::Stop],
+        );
+
+        let events = sink.transcripts();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].text, "the quick brown fox");
+        assert!(events[1].is_final);
+        assert_eq!(recognizer.input_finished_calls, 1);
+        assert_eq!(recognizer.decode_calls, 2, "one chunk step + one tail step");
+    }
+
+    #[test]
+    fn unchanged_and_empty_hypotheses_never_emit() {
+        let mut recognizer = FakeRecognizer::new(
+            vec![vec![
+                FakeStep::partial("same"),
+                FakeStep::partial("same"),
+                FakeStep::empty(),
+            ]],
+            None,
+        );
+        let sink = drive(
+            &mut recognizer,
+            vec![AudioMsg::Samples(vec![0.0_f32; 4]), AudioMsg::Cancel],
+        );
+
+        let events = sink.transcripts();
+        assert_eq!(events.len(), 1, "only the first distinct hypothesis emits");
+        assert_eq!(events[0].revision, 1);
+        assert_eq!(recognizer.decode_calls, 3);
+    }
+
+    /// Every failure code carries its pinned wire name and shapes an
+    /// `started:false` result with a non-empty human-readable detail.
+    #[test]
+    fn every_failure_code_is_pinned_to_its_wire_name_and_start_result() {
+        let cases: Vec<(VoiceError, SttErrorCode, &str)> = vec![
+            (VoiceError::no_device(), SttErrorCode::NoDevice, "noDevice"),
+            (
+                VoiceError::permission_denied("microphone access was denied"),
+                SttErrorCode::PermissionDenied,
+                "permissionDenied",
+            ),
+            (
+                VoiceError::model_missing("tokens.txt is missing"),
+                SttErrorCode::ModelMissing,
+                "modelMissing",
+            ),
+            (
+                VoiceError::model_corrupt("tokens.txt is incomplete"),
+                SttErrorCode::ModelCorrupt,
+                "modelCorrupt",
+            ),
+            (
+                VoiceError::engine_start_failed("OnlineRecognizer::create returned None"),
+                SttErrorCode::EngineStartFailed,
+                "engineStartFailed",
+            ),
+            (
+                VoiceError::already_listening(),
+                SttErrorCode::AlreadyListening,
+                "alreadyListening",
+            ),
+            (VoiceError::disabled(), SttErrorCode::Disabled, "disabled"),
+            (
+                VoiceError::internal("voice worker exited early"),
+                SttErrorCode::Internal,
+                "internal",
+            ),
+        ];
+
+        for (error, code, wire) in cases {
+            assert_eq!(error.code, code);
+            assert!(
+                !error.detail.trim().is_empty(),
+                "{wire} needs a human-readable detail"
+            );
+
+            let json = serde_json::to_string(&code).expect("serialize error code");
+            assert_eq!(json, format!("\"{wire}\""));
+
+            let result = error.into_start_result();
+            assert!(!result.started);
+            assert_eq!(result.code, Some(code));
+            assert!(result.detail.is_some());
+            assert!(result.device_name.is_none());
+            assert!(result.sample_rate.is_none());
+        }
+    }
+
+    #[test]
+    fn parse_enabled_pins_the_disabled_gate() {
+        for value in [
+            None,
+            Some("false"),
+            Some("FALSE"),
+            Some("0"),
+            Some(""),
+            Some("yes"),
+            Some("  "),
+        ] {
+            assert!(!parse_enabled(value), "{value:?} must resolve disabled");
+        }
+        for value in [Some("true"), Some("True"), Some("TRUE"), Some("1"), Some(" true ")] {
+            assert!(parse_enabled(value), "{value:?} must resolve enabled");
+        }
+    }
+
+    fn manifest_with(files: Vec<ModelFileSpec>) -> ModelManifest {
+        ModelManifest {
+            revision: "test".to_string(),
+            subdir: "stt-test".to_string(),
+            files,
+        }
+    }
+
+    fn spec(path: &str, expected_bytes: u64) -> ModelFileSpec {
+        ModelFileSpec {
+            id: path.to_string(),
+            path: path.to_string(),
+            url: format!("https://example.invalid/{path}"),
+            expected_bytes,
+            sha256: None,
+        }
+    }
+
+    fn write_sized(
+        dir: &Path,
+        manifest: &ModelManifest,
+        spec: &ModelFileSpec,
+        bytes: u64,
+    ) {
+        let path = file_path(dir, manifest, spec);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let file = std::fs::File::create(&path).expect("create");
+        file.set_len(bytes).expect("set_len");
+    }
+
+    #[test]
+    fn model_error_classifies_missing_incomplete_oversize_and_present() {
+        let manifest = manifest_with(vec![spec("model.onnx", 100)]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = &manifest.files[0];
+
+        // Absent ⇒ ModelMissing.
+        let error = model_error(dir.path(), &manifest).expect("missing model must error");
+        assert_eq!(error.code, SttErrorCode::ModelMissing);
+        assert!(error.detail.contains("model.onnx"));
+
+        // Truncated ⇒ ModelCorrupt (partial download).
+        write_sized(dir.path(), &manifest, file, 60);
+        let error = model_error(dir.path(), &manifest).expect("partial model must error");
+        assert_eq!(error.code, SttErrorCode::ModelCorrupt);
+        assert!(error.detail.contains("60"));
+
+        // Oversize ⇒ ModelCorrupt (unexpected size).
+        write_sized(dir.path(), &manifest, file, 120);
+        let error = model_error(dir.path(), &manifest).expect("oversize model must error");
+        assert_eq!(error.code, SttErrorCode::ModelCorrupt);
+        assert!(error.detail.contains("120"));
+
+        // Exact pinned size ⇒ no error (the shared exact-byte gate).
+        write_sized(dir.path(), &manifest, file, 100);
+        assert!(model_error(dir.path(), &manifest).is_none());
+    }
+
+    #[test]
+    fn model_error_reports_the_first_broken_file_of_the_pinned_stt_manifest() {
+        let manifest = resolve_stt_manifest();
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Nothing on disk ⇒ the first pinned file (tokens.txt) is the missing one.
+        let error = model_error(dir.path(), &manifest).expect("empty models dir must error");
+        assert_eq!(error.code, SttErrorCode::ModelMissing);
+        assert!(error.detail.contains("tokens.txt"));
+
+        // tokens present, encoder truncated ⇒ ModelCorrupt names the encoder.
+        let tokens = &manifest.files[0];
+        write_sized(dir.path(), &manifest, tokens, tokens.expected_bytes);
+        let encoder = &manifest.files[1];
+        write_sized(dir.path(), &manifest, encoder, 10);
+        let error = model_error(dir.path(), &manifest).expect("truncated encoder must error");
+        assert_eq!(error.code, SttErrorCode::ModelCorrupt);
+        assert!(error.detail.contains(encoder.filename()));
+    }
+}
