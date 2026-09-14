@@ -26,3 +26,14 @@
 - **S-6 PASS** — listening flow started on bar-focus; DR-1 cue present (`placeholder="Listening…"`, `data-testid="launcher-command-listening"`); stopped by Escape; console clean. (Real audio absent — virtual device.)
 - **S-7 UNVERIFIED (G-053)** — no network-block lever in the sandbox (no firewall/adapter control); static pin: the voice module contains no remote client (`grep reqwest|hyper|websocket|TcpStream|UdpSocket` → none).
 - **S-8 PASS** — 5 captures uploaded via `upload-evidence`; raw URLs embedded in `## Tests Runs` with descriptions.
+
+## Run log — round 2 (2026-09-14, `spec/2876` @ `84ff1ac`, fix `d9a9f8d`)
+
+- **S-1 PASS** — `tauri_webview_execute_js`/`dom_snapshot` returned a non-empty launcher DOM (`FREDO`, `input[role="searchbox"]`, `#fredo-launcher-grid`); one window `main`.
+- **S-2 PASS** — `tauri_read_logs(console)` clean across every leg; only the pre-existing `motion() is deprecated` WARN. No `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- **S-3 PASS** — launcher command bar (`input[role="searchbox"]`, `aria-label="Search, launch, or message Fredo"`) rendered + interactive; `stt_start`/`stt_stop` drove the DR-1 cue (`placeholder="Listening…"` → `"search or command"`).
+- **S-4 PASS (static re-confirm)** — no voice/STT/autosend settings section exists; the Settings surface was not re-driven this round (its host trigger is not mounted in the launcher view) — the UI sources are unchanged by the fix (`git diff df47d4f 84ff1ac`).
+- **S-5 PASS** — 3 round-2 screenshots captured under `.opencode/tmp/2876/e2e/` and uploaded.
+- **S-6 PASS** — listening started on the launcher path (`started:true`, 48000 Hz) with the cue present; stopped via `stt_stop`; console clean. (Real audio absent — virtual device.)
+- **S-7 UNVERIFIED (G-053)** — no network-block lever in the sandbox; static pin unchanged (no remote client on the audio→text path).
+- **S-8 PASS** — 3 uploads via `upload-evidence --issue 2876 --base spec/2876` (serial, G-144); raw URLs embedded in `## Tests Runs` with descriptions.
