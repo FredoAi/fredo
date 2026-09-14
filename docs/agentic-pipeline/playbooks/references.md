@@ -30,7 +30,30 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **Guardrail records** - persisted by the SI at every audit under `Known Failure Modes` below (retro-analysis Recipe 6).
 
 ---
+
+## Speech-to-Text (STT) — Candidate Research
+
+Shared research anchors for any voice-input spec (spike/implementation). Add entries as candidates are evaluated; keep them URL + one-line.
+
+- **Moonshine Voice (moonshine-ai/moonshine)** - on-device streaming ASR toolkit (C API + Python/JS-WASM, ONNX Runtime, Windows native via WASAPI); streaming models `TINY_STREAMING` 34M / `SMALL_STREAMING` 123M / `MEDIUM_STREAMING` 245M params, English core MIT, non-English models non-commercial; model manifest via `download.moonshine.ai` with size + checksum. C API header (`core/moonshine-c-api.h`) documents `moonshine_load_transcriber_from_files` + streaming `moonshine_transcribe_add_audio_to_stream`/`moonshine_transcribe_stream`. (https://github.com/moonshine-ai/moonshine ; https://moonshine-voice.readthedocs.io)
+- **Rust bindings for Moonshine** - `moonshine-rs` (safe wrapper, MIT OR Apache-2.0, statically embeds ONNX Runtime; prebuilt libs from GitHub Releases, source path needs a local moonshine checkout via `MOONSHINE_DIR`) and `moonshine-sys` (raw FFI, bindgen). (https://crates.io/crates/moonshine-rs ; https://crates.io/crates/moonshine-sys)
+- **sherpa-onnx** - Apache-2.0 streaming + non-streaming ASR (Zipformer transducer/CTC/paraformer), VAD, punctuation; first-class Rust crate `sherpa-onnx` (`OnlineRecognizer`) links statically by default and auto-downloads a prebuilt Windows x64 lib during `cargo build`; Windows x64 prebuilt binaries + streaming English/zh-en models published. (https://crates.io/crates/sherpa-onnx ; https://github.com/k2-fsa/sherpa-onnx)
+- **whisper.cpp + Rust** - MIT; `whisper-rs` (bindings) plus streaming wrappers (`whisper-cpp-plus`, `yamabiko-whisper` with Silero VAD + LocalAgreement-2). Note: on Windows the default CPU backend can be too slow in optimized builds — production needs a Vulkan/CUDA backend; model sizes tiny 75 MiB → large 2.9 GiB. (https://github.com/ggml-org/whisper.cpp ; https://docs.rs/whisper-rs)
+- **Tauri v2 / WebView2 microphone capture** - `getUserMedia()` is silently denied in WebView2 unless a Rust-side `PermissionRequested` handler explicitly allows `COREWEBVIEW2_PERMISSION_KIND_MICROPHONE` (registered via `with_webview`), and the CSP needs `media-src ... mediastream:`; alternatively capture natively in Rust with `cpal` (community `tauri-plugin-audio-recorder` is a cpal+hound precedent). (https://v2.tauri.app/security/permissions/ ; https://github.com/NostrisJr/tauri-plugin-audio-recorder)
+- **Web Speech API (`webkitSpeechRecognition`) in WebView2/Edge** - not viable local-first: Edge's implementation is a known no-op/broken without a backend speech service (Chrome's is Google-cloud backed); Edge's new on-device model is Canary/Dev-only and flagged. Use for context, not as the engine. (https://github.com/mdn/browser-compat-data/issues/22126)
+- **Windows built-in recognizer (`Windows.Media.SpeechRecognition`, WinRT)** - works offline with an installed speech language pack, decent accuracy; session/grammar-based with `HypothesisGenerated` (not true streaming partials) and heavy WinRT/WinSDK interop; viable fallback only. (https://learn.microsoft.com/uwp/api/windows.media.speechrecognition.speechrecognizer)
+
+---
 ## Known Failure Modes
+### G-155: on_the_go_improvement
+- **activation_date:** 2026-09-14
+- **observed:** #2876 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** dev-env.ps1 hardened for wedged-instance recovery - Down force-kills fredo.exe by image name (IM) and covers the OTLP ports 4317/4318, then verifies port release and warns when a lingering socket survives. Up falls back to a per-launch timestamped log when a wedged process holds dev-env-stdout.log. Round 1 left a native-abort instance (PID 13440) holding ports 9223/4318 and the primary log, so every cold start died silently (Vite never came up) until the log fallback. Validated by test-scripts.ps1 100 of 100.
+- **home:** references.md (G-155)
+- **effectiveness:** Pending
+
+
 
 ### G-154: ui_ux_visual_verdict_cannot_measure_pixels
 - **activation_date:** 2026-09-13
