@@ -65,4 +65,16 @@
 ## Promoted regression findings
 
 > Findings that become durable regression invariants are recorded here with their origin note.
-> None yet.
+
+- **R-9 (promoted, round 1):** `stt_start` with a **size-valid / content-invalid** model must NOT hang or abort the app — it must return a typed code and leave the process responsive. Origin: `functional.md` F-15 / `exploratory.md` E-15.
+
+## Run log — round 1 (2026-09-14, `spec/2876` @ `df47d4f`)
+
+- **R-1 PASS** — bar typed/controlled normally; cue off (`placeholder="search or command"`, plain border class) when not listening.
+- **R-2 PARTIAL** — Ctrl+Space branch (2) live (open+focus bar → listening). Branch (3)/carve-out not driven live (see functional run log); pure `selectCtrlSpaceAction` unit-pinned (13 tests).
+- **R-3 UNVERIFIED** — rapid double-press not driven live (automation key/focus limitation, launcher F-19 / desktop-chrome R-12/R-20); `selectCtrlSpaceAction` unit-pinned.
+- **R-4 PASS** — Escape cancelled the session and left the bar open with the transcript; ESC-on-open close behavior untouched (code review + live cancel).
+- **R-5 PASS** — app booted and ran with the virtual/silent capture device; no crash, no blocking modal.
+- **R-6 PASS (static)** — no new remote surface at rest; voice module has zero remote clients; model download is setup-gated only.
+- **R-7 PASS** — `pnpm --filter @fredo/ui build` clean; `cargo clippy --locked -D warnings` zero warnings; `cargo test --locked` ST-6a 10/10.
+- **R-8 PASS** — Settings nav unchanged; no voice/STT/autosend section added (voice group lives in Companion).

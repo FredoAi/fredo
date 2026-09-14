@@ -83,7 +83,13 @@
   - **Expected:** the tests-runs body clears the live-policy guard; each URL carries a description of what it shows.
   - **Edge:** a screenshot-only leg with no description FAILs AC3's explicit requirement; a local path never uploaded is not evidence.
 
-## Promoted exploratory findings
+- [ ] F-15 (promoted from E-15, round 1): **Engine start with a size-VALID / content-invalid model must yield a named error, not a hang.** Replace the encoder with a byte-exact picture of garbage (same pinned size, invalid ONNX); call `stt_start`. Expected: `{started:false, code:"engineStartFailed"}` and the app stays responsive.
+  - **Test data:** a size-exact (71,083,163 B) but content-invalid encoder copy.
+  - **Expected:** typed `engineStartFailed`, app responsive.
+  - **Actual (round 1):** UNVERIFIED / FAIL-risk — the MCP bridge dropped (`Connection closed`), then every webview/IPC call timed out for ~12 min; the process kept the MCP port (:9223) and resisted `dev-env -Action Down` (same PID re-found on the next Down). Dev stderr captured a native abort (`fatal runtime error: Rust cannot catch foreign exceptions, aborting` / exit `0xc0000409 STATUS_STACK_BUFFER_OVERRUN`) from a `target\debug\fredo.exe` run coincident with the attempt (attribution: could not be isolated from a second-instance port-conflict abort; needs a developer repro). Never a typed code, never responsive → matches the QA "silent hang FAILs" rule.
 
-> A confirmed exploratory probe (`exploratory.md` `E-<n>`) promotes here as a new `F-<n>` row with
-> its origin note. None yet.
+## Run log — round 1 (2026-09-14, `spec/2876` @ `df47d4f`)
+
+- **PASS:** F-1 (artifact), F-4 (capture/wiring), F-5 (provisioning), F-9 (transcript → bar, DOM-verified), F-10 (start/stop), F-11 (static local-only), F-12 (static STT-only), F-13 (clippy/TS build), F-3(b) fixture leg, F-7 partial (disabled/alreadyListening/modelMissing/modelCorrupt).
+- **UNVERIFIED (named blocker, G-053):** F-2 RAM + partial-update-latency numbers (no memory channel; the `#[ignore]` leg does not print `latencyMs`; the real mic is silent); F-3(a) real-mic (default input is the virtual `Irión Webcam`, carries no audio); F-6 network-block (no firewall/adapter lever); F-7 (noDevice / permissionDenied — no OS lever; engine-start-failure — see F-15); F-8 branch (1) companion-away and branch (3)/carve-out live driving (only branch (2) driven; pure cascade unit-pinned).
+- **PASS by hermetic pin (ST-6a):** all 7 failure codes (`noDevice`/`permissionDenied`/`modelMissing`/`modelCorrupt`/`engineStartFailed`/`alreadyListening`/`disabled`) + partial→partial→final + revision monotonicity (10/10 `voice::session::tests` green).
