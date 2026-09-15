@@ -45,6 +45,15 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-157: on_the_go_improvement
+- **activation_date:** 2026-09-15
+- **observed:** #2877 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** QA-seeded test suites were silently skipped: parse_feature_names() only matched a QA line that STARTED with '**Feature tests:**', so when the QA Expert wrote the declaration inside the QA policy blockquote ('> **Feature tests:** voice-input, companion, llama-setup') the planning -> implementation transition persisted ZERO suites and printed no warning. Hardened pipeline-state.rs to strip leading '>'/whitespace before matching, documented in state-machine.md, and pinned with a blockquoted regression in test-scripts.ps1 (100/100). Suites for #2877 were then persisted manually via tests-commit.
+- **home:** references.md (G-157)
+- **effectiveness:** Pending
+
+
 ### G-156: on_the_go_improvement
 - **activation_date:** 2026-09-14
 - **observed:** #2876 round 2

@@ -1718,9 +1718,13 @@ const FEATURE_TESTS_PREFIX: &str = "**Feature tests:**";
 /// Parse feature-domain names from the QA Expert's A2A section so the
 /// `triage → implementation` transition can persist each suite automatically.
 fn parse_feature_names(a2a: &str) -> Vec<String> {
+    // Accept the line even when the QA Expert writes it inside a blockquote
+    // (`> **Feature tests:** …`) — lead markers are stripped before matching.
+    // Without this, a quoted declaration silently skipped EVERY suite in the
+    // planning -> implementation transition (observed #2877).
     section(a2a, "## QA Expert")
         .lines()
-        .map(|l| l.trim())
+        .map(|l| l.trim().trim_start_matches(|c: char| c == '>' || c == ' ').trim())
         .filter(|l| l.starts_with(FEATURE_TESTS_PREFIX))
         .flat_map(|l| l[FEATURE_TESTS_PREFIX.len()..].split(','))
         .map(str::trim)
