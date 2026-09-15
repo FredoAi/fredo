@@ -164,3 +164,11 @@
 - **R-15 PASS** — `pnpm --filter @fredo/ui build` + `test:run` (79 files / 1036 tests) + `pnpm --filter @fredo/tauri build:webview` all clean; Rust gates recorded from CI (`rust-validate` PASS: check + nextest + clippy `-D warnings`) — the tester shell has no `cargo`. Frozen hooks (`companion-controls`, `companion-voice-model-download`, `companion-step-stt-model`, `companion-setup-optional`, `launcher-command-listening`) all present.
 - **R-16 PASS** — voice settings live under Companion inside the Settings window; enable/disable persists `Fredo_companion_voice_enabled`; the historical `R-8` "no voice section" assertion was NOT re-run as a FAIL (superseded).
 - **R-17 PASS (measured)** — idle CPU while not listening: 0.78 s CPU / 10.30 s wall = **0.76 %** (baseline app, no recognizer constructed). Newly persisted keys after the legs = the three declared voice preferences only; the existing companion keys were untouched.
+
+## Run log — #2877 round 2 (2026-09-15, `spec/2877` @ `1920ae43`)
+
+Scope: the F-38 fix surface only (`session.rs` state emission + `useVoiceDictation.start()`). The full R-10..R-17 matrix was NOT re-run — round-1 evidence stands for the untouched rows.
+
+- **R-10 PASS (regression, partial).** At idle the bar is byte-behavioural as before: `placeholder="search or command"`, no listening cue, no bubble, `stt_status {listening:false}`. With voice enabled + companion away, Ctrl+Space correctly took the companion-listen branch (never the bar) — consistent with R-16/DR-9.
+- **R-16 PASS (regression, live).** Settings → Companion ready branch still renders the voice group inside `companion-controls` (enable checked + model installed/location + device + autosend), no Voice nav item/section added; the not-ready gate still renders the wizard with the optional `sttModel` step additive. Evidence: `r2-regression-voice-settings.jpeg`.
+- **R-17 PASS (regression, measured).** Idle WS 87.2 MB with no recognizer constructed (engine loads only on `stt_start`: 208.9 MB listening → 88.0 MB after stop).
