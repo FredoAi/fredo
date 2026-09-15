@@ -269,6 +269,58 @@ describe('useVoiceDictation — start()', () => {
     expect(result.current.listening).toBe(true);
   });
 
+  it('F-38: a duplicate start is an idempotent no-op — listening stays true with no error', async () => {
+    // A live companion-origin session is already observable via the app-global
+    // `stt:state` (the backend owns the session).
+    invokeMock.mockResolvedValue({
+      started: false,
+      code: 'alreadyListening',
+      detail: 'A listening session is already active.',
+      deviceName: null,
+      sampleRate: null,
+    });
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'companion' });
+    expect(result.current.listening).toBe(true);
+    expect(result.current.origin).toBe('companion');
+
+    await act(async () => {
+      await result.current.start('companion');
+    });
+
+    // R-4.1: the reject is idempotent — the live indicator and session origin
+    // survive, and no failure state is synthesised.
+    expect(result.current.listening).toBe(true);
+    expect(result.current.origin).toBe('companion');
+    expect(result.current.errorCode).toBeNull();
+    expect(result.current.detail).toBeNull();
+  });
+
+  it('F-38: a duplicate start never adopts the REQUESTED origin (R-5.3 routing)', async () => {
+    // The active session is launcher-origin; a duplicate start requesting
+    // `companion` must not steal the origin (that would re-route the single
+    // visible indicator to the wrong surface).
+    invokeMock.mockResolvedValue({
+      started: false,
+      code: 'alreadyListening',
+      detail: 'A listening session is already active.',
+      deviceName: null,
+      sampleRate: null,
+    });
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
+
+    await act(async () => {
+      await result.current.start('companion');
+    });
+
+    expect(result.current.listening).toBe(true);
+    expect(result.current.origin).toBe('launcher');
+    expect(result.current.errorCode).toBeNull();
+  });
+
   it('is a no-op without an adapter (invoke resolves undefined)', async () => {
     invokeMock.mockResolvedValue(undefined);
     const { result } = renderHook(() => useVoiceDictation());

@@ -185,6 +185,15 @@ export function useVoiceDictation(): VoiceDictation {
         setOrigin(nextOrigin);
         setListening(true);
         setDeviceName(result.deviceName ?? null);
+      } else if (result.code === 'alreadyListening') {
+        // F-38 (R-4.1 / R-5.3) — a duplicate start is an IDEMPOTENCE signal, not
+        // a failure: the backend already owns a live app-global session, so the
+        // request is a no-op. Keep the live indicator, and do NOT adopt the
+        // requested origin (the ACTIVE session's origin is authoritative and
+        // comes from the app-global `stt:state` — R-5.3's one-indicator routing),
+        // do NOT touch `deviceName`, and do NOT set an error. The optimistic
+        // clear above is the whole effect.
+        setListening(true);
       } else {
         setListening(false);
         setErrorCode(result.code ?? 'internal');
