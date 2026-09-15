@@ -129,3 +129,22 @@
 ### Promoted findings
 
 - **E-25 → F-38 (CONFIRMED DEFECT, promoted):** a duplicate `stt_start` while a session is live returns the correct typed `alreadyListening` but the backend emits `stt:state {listening:false}` for that path, so the frontend clears the live indicator (launcher cue disappears; the companion bubble flips to its error variant with no Stop control) while `stt_status` still reports `listening:true` and the mic keeps capturing. Violates R-5.3/AC5 ("never capture audio without a visible active indicator"). Reachable through the binding cascade: `selectCtrlSpaceAction` returns `companion-listen` for a companion-away context regardless of `listening`, so a second Ctrl+Space re-invokes `stt_start`. Repro + suggested fix in `functional.md` F-38. Supersedes the spike-era "clean stop / no-op" question (old E-7).
+
+---
+
+## #2878 extension — launcher autosend commit probes
+
+> Issue #2878 promotes F-53 (batch commit-order + stale-mirror probes) and opens the commit-path
+> edge probes below. Live policy; an undrivable lever is a named blocker (G-053) with a static pin.
+
+- [x] **E-26 → F-53 (CONFIRMED DEFECT, promoted):** clearing the bar via the `—` MINIMIZE control does NOT clear the host's synchronous mirror `barTextRef` (`LauncherShell.tsx:514`). A subsequent dictation session that recognizes nothing finalizes against the STALE mirror and **dispatches the pre-Minimize text to Fredo** (a phantom send from an empty bar). Deterministic repro: type `STALE MIRROR PROBE 4477` → click Minimize (bar `value=""`) → `stt_start` → `stt_stop` (no `stt:transcript`) → the reply quotes the stale phrase. Promoted to `functional.md` F-53 (FAIL).
+- [x] **E-27 (observed, not promoted): a backend-direct `stt_cancel` (no UI gesture) also commits the bar text.** Invoking the `stt_cancel` command directly ends the session without setting the UI's cancel flag, so the finalize effect treated the leftover bar text (`e`) as an utterance and dispatched it. All three product cancel gestures (Escape, `launcher-cancel` chord, voice-disabled teardown) set the suppression flag first, so it is not directly user-reachable — but **any backend-initiated `launcher` session end** (a typed error / device-loss `stt:state {listening:false, code:…}`) with non-empty bar text would auto-send. Recommend the finalize commit treat a non-null `stt:state.code` end as a cancel.
+- [x] **E-28 (observed, not promoted): Minimize leaves `preSessionTextRef` un-mirrored.** Same stale-mirror class as E-26 — the minimize path is the only `setQuery` writer that skips the mirror; fix together.
+- [ ] **E-29 (probe): mid-session voice disable during a launcher dictation.** Toggle voice OFF while a launcher session runs with bar text: the teardown must stop the session, suppress autosend, and restore the pre-session text. Unit-pinned; live re-probe blocked by the Settings-provider split (the launcher window's `voiceEnabled` does not observe a settings-window toggle without a reload).
+- [ ] **E-30 (probe): Ctrl+Space churn while listening.** Press Ctrl+Space twice rapidly in the bar-focused context: exactly one session (no double-toggle/stuck state) and the second chord is `launcher-cancel` (discard), never a send. Partially observed (a first chord press was swallowed in one run, the second landed) — needs a dedicated repeat.
+
+## Run log — #2878 round 1 (2026-09-15, `spec/2878` @ `33cf86d5`)
+
+- **E-26 CONFIRMED + promoted to F-53 (the round's FAIL).** Phantom dispatch via the stale `barTextRef` after the Minimize control; two independent live repros, the second with the model reply echoing the marker ("…find the proof.").
+- **E-27 / E-28 observed, not promoted.** The backend-direct cancel commit and the un-mirrored Minimize capture are recorded as fix inputs for the F-53 defect.
+- **E-29 / E-30 not driven this round** (Settings-provider split / chord-driver flakiness) — named residual probes, not PASSes.
