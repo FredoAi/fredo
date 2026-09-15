@@ -145,6 +145,7 @@ export const CompanionSettingsPanel: React.FC = () => {
         actionError={actionError}
         modelFiles={modelFiles}
         serverLaunch={serverLaunch}
+        sttModel={sttModel}
         onRunAction={(id) => { void runAction(id); }}
         onRecheck={() => { void refresh(); }}
       />
