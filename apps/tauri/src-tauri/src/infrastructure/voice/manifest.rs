@@ -1,5 +1,4 @@
-// SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
-//! STT (speech-to-text) model manifest (Spec #2876, ST-2).
+//! STT (speech-to-text) model manifest.
 //!
 //! Reuses the shared [`ModelFileSpec`] / [`ModelManifest`] vocabulary from
 //! [`crate::infrastructure::companion::models`] so the streamed download +
@@ -9,9 +8,7 @@
 //! `DEFAULT_MANIFEST` / `MODEL_SUBDIR` / `MODEL_REVISION` are untouched.
 //!
 //! Every pin below was verified live against the Hugging Face resolve endpoint
-//! by ST-0 (byte counts + SHA-256; `.opencode/tmp/2876/st-0-verification.md`).
-//! The engine consuming these files (`sherpa-onnx` `OnlineRecognizer`) is added
-//! by ST-3; this module is engine-agnostic.
+//! (byte counts + SHA-256). This module is engine-agnostic.
 
 use std::sync::LazyLock;
 

@@ -1,11 +1,11 @@
-// SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
-//!
 //! Streaming engine wrapper around `sherpa_onnx::OnlineRecognizer`.
 //!
-//! [`Recognizer`] is the seam ST-6 injects a fake through (no model, no mic,
-//! CI-green); [`SherpaRecognizer`] is the real int8 Zipformer transducer.
-//! API verified live by ST-0 (docs.rs sherpa-onnx 1.13.8 + the official
-//! `rust-api-examples/examples/streaming_zipformer_microphone.rs`).
+//! [`Recognizer`] is the seam the hermetic session pins inject a fake through
+//! (no model, no mic, CI-green); [`SherpaRecognizer`] is the real int8 Zipformer
+//! transducer. The engine is created lazily on the first `stt_start` — never at
+//! app launch — and only after the SHA-256 content gate has verified the pinned
+//! bytes (a size-valid/content-invalid model must never reach the native parser).
+//! API verified live against sherpa-onnx 1.13.8.
 
 use std::fs::File;
 use std::io::Read;
@@ -213,14 +213,11 @@ pub fn load_recognizer(models_dir: &Path) -> Result<Box<dyn Recognizer>, VoiceEr
 
 #[cfg(test)]
 mod tests {
-    // SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
-    //!
-    //! Deterministic second leg (ST-6b): the REAL engine over a hand-placed
-    //! 16 kHz mono WAV, driven through the same recognition loop the live path
-    //! uses. The WAV and the models dir are supplied at run time — nothing is
-    //! downloaded, no fixture blob is committed, and the leg self-skips when the
-    //! env vars are absent, so `cargo test --locked` stays green with no model
-    //! and no mic.
+    //! Deterministic second leg: the REAL engine over a hand-placed 16 kHz mono
+    //! WAV, driven through the same recognition loop the live path uses. The WAV
+    //! and the models dir are supplied at run time — nothing is downloaded, no
+    //! fixture blob is committed, and the leg self-skips when the env vars are
+    //! absent, so `cargo test --locked` stays green with no model and no mic.
     //!
     //! Run it explicitly (PowerShell, from `apps/tauri/src-tauri`):
     //! ```text

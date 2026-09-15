@@ -1,13 +1,11 @@
-// SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
-//!
 //! One-session STT state machine + the recognition loop.
 //!
 //! `start` gates on the persisted voice preference, an already-active session,
 //! and model presence, then starts a dedicated worker thread that lazily loads
-//! the engine (never at app launch), opens the `cpal` capture stream, and drives
-//! `stt:transcript` / `stt:state` events. `stop` commits the final partial;
-//! `cancel` discards it. Every failure is a typed `VoiceError` — no panics
-//! (R-5.6).
+//! the engine (never at app launch), opens the `cpal` capture stream for the
+//! persisted input device, and drives `stt:transcript` / `stt:state` events.
+//! `stop` commits the final partial; `cancel` discards it. Every failure is a
+//! typed `VoiceError` — no panics.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -30,6 +28,11 @@ use crate::infrastructure::voice::state::{
 
 /// Persisted Companion preference (written by the ST-5 toggle, DEFAULT false).
 pub const VOICE_ENABLED_KEY: &str = "Fredo_companion_voice_enabled";
+
+/// Persisted Companion preference: the selected input device. The value is a
+/// `cpal` device name (`id` from `stt_list_devices`); unset/blank ⇒ the system
+/// default.
+pub const VOICE_DEVICE_KEY: &str = "Fredo_companion_voice_device_id";
 
 /// Budget for engine load + capture open before `stt_start` gives up.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -116,6 +119,15 @@ pub(crate) fn parse_enabled(value: Option<&str>) -> bool {
     )
 }
 
+/// Parse the persisted device preference: trimmed, blank/unset ⇒ `None` (the
+/// system default). Pure, so the "" default is hermetically pinned.
+pub(crate) fn parse_device_id(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn voice_enabled(app: &AppHandle) -> bool {
     let value = app
         .state::<std::sync::Arc<AppStore>>()
@@ -123,6 +135,20 @@ fn voice_enabled(app: &AppHandle) -> bool {
         .ok()
         .flatten();
     parse_enabled(value.as_deref())
+}
+
+/// The persisted input-device selection, trimmed. Unset or blank resolves to
+/// `None` — the system default (the key's documented default is `""`). This is
+/// only the KEY lookup: whether the named device still exists is decided by
+/// [`capture::start_capture`] against the live device set, so a vanished device
+/// is the typed `NoDevice` naming it instead of a silent fallback (AC4).
+pub(crate) fn persisted_device(app: &AppHandle) -> Option<String> {
+    let value = app
+        .state::<std::sync::Arc<AppStore>>()
+        .get(VOICE_DEVICE_KEY)
+        .ok()
+        .flatten();
+    parse_device_id(value.as_deref())
 }
 
 /// Typed model gate: absent ⇒ `ModelMissing`; partial/oversize ⇒ `ModelCorrupt`
@@ -201,6 +227,10 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     }
 
     // 4. Worker owns the engine AND the `cpal::Stream` (both stay on one thread).
+    // The persisted device preference is resolved to a name here, but validated
+    // against the live device set inside `capture` on the worker — a vanished
+    // device is the typed `NoDevice` naming it (AC4), never a silent fallback.
+    let selected_device = persisted_device(app);
     let (tx, rx) = mpsc::channel::<AudioMsg>();
     let (outcome_tx, outcome_rx) =
         tokio::sync::oneshot::channel::<Result<StartInfo, VoiceError>>();
@@ -210,7 +240,15 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     let worker = match std::thread::Builder::new()
         .name("fredo-stt".to_string())
         .spawn(move || {
-            worker_main(worker_app, session_id, models_dir, rx, worker_tx, outcome_tx);
+            worker_main(
+                worker_app,
+                session_id,
+                models_dir,
+                selected_device,
+                rx,
+                worker_tx,
+                outcome_tx,
+            );
         }) {
         Ok(handle) => handle,
         Err(error) => {
@@ -354,18 +392,19 @@ pub fn status(app: &AppHandle) -> SttStateEvent {
     }
 }
 
-/// Worker thread body: lazily load the engine, open capture, report readiness,
-/// then drive the recognition loop until Stop/Cancel. Owns the recognizer and
-/// the `cpal::Stream` for its whole lifetime.
+/// Worker thread body: lazily load the engine, open capture for the persisted
+/// device, report readiness, then drive the recognition loop until Stop/Cancel.
+/// Owns the recognizer and the `cpal::Stream` for its whole lifetime.
 fn worker_main(
     app: AppHandle,
     session_id: String,
     models_dir: PathBuf,
+    selected_device: Option<String>,
     rx: Receiver<AudioMsg>,
     tx: Sender<AudioMsg>,
     outcome_tx: tokio::sync::oneshot::Sender<Result<StartInfo, VoiceError>>,
 ) {
-    // Lazy engine creation on first start — never at app launch (R-5.1/R-2.1).
+    // Lazy engine creation on first start — never at app launch.
     let mut recognizer = match engine::load_recognizer(&models_dir) {
         Ok(recognizer) => recognizer,
         Err(error) => {
@@ -374,7 +413,7 @@ fn worker_main(
         }
     };
 
-    let capture = match capture::start_capture(tx) {
+    let capture = match capture::start_capture(tx, selected_device.as_deref()) {
         Ok(capture) => capture,
         Err(error) => {
             let _ = outcome_tx.send(Err(error));
@@ -482,12 +521,11 @@ pub(crate) fn run_recognition(
 
 #[cfg(test)]
 mod tests {
-    // SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
-    //!
-    //! Hermetic session pins (ST-6a): the recognition loop's state machine runs
-    //! against a scripted [`FakeStep`]-driven [`FakeRecognizer`] — no model, no
-    //! mic, no network, no `AppHandle`. The pure gates (`parse_enabled`,
-    //! `model_error`) and the full typed failure vocabulary are pinned here too.
+    //! Hermetic session pins: the recognition loop's state machine runs against a
+    //! scripted [`FakeStep`]-driven [`FakeRecognizer`] — no model, no mic, no
+    //! network, no `AppHandle`. The pure gates (`parse_enabled`,
+    //! `parse_device_id`, `model_error`) and the full typed failure vocabulary are
+    //! pinned here too.
 
     use super::*;
 
@@ -863,6 +901,24 @@ mod tests {
         for value in [Some("true"), Some("True"), Some("TRUE"), Some("1"), Some(" true ")] {
             assert!(parse_enabled(value), "{value:?} must resolve enabled");
         }
+    }
+
+    /// R-1.2/R-3.2: the persisted device key's documented default is `""` — an
+    /// unset or blank value means the system default (`None`), and a real name
+    /// round-trips trimmed.
+    #[test]
+    fn parse_device_id_treats_unset_and_blank_as_the_system_default() {
+        for value in [None, Some(""), Some("   "), Some("\t")] {
+            assert_eq!(parse_device_id(value), None, "{value:?} must mean default");
+        }
+        assert_eq!(
+            parse_device_id(Some("Iriun Webcam")),
+            Some("Iriun Webcam".to_string())
+        );
+        assert_eq!(
+            parse_device_id(Some("  Microphone (USB)  ")),
+            Some("Microphone (USB)".to_string())
+        );
     }
 
     fn manifest_with(files: Vec<ModelFileSpec>) -> ModelManifest {
