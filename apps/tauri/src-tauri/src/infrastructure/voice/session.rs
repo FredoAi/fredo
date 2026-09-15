@@ -198,6 +198,37 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
     }
 }
 
+/// The single builder for a truthful `stt:state`: `listening` is derived from
+/// whether a session origin is installed, never hardcoded. `stt_status`, the
+/// duplicate-start re-emit and the start success path all derive from this one
+/// function, so the read path and the emit path can never disagree (R-5.3/AC5).
+fn listening_state(origin: Option<String>) -> SttStateEvent {
+    SttStateEvent {
+        listening: origin.is_some(),
+        code: None,
+        detail: None,
+        origin,
+    }
+}
+
+/// The already-listening gate: `None` when no session is installed (the caller
+/// may start), or — when an [`ActiveSession`] IS installed — the unchanged
+/// idempotent `alreadyListening` result paired with the TRUE live state of the
+/// **ACTIVE** session. Deriving the event from `active.origin` (never the newly
+/// requested origin) keeps the live indicator on its correct surface while the
+/// microphone keeps capturing. Pure so the duplicate-start contract is
+/// hermetically pinned; the caller returns on `Some` before any worker spawn,
+/// so no second session, handle, or `cpal::Stream` is ever created (R-4.1).
+fn already_listening_outcome(
+    active: Option<&ActiveSession>,
+) -> Option<(SttStartResult, SttStateEvent)> {
+    let active = active?;
+    Some((
+        VoiceError::already_listening().into_start_result(),
+        listening_state(Some(active.origin.clone())),
+    ))
+}
+
 /// `stt_start`: gate → lazy engine + capture on a worker thread → report ready.
 pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     // 1. Disabled gate (R-5.7 backend pin; ST-5 owns the toggle).
@@ -207,14 +238,16 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         return error.into_start_result();
     }
 
-    // 2. Already-listening gate.
+    // 2. Already-listening gate. A duplicate start stays idempotent (R-4.1) and
+    // MUST NOT emit a false idle: the still-active session keeps its indicator
+    // and Stop control until `stt_stop`/`stt_cancel` (R-5.3/AC5). The re-emit
+    // carries the ACTIVE session's origin, never the newly requested one.
     {
         let state = app.state::<VoiceState>();
         let guard = lock_inner(&state);
-        if guard.is_some() {
-            let error = VoiceError::already_listening();
-            emit_state(app, &state_event_error(&error, Some(origin)));
-            return error.into_start_result();
+        if let Some((result, event)) = already_listening_outcome(guard.as_ref()) {
+            emit_state(app, &event);
+            return result;
         }
     }
 
@@ -293,15 +326,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
                     worker,
                 });
             }
-            emit_state(
-                app,
-                &SttStateEvent {
-                    listening: true,
-                    code: None,
-                    detail: None,
-                    origin: Some(origin.to_string()),
-                },
-            );
+            emit_state(app, &listening_state(Some(origin.to_string())));
             SttStartResult {
                 started: true,
                 code: None,
@@ -372,23 +397,15 @@ pub async fn cancel(app: &AppHandle) -> SttStateEvent {
     finish(app, AudioMsg::Cancel).await
 }
 
-/// `stt_status` — read the current listening state.
+/// `stt_status` — read the current listening state. Derived from the SAME
+/// builder the live `stt:state` emissions use, so the read path and the emit
+/// path cannot disagree (R-5.3).
 pub fn status(app: &AppHandle) -> SttStateEvent {
     let state = app.state::<VoiceState>();
     let guard = lock_inner(&state);
     match guard.as_ref() {
-        Some(session) => SttStateEvent {
-            listening: true,
-            code: None,
-            detail: None,
-            origin: Some(session.origin.clone()),
-        },
-        None => SttStateEvent {
-            listening: false,
-            code: None,
-            detail: None,
-            origin: None,
-        },
+        Some(session) => listening_state(Some(session.origin.clone())),
+        None => listening_state(None),
     }
 }
 
@@ -883,6 +900,74 @@ mod tests {
             assert!(result.device_name.is_none());
             assert!(result.sample_rate.is_none());
         }
+    }
+
+    /// R-5.3/AC5: the single state builder derives `listening` from the ACTUAL
+    /// session state — a live origin ⇒ listening, no origin ⇒ idle — so no path
+    /// can publish a false idle while a session is alive.
+    #[test]
+    fn listening_state_pins_live_truth_and_idle() {
+        let live = listening_state(Some("companion".to_string()));
+        assert!(live.listening);
+        assert!(live.code.is_none());
+        assert!(live.detail.is_none());
+        assert_eq!(live.origin.as_deref(), Some("companion"));
+
+        let idle = listening_state(None);
+        assert!(!idle.listening);
+        assert!(idle.code.is_none());
+        assert!(idle.detail.is_none());
+        assert!(idle.origin.is_none());
+    }
+
+    /// F-38: a duplicate `stt_start` MUST keep the `alreadyListening` result
+    /// unchanged (R-4.1) while emitting the TRUE live state of the ACTIVE
+    /// session — `listening:true` with the active origin, never the requested
+    /// one — and MUST NOT enter the start path (no second session/handle).
+    #[test]
+    fn duplicate_start_reemits_the_active_state_and_keeps_the_idempotent_result() {
+        let (control_tx, _control_rx) = mpsc::channel::<AudioMsg>();
+        let active = ActiveSession {
+            origin: "launcher".to_string(),
+            control_tx,
+            worker: std::thread::spawn(|| {}),
+        };
+
+        // The gate yields on an installed session: the caller returns before the
+        // worker spawn, so a second `ActiveSession` is never created. An empty
+        // slot yields `None` so a genuine start proceeds.
+        let (result, event) = already_listening_outcome(Some(&active))
+            .expect("an installed session must yield the duplicate-start outcome");
+        assert!(
+            already_listening_outcome(None).is_none(),
+            "an empty slot must let the start proceed"
+        );
+
+        // (a) TRUE active state, with the ACTIVE origin (a request for
+        // "companion" would still re-emit this "launcher" session).
+        assert!(event.listening);
+        assert_eq!(event.origin.as_deref(), Some("launcher"));
+        assert!(event.code.is_none());
+        assert!(event.detail.is_none());
+
+        // (b) `stt_status` derives from the SAME builder for the SAME session, so
+        // the read path and the emitted state are the identical shape.
+        let from_status = listening_state(Some(active.origin.clone()));
+        assert_eq!(event.listening, from_status.listening);
+        assert_eq!(event.origin, from_status.origin);
+        assert_eq!(event.code, from_status.code);
+        assert_eq!(event.detail, from_status.detail);
+
+        // (c) the duplicate-start result is byte-for-byte the pinned idempotence
+        // contract — unchanged by this fix.
+        assert!(!result.started);
+        assert_eq!(result.code, Some(SttErrorCode::AlreadyListening));
+        assert_eq!(
+            result.detail.as_deref(),
+            Some("A listening session is already active.")
+        );
+        assert!(result.device_name.is_none());
+        assert!(result.sample_rate.is_none());
     }
 
     #[test]
