@@ -56,10 +56,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-mcp-bridge = "0.12"
-# Voice input / STT POC (Spec #2876 ST-3 — THROWAWAY; see infrastructure/voice).
-# cpal 0.18 links natively (WASAPI); sherpa-onnx 1.13.8 auto-fetches its prebuilt
-# win-x64 static archive via sherpa-onnx-sys (ST-0 verified; SHERPA_ONNX_LIB_DIR
-# not needed). Both are removed/replaced by #2877.
+# Voice input / STT — local, on-device transcription (see infrastructure/voice).
+# cpal 0.18 (native WASAPI capture) and sherpa-onnx 1.13.8 (pinned via `=`,
+# streaming zipformer decode) are the shipped production dependencies.
+# On Windows, sherpa-onnx-sys fetches its prebuilt static win-x64 archive at
+# build time; set SHERPA_ONNX_LIB_DIR to point at a local library directory
+# instead (offline/CI builds).
 cpal = "0.18"
 sherpa-onnx = "=1.13.8"
 
