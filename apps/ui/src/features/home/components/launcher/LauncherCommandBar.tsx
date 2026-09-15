@@ -1,5 +1,6 @@
 /**
- * Fredo launcher command bar (Spec #2808 ST-3; #2871 ST-3 chat affordances).
+ * Fredo launcher command bar (Spec #2808 ST-3; #2871 ST-3 chat affordances;
+ * #2877 ST-5 launcher listening cue).
  *
  * The `>` search-or-command input (desktop-light.png): a centered, ~560px
  * max-width native-capable Chakra text input with an accent `>` chevron prefix
@@ -32,11 +33,28 @@
  *     `Fredo is replying…` placeholder; `aria-busy` + the accent indicator stay
  *     on for the whole stream.
  *
+ * #2877 ST-5 — launcher-origin listening affordance (DR-7/DR-10/DR-11), rendered
+ * only while the host reports `listening` (the host gates it to a `launcher`-
+ * origin session, so exactly ONE indicator shows per session — R-5.3):
+ *   • the FROZEN static accent dot `launcher-command-listening` (no pulse);
+ *   • a visible `Listening` text chip `launcher-command-listening-chip` and a
+ *     tab-reachable Stop control `launcher-command-listening-stop`
+ *     (`aria-label="Stop listening"`), inserted before the minimize control;
+ *   • the `Listening…` placeholder + accent-tinted border;
+ *   • `launcher-command-listening-status` below the bar: the hearing-nothing hint
+ *     after `HEARING_NOTHING_MS` of silence, or an inline `role="alert"` with
+ *     curated copy when a start failed (the raw backend detail is never the
+ *     primary sentence);
+ *   • two persistent polite live regions — `voice-listening-announcer` (start/stop
+ *     transitions ONLY) and `voice-transcript-announcer` (the newest FINAL
+ *     segment only; partials NEVER announce).
+ *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
  * today's rendering (`chatAvailable=false` / `enterMode='launch'` / no
- * `hintLabel` / `busy=false`) — no chip, no glyph swap, no reserved padding, and
- * `aria-busy` is omitted (not rendered as `"false"`), so the inactive bar is
- * byte-identical to before this change.
+ * `hintLabel` / `busy=false` / `listening=false` / no stop handler / no error /
+ * no final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no
+ * reserved padding, and `aria-busy` is omitted (not rendered as `"false"`), so
+ * the inactive bar is byte-identical to before this change.
  *
  * Token-native contract (AC5): every color is a theme CSS var referenced
  * directly (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`),
@@ -45,7 +63,7 @@
  * NO `var(--x)NN` alpha-append anywhere in this file.
  */
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { Box, Input, InputGroup } from '@chakra-ui/react';
 
@@ -78,13 +96,30 @@ export interface LauncherCommandBarProps {
   /** #2871: generation in flight — holds `aria-busy` + the accent indicator. */
   busy?: boolean;
   /**
-   * SPIKE #2876 ST-4 (DR-1) — THROWAWAY listening cue. `true` while a dictation
-   * session owns the bar: swaps the placeholder to `Listening…`, tints the
-   * border with `tint('var(--accent-primary)', …)` (token-native, no hardcoded
-   * color) and shows the transient indicator. Defaults to `false`, in which case
-   * the bar renders EXACTLY as before (inactive-companion invariance).
+   * Spec #2877 ST-5 (DR-7) — the launcher-origin listening cue. `true` while a
+   * `launcher`-origin dictation session owns the bar: swaps the placeholder to
+   * `Listening…`, tints the border with `tint('var(--accent-primary)', 30)`
+   * (token-native, no hardcoded color) and shows the static indicator + the
+   * `Listening` chip + the Stop control. The host gates this to
+   * `origin === 'launcher'` so exactly ONE indicator shows per session (R-5.3).
+   * Defaults to `false` — the bar then renders EXACTLY as before
+   * (inactive-companion invariance).
    */
   listening?: boolean;
+  /** DR-7: stops the live session (the bar's Stop control). */
+  onStopListening?: () => void;
+  /**
+   * DR-7/DR-11: curated `role="alert"` copy for a failed `stt_start`, or null.
+   * The raw backend detail is never the primary sentence.
+   */
+  voiceErrorMessage?: string | null;
+  /** DR-10: the newest FINAL transcript segment (partials never set this). */
+  finalTranscript?: string;
+  /**
+   * DR-9/DR-10: voice input enablement. Drives `aria-keyshortcuts` and the
+   * `Voice input is off` announcement when it flips OFF mid-session.
+   */
+  voiceEnabled?: boolean;
   /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
   ariaLabel?: string;
   /**
@@ -101,7 +136,17 @@ export interface LauncherCommandBarProps {
  * A CSS unit string (G-146) so it is pixels, never a Chakra size token.
  */
 const HINT_CHIP_MAX_WIDTH_PX = 184;
-const HINT_PADDING_END = `${HINT_CHIP_MAX_WIDTH_PX + 44}px`;
+/** Static `Listening` chip width (12px text) + the Stop control's footprint.
+ *  CSS unit strings only (G-146 → exact pixels). */
+const LISTENING_CHIP_WIDTH_PX = 72;
+const STOP_GUTTER_PX = 30;
+/** The `—` MINIMIZE gutter: left margin/border/padding + the 12px glyph. */
+const MINIMIZE_GUTTER_PX = 44;
+
+/** DR-7 — the "we haven't heard anything yet" hint, after this silent stretch. */
+export const HEARING_NOTHING_MS = 6000;
+export const HEARING_NOTHING_COPY =
+  "Listening… we haven't heard anything yet — check that your microphone isn't muted.";
 
 /** Accent `>` chevron prefix (monoweight, currentColor) — launch/filter mode. */
 function ChevronGlyph() {
@@ -140,6 +185,20 @@ function MinusGlyph() {
   );
 }
 
+/** Filled square Stop glyph for the listening Stop control (currentColor). */
+function StopGlyph() {
+  return (
+    <Box
+      as="span"
+      width="10px"
+      height="10px"
+      borderRadius="2px"
+      bg="currentColor"
+      aria-hidden="true"
+    />
+  );
+}
+
 export function LauncherCommandBar({
   query,
   onQueryChange,
@@ -153,6 +212,10 @@ export function LauncherCommandBar({
   hintLabel,
   busy = false,
   listening = false,
+  onStopListening,
+  voiceErrorMessage,
+  finalTranscript = '',
+  voiceEnabled = false,
   ariaLabel,
   ariaDescribedBy,
 }: LauncherCommandBarProps) {
@@ -168,8 +231,64 @@ export function LauncherCommandBar({
     [chatAvailable, hintLabel],
   );
 
+  // #2877 ST-5 (DR-7): reserve the right gutter for every end-slot affordance
+  // that is present, so the typed text never renders underneath them. With only
+  // the hint chip this is `184 + 44 = 228px` — byte-identical to the pre-ST-5
+  // reserved padding. Nothing present ⇒ omitted entirely.
+  const endPaddingPx =
+    (showHint ? HINT_CHIP_MAX_WIDTH_PX : 0) +
+    (listening ? LISTENING_CHIP_WIDTH_PX + STOP_GUTTER_PX : 0) +
+    (showHint || listening ? MINIMIZE_GUTTER_PX : 0);
+  const paddingEnd = endPaddingPx > 0 ? `${endPaddingPx}px` : undefined;
+
+  // #2877 ST-5 (DR-7): the hearing-nothing hint — shown only after
+  // `HEARING_NOTHING_MS` of a live session with an empty bar; it clears the
+  // moment any text (partial or typed) arrives. Non-blocking, never auto-stops.
+  const [hearingNothing, setHearingNothing] = useState(false);
+  useEffect(() => {
+    if (!listening || query.trim() !== '') {
+      setHearingNothing(false);
+      return;
+    }
+    const timer = setTimeout(() => setHearingNothing(true), HEARING_NOTHING_MS);
+    return () => clearTimeout(timer);
+  }, [listening, query]);
+
+  // #2877 ST-5 (DR-10): the listening announcer flips ONLY on a transition —
+  // never per event, never per partial. A disable-mid-session wins over the
+  // subsequent `Stopped listening` (the sticky `voiceOffRef`) so the region
+  // reads exactly once per user-visible transition.
+  const [listenAnnouncement, setListenAnnouncement] = useState('');
+  const prevListeningRef = useRef(listening);
+  const prevVoiceEnabledRef = useRef(voiceEnabled);
+  const voiceOffRef = useRef(false);
+
+  useEffect(() => {
+    const was = prevListeningRef.current;
+    prevListeningRef.current = listening;
+    if (was === listening) return;
+    if (!listening && voiceOffRef.current) return;
+    if (listening) voiceOffRef.current = false;
+    setListenAnnouncement(listening ? 'Listening' : 'Stopped listening');
+  }, [listening]);
+
+  useEffect(() => {
+    const was = prevVoiceEnabledRef.current;
+    prevVoiceEnabledRef.current = voiceEnabled;
+    if (was && !voiceEnabled) {
+      voiceOffRef.current = true;
+      setListenAnnouncement('Voice input is off');
+    }
+  }, [voiceEnabled]);
+
+  const isAlert = Boolean(voiceErrorMessage);
+  // The error takes precedence over the hearing-nothing hint (a failed start is
+  // never `listening`, so they cannot normally coexist).
+  const statusMessage =
+    voiceErrorMessage ?? (listening && hearingNothing ? HEARING_NOTHING_COPY : null);
+
   return (
-    <Box display="flex" justifyContent="center" w="100%" px="4">
+    <Box display="flex" flexDirection="column" alignItems="center" w="100%" px="4">
       <InputGroup
         width="100%"
         maxWidth="560px"
@@ -197,7 +316,7 @@ export function LauncherCommandBar({
                 flexShrink={0}
               />
             )}
-            {/* SPIKE #2876 ST-4 (DR-1) — transient listening indicator. */}
+            {/* #2877 ST-5 (DR-7) — FROZEN static listening dot (no pulse/loop). */}
             {listening && (
               <Box
                 as="span"
@@ -213,6 +332,52 @@ export function LauncherCommandBar({
         }
         endElement={
           <Box display="flex" alignItems="center" height="100%">
+            {/* #2877 ST-5 (DR-7) — visible `Listening` chip + Stop control, before
+                the existing hint chip / divider / `—` minimize (which stays LAST). */}
+            {listening && (
+              <Box
+                as="span"
+                data-testid="launcher-command-listening-chip"
+                display="block"
+                height="24px"
+                lineHeight="24px"
+                px="8px"
+                borderRadius="4px"
+                bg="accent.subtle"
+                color="fg.default"
+                fontFamily="var(--font-primary)"
+                fontSize="12px"
+                whiteSpace="nowrap"
+                flexShrink={0}
+              >
+                Listening
+              </Box>
+            )}
+            {listening && onStopListening && (
+              <Box
+                as="button"
+                data-testid="launcher-command-listening-stop"
+                aria-label="Stop listening"
+                onClick={onStopListening}
+                onMouseDown={(e) => e.preventDefault()}
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                height="24px"
+                width="24px"
+                ml="6px"
+                borderRadius="4px"
+                color="var(--text-secondary)"
+                cursor="pointer"
+                flexShrink={0}
+                _hover={{ color: 'accent.default' }}
+                css={{
+                  '&:focus-visible': { outline: '2px solid var(--accent-primary)', outlineOffset: '2px' },
+                }}
+              >
+                <StopGlyph />
+              </Box>
+            )}
             {showHint && (
               <Box
                 as="span"
@@ -266,13 +431,14 @@ export function LauncherCommandBar({
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
           aria-describedby={showHint ? ariaDescribedBy : undefined}
+          aria-keyshortcuts={voiceEnabled ? 'Control+Space' : undefined}
           placeholder={busy ? 'Fredo is replying…' : listening ? 'Listening…' : 'search or command'}
           readOnly={busy}
           value={query}
           onChange={handleChange}
           onFocus={onFocus}
           onBlur={onBlur}
-          paddingEnd={showHint ? HINT_PADDING_END : undefined}
+          paddingEnd={paddingEnd}
           bg="var(--card-bg)"
           border="1px solid"
           borderColor={listening ? tint('var(--accent-primary)', 30) : 'var(--border-color)'}
@@ -318,6 +484,63 @@ export function LauncherCommandBar({
           {hintLabel}
         </Box>
       )}
+      {/* #2877 ST-5 (DR-7/DR-11) — below the bar: the hearing-nothing hint, or an
+          inline `role="alert"` carrying the curated start-failure copy. Mounted
+          only while it has something to say (a live region that is empty when
+          idle is not useful here; the dedicated announcers below are persistent). */}
+      {statusMessage && (
+        <Box
+          data-testid="launcher-command-listening-status"
+          role={isAlert ? 'alert' : undefined}
+          aria-live={isAlert ? 'assertive' : 'polite'}
+          mt="2"
+          maxWidth="560px"
+          textAlign="center"
+          fontFamily="var(--font-primary)"
+          fontSize="12px"
+          color={isAlert ? 'var(--status-error)' : 'var(--text-subtle)'}
+        >
+          {statusMessage}
+        </Box>
+      )}
+      {/* #2877 ST-5 (DR-10) — persistent polite live regions (always mounted, so
+          AT registers them). Start/stop transitions only; partials never write
+          the transcript region. */}
+      <Box
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="voice-listening-announcer"
+        position="absolute"
+        width="1px"
+        height="1px"
+        padding="0"
+        margin="-1px"
+        overflow="hidden"
+        clipPath="inset(50%)"
+        whiteSpace="nowrap"
+        borderWidth="0"
+      >
+        {listenAnnouncement}
+      </Box>
+      <Box
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-label="Transcribed text"
+        data-testid="voice-transcript-announcer"
+        position="absolute"
+        width="1px"
+        height="1px"
+        padding="0"
+        margin="-1px"
+        overflow="hidden"
+        clipPath="inset(50%)"
+        whiteSpace="nowrap"
+        borderWidth="0"
+      >
+        {finalTranscript}
+      </Box>
     </Box>
   );
 }
