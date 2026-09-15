@@ -137,6 +137,10 @@ To place files manually, drop the correctly-sized GGUFs under `<models_dir>/gemm
 
 Yes. Companion inference is served by a managed **`llama-server`** child process, launched from a generated launch config once setup is complete. Fredo health-checks the server before chatting, streams tokens over the server's HTTP API, and stops the process on exit so no orphan survives. The legacy in-process engine — and its `llama-cpp-2` dependency — is retired.
 
+### Does Fredo support voice input?
+
+Yes — an **opt-in, on-device** voice-input feature (**Settings → Companion → Voice input**; default off). Speech is transcribed locally by a bundled `sherpa-onnx` streaming engine and **no audio or transcript ever leaves your machine** — the only network use is the one-time model download (four files, ~72.7 MB) through the same download + SHA-256 verify path as the companion models. The **Voice input model** step lives in the Companion setup wizard and is **optional and non-gating**: installing or removing it never blocks companion chat. **Ctrl+Space** starts/stops listening contextually — with Fredo away from his seat it dictates to Fredo, with the launcher bar focused it dictates into the bar, otherwise it opens/focuses the launcher. Routing a finished transcript into the bar / Fredo chat is the follow-up surface spec.
+
 ---
 
 ## Architecture

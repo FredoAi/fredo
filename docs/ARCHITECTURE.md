@@ -198,6 +198,13 @@ src-tauri/src/
     +-- companion/              — Shared companion runtime helpers (Spec #2857)
     |   +-- resolver.rs         — `llama-server` executable resolution (setting → PATH → winget shim)
     |   +-- models.rs           — required model-file manifest (pinned names/sizes/SHA-256) + on-disk probe
+    +-- voice/                  — Local on-device speech-to-text (Spec #2877): engine + capture + one session
+    |   +-- manifest.rs         — pinned sherpa-onnx model manifest (4 files / 72,654,782 B / SHA-256)
+    |   +-- capture.rs          — native cpal (WASAPI) input stream → mono-mix + resample → 16 kHz chunks
+    |   +-- engine.rs           — lazily created sherpa-onnx OnlineRecognizer + SHA-256 content gate
+    |   +-- session.rs          — single app-global session; the worker owns the engine and the cpal stream
+    |   +-- state.rs            — `Stt*` IPC wire types (camelCase)
+    |   +-- commands.rs         — stt_check_model, stt_list_devices, stt_start, stt_stop, stt_cancel, stt_status
     +-- rtdb/                   — RTDB row store — the production event pipeline
     |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
     |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables
@@ -776,6 +783,10 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `download_model` | setup | Download the three required model files with per-file progress, skip-present, HTTP `Range` resume, and streaming SHA-256 verification |
 | `check_companion_readiness` | setup | Report Companion prerequisites (`llama-server` availability + required model files) and overall readiness |
 | `install_llama_cpp` | setup | Install llama.cpp via `winget` off the UI thread; returns a structured result (no launch, no model download) |
+| `stt_check_model` | voice | Report per-file STT model state (size-gated) |
+| `stt_list_devices` | voice | Enumerate cpal input devices, mark the system default, and report the persisted selection |
+| `stt_start` / `stt_stop` / `stt_cancel` / `stt_status` | voice | Drive the single app-global local STT session (typed `SttErrorCode` on every failure; a duplicate start is an idempotent `alreadyListening`) |
+| `download_stt_model` | setup | Acquire the four-file sherpa-onnx STT model through the shared streamed download + SHA-256 verify engine |
 | `generate_llama_server_config` | llm_server | Build the `llama-server` launch config from persisted settings and materialize the `.bat` |
 | `launch_llama_server` | llm_server | Resolve/spawn the managed `llama-server`, poll `/health` until ready (bounded), and record it |
 | `stop_llama_server` | llm_server | Stop the managed server and clear its state |

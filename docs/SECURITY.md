@@ -54,6 +54,23 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 ---
 
+## Voice Input (local STT)
+
+Voice input (Spec #2877) is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`) and speech-to-text runs in-process via a statically linked `sherpa-onnx` `OnlineRecognizer` reading a pinned local model directory. Audio and transcripts never traverse the network: the **only** network-capable component of the feature is model acquisition (`download_stt_model` → the shared download + SHA-256 verify engine).
+
+**Protections:**
+- No audio or audio-derived payload is transmitted; the capture/decode path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
+- Voice is **opt-in** (`Fredo_companion_voice_enabled`, default `false`) — nothing is captured before the user enables it
+- Capture is always visibly indicated for the whole session (the launcher cue or the companion listening bubble), so audio is never captured without a visible active indicator
+- The microphone is released when capture stops or voice is disabled
+- The native WASAPI path needs no CSP widening and no new Tauri capability
+
+**Limitations:**
+- Any process on the same machine can access the microphone under the same OS user — the OS owns the microphone privacy/permission boundary
+- Model files are downloaded from a pinned upstream revision over HTTPS (the same trust model as the companion GGUF set)
+
+---
+
 ## Tauri Capabilities
 
 Tauri v2 uses a capability system (`capabilities/default.json`) to declare the minimum set of permissions the webview requires. Fredo follows least-privilege:

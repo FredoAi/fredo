@@ -45,13 +45,21 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-158: audit_accepts_pass_with_confirmed_ac_violation
+- **activation_date:** 2026-09-15
+- **observed:** #2877 round 1 — the tester's verdict was `Verdict: PASS` (18/22 rows) with 4 named-blocker UNVERIFIED rows and ONE confirmed edge defect: a duplicate start cleared the live capture indicator while the microphone kept recording (a reachable violation of the plan's continuous privacy invariant and an acceptance criterion). The QA Plan's own pass/fail criteria said "an edge case FAILing does not erase a primary PASS", so the PASS token mechanically cleared the testing-exit gate; only the SI's independent record-anchored judgment escalated it to a rework, which fixed it and re-verified PASS live in round 2.
+- **target_failure:** a tester PASS verdict that carries a confirmed, reachable violation of a declared acceptance criterion (especially a continuous/privacy "never do X while Y" invariant) is accepted because the plan's edge-tolerance rule or the verdict token lets it through, and the defect ships.
+- **guardrail:** The audit judges the evidence against the acceptance criteria, not the plan's edge-tolerance concession or the verdict token. A confirmed, reachable violation of a declared AC — particularly a continuous invariant ("never capture/show X without Y") — is a restart/rework even when the overall verdict is PASS and the named-blocker rows are legitimate. Do not conflate an acceptable environment-limited partial (a named blocker plus a unit/CI pin for an undrivable host lever, which ships documented) with a fixable product defect carrying a live repro (which loops).
+- **home:** playbooks/self-improver.md (audit judgment) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-15, #2877) — the PASS-with-confirmed-AC-violation was escalated to a rework; the fix landed and round 2 re-verified the invariant live on both origins, so the defect did not ship.
+
 ### G-157: on_the_go_improvement
 - **activation_date:** 2026-09-15
 - **observed:** #2877 round 1
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** QA-seeded test suites were silently skipped: parse_feature_names() only matched a QA line that STARTED with '**Feature tests:**', so when the QA Expert wrote the declaration inside the QA policy blockquote ('> **Feature tests:** voice-input, companion, llama-setup') the planning -> implementation transition persisted ZERO suites and printed no warning. Hardened pipeline-state.rs to strip leading '>'/whitespace before matching, documented in state-machine.md, and pinned with a blockquoted regression in test-scripts.ps1 (100/100). Suites for #2877 were then persisted manually via tests-commit.
 - **home:** references.md (G-157)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-15, #2877) — the rework re-entry (`testing -> implementation`) re-ran `persist_tests` against the blockquoted declaration and persisted all three suites with no manual step; the blockquoted regression is green in test-scripts.ps1 (100/100).
 
 
 ### G-156: on_the_go_improvement
@@ -60,7 +68,8 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** A known-flaky unrelated CI test has no in-sandbox recovery at merge time: pr_merge_guard blocks any non-exempt failing check (only sub-10s runner-provisioning failures are exempt) and the sandbox denies gh run rerun to the SI and tester, so FredoCompanion.seatTeleport (already documented in references.md as a re-run-passes flake) hard-blocked testing to audit despite rust-validate passing and the flake passing locally twice. Recovery applied: commit a real spec artifact (the references.md STT candidate-research section) to the spec branch to re-trigger the workflow on the same tree, which then passed. Proposed to the human: allowlist a scoped gh run rerun for the SI, or add a bounded one-shot flake retry to pr_merge_guard.
 - **home:** references.md (G-156)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-15, #2877) — the flake recurred on BOTH spec-branch tips: `ui-validate` failed first on the known seat-teleport assertion and then again with the seat-teleport assertion PLUS a cross-test unhandled-rejection from the companion harness. The documented re-trigger remedy (a real spec-branch sync commit on the same tree) worked and `ui-validate` passed in 1m54s on the new SHA, but the merge gate required the workaround twice and `gh run rerun` remains denied. The durable fix (a bounded one-shot flake retry in pr_merge_guard, or an allowlisted scoped rerun for the SI) is still unapplied.
+
 
 ### G-155: on_the_go_improvement
 - **activation_date:** 2026-09-14
@@ -107,6 +116,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** At convergence the SI MUST map EVERY QA REQ and UI/UX design requirement to an owning `- [ ]` sub-task line (with declared files), not only the backlog acceptance criteria — a requirement with no owning line is a plan defect returned to the Architect in the same pass. The Architect's decompose step MUST enumerate the QA REQ and UI/UX DR sets alongside the EARS/AC set.
 - **home:** playbooks/self-improver.md (plan review) + playbooks/software-architect.md (decompose) + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-13, #2872) — the convergence pass mapped EVERY QA REQ/NFR and every UI/UX design requirement to the single owning sub-task line (or a tester/QA-owned verification artifact) before `## Convergence: agreed`, and no requirement surfaced unowned at testing. (First observed #2871; caught pre-testing and folded into the queued sub-task.)
+- **re-validated:** 2026-09-15, #2877 — the convergence pass mapped every QA Plan REQ (REQ-1.1…REQ-NF6), every UI/UX design requirement (DR-1…DR-12) and every EARS clause (R-1.1…R-5.4) to an owning sub-task line via explicit binding tables; the Architect's initial "1:1" claim was inaccurate and the SI returned it for an explicit QA-REQ/EARS → ST mapping before convergence. The F-38 rework kept the mapping intact and no requirement surfaced unowned at testing.
 
 ### G-149: cross_slice_surface_extraction_strands_window_gesture
 - **activation_date:** 2026-09-13
@@ -131,6 +141,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** For any UI spec, developer verification MUST include the shipped Tauri webview build (`pnpm --filter @fredo/tauri build:webview`) in addition to the `@fredo/ui` checks; where feasible also boot-check the live dev server. In `apps/ui` production source use RELATIVE imports for shared modules — the `@/` alias resolves only under the `apps/ui` configs. Adding the webview build to `.github/workflows/validate.yml` + CONTRIBUTING.md is proposed to the human (human-owned infra).
 - **home:** playbooks/developer.md (verification) + playbooks/self-improver.md (dispatch) + references.md (this record) + proposed human-owned CI addition
 - **effectiveness:** Confirmed (2026-09-13, #2870) — the relative-import fix landed the app boot; every later round's verification ran `pnpm --filter @fredo/tauri build:webview` green and rounds 3-4 booted and passed live. Re-validated (2026-09-13, #2871) — every round's developer verification ran the shipped Tauri webview build green and the app booted/served at each tip; no webview build failure. Re-validated (2026-09-13, #2872) — the developer's round-1 receipt included the shipped Tauri webview build green (2551 modules) alongside the `@fredo/ui` build/test:run gates, and the app booted and served the tested tip; no webview build failure.
+- **re-validated:** 2026-09-15, #2877 — every developer round ran the shipped Tauri webview build green alongside `cargo check/test/clippy --locked` and the `@fredo/ui` build, and the SI re-ran it at the merged tip (2555 modules); the app built and served the tested tip via dev-env on `spec/2877`. No module-resolution or boot failure.
 
 ### G-146: chakra_numeric_size_prop_resolves_to_token
 - **activation_date:** 2026-09-13
@@ -203,6 +214,8 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** At planning, the QA Expert MUST read the durable suites for the feature domains in scope and RE-RECONCILE any prior resolution the plan supersedes (a residual brought in scope, an "out of scope" annotation, a frozen contract that changed) — append an extension row/note in the same pass, preserving all historical PASS/FAIL records (never delete or rewrite them). The orchestration/plan review verifies the reconciliation is recorded.
 - **home:** playbooks/qa-expert.md (suite reconciliation) + playbooks/self-improver.md (plan review) + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-12, #2864 — the stale resolution was surfaced and reconciled). Re-validated (2026-09-12, #2865) — the QA Expert reconciled theming E-12/F-14, companion F-45 and settings F-7 as superseded and added the #2865 extension rows across all four domains in the planning pass; the tester ran against the reconciled suites with no stale-expectation failure. Re-validated (2026-09-12, #2868) — the settings/launcher/desktop-chrome/theming/window-manager/companion suites all pinned the retired modal-or-gear container; the QA Expert superseded those rows with #2868 extension rows in the SAME planning pass (historical PASS/FAIL preserved, none rewritten) and the tester executed the reconciled suites with no stale-expectation failure. Re-validated (2026-09-13, #2870) — the QA Expert reconciled the companion/launcher/window-manager/desktop-shell suites whose rows pinned the removed `!companionPresent` render gate (the #2853 hide-while-visible model superseded), appended #2870 extension rows (F-59..F-68, S-20..S-23, R-33..R-36, launcher S-14/R-35/R-36, window-manager S-12, desktop-shell S-9/R-13) with all historical PASS/FAIL preserved, and the tester executed the reconciled suites with no stale-expectation failure. Re-validated (2026-09-13, #2871) — the QA Expert reconciled the launcher/companion/llama-setup suites (the "command bar is a grid filter only" resolution superseded for the ACTIVE-companion state) and appended #2871 extension rows with history preserved; the tester executed the reconciled suites with no stale-expectation failure. Re-validated (2026-09-13, #2872) — the QA Expert reconciled the `desktop-chrome` suite in the planning pass: F-17/S-8 (the shipped symmetric `top:16/right:16` record, with the `|diff| ≤ 6px` tolerance that had let it pass against the 20/24 intent) was SUPERSEDED by #2872 extension rows F-25..F-29 / S-9 / R-22..R-23 / E-19..E-20 asserting the exact asymmetric 20/24, all historical PASS records preserved; the tester executed the reconciled suite with no stale-expectation failure.
+
+- **re-validated:** 2026-09-15, #2877 — the QA Expert appended the #2877 extension rows and supersession notes to the `voice-input` / `llama-setup` / `companion` durable suites in the planning pass (history preserved), the tester refreshed the F-38 row to PASS plus a round-2 log, and no stale prior resolution contradicted the plan. No stale-expectation failure surfaced. (The initial `**Feature tests:**` declaration was silently skipped because it sat inside the QA policy blockquote — see G-157 — not a G-136 issue.)
 
 ### G-137: accent_filled_control_thumb_must_contrast_track
 - **activation_date:** 2026-09-12
@@ -333,6 +346,8 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 - **re-validated:** 2026-09-12, #2865 — the wizard's continuous clauses (WHILE a step is working, never a static screen; WHILE the first probe is checking, the row stays legible) each owned an explicit checklist line (R-2.1/R-2.5 → ST-2); the live round observed active indicators + changing narration in every working state. No continuous-requirement gap surfaced.
 - **re-validated:** 2026-09-12, #2868 — the two continuous clauses ("WHILE a Settings window is open, re-invoking focuses the existing window and never duplicates"; "WHILE the companion is not ready or the first probe is in flight, the Companion section renders only the setup wizard") each owned a dedicated capsule with an executable assertion (window dedup/focus/restore contract test; companion-gate shell test), and the live round observed both behaviors. No continuous-requirement gap surfaced.
+
+- **re-validated:** 2026-09-15, #2877 — the plan's continuous `WHILE` clauses (the visible active-capture indicator held for the whole session; no idle engine/microphone while not listening; opt-in default) each owned explicit checklist lines (ST-5/ST-6/ST-9). The plan-level mapping held — the round-1 F-38 defect was a fix break in the owned line (a duplicate start cleared the indicator), not an unowned continuous requirement, and the rework restored the invariant live. No continuous-requirement gap surfaced.
 
 ### G-124: per_webview_transient_state_ownership_unstated
 - **activation_date:** 2026-09-10
