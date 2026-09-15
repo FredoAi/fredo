@@ -24,6 +24,7 @@ import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
+import type { FredoFeatureClass } from '@/shared/classes/FredoFeatureClass';
 import { HEARING_NOTHING_COPY, HEARING_NOTHING_MS } from '../LauncherCommandBar';
 import {
   LauncherShell,
@@ -45,10 +46,24 @@ const companionMock = vi.hoisted(() => ({
   current: {
     state: { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
     voiceEnabled: true,
+    // #2878 ST-1 — the persisted autosend preference the finalize effect consumes
+    // (DEFAULT false).
+    voiceAutosend: false,
   },
 }));
 vi.mock('@/shared/contexts/CompanionContext', () => ({
   useCompanion: () => companionMock.current,
+}));
+
+// #2878 ST-1 — the ONE dispatch path (`askActiveCompanion`) is spied so the
+// commit contract (launch vs send vs no-op) is observable without mounting the
+// real entity. `CompanionEntity` is stubbed (the seat render is irrelevant here).
+const companionDispatchMock = vi.hoisted(() => ({
+  askActiveCompanion: vi.fn((_text: string) => true),
+}));
+vi.mock('@/shared/components/companion', () => ({
+  CompanionEntity: () => null,
+  askActiveCompanion: companionDispatchMock.askActiveCompanion,
 }));
 
 type Handler = (payload: unknown) => void;
@@ -81,7 +96,10 @@ beforeEach(() => {
   companionMock.current = {
     state: { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
     voiceEnabled: true,
+    voiceAutosend: false,
   };
+  companionDispatchMock.askActiveCompanion.mockReset();
+  companionDispatchMock.askActiveCompanion.mockReturnValue(true);
   vi.stubGlobal(
     'matchMedia',
     vi.fn().mockImplementation((query: string) => ({
@@ -603,5 +621,341 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
       });
     });
     expect(announcer).toHaveTextContent('hello world');
+  });
+});
+
+// ── #2878 ST-1 — ONE commit path (Enter) + autosend-on-finalize ──────────────
+
+describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
+  const FEATURE = {
+    id: 'mission-monitor',
+    name: 'Mission Monitor',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const renderShell = (features: FredoFeatureClass[] = [FEATURE]) => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+
+  const type = (value: string) => {
+    act(() => {
+      fireEvent.change(input(), { target: { value } });
+    });
+  };
+
+  const pressEnter = () => {
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Enter' });
+    });
+  };
+
+  const emitListening = (listening: boolean, origin: string | null) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const emitPartial = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: false,
+        latencyMs: 1,
+      });
+    });
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  // ── Enter contract (unchanged, extended) ───────────────────────────────────
+
+  it('Enter: an exact full-name match launches and NEVER sends (launch wins)', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell();
+
+    type('  mission monitor  ');
+    pressEnter();
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('mission-monitor');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('Enter: a non-match with an active companion sends through askActiveCompanion and clears the bar', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell();
+
+    type('hello there');
+    pressEnter();
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('hello there');
+    expect(input().value).toBe('');
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+
+  it('Enter: a non-match with NO active companion never sends (today’s launch path)', () => {
+    renderShell();
+
+    type('hello there');
+    pressEnter();
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('Enter: busy is a GLOBAL no-op (no launch, no send)', () => {
+    seatCompanion();
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: true,
+    };
+    const onOpenFeature = renderShell();
+
+    type('hello there');
+    pressEnter();
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+
+  // ── Autosend finalize (R-2.5) ──────────────────────────────────────────────
+
+  it('autosend ON: finalizing an exact tile name launches once (launch wins)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    const onOpenFeature = renderShell();
+
+    emitListening(true, 'launcher');
+    emitFinal('Mission Monitor');
+    emitListening(false, 'launcher');
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('autosend ON: finalizing a non-match with an active companion sends once and clears the bar', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    emitListening(true, 'launcher');
+    emitFinal('hello there');
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('hello there');
+    expect(input().value).toBe('');
+  });
+
+  it('autosend OFF: finalizing leaves the transcript in the bar and never dispatches (R-2.6)', () => {
+    seatCompanion();
+    renderShell();
+
+    emitListening(true, 'launcher');
+    emitFinal('hello there');
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('hello there');
+  });
+
+  it('autosend ON while busy: the finalize is a silent hard drop (no send, no launch, text kept)', () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: true,
+    };
+    companionMock.current.voiceAutosend = true;
+    const onOpenFeature = renderShell();
+
+    emitListening(true, 'launcher');
+    emitFinal('hello there');
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('hello there');
+  });
+
+  it('autosend ON: a final landing just after the state event still commits (liveText dep)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    emitListening(true, 'launcher');
+    // The state event lands FIRST with no text...
+    emitListening(false, 'launcher');
+    // ...then the final transcript arrives (synthetic-lever ordering).
+    emitFinal('late text');
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('late text');
+  });
+
+  it('autosend ON: commits exactly once per session (one-shot guard)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    emitListening(true, 'launcher');
+    emitFinal('once');
+    emitListening(false, 'launcher');
+    // A duplicate end-of-session state event and a stray final never re-dispatch.
+    emitListening(false, 'launcher');
+    emitFinal('once more');
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('once');
+  });
+
+  // ── Cancel suppression + restore (R-3.1/R-3.2) ─────────────────────────────
+
+  it('Escape cancels: suppresses autosend and restores the pre-session bar text', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    type('draft I typed');
+    emitListening(true, 'launcher');
+    emitPartial('hello');
+    expect(input().value).toBe('hello');
+
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Escape' });
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('draft I typed');
+  });
+
+  it('the Ctrl+Space launcher-cancel cascade suppresses autosend and restores the bar', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    type('draft I typed');
+    emitListening(true, 'launcher');
+    emitPartial('hello');
+
+    act(() => {
+      input().focus();
+      fireEvent.focus(input());
+    });
+    act(() => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('draft I typed');
+  });
+
+  it('the voice-disabled teardown stops the session, restores the bar, and never autosends', async () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    type('draft I typed');
+    emitListening(true, 'launcher');
+    emitPartial('hello');
+
+    companionMock.current.voiceEnabled = false;
+    await act(async () => {
+      // A distinct partial value forces the re-render that runs the teardown effect.
+      emitPartial('hello world', 2);
+      await Promise.resolve();
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('draft I typed');
+  });
+
+  it('an empty finalize restores the pre-session text and never dispatches (R-5.1)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    type('draft I typed');
+    emitListening(true, 'launcher');
+    // The live-text writer replaces the bar at session start...
+    expect(input().value).toBe('');
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('draft I typed');
+  });
+
+  // ── Consecutive sessions (exactly-once per utterance) ──────────────────────
+
+  // ── UX-2 — manual edit during a live segment ───────────────────────────────
+
+  it('UX-2: a manual edit suppresses further partials for the session; a final still appends and the guard resets next session', () => {
+    seatCompanion();
+    renderShell();
+
+    emitListening(true, 'launcher');
+    emitPartial('hello');
+    type('hello there');
+    expect(input().value).toBe('hello there');
+
+    // A further partial is suppressed (the edit is authoritative)...
+    emitPartial('hello world', 2);
+    expect(input().value).toBe('hello there');
+
+    // ...but a finalized segment still appends.
+    emitFinal('hello world', 3);
+    expect(input().value).toBe('hello there hello world');
+
+    emitListening(false, 'launcher');
+    // A new session resets the guard: live partials write again.
+    emitListening(true, 'launcher');
+    emitPartial('fresh', 4);
+    expect(input().value).toBe('fresh');
+  });
+
+  it('each session commits only its own utterance (never the accumulated transcript)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    emitListening(true, 'launcher');
+    emitFinal('first');
+    emitListening(false, 'launcher');
+    emitListening(true, 'launcher');
+    emitFinal('second', 2);
+    emitListening(false, 'launcher');
+
+    const calls = companionDispatchMock.askActiveCompanion.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0]).toBe('first');
+    expect(calls[1][0]).toBe('second');
   });
 });
