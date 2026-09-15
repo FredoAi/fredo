@@ -3193,15 +3193,29 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // both before the label swap. No sub-issues are generated: all
                     // work is tracked directly on the plan issue + the spec branch.
                     if assemble_impl_plan(issue, &a.actor)?.is_some() {
-                        let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
-                        for feat in parse_feature_names(&a2a) {
-                            match persist_tests(&feat) {
-                                Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
-                                // A declared-but-unseeded suite must surface, not vanish:
-                                // the QA Expert seeds the files, and a silent skip here hides
-                                // a brief/QA gap until the tester finds it mid-round.
-                                Err(e) => { notes.push(format!("tests for '{}' NOT persisted: {}", feat, e)); }
+                        // Persist the QA-seeded suites to main ONLY on the FIRST entry
+                        // into implementation. On a rework (`testing → implementation`)
+                        // or rescope (`implementation → planning → implementation`)
+                        // re-entry the root checkout may still sit on a spec branch whose
+                        // `.opencode/tests/**` copies predate the tester's later suite
+                        // extensions; re-running `persist_tests` from that stale tree
+                        // REVERTS main's suite guidance (the G-038 hazard; observed on
+                        // #2878's round 1→2 re-entry, where it silently dropped 107 lines
+                        // of tester-extended rows). The tester owns suite persistence
+                        // during testing, so a re-entry has nothing new to add.
+                        if prior_phase_entries(issue, "implementation") == 0 {
+                            let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
+                            for feat in parse_feature_names(&a2a) {
+                                match persist_tests(&feat) {
+                                    Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
+                                    // A declared-but-unseeded suite must surface, not vanish:
+                                    // the QA Expert seeds the files, and a silent skip here hides
+                                    // a brief/QA gap until the tester finds it mid-round.
+                                    Err(e) => { notes.push(format!("tests for '{}' NOT persisted: {}", feat, e)); }
+                                }
                             }
+                        } else {
+                            notes.push("test-suite persistence skipped (rework re-entry — suites already on main)".to_string());
                         }
                     }
                     if let Some(n) = ensure_spec_branch(issue)? { notes.push(n); }

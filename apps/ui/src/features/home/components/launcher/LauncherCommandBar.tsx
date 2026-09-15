@@ -49,10 +49,18 @@
  *     transitions ONLY) and `voice-transcript-announcer` (the newest FINAL
  *     segment only; partials NEVER announce).
  *
+ * #2878 ST-2 — the visible cancel/discard affordance (`launcher-command-listening-cancel`,
+ * `aria-label="Cancel dictation"`) sits before the Stop control while listening and
+ * calls `cancel()` (`stt_cancel`): Escape already discards, this exposes the same
+ * gesture to a mouse user. Neither termination launches/sends by itself — the Stop
+ * control stays the FINALIZE/commit control (`stt_stop`, the autosend trigger), and
+ * only the host's commit step dispatches. `onUserEdit` reports the first manual
+ * keystroke during a live segment so the host can stop partial writes (UX-2).
+ *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
  * today's rendering (`chatAvailable=false` / `enterMode='launch'` / no
- * `hintLabel` / `busy=false` / `listening=false` / no stop handler / no error /
- * no final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no
+ * `hintLabel` / `busy=false` / `listening=false` / no stop or cancel handler / no
+ * error / no final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no
  * reserved padding, and `aria-busy` is omitted (not rendered as `"false"`), so
  * the inactive bar is byte-identical to before this change.
  *
@@ -106,8 +114,22 @@ export interface LauncherCommandBarProps {
    * (inactive-companion invariance).
    */
   listening?: boolean;
-  /** DR-7: stops the live session (the bar's Stop control). */
+  /** DR-7: stops the live session (the bar's Stop control). This is the
+   *  FINALIZE/commit control (`stt_stop`) — never re-point it at `stt_cancel`. */
   onStopListening?: () => void;
+  /**
+   * #2878 ST-2 (AC3 resolution) — the visible cancel/discard affordance for a
+   * mouse user. It calls `cancel()` (`stt_cancel`: discard the in-flight
+   * partial) and never launches/sends; Escape already discards. Optional and
+   * rendered only while `listening`, so the inactive bar is byte-identical.
+   */
+  onCancelListening?: () => void;
+  /**
+   * #2878 ST-2 (UX-2) — the user manually edited the bar during a live segment.
+   * The host stops further *partial* writes for the session (finals still
+   * append). Reported only while `listening`; optional.
+   */
+  onUserEdit?: () => void;
   /**
    * DR-7/DR-11: curated `role="alert"` copy for a failed `stt_start`, or null.
    * The raw backend detail is never the primary sentence.
@@ -139,9 +161,28 @@ const HINT_CHIP_MAX_WIDTH_PX = 184;
 /** Static `Listening` chip width (12px text) + the Stop control's footprint.
  *  CSS unit strings only (G-146 → exact pixels). */
 const LISTENING_CHIP_WIDTH_PX = 72;
+/** #2878 ST-2 — the cancel/discard control's gutter (24px + `ml="6px"`). */
+const CANCEL_GUTTER_PX = 30;
 const STOP_GUTTER_PX = 30;
 /** The `—` MINIMIZE gutter: left margin/border/padding + the 12px glyph. */
 const MINIMIZE_GUTTER_PX = 44;
+
+/**
+ * #2878 ST-2 — the reserved right gutter (px) for every end-slot affordance that
+ * is present, so the typed text never renders underneath them. Exported as a
+ * pure helper so the "zero reserved padding when nothing shows" invariance is
+ * unit-pinned. `undefined` = omit the padding entirely (byte-identical idle bar).
+ */
+export function computeEndPaddingPx(options: {
+  showHint: boolean;
+  listening: boolean;
+}): number | undefined {
+  const px =
+    (options.showHint ? HINT_CHIP_MAX_WIDTH_PX : 0) +
+    (options.listening ? LISTENING_CHIP_WIDTH_PX + CANCEL_GUTTER_PX + STOP_GUTTER_PX : 0) +
+    (options.showHint || options.listening ? MINIMIZE_GUTTER_PX : 0);
+  return px > 0 ? px : undefined;
+}
 
 /** DR-7 — the "we haven't heard anything yet" hint, after this silent stretch. */
 export const HEARING_NOTHING_MS = 6000;
@@ -185,6 +226,15 @@ function MinusGlyph() {
   );
 }
 
+/** `×` discard glyph for the listening cancel control (currentColor, token-native). */
+function CancelGlyph() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+      <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /** Filled square Stop glyph for the listening Stop control (currentColor). */
 function StopGlyph() {
   return (
@@ -213,13 +263,22 @@ export function LauncherCommandBar({
   busy = false,
   listening = false,
   onStopListening,
+  onCancelListening,
+  onUserEdit,
   voiceErrorMessage,
   finalTranscript = '',
   voiceEnabled = false,
   ariaLabel,
   ariaDescribedBy,
 }: LauncherCommandBarProps) {
-  const handleChange = (e: ChangeEvent<HTMLInputElement>) => onQueryChange(e.target.value);
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    // #2878 ST-2 (UX-2) — a user keystroke during a live segment makes the edit
+    // authoritative: the host stops further partial writes for the session.
+    // `onChange` fires only for real user input (never for a programmatic value
+    // update), so this is exactly the manual-edit signal.
+    if (listening) onUserEdit?.();
+    onQueryChange(e.target.value);
+  };
 
   // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
   // Label-driven visibility (#2871 ST-3r state 5): the host omits the label when
@@ -231,15 +290,12 @@ export function LauncherCommandBar({
     [chatAvailable, hintLabel],
   );
 
-  // #2877 ST-5 (DR-7): reserve the right gutter for every end-slot affordance
-  // that is present, so the typed text never renders underneath them. With only
-  // the hint chip this is `184 + 44 = 228px` — byte-identical to the pre-ST-5
-  // reserved padding. Nothing present ⇒ omitted entirely.
-  const endPaddingPx =
-    (showHint ? HINT_CHIP_MAX_WIDTH_PX : 0) +
-    (listening ? LISTENING_CHIP_WIDTH_PX + STOP_GUTTER_PX : 0) +
-    (showHint || listening ? MINIMIZE_GUTTER_PX : 0);
-  const paddingEnd = endPaddingPx > 0 ? `${endPaddingPx}px` : undefined;
+  // #2877 ST-5 (DR-7) / #2878 ST-2: reserve the right gutter for every end-slot
+  // affordance that is present, so the typed text never renders underneath them.
+  // With only the hint chip this is `184 + 44 = 228px` — byte-identical to the
+  // pre-ST-5 reserved padding. Nothing present ⇒ omitted entirely.
+  const endPaddingPx = computeEndPaddingPx({ showHint, listening });
+  const paddingEnd = endPaddingPx === undefined ? undefined : `${endPaddingPx}px`;
 
   // #2877 ST-5 (DR-7): the hearing-nothing hint — shown only after
   // `HEARING_NOTHING_MS` of a live session with an empty bar; it clears the
@@ -351,6 +407,35 @@ export function LauncherCommandBar({
                 flexShrink={0}
               >
                 Listening
+              </Box>
+            )}
+            {/* #2878 ST-2 (AC3 resolution) — the visible CANCEL/DISCARD affordance
+                (`stt_cancel`): Escape already discards; this exposes the same
+                gesture to a mouse user. It never launches/sends — only the commit
+                step does. The Stop control below stays the FINALIZE/commit path. */}
+            {listening && onCancelListening && (
+              <Box
+                as="button"
+                data-testid="launcher-command-listening-cancel"
+                aria-label="Cancel dictation"
+                onClick={onCancelListening}
+                onMouseDown={(e) => e.preventDefault()}
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                height="24px"
+                width="24px"
+                ml="6px"
+                borderRadius="4px"
+                color="var(--text-secondary)"
+                cursor="pointer"
+                flexShrink={0}
+                _hover={{ color: 'var(--status-error)' }}
+                css={{
+                  '&:focus-visible': { outline: '2px solid var(--accent-primary)', outlineOffset: '2px' },
+                }}
+              >
+                <CancelGlyph />
               </Box>
             )}
             {listening && onStopListening && (

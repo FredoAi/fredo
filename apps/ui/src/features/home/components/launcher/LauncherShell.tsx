@@ -69,6 +69,14 @@ export interface LauncherShellProps {
 const clampIndex = (value: number, len: number): number =>
   Math.min(Math.max(0, value), len - 1);
 
+/** Space-join two bar-text fragments without a duplicate/trailing space (the
+ *  same rule `useVoiceDictation` uses, so the bar's live text matches it). */
+const joinBarText = (lead: string, tail: string): string => {
+  if (!lead) return tail;
+  if (!tail) return lead;
+  return `${lead} ${tail}`;
+};
+
 /** The command-bar `role="searchbox"` input is the grid-navigation focus anchor. */
 const SEARCHBOX_SELECTOR = 'input[role="searchbox"]';
 const NOTCH_SELECTOR = '[role="button"][aria-label="Fredo launcher"]';
@@ -200,7 +208,7 @@ const DESKTOP_TEXTURE_CSS = {
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
-  const { state: companion, voiceEnabled } = useCompanion();
+  const { state: companion, voiceEnabled, voiceAutosend } = useCompanion();
 
   // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
   // band (the wrapper below owns the size + `mb="4"`), so the command bar's
@@ -239,6 +247,38 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const companionAwayRef = useRef(companionAway);
   const listeningRef = useRef(voice.listening);
   const voiceEnabledRef = useRef(voiceEnabled);
+
+  // ── Spec #2878 ST-1 — commit-path support refs ─────────────────────────────
+  // All are mutable refs (never state) so they can be read/written synchronously
+  // inside effects in the SAME commit (a one-render-stale `query` read would
+  // commit the previous utterance's text). Deps stay primitives (AGENTS.md #523).
+  //
+  // `barTextRef` mirrors the controlled bar query synchronously — the live-text
+  // effect and the finalize effect both run in one commit, so the commit reads
+  // the text the live-text effect just wrote.
+  const barTextRef = useRef('');
+  // R-3.2 restore target (the bar text present BEFORE the session started).
+  const preSessionTextRef = useRef('');
+  // The hook accumulates `committed` across sessions, so each utterance writes
+  // only its own segments (`committed` minus the baseline captured at start).
+  const sessionBaseCommittedRef = useRef('');
+  const prevCommittedRef = useRef('');
+  // UX-2 — after the first manual keystroke during a live segment, partial
+  // writes stop for the session (finals still append). Reset at session start.
+  const userEditedDuringSessionRef = useRef(false);
+  // R-3.1 — a cancel suppresses the autosend commit and restores the pre-session
+  // text. Reset at session start.
+  const cancelledRef = useRef(false);
+  // The exactly-once witness (R-2.5/4.2) plus the finalize bookkeeping that
+  // survives a final transcript landing just after the `listening:false` event.
+  const autosendFiredRef = useRef(false);
+  const launcherActiveRef = useRef(false);
+  const finalizePendingRef = useRef(false);
+  // ST-1r — the no-produced finalize restores the pre-session bar text ONCE per
+  // session; the finalize effect then STAYS armed for a late final, so the
+  // once-guard is what stops a later manual keystroke being clobbered by a
+  // repeated restore. Reset at session start with the other per-session guards.
+  const restoredAfterSessionRef = useRef(false);
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -474,6 +514,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const handleMinimize = useCallback(() => {
     // #2823: minimize closes a shortcut-opened overlay too (its z must drop).
     closeSurface();
+    // ST-1r-2 — keep the synchronous mirror in lockstep with the controlled
+    // `query`: every synchronous `setQuery` writer updates `barTextRef`, so the
+    // pre-session/commit captures can never read the cleared-away text (the
+    // stale-mirror phantom-dispatch class).
+    barTextRef.current = '';
     setQuery('');
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
@@ -501,6 +546,46 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     launchFeature(feature);
   }, [filteredEntries, safeSelectedIndex, launchFeature]);
 
+  // Spec #2878 ST-1 — the ONE commit path, shared by the Enter handler and the
+  // autosend finalize effect (never a second dispatch route — G-149). The caller
+  // MUST have already guarded `raw.trim() !== ''` (R-5.1); the local empty guard
+  // is defensive only. The order matches today's smart-Enter exactly
+  // (R-2.1→R-2.4): busy → no-op; exact full-name match → launch (launch WINS);
+  // else an active companion → `askActiveCompanion` + clear/collapse; else
+  // today's launch path. The exact match is computed from the commit text (not
+  // the memoized `commandBar.exact`) because the autosend path may commit text
+  // written by the live-text effect in the same commit.
+  const commitBarQuery = useCallback(
+    (raw: string): 'launched' | 'sent' | 'none' => {
+      if (companionBusy) return 'none';
+      const q = raw.trim();
+      if (q === '') return 'none';
+      const lower = q.toLowerCase();
+      const exact =
+        showableFeatures.find((feature) => feature.name.trim().toLowerCase() === lower) ?? null;
+      if (exact) {
+        launchFeature(exact);
+        return 'launched';
+      }
+      if (companionActive) {
+        // Returns true iff this window has an active entity that accepted the
+        // message; `false` falls through to today's launch path so a missing
+        // entity can never swallow the query.
+        if (askActiveCompanion(q)) {
+          setQuery('');
+          barTextRef.current = '';
+          setEngaged(false);
+          return 'sent';
+        }
+        openSelected();
+        return 'launched';
+      }
+      openSelected();
+      return 'launched';
+    },
+    [companionBusy, showableFeatures, companionActive, launchFeature, openSelected],
+  );
+
   const handleSelect = useCallback(
     (index: number) => {
       const feature = filteredEntries[index];
@@ -511,12 +596,24 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   );
 
   const handleQueryChange = useCallback((q: string) => {
+    // #2878 ST-1 — synchronous mirror so the finalize commit reads the text the
+    // live-text effect wrote in this same commit (never a one-render-stale read).
+    barTextRef.current = q;
     setQuery(q);
     // A fresh filter restarts selection at the first tile.
     setSelectedIndex(0);
     // A present query reveals the grid (engaged) even without surface focus.
     if (q.trim() !== '') setEngaged(true);
   }, []);
+
+  // Spec #2878 ST-1 (R-3.1/R-3.2) — the cancel/discard entry point: suppress the
+  // autosend commit for the ended session and restore the pre-session bar text.
+  // Called by the Escape branch, the `launcher-cancel` cascade branch, and the
+  // voice-disabled teardown BEFORE the session is stopped/cancelled.
+  const suppressAutosendAndRestore = useCallback(() => {
+    cancelledRef.current = true;
+    handleQueryChange(preSessionTextRef.current);
+  }, [handleQueryChange]);
 
   // Spec #2877 ST-5 — keep the mounted-once listener's ref mirrors current ((g).7):
   // companion presence, live session state, and the DR-9 voice-enablement gate.
@@ -535,17 +632,76 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // the belt-and-braces second line). Keyed on the enablement flag only; the live
   // state is read from the ref so this never re-fires per session tick.
   useEffect(() => {
-    if (!voiceEnabled && listeningRef.current) void stopVoice();
-  }, [voiceEnabled, stopVoice]);
+    if (!voiceEnabled && listeningRef.current) {
+      // #2878 ST-1 — a voice-disabled teardown is a CANCEL: it suppresses the
+      // autosend commit and restores the pre-session bar text (R-3.1/R-3.2). It
+      // still STOPS the session (the #2877 behavior) and never autosends.
+      suppressAutosendAndRestore();
+      void stopVoice();
+    }
+  }, [voiceEnabled, stopVoice, suppressAutosendAndRestore]);
 
-  // Spec #2877 ST-5 — live transcript → the EXISTING controlled bar input,
-  // LAUNCHER-origin sessions only. Writes `committed + partial` through the one
-  // `handleQueryChange` path (never a second input, never a submit, never grid
-  // navigation). Companion-origin dictation never writes into the bar.
+  // Spec #2878 ST-1 — the launcher session lifecycle: the exactly-once guard's
+  // key (R-2.5/4.2). Declared BEFORE the live-text effect so the pre-session text
+  // and the committed baseline are captured before the transcript writer clears
+  // the bar. Primitive deps only (AGENTS.md #523 — never a raw render/identity).
+  useEffect(() => {
+    const now = voice.listening && voice.origin === 'launcher';
+    const was = launcherActiveRef.current;
+    launcherActiveRef.current = now;
+    if (now && !was) {
+      // Session start: reset every per-session guard and capture the restore
+      // target (R-3.2) + the committed baseline (the hook accumulates
+      // `committed` across sessions, so each utterance prints only its own text).
+      autosendFiredRef.current = false;
+      cancelledRef.current = false;
+      userEditedDuringSessionRef.current = false;
+      finalizePendingRef.current = false;
+      restoredAfterSessionRef.current = false;
+      preSessionTextRef.current = barTextRef.current;
+      sessionBaseCommittedRef.current = voice.committed;
+      prevCommittedRef.current = voice.committed;
+    } else if (was && !now) {
+      // Session end: arm the finalize commit. The commit effect below also runs
+      // on `voice.liveText` so a final transcript landing just after the
+      // `listening:false` state event still commits (the exactly-once witness
+      // lives in `autosendFiredRef`). ST-1r — the commit EVIDENCE is derived in
+      // the finalize effect from the session-scoped `committed` delta, never
+      // from the bar mirror.
+      finalizePendingRef.current = true;
+    }
+  }, [voice.listening, voice.origin, voice.committed]);
+
+  // Spec #2877 ST-5 / #2878 ST-1+ST-2 — live transcript → the EXISTING controlled
+  // bar input, LAUNCHER-origin sessions only. Writes the session-scoped
+  // `committed + partial` through the one `handleQueryChange` path (never a second
+  // input, never a submit, never grid navigation); a companion-origin session
+  // never writes into the bar. Two #2878 guards:
+  //   • R-3.1 — a cancelled session's late transcript never re-writes the bar
+  //     (the restore wins until the next session start).
+  //   • UX-2 — after the first manual keystroke during a live segment, partial
+  //     writes stop for the session; a later FINAL segment still appends.
   useEffect(() => {
     if (voice.origin !== 'launcher') return;
-    handleQueryChange(voice.liveText);
-  }, [voice.origin, voice.liveText, handleQueryChange]);
+    if (cancelledRef.current) return;
+    const prevCommitted = prevCommittedRef.current;
+    prevCommittedRef.current = voice.committed;
+    if (userEditedDuringSessionRef.current) {
+      const grew =
+        voice.committed.startsWith(prevCommitted) &&
+        voice.committed.length > prevCommitted.length;
+      if (!grew) return; // suppress partial-only writes
+      const segment = voice.committed.slice(prevCommitted.length).trim();
+      if (segment) handleQueryChange(joinBarText(barTextRef.current, segment));
+      return;
+    }
+    const base = sessionBaseCommittedRef.current;
+    const scoped =
+      base && voice.committed.startsWith(base)
+        ? voice.committed.slice(base.length).trimStart()
+        : voice.committed;
+    handleQueryChange(joinBarText(scoped, voice.partial));
+  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange]);
 
   // Spec #2877 ST-5 (DR-10) — the newest FINAL segment, derived from the hook's
   // append-only `committed` text (a final APPENDS its segment; a partial only ever
@@ -562,6 +718,78 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (segment) setFinalTranscript(segment);
   }, [voice.committed]);
 
+  // Spec #2878 ST-1r (R-2.5/R-2.6/R-4.2/R-5.1) — the autosend finalize commit.
+  // Fires once on the `launcher`-origin session's END transition (the
+  // `listening:false` state event), reads the CURRENT bar text, and is a one-shot
+  // per session. It depends on `voice.liveText` as well as `listening` so a final
+  // transcript landing just after the state event still commits. At finalize while
+  // a generation is in flight `commitBarQuery` is a hard no-op (silent drop, no
+  // queue — R-2.4/R-4.2).
+  //
+  // The commit EVIDENCE is session-scoped, never the bar mirror: the session is
+  // committable iff its own `voice.committed` FINAL text grew past the baseline
+  // captured at session start. Guarding on a committed FINAL (never `partial`) is
+  // exactly what separates Stop from Cancel at the source, so any DOM↔mirror
+  // divergence can never become a phantom dispatch (the #2878 round-2 defect).
+  useEffect(() => {
+    if (!finalizePendingRef.current) return;
+    if (voice.origin !== 'launcher' || voice.listening) return;
+    if (cancelledRef.current) {
+      // R-3.1 — a cancel suppresses the commit (the restore already happened).
+      finalizePendingRef.current = false;
+      return;
+    }
+    // ST-1r (E-1) — an end carrying a typed error (device loss / failure) is a
+    // CANCEL: restore the pre-session text once, never commit. The shipped wire
+    // cannot distinguish a backend cancel from a stop, so the committed-final
+    // evidence below closes the silent/partial gap while this guard covers the
+    // typed-error end.
+    if (voice.errorCode !== null) {
+      finalizePendingRef.current = false;
+      if (!restoredAfterSessionRef.current) {
+        restoredAfterSessionRef.current = true;
+        handleQueryChange(preSessionTextRef.current);
+      }
+      return;
+    }
+    // ST-1r — the append-only, session-scoped evidence rule (same as the
+    // live-text effect): only a FINAL that grew `committed` past this session's
+    // baseline is committable. A partial alone never commits.
+    const base = sessionBaseCommittedRef.current;
+    const hasCommittedFinal =
+      voice.committed.startsWith(base) && voice.committed.length > base.length;
+    if (!hasCommittedFinal) {
+      // R-3.2 — a finalize that produced no recognized text restores the
+      // pre-session text ONCE per session, then STAYS armed: a final may still be
+      // in flight (the effect re-runs on the `voice.committed`/`voice.liveText`
+      // deps). The once-guard stops a later manual edit being clobbered.
+      if (!restoredAfterSessionRef.current) {
+        restoredAfterSessionRef.current = true;
+        handleQueryChange(preSessionTextRef.current);
+      }
+      return;
+    }
+    // The finalize decision is made from here on — never re-arm (including the
+    // empty-text branch below), so a post-session manual edit can never be
+    // auto-dispatched.
+    finalizePendingRef.current = false;
+    const text = barTextRef.current.trim();
+    if (text === '') return;
+    if (!voiceAutosend) return; // R-2.6 — autosend OFF: text stays, no dispatch.
+    if (autosendFiredRef.current) return;
+    autosendFiredRef.current = true;
+    commitBarQuery(text);
+  }, [
+    voice.listening,
+    voice.origin,
+    voice.liveText,
+    voice.committed,
+    voice.errorCode,
+    voiceAutosend,
+    commitBarQuery,
+    handleQueryChange,
+  ]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -570,7 +798,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // FIRST (the launcher stays open, the text is kept); otherwise Escape
         // keeps today's exact behavior (shortcut-open → closeOverlay with
         // focus-origin restore; non-shortcut → idle collapse).
+        // #2878 ST-1 — set the cancel guard BEFORE `cancel()` so the autosend
+        // commit is suppressed and the pre-session text is restored (R-3.1/3.2).
         if (listeningRef.current) {
+          suppressAutosendAndRestore();
           void cancelVoice();
           return;
         }
@@ -619,27 +850,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // second generation.
         if (companionBusy) return;
         const q = query.trim();
+        // The empty branch keeps today's launch — it must never be reachable from
+        // the autosend path (R-5.1).
         if (q === '') {
           openSelected();
           return;
         }
-        if (commandBar.exact) {
-          launchFeature(commandBar.exact);
-          return;
-        }
-        if (companionActive && !companionBusy) {
-          // Returns true iff this window has an active entity that accepted the
-          // message; `false` falls through to today's launch path so a missing
-          // entity can never swallow the query.
-          if (askActiveCompanion(q)) {
-            setQuery('');
-            setEngaged(false);
-          } else {
-            openSelected();
-          }
-          return;
-        }
-        openSelected();
+        // #2878 ST-1 — the SAME commit path the autosend finalize uses (one
+        // dispatch route — G-149).
+        commitBarQuery(q);
         return;
       }
 
@@ -681,14 +900,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       columns,
       entryCount,
       openSelected,
-      launchFeature,
-      commandBar,
-      companionActive,
+      commitBarQuery,
       companionBusy,
       query,
       open,
       closeOverlay,
       cancelVoice,
+      suppressAutosendAndRestore,
     ],
   );
 
@@ -737,6 +955,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           void startVoice('launcher');
           break;
         case 'launcher-cancel':
+          // #2878 ST-1 — the chord's cancel is a CANCEL too: suppress the autosend
+          // commit and restore the pre-session text before `cancel()` (R-3.1/3.2).
+          suppressAutosendAndRestore();
           void cancelVoice();
           break;
         case 'open':
@@ -744,7 +965,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           break;
       }
     },
-    [openOverlay, startVoice, cancelVoice],
+    [openOverlay, startVoice, cancelVoice, suppressAutosendAndRestore],
   );
 
   // #2823: mount exactly ONE document listener (NFR-2). A ref-based guard keeps the
@@ -853,7 +1074,20 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // exactly one indicator shows per session (companion-origin is the
             // bubble's surface, never the bar).
             listening={voice.listening && voice.origin === 'launcher'}
+            // #2878 ST-2 (AC3 resolution) — the Stop control is the FINALIZE/commit
+            // control (`stt_stop`), the only autosend trigger; the visible cancel
+            // affordance DISCARDS (`stt_cancel`) and never sends. Neither
+            // dispatches by itself — only the commit step does.
             onStopListening={() => void stopVoice()}
+            onCancelListening={() => {
+              suppressAutosendAndRestore();
+              void cancelVoice();
+            }}
+            // #2878 ST-2 (UX-2) — the user corrected the bar during a live
+            // segment: stop partial writes for the session (finals still append).
+            onUserEdit={() => {
+              userEditedDuringSessionRef.current = true;
+            }}
             voiceErrorMessage={voiceStartErrorCopy(voice.errorCode)}
             finalTranscript={finalTranscript}
             voiceEnabled={voiceEnabled}

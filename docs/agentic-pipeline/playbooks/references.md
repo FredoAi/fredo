@@ -28,6 +28,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **State machine** - the single writer and phase authority: `.opencode/scripts/pipeline-state.rs`, reached only through the `pipeline-state` skill. All pipeline GitHub writes go through it.
 - **Validation harness** - `powershell -File .opencode/scripts/test-scripts.ps1` runs fully offline against a mock GitHub (`FREDO_MOCK_GH=1`); run after any pipeline-state change.
 - **Guardrail records** - persisted by the SI at every audit under `Known Failure Modes` below (retro-analysis Recipe 6).
+- **CI failure diagnosis without log access** - agent sandboxes deny `gh run view`/`gh run rerun`, so a failing check is opaque from the CLI. But the public GitHub Actions **job page** URL (from `gh pr checks <N> --watch`, e.g. `https://github.com/<owner>/<repo>/actions/runs/<run>/job/<job>`) is fetchable and its **Annotations** block names the failing step and the exact assertion — enough to distinguish a real regression from a documented CI flake, even though the raw log says "Sign in to view logs".
 
 ---
 
@@ -45,6 +46,15 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-159: on_the_go_improvement
+- **activation_date:** 2026-09-15
+- **observed:** #2878 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Rework/rescope re-entry no longer re-runs tests-commit from a stale spec-branch tree. persist_tests now runs only on the FIRST implementation entry, so a spec branch whose .opencode/tests copies predate the tester's later extensions can never revert main's suite guidance (the G-038 hazard). Observed on #2878 round 1 to 2, the re-entry silently dropped 107 tester-extended lines from main before the fix, recovered from git history. Hardened pipeline-state.rs and documented in state-machine.md, test-scripts 100/100.
+- **home:** references.md (G-159)
+- **effectiveness:** Pending
+
+
 ### G-158: audit_accepts_pass_with_confirmed_ac_violation
 - **activation_date:** 2026-09-15
 - **observed:** #2877 round 1 — the tester's verdict was `Verdict: PASS` (18/22 rows) with 4 named-blocker UNVERIFIED rows and ONE confirmed edge defect: a duplicate start cleared the live capture indicator while the microphone kept recording (a reachable violation of the plan's continuous privacy invariant and an acceptance criterion). The QA Plan's own pass/fail criteria said "an edge case FAILing does not erase a primary PASS", so the PASS token mechanically cleared the testing-exit gate; only the SI's independent record-anchored judgment escalated it to a rework, which fixed it and re-verified PASS live in round 2.
@@ -68,7 +78,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** A known-flaky unrelated CI test has no in-sandbox recovery at merge time: pr_merge_guard blocks any non-exempt failing check (only sub-10s runner-provisioning failures are exempt) and the sandbox denies gh run rerun to the SI and tester, so FredoCompanion.seatTeleport (already documented in references.md as a re-run-passes flake) hard-blocked testing to audit despite rust-validate passing and the flake passing locally twice. Recovery applied: commit a real spec artifact (the references.md STT candidate-research section) to the spec branch to re-trigger the workflow on the same tree, which then passed. Proposed to the human: allowlist a scoped gh run rerun for the SI, or add a bounded one-shot flake retry to pr_merge_guard.
 - **home:** references.md (G-156)
-- **effectiveness:** Partial (2026-09-15, #2877) — the flake recurred on BOTH spec-branch tips: `ui-validate` failed first on the known seat-teleport assertion and then again with the seat-teleport assertion PLUS a cross-test unhandled-rejection from the companion harness. The documented re-trigger remedy (a real spec-branch sync commit on the same tree) worked and `ui-validate` passed in 1m54s on the new SHA, but the merge gate required the workaround twice and `gh run rerun` remains denied. The durable fix (a bounded one-shot flake retry in pr_merge_guard, or an allowlisted scoped rerun for the SI) is still unapplied.
+- **effectiveness:** Partial (2026-09-15, #2877) — the flake recurred on BOTH spec-branch tips: `ui-validate` failed first on the known seat-teleport assertion and then again with the seat-teleport assertion PLUS a cross-test unhandled-rejection from the companion harness. The documented re-trigger remedy (a real spec-branch sync commit on the same tree) worked and `ui-validate` passed in 1m54s on the new SHA, but the merge gate required the workaround twice and `gh run rerun` remains denied. The durable fix (a bounded one-shot flake retry in pr_merge_guard, or an allowlisted scoped rerun for the SI) is still unapplied. **Escalated (2026-09-15, #2878): the re-trigger remedy was EXHAUSTED** — 4 consecutive spec-branch re-triggers each failed `ui-validate` on the identical seat-teleport + cross-test-rejection signature (1m29s–1m54s) while the byte-identical app tree passed locally 1083/1083 (80 files), so `testing → audit` hard-blocked and the issue was blocked pending the human-gated durable fix. The workaround is no longer reliable for this signature — the durable fix is now required, not optional.
 
 
 ### G-155: on_the_go_improvement

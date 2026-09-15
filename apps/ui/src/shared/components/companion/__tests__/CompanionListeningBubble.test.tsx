@@ -35,6 +35,21 @@ import {
   companionVoiceErrorCopy,
 } from '../CompanionListeningBubble';
 
+// #2878 ST-3 — the bubble reads the autosend preference from the companion
+// context and dispatches through the ONE registered entity handle
+// (`askActiveCompanion`). Both boundaries are mocked so the READ-ONLY preview /
+// dispatch matrix is driven deterministically without a real CompanionProvider
+// or a real entity tree.
+const companionMock = vi.hoisted(() => ({ voiceAutosend: false }));
+vi.mock('@/shared/contexts/CompanionContext', () => ({
+  useCompanion: () => ({ voiceAutosend: companionMock.voiceAutosend }),
+}));
+
+const askMock = vi.hoisted(() => vi.fn((_text: string) => true));
+vi.mock('../CompanionEntity', () => ({
+  askActiveCompanion: askMock,
+}));
+
 type Handler = (payload: unknown) => void;
 
 let handlers: Record<string, Handler[]>;
@@ -46,6 +61,8 @@ const emit = (event: string, payload: unknown) => {
 
 beforeEach(() => {
   handlers = {};
+  companionMock.voiceAutosend = false;
+  askMock.mockClear();
   invokeSpy = vi.fn(async () => undefined);
   adapterBridge.setInvoke(invokeSpy as never);
   adapterBridge.setListen((async (event: string, handler: Handler) => {
@@ -196,6 +213,110 @@ describe('#2877 ST-6 — companion listening bubble (R-5.3 / DR-8)', () => {
     emitState(true, 'companion');
     const overlayBubble = screen.getByTestId('companion-listening-bubble');
     expect(overlayBubble.style.position).toBe('fixed');
+  });
+});
+
+describe('#2878 ST-3 — companion-origin commit (R-4.3, PO case 1)', () => {
+  it('autosend ON: dispatches the finalized utterance exactly once through askActiveCompanion', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'companion');
+    emitTranscript('hello');
+    emitTranscript('hello world', true);
+    emitState(false, 'companion');
+
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(askMock).toHaveBeenCalledWith('hello world');
+    // The dispatched session leaves no lingering read-only preview.
+    expect(screen.queryByTestId('companion-listening-finalized')).toBeNull();
+  });
+
+  it('autosend ON: a replayed final / duplicate terminal state never double-dispatches', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'companion');
+    emitTranscript('send me once', true);
+    emitState(false, 'companion');
+    expect(askMock).toHaveBeenCalledTimes(1);
+
+    // Hostile replay: the same final again + another terminal state.
+    emitTranscript('send me once', true);
+    emitState(false, 'companion');
+
+    expect(askMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('autosend OFF: never dispatches and keeps the finalized text visible read-only', () => {
+    companionMock.voiceAutosend = false;
+    renderBubble();
+    emitState(true, 'companion');
+    emitTranscript('hello world', true);
+    emitState(false, 'companion');
+
+    expect(askMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('companion-listening-bubble')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-listening-finalized-preview')).toHaveTextContent(
+      'hello world',
+    );
+    // Read-only: the live affordances are gone (no Stop, no capture dot).
+    expect(screen.queryByTestId('companion-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('companion-listening-dot')).toBeNull();
+  });
+
+  it('no recognized speech → no dispatch and no lingering preview', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'companion');
+    emitState(false, 'companion');
+
+    expect(askMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('companion-listening-bubble')).toBeNull();
+  });
+
+  it('exactly once per session — a later empty session cannot re-send stale text', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'companion');
+    emitTranscript('first utterance', true);
+    emitState(false, 'companion');
+    expect(askMock).toHaveBeenCalledTimes(1);
+
+    // A second session that recognizes nothing must not replay `committed`.
+    emitState(true, 'companion');
+    emitState(false, 'companion');
+    expect(askMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a LAUNCHER-origin finalize never dispatches from the bubble', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'launcher');
+    emitTranscript('not for the bubble', true);
+    emitState(false, 'launcher');
+
+    expect(askMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('companion-listening-bubble')).toBeNull();
+  });
+
+  it('commits when the terminal state lands BEFORE the final transcript (race)', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'companion');
+    emitState(false, 'companion'); // idle state first
+    emitTranscript('late final', true); // final after
+
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(askMock).toHaveBeenCalledWith('late final');
+  });
+
+  it('a cancel (partial discarded, no final) never dispatches', () => {
+    companionMock.voiceAutosend = true;
+    renderBubble();
+    emitState(true, 'companion');
+    emitTranscript('half a sentence'); // partial only
+    emitState(false, 'companion'); // cancel-shaped idle
+
+    expect(askMock).not.toHaveBeenCalled();
   });
 });
 
