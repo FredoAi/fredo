@@ -1148,3 +1148,23 @@ Verdict: the round-1 F-71 defect is **FIXED**. Live (real managed `llama-server`
   Enter landed with `streamingAtKeydown="true"`, `busyAtKeydown="true"`, `roAtKeydown=true` and
   `winsAtKeydown` unchanged — no second generation (`runGeneration` count unchanged) and no window
   opened. Console: one `runGeneration` + one `llm-done` per send across 12+ sends.
+
+---
+
+## #2878 extension — companion-origin dictation commit (PO case 1)
+
+> Issue #2878 ST-3 completes the companion-origin commit on the shipped #2877
+> `CompanionListeningBubble`: when a `companion`-origin utterance finalizes and
+> `Fredo_companion_voice_autosend` is ON, the finalized transcript is dispatched EXACTLY ONCE
+> through the ONE existing `askActiveCompanion()` path (no bar involvement, no focus steal);
+> with autosend OFF nothing is dispatched and the text stays in the bubble's read-only preview
+> (documented limitation). **Verification policy: live.** Serving `spec/2878 @ 33cf86d5`.
+
+- [x] **F-73 (REQ-4.3 ON) — companion-origin finalize dispatches exactly once through `askActiveCompanion()` (live).** PASS. `stt_start {origin:"companion"}` → `companion-listening-bubble` (dot + preview + Stop) with the launcher bar cue ABSENT (0 `launcher-command-listening*` testids); a final + `stt_stop` with autosend ON → exactly ONE `runGeneration`; the bubble cleared.
+- [x] **F-74 (REQ-4.3 OFF) — autosend OFF keeps the finalized text in the read-only preview, zero dispatch (live).** PASS-as-documented. A companion-origin final + `stt_stop` with autosend OFF → ZERO `runGeneration`; the bubble rendered `companion-listening-finalized` + `companion-listening-finalized-preview` = the finalized text ("Transcribed" header, no Stop control).
+- [x] **F-75 (one-indicator routing / no focus steal) — companion-origin never surfaces the bar (live).** PASS. During a companion-origin session the bar cue is absent and `document.activeElement` is unchanged; on Ctrl+Space with the companion away the same holds (the #2878 F-62/REQ-CTRL.2 receipt).
+
+### #2878 testing round 1 (spec/2878 @ 33cf86d5) — results
+
+F-73..F-75 PASS (live). The round's FAIL is on the launcher surface (`launcher` F-63 /
+`voice-input` F-53) — not on the companion bubble. Full receipts in the issue's `## Tests Runs`.
