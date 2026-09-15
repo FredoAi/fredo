@@ -1925,7 +1925,9 @@ Low
       "|-----|-----------|----------|------------|",
       "| REQ-1 | widget renders | visible | none |",
       "",
-      "**Feature tests:** $feat",
+      # #2877 regression: the QA Expert may write the declaration inside a
+      # blockquote — the parser must strip lead markers, not silently drop it.
+      "> **Feature tests:** $feat",
       "",
       "## Summary",
       "goal + acceptance criteria",

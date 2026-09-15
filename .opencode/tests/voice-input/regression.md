@@ -88,3 +88,68 @@
 - **R-6 PASS (static)** — unchanged; no remote client on the audio→text path.
 - **R-7 PASS (regression)** — `cargo test --locked` 502 passed / 1 ignored; `cargo clippy --locked -- -D warnings` zero warnings; `pnpm --filter @fredo/ui build` N/A (no UI file touched by the fix).
 - **R-2/R-3/R-8** — unchanged from round 1 (Ctrl+Space focus automation limit / settings not re-driven); see round-1 notes.
+
+---
+
+## #2877 extension — the local STT foundation must not regress the surfaces it rides on
+
+> Added at Spec #2877. Run alongside R-1..R-9 above and the overlapping suites listed in
+> §"Overlapping prior-feature suites". **Verification policy: live** (the tester's Evidence must
+> carry the functional F-37 live receipt). Historical PASS/FAIL records above are preserved.
+>
+> **SUPERSESSION (from #2877):** R-8 ("the settings dialog gains NO voice/STT/autosend section in
+> this spike") is **SUPERSEDED** by the PO amendment — voice/STT settings (enable, model status,
+> device, autosend) now live INSIDE the Companion settings section, hosted in the Settings app
+> window (`SettingsSurface.tsx` → `CompanionSettingsPanel`). Do NOT re-run the old "no voice
+> section" assertion as a FAIL; the new invariant is R-16 below.
+> **MOVED to #2878:** this file's R-2/R-3 (Ctrl+Space live-driving limits) and the functional F-9/
+> F-10 bar-input rows are #2878's surface cascade — NOT re-run as FAIL here. Only the disabled-chord
+> gate (functional F-18) stays in this spec.
+
+## R-10 — Launcher / command-bar / Ctrl+Space behavior unchanged when voice is off
+
+- [ ] R-10: With voice OFF (or not listening), type into `input[role="searchbox"]` (`LauncherCommandBar.tsx`): the controlled value updates per keystroke, the grid filters, clearing restores the grid, ESC closes the launcher. Press Ctrl+Space in the launcher context with voice disabled: the #2823 show/focus behavior still fires and NO listening starts.
+  **Expected:** no behavioral drift and no listening cue while not listening (the cue appears only while `listening`); console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference functional F-18/F-31.
+  - **Edge:** rapid Ctrl+Space double-press (no stuck state, no double-toggle); ESC precedence unchanged with a feature window behind; the bar is byte-identical to before the spec when voice is off.
+
+## R-11 — Disabled-chord gate is the only Ctrl+Space change (surface cascade is #2878)
+
+- [ ] R-11: With `Fredo_companion_voice_enabled=false`, invoke Ctrl+Space from each context (companion active; bar focused) and assert the launcher's #2823 behavior executes without starting a session.
+  **Expected:** zero `stt_start` invocations while disabled; the launcher open/focus behavior is unchanged from R-2; the companion-away/companion-listening cascade is NOT asserted here (#2878 owns it).
+  - **Edge:** synthetic Ctrl+Space may not land focus under automation (R-2/R-3 note) → drive the disabled gate via the direct `stt_start` invoke + the unit-pinned chord selection; record the lever.
+
+## R-12 — The download engine + companion GGUF layout are untouched
+
+- [ ] R-12: Exercise the `llama-setup` model-files surface (per-file rows, skip-present, Range resume, per-file error isolation) and the companion model readiness; compare against `.opencode/tests/llama-setup/` R-8..R-15 + R-30.
+  **Expected:** `download_missing_files` semantics unchanged; the companion GGUF manifest/subdir/layout (`gemma-4-e2b-it-qat` + nested `MTP/`) untouched; the new `sttModel` step is ADDITIVE and non-gating (counts stay GGUF-only). Reference `.opencode/tests/llama-setup/` R-30.
+  - **Edge:** a companion GGUF download and an STT download must not corrupt each other's progress/state; `models_dir` resolution order unchanged.
+
+## R-13 — Companion overlay behavior + persisted keys unchanged by the voice group
+
+- [ ] R-13: Toggle the companion ON/OFF; exercise single-click joke, double-click TicTacToe, Ctrl+right-click teleport, and the speech bubble; read `Fredo_companion_visible` / `Fredo_companion_idle_timeout`; confirm `isAway` is not persisted.
+  **Expected:** `.opencode/tests/companion/` R-33..R-38 still hold — teleport timing, the 250 ms discriminator, 240×120 / 208×268 bubbles, the `above > right > left > below` ranking, and the persisted-key semantics are unchanged; the voice group adds its own keys and does NOT mutate the existing ones.
+  - **Edge:** the voice group's rows render inside the ready-state Companion section without removing the toggle/teleport tip; the not-ready gate (`R-31`) still renders the wizard ONLY with the optional `sttModel` row additive.
+
+## R-14 — Settings host unchanged (no orphan Voice nav item/section)
+
+- [ ] R-14: Open the Settings app window; enumerate its nav items/sections and its discovered feature sections; open Companion.
+  **Expected:** no new nav item and no dedicated "Voice" section was added anywhere; the Companion section mounts cleanly with the voice group additive; a settings-section list with zero discovered sections does not break. Reference `.opencode/tests/settings/` host rows + `companion` R-31/R-32.
+  - **Edge:** open/close the Settings window while listening; the voice group's presence does not disturb the readiness gate swap.
+
+## R-15 — Token contract + build gates unchanged
+
+- [ ] R-15: Static-grep the changed voice/settings files for hex `#…`, `rgba(`, `rgb(`, `hsla(` and the invalid `var(--x)NN` alpha-append; run `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`; run the Rust gates (or record the CI result — the tester shell has no `cargo`).
+  **Expected:** ZERO true color literals (comment issue-refs exempt); theme token → CSS var + `tint()` only; build exit 0; suites green; `cargo check`/`clippy` zero warnings and `cargo test` green; no existing assertion weakened/disabled/deleted (G-125).
+  - **Edge:** a moved/renamed frozen hook must be refreshed in the same scope and named; a silently dropped hook is a FAIL.
+
+## R-16 — Voice settings live under Companion, hosted in the Settings window (supersedes R-8)
+
+- [ ] R-16: Open the Settings app window → Companion; assert the voice group (enable toggle + model status + device + autosend) renders inside the Companion section and that enabling/disabling persists `Fredo_companion_voice_enabled`.
+  **Expected:** the voice settings are discoverable through the settings surface inside Companion (no dedicated Voice section/nav); toggling persists; the not-ready gate still renders the wizard first, with the voice row additive; on ready the controls include the voice group. **This row REPLACES R-8's "no voice section" invariant** (kept above as history).
+  - **Edge:** legacy `R-8` re-run must not be reported as a FAIL; the gate → controls swap still happens in place with no reload (`.opencode/tests/companion/` R-31/R-32).
+
+## R-17 — No idle CPU / no undeclared persisted key
+
+- [ ] R-17: Launch Fredo and leave it idle (never listening); sample CPU + assert no recognizer was constructed; enumerate newly persisted keys after enabling/disabling voice, choosing a device, and toggling autosend.
+  **Expected:** no measurable idle CPU while not listening (engine created lazily on first `stt_start`); the only new persisted keys are the declared voice preferences (`Fredo_companion_voice_enabled`, the device id, the autosend value); no existing companion key is rewritten by the voice group.
+  - **Edge:** enable → restart → disable leaves the declared keys consistent and the existing companion keys intact.

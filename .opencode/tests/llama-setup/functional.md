@@ -911,3 +911,20 @@ offloaded). AC1 was not weakened; only the documented boolean-switch syntax was 
   `{"queued":true}`; `telemetry_spans` = **23,735**, `MAX(ingested_at)` =
   `2026-09-13T21:46:52.331Z`; `chat_rows(e2e-2871-r2-chat)=1`;
   `tool_use_rows(e2e-2871-r2-tool)=1`. Managed `/health` returned 200 (:8080) before the chat.
+
+---
+
+## #2877 — Supersession note (gating counts stay GGUF-only)
+
+> Added at Spec #2877. #2877 adds a new **non-gating** `sttModel` step to `COMPANION_SETUP_STEPS`
+> for the local STT model (4 files, 72,654,782 B; `download_stt_model` reuses this domain's
+> `download_missing_files` engine — `acquire_file` skip-present/Range-resume/bounded-retry +
+> streaming SHA-256 verify). **The `n of 2 / n of 3` counts asserted above by F-05/F-06 (and the
+> related F-18/F-22/F-23/F-24 progress/summary rows) are SUPERSEDED to mean GGUF prerequisites
+> ONLY** — the optional `sttModel` step MUST stay EXCLUDED from the wizard's `installed/total`
+> summary and from `CompanionReadiness.ready`. Historical records above are preserved; no row above
+> is rewritten.
+>
+> Verify via `regression.md` R-30 and `.opencode/tests/voice-input/` functional F-23 (REQ-2.4).
+> The model-download AC for #2877 (real 72,654,782 B transfer + a deliberately idle/slow Range
+> resume at a realistic ~35,000,000 B offset) lives in the voice-input suite's F-22, not here.

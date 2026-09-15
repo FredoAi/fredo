@@ -79,3 +79,40 @@
 - **E-10 observed (silent input).** The only capture device is the silent virtual `Micrófono (Iriun Webcam)`; across several listening sessions the bar stayed `""` and **no phantom/partial text** was produced from silence — no hallucinated partial, no runaway bar mutation. (Environment-limited: this is a no-audio observation, not a real-speech probe.)
 - **E-3 observed (model file changed under the running engine).** The content gate runs before `OnlineRecognizer::create`, so a model replaced between gate and load would still reach native code — the **TOCTOU residual** is documented by the developer as out of spike scope (#2877). Not re-probed live this round.
 - **E-4 / E-2 / E-1 / E-5 / E-6 / E-7 / E-9 / E-11 / E-12 / E-13 / E-14** — not driven this round (environment levers: real mic / network block / OS permission; or no UI re-drive required for the fix delta). Same named blockers as round 1 (G-053).
+
+---
+
+## #2877 extension — local STT foundation probes
+
+> Issue #2877 production-hardens the spike into the foundation. Promote any confirmed invariant to
+> `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a
+> named blocker (G-053) with a unit/static pin — never fabricated. **MOVED to #2878:** the
+> context-dependent Ctrl+Space branch probes (old E-7/E-8) belong to the surface wiring and are not
+> re-run as FAIL here.
+
+- [ ] E-16: **Claim / focus or automation limitation.** Try to drive the Ctrl+Space disabled-chord gate (functional F-18) and the enabled start path via real key events. Does focus land? If not, is the fallback (direct `stt_start` invoke + unit-pinned chord selection) recorded as the lever used? Any silent no-op reported as a PASS without naming the lever is a finding.
+  - Prompt: real `keydown` Ctrl+Space with the launcher focused vs the direct invoke; `tauri_ipc_monitor` for `stt_start`.
+
+- [ ] E-17: **Network blocked mid-transcription.** Start a real transcription, then activate the network block mid-session (and/or toggle airplane mode). Does transcription continue with no crash and no retry storm? Any drop, stall, or error attributable to the network event is a finding. Reference functional F-25.
+  - Prompt: block after the first partial; watch `stt:transcript` continuity + console.
+
+- [ ] E-18: **Model file changed under the running engine (TOCTOU residual).** Start listening, then truncate/replace the loaded model file on disk. Does the running session continue (model resident), and does a subsequent engine start fail cleanly with a typed code? Any crash/abort is a finding. (Spike E-3 documented this as a #2877 residual — re-probe.)
+  - Prompt: truncate the encoder after a successful start; then `stt_stop` → `stt_start`.
+
+- [ ] E-19: **Device switch / vanished device mid-session.** Start on one input device, then switch the OS default (or unplug/disable the device) mid-utterance. Does listening end gracefully with a typed code, does the app stay alive, and is the partial preserved? Any stale "listening" indicator or silent hang is a finding. Reference functional F-26/F-29.
+  - Prompt: change the default input while listening; read `stt_status` + console.
+
+- [ ] E-20: **Download interrupted at a realistic offset + resume.** Kill the app (or close the settings window) mid-encoder download after ~35 MB has landed; reopen and re-trigger. Does the step read `incomplete` with the partial offset, and does the resume start from the persisted offset and verify in place? Any append-onto-garbage or restart-from-zero is a finding. Reference functional F-22 and `llama-setup` E-16/E-17.
+  - Prompt: compare the on-disk partial bytes before/after; read the first resume progress event.
+
+- [ ] E-21: **Enabling voice never silently captures.** Toggle voice ON but do NOT start listening; watch for any capture start, mic-in-use indicator, or CPU activity. Then start listening and confirm the visible indicator appears BEFORE or WITH the first capture.
+  - Prompt: OS mic-in-use indicator + `stt_status` while merely enabled; sample the indicator at <= 50 ms around the start boundary (G-140).
+
+- [ ] E-22: **Autosend OFF/ON boundary (setting only, #2878 boundary).** Toggle the autosend setting and, while nothing consumes the transcript yet, confirm no unintended send/submit path fires from this spec's surface.
+  - Prompt: toggle autosend with a live transcript present; assert no Enter/submit side-effect attributable to the setting (the send behavior is #2878).
+
+- [ ] E-23: **Long silence / endpoint timing.** Stay silent for > 10 s after speaking; does an endpoint fire at the configured trailing-silence window without a runaway buffer or a phantom segment? Record the observed endpoint delay. Reference functional F-24.
+  - Prompt: timestamp the last partial → `is_final: true` transition.
+
+- [ ] E-24: **Repeated enable/disable + start/stop churn (leak).** Cycle enable→start→stop→disable 10 times; watch for leaked capture handles, accumulated threads, memory creep, or a stuck indicator.
+  - Prompt: memory snapshots across cycles; OS mic indicator; console.

@@ -390,3 +390,29 @@
   `aria-label="Fredo is away"`, bar inactive, Enter no chat. Home-after-auto-return behaviour
   unchanged from round 1. Persisted keys `Fredo_companion_visible`/`Fredo_companion_idle_timeout`
   intact; `isAway` not persisted.
+
+---
+
+## #2877 extension — voice settings are ADDITIVE to the Companion section (G-136)
+
+> Added at Spec #2877 (local STT foundation). #2877 adds a "Voice input" group INSIDE
+> `CompanionSettingsPanel` (enable toggle, model status + one-action setup, device select, autosend
+> setting) and a non-gating `sttModel` step in the Companion setup wizard. R-1..R-38 above remain in
+> force; this note records the additive surface so no prior resolution is silently contradicted and
+> no historical PASS/FAIL record is deleted. **Verification policy: live.**
+>
+> - **R-31/R-32 (settings host)** stay in force: the Companion section renders in the Settings app
+>   window; the not-ready gate still renders the wizard ONLY (no toggle/tip), with the optional
+>   `sttModel` row additive; on ready the controls swap in place with no reload. The voice group is
+>   part of the controls and must not disturb the gate.
+> - **R-33..R-38 (overlay behavior + persisted keys)** must be UNCHANGED by the voice group — the
+>   joke / TicTacToe / teleport / bubble / avatar behaviors and the `Fredo_companion_visible` /
+>   `Fredo_companion_idle_timeout` semantics are untouched; `isAway` stays transient. The voice
+>   group adds its own persisted keys (`Fredo_companion_voice_enabled` — default false; the device
+>   id; the autosend value) and MUST NOT mutate the existing keys.
+> - **R-9 successor:** the panel's ready-state content keeps its existing controls (visibility
+>   toggle + teleport tip) with the voice group additive — the voice group must not remove or gate
+>   them.
+> - **Cross-ref:** `.opencode/tests/voice-input/` R-13/R-16 (overlay unchanged; voice settings under
+>   Companion) and functional F-16..F-37; `.opencode/tests/llama-setup/` R-30 (counts stay
+>   GGUF-only).

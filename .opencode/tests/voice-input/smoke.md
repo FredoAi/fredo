@@ -37,3 +37,19 @@
 - **S-6 PASS** — listening started on the launcher path (`started:true`, 48000 Hz) with the cue present; stopped via `stt_stop`; console clean. (Real audio absent — virtual device.)
 - **S-7 UNVERIFIED (G-053)** — no network-block lever in the sandbox; static pin unchanged (no remote client on the audio→text path).
 - **S-8 PASS** — 3 uploads via `upload-evidence --issue 2876 --base spec/2876` (serial, G-144); raw URLs embedded in `## Tests Runs` with descriptions.
+
+## #2877 extension — local STT foundation smoke
+
+> Issue #2877 production-hardens the spike. **Serving checkout:** the `spec/2877` tip on a running
+> Fredo desktop app. **Verification policy: live.**
+>
+> **SUPERSESSION:** this file's S-4 wording ("confirm NO voice/STT/autosend section exists — autosend
+> is out of spike scope") is **SUPERSEDED** for #2877 — per the PO amendment, voice/STT settings
+> (and the autosend setting) now live INSIDE the Companion section, hosted in the Settings app
+> window. The historical S-4 record above is preserved; the new quick paths below assert the
+> presence + persistence of those controls. **MOVED to #2878:** transcript → launcher-bar wiring is
+> not smoked here.
+
+- [ ] S-9: Voice controls reachable + persisted — open the Settings app window → Companion; the voice group (enable toggle + model status, and the device/autosend controls when present) renders; toggle the enable control, restart the app, and re-read it. **Expected:** the controls render under Companion (no dedicated Voice section/nav) and the toggled value persists across the restart; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-10: Model step quick path — with the STT model absent, the Companion `sttModel` step renders with a single acquire action + a state; the step is in the wizard's Optional group and does NOT change the gating `installed/total` summary. **Expected:** one-action setup affordance present; counts stay GGUF-only; screenshot succeeds.
+- [ ] S-11: Listening quick path — start listening (voice enabled), assert a visible active-capture indicator (and no capture without it), then stop and confirm the indicator clears and the app returns to rest. **Expected:** indicator present exactly while `listening`; no console `Error:`/`Uncaught`/`Maximum update depth exceeded`; screenshot succeeds. **If no mic/permission/engine → named blocker (G-053) + unit/static pin, not a PASS.**
