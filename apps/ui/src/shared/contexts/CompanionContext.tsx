@@ -29,6 +29,19 @@ export const MAX_IDLE_TIMEOUT_S = 3600;
 export const VOICE_ENABLED_SETTING_KEY = 'Fredo_companion_voice_enabled';
 export const DEFAULT_VOICE_ENABLED = false;
 
+// ── Voice input preferences (#2877 ST-2) ─────────────────────────────────────
+// Two sibling preferences under Companion settings, persisted through the SAME
+// `usePersistedSetting` path as the enable switch. `voiceAutosend` is the SETTING
+// only — its dispatch (transcript → chat/launcher send) is #2878. `deviceId` is a
+// cpal device id (the device NAME string, `""` = system default) resolved by the
+// backend on the next session (R-3.2). Neither gates companion chat.
+
+export const VOICE_AUTOSEND_SETTING_KEY = 'Fredo_companion_voice_autosend';
+export const DEFAULT_VOICE_AUTOSEND = false;
+
+export const VOICE_DEVICE_ID_SETTING_KEY = 'Fredo_companion_voice_device_id';
+export const DEFAULT_VOICE_DEVICE_ID = '';
+
 /**
  * Resolve a (possibly corrupt) configured idle timeout to a usable value.
  * `!Number.isFinite(s) || s <= 0` → default; otherwise round then clamp to
@@ -132,6 +145,20 @@ interface CompanionContextValue {
    */
   voiceEnabled: boolean;
   setVoiceEnabled: (enabled: boolean) => void;
+  /**
+   * #2877 ST-2: persisted autosend choice — `Fredo_companion_voice_autosend`
+   * (DEFAULT false). The SETTING lives here; honoring it (transcript dispatch) is
+   * #2878, out of this slice. Never a companion-chat gate.
+   */
+  voiceAutosend: boolean;
+  setVoiceAutosend: (enabled: boolean) => void;
+  /**
+   * #2877 ST-2: persisted input-device selection —
+   * `Fredo_companion_voice_device_id` (DEFAULT '' = system default). A cpal
+   * device id (name); the backend resolves it on the next capture session (R-3.2).
+   */
+  voiceDeviceId: string;
+  setVoiceDeviceId: (deviceId: string) => void;
   /** Called by FredoCompanion on leave-motion settle; settles hidden + broadcasts. */
   confirmAutoReturn: () => void;
   /** FredoCompanion reports whether this webview currently displays the companion. */
@@ -250,6 +277,20 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     VOICE_ENABLED_SETTING_KEY, DEFAULT_VOICE_ENABLED,
     (v) => String(v),
     (r) => r === 'true',
+  );
+
+  // #2877 ST-2 — the autosend preference (SETTING only; dispatch is #2878) and
+  // the selected input device ('' = system default). Same persistence path.
+  const [voiceAutosend, setVoiceAutosend] = usePersistedSetting<boolean>(
+    VOICE_AUTOSEND_SETTING_KEY, DEFAULT_VOICE_AUTOSEND,
+    (v) => String(v),
+    (r) => r === 'true',
+  );
+
+  const [voiceDeviceId, setVoiceDeviceId] = usePersistedSetting<string>(
+    VOICE_DEVICE_ID_SETTING_KEY, DEFAULT_VOICE_DEVICE_ID,
+    (v) => v,
+    (r) => r,
   );
 
   const [state, dispatch] = useReducer(reducer, {
@@ -412,10 +453,12 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
+    voiceAutosend, setVoiceAutosend, voiceDeviceId, setVoiceDeviceId,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
+    voiceAutosend, setVoiceAutosend, voiceDeviceId, setVoiceDeviceId,
   ]);
 
   return (
