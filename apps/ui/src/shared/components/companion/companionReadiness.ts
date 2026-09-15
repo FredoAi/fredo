@@ -135,6 +135,43 @@ export interface SttModelStatus {
   files: ModelFileStatus[];
 }
 
+/**
+ * #2877 ST-2 — the DERIVED `sttModel` readiness report consumed by the voice
+ * settings UI. Distinct from the raw IPC shape (`SttModelStatus`): `location`
+ * is the resolved on-disk model directory derived from the per-file `path`s
+ * (`resolveSttModelDir`), so AC2's "model location" is displayable on BOTH
+ * `ready` and `error` — null only until at least one pinned file is on disk.
+ */
+export interface SttModelReadiness {
+  /** true iff EVERY pinned STT file is present-and-complete. */
+  ready: boolean;
+  /** Per-file status, ordered tokens → encoder → decoder → joiner. */
+  files: ModelFileStatus[];
+  /** Resolved on-disk model directory (from the per-file `path`s), or null. */
+  location: string | null;
+}
+
+/**
+ * Resolve the model DIRECTORY from the backend's per-file absolute `path`s.
+ * The first materialized file wins (every pinned STT file shares one directory);
+ * a path with no parent separator contributes nothing. Pure + unit-testable;
+ * `null` means "nothing on disk yet" — never a fabricated/assumed location.
+ */
+export function resolveSttModelDir(files: readonly ModelFileStatus[]): string | null {
+  for (const file of files) {
+    const dir = parentDirectory(file.path);
+    if (dir) return dir;
+  }
+  return null;
+}
+
+/** Parent directory of an absolute path, or null when there is none. */
+function parentDirectory(path: string | null): string | null {
+  if (typeof path !== 'string' || path.length === 0) return null;
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return separator >= 1 ? path.slice(0, separator) : null;
+}
+
 /** `setup:download-progress` payload for a model-file transfer (#2856). */
 export interface ModelDownloadProgress {
   /** Join key for the per-file row; absent on legacy (pre-#2856) emissions. */
@@ -147,6 +184,114 @@ export interface ModelDownloadProgress {
   /** 0–100 (legacy contract). */
   percent: number;
   state: 'downloading' | 'present' | 'skipped' | 'error';
+}
+
+// ── STT input-device enumeration — #2877 ST-2 ────────────────────────────────
+//
+// `stt_list_devices` enumerates the cpal input devices so the Companion voice
+// settings row can offer a device picker (R-3.2). cpal exposes no device GUID,
+// so `id` IS the cpal device name string (`name` is the display label — identical
+// today, may be decorated later).
+
+/** Typed STT failure vocabulary (mirrors the Rust `SttErrorCode`). */
+export type SttErrorCode =
+  | 'noDevice'
+  | 'permissionDenied'
+  | 'modelMissing'
+  | 'modelCorrupt'
+  | 'engineStartFailed'
+  | 'alreadyListening'
+  | 'disabled'
+  | 'internal';
+
+/** One enumerated cpal input device (`stt_list_devices`). */
+export interface SttDeviceInfo {
+  /** Stable selector — the cpal device name (cpal exposes no device GUID). */
+  id: string;
+  /** Display label (identical to `id` today; may be decorated later). */
+  name: string;
+  isDefault: boolean;
+}
+
+/** `stt_list_devices` result (camelCase, IPC). */
+export interface SttDevicesResult {
+  devices: SttDeviceInfo[];
+  /** Persisted selection reported by the backend; null = system default. */
+  selectedId: string | null;
+  /** Typed failure (e.g. `permissionDenied`), or null on success. */
+  code: SttErrorCode | null;
+}
+
+/**
+ * Presentation state for the device probe. `checking` exists only while a probe
+ * is in flight; `unavailable` is the FAIL-CLOSED state for a missing/unknown
+ * backend — it never claims "no device" (that would fabricate a fact).
+ */
+export type SttDeviceProbeState =
+  | 'checking'
+  | 'devices'
+  | 'no-device'
+  | 'vanished'
+  | 'permissionDenied'
+  | 'unavailable';
+
+/** Derived device-probe snapshot consumed by the settings UI. */
+export interface SttDeviceProbe {
+  state: SttDeviceProbeState;
+  devices: SttDeviceInfo[];
+  /** Normalized persisted selection: a device id, or null for system default. */
+  selectedId: string | null;
+  code: SttErrorCode | null;
+}
+
+/** Normalize a persisted device id: blank/whitespace/non-string ⇒ null (default). */
+export function normalizeDeviceId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isSttDeviceInfo(value: unknown): value is SttDeviceInfo {
+  if (!value || typeof value !== 'object') return false;
+  const device = value as Record<string, unknown>;
+  return typeof device.id === 'string' && device.id.trim().length > 0;
+}
+
+const EMPTY_DEVICE_PROBE: Omit<SttDeviceProbe, 'state'> = {
+  devices: [],
+  selectedId: null,
+  code: null,
+};
+
+/**
+ * Derive the device-probe presentation state. Pure — unit-testable without a
+ * Tauri host. Fail-closed: a null/malformed result is `unavailable`, never
+ * `no-device`; a persisted selection absent from the enumeration is `vanished`
+ * (the system never silently falls back to the default device — AC4).
+ */
+export function deriveSttDeviceProbe(input: {
+  /** A `stt_list_devices` probe is in flight. */
+  checking: boolean;
+  /** The latest result, or null when the command is unavailable/failed. */
+  result: SttDevicesResult | null;
+}): SttDeviceProbe {
+  if (input.checking) return { state: 'checking', ...EMPTY_DEVICE_PROBE };
+  const result = input.result;
+  if (!result || !Array.isArray(result.devices)) {
+    return { state: 'unavailable', ...EMPTY_DEVICE_PROBE };
+  }
+  const devices = result.devices.filter(isSttDeviceInfo);
+  const selectedId = normalizeDeviceId(result.selectedId);
+  const code = result.code ?? null;
+  // Access denial is about permission, not absence — it wins over `no-device`.
+  if (code === 'permissionDenied') {
+    return { state: 'permissionDenied', devices, selectedId, code };
+  }
+  if (devices.length === 0) return { state: 'no-device', devices, selectedId, code };
+  if (selectedId && !devices.some((device) => device.id === selectedId)) {
+    return { state: 'vanished', devices, selectedId, code };
+  }
+  return { state: 'devices', devices, selectedId, code };
 }
 
 // ── Companion server launch (#2857) — wire + derived types ───────────────────
