@@ -18,7 +18,8 @@ import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
-// SPIKE #2876 ST-4 — THROWAWAY POC. Live dictation into the existing bar input.
+// Spec #2877 ST-5 — live dictation into the existing bar input (the binding
+// context-dependent Ctrl+Space cascade + the launcher-origin listening cue).
 import { useVoiceDictation } from '../../../../shared/hooks/useVoiceDictation';
 
 /**
@@ -110,13 +111,21 @@ const isFocusable = (el: HTMLElement | null): boolean =>
   el.getAttribute('aria-disabled') !== 'true';
 
 /**
- * SPIKE #2876 ST-4 — THROWAWAY POC. The binding context-dependent Ctrl+Space
- * cascade, extracted PURE so every branch + the priority order is unit-pinned.
+ * Spec #2877 ST-5 — the BINDING context-dependent Ctrl+Space cascade (`(g)`),
+ * extracted PURE so every branch + the priority order is unit-pinned.
  *
- * `companionAway` is the file's `companion.isVisible && companion.isAway`
- * predicate — the PO case 1 state ("companion ACTIVE and AWAY FROM ITS SEAT").
- * It pre-empts the bar-focused branch, exactly as the binding amendment
- * requires. `pass` means "do not act and do not swallow the chord" (#2823 AC3).
+ * Order (binding):
+ *   1. #2823 AC3 carve-out — a focused text control OUTSIDE the launcher ⇒ `pass`
+ *      (never hijack unrelated in-app inputs; runs FIRST, also ahead of case 1).
+ *   2. DR-9 gate — voice disabled ⇒ `open` (every listening branch is
+ *      unreachable; `stt_start` is never invoked).
+ *   3. PO case 1 — companion ACTIVE and AWAY FROM ITS SEAT ⇒ `companion-listen`
+ *      (starts a companion-origin session with NO launcher reveal/focus).
+ *   4. PO case 2 — the launcher bar already has focus ⇒ listen/cancel toggle.
+ *   5. PO case 3 — default ⇒ `open` (show/focus the bar; NEVER starts listening).
+ *
+ * Ctrl+Space NEVER closes the launcher (close moved to Escape). `pass` means
+ * "do not act and do not swallow the chord" (#2823 AC3).
  */
 export type CtrlSpaceAction =
   | 'companion-listen'
@@ -130,17 +139,50 @@ export interface CtrlSpaceContext {
   activeInLauncher: boolean;
   listening: boolean;
   companionAway: boolean;
+  /** DR-9: voice input enablement — `false` makes every listening branch unreachable. */
+  voiceEnabled: boolean;
 }
 
 export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
   // 1. #2823 AC3 carve-out — typing in a text control OUTSIDE the launcher.
   if (ctx.activeIsTextControl && !ctx.activeInLauncher) return 'pass';
-  // 2. PO case 1 — companion active but away from its seat → companion listening.
+  // 2. DR-9 — voice disabled: no listening branch is reachable; fall through to
+  //    the #2823 show/focus behavior and never invoke `stt_start`.
+  if (!ctx.voiceEnabled) return 'open';
+  // 3. PO case 1 — companion active but away from its seat → companion listening.
   if (ctx.companionAway) return 'companion-listen';
-  // 3. PO case 2 — the launcher bar already has focus → toggle listening.
+  // 4. PO case 2 — the launcher bar already has focus → toggle listening.
   if (ctx.activeInLauncher) return ctx.listening ? 'launcher-cancel' : 'launcher-listen';
-  // 4. PO case 3 — default: show/focus the bar (#2823); it NEVER starts listening.
+  // 5. PO case 3 — default: show/focus the bar (#2823); it NEVER starts listening.
   return 'open';
+}
+
+/**
+ * Spec #2877 ST-5 (DR-11) — curated, actionable copy for a failed `stt_start`.
+ * The typed `SttErrorCode` is the only primary key; a raw IPC detail is never
+ * the primary sentence. Non-blocking: the app stays fully usable, no session
+ * starts, and the enablement preference is never silently flipped.
+ */
+export function voiceStartErrorCopy(code: string | null): string | null {
+  switch (code) {
+    case 'permissionDenied':
+      return 'Microphone access is blocked — allow it in Windows Settings → Privacy → Microphone, then try again.';
+    case 'noDevice':
+      return 'No microphone found. Connect a microphone, then try again.';
+    case 'modelMissing':
+    case 'modelCorrupt':
+      return "Voice input model isn't ready — open Companion settings to install it.";
+    case 'engineStartFailed':
+      return "Voice input couldn't start. Try again; if it persists, re-check the model in Companion settings.";
+    case 'disabled':
+      return 'Voice input is off. Turn it on in Companion settings.';
+    case 'alreadyListening':
+      return 'Voice input is already listening.';
+    case 'internal':
+      return 'Voice input hit an unexpected problem. Try again.';
+    default:
+      return null;
+  }
 }
 
 /** Subtle dot/tick grid texture (Asset 1.7) — faint border-color color-mix
@@ -158,7 +200,7 @@ const DESKTOP_TEXTURE_CSS = {
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
-  const { state: companion } = useCompanion();
+  const { state: companion, voiceEnabled } = useCompanion();
 
   // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
   // band (the wrapper below owns the size + `mb="4"`), so the command bar's
@@ -184,15 +226,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // #2871 ST-3 continuous busy primitive (AGENTS.md #523 — primitive read only).
   const companionBusy = companion.isInUse;
 
-  // SPIKE #2876 ST-4 — THROWAWAY POC. Live dictation (context-dependent Ctrl+Space).
-  // `start`/`cancel` are stable useCallbacks, so the document listener below can
-  // keep a stable identity and be mounted exactly once.
+  // Spec #2877 ST-5 — the context-dependent Ctrl+Space cascade (`(g)`) and the
+  // launcher-origin listening cue (DR-7). `start`/`stop`/`cancel` are stable
+  // useCallbacks, so the document listener below keeps a stable identity and is
+  // mounted exactly once (NFR-2).
   const voice = useVoiceDictation();
-  const { start: startVoice, cancel: cancelVoice } = voice;
-  // Latest-value refs for the mounted-once listener (mirrors `openRef` :185): the
-  // handler identity is stable, so any non-ref read inside it would be stale.
+  const { start: startVoice, stop: stopVoice, cancel: cancelVoice } = voice;
+  // Latest-value refs for the mounted-once listener (mirrors `openRef` :231): its
+  // handler identity is stable, so any non-ref read inside it would be stale
+  // ((g).7). `voiceEnabledRef` carries the DR-9 gate — when voice is disabled the
+  // listening branches are unreachable and `stt_start` is never invoked.
   const companionAwayRef = useRef(companionAway);
   const listeningRef = useRef(voice.listening);
+  const voiceEnabledRef = useRef(voiceEnabled);
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -472,15 +518,27 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (q.trim() !== '') setEngaged(true);
   }, []);
 
-  // SPIKE #2876 ST-4 — keep the mounted-once listener's ref mirrors current.
+  // Spec #2877 ST-5 — keep the mounted-once listener's ref mirrors current ((g).7):
+  // companion presence, live session state, and the DR-9 voice-enablement gate.
   useEffect(() => {
     companionAwayRef.current = companionAway;
   }, [companionAway]);
   useEffect(() => {
     listeningRef.current = voice.listening;
   }, [voice.listening]);
+  useEffect(() => {
+    voiceEnabledRef.current = voiceEnabled;
+  }, [voiceEnabled]);
 
-  // SPIKE #2876 ST-4 — live transcript → the EXISTING controlled bar input,
+  // Spec #2877 ST-5 (DR-9) — disabling voice while a session is live stops it
+  // immediately and releases the microphone (the backend's own `disabled` gate is
+  // the belt-and-braces second line). Keyed on the enablement flag only; the live
+  // state is read from the ref so this never re-fires per session tick.
+  useEffect(() => {
+    if (!voiceEnabled && listeningRef.current) void stopVoice();
+  }, [voiceEnabled, stopVoice]);
+
+  // Spec #2877 ST-5 — live transcript → the EXISTING controlled bar input,
   // LAUNCHER-origin sessions only. Writes `committed + partial` through the one
   // `handleQueryChange` path (never a second input, never a submit, never grid
   // navigation). Companion-origin dictation never writes into the bar.
@@ -489,12 +547,28 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     handleQueryChange(voice.liveText);
   }, [voice.origin, voice.liveText, handleQueryChange]);
 
+  // Spec #2877 ST-5 (DR-10) — the newest FINAL segment, derived from the hook's
+  // append-only `committed` text (a final APPENDS its segment; a partial only ever
+  // lives in `partial`, so it can never reach this). It feeds the transcript
+  // announcer, which must never announce a partial.
+  const [finalTranscript, setFinalTranscript] = useState('');
+  const committedRef = useRef('');
+  useEffect(() => {
+    const next = voice.committed;
+    const prev = committedRef.current;
+    committedRef.current = next;
+    if (next.length <= prev.length || !next.startsWith(prev)) return;
+    const segment = next.slice(prev.length).trim();
+    if (segment) setFinalTranscript(segment);
+  }, [voice.committed]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        // SPIKE #2876 ST-4 — a live dictation session cancels FIRST; otherwise
-        // Escape keeps today's exact behavior (shortcut-open → closeOverlay with
+        // Spec #2877 ST-5 ((g).2, binding) — a live dictation session cancels
+        // FIRST (the launcher stays open, the text is kept); otherwise Escape
+        // keeps today's exact behavior (shortcut-open → closeOverlay with
         // focus-origin restore; non-shortcut → idle collapse).
         if (listeningRef.current) {
           void cancelVoice();
@@ -634,10 +708,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         return;
       }
 
-      // SPIKE #2876 ST-4 — the binding context-dependent Ctrl+Space cascade
-      // (pure `selectCtrlSpaceAction`). Ctrl+Space NEVER closes the launcher any
-      // more; close moved to Escape. Every read comes from a ref because the
-      // listener is mounted once with a stable handler identity.
+      // Spec #2877 ST-5 — the BINDING context-dependent Ctrl+Space cascade (pure
+      // `selectCtrlSpaceAction`). Ctrl+Space NEVER closes the launcher; close
+      // moved to Escape. Every read comes from a ref because the listener is
+      // mounted once with a stable handler identity ((g).7 / DR-9).
       const active = document.activeElement as HTMLElement | null;
       const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
       const action = selectCtrlSpaceAction({
@@ -645,6 +719,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         activeInLauncher,
         listening: listeningRef.current,
         companionAway: companionAwayRef.current,
+        voiceEnabled: voiceEnabledRef.current,
       });
 
       // #2823 AC3/AC4: a pass neither acts nor swallows the chord.
@@ -654,6 +729,8 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
 
       switch (action) {
         case 'companion-listen':
+          // PO case 1 (R-3.6) — companion-origin: NEVER reveal or focus the
+          // launcher bar; the companion surface (seat/away overlay) shows the cue.
           void startVoice('companion');
           break;
         case 'launcher-listen':
@@ -772,7 +849,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             enterMode={commandBar.enterMode}
             hintLabel={commandBar.hintLabel}
             busy={companionBusy}
-            listening={voice.listening}
+            // Spec #2877 ST-5 (R-5.3) — the bar cue is LAUNCHER-origin only, so
+            // exactly one indicator shows per session (companion-origin is the
+            // bubble's surface, never the bar).
+            listening={voice.listening && voice.origin === 'launcher'}
+            onStopListening={() => void stopVoice()}
+            voiceErrorMessage={voiceStartErrorCopy(voice.errorCode)}
+            finalTranscript={finalTranscript}
+            voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"
           />
