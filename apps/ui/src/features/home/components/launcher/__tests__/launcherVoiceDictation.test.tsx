@@ -287,6 +287,67 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
   });
 
+  it('F-38: a duplicate companion-away Ctrl+Space keeps the live session (Escape still cancels, no alert)', async () => {
+    // Tester repro (F-38): companion away ⇒ `selectCtrlSpaceAction` returns
+    // `companion-listen` REGARDLESS of `listening`, so a second Ctrl+Space
+    // re-invokes `stt_start`. The duplicate must be an idempotent no-op: the
+    // live session survives (so Escape still cancels it) and no failure surface
+    // renders (alreadyListening is not an error).
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: true,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+    let startCount = 0;
+    invokeSpy.mockImplementation(async (command: string) => {
+      if (command === 'stt_start') {
+        startCount += 1;
+        return startCount === 1
+          ? okStart()
+          : {
+              started: false,
+              code: 'alreadyListening',
+              detail: 'A listening session is already active.',
+              deviceName: null,
+              sampleRate: null,
+            };
+      }
+      return undefined;
+    });
+    renderShell();
+
+    // Press 1 — a normal companion-origin start.
+    await act(async () => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+      await Promise.resolve();
+    });
+    expect(invokeSpy).toHaveBeenCalledWith('stt_start', { origin: 'companion' });
+
+    // The app-global live state (as the backend emits it after a real start).
+    emitListening(true, 'companion');
+
+    // Press 2 — same chord, backend now reports alreadyListening.
+    await act(async () => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+      await Promise.resolve();
+    });
+
+    const startCalls = invokeSpy.mock.calls.filter((call) => call[0] === 'stt_start');
+    expect(startCalls).toHaveLength(2);
+    expect(startCalls.every((call) => call[1]?.origin === 'companion')).toBe(true);
+
+    // The session is still live: Escape cancels it (never a launcher close).
+    const input = focusBar();
+    act(() => {
+      fireEvent.keyDown(input, { key: 'Escape' });
+    });
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+
+    // No inline failure surface (`voiceErrorMessage` must be null).
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+  });
+
   it('the bar input tracks the live transcript (partial → partial → final) and never submits', () => {
     const onOpenFeature = renderShell();
 

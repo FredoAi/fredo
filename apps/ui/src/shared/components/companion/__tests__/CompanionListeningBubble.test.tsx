@@ -114,6 +114,36 @@ describe('#2877 ST-6 — companion listening bubble (R-5.3 / DR-8)', () => {
     );
   });
 
+  it('F-38: a corrected duplicate-start re-emit keeps the dot + Stop (never the error variant)', () => {
+    renderBubble();
+    emitState(true, 'companion');
+    expect(screen.getByTestId('companion-listening-dot')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-listening-stop')).toBeInTheDocument();
+
+    // ST-1's corrected duplicate-start emission is the TRUE live state — the
+    // same shape as the original start (`listening:true`, active
+    // `origin:'companion'`). It must never flip the bubble to `showError`.
+    emitState(true, 'companion', null, null);
+
+    expect(screen.getByTestId('companion-listening-bubble')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-listening-dot')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-listening-stop')).toBeInTheDocument();
+    expect(screen.queryByTestId('companion-listening-error')).toBeNull();
+  });
+
+  it('F-38: a re-emit that still carries alreadyListening cannot flip a LIVE session to the error variant', () => {
+    // Belt-and-braces for the frontend half: while `listening:true` the code is
+    // ignored (the hook nulls it), so a partially-corrected backend emission can
+    // never blank the indicator mid-session (R-5.3).
+    renderBubble();
+    emitState(true, 'companion');
+    emitState(true, 'companion', 'alreadyListening', 'A listening session is already active.');
+
+    expect(screen.getByTestId('companion-listening-dot')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-listening-stop')).toBeInTheDocument();
+    expect(screen.queryByTestId('companion-listening-error')).toBeNull();
+  });
+
   it('Stop invokes stt_stop (backend-authoritative, idempotent)', () => {
     renderBubble();
     emitState(true, 'companion');
