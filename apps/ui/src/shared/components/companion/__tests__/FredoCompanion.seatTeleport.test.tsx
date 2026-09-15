@@ -29,6 +29,7 @@ import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
 import { CompanionEntity, FredoCompanion } from '@/shared/components/companion';
+import { getActiveCompanionEntity } from '@/shared/components/companion/CompanionEntity';
 import { DevAdapter } from '@/app/adapters/DevAdapter';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { AVATAR_SM } from '@/shared/components/fredo-avatar/fredoAvatarSizes';
@@ -146,6 +147,14 @@ describe('FredoCompanion seat→away teleport dispatch (#2870 ST-2c)', () => {
     // At home the single rendered avatar is the SEAT (in-flow, position:relative);
     // the away overlay is NOT mounted while Fredo is home.
     await waitFor(() => expect(avatars(container)).toHaveLength(1));
+
+    // #2878 — the gesture dispatches through the module-scoped active-entity
+    // registry (CompanionEntity.tsx:89-101), populated by a PASSIVE effect (:579)
+    // that can flush AFTER the commit the DOM-only waitFor above observes. Arm the
+    // actual dispatch target explicitly — the same discipline crossWindow.test.tsx:125-131
+    // uses for the companion-teleport listener — before the gesture.
+    await waitFor(() => expect(getActiveCompanionEntity()?.surface).toBe('seat'));
+
     const seat = avatar(container);
     expect(seat.style.position).toBe('relative');
     expect(seat.getAttribute('data-state')).toBe('idle');
