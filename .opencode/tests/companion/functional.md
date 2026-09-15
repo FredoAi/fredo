@@ -1168,3 +1168,11 @@ Verdict: the round-1 F-71 defect is **FIXED**. Live (real managed `llama-server`
 
 F-73..F-75 PASS (live). The round's FAIL is on the launcher surface (`launcher` F-63 /
 `voice-input` F-53) — not on the companion bubble. Full receipts in the issue's `## Tests Runs`.
+
+### #2878 testing round 2 (spec/2878 @ 99144a19, fix 99144a1) — results
+
+- **F-73 re-verified PASS (live).** `stt_start {origin:"companion"}` → `companion-listening-bubble`
+  with `companion-listening-stop`, the launcher bar cue ABSENT (0 `launcher-command-listening*`),
+  `document.activeElement` unchanged; final `companion origin probe 3232` + real `stt_stop` with
+  autosend ON → exactly ONE `runGeneration`; the bubble cleared. The ST-1r launcher fix does not
+  touch the bubble (F-74/F-75 stand from round 1).
