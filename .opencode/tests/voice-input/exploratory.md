@@ -116,3 +116,16 @@
 
 - [ ] E-24: **Repeated enable/disable + start/stop churn (leak).** Cycle enable→start→stop→disable 10 times; watch for leaked capture handles, accumulated threads, memory creep, or a stuck indicator.
   - Prompt: memory snapshots across cycles; OS mic indicator; console.
+
+## Run log — #2877 round 1 (2026-09-15, `spec/2877` @ `dbb3843`)
+
+- **E-16 observed (lever recorded).** The real Ctrl+Space chord DID land in the WebView (disabled gate → case 3 `open`, bar focused) — no focus fallback needed for the disabled case; the direct `stt_start` invoke was used for the typed-code probes.
+- **E-17 / E-18 / E-19 / E-23 UNVERIFIED (named blockers).** Mid-transcription network block (no elevation/adapter lever), TOCTOU model swap (the size-exact garbage encoder was rejected cleanly by the SHA gate — no crash, but a true mid-session swap was not driven), and mid-session device loss/endpoint timing (silent virtual device only).
+- **E-20 PASS (observed).** Interrupted-resume: a genuine 35,000,000 B partial encoder + ≥ 25.9 s idle, then a real `download_stt_model` whose first progress event carried the on-disk offset (35,000,000) and completed in place to 71,083,163 with the SHA verified. (Related functional F-22.)
+- **E-21 PASS (observed).** Enabling voice alone never started capture (`stt_status` idle; the engine is constructed only on first `stt_start`); the visible cue appeared with the session (the 6 s hearing-nothing hint fired on silence); no capture ran without a visible indicator on a clean single start.
+- **E-22 observed.** Toggling autosend produced no send/submit side-effect (setting-only); the toggle's behaviour caption flipped. (Dispatch is #2878.)
+- **E-24 observed (3 cycles, measured).** 3 start/stop cycles re-opened cleanly; WS returned from 182.6 MB (engine loaded) to 79.5 MB after stop; no stuck indicator, console clean.
+
+### Promoted findings
+
+- **E-25 → F-38 (CONFIRMED DEFECT, promoted):** a duplicate `stt_start` while a session is live returns the correct typed `alreadyListening` but the backend emits `stt:state {listening:false}` for that path, so the frontend clears the live indicator (launcher cue disappears; the companion bubble flips to its error variant with no Stop control) while `stt_status` still reports `listening:true` and the mic keeps capturing. Violates R-5.3/AC5 ("never capture audio without a visible active indicator"). Reachable through the binding cascade: `selectCtrlSpaceAction` returns `companion-listen` for a companion-away context regardless of `listening`, so a second Ctrl+Space re-invokes `stt_start`. Repro + suggested fix in `functional.md` F-38. Supersedes the spike-era "clean stop / no-op" question (old E-7).
