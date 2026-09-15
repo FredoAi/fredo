@@ -664,3 +664,25 @@ Verdict: round-1 REQ-6/REQ-14/REQ-15/REQ-16 **all FIXED**. Live (real managed `l
   `animationName="Fredo-cursor-blink"` during streaming; product pins
   `companion.cursorReducedMotion.test.ts` 2/2 + `companionReplyErrorCopy.test.ts` 4/4 green.
   Screens `req14-busy-atomic.png`, `req4-busy-streaming.png`.
+
+---
+
+## #2878 extension — launcher-bar dictation commit (autosend) + visible cancel affordance
+
+> Issue #2878 completes the **commit behavior** on the #2877 ST-5 bar surface: `voiceAutosend` ON →
+> the #2871 smart-Enter path (`commitBarQuery`), OFF → input only; Stop = finalize/commit, the new
+> visible `×` control + Escape = cancel/discard. **Verification policy: live.** Serving
+> `spec/2878 @ 33cf86d5`. Rows F-59..F-63 map to the QA-Plan REQ-2.x/3.x/5.2 + the binding Ctrl+Space/Escape
+> decisions. (Full matrix in `.opencode/tests/voice-input/functional.md` F-39..F-61.)
+
+- [x] **F-59 (REQ-2.1/2.3) — autosend ON + exact tile name launches through the smart-Enter path (live).** PASS. Companion ACTIVE; a launcher-origin finalize of `Settings` → `div[role="group"][aria-label="Settings"]` opened with NO manual Enter and NO `runGeneration` (launch WINS). Autosend OFF repeats it only on a manual Enter.
+- [x] **F-60 (REQ-2.2/2.6) — autosend ON non-match sends / OFF keeps the text (live).** PASS. ON: final `what is your name` → bar cleared + one `runGeneration` + streamed reply. OFF: a non-tile final leaves `value` in the bar with zero `runGeneration`.
+- [x] **F-61 (REQ-3.1/3.2/ESC) — Escape discards the partial, restores the pre-session draft, one action per press (live).** PASS. Draft typed → partial in the bar → Escape → partial gone, `value` restored to the draft, `listening:false`, no dispatch; a 2nd Escape follows today's idle-collapse (`aria-expanded=false`; launcher stays open on the 1st).
+- [x] **F-62 (REQ-CTRL.1/CTRL.2) — binding Ctrl+Space cascade + no bar focus steal (live).** PASS. companion away + chord → companion-origin session + bar cue absent + `activeElement` stays BODY; bar focused + chord → `launcher-listen`; default + chord → show/focus with `listening:false`.
+- [ ] **F-63 (REQ-5.1 via the launcher surface) — the MINIMIZE control clears the bar but NOT the host mirror → silent finalize dispatches stale text. FAIL (defect routed to `voice-input` F-53).** Repro on the launcher: type text → click `button[aria-label="Minimize launcher"]` (bar `value=""`) → `stt_start` → `stt_stop` with no transcript → the pre-Minimize text is sent to Fredo. Root cause `LauncherShell.tsx:514` (`setQuery('')` without `barTextRef.current = ''`).
+
+### #2878 testing round 1 (spec/2878 @ 33cf86d5) — results
+
+Verdict **FAIL** (the F-63 phantom dispatch). Full per-AC matrix + live receipts in the issue's
+`## Tests Runs`. F-59..F-62 PASS; F-63 FAIL (reproducible). `pnpm --filter @fredo/ui test:run`
+80 files / 1079 tests green; console clean across every leg.
