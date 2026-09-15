@@ -913,6 +913,91 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
     expect(input().value).toBe('draft I typed');
   });
 
+  // ── ST-1r — session-scoped finalize evidence (the round-2 defect) ──────────
+  // The finalize commit is decided by the session's OWN committed FINAL, never by
+  // the bar mirror. These legs FAIL on the pre-fix code (mirror-derived
+  // `sessionHasTextRef`): the discriminator + the minimize repro dispatch the
+  // draft, and both E-1 legs dispatch the partial / finalized text.
+
+  it('ST-1r discriminator: a no-final session after a prior session restores the draft and never dispatches', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    // One completed session so `origin` persists `'launcher'` — the live repro's
+    // precondition (the live-text effect does not re-run for a 2nd+ launcher
+    // session, so the mirror is never cleared at its start).
+    emitListening(true, 'launcher');
+    emitFinal('first');
+    emitListening(false, 'launcher');
+    companionDispatchMock.askActiveCompanion.mockClear();
+
+    // This next session recognizes NOTHING — the draft must survive, unsent.
+    type('draft I typed');
+    emitListening(true, 'launcher');
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('draft I typed');
+  });
+
+  it('ST-1r minimize: a silent session after Minimize never dispatches the pre-Minimize text (E-2 mirror sync)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    const onOpenFeature = renderShell();
+
+    type('STALE MIRROR PROBE 4477');
+    act(() => {
+      fireEvent.click(screen.getByLabelText('Minimize launcher'));
+    });
+    expect(input().value).toBe('');
+
+    emitListening(true, 'launcher');
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('');
+  });
+
+  it('ST-1r E-1 partial-cancel: a session ending with only a partial never dispatches and restores the bar', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    type('pre-session text');
+    emitListening(true, 'launcher');
+    emitPartial('e');
+    expect(input().value).toBe('e');
+
+    emitListening(false, 'launcher');
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('pre-session text');
+  });
+
+  it('ST-1r E-1 typed-error: an error end is a cancel (no dispatch, pre-session restore)', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    renderShell();
+
+    type('pre-session text');
+    emitListening(true, 'launcher');
+    emitFinal('hello');
+
+    act(() => {
+      emit('stt:state', {
+        listening: false,
+        code: 'noDevice',
+        detail: 'x',
+        origin: 'launcher',
+      });
+    });
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('pre-session text');
+  });
+
   // ── Consecutive sessions (exactly-once per utterance) ──────────────────────
 
   // ── UX-2 — manual edit during a live segment ───────────────────────────────

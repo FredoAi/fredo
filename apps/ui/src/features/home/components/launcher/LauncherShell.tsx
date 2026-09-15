@@ -274,8 +274,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const autosendFiredRef = useRef(false);
   const launcherActiveRef = useRef(false);
   const finalizePendingRef = useRef(false);
-  const sessionHasTextRef = useRef(false);
-  const committedAtEndRef = useRef('');
+  // ST-1r — the no-produced finalize restores the pre-session bar text ONCE per
+  // session; the finalize effect then STAYS armed for a late final, so the
+  // once-guard is what stops a later manual keystroke being clobbered by a
+  // repeated restore. Reset at session start with the other per-session guards.
+  const restoredAfterSessionRef = useRef(false);
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -511,6 +514,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const handleMinimize = useCallback(() => {
     // #2823: minimize closes a shortcut-opened overlay too (its z must drop).
     closeSurface();
+    // ST-1r-2 — keep the synchronous mirror in lockstep with the controlled
+    // `query`: every synchronous `setQuery` writer updates `barTextRef`, so the
+    // pre-session/commit captures can never read the cleared-away text (the
+    // stale-mirror phantom-dispatch class).
+    barTextRef.current = '';
     setQuery('');
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
@@ -649,6 +657,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       cancelledRef.current = false;
       userEditedDuringSessionRef.current = false;
       finalizePendingRef.current = false;
+      restoredAfterSessionRef.current = false;
       preSessionTextRef.current = barTextRef.current;
       sessionBaseCommittedRef.current = voice.committed;
       prevCommittedRef.current = voice.committed;
@@ -656,10 +665,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // Session end: arm the finalize commit. The commit effect below also runs
       // on `voice.liveText` so a final transcript landing just after the
       // `listening:false` state event still commits (the exactly-once witness
-      // lives in `autosendFiredRef`).
+      // lives in `autosendFiredRef`). ST-1r — the commit EVIDENCE is derived in
+      // the finalize effect from the session-scoped `committed` delta, never
+      // from the bar mirror.
       finalizePendingRef.current = true;
-      sessionHasTextRef.current = barTextRef.current.trim() !== '';
-      committedAtEndRef.current = voice.committed;
     }
   }, [voice.listening, voice.origin, voice.committed]);
 
@@ -709,12 +718,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (segment) setFinalTranscript(segment);
   }, [voice.committed]);
 
-  // Spec #2878 ST-1 (R-2.5/R-2.6/R-4.2) — the autosend finalize commit. Fires once
-  // on the `launcher`-origin session's END transition (the `listening:false` state
-  // event), reads the CURRENT bar text, and is a one-shot per session. It depends
-  // on `voice.liveText` as well as `listening` so a final transcript landing just
-  // after the state event still commits. At finalize while a generation is in
-  // flight `commitBarQuery` is a hard no-op (silent drop, no queue — R-2.4/R-4.2).
+  // Spec #2878 ST-1r (R-2.5/R-2.6/R-4.2/R-5.1) — the autosend finalize commit.
+  // Fires once on the `launcher`-origin session's END transition (the
+  // `listening:false` state event), reads the CURRENT bar text, and is a one-shot
+  // per session. It depends on `voice.liveText` as well as `listening` so a final
+  // transcript landing just after the state event still commits. At finalize while
+  // a generation is in flight `commitBarQuery` is a hard no-op (silent drop, no
+  // queue — R-2.4/R-4.2).
+  //
+  // The commit EVIDENCE is session-scoped, never the bar mirror: the session is
+  // committable iff its own `voice.committed` FINAL text grew past the baseline
+  // captured at session start. Guarding on a committed FINAL (never `partial`) is
+  // exactly what separates Stop from Cancel at the source, so any DOM↔mirror
+  // divergence can never become a phantom dispatch (the #2878 round-2 defect).
   useEffect(() => {
     if (!finalizePendingRef.current) return;
     if (voice.origin !== 'launcher' || voice.listening) return;
@@ -723,34 +739,52 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       finalizePendingRef.current = false;
       return;
     }
-    // A final that lands after the state event grows `committed` — part of this
-    // same utterance; its text is now in the bar (the live-text effect ran first).
-    if (voice.committed !== committedAtEndRef.current) sessionHasTextRef.current = true;
-    if (!sessionHasTextRef.current) {
-      // R-3.2 — a finalize that produced no text restores the pre-session text.
-      // Stay armed for one tick: a final may still be in flight.
-      handleQueryChange(preSessionTextRef.current);
+    // ST-1r (E-1) — an end carrying a typed error (device loss / failure) is a
+    // CANCEL: restore the pre-session text once, never commit. The shipped wire
+    // cannot distinguish a backend cancel from a stop, so the committed-final
+    // evidence below closes the silent/partial gap while this guard covers the
+    // typed-error end.
+    if (voice.errorCode !== null) {
+      finalizePendingRef.current = false;
+      if (!restoredAfterSessionRef.current) {
+        restoredAfterSessionRef.current = true;
+        handleQueryChange(preSessionTextRef.current);
+      }
       return;
     }
+    // ST-1r — the append-only, session-scoped evidence rule (same as the
+    // live-text effect): only a FINAL that grew `committed` past this session's
+    // baseline is committable. A partial alone never commits.
+    const base = sessionBaseCommittedRef.current;
+    const hasCommittedFinal =
+      voice.committed.startsWith(base) && voice.committed.length > base.length;
+    if (!hasCommittedFinal) {
+      // R-3.2 — a finalize that produced no recognized text restores the
+      // pre-session text ONCE per session, then STAYS armed: a final may still be
+      // in flight (the effect re-runs on the `voice.committed`/`voice.liveText`
+      // deps). The once-guard stops a later manual edit being clobbered.
+      if (!restoredAfterSessionRef.current) {
+        restoredAfterSessionRef.current = true;
+        handleQueryChange(preSessionTextRef.current);
+      }
+      return;
+    }
+    // The finalize decision is made from here on — never re-arm (including the
+    // empty-text branch below), so a post-session manual edit can never be
+    // auto-dispatched.
+    finalizePendingRef.current = false;
     const text = barTextRef.current.trim();
     if (text === '') return;
-    if (!voiceAutosend) {
-      // R-2.6 — autosend OFF: the finalized text stays in the bar, no dispatch.
-      finalizePendingRef.current = false;
-      return;
-    }
-    if (autosendFiredRef.current) {
-      finalizePendingRef.current = false;
-      return;
-    }
+    if (!voiceAutosend) return; // R-2.6 — autosend OFF: text stays, no dispatch.
+    if (autosendFiredRef.current) return;
     autosendFiredRef.current = true;
-    finalizePendingRef.current = false;
     commitBarQuery(text);
   }, [
     voice.listening,
     voice.origin,
     voice.liveText,
     voice.committed,
+    voice.errorCode,
     voiceAutosend,
     commitBarQuery,
     handleQueryChange,
