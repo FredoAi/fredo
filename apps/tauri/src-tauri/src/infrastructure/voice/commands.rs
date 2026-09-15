@@ -1,7 +1,8 @@
-// SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
+//! STT Tauri commands.
 //!
-//! STT Tauri commands. [`stt_check_model`] probes the pinned STT model files
-//! with the shared exact-size classifier (NFR-6). Acquisition lives in
+//! [`stt_check_model`] probes the pinned STT model files with the shared
+//! exact-size classifier (NFR-6); [`stt_list_devices`] enumerates the host input
+//! devices and reports the persisted selection. Acquisition lives in
 //! `features::setup::commands::download_stt_model`, which reuses the companion
 //! streamed download + SHA-256 verify engine. The session commands delegate to
 //! [`super::session`].
@@ -13,9 +14,10 @@ use crate::infrastructure::companion::models::{
     is_step_complete, probe_files, resolve_models_dir, ModelFileStatus,
 };
 
+use super::capture;
 use super::manifest::resolve_stt_manifest;
 use super::session;
-use super::state::{SttStartResult, SttStateEvent};
+use super::state::{SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent};
 
 /// Per-file STT model probe result returned by [`stt_check_model`].
 #[derive(Serialize, Clone, Debug)]
@@ -37,6 +39,32 @@ pub fn stt_check_model(app: AppHandle) -> SttModelStatus {
     let files = probe_files(&models_dir, &manifest);
     let ready = is_step_complete(&models_dir, &manifest);
     SttModelStatus { ready, files }
+}
+
+/// Enumerate the host input devices for the Companion settings picker, marking
+/// the system default and echoing the persisted selection
+/// (`Fredo_companion_voice_device_id`). Never panics: an empty host or an
+/// enumeration failure reports the typed `noDevice` code with an empty list.
+#[tauri::command]
+pub fn stt_list_devices(app: AppHandle) -> SttDevicesResult {
+    let selected_id = session::persisted_device(&app);
+    match capture::list_input_devices() {
+        Ok(devices) if !devices.is_empty() => SttDevicesResult {
+            devices,
+            selected_id,
+            code: None,
+        },
+        Ok(devices) => SttDevicesResult {
+            devices,
+            selected_id,
+            code: Some(SttErrorCode::NoDevice),
+        },
+        Err(error) => SttDevicesResult {
+            devices: Vec::new(),
+            selected_id,
+            code: Some(error.code),
+        },
+    }
 }
 
 /// Start a listening session (context-dependent Ctrl+Space path). Never panics;

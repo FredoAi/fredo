@@ -83,7 +83,7 @@ The companion's runtime prerequisites are checked in-app. Open **Settings → Co
 
 Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once all prerequisites are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
 
-A separate **Voice input model** step is **optional and non-gating** — it is rendered under an explicit *Optional / Not required for companion chat* group, excluded from the wizard's `installed/total` summary, and installing or removing it never changes Companion readiness. It downloads the four-file sherpa-onnx English model (~72.7 MB) through the same streamed download + per-file SHA-256 verification path as the GGUF set. Voice input is opt-in (Companion settings → **Voice input**, default off); production voice-input UX is owned by the follow-up implementation specs.
+A separate **Voice input model** step is **optional and non-gating** — it is rendered under an explicit *Optional / Not required for companion chat* group, excluded from the wizard's `installed/total` summary, and installing or removing it never changes Companion readiness. It downloads the four-file sherpa-onnx English model (`tokens.txt` / `encoder` / `decoder` / `joiner`, ~72.7 MB) through the same streamed download + per-file SHA-256 verification path as the GGUF set, into `<models_dir>/sherpa-onnx-streaming-zipformer-en-2023-06-26/`, where `<models_dir>` is the models directory the backend reports. Voice input is a **shipped, opt-in** feature (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the model setup/repair row (with a re-check action and the resolved model location), the input-device selection, and the autosend toggle. All transcription runs on-device — audio never leaves the machine.
 
 ## OTLP Configuration
 
@@ -150,7 +150,7 @@ window.__devAdapter.emit({
 pnpm build:tauri
 ```
 
-> **Native STT dependency (spike #2876 POC):** the Rust workspace carries a `sherpa-onnx` dependency for the local speech-to-text proof-of-concept. On Windows, `sherpa-onnx-sys` fetches a prebuilt static x64 archive during `cargo build` unless `SHERPA_ONNX_LIB_DIR` points at a local library directory. The follow-up implementation specs either keep or deliberately revert this dependency.
+> **Native STT dependency:** the Rust workspace carries pinned `cpal` (0.18) and `sherpa-onnx` (1.13.8) dependencies backing the shipped on-device voice-input feature. On Windows, `sherpa-onnx-sys` fetches a prebuilt static x64 archive during `cargo build`; set `SHERPA_ONNX_LIB_DIR` to point at a local library directory for offline or CI builds.
 
 A local build produces an installer for your current OS in `apps/tauri/src-tauri/target/release/bundle/`:
 

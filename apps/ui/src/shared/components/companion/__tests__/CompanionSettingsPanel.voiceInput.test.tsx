@@ -1,5 +1,6 @@
 /**
- * CompanionSettingsPanel — #2876 ST-5 voice input group + optional STT setup step.
+ * CompanionSettingsPanel — #2876 ST-5 voice input group + optional STT setup step,
+ * refreshed for #2877 ST-4 (the extracted `VoiceInputSettings` group).
  *
  * Proves the observable contract without a Tauri host:
  *   1. the READY branch renders a "Voice input" group with an opt-in toggle that
@@ -9,17 +10,28 @@
  *      inputs: backend readiness + a healthy managed server);
  *   3. the optional `sttModel` step is rendered in a separate OPTIONAL group and is
  *      EXCLUDED from the wizard's `installed/total` summary.
+ *
+ * #2877 ST-4 extensions (added, never weakening the pins above):
+ *   4. the voice group renders INSIDE the existing Companion section — no new
+ *      settings nav item and no dedicated Voice section;
+ *   5. the model row shows the resolved location on ready, the engine status line
+ *      and the one persistent settings live region;
+ *   6. the device selector + autosend switch render under the same group and
+ *      persist their values (`Fredo_companion_voice_device_id`,
+ *      `Fredo_companion_voice_autosend`).
  */
 
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
   CompanionProvider,
   useCompanion,
   VOICE_ENABLED_SETTING_KEY,
+  VOICE_AUTOSEND_SETTING_KEY,
+  VOICE_DEVICE_ID_SETTING_KEY,
 } from '@/shared/contexts/CompanionContext';
 import { CompanionSettingsPanel } from '@/shared/components/companion/CompanionSettingsPanel';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -29,6 +41,7 @@ import type {
   ModelFileId,
   ModelFileStatus,
   ModelFileState,
+  SttDevicesResult,
   SttModelStatus,
 } from '@/shared/components/companion/companionReadiness';
 
@@ -101,6 +114,15 @@ const sttReady: SttModelStatus = {
   files: STT_IDS.map((id) => sttFile(id, 'present')),
 };
 
+const sttDevices: SttDevicesResult = {
+  devices: [
+    { id: 'Microphone (USB)', name: 'Microphone (USB)', isDefault: true },
+    { id: 'Iriun Webcam', name: 'Iriun Webcam', isDefault: false },
+  ],
+  selectedId: null,
+  code: null,
+};
+
 /** Observable voice-input preference (mirrors the CompanionStateProbe pattern). */
 function VoiceProbe() {
   const { voiceEnabled } = useCompanion();
@@ -127,6 +149,7 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
       if (command === 'stt_check_model') return sttReady;
+      if (command === 'stt_list_devices') return sttDevices;
       return undefined;
     });
     adapterBridge.setListen(async () => () => {});
@@ -215,5 +238,91 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
 
     // The not-ready gate keeps rendering the wizard ONLY (no controls).
     expect(screen.queryByTestId('companion-controls')).toBeNull();
+  });
+});
+
+// ── #2877 ST-4 — the extracted VoiceInputSettings group ──────────────────────
+
+describe('CompanionSettingsPanel voice group placement + status (#2877 ST-4)', () => {
+  function renderReady() {
+    adapterBridge.setInvoke(async (command: string) => {
+      if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'get_llama_server_status') return healthyServer();
+      if (command === 'stt_check_model') return sttReady;
+      if (command === 'stt_list_devices') return sttDevices;
+      return undefined;
+    });
+    adapterBridge.setListen(async () => () => {});
+    return renderWithChakra(
+      <CompanionProvider>
+        <CompanionSettingsPanel />
+      </CompanionProvider>,
+    );
+  }
+
+  it('renders the voice group INSIDE the existing Companion section (no new nav item/section)', async () => {
+    renderReady();
+
+    const section = await screen.findByTestId('companion-controls');
+    // The voice group lives in the existing Companion section.
+    expect(within(section).getByText('Voice input')).toBeInTheDocument();
+    expect(within(section).getByText('Dictate with Ctrl+Space')).toBeInTheDocument();
+    // No dedicated Voice section heading was added anywhere.
+    expect(screen.queryByRole('heading', { name: 'Voice' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Voice input' })).toBeNull();
+  });
+
+  it('shows the resolved model location on ready + the engine status + settings live region', async () => {
+    renderReady();
+
+    await screen.findByTestId('companion-controls');
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-voice-model-row')).toHaveAttribute(
+        'data-state',
+        'installed',
+      );
+    });
+    // AC2 — the resolved on-disk location (derived from the per-file paths).
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-voice-model-location')).toHaveTextContent(
+        'C:\\models',
+      );
+    });
+    // R-1.3 — the engine status line is present and idle by default.
+    expect(screen.getByTestId('companion-voice-engine-status')).toHaveAttribute(
+      'data-state',
+      'idle',
+    );
+    // DR-10 — one persistent polite live region for settings changes.
+    const announcer = screen.getByTestId('companion-voice-settings-announcer');
+    expect(announcer).toHaveAttribute('role', 'status');
+    expect(announcer).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('renders the device selector + autosend switch and persists their values', async () => {
+    renderReady();
+
+    const select = (await screen.findByTestId(
+      'companion-voice-device-select',
+    )) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(within(select).getByRole('option', { name: 'Iriun Webcam' })).toBeInTheDocument();
+    });
+    fireEvent.change(select, { target: { value: 'Iriun Webcam' } });
+    await waitFor(() => {
+      expect(localStorage.getItem(VOICE_DEVICE_ID_SETTING_KEY)).toBe('Iriun Webcam');
+    });
+
+    // Autosend defaults OFF and persists ON.
+    const autosend = screen.getByLabelText('Send voice transcripts automatically');
+    expect(autosend).not.toBeChecked();
+    expect(localStorage.getItem(VOICE_AUTOSEND_SETTING_KEY)).toBeNull();
+    fireEvent.click(autosend);
+    await waitFor(() => {
+      expect(localStorage.getItem(VOICE_AUTOSEND_SETTING_KEY)).toBe('true');
+    });
+    expect(
+      screen.getByText('Transcripts are sent as soon as you stop — no review.'),
+    ).toBeInTheDocument();
   });
 });

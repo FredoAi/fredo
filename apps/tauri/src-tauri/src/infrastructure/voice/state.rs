@@ -1,8 +1,9 @@
-// SPIKE #2876 — THROWAWAY POC — replaced by #2877/#2878
+//! STT IPC wire types (`serde(rename_all = "camelCase")`).
 //!
-//! STT IPC wire types (camelCase; `serde(rename_all = "camelCase")`) exactly as
-//! pinned in the #2876 plan's API Contracts. ST-3 owns this file; #2877 replaces
-//! it.
+//! The vocabulary the Companion settings UI, the launcher listening cue and the
+//! transcript stream client consume: the typed failure codes, the `stt_start`
+//! result, the `stt:transcript` / `stt:state` payloads, and the input-device
+//! enumeration returned by `stt_list_devices`.
 
 use serde::Serialize;
 
@@ -62,6 +63,36 @@ pub struct SttStateEvent {
     pub origin: Option<String>,
 }
 
+/// One enumerable input device for the Companion settings picker.
+///
+/// `id` is the stable selector: `cpal` exposes no device GUID, so **`id` IS the
+/// cpal device name string**. `name` is the display label (identical today; it
+/// may be decorated later without changing the selection identity).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SttDeviceInfo {
+    /// Stable selector — the cpal device name.
+    pub id: String,
+    /// Display label for the picker.
+    pub name: String,
+    /// True for the host's default input device.
+    pub is_default: bool,
+}
+
+/// Result of `stt_list_devices`.
+///
+/// `code` is `None` when enumeration succeeded with at least one device, and
+/// `Some(NoDevice)` when the host exposes no input device or enumeration itself
+/// failed (both render the UI's no-device state). `selectedId` echoes the
+/// persisted `Fredo_companion_voice_device_id`; `None` = the system default.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SttDevicesResult {
+    pub devices: Vec<SttDeviceInfo>,
+    pub selected_id: Option<String>,
+    pub code: Option<SttErrorCode>,
+}
+
 /// Internal typed error carried from capture/engine/session to the command
 /// boundary. Never surfaced as a panic.
 #[derive(Clone, Debug)]
@@ -82,6 +113,18 @@ impl VoiceError {
         Self::new(
             SttErrorCode::NoDevice,
             "No input device is available on this host.",
+        )
+    }
+
+    /// The persisted input device no longer enumerates — actionable copy that
+    /// NAMES the device. Capture never silently falls back to a different
+    /// microphone (AC4 / R-4.5).
+    pub fn no_device_named(name: &str) -> Self {
+        Self::new(
+            SttErrorCode::NoDevice,
+            format!(
+                "The selected microphone \"{name}\" is not available — choose a microphone in Companion settings."
+            ),
         )
     }
 
@@ -128,5 +171,56 @@ impl VoiceError {
             device_name: None,
             sample_rate: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The device-enumeration wire shape the settings picker consumes
+    /// (`stt_list_devices`): camelCase keys, `id` == the cpal name, `selectedId`
+    /// echoing the persisted preference.
+    #[test]
+    fn device_wire_types_serialize_as_camel_case() {
+        let info = SttDeviceInfo {
+            id: "Iriun Webcam".to_string(),
+            name: "Iriun Webcam".to_string(),
+            is_default: true,
+        };
+        let json = serde_json::to_value(&info).expect("serialize device info");
+        assert_eq!(json["id"], "Iriun Webcam");
+        assert_eq!(json["name"], "Iriun Webcam");
+        assert_eq!(json["isDefault"], true);
+        assert!(json.get("is_default").is_none());
+
+        let result = SttDevicesResult {
+            devices: vec![info],
+            selected_id: None,
+            code: None,
+        };
+        let json = serde_json::to_value(&result).expect("serialize devices result");
+        assert_eq!(json["selectedId"], serde_json::Value::Null);
+        assert_eq!(json["code"], serde_json::Value::Null);
+        assert_eq!(json["devices"][0]["isDefault"], true);
+    }
+
+    /// The vanished-device failure names the device and is the typed `noDevice`
+    /// (AC4) — never a generic message that hides which microphone vanished.
+    #[test]
+    fn no_device_named_is_typed_and_names_the_device() {
+        let error = VoiceError::no_device_named("Iriun Webcam");
+        assert_eq!(error.code, SttErrorCode::NoDevice);
+        assert!(
+            error.detail.contains("Iriun Webcam"),
+            "detail must name the device: {}",
+            error.detail
+        );
+
+        let result = error.into_start_result();
+        assert!(!result.started);
+        assert_eq!(result.code, Some(SttErrorCode::NoDevice));
+        assert!(result.device_name.is_none());
+        assert!(result.sample_rate.is_none());
     }
 }

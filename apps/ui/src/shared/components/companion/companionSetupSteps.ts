@@ -96,7 +96,7 @@ export const COMPANION_SETUP_STEPS: CompanionSetupStepMeta[] = [
     testId: 'stt-model',
     label: 'Voice input model',
     description:
-      'Optional. The local speech-to-text model for voice input. Not required for companion chat.',
+      'Optional — on-device speech-to-text for voice dictation. Four files run locally and no audio leaves this machine. Not required for companion chat.',
     icon: LuMic,
     optional: true,
     action: {

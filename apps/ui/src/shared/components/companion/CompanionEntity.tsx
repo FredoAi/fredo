@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { useCompanion } from '../../contexts/CompanionContext';
 import type { CompanionPosition, CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
+import { CompanionListeningBubble } from './CompanionListeningBubble';
 import { TicTacToe } from './features/tictactoe';
 import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
@@ -751,6 +752,20 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         >
           <FredoAvatar size="sm" state={displayAnim} />
         </div>
+
+        {/* #2877 ST-6 (DR-8) — the companion-origin listening affordance. Rendered
+            OUTSIDE the decorative `aria-hidden` SpeechBubble wrapper so its Stop
+            control stays AT-reachable. The bubble self-gates on
+            `stt:state.origin === 'companion'` (R-5.3: exactly one indicator per
+            session — the launcher bar cue owns `launcher`-origin), and this entity
+            is the shared body for the home seat AND the away overlay, so a
+            companion-origin capture is visible wherever Fredo is rendered (AC5). */}
+        <CompanionListeningBubble
+          surface={surface}
+          x={displayPos.x}
+          y={displayPos.y}
+          anchorWidth={avatarWidth}
+        />
       </>
     );
   },

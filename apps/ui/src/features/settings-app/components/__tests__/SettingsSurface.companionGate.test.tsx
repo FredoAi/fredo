@@ -29,6 +29,7 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider } from '@/shared/contexts/CompanionContext';
 import type { UseCompanionReadinessResult } from '@/shared/components/companion/useCompanionReadiness';
 import type { CompanionReadiness } from '@/shared/components/companion/companionReadiness';
+import type { SttDeviceProbe } from '@/shared/components/companion/companionReadiness';
 
 // ── Readiness hook stub — the ONE seam driving the gate (mutable per test). ──
 // Mocking the resolved module id intercepts CompanionSettingsPanel's relative
@@ -59,6 +60,19 @@ vi.mock('@/features/home', () => ({
 import { SettingsSurface } from '../SettingsSurface';
 
 const noopAsync = async () => {};
+
+/**
+ * #2877 ST-2/ST-4 — the voice fields the hook now also returns. This suite's
+ * stub must match `UseCompanionReadinessResult` so the REAL
+ * `CompanionSettingsPanel` (which renders the voice group in the ready branch)
+ * has a fail-closed device probe instead of `undefined`.
+ */
+const unavailableDevices: SttDeviceProbe = {
+  state: 'unavailable',
+  devices: [],
+  selectedId: null,
+  code: null,
+};
 
 const notReadyReadiness: CompanionReadiness = {
   ready: false,
@@ -91,6 +105,9 @@ function hookValue(
     actionError: {},
     modelFiles: null,
     serverLaunch: null,
+    sttModel: null,
+    sttDevices: unavailableDevices,
+    refreshSttDevices: noopAsync,
     ...overrides,
   };
 }

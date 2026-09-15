@@ -21,8 +21,10 @@ import { adapterBridge } from '../../utils/adapterBridge';
 import { COMPANION_SETUP_STEPS } from './companionSetupSteps';
 import {
   deriveServerLaunchState,
+  deriveSttDeviceProbe,
   errorCopyFor,
   llamaServerEndpoint,
+  resolveSttModelDir,
   serverLaunchFailureCopy,
   STT_MODEL_FILE_IDS,
   type CompanionReadiness,
@@ -39,6 +41,9 @@ import {
   type ModelFilesStatus,
   type PrerequisiteId,
   type PrerequisiteReport,
+  type SttDeviceProbe,
+  type SttDevicesResult,
+  type SttModelReadiness,
   type SttModelStatus,
 } from './companionReadiness';
 
@@ -59,10 +64,19 @@ export interface UseCompanionReadinessResult {
    */
   serverLaunch: CompanionServerLaunchInfo | null;
   /**
-   * #2876 ST-5 voice-input model status (merged with live progress). null when
-   * `stt_check_model` is unavailable. NEVER contributes to `readiness.ready`.
+   * #2876 ST-5 voice-input model status (merged with live progress, plus the
+   * #2877 ST-2 resolved `location`). null when `stt_check_model` is unavailable.
+   * NEVER contributes to `readiness.ready`.
    */
-  sttModel: SttModelStatus | null;
+  sttModel: SttModelReadiness | null;
+  /**
+   * #2877 ST-2 — the input-device probe for the Companion voice settings row.
+   * Fail-closed (`unavailable`) when the backend has no `stt_list_devices`
+   * command; NEVER contributes to `readiness.ready`.
+   */
+  sttDevices: SttDeviceProbe;
+  /** #2877 ST-2 — re-scan just the input-device probe (the settings Re-scan). */
+  refreshSttDevices: () => Promise<void>;
 }
 
 /**
@@ -178,11 +192,14 @@ function filesFromResult(result: ModelDownloadResult): ModelFilesStatus | null {
  * re-derived from the merged files so an in-flight set can never read ready.
  * Progress keys for companion files are ignored here (and vice versa), so one
  * shared progress map serves both downloads.
+ *
+ * #2877 ST-2 — the resolved `location` is re-derived from the merged files, so
+ * it stays displayable on `ready` AND `error` (AC2) without ever being stale.
  */
 function mergeSttModel(
-  base: SttModelStatus | null,
+  base: SttModelReadiness | null,
   progress: Partial<Record<ModelFileId, ModelFileProgress>>,
-): SttModelStatus | null {
+): SttModelReadiness | null {
   if (!base) return null;
   const files = base.files.map((file) => {
     const live = progress[file.id];
@@ -212,7 +229,7 @@ function mergeSttModel(
     }
   });
   const ready = files.length > 0 && files.every((file) => file.state === 'present');
-  return { ready, files };
+  return { ready, files, location: resolveSttModelDir(files) };
 }
 
 export function useCompanionReadiness(): UseCompanionReadinessResult {
@@ -225,7 +242,11 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   );
   const [baseModelFiles, setBaseModelFiles] = useState<ModelFilesStatus | null>(null);
   // #2876 ST-5 — the OPTIONAL voice-input model status (never a chat gate).
-  const [baseSttModel, setBaseSttModel] = useState<SttModelStatus | null>(null);
+  const [baseSttModel, setBaseSttModel] = useState<SttModelReadiness | null>(null);
+  // #2877 ST-2 — the input-device probe (never a chat gate). `checking` starts
+  // true so the first render is honest while the enumeration is in flight.
+  const [sttDevicesResult, setSttDevicesResult] = useState<SttDevicesResult | null>(null);
+  const [sttDevicesChecking, setSttDevicesChecking] = useState(true);
   const [progressByFile, setProgressByFile] = useState<
     Partial<Record<ModelFileId, ModelFileProgress>>
   >({});
@@ -348,12 +369,43 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       const status = await adapterBridge.invoke<SttModelStatus>('stt_check_model');
       if (!mountedRef.current) return;
       if (status && Array.isArray(status.files) && status.files.length > 0) {
-        setBaseSttModel({ ready: status.ready === true, files: status.files });
+        setBaseSttModel({
+          ready: status.ready === true,
+          files: status.files,
+          // #2877 ST-2 — AC2's model location, derived from the per-file paths.
+          location: resolveSttModelDir(status.files),
+        });
       } else {
         setBaseSttModel(null);
       }
     } catch {
       if (mountedRef.current) setBaseSttModel(null);
+    }
+  }, []);
+
+  /**
+   * #2877 ST-2 — probe the cpal input devices (`stt_list_devices`). A missing /
+   * unknown-shaped result leaves the probe `unavailable` (fail closed — never a
+   * fabricated "no device"). Never feeds the companion-chat `ready` gate.
+   */
+  const probeSttDevices = useCallback(async () => {
+    if (mountedRef.current) setSttDevicesChecking(true);
+    try {
+      const result = await adapterBridge.invoke<SttDevicesResult>('stt_list_devices');
+      if (!mountedRef.current) return;
+      if (result && Array.isArray(result.devices)) {
+        setSttDevicesResult({
+          devices: result.devices,
+          selectedId: result.selectedId ?? null,
+          code: result.code ?? null,
+        });
+      } else {
+        setSttDevicesResult(null);
+      }
+    } catch {
+      if (mountedRef.current) setSttDevicesResult(null);
+    } finally {
+      if (mountedRef.current) setSttDevicesChecking(false);
     }
   }, []);
 
@@ -364,12 +416,16 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         probeModelFiles(),
         probeServerStatus(),
         probeSttModel(),
+        probeSttDevices(),
       ]);
     },
-    [probeReadiness, probeModelFiles, probeServerStatus, probeSttModel],
+    [probeReadiness, probeModelFiles, probeServerStatus, probeSttModel, probeSttDevices],
   );
 
   const refresh = useCallback(() => refreshInternal(true), [refreshInternal]);
+
+  /** #2877 ST-2 — re-scan just the input devices (the settings Re-scan action). */
+  const refreshSttDevices = useCallback(() => probeSttDevices(), [probeSttDevices]);
 
   useEffect(() => {
     void refreshInternal(true);
@@ -542,11 +598,18 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
           }
         } else if (sttResult) {
           // #2876 ST-5 — the download result is authoritative for the STT files;
-          // it never touches the companion readiness gate.
+          // it never touches the companion readiness gate. #2877 ST-2 carries the
+          // resolved location through from the per-file paths.
           const nextStt = filesFromResult(sttResult);
           if (mountedRef.current) {
             setBaseSttModel(
-              nextStt ? { ready: nextStt.complete, files: nextStt.files } : null,
+              nextStt
+                ? {
+                    ready: nextStt.complete,
+                    files: nextStt.files,
+                    location: resolveSttModelDir(nextStt.files),
+                  }
+                : null,
             );
             setProgressByFile({});
           }
@@ -573,6 +636,12 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   const sttModel = useMemo(
     () => mergeSttModel(baseSttModel, progressByFile),
     [baseSttModel, progressByFile],
+  );
+
+  // #2877 ST-2 — the input-device probe (fail-closed when the backend is absent).
+  const sttDevices = useMemo(
+    () => deriveSttDeviceProbe({ checking: sttDevicesChecking, result: sttDevicesResult }),
+    [sttDevicesChecking, sttDevicesResult],
   );
 
   // #2857 — compose the third prerequisite from the managed-server status.
@@ -640,7 +709,8 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
             : `${sttModel.files.filter((file) => file.state === 'present').length} of ${
                 sttModel.files.length
               } voice input model files present.`,
-          resolvedPath: null,
+          // #2877 ST-2 — AC2's resolved model location, on ready AND error/missing.
+          resolvedPath: sttModel.location,
         }
       : null;
 
@@ -687,6 +757,8 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       modelFiles,
       serverLaunch,
       sttModel,
+      sttDevices,
+      refreshSttDevices,
     }),
     [
       readiness,
@@ -699,6 +771,8 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       modelFiles,
       serverLaunch,
       sttModel,
+      sttDevices,
+      refreshSttDevices,
     ],
   );
 }
