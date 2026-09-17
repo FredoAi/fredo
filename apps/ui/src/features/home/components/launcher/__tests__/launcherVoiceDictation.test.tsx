@@ -1453,6 +1453,11 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
 // autosend commit suppressed), R-2.4 (the cue spans the WHOLE gesture), R-3.2/3.3
 // (no capture and no error without usable voice), R-4.1/R-4.2 (the finalized
 // transcript flows through the existing ST-4 commit path unchanged).
+//
+// #2887 ST-5 re-points the cue COPY only (G-125): the armed/pending windows now
+// show `Hold to dictate…` instead of `Listening…` (R-3 — only a live capture may
+// claim listening). Every gesture assertion below (consume, arm, tap, finalize,
+// one-space, routing) is unchanged.
 
 describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', () => {
   beforeEach(() => {
@@ -1544,8 +1549,10 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
 
     expect(spaceDown()).toBe(true); // preventDefault: no space reaches the input
     expect(el.value).toBe('');
-    // The cue is shown from the ARMED moment for the whole gesture (R-2.4)…
-    expect(el).toHaveAttribute('placeholder', 'Listening…');
+    // #2887 ST-5 (G-125 re-point — was `Listening…`): the armed window acknowledges
+    // the gesture without claiming capture (R-3); `startCallCount()` below proves no
+    // session exists yet.
+    expect(el).toHaveAttribute('placeholder', 'Hold to dictate…');
     // …but nothing is live yet: no dot, no chip, no mic.
     expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
@@ -1623,7 +1630,9 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
       'starting voice input…',
     );
-    expect(input()).toHaveAttribute('placeholder', 'Listening…');
+    // #2887 ST-5 (G-125 re-point — was `Listening…`): the pending window is still a
+    // non-listener — the chip says what is happening, the field acknowledges the hold.
+    expect(input()).toHaveAttribute('placeholder', 'Hold to dictate…');
 
     // The engine confirms: S2 → S3, and the chip slot swaps to the Listening chip
     // (exactly ONE indicator, never both).
