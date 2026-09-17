@@ -32,6 +32,7 @@ import {
   voiceStartErrorCopy,
   type CtrlSpaceContext,
 } from '../LauncherShell';
+import { HOLD_PENDING_CUE_MS, HOLD_THRESHOLD_MS } from '../launcherSpaceHold';
 
 // LauncherShell reads the live connection flag via useConnectionStatus (no
 // StreamProvider in this isolated harness) — stub the one consumer.
@@ -1221,5 +1222,405 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     expect(calls).toHaveLength(2);
     expect(calls[0][0]).toBe('first');
     expect(calls[1][0]).toBe('second');
+  });
+});
+
+// ── Spec #2882 ST-5 — the hold-to-dictate capture lifecycle ───────────────────
+// R-2.1-2.7 (arm / hold / tap / release-before-live), R-2.5 (blur = stop with the
+// autosend commit suppressed), R-2.4 (the cue spans the WHOLE gesture), R-3.2/3.3
+// (no capture and no error without usable voice), R-4.1/R-4.2 (the finalized
+// transcript flows through the existing ST-4 commit path unchanged).
+
+describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  const startCallCount = () =>
+    invokeSpy.mock.calls.filter(([command]) => command === 'stt_start').length;
+
+  /**
+   * `live`    — the engine confirms immediately (the harness's normal shape), so
+   *             the cue escalates to the live Listening state.
+   * `pending` — the start never settles inside the test window, so the bounded
+   *             pending cue and the release-before-live (R-2.6) path are drivable.
+   */
+  const renderArmedShell = async (start: 'live' | 'pending' = 'live') => {
+    invokeSpy.mockImplementation((async (command: string) => {
+      if (command === 'stt_check_model') return { ready: true };
+      if (command === 'stt_start') {
+        return start === 'live' ? okStart() : new Promise(() => {});
+      }
+      return undefined;
+    }) as never);
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    // ST-3's probe is fail-closed: nothing is armed until it affirms.
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+
+  const focusBar = () => {
+    const el = input();
+    act(() => {
+      el.focus();
+      fireEvent.focus(el);
+    });
+    return el;
+  };
+
+  /** Returns true iff the keydown was CONSUMED (`preventDefault`). */
+  const spaceDown = (repeat = false): boolean => {
+    let consumed = false;
+    act(() => {
+      consumed = !fireEvent.keyDown(input(), { key: ' ', code: 'Space', repeat });
+    });
+    return consumed;
+  };
+
+  const spaceUp = () =>
+    act(() => {
+      fireEvent.keyUp(document, { key: ' ', code: 'Space' });
+    });
+
+  const emitListening = (listening: boolean, origin: string | null) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  // ── R-2.1/R-2.2/R-2.4 — arming, the swallow, the cue ────────────────────────
+
+  it('R-2.1/R-2.4: the qualifying keydown is consumed, the cue appears at once, and NO capture starts', async () => {
+    await renderArmedShell();
+    const el = focusBar();
+    // S1 — the promise placeholder while holding Space would dictate.
+    expect(el).toHaveAttribute('placeholder', 'search, or hold Space to dictate');
+
+    expect(spaceDown()).toBe(true); // preventDefault: no space reaches the input
+    expect(el.value).toBe('');
+    // The cue is shown from the ARMED moment for the whole gesture (R-2.4)…
+    expect(el).toHaveAttribute('placeholder', 'Listening…');
+    // …but nothing is live yet: no dot, no chip, no mic.
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(startCallCount()).toBe(0);
+
+    spaceUp();
+  });
+
+  it('R-2.2: while armed EVERY Space keydown (auto-repeat included) is swallowed — exactly one capture', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+
+    // Auto-repeats (and a re-press) never restart the capture and never leak a space.
+    expect(spaceDown(true)).toBe(true);
+    expect(spaceDown(true)).toBe(true);
+    expect(spaceDown()).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+    expect(startCallCount()).toBe(1);
+    expect(input().value).toBe('');
+
+    spaceUp();
+  });
+
+  // ── R-2.7 — a sub-threshold release is an ordinary space ────────────────────
+
+  it('R-2.7: a sub-threshold TAP writes exactly ONE ordinary space and never opens the mic', async () => {
+    await renderArmedShell();
+    focusBar();
+    spaceDown();
+
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+    spaceUp();
+
+    expect(input().value).toBe(' '); // exactly one character — never 0, never 2
+    expect(startCallCount()).toBe(0);
+
+    // The cleared timer can never fire late.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+      await Promise.resolve();
+    });
+    expect(startCallCount()).toBe(0);
+  });
+
+  // ── R-2.1/R-2.5.4/R-2.3 — the hold, the bounded pending cue, the finalize ────
+
+  it('R-2.1/S2: crossing the 200 ms threshold starts a launcher-origin capture; the pending chip is bounded', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+
+    // Below the threshold no capture is attempted at all (the tap never opens the mic).
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS - 1);
+    });
+    expect(startCallCount()).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(invokeSpy).toHaveBeenCalledWith('stt_start', { origin: 'launcher' });
+
+    // The `starting voice input…` chip is withheld until the pending window
+    // outlives the bounded cue (HOLD_PENDING_CUE_MS).
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(HOLD_PENDING_CUE_MS);
+    });
+    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
+      'starting voice input…',
+    );
+    expect(input()).toHaveAttribute('placeholder', 'Listening…');
+
+    // The engine confirms: S2 → S3, and the chip slot swaps to the Listening chip
+    // (exactly ONE indicator, never both).
+    emitListening(true, 'launcher');
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+
+    spaceUp();
+  });
+
+  it('R-2.3: releasing while live finalizes — the transcript is ordinary editable text and NO space lands', async () => {
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('hello there');
+
+    spaceUp();
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(el.value).toBe('hello there');
+    // The input stays ordinary editable text (AC2).
+    expect(el).not.toHaveAttribute('readonly');
+  });
+
+  // ── R-2.6 — the stale-hold guard (the mic-hot race) ─────────────────────────
+
+  it('R-2.6: a release before the engine confirms cancels the late session on its rise edge and writes ONE space', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+
+    spaceUp();
+
+    // The hold never captured, so it types exactly one ordinary space…
+    expect(input().value).toBe(' ');
+    // …and no cancel is issued yet (there is no active session to cancel).
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_cancel', undefined);
+
+    // The late session reports live: it is cancelled immediately (the microphone is
+    // never left capturing), and the landed space survives the discard.
+    emitListening(true, 'launcher');
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(input().value).toBe(' ');
+  });
+
+  // ── R-2.5 — blur is a STOP that KEEPS the words (QA-9 CLOSED) ───────────────
+
+  it('R-2.5: a blur mid-capture stops the session, keeps the words and SUPPRESSES the autosend commit', async () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('set');
+
+    act(() => {
+      fireEvent.blur(el);
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    // The words are KEPT as a dictated transcript — and never dispatched.
+    expect(el.value).toBe('set');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    // Provenance survives, so the hint truthfully names the send.
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
+      '↵ send transcript to Fredo',
+    );
+
+    // The trailing release adds nothing and re-stops nothing.
+    spaceUp();
+    expect(el.value).toBe('set');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('R-2.5: a WINDOW blur mid-capture is the same STOP (words kept, autosend suppressed)', async () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    await renderArmedShell();
+    focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('miss');
+
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(input().value).toBe('miss');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  // ── §5.7 — Escape disarms the pending hold ─────────────────────────────────
+
+  it('§5.7: Escape during a hold disarms it — no space on the trailing release and no stop', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Escape' });
+    });
+    // The cancel path (never the finalize/stop control) and no space yet.
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_stop', undefined);
+    expect(input().value).toBe('');
+
+    spaceUp();
+    expect(input().value).toBe('');
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_stop', undefined);
+  });
+
+  // ── R-3.2/R-3.3 — no usable voice: nothing promised, nothing attempted ──────
+
+  it('R-3.3: with the model not ready the keydown is NOT consumed, no capture is attempted and no error shows', async () => {
+    // The default harness answers `stt_check_model` with undefined → fail-closed.
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const el = focusBar();
+    // No promise is made: readiness unknown ⇒ the legacy resting copy (contract 4c).
+    expect(el).toHaveAttribute('placeholder', 'search or command');
+
+    expect(spaceDown()).toBe(false); // the native space is left alone (AC3)
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(startCallCount()).toBe(0);
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+  });
+
+  it('R-3.2: with voice disabled an empty-bar Space is never consumed and never starts a capture', async () => {
+    companionMock.current.voiceEnabled = false;
+    await renderArmedShell();
+    focusBar();
+
+    expect(spaceDown()).toBe(false);
+    spaceUp();
+    expect(startCallCount()).toBe(0);
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+  });
+
+  // ── R-2.5.6/AC3 — a hold-origin start failure is SILENT ────────────────────
+
+  it('AC3: a hold-origin start failure lands one space and surfaces NO alert', async () => {
+    invokeSpy.mockImplementation((async (command: string) => {
+      if (command === 'stt_check_model') return { ready: true };
+      if (command === 'stt_start') {
+        return { started: false, code: 'noDevice', detail: 'raw ipc string', deviceName: null, sampleRate: null };
+      }
+      return undefined;
+    }) as never);
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+
+    spaceUp();
+
+    expect(input().value).toBe(' ');
+    expect(startCallCount()).toBe(1);
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+    expect(screen.queryByText('raw ipc string')).toBeNull();
+  });
+
+  // ── R-4.3 / clarification #2 — provenance survives editing ─────────────────
+
+  it('R-4.3/clarification #2: a finalized transcript is dictated — a later EDIT never re-types it', async () => {
+    seatCompanion();
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('set');
+    spaceUp();
+
+    expect(el.value).toBe('set');
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
+      '↵ send transcript to Fredo',
+    );
+
+    // Editing the transcript to an app name does NOT make it typed (clarification #2).
+    act(() => {
+      fireEvent.change(el, { target: { value: 'Settings' } });
+    });
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
+      '↵ send transcript to Fredo',
+    );
   });
 });

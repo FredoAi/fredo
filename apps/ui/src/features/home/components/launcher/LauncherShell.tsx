@@ -33,6 +33,17 @@ import {
   resolveEnterAction,
   type EnterTextOrigin,
 } from './launcherEnterAction';
+// Spec #2882 ST-2 — the PURE hold-Space gesture decision. The shell owns the
+// DOM/timer/mic wiring; the precedence stays in the tested module (a Space may
+// only be consumed under the FULL R-2.1 precondition, and every release resolves
+// to at most ONE ordinary space — the typing-safety NFR, R-2.6/R-2.7).
+import {
+  HOLD_PENDING_CUE_MS,
+  HOLD_THRESHOLD_MS,
+  resolveSpaceKeyDown,
+  resolveSpaceKeyUp,
+  spaceWriteForVerdict,
+} from './launcherSpaceHold';
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -235,9 +246,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // are stable useCallbacks, so the document listener below keeps a stable identity
   // and is mounted exactly once (NFR-2).
   const voice = useVoiceDictation();
-  // ST-4 retires Ctrl+Space's listening branches, so `start` is not called here
-  // yet — ST-5 wires the hold gesture's arming path to it.
-  const { stop: stopVoice, cancel: cancelVoice } = voice;
+  // Spec #2882 ST-5 — CT-1: the hold gesture is now the ONLY launcher capture
+  // entry point (ST-4 retired every Ctrl+Space listening branch, ST-6 retired the
+  // companion-origin path), so `start` is wired to the hold timer's arm path.
+  const { start: startVoice, stop: stopVoice, cancel: cancelVoice } = voice;
   // Spec #2882 ST-3 — the fail-closed model-readiness probe (R-3.3). Mounted here so
   // the shell owns the arming gate ST-5 reads (`voiceEnabled && sttModelReady`);
   // refreshed on the summon path. It probes ONLY while voice is enabled.
@@ -303,6 +315,129 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // (it re-z's above the window stack + autofocuses the searchbox). When FALSE the
   // resting z-model (coveredByWindow) applies unchanged.
   const [open, setOpen] = useState(false);
+
+  // ── Spec #2882 ST-5 — the hold-to-dictate gesture state (never persisted) ────
+  // The WHILE-Space-is-held condition is a continuous state machine, not a set of
+  // transition call-sites: `holdArmed` is the cue from the keydown moment for the
+  // WHOLE gesture (R-2.4), `holdPending` is the bounded `starting voice input…`
+  // chip once the engine start outlives `HOLD_PENDING_CUE_MS` (S2). One release
+  // owner: the mount-once document keyup listener below (inert outside a hold).
+  const [holdArmed, setHoldArmed] = useState(false);
+  const [holdPending, setHoldPending] = useState(false);
+  // R-2.1 / contract 4c — the promise placeholder is offered only when the whole
+  // precondition is available (voice on + FAIL-CLOSED model readiness + not busy).
+  // Readiness unknown ⇒ no promise is made and Space stays natively ordinary.
+  const holdAvailable = voiceEnabled && sttModel.ready && !companionBusy;
+  // R-2.5.6 (AC3) — a hold-origin start failure is SILENT (no alert, no error
+  // text). Muted from the moment the hold starts the engine and re-armed when the
+  // next gesture arms, so a failure arriving with NO hold start in flight (the
+  // app-global `stt:state` channel — the DR-11 lever) still surfaces the copy.
+  const [holdFailureMuted, setHoldFailureMuted] = useState(false);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdPendingCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdArmedRef = useRef(false);
+  // Escape / the visible `×` disarmed this gesture: swallow Space until the release.
+  const holdDisarmedRef = useRef(false);
+  // The release-resolution inputs (R-2.6 vs R-2.7).
+  const thresholdCrossedRef = useRef(false);
+  // Went live DURING this gesture — a live-then-stopped release is a FINALIZE,
+  // never a cancel-and-space.
+  const holdWentLiveRef = useRef(false);
+  // The release landed before the engine confirmed the start: cancel the session
+  // on its rise edge. `stt_stop`/`stt_cancel` with NO active session is a silent
+  // no-op (session.rs:357-388), so without this the microphone stays hot.
+  const cancelOnLiveRef = useRef(false);
+  // R-2.5 — a blur stop keeps the words but must never trigger the autosend commit.
+  const suppressAutosendOnceRef = useRef(false);
+  // R-2.5 — one blur stop per gesture (the input's focusout and a `window` blur
+  // can both report the same gesture).
+  const blurStopIssuedRef = useRef(false);
+
+  // The gesture's two bounded timers — always cleared together (no leaked timer).
+  const clearHoldTimers = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (holdPendingCueTimerRef.current) {
+      clearTimeout(holdPendingCueTimerRef.current);
+      holdPendingCueTimerRef.current = null;
+    }
+  }, []);
+
+  // End the gesture's timers + cue state WITHOUT touching the session (the caller
+  // owns stop/cancel). Never writes a space — the release owner does that.
+  const resetHoldGesture = useCallback(() => {
+    clearHoldTimers();
+    holdArmedRef.current = false;
+    thresholdCrossedRef.current = false;
+    holdWentLiveRef.current = false;
+    setHoldArmed(false);
+    setHoldPending(false);
+  }, [clearHoldTimers]);
+
+  // R-2.1 — arm the hold: the caller has already consumed the keydown
+  // (`preventDefault`), the bounded HOLD_THRESHOLD_MS timer starts here, and every
+  // further Space keydown is swallowed until the release (R-2.2).
+  const armHold = useCallback(() => {
+    holdArmedRef.current = true;
+    holdDisarmedRef.current = false;
+    thresholdCrossedRef.current = false;
+    holdWentLiveRef.current = false;
+    cancelOnLiveRef.current = false;
+    blurStopIssuedRef.current = false;
+    setHoldArmed(true);
+    holdTimerRef.current = setTimeout(() => {
+      holdTimerRef.current = null;
+      thresholdCrossedRef.current = true;
+      // From here any failure belongs to this hold-origin start: silent (AC3).
+      setHoldFailureMuted(true);
+      // S2 — the pending chip appears only if the engine start outlives the
+      // bounded cue window (Doherty: the loop must never look dead).
+      holdPendingCueTimerRef.current = setTimeout(() => {
+        holdPendingCueTimerRef.current = null;
+        if (!launcherActiveRef.current) setHoldPending(true);
+      }, HOLD_PENDING_CUE_MS);
+      // R-2.1 — a LAUNCHER-origin capture (the only capture entry point, R-1.4).
+      void startVoice('launcher');
+    }, HOLD_THRESHOLD_MS);
+  }, [startVoice]);
+
+  // R-2.5 (QA-9 CLOSED) — a blur during a hold/capture is a STOP, never a
+  // discard: the capture stops, the microphone is released, the recognized words
+  // are KEPT in the bar as a dictated transcript, and the autosend commit is
+  // SUPPRESSED (a release is the send consent; a blur is not). Discard + restore
+  // applies ONLY to an explicit cancel (Escape / the visible `×`).
+  const stopCaptureOnBlur = useCallback(() => {
+    if (blurStopIssuedRef.current) return;
+    const live = launcherActiveRef.current;
+    const crossed = thresholdCrossedRef.current;
+    const armed = holdArmedRef.current;
+    if (!live && !crossed && !armed) return;
+    blurStopIssuedRef.current = true;
+
+    if (live) {
+      // The trailing keyup must not write a space or re-issue a stop.
+      holdDisarmedRef.current = true;
+      suppressAutosendOnceRef.current = true;
+      resetHoldGesture();
+      void stopVoice();
+      return;
+    }
+    if (crossed) {
+      // Threshold crossed, engine not confirmed: cancel on the rise edge so the
+      // microphone is never left capturing, and drop the gesture (no space — a
+      // blur is not a release).
+      holdDisarmedRef.current = true;
+      cancelOnLiveRef.current = true;
+      resetHoldGesture();
+      return;
+    }
+    // Merely armed (the release had not beaten the threshold yet): still a TAP.
+    // Only the pending start is cancelled; the trailing keyup resolves it so the
+    // space the user meant to type is never lost (R-2.7 / the typing-safety NFR).
+    clearHoldTimers();
+  }, [clearHoldTimers, resetHoldGesture, stopVoice]);
 
   // #2854 ST-4: the desktop mascot's SURFACE-LOCAL expression state (never the
   // companion context / `CompanionState` / presence payload — #2853 invariant).
@@ -549,6 +684,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [query, closeSurface],
   );
 
+  // Spec #2882 ST-5 (R-2.5) — the BAR's own focusout is the "input loses focus"
+  // trigger: a hold/capture must stop there (before the surface-level collapse
+  // logic, which only rewrites the overlay state). The capture stop is idempotent
+  // per gesture, so the bubbled surface `onBlur` that follows is a no-op.
+  const handleBarBlur = useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      stopCaptureOnBlur();
+      handleSurfaceBlur(e);
+    },
+    [stopCaptureOnBlur, handleSurfaceBlur],
+  );
+
   // `—` MINIMIZE control: collapse the ENGAGED grid back to the resting Main
   // (keep the search bar — AC5) and land focus on the FREDO notch trigger.
   const handleMinimize = useCallback(() => {
@@ -688,6 +835,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     listeningRef.current = voice.listening;
   }, [voice.listening]);
 
+  // Spec #2882 ST-5 (R-2.5.6/AC3) — the failure mute lives exactly as long as the
+  // error it belongs to: it clears when the hook's error clears OUTSIDE a gesture
+  // (a new session / a successful start), so the NEXT start's failure can be muted
+  // again while a stale hold-origin error is never surfaced later. While a gesture
+  // is in flight the mute survives the start's optimistic error-clear.
+  useEffect(() => {
+    if (voice.errorCode === null && !holdArmedRef.current) setHoldFailureMuted(false);
+  }, [voice.errorCode]);
+
   // Spec #2877 ST-5 (DR-9) — disabling voice while a session is live stops it
   // immediately and releases the microphone (the backend's own `disabled` gate is
   // the belt-and-braces second line). Keyed on the enablement flag only; the live
@@ -719,9 +875,33 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       userEditedDuringSessionRef.current = false;
       finalizePendingRef.current = false;
       restoredAfterSessionRef.current = false;
+      // R-2.5 — a blur suppression is one-shot per session; a fresh session must
+      // never inherit a stale mute.
+      suppressAutosendOnceRef.current = false;
       preSessionTextRef.current = barTextRef.current;
       sessionBaseCommittedRef.current = voice.committed;
       prevCommittedRef.current = voice.committed;
+      // Spec #2882 ST-5 — S2 → S3: the pending cue ends the moment the engine is
+      // live, and the gesture is now known to have gone live (so its release is a
+      // FINALIZE even if the session ends first).
+      if (holdPendingCueTimerRef.current) {
+        clearTimeout(holdPendingCueTimerRef.current);
+        holdPendingCueTimerRef.current = null;
+      }
+      setHoldPending(false);
+      blurStopIssuedRef.current = false;
+      if (holdArmedRef.current) holdWentLiveRef.current = true;
+      // Spec #2882 ST-5 (R-2.6) — the STALE-HOLD GUARD: the release landed BEFORE
+      // the engine confirmed the start, so this late session is CANCELLED on its
+      // rise edge (a no-op `stt_cancel` would leave the microphone hot — the
+      // privacy violation). The utterance is discarded (the hold never captured)
+      // and the one ordinary space the release already wrote is PRESERVED: the
+      // cancel suppresses the autosend commit AND the no-final restore.
+      if (cancelOnLiveRef.current) {
+        cancelOnLiveRef.current = false;
+        cancelledRef.current = true;
+        void cancelVoice();
+      }
     } else if (was && !now) {
       // Session end: arm the finalize commit. The commit effect below also runs
       // on `voice.liveText` so a final transcript landing just after the
@@ -731,7 +911,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // from the bar mirror.
       finalizePendingRef.current = true;
     }
-  }, [voice.listening, voice.origin, voice.committed]);
+  }, [voice.listening, voice.origin, voice.committed, cancelVoice]);
 
   // Spec #2877 ST-5 / #2878 ST-1+ST-2 — live transcript → the EXISTING controlled
   // bar input, LAUNCHER-origin sessions only. Writes the session-scoped
@@ -844,6 +1024,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const text = barTextRef.current.trim();
     if (text === '') return;
     if (!voiceAutosend) return; // R-2.6 — autosend OFF: text stays, no dispatch.
+    // Spec #2882 ST-5 (R-2.5) — this is the ONLY addition to the finalize effect:
+    // a BLUR stop keeps the recognized words but must never dispatch them (a
+    // release is the send consent, a blur is not). One-shot, and it sits AFTER the
+    // session-scoped evidence rule (which is untouched) and BEFORE the commit, so
+    // a suppressed finalize can never be replayed or double-counted.
+    if (suppressAutosendOnceRef.current) {
+      suppressAutosendOnceRef.current = false;
+      return;
+    }
     if (autosendFiredRef.current) return;
     autosendFiredRef.current = true;
     // Spec #2882 ST-4 (R-4.1/clarification #2) — a finalize commit is ALWAYS a
@@ -866,6 +1055,23 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // Spec #2882 ST-5 — a HOLD gesture in flight is disarmed FIRST: its
+        // trailing keyup writes NO space and issues no stop, and a session that
+        // goes live after this Escape is cancelled on its rise edge (the mic-hot
+        // race). The utterance is discarded (a cancel), never kept — that is the
+        // bound resolution: only Escape / the visible `×` discard.
+        if (holdArmedRef.current || thresholdCrossedRef.current) {
+          const mayStart = thresholdCrossedRef.current && !listeningRef.current;
+          holdDisarmedRef.current = true;
+          blurStopIssuedRef.current = true;
+          resetHoldGesture();
+          if (mayStart) cancelOnLiveRef.current = true;
+          // A session that raced in before/at the Escape still takes the existing
+          // cancel path (suppress the autosend commit, restore the draft).
+          if (listeningRef.current) suppressAutosendAndRestore();
+          void cancelVoice();
+          return;
+        }
         // Spec #2877 ST-5 ((g).2, binding) — a live dictation session cancels
         // FIRST (the launcher stays open, the text is kept); otherwise Escape
         // keeps today's exact behavior (shortcut-open → closeOverlay with
@@ -931,6 +1137,55 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         return;
       }
 
+      // ── Spec #2882 ST-5 — hold-Space dictates (R-2.1/R-2.2/R-3.1-3.3) ────────
+      // Evaluated BEFORE the empty-grid guard: the target is the searchbox input,
+      // so a fully-filtered grid must never block the gesture. The verdict is
+      // ST-2's PURE precedence — a Space may only be consumed under the FULL R-2.1
+      // precondition (focused empty bar + voice usable + unmodified + non-repeat),
+      // and every other input stays natively ordinary (R-3.1-3.3: no promise, no
+      // capture attempt, no error).
+      if (e.key === ' ') {
+        // A disarmed gesture (Escape / the visible `×` / a blur stop) swallows
+        // every Space keydown — auto-repeats included — until the release, so a
+        // discarded hold can never leak a run of spaces.
+        if (holdDisarmedRef.current) {
+          e.preventDefault();
+          return;
+        }
+        const spaceTarget = e.target as HTMLElement;
+        const spaceVerdict = resolveSpaceKeyDown({
+          holdArmed: holdArmedRef.current,
+          // The SEARCHBOX specifically — a tile-focused Space keeps its existing
+          // opens-the-tile meaning (the switch below), and hold-Space never
+          // applies to any other Fredo text input (REQ-14).
+          isBarInputTarget:
+            spaceTarget.tagName === 'INPUT' &&
+            spaceTarget.getAttribute('role') === 'searchbox',
+          queryIsEmpty: query === '',
+          // The persisted enablement + ST-3's fail-closed readiness probe: unknown
+          // readiness ⇒ NOT armed ⇒ Space stays natively ordinary (contract 4c).
+          voiceUsable: voiceEnabled && sttModel.ready,
+          busy: companionBusy,
+          modified: e.ctrlKey || e.metaKey || e.altKey || e.shiftKey,
+          repeat: e.repeat,
+        });
+        if (spaceVerdict === 'hold-arm') {
+          // R-2.1 — consume the keydown so no space reaches the input, and start
+          // the bounded hold timer.
+          e.preventDefault();
+          armHold();
+          return;
+        }
+        if (spaceVerdict === 'hold-suppress') {
+          // R-2.2 — WHILE armed every Space keydown is swallowed (incl. the OS
+          // auto-repeat): no restart, no run of spaces.
+          e.preventDefault();
+          return;
+        }
+        // `ordinary-space` — nothing promised: fall through to the native
+        // character, and to the grid's tile-open branch when a TILE has focus.
+      }
+
       // AC4: an empty / fully-filtered grid has no openable target — arrows and
       // Space are NO-OPs (keyboard never opens a tile that does not exist).
       if (entryCount === 0) return;
@@ -976,6 +1231,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       closeOverlay,
       cancelVoice,
       suppressAutosendAndRestore,
+      armHold,
+      resetHoldGesture,
+      voiceEnabled,
+      sttModel.ready,
     ],
   );
 
@@ -1016,18 +1275,88 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [openOverlay],
   );
 
+  // Spec #2882 ST-5 — the SINGLE release owner for the hold gesture (R-2.2/R-2.6/
+  // R-2.7, UI/UX §5.9): one mount-once bubble-phase `document` keyup listener,
+  // inert outside a hold. It is on `document` (not the bar) because a release must
+  // be honoured even when focus/pointer moved mid-hold. The gesture's timers are
+  // cleared exactly once here (and in the disarm/blur paths).
+  //
+  // The verdict comes from ST-2's pure `resolveSpaceKeyUp`; this handler performs
+  // the DOM/timer/mic side of it and writes AT MOST ONE ordinary space through the
+  // ordinary typed path (never a second write route).
+  const handleGlobalKeyUp = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+
+      // A disarmed gesture (Escape / the visible `×` / a blur stop) swallows its
+      // trailing release: no space, no stop — the capture was already dealt with.
+      if (holdDisarmedRef.current) {
+        holdDisarmedRef.current = false;
+        resetHoldGesture();
+        return;
+      }
+      if (!holdArmedRef.current) return;
+
+      const verdict = resolveSpaceKeyUp({
+        holdArmed: holdArmedRef.current,
+        // "Went live during THIS gesture": a live-then-stopped capture finalizes;
+        // only a gesture that NEVER went live writes the fallback space (R-2.6).
+        captureLive: launcherActiveRef.current || holdWentLiveRef.current,
+        thresholdCrossed: thresholdCrossedRef.current,
+      });
+      const write = spaceWriteForVerdict(verdict);
+      resetHoldGesture();
+
+      if (verdict === 'finalize') {
+        // R-2.3 — stop listening. The backend emits the final, the existing
+        // live-text effect lands it as ordinary editable text, and the existing
+        // finalize effect decides delivery (R-4.1/R-4.2). NO space is inserted.
+        void stopVoice();
+        return;
+      }
+      if (verdict === 'none') return;
+      if (verdict === 'cancel-pending') {
+        // R-2.6 — the release beat the engine: cancel the session as soon as it
+        // reports live so the microphone is never left capturing.
+        cancelOnLiveRef.current = true;
+      }
+      // R-2.6/R-2.7 — exactly ONE ordinary space, through the ordinary query path
+      // (never `stt_start`): the tap types the character it always did, and the
+      // hold that never captured types one too.
+      if (write) handleQueryChange(barTextRef.current + write);
+    },
+    [handleQueryChange, resetHoldGesture, stopVoice],
+  );
+
+  // Spec #2882 ST-5 (R-2.5) — the window-focus safety net: a `window` blur mid-hold
+  // loses the keyup, so the capture must be stopped by the blur path (STOP with the
+  // autosend commit suppressed, words kept, microphone released).
+  const handleWindowBlur = useCallback(() => {
+    stopCaptureOnBlur();
+  }, [stopCaptureOnBlur]);
+
   // #2823: mount exactly ONE document listener (NFR-2). A ref-based guard keeps the
   // effect idempotent under React StrictMode; the cleanup removes the listener so it
   // never leaks across an unmount.
+  // Spec #2882 ST-5 adds the gesture's single release owner and the window-blur
+  // safety net to the same mount-once effect.
   useEffect(() => {
     if (globalKeydownMountedRef.current) return;
     globalKeydownMountedRef.current = true;
     document.addEventListener('keydown', handleGlobalKeyDown);
+    document.addEventListener('keyup', handleGlobalKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       globalKeydownMountedRef.current = false;
       document.removeEventListener('keydown', handleGlobalKeyDown);
+      document.removeEventListener('keyup', handleGlobalKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [handleGlobalKeyDown]);
+  }, [handleGlobalKeyDown, handleGlobalKeyUp, handleWindowBlur]);
+
+  // The gesture's bounded timers must never outlive the surface (AGENTS.md #523 —
+  // a single cleared handle per timer, cleared on unmount).
+  useEffect(() => () => clearHoldTimers(), [clearHoldTimers]);
 
   return (
     <>
@@ -1112,7 +1441,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             gridOpen={engaged}
             ariaActivedescendant={activeTileId}
             onFocus={handleBarFocus}
-            onBlur={handleSurfaceBlur}
+            onBlur={handleBarBlur}
             onMinimize={handleMinimize}
             enterMode={commandBar.enterMode}
             hintLabel={commandBar.hintLabel}
@@ -1121,12 +1450,23 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // exactly one indicator shows per session (companion-origin is the
             // bubble's surface, never the bar).
             listening={voice.listening && voice.origin === 'launcher'}
+            // Spec #2882 ST-5 (R-2.4/S2) — the hold gesture's cue: `holdArmed` shows
+            // it from the keydown moment for the WHOLE gesture, `holdPending` adds
+            // the bounded `starting voice input…` chip once the engine start
+            // outlives the cue window. One indicator at a time (the pending chip
+            // and the Listening chip share the slot).
+            holdArmed={holdArmed}
+            holdPending={holdPending}
+            holdAvailable={holdAvailable}
             // #2878 ST-2 (AC3 resolution) — the Stop control is the FINALIZE/commit
             // control (`stt_stop`), the only autosend trigger; the visible cancel
             // affordance DISCARDS (`stt_cancel`) and never sends. Neither
             // dispatches by itself — only the commit step does.
             onStopListening={() => void stopVoice()}
             onCancelListening={() => {
+              holdDisarmedRef.current = true;
+              blurStopIssuedRef.current = true;
+              resetHoldGesture();
               suppressAutosendAndRestore();
               void cancelVoice();
             }}
@@ -1135,7 +1475,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             onUserEdit={() => {
               userEditedDuringSessionRef.current = true;
             }}
-            voiceErrorMessage={voiceStartErrorCopy(voice.errorCode)}
+            // Spec #2882 ST-5 (R-2.5.6/AC3) — a HOLD-origin start failure is
+            // SILENT: no alert, no error text (exactly one ordinary space lands on
+            // the release). A failure that arrives with no hold start in flight —
+            // the app-global `stt:state` channel — still surfaces the curated copy.
+            voiceErrorMessage={holdFailureMuted ? null : voiceStartErrorCopy(voice.errorCode)}
             finalTranscript={finalTranscript}
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}

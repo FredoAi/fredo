@@ -29,7 +29,7 @@
  *   7. Inactive-bar invariance — no cue, no cancel/stop, no reserved padding.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { LauncherCommandBar, computeEndPaddingPx } from '../LauncherCommandBar';
@@ -73,6 +73,96 @@ describe('computeEndPaddingPx — the reserved end gutter (ST-2 invariance)', ()
   it('reserves the listening chip + cancel + stop + minimize while listening', () => {
     // 72 (chip) + 30 (cancel) + 30 (stop) + 44 (minimize)
     expect(computeEndPaddingPx({ showHint: false, listening: true })).toBe(72 + 30 + 30 + 44);
+  });
+
+  // Spec #2882 ST-5 (UI/UX §9) — the S2 pending chip occupies the SAME slot and
+  // the SAME width as the Listening chip, so typed text never runs under it.
+  it('reserves the pending chip gutter while the hold is pending (S2)', () => {
+    expect(computeEndPaddingPx({ showHint: false, listening: false, holdPending: true })).toBe(
+      72 + 44,
+    );
+  });
+
+  it('never double-counts the chip slot: pending is not reserved while live', () => {
+    expect(computeEndPaddingPx({ showHint: false, listening: true, holdPending: true })).toBe(
+      72 + 30 + 30 + 44,
+    );
+  });
+});
+
+// ── #2882 ST-5 — the hold-Space cue (R-2.4) ───────────────────────────────────
+
+describe('LauncherCommandBar — the hold-Space cue (ST-5)', () => {
+  it('shows the cue from the ARMED moment, with no live indicator yet', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} holdArmed />);
+
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
+    // Armed is not live: the dot, the Listening chip and its controls stay absent
+    // (nothing may be stopped before a session exists).
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+  });
+
+  it('renders the bounded `starting voice input…` chip while the hold is pending', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} holdPending />);
+
+    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
+      'starting voice input…',
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
+    // Exactly ONE indicator: no Listening chip / dot / controls in this state.
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+  });
+
+  it('never renders the pending chip and the Listening chip together (one slot)', () => {
+    renderWithChakra(
+      <LauncherCommandBar
+        query=""
+        onQueryChange={vi.fn()}
+        listening
+        holdPending
+        onStopListening={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+  });
+
+  it('offers the S1 promise placeholder only while focused, empty and available', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} holdAvailable />,
+    );
+    const input = screen.getByRole('searchbox');
+    // Unfocused (S0) — the legacy resting copy.
+    expect(input).toHaveAttribute('placeholder', 'search or command');
+
+    act(() => {
+      input.focus();
+      fireEvent.focus(input);
+    });
+    expect(input).toHaveAttribute('placeholder', 'search, or hold Space to dictate');
+
+    // The cue outranks the promise: an armed hold shows the gesture, not the offer.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} holdAvailable holdArmed />);
+    expect(input).toHaveAttribute('placeholder', 'Listening…');
+
+    // Once the bar holds text the promise is withdrawn (the gesture is unavailable).
+    rerender(<LauncherCommandBar query="set" onQueryChange={vi.fn()} holdAvailable />);
+    expect(input).toHaveAttribute('placeholder', 'search or command');
+  });
+
+  it('withdraws the promise when the hold is unavailable (readiness unknown — no promise made)', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    const input = screen.getByRole('searchbox');
+    act(() => {
+      input.focus();
+      fireEvent.focus(input);
+    });
+    expect(input).toHaveAttribute('placeholder', 'search or command');
   });
 });
 
