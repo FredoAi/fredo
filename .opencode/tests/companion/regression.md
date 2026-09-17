@@ -460,3 +460,70 @@
       `motion() is deprecated` WARN exempt); no per-keystroke state churn that re-renders the
       companion; the `stt:state`/`llm-*` listeners register once per lifecycle and are removed —
       no accumulation. Reference R-17/R-36 + `launcher` R-43.
+
+---
+
+## #2883 extension — the reply-surface change must not disturb the game bubble or companion behavior (G-136)
+
+> Issue #2883 makes the TEXT reply surface grow/scroll and protects it while the reader is on it.
+> The game bubble, the avatar, the click/teleport gestures, the presence lifecycle and the persisted
+> keys are NON-GOALS. **G-136 SUPERSESSION (history preserved):** **R-1's** "the speech bubble keeps
+> its fixed dimensions — **240×120 text bubble**, 208×268 game bubble" is **SUPERSEDED for the TEXT
+> reply surface only** — the text reply now grows and scrolls (functional F-79/F-82). The **208×268
+> GAME bubble**, the `above > right > left > below` ranking, the on-screen margin clamp, the
+> framer-motion spring and the streaming cursor remain IN FORCE. **F-61's** welcome-bubble ~4 s
+> auto-hide remains in force when nothing is hovering/focused. R-1..R-41 otherwise remain in force.
+> Run alongside the `launcher` R-44..R-46 extensions. **Verification policy: live.**
+
+## R-42 — Game bubble + anchoring contract unchanged; the frozen 208×268 stays fixed
+
+- [ ] R-42: Double-click the avatar (250 ms discriminator) → the TicTacToe bubble; measure
+      `[data-testid="fredo-game-bubble"]`'s rect and read the status text; separately drive the text
+      reply to each screen edge and read the `chooseSide` ranking + the margin clamp on the FIXED
+      away-overlay path.
+  **Expected:** the TicTacToe game card is still exactly **208×268** (unchanged, fixed, a DIFFERENT
+      surface) and playable; the away-overlay path's side-choosing ranking
+      `above > right > left > below`, the on-screen margin clamp, the spring
+      (`stiffness 380 / damping 30`) and the 2×14 px `Fredo-cursor-blink` streaming cursor are
+      unchanged. **Only the TEXT reply's grown tier (`[data-testid="fredo-reply-surface"]`,
+      `data-reply-tier="grown"`) and its `pointerEvents` are new** — the seat candidate set is the
+      bound subset `above > right > left` (`below` stays exclusive to the overlay). The
+      growing/scrolling text surface must NOT alter the GAME card or the ranking/clamp math.
+      Reference R-1 (text half superseded), R-2/R-3/R-21/R-33.
+
+## R-43 — Joke / click discriminator / teleport / presence / persisted keys unchanged
+
+- [ ] R-43: Single-click joke; double-click TicTacToe; Ctrl+right-click teleport (same window and
+      cross-window with `run-cli-terminal`); toggle the companion ON/OFF; set the idle timeout to
+      5 s and let it auto-return; read `Fredo_companion_visible` / `Fredo_companion_idle_timeout`
+      and confirm `isAway` is not persisted.
+  **Expected:** R-33..R-41 still hold — the joke/vision flows, the 250 ms discriminator, the teleport
+      timing (~400 ms out / ~400 ms in + ~50 ms settle), one-Fredo-at-home, the seat wrapper 80×100 +
+      `mb="4"`, and the persisted keys/ranges are byte/behaviour-identical. The reply-surface change
+      must not perturb the presence lifecycle or the idle timer. Reference R-33..R-41 + #2870 R-35/R-36.
+
+## R-44 — Auto-dismiss / welcome-bubble timing still fires when nothing hovers or holds focus
+
+- [ ] R-44: Display a reply with NO pointer over it and NO keyboard focus on it; sample presence
+      across the dismiss period. Separately toggle the companion ON (the welcome bubble) with nothing
+      hovering.
+  **Expected:** the reply still auto-dismisses on its normal timer when unprotected, and the welcome
+      bubble still auto-hides at ~4 s (`showMessage(WELCOME_TEXT, 4000)` ±500 ms, same cleared timer).
+      The protection (F-83/F-84/F-87) is ADDITIVE and must not leave a reply permanently pinned.
+      Reference F-61 + R-15/R-22.
+
+## R-45 — Token-native / console clean / no re-render loop / listeners once after the reply change
+
+- [ ] R-45: Static-grep the changed reply/companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every reply leg (incl. repeated streams, scroll
+      churn and a theme switch mid-stream); inspect the new size/scroll/protection code for
+      effect/memo deps on array `.length`/fresh refs; count listener registrations across cycles.
+  **Expected:** ZERO hardcoded colour literals (comment issue-refs exempt), NO `var(--x)NN`
+      alpha-append (#2770); the reply chrome re-tints token-native in both themes/accent; no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (AGENTS.md #523); the
+      `llm-token`/`llm-done`/`llm-error` listeners register per generation and unlisten on settle —
+      no accumulation. Reference R-7/R-8/R-17/R-36/R-41 + `launcher` R-46.
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
