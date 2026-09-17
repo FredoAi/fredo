@@ -18,7 +18,9 @@
  *      and the one persistent settings live region;
  *   6. the device selector + autosend switch render under the same group and
  *      persist their values (`Fredo_companion_voice_device_id`,
- *      `Fredo_companion_voice_autosend`).
+ *      `Fredo_companion_voice_autosend`);
+ *   7. #2882 ST-7 re-points the enable label/help onto the hold-Space gesture —
+ *      the retired Ctrl+Space dictation shortcut is gone from the copy.
  */
 
 import React from 'react';
@@ -165,7 +167,10 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
       expect(screen.getByTestId('companion-controls')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('Dictate with Ctrl+Space')).toBeInTheDocument();
+    // #2882 ST-7 re-pinned (G-125): the enable label teaches hold-Space, not the
+    // retired Ctrl+Space dictation shortcut.
+    expect(screen.getByText('Hold Space to dictate')).toBeInTheDocument();
+    expect(screen.queryByText('Dictate with Ctrl+Space')).toBeNull();
     // Opt-in / privacy-first: OFF until the user turns it on, nothing persisted.
     expect(screen.getByTestId('voice-probe').getAttribute('data-enabled')).toBe('false');
     expect(localStorage.getItem(VOICE_ENABLED_SETTING_KEY)).toBeNull();
@@ -266,7 +271,8 @@ describe('CompanionSettingsPanel voice group placement + status (#2877 ST-4)', (
     const section = await screen.findByTestId('companion-controls');
     // The voice group lives in the existing Companion section.
     expect(within(section).getByText('Voice input')).toBeInTheDocument();
-    expect(within(section).getByText('Dictate with Ctrl+Space')).toBeInTheDocument();
+    // #2882 ST-7 re-pinned (G-125) — the group still lives in the Companion section.
+    expect(within(section).getByText('Hold Space to dictate')).toBeInTheDocument();
     // No dedicated Voice section heading was added anywhere.
     expect(screen.queryByRole('heading', { name: 'Voice' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Voice input' })).toBeNull();

@@ -18,9 +18,33 @@ import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
-// Spec #2877 ST-5 — live dictation into the existing bar input (the binding
-// context-dependent Ctrl+Space cascade + the launcher-origin listening cue).
+// Spec #2877 ST-5 — live dictation into the existing bar input (the launcher-origin
+// listening cue). Spec #2882 ST-4 retires the context-dependent Ctrl+Space cascade.
 import { useVoiceDictation } from '../../../../shared/hooks/useVoiceDictation';
+// Spec #2882 ST-3 — the fail-closed STT-model readiness probe. Mounted here so the
+// shell owns the arming gate (`voiceEnabled && sttModelReady`) ST-5 reads; the
+// probe is refreshed on the summon path (Ctrl+Space).
+import { useSttModelReady } from '../../../../shared/hooks/useSttModelReady';
+// Spec #2882 ST-1 — THE ONE pure Enter decision. Both the hint memo and the commit
+// path consume it, so the chip can never promise a different action than Enter takes
+// (R-6.3). The rule is never re-derived locally.
+import {
+  enterHintLabel,
+  findTopRankedMatch,
+  resolveEnterAction,
+  type EnterTextOrigin,
+} from './launcherEnterAction';
+// Spec #2882 ST-2 — the PURE hold-Space gesture decision. The shell owns the
+// DOM/timer/mic wiring; the precedence stays in the tested module (a Space may
+// only be consumed under the FULL R-2.1 precondition, and every release resolves
+// to at most ONE ordinary space — the typing-safety NFR, R-2.6/R-2.7).
+import {
+  HOLD_PENDING_CUE_MS,
+  HOLD_THRESHOLD_MS,
+  resolveSpaceKeyDown,
+  resolveSpaceKeyUp,
+  spaceWriteForVerdict,
+} from './launcherSpaceHold';
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -119,49 +143,33 @@ const isFocusable = (el: HTMLElement | null): boolean =>
   el.getAttribute('aria-disabled') !== 'true';
 
 /**
- * Spec #2877 ST-5 — the BINDING context-dependent Ctrl+Space cascade (`(g)`),
- * extracted PURE so every branch + the priority order is unit-pinned.
+ * Spec #2882 ST-4 — Ctrl+Space has ONE meaning: show/focus the bar.
  *
- * Order (binding):
- *   1. #2823 AC3 carve-out — a focused text control OUTSIDE the launcher ⇒ `pass`
- *      (never hijack unrelated in-app inputs; runs FIRST, also ahead of case 1).
- *   2. DR-9 gate — voice disabled ⇒ `open` (every listening branch is
- *      unreachable; `stt_start` is never invoked).
- *   3. PO case 1 — companion ACTIVE and AWAY FROM ITS SEAT ⇒ `companion-listen`
- *      (starts a companion-origin session with NO launcher reveal/focus).
- *   4. PO case 2 — the launcher bar already has focus ⇒ listen/cancel toggle.
- *   5. PO case 3 — default ⇒ `open` (show/focus the bar; NEVER starts listening).
+ * The shipped #2877 context-dependent cascade (`companion-listen` /
+ * `launcher-listen` / `launcher-cancel`) is RETIRED (R-1.2/R-1.4): the chord is
+ * never a listening control, never closes the bar, and never starts a
+ * companion-origin session. What survives is the #2823 AC-3 carve-out — a
+ * focused text control OUTSIDE the launcher still receives the chord untouched
+ * (`pass`: no `preventDefault`, no text mutation).
  *
- * Ctrl+Space NEVER closes the launcher (close moved to Escape). `pass` means
- * "do not act and do not swallow the chord" (#2823 AC3).
+ * The predicate is PURE and takes only what it needs, so the retired branches
+ * cannot be reintroduced by a stale context field.
  */
-export type CtrlSpaceAction =
-  | 'companion-listen'
-  | 'launcher-listen'
-  | 'launcher-cancel'
-  | 'open'
-  | 'pass';
+export type CtrlSpaceAction = 'open' | 'pass';
 
 export interface CtrlSpaceContext {
+  /** A text-editing control (input/textarea/select/contenteditable) has focus. */
   activeIsTextControl: boolean;
+  /** …and that control lives INSIDE the launcher surface (the launcher bar). */
   activeInLauncher: boolean;
-  listening: boolean;
-  companionAway: boolean;
-  /** DR-9: voice input enablement — `false` makes every listening branch unreachable. */
-  voiceEnabled: boolean;
 }
 
 export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
-  // 1. #2823 AC3 carve-out — typing in a text control OUTSIDE the launcher.
+  // The #2823 AC3 carve-out — typing in a text control OUTSIDE the launcher: do
+  // not act and do not swallow the chord.
   if (ctx.activeIsTextControl && !ctx.activeInLauncher) return 'pass';
-  // 2. DR-9 — voice disabled: no listening branch is reachable; fall through to
-  //    the #2823 show/focus behavior and never invoke `stt_start`.
-  if (!ctx.voiceEnabled) return 'open';
-  // 3. PO case 1 — companion active but away from its seat → companion listening.
-  if (ctx.companionAway) return 'companion-listen';
-  // 4. PO case 2 — the launcher bar already has focus → toggle listening.
-  if (ctx.activeInLauncher) return ctx.listening ? 'launcher-cancel' : 'launcher-listen';
-  // 5. PO case 3 — default: show/focus the bar (#2823); it NEVER starts listening.
+  // Every other context (including the launcher's own focused bar): show/focus
+  // the bar. Ctrl+Space NEVER starts/stops listening and NEVER closes it.
   return 'open';
 }
 
@@ -234,19 +242,29 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // #2871 ST-3 continuous busy primitive (AGENTS.md #523 — primitive read only).
   const companionBusy = companion.isInUse;
 
-  // Spec #2877 ST-5 — the context-dependent Ctrl+Space cascade (`(g)`) and the
-  // launcher-origin listening cue (DR-7). `start`/`stop`/`cancel` are stable
-  // useCallbacks, so the document listener below keeps a stable identity and is
-  // mounted exactly once (NFR-2).
+  // Spec #2882 ST-4 — Ctrl+Space shows/focuses the bar (see `selectCtrlSpaceAction`);
+  // the launcher-origin listening cue (DR-7) is unchanged. `start`/`stop`/`cancel`
+  // are stable useCallbacks, so the document listener below keeps a stable identity
+  // and is mounted exactly once (NFR-2).
   const voice = useVoiceDictation();
+  // Spec #2882 ST-5 — CT-1: the hold gesture is now the ONLY launcher capture
+  // entry point (ST-4 retired every Ctrl+Space listening branch, ST-6 retired the
+  // companion-origin path), so `start` is wired to the hold timer's arm path.
   const { start: startVoice, stop: stopVoice, cancel: cancelVoice } = voice;
-  // Latest-value refs for the mounted-once listener (mirrors `openRef` :231): its
-  // handler identity is stable, so any non-ref read inside it would be stale
-  // ((g).7). `voiceEnabledRef` carries the DR-9 gate — when voice is disabled the
-  // listening branches are unreachable and `stt_start` is never invoked.
-  const companionAwayRef = useRef(companionAway);
+  // Spec #2882 ST-3 — the fail-closed model-readiness probe (R-3.3). Mounted here so
+  // the shell owns the arming gate ST-5 reads (`voiceEnabled && sttModelReady`);
+  // refreshed on the summon path. It probes ONLY while voice is enabled.
+  const sttModel = useSttModelReady(voiceEnabled);
+  // Spec #2882 ST-5-fix (QA-10) — WHILE a launcher-origin capture is live, Enter is
+  // a NO-OP and the chip reads exactly `release Space to finish`. This ONE primitive
+  // is fed to the SAME `resolveEnterAction` on BOTH the hint path (the memo) and the
+  // handler path (the Enter branch) and drives the bar cue below, so the chip can
+  // never contradict what Enter does (R-6.3) — there is no second copy table.
+  const captureLive = voice.listening && voice.origin === 'launcher';
+  // Latest-value ref for the mounted-once listener (mirrors `openRef`): its handler
+  // identity is stable, so any non-ref read inside it would be stale. The retired
+  // `companionAwayRef` / `voiceEnabledRef` went with the cached cascade branches.
   const listeningRef = useRef(voice.listening);
-  const voiceEnabledRef = useRef(voiceEnabled);
 
   // ── Spec #2878 ST-1 — commit-path support refs ─────────────────────────────
   // All are mutable refs (never state) so they can be read/written synchronously
@@ -279,6 +297,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // once-guard is what stops a later manual keystroke being clobbered by a
   // repeated restore. Reset at session start with the other per-session guards.
   const restoredAfterSessionRef = useRef(false);
+  // Spec #2882 ST-4 (R-4.3, clarification #2) — the bar's content PROVENANCE.
+  // TRUE iff the bar's text originated from a launcher-origin dictation capture
+  // that produced a committed final. It is NEVER inferred from the text and NEVER
+  // cleared by a user edit; it clears only when the content stops existing (bar
+  // emptied, committed, minimized, or suppress-restored). This ref is the
+  // synchronous mirror the commit path reads — `commitBarQuery` may run in the
+  // same commit in which the finalize wrote the bar.
+  const dictationOriginRef = useRef(false);
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -286,12 +312,139 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // query is present; returns to idle on ESC / focus-leaving-the-surface (empty query).
   const [engaged, setEngaged] = useState(false);
   const [query, setQuery] = useState('');
+  // Spec #2882 ST-4 (R-4.3/R-4.5) — render-time provenance, so the hint memo can
+  // derive the truthful chip (`↵ send transcript to Fredo`) for dictated content.
+  // The ref above is the synchronous mirror the commit path reads.
+  const [dictationOrigin, setDictationOrigin] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   // #2823: shortcut-opened overlay state — DISTINCT from the #2819 `engaged`
   // grid-reveal. `open` is TRUE only when the launcher was summoned by Ctrl+Space
   // (it re-z's above the window stack + autofocuses the searchbox). When FALSE the
   // resting z-model (coveredByWindow) applies unchanged.
   const [open, setOpen] = useState(false);
+
+  // ── Spec #2882 ST-5 — the hold-to-dictate gesture state (never persisted) ────
+  // The WHILE-Space-is-held condition is a continuous state machine, not a set of
+  // transition call-sites: `holdArmed` is the cue from the keydown moment for the
+  // WHOLE gesture (R-2.4), `holdPending` is the bounded `starting voice input…`
+  // chip once the engine start outlives `HOLD_PENDING_CUE_MS` (S2). One release
+  // owner: the mount-once document keyup listener below (inert outside a hold).
+  const [holdArmed, setHoldArmed] = useState(false);
+  const [holdPending, setHoldPending] = useState(false);
+  // R-2.1 / contract 4c — the promise placeholder is offered only when the whole
+  // precondition is available (voice on + FAIL-CLOSED model readiness + not busy).
+  // Readiness unknown ⇒ no promise is made and Space stays natively ordinary.
+  const holdAvailable = voiceEnabled && sttModel.ready && !companionBusy;
+  // R-2.5.6 (AC3) — a hold-origin start failure is SILENT (no alert, no error
+  // text). Muted from the moment the hold starts the engine and re-armed when the
+  // next gesture arms, so a failure arriving with NO hold start in flight (the
+  // app-global `stt:state` channel — the DR-11 lever) still surfaces the copy.
+  const [holdFailureMuted, setHoldFailureMuted] = useState(false);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdPendingCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdArmedRef = useRef(false);
+  // Escape / the visible `×` disarmed this gesture: swallow Space until the release.
+  const holdDisarmedRef = useRef(false);
+  // The release-resolution inputs (R-2.6 vs R-2.7).
+  const thresholdCrossedRef = useRef(false);
+  // Went live DURING this gesture — a live-then-stopped release is a FINALIZE,
+  // never a cancel-and-space.
+  const holdWentLiveRef = useRef(false);
+  // The release landed before the engine confirmed the start: cancel the session
+  // on its rise edge. `stt_stop`/`stt_cancel` with NO active session is a silent
+  // no-op (session.rs:357-388), so without this the microphone stays hot.
+  const cancelOnLiveRef = useRef(false);
+  // R-2.5 — a blur stop keeps the words but must never trigger the autosend commit.
+  const suppressAutosendOnceRef = useRef(false);
+  // R-2.5 — one blur stop per gesture (the input's focusout and a `window` blur
+  // can both report the same gesture).
+  const blurStopIssuedRef = useRef(false);
+
+  // The gesture's two bounded timers — always cleared together (no leaked timer).
+  const clearHoldTimers = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (holdPendingCueTimerRef.current) {
+      clearTimeout(holdPendingCueTimerRef.current);
+      holdPendingCueTimerRef.current = null;
+    }
+  }, []);
+
+  // End the gesture's timers + cue state WITHOUT touching the session (the caller
+  // owns stop/cancel). Never writes a space — the release owner does that.
+  const resetHoldGesture = useCallback(() => {
+    clearHoldTimers();
+    holdArmedRef.current = false;
+    thresholdCrossedRef.current = false;
+    holdWentLiveRef.current = false;
+    setHoldArmed(false);
+    setHoldPending(false);
+  }, [clearHoldTimers]);
+
+  // R-2.1 — arm the hold: the caller has already consumed the keydown
+  // (`preventDefault`), the bounded HOLD_THRESHOLD_MS timer starts here, and every
+  // further Space keydown is swallowed until the release (R-2.2).
+  const armHold = useCallback(() => {
+    holdArmedRef.current = true;
+    holdDisarmedRef.current = false;
+    thresholdCrossedRef.current = false;
+    holdWentLiveRef.current = false;
+    cancelOnLiveRef.current = false;
+    blurStopIssuedRef.current = false;
+    setHoldArmed(true);
+    holdTimerRef.current = setTimeout(() => {
+      holdTimerRef.current = null;
+      thresholdCrossedRef.current = true;
+      // From here any failure belongs to this hold-origin start: silent (AC3).
+      setHoldFailureMuted(true);
+      // S2 — the pending chip appears only if the engine start outlives the
+      // bounded cue window (Doherty: the loop must never look dead).
+      holdPendingCueTimerRef.current = setTimeout(() => {
+        holdPendingCueTimerRef.current = null;
+        if (!launcherActiveRef.current) setHoldPending(true);
+      }, HOLD_PENDING_CUE_MS);
+      // R-2.1 — a LAUNCHER-origin capture (the only capture entry point, R-1.4).
+      void startVoice('launcher');
+    }, HOLD_THRESHOLD_MS);
+  }, [startVoice]);
+
+  // R-2.5 (QA-9 CLOSED) — a blur during a hold/capture is a STOP, never a
+  // discard: the capture stops, the microphone is released, the recognized words
+  // are KEPT in the bar as a dictated transcript, and the autosend commit is
+  // SUPPRESSED (a release is the send consent; a blur is not). Discard + restore
+  // applies ONLY to an explicit cancel (Escape / the visible `×`).
+  const stopCaptureOnBlur = useCallback(() => {
+    if (blurStopIssuedRef.current) return;
+    const live = launcherActiveRef.current;
+    const crossed = thresholdCrossedRef.current;
+    const armed = holdArmedRef.current;
+    if (!live && !crossed && !armed) return;
+    blurStopIssuedRef.current = true;
+
+    if (live) {
+      // The trailing keyup must not write a space or re-issue a stop.
+      holdDisarmedRef.current = true;
+      suppressAutosendOnceRef.current = true;
+      resetHoldGesture();
+      void stopVoice();
+      return;
+    }
+    if (crossed) {
+      // Threshold crossed, engine not confirmed: cancel on the rise edge so the
+      // microphone is never left capturing, and drop the gesture (no space — a
+      // blur is not a release).
+      holdDisarmedRef.current = true;
+      cancelOnLiveRef.current = true;
+      resetHoldGesture();
+      return;
+    }
+    // Merely armed (the release had not beaten the threshold yet): still a TAP.
+    // Only the pending start is cancelled; the trailing keyup resolves it so the
+    // space the user meant to type is never lost (R-2.7 / the typing-safety NFR).
+    clearHoldTimers();
+  }, [clearHoldTimers, resetHoldGesture, stopVoice]);
 
   // #2854 ST-4: the desktop mascot's SURFACE-LOCAL expression state (never the
   // companion context / `CompanionState` / presence payload — #2853 invariant).
@@ -330,6 +483,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     setEngaged(false);
   }, []);
 
+  // Spec #2882 ST-4 — the ONE provenance writer. The ref is assigned synchronously
+  // so a commit path running in the SAME commit as the write reads the new value.
+  const setBarOrigin = useCallback((dictated: boolean) => {
+    dictationOriginRef.current = dictated;
+    setDictationOrigin(dictated);
+  }, []);
+
   // #2854 ST-4: a feature-tile open fires the mascot's bounded `happy` beat. A
   // SINGLE cleared `setTimeout` (never doubled) — cleared on re-trigger and on
   // unmount, so no timer can leak (AGENTS.md #523 — no re-render loops). The
@@ -350,23 +510,39 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [],
   );
 
-  // #2823: Ctrl+Space open — capture the pre-open focus origin (first-open only;
-  // never re-captured on a toggle-close, so a Ctrl+Space in → Ctrl+Space out returns
-  // to the element the user was on before the FIRST open, not the searchbox), raise
-  // the overlay above the window stack and autofocus the command-bar searchbox.
+  // #2823: Ctrl+Space open — capture the pre-open focus origin (first-open ONLY;
+  // a repeat chord while the bar is already up must not re-point Escape's restore
+  // target at the searchbox itself), raise the overlay above the window stack and
+  // focus the command-bar searchbox.
+  //
+  // Spec #2882 ST-4 (R-1.1/R-1.3, UI/UX §6) — the caret rule: when the input did
+  // NOT already have focus, place the caret at the END of the existing text, so a
+  // summon can never overwrite an uncommitted transcript; when it already HAD
+  // focus (with a selection) the selection is left untouched — Ctrl+Space must
+  // never mutate text or move an existing caret. It also NEVER closes the bar.
   const openOverlay = useCallback(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    if (!openRef.current) {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
+    }
     openRef.current = true;
     setOpen(true);
     setEngaged(true);
+    // ST-3 contract — the summon path re-probes model readiness (bounded,
+    // coalesced, and a no-op while voice is disabled).
+    sttModel.refresh();
     window.requestAnimationFrame(() => {
-      // Guard against a within-frame toggle-off (rapid double-press): only focus the
+      // Guard against a within-frame close (rapid double-press): only touch the
       // searchbox if the overlay is STILL open (openRef is read live, not captured).
       if (!openRef.current) return;
       const input = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
-      if (input && document.activeElement !== input) input.focus();
+      if (!input) return;
+      if (document.activeElement !== input) {
+        input.focus();
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+      }
     });
-  }, []);
+  }, [sttModel.refresh]);
 
   // #2823: close (ESC / toggle-off) — drop the overlay to resting (closeSurface) AND
   // restore focus to the pre-open element ONLY if focus was actually inside the
@@ -405,33 +581,65 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     return showableFeatures.filter((feature) => feature.name.toLowerCase().includes(q));
   }, [showableFeatures, query]);
 
-  // #2871 ST-2 — smart-Enter mode derivation (the presentational contract for the
-  // bar; UI/UX §1). One memo off primitives + the feature list (AGENTS.md #523):
-  //   empty query              → no action (`none`), no chip; Enter launches today.
-  //   exact full-name match    → launch that tile (`launch`) + `↵ open <Tile>`;
-  //                              launch WINS over chat (R-1.3 / R-4.2).
-  //   non-match + active       → send to Fredo (`send`) + `↵ send to Fredo` (R-1.1).
-  //   non-match + inactive     → no chip (`none`); Enter launches today (R-4.1).
-  // Exact match is FULL-NAME equality over `showableFeatures` — never the
-  // substring `filteredEntries` (a substring-only hit is a send while active).
+  // Spec #2882 ST-4 — the truthful hint, derived from ST-1's ONE Enter verdict
+  // (R-6.3: "the hint always states the action Enter will take"). The old
+  // independent exact-full-name rule + the `companionBusy` global gate are
+  // retired: the memo reads the SAME `resolveEnterAction` the handler commits,
+  // so the two can never drift. One memo off primitives + the feature list
+  // (AGENTS.md #523).
+  //
+  // `entries` is the rendered results list (`filteredEntries`); a rule match is
+  // always a substring-filter match (contract 2), so `findTopRankedMatch` settles
+  // on the earliest matching entry the grid shows.
+  //
+  // Spec #2882 ST-5-fix (QA-10) — `captureLive` is fed here too: while a launcher-
+  // origin capture is live the verdict is `none/listening`, so the chip reads
+  // `release Space to finish` (or `Fredo is replying…` while busy, UI/UX §3 row 1
+  // outranking row 2). The Enter branch below reads the SAME verdict.
   const commandBar = useMemo<{
-    exact: FredoFeatureClass | null;
     enterMode: LauncherEnterMode;
     hintLabel: string | undefined;
   }>(() => {
-    // #2871 ST-2r — busy-first (UI/UX §1 state 5): while a companion generation
-    // is in flight the bar shows the `Fredo is replying…` chip regardless of the
-    // query (a send clears it, so a query-derived label would never appear).
-    // Enter is gated to a no-op in the keydown handler above.
-    if (companionBusy) return { exact: null, enterMode: 'none', hintLabel: 'Fredo is replying…' };
+    const queryEmpty = query.trim() === '';
+    const action = resolveEnterAction({
+      query,
+      entries: filteredEntries,
+      textOrigin: dictationOrigin ? 'dictated' : 'typed',
+      companionActive,
+      companionBusy,
+      captureLive,
+    });
+    const hintLabel = enterHintLabel(action, { busy: companionBusy, queryEmpty });
+    const enterMode: LauncherEnterMode =
+      action.kind === 'launch' ? 'launch' : action.kind === 'send' ? 'send' : 'none';
+    return { enterMode, hintLabel };
+  }, [
+    query,
+    filteredEntries,
+    dictationOrigin,
+    companionActive,
+    companionBusy,
+    captureLive,
+  ]);
+
+  // Spec #2882 ST-5-fix (UI/UX §7) — the accent-highlighted tile follows the
+  // top-ranked rule match, so the tile the grid highlights is the SAME app the chip
+  // names and Enter opens. This is a SEPARATE effect on purpose: the live-text
+  // effect depends on `handleQueryChange`'s identity, so folding this into that
+  // callback would restart partial writes mid-session. Arrow-key navigation is
+  // untouched — it moves the selection WITHIN a query and this effect re-runs only
+  // when the query (or the filtered list it derives from) actually changes.
+  useEffect(() => {
     const q = query.trim();
-    if (q === '') return { exact: null, enterMode: 'none', hintLabel: undefined };
-    const lower = q.toLowerCase();
-    const exact = showableFeatures.find((f) => f.name.trim().toLowerCase() === lower) ?? null;
-    if (exact) return { exact, enterMode: 'launch', hintLabel: `↵ open ${exact.name}` };
-    if (companionActive) return { exact: null, enterMode: 'send', hintLabel: '↵ send to Fredo' };
-    return { exact: null, enterMode: 'none', hintLabel: undefined };
-  }, [query, showableFeatures, companionActive, companionBusy]);
+    if (q === '') {
+      setSelectedIndex(0);
+      return;
+    }
+    const match = findTopRankedMatch(q, filteredEntries);
+    if (!match) return;
+    const index = filteredEntries.indexOf(match);
+    if (index !== -1) setSelectedIndex(index);
+  }, [query, filteredEntries]);
 
   // Responsive column count — MUST mirror LauncherAppGrid's
   // `SimpleGrid columns={{ base: 2, sm: 3, md: 4, lg: 6 }}` so ↑↓ leaps a full row.
@@ -509,6 +717,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [query, closeSurface],
   );
 
+  // Spec #2882 ST-5 (R-2.5) — the BAR's own focusout is the "input loses focus"
+  // trigger: a hold/capture must stop there (before the surface-level collapse
+  // logic, which only rewrites the overlay state). The capture stop is idempotent
+  // per gesture, so the bubbled surface `onBlur` that follows is a no-op.
+  const handleBarBlur = useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      stopCaptureOnBlur();
+      handleSurfaceBlur(e);
+    },
+    [stopCaptureOnBlur, handleSurfaceBlur],
+  );
+
   // `—` MINIMIZE control: collapse the ENGAGED grid back to the resting Main
   // (keep the search bar — AC5) and land focus on the FREDO notch trigger.
   const handleMinimize = useCallback(() => {
@@ -520,10 +740,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     // stale-mirror phantom-dispatch class).
     barTextRef.current = '';
     setQuery('');
+    // Spec #2882 ST-4 — minimize clears the bar, so the content provenance is
+    // reset with it (declared data contract).
+    setBarOrigin(false);
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
     });
-  }, [closeSurface]);
+  }, [closeSurface, setBarOrigin]);
 
   // #2871 ST-2 — the ONE tile-open path (close overlay → mascot happy beat →
   // full-lifecycle opener). Shared by the filtered selection, a grid click, and
@@ -546,44 +769,60 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     launchFeature(feature);
   }, [filteredEntries, safeSelectedIndex, launchFeature]);
 
-  // Spec #2878 ST-1 — the ONE commit path, shared by the Enter handler and the
-  // autosend finalize effect (never a second dispatch route — G-149). The caller
-  // MUST have already guarded `raw.trim() !== ''` (R-5.1); the local empty guard
-  // is defensive only. The order matches today's smart-Enter exactly
-  // (R-2.1→R-2.4): busy → no-op; exact full-name match → launch (launch WINS);
-  // else an active companion → `askActiveCompanion` + clear/collapse; else
-  // today's launch path. The exact match is computed from the commit text (not
-  // the memoized `commandBar.exact`) because the autosend path may commit text
-  // written by the live-text effect in the same commit.
+  // Spec #2882 ST-4 — the ONE commit path, shared by the Enter handler and the
+  // autosend finalize effect (never a second dispatch route — G-149). It reads
+  // ST-1's `resolveEnterAction` — the SAME verdict the hint chip renders — so the
+  // promise and the act cannot disagree (R-6.3). The caller supplies the content
+  // PROVENANCE (`origin`), which decides whether a launch is even possible.
+  //
+  // Superseded by this spec (binding contract point 3):
+  //   • the `companionBusy` GLOBAL no-op → busy now affects only the SEND path: a
+  //     TYPED app match launches even while Fredo is replying (AC5);
+  //   • the non-empty non-match `openSelected()` fall-through → retired (R-6.1):
+  //     unmatched typed text is sent or left alone, NEVER the substring tile;
+  //   • "a dictated exact tile name launches" (#2878) → retired (R-4.3): dictated
+  //     content is delivered or left alone, NEVER an app.
+  // The EMPTY-query grid selection stays in the Enter handler (R-5.1) — it is not
+  // a commit and never reaches here.
   const commitBarQuery = useCallback(
-    (raw: string): 'launched' | 'sent' | 'none' => {
-      if (companionBusy) return 'none';
-      const q = raw.trim();
-      if (q === '') return 'none';
-      const lower = q.toLowerCase();
-      const exact =
-        showableFeatures.find((feature) => feature.name.trim().toLowerCase() === lower) ?? null;
-      if (exact) {
-        launchFeature(exact);
+    (raw: string, origin: EnterTextOrigin): 'launched' | 'sent' | 'none' => {
+      const action = resolveEnterAction({
+        query: raw,
+        entries: filteredEntries,
+        textOrigin: origin,
+        companionActive,
+        companionBusy,
+      });
+
+      if (action.kind === 'launch') {
+        launchFeature(action.feature);
         return 'launched';
       }
-      if (companionActive) {
-        // Returns true iff this window has an active entity that accepted the
-        // message; `false` falls through to today's launch path so a missing
-        // entity can never swallow the query.
-        if (askActiveCompanion(q)) {
+
+      if (action.kind === 'send') {
+        // `askActiveCompanion` returns true iff this window has an active entity
+        // that accepted the message. A `false` (no active entity) leaves the text
+        // UNTOUCHED — never the retired launch fall-through.
+        if (askActiveCompanion(raw.trim())) {
           setQuery('');
           barTextRef.current = '';
+          setBarOrigin(false);
           setEngaged(false);
           return 'sent';
         }
-        openSelected();
-        return 'launched';
+        return 'none';
       }
-      openSelected();
-      return 'launched';
+
+      // `none` (empty / busy / no-match-no-companion): the bar keeps its content.
+      return 'none';
     },
-    [companionBusy, showableFeatures, companionActive, launchFeature, openSelected],
+    [
+      filteredEntries,
+      companionActive,
+      companionBusy,
+      launchFeature,
+      setBarOrigin,
+    ],
   );
 
   const handleSelect = useCallback(
@@ -595,37 +834,48 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [filteredEntries, launchFeature],
   );
 
-  const handleQueryChange = useCallback((q: string) => {
-    // #2878 ST-1 — synchronous mirror so the finalize commit reads the text the
-    // live-text effect wrote in this same commit (never a one-render-stale read).
-    barTextRef.current = q;
-    setQuery(q);
-    // A fresh filter restarts selection at the first tile.
-    setSelectedIndex(0);
-    // A present query reveals the grid (engaged) even without surface focus.
-    if (q.trim() !== '') setEngaged(true);
-  }, []);
+  const handleQueryChange = useCallback(
+    (q: string) => {
+      // #2878 ST-1 — synchronous mirror so the finalize commit reads the text the
+      // live-text effect wrote in this same commit (never a one-render-stale read).
+      barTextRef.current = q;
+      setQuery(q);
+      // A fresh filter restarts selection at the first tile.
+      setSelectedIndex(0);
+      // A present query reveals the grid (engaged) even without surface focus.
+      if (q.trim() !== '') setEngaged(true);
+      // Spec #2882 ST-4 (clarification #2) — the content stopped existing, so its
+      // provenance does too. A USER EDIT is not a reset (the text is still the
+      // dictated transcript); only a genuine emptying is.
+      if (q === '') setBarOrigin(false);
+    },
+    [setBarOrigin],
+  );
 
   // Spec #2878 ST-1 (R-3.1/R-3.2) — the cancel/discard entry point: suppress the
   // autosend commit for the ended session and restore the pre-session bar text.
-  // Called by the Escape branch, the `launcher-cancel` cascade branch, and the
-  // voice-disabled teardown BEFORE the session is stopped/cancelled.
+  // Called by the Escape branch, the bar's `×` cancel control, and the
+  // voice-disabled teardown BEFORE the session is stopped/cancelled. #2882 ST-4:
+  // a discard also resets the content PROVENANCE (declared data contract).
   const suppressAutosendAndRestore = useCallback(() => {
     cancelledRef.current = true;
+    setBarOrigin(false);
     handleQueryChange(preSessionTextRef.current);
-  }, [handleQueryChange]);
+  }, [handleQueryChange, setBarOrigin]);
 
-  // Spec #2877 ST-5 — keep the mounted-once listener's ref mirrors current ((g).7):
-  // companion presence, live session state, and the DR-9 voice-enablement gate.
-  useEffect(() => {
-    companionAwayRef.current = companionAway;
-  }, [companionAway]);
+  // Spec #2882 ST-4 — keep the mounted-once listener's live-session mirror current.
   useEffect(() => {
     listeningRef.current = voice.listening;
   }, [voice.listening]);
+
+  // Spec #2882 ST-5 (R-2.5.6/AC3) — the failure mute lives exactly as long as the
+  // error it belongs to: it clears when the hook's error clears OUTSIDE a gesture
+  // (a new session / a successful start), so the NEXT start's failure can be muted
+  // again while a stale hold-origin error is never surfaced later. While a gesture
+  // is in flight the mute survives the start's optimistic error-clear.
   useEffect(() => {
-    voiceEnabledRef.current = voiceEnabled;
-  }, [voiceEnabled]);
+    if (voice.errorCode === null && !holdArmedRef.current) setHoldFailureMuted(false);
+  }, [voice.errorCode]);
 
   // Spec #2877 ST-5 (DR-9) — disabling voice while a session is live stops it
   // immediately and releases the microphone (the backend's own `disabled` gate is
@@ -658,9 +908,33 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       userEditedDuringSessionRef.current = false;
       finalizePendingRef.current = false;
       restoredAfterSessionRef.current = false;
+      // R-2.5 — a blur suppression is one-shot per session; a fresh session must
+      // never inherit a stale mute.
+      suppressAutosendOnceRef.current = false;
       preSessionTextRef.current = barTextRef.current;
       sessionBaseCommittedRef.current = voice.committed;
       prevCommittedRef.current = voice.committed;
+      // Spec #2882 ST-5 — S2 → S3: the pending cue ends the moment the engine is
+      // live, and the gesture is now known to have gone live (so its release is a
+      // FINALIZE even if the session ends first).
+      if (holdPendingCueTimerRef.current) {
+        clearTimeout(holdPendingCueTimerRef.current);
+        holdPendingCueTimerRef.current = null;
+      }
+      setHoldPending(false);
+      blurStopIssuedRef.current = false;
+      if (holdArmedRef.current) holdWentLiveRef.current = true;
+      // Spec #2882 ST-5 (R-2.6) — the STALE-HOLD GUARD: the release landed BEFORE
+      // the engine confirmed the start, so this late session is CANCELLED on its
+      // rise edge (a no-op `stt_cancel` would leave the microphone hot — the
+      // privacy violation). The utterance is discarded (the hold never captured)
+      // and the one ordinary space the release already wrote is PRESERVED: the
+      // cancel suppresses the autosend commit AND the no-final restore.
+      if (cancelOnLiveRef.current) {
+        cancelOnLiveRef.current = false;
+        cancelledRef.current = true;
+        void cancelVoice();
+      }
     } else if (was && !now) {
       // Session end: arm the finalize commit. The commit effect below also runs
       // on `voice.liveText` so a final transcript landing just after the
@@ -670,7 +944,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // from the bar mirror.
       finalizePendingRef.current = true;
     }
-  }, [voice.listening, voice.origin, voice.committed]);
+  }, [voice.listening, voice.origin, voice.committed, cancelVoice]);
 
   // Spec #2877 ST-5 / #2878 ST-1+ST-2 — live transcript → the EXISTING controlled
   // bar input, LAUNCHER-origin sessions only. Writes the session-scoped
@@ -681,11 +955,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   //     (the restore wins until the next session start).
   //   • UX-2 — after the first manual keystroke during a live segment, partial
   //     writes stop for the session; a later FINAL segment still appends.
+  // Spec #2882 ST-4 (R-4.3, clarification #2) — a write that carries a committed
+  // FINAL for this session marks the bar's content as DICTATED. The evidence rule
+  // is the #2878 one (`committed` grew past the session baseline); a partial-only
+  // session never flips provenance, and a LATER USER EDIT never clears it.
   useEffect(() => {
     if (voice.origin !== 'launcher') return;
     if (cancelledRef.current) return;
     const prevCommitted = prevCommittedRef.current;
     prevCommittedRef.current = voice.committed;
+    const base = sessionBaseCommittedRef.current;
+    if (voice.committed.startsWith(base) && voice.committed.length > base.length) {
+      setBarOrigin(true);
+    }
     if (userEditedDuringSessionRef.current) {
       const grew =
         voice.committed.startsWith(prevCommitted) &&
@@ -695,13 +977,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       if (segment) handleQueryChange(joinBarText(barTextRef.current, segment));
       return;
     }
-    const base = sessionBaseCommittedRef.current;
     const scoped =
       base && voice.committed.startsWith(base)
         ? voice.committed.slice(base.length).trimStart()
         : voice.committed;
     handleQueryChange(joinBarText(scoped, voice.partial));
-  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange]);
+  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange, setBarOrigin]);
 
   // Spec #2877 ST-5 (DR-10) — the newest FINAL segment, derived from the hook's
   // append-only `committed` text (a final APPENDS its segment; a partial only ever
@@ -776,9 +1057,22 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const text = barTextRef.current.trim();
     if (text === '') return;
     if (!voiceAutosend) return; // R-2.6 — autosend OFF: text stays, no dispatch.
+    // Spec #2882 ST-5 (R-2.5) — this is the ONLY addition to the finalize effect:
+    // a BLUR stop keeps the recognized words but must never dispatch them (a
+    // release is the send consent, a blur is not). One-shot, and it sits AFTER the
+    // session-scoped evidence rule (which is untouched) and BEFORE the commit, so
+    // a suppressed finalize can never be replayed or double-counted.
+    if (suppressAutosendOnceRef.current) {
+      suppressAutosendOnceRef.current = false;
+      return;
+    }
     if (autosendFiredRef.current) return;
     autosendFiredRef.current = true;
-    commitBarQuery(text);
+    // Spec #2882 ST-4 (R-4.1/clarification #2) — a finalize commit is ALWAYS a
+    // capture's transcript, so its provenance is `dictated` by construction: the
+    // autosend path delivers to Fredo and can NEVER open an app, whatever the
+    // transcript spells.
+    commitBarQuery(text, 'dictated');
   }, [
     voice.listening,
     voice.origin,
@@ -794,6 +1088,23 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // Spec #2882 ST-5 — a HOLD gesture in flight is disarmed FIRST: its
+        // trailing keyup writes NO space and issues no stop, and a session that
+        // goes live after this Escape is cancelled on its rise edge (the mic-hot
+        // race). The utterance is discarded (a cancel), never kept — that is the
+        // bound resolution: only Escape / the visible `×` discard.
+        if (holdArmedRef.current || thresholdCrossedRef.current) {
+          const mayStart = thresholdCrossedRef.current && !listeningRef.current;
+          holdDisarmedRef.current = true;
+          blurStopIssuedRef.current = true;
+          resetHoldGesture();
+          if (mayStart) cancelOnLiveRef.current = true;
+          // A session that raced in before/at the Escape still takes the existing
+          // cancel path (suppress the autosend commit, restore the draft).
+          if (listeningRef.current) suppressAutosendAndRestore();
+          void cancelVoice();
+          return;
+        }
         // Spec #2877 ST-5 ((g).2, binding) — a live dictation session cancels
         // FIRST (the launcher stays open, the text is kept); otherwise Escape
         // keeps today's exact behavior (shortcut-open → closeOverlay with
@@ -830,36 +1141,101 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
 
       const isFromInput = (e.target as HTMLElement).tagName === 'INPUT';
 
-      // #2871 ST-2 — smart Enter, evaluated BEFORE the empty-grid guard so a chat
-      // send still works when the query filters every tile out (R-1.1). Escape
-      // stays first; arrows/Space keep the empty-grid no-op below. Rule (binding):
-      //   empty query         → today's launch of the selected tile; never a send.
-      //   exact full-name hit → today's launch path (launch WINS over chat).
-      //   active + non-match  → send the message to Fredo (dispatch through the
-      //                         per-window registry), then clear + collapse while
-      //                         KEEPING focus in the bar (never blur).
-      //   inactive            → today's launch path; never a chat send (R-4.1).
-      //   busy (#2871 ST-2r)  → GLOBAL no-op (UI/UX §1 state 5); never launch and
-      //                         never a second send.
+      // Spec #2882 ST-4 — smart Enter, evaluated BEFORE the empty-grid guard so a
+      // chat send still works when the query filters every tile out. Escape stays
+      // first; arrows/Space keep the empty-grid no-op below. The commit rule lives
+      // in ST-1's `resolveEnterAction` (the SAME verdict the chip renders):
+      //   empty query          → today's launch of the selected tile (never a send);
+      //   live capture         → NOTHING (ST-5-fix QA-10 — no launch, no send, no
+      //                          mutation of the bar: the live text is provisional);
+      //   dictated content     → deliver to Fredo or nothing — NEVER an app (R-4.3);
+      //   typed + app match    → open it, INDEPENDENT of the companion / busy (AC5);
+      //   typed, no match      → send when an active companion accepts, else nothing
+      //                          (R-6.1 — the retired `openSelected()` fall-through).
       if (e.key === 'Enter') {
         e.preventDefault();
-        // #2871 ST-2r — Enter is a GLOBAL no-op while a companion generation is in
-        // flight (UI/UX §1 state 5). A send clears the query (`setQuery('')`), so
-        // without this guard the old empty-query branch would launch filtered tile
-        // index 0 mid-stream; it must never reach `openSelected()` and never start a
-        // second generation.
-        if (companionBusy) return;
+        // Spec #2882 ST-5-fix (QA-10, R-6.3) — the Enter verdict comes from the SAME
+        // pure `resolveEnterAction` the hint chip renders, fed the SAME `captureLive`
+        // primitive. WHILE a launcher-origin capture is live the verdict is
+        // `none/listening` in EVERY query state, so Enter can never open a partially
+        // transcribed live text or dispatch a partial — and the chip, derived from
+        // the identical verdict, can only read `release Space to finish` (or the
+        // busy copy, which outranks it). Both are no-ops, so the pair always agrees.
+        const verdict = resolveEnterAction({
+          query,
+          entries: filteredEntries,
+          textOrigin: dictationOriginRef.current ? 'dictated' : 'typed',
+          companionActive,
+          companionBusy,
+          captureLive,
+        });
+        if (verdict.kind === 'none' && verdict.reason === 'listening') return;
+
         const q = query.trim();
-        // The empty branch keeps today's launch — it must never be reachable from
-        // the autosend path (R-5.1).
+        // The empty branch keeps today's grid launch — it must never be reachable
+        // from the autosend path (R-5.1). A generation in flight keeps the pre-#2882
+        // GLOBAL no-op here (the truth table's `companionBusy` row outranks the
+        // empty-query row); a TYPED app match below still launches while replying.
         if (q === '') {
+          if (companionBusy) return;
           openSelected();
           return;
         }
         // #2878 ST-1 — the SAME commit path the autosend finalize uses (one
-        // dispatch route — G-149).
-        commitBarQuery(q);
+        // dispatch route — G-149). The content PROVENANCE comes from the
+        // synchronous ref, so a transcript written earlier in this commit is
+        // already `dictated` (clarification #2).
+        commitBarQuery(q, dictationOriginRef.current ? 'dictated' : 'typed');
         return;
+      }
+
+      // ── Spec #2882 ST-5 — hold-Space dictates (R-2.1/R-2.2/R-3.1-3.3) ────────
+      // Evaluated BEFORE the empty-grid guard: the target is the searchbox input,
+      // so a fully-filtered grid must never block the gesture. The verdict is
+      // ST-2's PURE precedence — a Space may only be consumed under the FULL R-2.1
+      // precondition (focused empty bar + voice usable + unmodified + non-repeat),
+      // and every other input stays natively ordinary (R-3.1-3.3: no promise, no
+      // capture attempt, no error).
+      if (e.key === ' ') {
+        // A disarmed gesture (Escape / the visible `×` / a blur stop) swallows
+        // every Space keydown — auto-repeats included — until the release, so a
+        // discarded hold can never leak a run of spaces.
+        if (holdDisarmedRef.current) {
+          e.preventDefault();
+          return;
+        }
+        const spaceTarget = e.target as HTMLElement;
+        const spaceVerdict = resolveSpaceKeyDown({
+          holdArmed: holdArmedRef.current,
+          // The SEARCHBOX specifically — a tile-focused Space keeps its existing
+          // opens-the-tile meaning (the switch below), and hold-Space never
+          // applies to any other Fredo text input (REQ-14).
+          isBarInputTarget:
+            spaceTarget.tagName === 'INPUT' &&
+            spaceTarget.getAttribute('role') === 'searchbox',
+          queryIsEmpty: query === '',
+          // The persisted enablement + ST-3's fail-closed readiness probe: unknown
+          // readiness ⇒ NOT armed ⇒ Space stays natively ordinary (contract 4c).
+          voiceUsable: voiceEnabled && sttModel.ready,
+          busy: companionBusy,
+          modified: e.ctrlKey || e.metaKey || e.altKey || e.shiftKey,
+          repeat: e.repeat,
+        });
+        if (spaceVerdict === 'hold-arm') {
+          // R-2.1 — consume the keydown so no space reaches the input, and start
+          // the bounded hold timer.
+          e.preventDefault();
+          armHold();
+          return;
+        }
+        if (spaceVerdict === 'hold-suppress') {
+          // R-2.2 — WHILE armed every Space keydown is swallowed (incl. the OS
+          // auto-repeat): no restart, no run of spaces.
+          e.preventDefault();
+          return;
+        }
+        // `ordinary-space` — nothing promised: fall through to the native
+        // character, and to the grid's tile-open branch when a TILE has focus.
       }
 
       // AC4: an empty / fully-filtered grid has no openable target — arrows and
@@ -902,11 +1278,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       openSelected,
       commitBarQuery,
       companionBusy,
+      companionActive,
+      captureLive,
+      filteredEntries,
       query,
       open,
       closeOverlay,
       cancelVoice,
       suppressAutosendAndRestore,
+      armHold,
+      resetHoldGesture,
+      voiceEnabled,
+      sttModel.ready,
     ],
   );
 
@@ -916,28 +1299,24 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   //   - matches EXACTLY Ctrl+Space (physical `code === 'Space'`, no meta/alt/shift)
   //     so it is a distinct chord from plain Space (AC4 / NFR-5);
   //   - is a NO-OP while typing in a text-control OUTSIDE the launcher surface
-  //     (AC3), treating the launcher's own searchbox as a valid toggle target (NFR-7);
-  //   - only `preventDefault()` + `stopPropagation()` when the toggle actually fires
-  //     so the chord NEVER reaches a second action (AC4);
-  //   - toggles: closed → open (overlay on top + searchbox focused), open → close.
+  //     (AC3/#2823 carve-out), treating the launcher's own searchbox as a valid
+  //     target (NFR-7);
+  //   - only `preventDefault()` + `stopPropagation()` when it actually acts so the
+  //     chord NEVER reaches a second action (AC4);
+  //   - Spec #2882 ST-4 — has ONE meaning: show/focus the bar (R-1.1/R-1.2/R-1.3).
+  //     The shipped listening cascade is retired: no branch starts, stops or
+  //     cancels a dictation session, and the chord NEVER closes the bar.
   const handleGlobalKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (!(e.ctrlKey === true && !e.metaKey && !e.altKey && !e.shiftKey && e.code === 'Space')) {
         return;
       }
 
-      // Spec #2877 ST-5 — the BINDING context-dependent Ctrl+Space cascade (pure
-      // `selectCtrlSpaceAction`). Ctrl+Space NEVER closes the launcher; close
-      // moved to Escape. Every read comes from a ref because the listener is
-      // mounted once with a stable handler identity ((g).7 / DR-9).
       const active = document.activeElement as HTMLElement | null;
       const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
       const action = selectCtrlSpaceAction({
         activeIsTextControl: isTextControl(active),
         activeInLauncher,
-        listening: listeningRef.current,
-        companionAway: companionAwayRef.current,
-        voiceEnabled: voiceEnabledRef.current,
       });
 
       // #2823 AC3/AC4: a pass neither acts nor swallows the chord.
@@ -945,41 +1324,94 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       e.preventDefault();
       e.stopPropagation();
 
-      switch (action) {
-        case 'companion-listen':
-          // PO case 1 (R-3.6) — companion-origin: NEVER reveal or focus the
-          // launcher bar; the companion surface (seat/away overlay) shows the cue.
-          void startVoice('companion');
-          break;
-        case 'launcher-listen':
-          void startVoice('launcher');
-          break;
-        case 'launcher-cancel':
-          // #2878 ST-1 — the chord's cancel is a CANCEL too: suppress the autosend
-          // commit and restore the pre-session text before `cancel()` (R-3.1/3.2).
-          suppressAutosendAndRestore();
-          void cancelVoice();
-          break;
-        case 'open':
-          openOverlay();
-          break;
-      }
+      // `open` — raise the surface, focus the bar and place the caret (R-1.1).
+      openOverlay();
     },
-    [openOverlay, startVoice, cancelVoice, suppressAutosendAndRestore],
+    [openOverlay],
   );
+
+  // Spec #2882 ST-5 — the SINGLE release owner for the hold gesture (R-2.2/R-2.6/
+  // R-2.7, UI/UX §5.9): one mount-once bubble-phase `document` keyup listener,
+  // inert outside a hold. It is on `document` (not the bar) because a release must
+  // be honoured even when focus/pointer moved mid-hold. The gesture's timers are
+  // cleared exactly once here (and in the disarm/blur paths).
+  //
+  // The verdict comes from ST-2's pure `resolveSpaceKeyUp`; this handler performs
+  // the DOM/timer/mic side of it and writes AT MOST ONE ordinary space through the
+  // ordinary typed path (never a second write route).
+  const handleGlobalKeyUp = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+
+      // A disarmed gesture (Escape / the visible `×` / a blur stop) swallows its
+      // trailing release: no space, no stop — the capture was already dealt with.
+      if (holdDisarmedRef.current) {
+        holdDisarmedRef.current = false;
+        resetHoldGesture();
+        return;
+      }
+      if (!holdArmedRef.current) return;
+
+      const verdict = resolveSpaceKeyUp({
+        holdArmed: holdArmedRef.current,
+        // "Went live during THIS gesture": a live-then-stopped capture finalizes;
+        // only a gesture that NEVER went live writes the fallback space (R-2.6).
+        captureLive: launcherActiveRef.current || holdWentLiveRef.current,
+        thresholdCrossed: thresholdCrossedRef.current,
+      });
+      const write = spaceWriteForVerdict(verdict);
+      resetHoldGesture();
+
+      if (verdict === 'finalize') {
+        // R-2.3 — stop listening. The backend emits the final, the existing
+        // live-text effect lands it as ordinary editable text, and the existing
+        // finalize effect decides delivery (R-4.1/R-4.2). NO space is inserted.
+        void stopVoice();
+        return;
+      }
+      if (verdict === 'none') return;
+      if (verdict === 'cancel-pending') {
+        // R-2.6 — the release beat the engine: cancel the session as soon as it
+        // reports live so the microphone is never left capturing.
+        cancelOnLiveRef.current = true;
+      }
+      // R-2.6/R-2.7 — exactly ONE ordinary space, through the ordinary query path
+      // (never `stt_start`): the tap types the character it always did, and the
+      // hold that never captured types one too.
+      if (write) handleQueryChange(barTextRef.current + write);
+    },
+    [handleQueryChange, resetHoldGesture, stopVoice],
+  );
+
+  // Spec #2882 ST-5 (R-2.5) — the window-focus safety net: a `window` blur mid-hold
+  // loses the keyup, so the capture must be stopped by the blur path (STOP with the
+  // autosend commit suppressed, words kept, microphone released).
+  const handleWindowBlur = useCallback(() => {
+    stopCaptureOnBlur();
+  }, [stopCaptureOnBlur]);
 
   // #2823: mount exactly ONE document listener (NFR-2). A ref-based guard keeps the
   // effect idempotent under React StrictMode; the cleanup removes the listener so it
   // never leaks across an unmount.
+  // Spec #2882 ST-5 adds the gesture's single release owner and the window-blur
+  // safety net to the same mount-once effect.
   useEffect(() => {
     if (globalKeydownMountedRef.current) return;
     globalKeydownMountedRef.current = true;
     document.addEventListener('keydown', handleGlobalKeyDown);
+    document.addEventListener('keyup', handleGlobalKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       globalKeydownMountedRef.current = false;
       document.removeEventListener('keydown', handleGlobalKeyDown);
+      document.removeEventListener('keyup', handleGlobalKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [handleGlobalKeyDown]);
+  }, [handleGlobalKeyDown, handleGlobalKeyUp, handleWindowBlur]);
+
+  // The gesture's bounded timers must never outlive the surface (AGENTS.md #523 —
+  // a single cleared handle per timer, cleared on unmount).
+  useEffect(() => () => clearHoldTimers(), [clearHoldTimers]);
 
   return (
     <>
@@ -1064,22 +1496,33 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             gridOpen={engaged}
             ariaActivedescendant={activeTileId}
             onFocus={handleBarFocus}
-            onBlur={handleSurfaceBlur}
+            onBlur={handleBarBlur}
             onMinimize={handleMinimize}
-            chatAvailable={companionActive}
             enterMode={commandBar.enterMode}
             hintLabel={commandBar.hintLabel}
             busy={companionBusy}
             // Spec #2877 ST-5 (R-5.3) — the bar cue is LAUNCHER-origin only, so
             // exactly one indicator shows per session (companion-origin is the
-            // bubble's surface, never the bar).
-            listening={voice.listening && voice.origin === 'launcher'}
+            // bubble's surface, never the bar). ST-5-fix (QA-10): the SAME
+            // `captureLive` primitive the Enter verdict and the hint derive from.
+            listening={captureLive}
+            // Spec #2882 ST-5 (R-2.4/S2) — the hold gesture's cue: `holdArmed` shows
+            // it from the keydown moment for the WHOLE gesture, `holdPending` adds
+            // the bounded `starting voice input…` chip once the engine start
+            // outlives the cue window. One indicator at a time (the pending chip
+            // and the Listening chip share the slot).
+            holdArmed={holdArmed}
+            holdPending={holdPending}
+            holdAvailable={holdAvailable}
             // #2878 ST-2 (AC3 resolution) — the Stop control is the FINALIZE/commit
             // control (`stt_stop`), the only autosend trigger; the visible cancel
             // affordance DISCARDS (`stt_cancel`) and never sends. Neither
             // dispatches by itself — only the commit step does.
             onStopListening={() => void stopVoice()}
             onCancelListening={() => {
+              holdDisarmedRef.current = true;
+              blurStopIssuedRef.current = true;
+              resetHoldGesture();
               suppressAutosendAndRestore();
               void cancelVoice();
             }}
@@ -1088,7 +1531,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             onUserEdit={() => {
               userEditedDuringSessionRef.current = true;
             }}
-            voiceErrorMessage={voiceStartErrorCopy(voice.errorCode)}
+            // Spec #2882 ST-5 (R-2.5.6/AC3) — a HOLD-origin start failure is
+            // SILENT: no alert, no error text (exactly one ordinary space lands on
+            // the release). A failure that arrives with no hold start in flight —
+            // the app-global `stt:state` channel — still surfaces the curated copy.
+            voiceErrorMessage={holdFailureMuted ? null : voiceStartErrorCopy(voice.errorCode)}
             finalTranscript={finalTranscript}
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}

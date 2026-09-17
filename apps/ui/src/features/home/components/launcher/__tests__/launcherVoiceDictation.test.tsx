@@ -20,7 +20,7 @@
  *      FINAL segment only (partials never announce).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -32,6 +32,7 @@ import {
   voiceStartErrorCopy,
   type CtrlSpaceContext,
 } from '../LauncherShell';
+import { HOLD_PENDING_CUE_MS, HOLD_THRESHOLD_MS } from '../launcherSpaceHold';
 
 // LauncherShell reads the live connection flag via useConnectionStatus (no
 // StreamProvider in this isolated harness) — stub the one consumer.
@@ -123,82 +124,45 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// ── 1. Pure cascade ──────────────────────────────────────────────────────────
+// ── 1. Pure cascade — ONE meaning: open, or pass ──────────────────────────────
 
-describe('selectCtrlSpaceAction — binding Ctrl+Space cascade (pure)', () => {
+describe('selectCtrlSpaceAction — Ctrl+Space has ONE meaning (pure, #2882 ST-4)', () => {
   const ctx = (over: Partial<CtrlSpaceContext>): CtrlSpaceContext => ({
     activeIsTextControl: false,
     activeInLauncher: false,
-    listening: false,
-    companionAway: false,
-    voiceEnabled: true,
     ...over,
   });
 
-  it('suppresses the chord while typing in a text control OUTSIDE the launcher (carve-out first)', () => {
+  it('passes the chord through while typing in a text control OUTSIDE the launcher (the #2823 AC3 carve-out, RETAINED)', () => {
     expect(
       selectCtrlSpaceAction(ctx({ activeIsTextControl: true, activeInLauncher: false })),
     ).toBe('pass');
   });
 
-  it('does NOT suppress when the text control IS the launcher bar', () => {
+  it('OPENS when the text control IS the launcher bar (the carve-out does not apply)', () => {
     expect(
-      selectCtrlSpaceAction(
-        ctx({ activeIsTextControl: true, activeInLauncher: true, listening: false }),
-      ),
-    ).toBe('launcher-listen');
+      selectCtrlSpaceAction(ctx({ activeIsTextControl: true, activeInLauncher: true })),
+    ).toBe('open');
   });
 
-  it('companion-away (case 1) pre-empts the bar-focused branch (case 2)', () => {
-    expect(
-      selectCtrlSpaceAction(
-        ctx({ activeIsTextControl: false, activeInLauncher: true, companionAway: true }),
-      ),
-    ).toBe('companion-listen');
-  });
-
-  it('bar-focused (case 2) starts listening when idle', () => {
-    expect(selectCtrlSpaceAction(ctx({ activeInLauncher: true, listening: false }))).toBe(
-      'launcher-listen',
-    );
-  });
-
-  it('bar-focused while listening cancels the session', () => {
-    expect(selectCtrlSpaceAction(ctx({ activeInLauncher: true, listening: true }))).toBe(
-      'launcher-cancel',
-    );
-  });
-
-  it('default (case 3) opens the bar and NEVER starts listening', () => {
+  it('OPENS by default — the chord ONLY shows/focuses the bar', () => {
     expect(selectCtrlSpaceAction(ctx({}))).toBe('open');
   });
 
-  it('a seated companion + focused bar takes case 2, never case 1', () => {
-    // `companionAway` false = seated → branch 1 cannot fire.
-    expect(selectCtrlSpaceAction(ctx({ activeInLauncher: true, companionAway: false }))).toBe(
-      'launcher-listen',
-    );
-  });
-
-  // ── DR-9 — the disabled gate ───────────────────────────────────────────────
-
-  it('DR-9: with voice disabled the carve-out still passes (never acts)', () => {
-    expect(
-      selectCtrlSpaceAction(ctx({ voiceEnabled: false, activeIsTextControl: true })),
-    ).toBe('pass');
-  });
-
-  it('DR-9: with voice disabled a focused bar falls through to open (never listen/cancel)', () => {
-    expect(
-      selectCtrlSpaceAction(ctx({ voiceEnabled: false, activeInLauncher: true, listening: false })),
-    ).toBe('open');
-    expect(
-      selectCtrlSpaceAction(ctx({ voiceEnabled: false, activeInLauncher: true, listening: true })),
-    ).toBe('open');
-  });
-
-  it('DR-9: with voice disabled a companion-away chord opens the bar (never companion-listen)', () => {
-    expect(selectCtrlSpaceAction(ctx({ voiceEnabled: false, companionAway: true }))).toBe('open');
+  it('the retired listening branches are UNREACHABLE: the action set is exactly open | pass', () => {
+    // G-125 — the shipped #2877 cascade (`companion-listen` / `launcher-listen` /
+    // `launcher-cancel`) is retired together with the context fields that selected
+    // it. `CtrlSpaceAction` is now the two-member union `'open' | 'pass'`; the
+    // runtime pin below asserts NO input — including the presence/enablement
+    // combinations the old cascade keyed on — can yield anything else.
+    const everyContext: CtrlSpaceContext[] = [
+      { activeIsTextControl: true, activeInLauncher: true },
+      { activeIsTextControl: false, activeInLauncher: true },
+      { activeIsTextControl: false, activeInLauncher: false },
+    ];
+    for (const c of everyContext) {
+      expect(['open', 'pass']).toContain(selectCtrlSpaceAction(c));
+    }
   });
 });
 
@@ -262,16 +226,21 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
       emit('stt:state', { listening, code: null, detail: null, origin });
     });
 
-  it('case 2: Ctrl+Space with the bar focused starts a LAUNCHER session', () => {
+  it('G-125 re-point: Ctrl+Space with the bar focused SHOWS/FOCUSES the bar and NEVER starts a session (R-1.2)', () => {
+    // Supersedes "case 2: … starts a LAUNCHER session": the bar-focused branch no
+    // longer listens (nor cancels) — the chord has one meaning (R-1).
     renderShell();
     focusBar();
 
     ctrlSpace();
 
-    expect(invokeSpy).toHaveBeenCalledWith('stt_start', { origin: 'launcher' });
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_start', expect.anything());
   });
 
-  it('case 1: Ctrl+Space with the companion away starts a COMPANION session', () => {
+  it('G-125 re-point: the retired away-dictate path starts NOTHING (R-1.4)', () => {
+    // Supersedes "case 1: … starts a COMPANION session": the companion-away
+    // pre-emption is retired — no keyboard gesture starts a companion-origin
+    // capture any more.
     companionMock.current.state = {
       isVisible: true,
       isAway: true,
@@ -282,15 +251,31 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
 
     ctrlSpace();
 
-    expect(invokeSpy).toHaveBeenCalledWith('stt_start', { origin: 'companion' });
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_start', expect.anything());
   });
 
-  it('case 3: default Ctrl+Space opens the bar and does NOT start listening', () => {
+  it('default Ctrl+Space opens the bar and does NOT start listening', () => {
     renderShell();
 
     ctrlSpace();
 
     expect(invokeSpy).not.toHaveBeenCalledWith('stt_start', expect.anything());
+  });
+
+  it('Ctrl+Space NEVER cancels and NEVER closes a live session (R-1.2/R-1.3)', () => {
+    renderShell();
+    emitListening(true, 'launcher');
+    const input = focusBar() as HTMLInputElement;
+
+    act(() => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+    });
+
+    // Neither a stop nor a cancel — the capture continues while Space is held.
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_stop', undefined);
+    // …and the bar stays mounted (the overlay is never closed by the chord).
+    expect(input).toBeInTheDocument();
   });
 
   it('Escape cancels a live session BEFORE closing the launcher', () => {
@@ -305,65 +290,64 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
   });
 
-  it('F-38: a duplicate companion-away Ctrl+Space keeps the live session (Escape still cancels, no alert)', async () => {
-    // Tester repro (F-38): companion away ⇒ `selectCtrlSpaceAction` returns
-    // `companion-listen` REGARDLESS of `listening`, so a second Ctrl+Space
-    // re-invokes `stt_start`. The duplicate must be an idempotent no-op: the
-    // live session survives (so Escape still cancels it) and no failure surface
-    // renders (alreadyListening is not an error).
-    companionMock.current.state = {
-      isVisible: true,
-      isAway: true,
-      isAutoHidden: false,
-      isInUse: false,
-    };
-    let startCount = 0;
-    invokeSpy.mockImplementation(async (command: string) => {
-      if (command === 'stt_start') {
-        startCount += 1;
-        return startCount === 1
-          ? okStart()
-          : {
-              started: false,
-              code: 'alreadyListening',
-              detail: 'A listening session is already active.',
-              deviceName: null,
-              sampleRate: null,
-            };
-      }
-      return undefined;
-    });
+  it('caret (R-1.1/R-1.3): a summon from OUTSIDE the bar focuses it with the caret at the END; a repeat chord leaves the caret untouched', async () => {
+    // The focus/caret placement runs in `requestAnimationFrame`, which vitest does
+    // NOT fake by default — so wait a real frame instead of advancing fake timers.
+    const nextFrame = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+
     renderShell();
+    const input = screen.getByRole('searchbox') as HTMLInputElement;
 
-    // Press 1 — a normal companion-origin start.
-    await act(async () => {
-      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
-      await Promise.resolve();
-    });
-    expect(invokeSpy).toHaveBeenCalledWith('stt_start', { origin: 'companion' });
-
-    // The app-global live state (as the backend emits it after a real start).
-    emitListening(true, 'companion');
-
-    // Press 2 — same chord, backend now reports alreadyListening.
-    await act(async () => {
-      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
-      await Promise.resolve();
-    });
-
-    const startCalls = invokeSpy.mock.calls.filter((call) => call[0] === 'stt_start');
-    expect(startCalls).toHaveLength(2);
-    expect(startCalls.every((call) => call[1]?.origin === 'companion')).toBe(true);
-
-    // The session is still live: Escape cancels it (never a launcher close).
-    const input = focusBar();
+    // The bar holds an uncommitted transcript.
     act(() => {
-      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.change(input, { target: { value: 'hello' } });
     });
-    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    // Park the caret at the START so "moved to the end" is a real observation.
+    input.setSelectionRange(0, 0);
+    // Focus is somewhere OUTSIDE the launcher (so the input is not already focused).
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
 
-    // No inline failure surface (`voiceErrorMessage` must be null).
-    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+    act(() => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+    });
+    await nextFrame();
+
+    expect(document.activeElement).toBe(input);
+    // The caret is at the END — typing appends and never overwrites a character.
+    expect(input.selectionStart).toBe(input.value.length);
+
+    // A repeat chord must NOT disturb an existing caret (R-1.3).
+    input.setSelectionRange(2, 2);
+    act(() => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+    });
+    await nextFrame();
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(2);
+    outside.remove();
+  });
+
+  it('the retired away-dictate chord is INERT in every companion presence state (no residue, R-1.4/REQ-19)', async () => {
+    // G-125 re-point of the #2877 F-38 repro: that test pinned the companion-away
+    // cascade re-invoking `stt_start`. There is no such branch any more — the only
+    // observable is ZERO sessions, whatever the companion is doing.
+    for (const state of [
+      { isVisible: true, isAway: true, isAutoHidden: false, isInUse: false },
+      { isVisible: true, isAway: false, isAutoHidden: false, isInUse: false },
+      { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
+      { isVisible: true, isAway: false, isAutoHidden: false, isInUse: true },
+    ]) {
+      cleanup();
+      companionMock.current.state = state;
+      renderShell();
+      await act(async () => {
+        fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+        await Promise.resolve();
+      });
+      expect(invokeSpy).not.toHaveBeenCalledWith('stt_start', expect.anything());
+    }
   });
 
   it('the bar input tracks the live transcript (partial → partial → final) and never submits', () => {
@@ -420,9 +404,10 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
   });
 
-  // ── DR-9 — the cascade respects voiceEnabled ───────────────────────────────
+  // ── R-1.2 — no context (voice enablement, companion presence) selects a
+  // listening branch any more; the chord's only variance is the AC-3 carve-out ──
 
-  it('DR-9: with voice disabled Ctrl+Space opens and NEVER starts listening', () => {
+  it('with voice disabled Ctrl+Space still OPENS the bar and NEVER starts listening', () => {
     companionMock.current.voiceEnabled = false;
     renderShell();
     focusBar();
@@ -432,7 +417,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     expect(invokeSpy).not.toHaveBeenCalledWith('stt_start', expect.anything());
   });
 
-  it('DR-9: with voice disabled a companion-away chord never starts a companion session', () => {
+  it('with voice disabled a companion-away chord never starts a companion session', () => {
     companionMock.current.voiceEnabled = false;
     companionMock.current.state = {
       isVisible: true,
@@ -539,21 +524,24 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
   });
 
-  it('DR-11: a failed start renders an inline role=alert with curated copy', async () => {
-    invokeSpy.mockImplementation(async (command: string) =>
-      command === 'stt_start'
-        ? { started: false, code: 'modelMissing', detail: 'raw ipc string', deviceName: null, sampleRate: null }
-        : undefined,
-    );
+  it('DR-11 (G-125 re-point): a start failure surfaces the curated inline role=alert, never the raw IPC detail', () => {
+    // Supersedes the #2877 leg that drove this through a bar-focused Ctrl+Space
+    // `stt_start` failure: no keyboard gesture starts a capture any more (ST-4
+    // retired the listening cascade; ST-5 owns the hold). The app-global
+    // `stt:state` is the shipped failure channel, and the assertion (curated copy
+    // wins over the raw backend detail) is unchanged.
     renderShell();
-    focusBar();
 
-    await act(async () => {
-      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
-      await Promise.resolve();
+    act(() => {
+      emit('stt:state', {
+        listening: false,
+        code: 'modelMissing',
+        detail: 'raw ipc string',
+        origin: 'launcher',
+      });
     });
 
-    const status = await screen.findByTestId('launcher-command-listening-status');
+    const status = screen.getByTestId('launcher-command-listening-status');
     expect(status).toHaveAttribute('role', 'alert');
     expect(status).toHaveTextContent("Voice input model isn't ready");
     expect(status).not.toHaveTextContent('raw ipc string');
@@ -569,7 +557,9 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     expect(screen.getByTestId('launcher-command-listening-chip')).toBeInTheDocument();
   });
 
-  it('R-5.3: a companion-origin session shows NO bar cue (the bubble owns it)', () => {
+  it('R-5.3: a companion-origin session shows NO bar cue', () => {
+    // The `origin === 'launcher'` gate on the bar cue is unchanged; the
+    // companion-origin surface it used to defer to was retired in #2882 ST-6.
     renderShell();
     emitListening(true, 'companion');
 
@@ -626,14 +616,24 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
 
 // ── #2878 ST-1 — ONE commit path (Enter) + autosend-on-finalize ──────────────
 
-describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
-  const FEATURE = {
+describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', () => {
+  const MISSION_MONITOR = {
     id: 'mission-monitor',
     name: 'Mission Monitor',
     icon: () => null,
   } as unknown as FredoFeatureClass;
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const MONITOR_TWO = {
+    id: 'monitor-two',
+    name: 'Monitor Two',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
 
-  const renderShell = (features: FredoFeatureClass[] = [FEATURE]) => {
+  const renderShell = (features: FredoFeatureClass[] = [MISSION_MONITOR]) => {
     const onOpenFeature = vi.fn();
     renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
     return onOpenFeature;
@@ -691,13 +691,66 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
     };
   };
 
-  // ── Enter contract (unchanged, extended) ───────────────────────────────────
+  // ── Enter contract (#2882 ST-4 — the whole-query matcher, R-5/R-6) ──────────
 
-  it('Enter: an exact full-name match launches and NEVER sends (launch wins)', () => {
+  it('G-125 re-point: a typed query that NAMES an app opens it and NEVER sends (the rule is no longer exact-full-name equality)', () => {
+    // Supersedes "an exact full-name match launches": the binding rule is the
+    // whole-query prefix / whole-word-run matcher (R-5.1/R-5.4), so `set`, `Miss`,
+    // `monitor` and a longer prefix all launch — and a launch still wins over chat.
     seatCompanion();
-    const onOpenFeature = renderShell();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
 
-    type('  mission monitor  ');
+    type('set');
+    pressEnter();
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('settings');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('R-5.4: `Miss` / `monitor` / `Mission Mon` / a padded full name all open Mission Monitor', () => {
+    for (const query of ['Miss', 'miss', 'monitor', 'Mission Mon', 'mission monitor', '  mission monitor  ']) {
+      cleanup();
+      companionDispatchMock.askActiveCompanion.mockClear();
+      const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+      type(query);
+      pressEnter();
+
+      expect(onOpenFeature, query).toHaveBeenCalledTimes(1);
+      expect(onOpenFeature.mock.calls[0][0], query).toBe('mission-monitor');
+      expect(companionDispatchMock.askActiveCompanion, query).not.toHaveBeenCalled();
+    }
+  });
+
+  it('R-5.2: the open happens INDEPENDENT of the companion state — including while replying', () => {
+    for (const state of [
+      { isVisible: true, isAway: true, isAutoHidden: false, isInUse: false }, // away
+      { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false }, // off
+      { isVisible: true, isAway: false, isAutoHidden: false, isInUse: true }, // replying (busy)
+      { isVisible: true, isAway: false, isAutoHidden: false, isInUse: false }, // at home
+    ]) {
+      cleanup();
+      companionDispatchMock.askActiveCompanion.mockClear();
+      companionMock.current.state = state;
+      const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+      type('mission');
+      pressEnter();
+
+      expect(onOpenFeature, JSON.stringify(state)).toHaveBeenCalledTimes(1);
+      expect(onOpenFeature.mock.calls[0][0], JSON.stringify(state)).toBe('mission-monitor');
+      expect(companionDispatchMock.askActiveCompanion, JSON.stringify(state)).not.toHaveBeenCalled();
+    }
+  });
+
+  it('R-5.3: when several apps match, the TOP-RANKED (first rendered) one opens', () => {
+    companionDispatchMock.askActiveCompanion.mockClear();
+    // BOTH entries match the whole-word run `monitor`; the first rendered entry is
+    // the top-ranked match (clarification #1) — order is never re-sorted.
+    const onOpenFeature = renderShell([MISSION_MONITOR, MONITOR_TWO]);
+
+    type('monitor');
     pressEnter();
 
     expect(onOpenFeature).toHaveBeenCalledTimes(1);
@@ -717,16 +770,64 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
     expect(onOpenFeature).not.toHaveBeenCalled();
   });
 
-  it('Enter: a non-match with NO active companion never sends (today’s launch path)', () => {
-    renderShell();
+  it('G-125 re-point (R-6.1): a non-match with NO companion leaves the bar untouched and opens NOTHING (the `openSelected` fall-through is retired)', () => {
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
 
     type('hello there');
     pressEnter();
 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    // The retired bug: the substring-filtered tile used to open here.
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('hello there');
   });
 
-  it('Enter: busy is a GLOBAL no-op (no launch, no send)', () => {
+  it('R-6.2: `Missing all the time` (which CONTAINS `Miss`) never opens a tile', () => {
+    const onOpenFeature = renderShell([MISSION_MONITOR]);
+
+    type('Missing all the time');
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('Missing all the time');
+  });
+
+  it('R-5.4/R-6.1: `MM` (an alias) and `ission` (a fragment) never open the filtered tile', () => {
+    for (const query of ['MM', 'ission']) {
+      cleanup();
+      companionDispatchMock.askActiveCompanion.mockClear();
+      const onOpenFeature = renderShell([MISSION_MONITOR]);
+
+      type(query);
+      pressEnter();
+
+      expect(onOpenFeature, query).not.toHaveBeenCalled();
+      expect(input().value, query).toBe(query);
+    }
+  });
+
+  it('G-125 re-point: busy is NOT a global no-op — a TYPED match still launches while Fredo is replying (AC5)', () => {
+    // Supersedes "busy is a GLOBAL no-op": the busy gate now affects only the
+    // SEND path. This is the exact supersession AC5 names ("…present, away, off,
+    // or replying").
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: true,
+    };
+    const onOpenFeature = renderShell([MISSION_MONITOR]);
+
+    type('Miss');
+    pressEnter();
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('mission-monitor');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('busy: a typed NON-match is a no-op (no send, no launch)', () => {
     seatCompanion();
     companionMock.current.state = {
       isVisible: true,
@@ -741,21 +842,101 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
     expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('hello there');
+  });
+
+  // ── Clarification #2 — dictation provenance survives editing (R-4.3) ────────
+
+  it('R-4.3/clarification #2: a DICTATED transcript is Fredo-bound on Enter even after being edited into an app name', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    // A launcher-origin capture finalizes `set` (autosend OFF — the shipped default).
+    emitListening(true, 'launcher');
+    emitFinal('set');
+    emitListening(false, 'launcher');
+    expect(input().value).toBe('set');
+
+    // The user EDITS it into an exact app name. Provenance survives the edit.
+    type('Settings');
+    pressEnter();
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Settings');
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL for R-4.3: the same text typed from scratch DOES open the app', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    type('Settings');
+    pressEnter();
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('settings');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('clarification #2 reset: emptying the bar returns it to typed provenance', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    emitFinal('set');
+    emitListening(false, 'launcher');
+    expect(input().value).toBe('set');
+
+    // Clear the bar completely — the content stopped existing.
+    type('');
+    type('Settings');
+    pressEnter();
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('settings');
+  });
+
+  it('R-4.4: a dictated transcript with NO active companion is left undelivered and opens no app', () => {
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    emitFinal('Settings');
+    emitListening(false, 'launcher');
+    pressEnter();
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('Settings');
   });
 
   // ── Autosend finalize (R-2.5) ──────────────────────────────────────────────
 
-  it('autosend ON: finalizing an exact tile name launches once (launch wins)', () => {
+  it('G-125 re-point (R-4.3): finalizing a transcript that SPELLS an exact tile name is SENT to Fredo — never launched', () => {
+    // Supersedes the #2878 "autosend ON: finalizing an exact tile name launches"
+    // expectation: a dictated phrase NEVER opens an app, whatever it spells.
     seatCompanion();
     companionMock.current.voiceAutosend = true;
-    const onOpenFeature = renderShell();
+    const onOpenFeature = renderShell([MISSION_MONITOR]);
 
     emitListening(true, 'launcher');
     emitFinal('Mission Monitor');
     emitListening(false, 'launcher');
 
-    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Mission Monitor');
+  });
+
+  it('R-4.4: autosend ON with NO active companion keeps the transcript and opens NOTHING', () => {
+    companionMock.current.voiceAutosend = true;
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    emitFinal('Settings');
+    emitListening(false, 'launcher');
+
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('Settings');
   });
 
   it('autosend ON: finalizing a non-match with an active companion sends once and clears the bar', () => {
@@ -855,7 +1036,10 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
     expect(input().value).toBe('draft I typed');
   });
 
-  it('the Ctrl+Space launcher-cancel cascade suppresses autosend and restores the bar', () => {
+  it('G-125 re-point: the bar’s `×` cancel control suppresses autosend and restores the bar (the retired Ctrl+Space cancel branch is gone)', () => {
+    // Supersedes "the Ctrl+Space launcher-cancel cascade …": the chord never
+    // cancels any more (R-1.2). The same discard gesture is still reachable from
+    // the visible `×` affordance — pinned here so the wiring is not lost.
     seatCompanion();
     companionMock.current.voiceAutosend = true;
     renderShell();
@@ -865,11 +1049,7 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
     emitPartial('hello');
 
     act(() => {
-      input().focus();
-      fireEvent.focus(input());
-    });
-    act(() => {
-      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+      fireEvent.click(screen.getByTestId('launcher-command-listening-cancel'));
     });
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
@@ -1042,5 +1222,619 @@ describe('LauncherShell — #2878 ST-1 commit path + autosend finalize', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0][0]).toBe('first');
     expect(calls[1][0]).toBe('second');
+  });
+});
+
+// ── Spec #2882 ST-5-fix — the live-capture Enter guard (QA-10) + §7 selection ─
+// QA-10 (bound): WHILE a launcher-origin capture is live (`voice.listening &&
+// origin === 'launcher'`) Enter acts as NOTHING and the chip reads exactly
+// `release Space to finish`. The guard is owned by the ST-5 WIRING and the hint +
+// handler derive from ONE `resolveEnterAction` verdict (R-6.3), so the shipped
+// chip can never contradict what Enter does. UI/UX §7: the accent-highlighted tile
+// follows the top-ranked match so the tile agrees with the chip and with Enter.
+
+describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selection-follow', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const MISSION_MONITOR = {
+    id: 'mission-monitor',
+    name: 'Mission Monitor',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const QUERY_VIEWER = {
+    id: 'query-viewer',
+    name: 'Query Viewer',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const RUN_CLI = {
+    id: 'run-cli',
+    name: 'Run CLI',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const STEPPER_PROBE = {
+    id: 'stepper-probe',
+    name: 'Stepper Probe',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const renderShell = (features: FredoFeatureClass[] = [QUERY_VIEWER, RUN_CLI, STEPPER_PROBE]) => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+
+  const type = (value: string) => {
+    act(() => {
+      fireEvent.change(input(), { target: { value } });
+    });
+  };
+
+  const pressEnter = () => {
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Enter' });
+    });
+  };
+
+  const pressArrow = (key: 'ArrowLeft' | 'ArrowRight') => {
+    act(() => {
+      fireEvent.keyDown(input(), { key });
+    });
+  };
+
+  const emitListening = (listening: boolean, origin: string | null) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  const setCompanionBusy = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: true,
+    };
+  };
+
+  const hint = () => screen.getByTestId('launcher-command-hint');
+
+  /** The accent-highlighted grid tile is the one carrying the roving `tabIndex={0}`. */
+  const highlightedTiles = () =>
+    within(screen.getByRole('grid'))
+      .getAllByRole('button')
+      .filter((el) => el.getAttribute('tabindex') === '0')
+      .map((el) => el.getAttribute('aria-label'));
+
+  // ── QA-10 — Enter is a NO-OP while a launcher-origin capture is live ────────
+
+  it('QA-10: live text that NAMES an app is neither launched nor sent, the bar is untouched, and the chip reads `release Space to finish`', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    // A partially transcribed live segment that spells an app name — exactly the
+    // text that must NOT be launched while the capture is still running.
+    emitFinal('Miss');
+    expect(input().value).toBe('Miss');
+
+    // Char-for-char: the chip must be EXACTLY the bound copy (no ellipsis, no extra).
+    expect(hint()).toHaveTextContent(/^release Space to finish$/);
+
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('Miss');
+  });
+
+  it('QA-10: the chip reads `release Space to finish` on an EMPTY bar too, and Enter suppresses even the empty-query grid launch', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    // Char-for-char: the chip must be EXACTLY the bound copy (no ellipsis, no extra).
+    expect(hint()).toHaveTextContent(/^release Space to finish$/);
+
+    // Without the guard this empty bar would launch the highlighted first tile.
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('QA-10 PRECEDENCE: `busy` (UI/UX §3 row 1) outranks the live capture (row 2) — chip `Fredo is replying…`, Enter still a no-op', () => {
+    setCompanionBusy();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    emitFinal('Miss');
+
+    expect(hint()).toHaveTextContent(/^Fredo is replying…$/);
+
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('Miss');
+  });
+
+  // ── UI/UX §7 — the highlighted tile follows the top-ranked match ────────────
+
+  it('UI/UX §7: the accent-highlighted tile follows the top-ranked match and agrees with the chip AND with what Enter opens', () => {
+    const onOpenFeature = renderShell();
+    // Every name contains `r`, so the results list is all three tiles — but only
+    // `Run CLI` rule-matches (`r` is a whole-query prefix there, not a fragment of
+    // `Query Viewer` / `Stepper Probe`). The highlight must land on it.
+    type('r');
+
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(/^↵ open Run CLI$/);
+    expect(highlightedTiles()).toEqual(['Run CLI']);
+
+    pressEnter();
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('run-cli');
+  });
+
+  it('UI/UX §7: arrow-key navigation still wins within a query and is never snapped back', () => {
+    renderShell();
+    type('r');
+    expect(highlightedTiles()).toEqual(['Run CLI']);
+
+    pressArrow('ArrowRight');
+    expect(highlightedTiles()).toEqual(['Stepper Probe']);
+
+    pressArrow('ArrowLeft');
+    expect(highlightedTiles()).toEqual(['Run CLI']);
+  });
+
+  it('the empty-grid and empty-query Enter behaviours do not move (the §7 effect is selection-only)', () => {
+    // Empty GRID: Enter opens nothing (unchanged).
+    const onOpenEmptyGrid = renderShell([]);
+    pressEnter();
+    expect(onOpenEmptyGrid).not.toHaveBeenCalled();
+    cleanup();
+
+    // Empty QUERY: Enter still opens the highlighted tile (the grid's own
+    // keyboard affordance, R-5.1 — never a send).
+    const onOpenFirst = renderShell();
+    pressEnter();
+    expect(onOpenFirst).toHaveBeenCalledTimes(1);
+    expect(onOpenFirst.mock.calls[0][0]).toBe('query-viewer');
+  });
+});
+
+// ── Spec #2882 ST-5 — the hold-to-dictate capture lifecycle ───────────────────
+// R-2.1-2.7 (arm / hold / tap / release-before-live), R-2.5 (blur = stop with the
+// autosend commit suppressed), R-2.4 (the cue spans the WHOLE gesture), R-3.2/3.3
+// (no capture and no error without usable voice), R-4.1/R-4.2 (the finalized
+// transcript flows through the existing ST-4 commit path unchanged).
+
+describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  const startCallCount = () =>
+    invokeSpy.mock.calls.filter(([command]) => command === 'stt_start').length;
+
+  /**
+   * `live`    — the engine confirms immediately (the harness's normal shape), so
+   *             the cue escalates to the live Listening state.
+   * `pending` — the start never settles inside the test window, so the bounded
+   *             pending cue and the release-before-live (R-2.6) path are drivable.
+   */
+  const renderArmedShell = async (start: 'live' | 'pending' = 'live') => {
+    invokeSpy.mockImplementation((async (command: string) => {
+      if (command === 'stt_check_model') return { ready: true };
+      if (command === 'stt_start') {
+        return start === 'live' ? okStart() : new Promise(() => {});
+      }
+      return undefined;
+    }) as never);
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    // ST-3's probe is fail-closed: nothing is armed until it affirms.
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+
+  const focusBar = () => {
+    const el = input();
+    act(() => {
+      el.focus();
+      fireEvent.focus(el);
+    });
+    return el;
+  };
+
+  /** Returns true iff the keydown was CONSUMED (`preventDefault`). */
+  const spaceDown = (repeat = false): boolean => {
+    let consumed = false;
+    act(() => {
+      consumed = !fireEvent.keyDown(input(), { key: ' ', code: 'Space', repeat });
+    });
+    return consumed;
+  };
+
+  const spaceUp = () =>
+    act(() => {
+      fireEvent.keyUp(document, { key: ' ', code: 'Space' });
+    });
+
+  const emitListening = (listening: boolean, origin: string | null) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  // ── R-2.1/R-2.2/R-2.4 — arming, the swallow, the cue ────────────────────────
+
+  it('R-2.1/R-2.4: the qualifying keydown is consumed, the cue appears at once, and NO capture starts', async () => {
+    await renderArmedShell();
+    const el = focusBar();
+    // S1 — the promise placeholder while holding Space would dictate.
+    expect(el).toHaveAttribute('placeholder', 'search, or hold Space to dictate');
+
+    expect(spaceDown()).toBe(true); // preventDefault: no space reaches the input
+    expect(el.value).toBe('');
+    // The cue is shown from the ARMED moment for the whole gesture (R-2.4)…
+    expect(el).toHaveAttribute('placeholder', 'Listening…');
+    // …but nothing is live yet: no dot, no chip, no mic.
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(startCallCount()).toBe(0);
+
+    spaceUp();
+  });
+
+  it('R-2.2: while armed EVERY Space keydown (auto-repeat included) is swallowed — exactly one capture', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+
+    // Auto-repeats (and a re-press) never restart the capture and never leak a space.
+    expect(spaceDown(true)).toBe(true);
+    expect(spaceDown(true)).toBe(true);
+    expect(spaceDown()).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+    expect(startCallCount()).toBe(1);
+    expect(input().value).toBe('');
+
+    spaceUp();
+  });
+
+  // ── R-2.7 — a sub-threshold release is an ordinary space ────────────────────
+
+  it('R-2.7: a sub-threshold TAP writes exactly ONE ordinary space and never opens the mic', async () => {
+    await renderArmedShell();
+    focusBar();
+    spaceDown();
+
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+    spaceUp();
+
+    expect(input().value).toBe(' '); // exactly one character — never 0, never 2
+    expect(startCallCount()).toBe(0);
+
+    // The cleared timer can never fire late.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+      await Promise.resolve();
+    });
+    expect(startCallCount()).toBe(0);
+  });
+
+  // ── R-2.1/R-2.5.4/R-2.3 — the hold, the bounded pending cue, the finalize ────
+
+  it('R-2.1/S2: crossing the 200 ms threshold starts a launcher-origin capture; the pending chip is bounded', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+
+    // Below the threshold no capture is attempted at all (the tap never opens the mic).
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS - 1);
+    });
+    expect(startCallCount()).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(invokeSpy).toHaveBeenCalledWith('stt_start', { origin: 'launcher' });
+
+    // The `starting voice input…` chip is withheld until the pending window
+    // outlives the bounded cue (HOLD_PENDING_CUE_MS).
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(HOLD_PENDING_CUE_MS);
+    });
+    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
+      'starting voice input…',
+    );
+    expect(input()).toHaveAttribute('placeholder', 'Listening…');
+
+    // The engine confirms: S2 → S3, and the chip slot swaps to the Listening chip
+    // (exactly ONE indicator, never both).
+    emitListening(true, 'launcher');
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+
+    spaceUp();
+  });
+
+  it('R-2.3: releasing while live finalizes — the transcript is ordinary editable text and NO space lands', async () => {
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('hello there');
+
+    spaceUp();
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(el.value).toBe('hello there');
+    // The input stays ordinary editable text (AC2).
+    expect(el).not.toHaveAttribute('readonly');
+  });
+
+  // ── R-2.6 — the stale-hold guard (the mic-hot race) ─────────────────────────
+
+  it('R-2.6: a release before the engine confirms cancels the late session on its rise edge and writes ONE space', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+
+    spaceUp();
+
+    // The hold never captured, so it types exactly one ordinary space…
+    expect(input().value).toBe(' ');
+    // …and no cancel is issued yet (there is no active session to cancel).
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_cancel', undefined);
+
+    // The late session reports live: it is cancelled immediately (the microphone is
+    // never left capturing), and the landed space survives the discard.
+    emitListening(true, 'launcher');
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(input().value).toBe(' ');
+  });
+
+  // ── R-2.5 — blur is a STOP that KEEPS the words (QA-9 CLOSED) ───────────────
+
+  it('R-2.5: a blur mid-capture stops the session, keeps the words and SUPPRESSES the autosend commit', async () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('set');
+
+    act(() => {
+      fireEvent.blur(el);
+    });
+    // The backend's answer to `stt_stop`: the session ends. ST-5-fix (G-125
+    // re-point — the assertion itself is UNCHANGED): the chip is now also derived
+    // from the live-capture state, so the stop transfer must be driven before the
+    // post-stop chip is asserted. While the session is still reported live the
+    // chip is `release Space to finish` — pinned by the QA-10 tests above.
+    emitListening(false, 'launcher');
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    // The words are KEPT as a dictated transcript — and never dispatched.
+    expect(el.value).toBe('set');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    // Provenance survives, so the hint truthfully names the send.
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
+      '↵ send transcript to Fredo',
+    );
+
+    // The trailing release adds nothing and re-stops nothing.
+    spaceUp();
+    expect(el.value).toBe('set');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('R-2.5: a WINDOW blur mid-capture is the same STOP (words kept, autosend suppressed)', async () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    await renderArmedShell();
+    focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('miss');
+
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(input().value).toBe('miss');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  // ── §5.7 — Escape disarms the pending hold ─────────────────────────────────
+
+  it('§5.7: Escape during a hold disarms it — no space on the trailing release and no stop', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Escape' });
+    });
+    // The cancel path (never the finalize/stop control) and no space yet.
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_stop', undefined);
+    expect(input().value).toBe('');
+
+    spaceUp();
+    expect(input().value).toBe('');
+    expect(invokeSpy).not.toHaveBeenCalledWith('stt_stop', undefined);
+  });
+
+  // ── R-3.2/R-3.3 — no usable voice: nothing promised, nothing attempted ──────
+
+  it('R-3.3: with the model not ready the keydown is NOT consumed, no capture is attempted and no error shows', async () => {
+    // The default harness answers `stt_check_model` with undefined → fail-closed.
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const el = focusBar();
+    // No promise is made: readiness unknown ⇒ the legacy resting copy (contract 4c).
+    expect(el).toHaveAttribute('placeholder', 'search or command');
+
+    expect(spaceDown()).toBe(false); // the native space is left alone (AC3)
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(startCallCount()).toBe(0);
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+  });
+
+  it('R-3.2: with voice disabled an empty-bar Space is never consumed and never starts a capture', async () => {
+    companionMock.current.voiceEnabled = false;
+    await renderArmedShell();
+    focusBar();
+
+    expect(spaceDown()).toBe(false);
+    spaceUp();
+    expect(startCallCount()).toBe(0);
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+  });
+
+  // ── R-2.5.6/AC3 — a hold-origin start failure is SILENT ────────────────────
+
+  it('AC3: a hold-origin start failure lands one space and surfaces NO alert', async () => {
+    invokeSpy.mockImplementation((async (command: string) => {
+      if (command === 'stt_check_model') return { ready: true };
+      if (command === 'stt_start') {
+        return { started: false, code: 'noDevice', detail: 'raw ipc string', deviceName: null, sampleRate: null };
+      }
+      return undefined;
+    }) as never);
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+
+    spaceUp();
+
+    expect(input().value).toBe(' ');
+    expect(startCallCount()).toBe(1);
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+    expect(screen.queryByText('raw ipc string')).toBeNull();
+  });
+
+  // ── R-4.3 / clarification #2 — provenance survives editing ─────────────────
+
+  it('R-4.3/clarification #2: a finalized transcript is dictated — a later EDIT never re-types it', async () => {
+    seatCompanion();
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+    emitFinal('set');
+    spaceUp();
+    // The backend's answer to the release (`stt_stop` → `listening:false`). ST-5-fix
+    // (G-125 re-point — same assertion): the chip is now derived from the live-capture
+    // state too, so the session end must be driven before asserting the post-capture
+    // chip. The live-capture chip is pinned by the QA-10 tests above.
+    emitListening(false, 'launcher');
+
+    expect(el.value).toBe('set');
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
+      '↵ send transcript to Fredo',
+    );
+
+    // Editing the transcript to an app name does NOT make it typed (clarification #2).
+    act(() => {
+      fireEvent.change(el, { target: { value: 'Settings' } });
+    });
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
+      '↵ send transcript to Fredo',
+    );
   });
 });

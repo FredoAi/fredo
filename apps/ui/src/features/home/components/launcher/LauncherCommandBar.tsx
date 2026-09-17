@@ -20,13 +20,14 @@
  *   • `enterMode` swaps the prefix glyph: `>` chevron for launch/filter, a small
  *     speech-bubble outline for send (both `aria-hidden`).
  *   • `hintLabel` renders inside the existing `endElement` slot as a flex row
- *     `[hint chip][vertical divider][— minimize]`; the chip is hidden only when
- *     `chatAvailable` is false or `hintLabel` is absent. The host derives the
- *     label per state (#2871 ST-2r: `launch`/`send` when idle, `Fredo is
- *     replying…` while busy), so the visibility rule is label-driven rather than
- *     `enterMode`-driven — state 5 (busy) has no pending Enter action yet still
- *     shows the chip. The `—` MINIMIZE control stays the LAST item in every state
- *     (its existing `borderLeft` is the vertical divider) and is never replaced.
+ *     `[hint chip][vertical divider][— minimize]`; the chip is hidden ONLY when
+ *     `hintLabel` is absent. #2882 ST-4 retires the #2871 `chatAvailable` gate:
+ *     the host derives a label whenever Enter has a promise — including an app
+ *     match with the companion OFF (`↵ open <App>`) and a dictated transcript
+ *     with no companion (`no match`) — so visibility is purely label-driven (a
+ *     `chatAvailable` term would hide exactly the truthful chips this spec
+ *     adds). The `—` MINIMIZE control stays the LAST item in every state (its
+ *     existing `borderLeft` is the vertical divider) and is never replaced.
  *     When the chip shows, the `Input` reserves `paddingEnd` so the typed text
  *     never runs under it.
  *   • State 5 (busy, UI/UX §1): the `Input` becomes `readOnly` and shows the
@@ -57,12 +58,26 @@
  * only the host's commit step dispatches. `onUserEdit` reports the first manual
  * keystroke during a live segment so the host can stop partial writes (UX-2).
  *
+ * #2882 ST-5 — the hold-Space cue (R-2.4):
+ *   • `holdArmed` shows the cue from the KEYDOWN moment for the whole gesture
+ *     (`Listening…`), so the state is never silent while Space is held;
+ *   • `holdPending` (the host gates it on `HOLD_PENDING_CUE_MS`) adds the bounded
+ *     `starting voice input…` chip (`launcher-command-listening-pending`) in the
+ *     SAME slot as the Listening chip — the two are mutually exclusive, so exactly
+ *     ONE indicator ever shows, and the reserved gutter accounts for whichever it is;
+ *   • `holdAvailable` drives the S1 promise placeholder (`search, or hold Space to
+ *     dictate`) — shown only while the input is focused and empty with a usable
+ *     model, so no promise is made when Space is simply an ordinary space.
+ *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
- * today's rendering (`chatAvailable=false` / `enterMode='launch'` / no
- * `hintLabel` / `busy=false` / `listening=false` / no stop or cancel handler / no
- * error / no final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no
- * reserved padding, and `aria-busy` is omitted (not rendered as `"false"`), so
- * the inactive bar is byte-identical to before this change.
+ * today's rendering (`enterMode='launch'` / no `hintLabel` / `busy=false` /
+ * `listening=false` / no stop or cancel handler / no error / no final transcript
+ * / `voiceEnabled=false`) — no chip, no glyph swap, no reserved padding, and
+ * `aria-busy` is omitted (not rendered as `"false"`). #2882 ST-4 deliberately
+ * supersedes the #2871 `chatAvailable`-gated byte-identity: the chip now shows
+ * whenever the host supplies a label, and `aria-keyshortcuts` is an
+ * unconditional `Control+Space` (the chord always opens/focuses the bar, so it
+ * is no longer a voice affordance).
  *
  * Token-native contract (AC5): every color is a theme CSS var referenced
  * directly (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`),
@@ -95,8 +110,6 @@ export interface LauncherCommandBarProps {
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   /** The `—` minimize control was clicked (#2819 — host collapses the shell to bare chrome). */
   onMinimize?: () => void;
-  /** #2871: companion active in THIS window (host-derived; gates the hint chip). */
-  chatAvailable?: boolean;
   /** #2871: pending Enter action — drives the prefix glyph swap. Defaults to `'launch'`. */
   enterMode?: LauncherEnterMode;
   /** #2871: full hint-chip text (host-derived); absent/empty → no chip. */
@@ -114,6 +127,28 @@ export interface LauncherCommandBarProps {
    * (inactive-companion invariance).
    */
   listening?: boolean;
+  /**
+   * Spec #2882 ST-5 (R-2.4) — a HOLD is armed: the qualifying Space keydown
+   * happened and the bounded threshold timer is running. The bar shows the cue
+   * from this moment for the WHOLE gesture (the `Listening…` placeholder), so the
+   * state is never silent while Space is held. Defaults to `false`.
+   */
+  holdArmed?: boolean;
+  /**
+   * Spec #2882 ST-5 (UI/UX §1 S2) — the hold crossed the 200 ms threshold and the
+   * engine is not live yet: the bounded `starting voice input…` pending chip,
+   * shown only once the pending window outlives `HOLD_PENDING_CUE_MS` (the host
+   * owns that gate). It occupies the SAME end slot as the `Listening` chip (never
+   * both). Defaults to `false`.
+   */
+  holdPending?: boolean;
+  /**
+   * Spec #2882 ST-5 (R-2.1 / contract 4c) — holding Space would dictate right now
+   * (voice enabled + FAIL-CLOSED model readiness + not busy). Drives the S1
+   * promise placeholder; with readiness unknown NO promise is made, so the bar
+   * falls back to the legacy `search or command`.
+   */
+  holdAvailable?: boolean;
   /** DR-7: stops the live session (the bar's Stop control). This is the
    *  FINALIZE/commit control (`stt_stop`) — never re-point it at `stt_cancel`. */
   onStopListening?: () => void;
@@ -138,8 +173,10 @@ export interface LauncherCommandBarProps {
   /** DR-10: the newest FINAL transcript segment (partials never set this). */
   finalTranscript?: string;
   /**
-   * DR-9/DR-10: voice input enablement. Drives `aria-keyshortcuts` and the
-   * `Voice input is off` announcement when it flips OFF mid-session.
+   * DR-9/DR-10: voice input enablement. Drives the `Voice input is off`
+   * announcement when it flips OFF mid-session. #2882 ST-4: it NO LONGER gates
+   * `aria-keyshortcuts` — that attribute is now an unconditional
+   * `Control+Space` (it advertises the bar-opening chord, not dictation).
    */
   voiceEnabled?: boolean;
   /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
@@ -156,8 +193,12 @@ export interface LauncherCommandBarProps {
  * (`HINT_CHIP_MAX_WIDTH_PX`) plus the end-slot chrome to its right — the
  * minimize control's left margin/border/padding and its 12px `—` glyph.
  * A CSS unit string (G-146) so it is pixels, never a Chakra size token.
+ *
+ * #2882 ST-4 (UI/UX §9): raised 184 → 220 so the longest truthful instruction
+ * (`↵ send transcript to Fredo`) never ellipsizes — a truncated instruction is
+ * a lying instruction (R-6.3).
  */
-const HINT_CHIP_MAX_WIDTH_PX = 184;
+const HINT_CHIP_MAX_WIDTH_PX = 220;
 /** Static `Listening` chip width (12px text) + the Stop control's footprint.
  *  CSS unit strings only (G-146 → exact pixels). */
 const LISTENING_CHIP_WIDTH_PX = 72;
@@ -176,11 +217,19 @@ const MINIMIZE_GUTTER_PX = 44;
 export function computeEndPaddingPx(options: {
   showHint: boolean;
   listening: boolean;
+  /**
+   * Spec #2882 ST-5 (UI/UX §9) — the S2 pending chip occupies the SAME slot (and
+   * the SAME width) as the Listening chip, so typed text never runs under it. It
+   * is never rendered while `listening` (the slot is exclusive).
+   */
+  holdPending?: boolean;
 }): number | undefined {
+  const pendingChip = !options.listening && options.holdPending === true;
   const px =
     (options.showHint ? HINT_CHIP_MAX_WIDTH_PX : 0) +
     (options.listening ? LISTENING_CHIP_WIDTH_PX + CANCEL_GUTTER_PX + STOP_GUTTER_PX : 0) +
-    (options.showHint || options.listening ? MINIMIZE_GUTTER_PX : 0);
+    (pendingChip ? LISTENING_CHIP_WIDTH_PX : 0) +
+    (options.showHint || options.listening || pendingChip ? MINIMIZE_GUTTER_PX : 0);
   return px > 0 ? px : undefined;
 }
 
@@ -188,6 +237,20 @@ export function computeEndPaddingPx(options: {
 export const HEARING_NOTHING_MS = 6000;
 export const HEARING_NOTHING_COPY =
   "Listening… we haven't heard anything yet — check that your microphone isn't muted.";
+
+/**
+ * Spec #2882 ST-5 (UI/UX §1 S2) — the bounded pending chip's copy. Shown only
+ * once the engine start outlives `HOLD_PENDING_CUE_MS` (the host owns that gate),
+ * so the loop never looks dead while the model/engine loads.
+ */
+export const STARTING_VOICE_INPUT_COPY = 'starting voice input…';
+
+/**
+ * Spec #2882 ST-5 (UI/UX §1 S1) — the promise placeholder shown while the bar is
+ * focused and empty and holding Space WOULD dictate (voice on + model ready + not
+ * busy). Readiness unknown ⇒ this is never shown (contract 4c: no promise made).
+ */
+export const HOLD_AVAILABLE_PLACEHOLDER = 'search, or hold Space to dictate';
 
 /** Accent `>` chevron prefix (monoweight, currentColor) — launch/filter mode. */
 function ChevronGlyph() {
@@ -256,12 +319,13 @@ export function LauncherCommandBar({
   ariaActivedescendant,
   onFocus,
   onBlur,
-  onMinimize,
-  chatAvailable = false,
-  enterMode = 'launch',
+  onMinimize,  enterMode = 'launch',
   hintLabel,
   busy = false,
   listening = false,
+  holdArmed = false,
+  holdPending = false,
+  holdAvailable = false,
   onStopListening,
   onCancelListening,
   onUserEdit,
@@ -281,20 +345,48 @@ export function LauncherCommandBar({
   };
 
   // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
-  // Label-driven visibility (#2871 ST-3r state 5): the host omits the label when
-  // no chip should render, so busy still shows the host-supplied `Fredo is
-  // replying…` label; while non-busy only `launch`/`send` yield a label, so that
-  // behavior is unchanged.
-  const showHint = useMemo(
-    () => chatAvailable && Boolean(hintLabel),
-    [chatAvailable, hintLabel],
-  );
+  // #2882 ST-4 (R-6.3 / UI/UX §3): chip visibility is LABEL-DRIVEN — the host
+  // derives the label from the SAME Enter verdict the handler consumes, so the
+  // chip can never promise a different action than Enter performs. The old
+  // `chatAvailable` term (which hid the truthful `↵ open <App>` / `no match`
+  // chips whenever no companion was present) is retired with its prop.
+  const showHint = useMemo(() => Boolean(hintLabel), [hintLabel]);
+
+  // Spec #2882 ST-5 (R-2.4) — THE ONE CUE. It is shown from the armed moment
+  // (`holdArmed`), stays through the bounded pending window (`holdPending`) and
+  // the live capture (`listening`), and is gone the moment the gesture is over.
+  // The CHIP slot holds at most one indicator: the pending chip and the Listening
+  // chip are mutually exclusive (never both).
+  const cueActive = holdArmed || holdPending || listening;
+  const pendingChip = holdPending && !listening;
+
+  // S1 vs S0 (UI/UX §1): the promise placeholder is offered only while the search
+  // input actually holds focus, is empty, and holding Space would dictate.
+  const [inputFocused, setInputFocused] = useState(false);
+  const handleInputFocus = () => {
+    setInputFocused(true);
+    onFocus?.();
+  };
+  const handleInputBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    setInputFocused(false);
+    onBlur?.(e);
+  };
+
+  // The 4-way placeholder (UI/UX §9): busy > the gesture cue > the S1 promise >
+  // the legacy resting copy.
+  const placeholder = busy
+    ? 'Fredo is replying…'
+    : cueActive
+      ? 'Listening…'
+      : holdAvailable && inputFocused && query === ''
+        ? HOLD_AVAILABLE_PLACEHOLDER
+        : 'search or command';
 
   // #2877 ST-5 (DR-7) / #2878 ST-2: reserve the right gutter for every end-slot
   // affordance that is present, so the typed text never renders underneath them.
-  // With only the hint chip this is `184 + 44 = 228px` — byte-identical to the
-  // pre-ST-5 reserved padding. Nothing present ⇒ omitted entirely.
-  const endPaddingPx = computeEndPaddingPx({ showHint, listening });
+  // With only the hint chip this is `220 + 44 = 264px`. Nothing present ⇒
+  // omitted entirely.
+  const endPaddingPx = computeEndPaddingPx({ showHint, listening, holdPending: pendingChip });
   const paddingEnd = endPaddingPx === undefined ? undefined : `${endPaddingPx}px`;
 
   // #2877 ST-5 (DR-7): the hearing-nothing hint — shown only after
@@ -388,6 +480,29 @@ export function LauncherCommandBar({
         }
         endElement={
           <Box display="flex" alignItems="center" height="100%">
+            {/* Spec #2882 ST-5 (UI/UX §1 S2/§9) — the bounded pending chip: the
+                hold crossed the threshold but the engine is not live yet. It is a
+                clone of the Listening chip (same box, same slot) and the two are
+                never rendered together (exactly ONE indicator). */}
+            {pendingChip && (
+              <Box
+                as="span"
+                data-testid="launcher-command-listening-pending"
+                display="block"
+                height="24px"
+                lineHeight="24px"
+                px="8px"
+                borderRadius="4px"
+                bg="accent.subtle"
+                color="fg.default"
+                fontFamily="var(--font-primary)"
+                fontSize="12px"
+                whiteSpace="nowrap"
+                flexShrink={0}
+              >
+                {STARTING_VOICE_INPUT_COPY}
+              </Box>
+            )}
             {/* #2877 ST-5 (DR-7) — visible `Listening` chip + Stop control, before
                 the existing hint chip / divider / `—` minimize (which stays LAST). */}
             {listening && (
@@ -516,13 +631,17 @@ export function LauncherCommandBar({
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
           aria-describedby={showHint ? ariaDescribedBy : undefined}
-          aria-keyshortcuts={voiceEnabled ? 'Control+Space' : undefined}
-          placeholder={busy ? 'Fredo is replying…' : listening ? 'Listening…' : 'search or command'}
+          // #2882 ST-4 (UI/UX §8): the chord ALWAYS opens/focuses the bar, so the
+          // shortcut is advertised unconditionally — it is no longer a voice
+          // affordance (the hold-Space long-press is not expressible in ARIA; the
+          // armed mirror sentence carries it).
+          aria-keyshortcuts="Control+Space"
+          placeholder={placeholder}
           readOnly={busy}
           value={query}
           onChange={handleChange}
-          onFocus={onFocus}
-          onBlur={onBlur}
+          onFocus={handleInputFocus}
+          onBlur={handleInputBlur}
           paddingEnd={paddingEnd}
           bg="var(--card-bg)"
           border="1px solid"
