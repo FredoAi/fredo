@@ -154,3 +154,32 @@
 - **E-26/E-27/E-28 RESOLVED** by the ST-1r session-scoped finalize evidence + the `handleMinimize` mirror sync; promoted to `functional.md` F-62 (prior-session discriminator), F-63 (partial-cancel), F-64 (typed-error end), and F-53 now passes.
 - **New exploratory probe E-31 (observed, not promoted):** a real-generation busy window is shorter than one `stt_start` round-trip (~4–5 s engine start on the virtual mic), so a "finalize a 2nd dictation while the 1st reply streams" race cannot be driven deterministically through the real backend; the `companionBusy` hard-drop is instead held by the TicTacToe `isInUse` primitive (`functional.md` F-46), and the first finalize's own dispatch is exactly-once (F-51). Not a defect.
 - **E-32 (environment, observed):** the app process exited once mid-round immediately after a `stt_start {origin:"companion"}` attempt. `dev-env -Action Logs` showed no panic/abort — only the expected `[stt] audio stream error: A buffer underrun or overrun occurred.` spam (the silent virtual mic). `dev-env -Action Up -Spec 2878` recovered; the leg then passed. Not reproducible; recorded as an environment event, not a product defect.
+
+---
+
+## #2882 extension — hold-Space trigger probes
+
+> Issue #2882 makes Space a gesture on an EMPTY focused bar and retires the Ctrl+Space cascade.
+> A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Live
+> policy; an undrivable lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+> The pre-#2882 Ctrl+Space cascade probes (E-7/E-8, E-30) are RETIRED with the cascade — do not
+> re-run them as PASS or FAIL.
+
+- [ ] E-33: **Hold duration extremes.** Hold Space for ~50 ms (a tap), ~1 s, and ≥6 s (long enough
+      for many auto-repeat `keydown`s). For each: exactly one session, a cue present for the whole
+      hold with no gap, `listening === false` promptly after the `up`, and no leaked capture handle.
+      A tap that leaves a stuck session, a duplicate session under auto-repeat, or a cue gap while
+      capturing is a finding (promotes to F-66/F-71).
+- [ ] E-34: **Hold while the bar already holds a dictated transcript.** Hold Space with a
+      dictation-origin transcript in the bar (non-empty ⇒ REQ-4 says Space is a space). Does a
+      literal space land (correct), or does capture start and clobber the transcript? Record the
+      observed branch — a started session or a lost/overwritten transcript is a finding (promotes to
+      F-67/F-70).
+- [ ] E-35: **Disable voice MID-hold.** Start a hold, then toggle `Fredo_companion_voice_enabled`
+      to false while Space is still down; release. Does the session stop, the mic release, the cue
+      clear, and NO phantom dispatch occur (autosend ON)? Any continued capture (a capture without a
+      visible indicator), any dispatch, or a stuck cue is a finding (promotes to F-68/F-71).
+- [ ] E-36: **Esc-close vs hold collision.** Press Escape in the same tick as — or immediately after
+      — the Space `up`. Exactly one action is expected (finalize OR discard, never both, never a
+      z-ordered second action). Any double action, lost utterance, or console error is a finding
+      (promotes to F-66/the launcher REQ-11 row).
