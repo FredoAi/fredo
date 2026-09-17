@@ -523,3 +523,28 @@ for the untouched rows and their round-2 spot re-confirmation is recorded in the
   release offsets, and assert `stt_status.listening === false` afterwards.
 - **Exact dictated chip copy:** `↵ send transcript to Fredo` (including after the user edits the
   transcript). Never promise an app launch for dictated content.
+
+### #2882 round 1 — tester run record (`spec/2882 @ f076fa08`, live)
+
+**Rows F-66..F-73 PASS** (F-71's working-set leg and F-72's reduced-motion leg are NAMED BLOCKERS).
+Verdict + per-REQ values: the `## Tests Runs (round 1)` comment on #2882. Key receipts:
+- Hold `down`→`up` with recorded durations **30,226 ms / 9,610 ms / 8,967 ms**; a **0 ms tap** lands
+  `value === " "` with ZERO `stt:state` and the mic never opened.
+- Release-while-live ⇒ `stt_status.listening:false` + `stt:state listening:false` (mic released),
+  no space. Autosend ON ⇒ exactly ONE `[companion] calling adapterBridge.llmChat`, ZERO windows
+  (the reply echoed the transcript); autosend OFF ⇒ the transcript WAITS as editable text
+  (`readOnly=false`, `disabled=false`) with chip `↵ send transcript to Fredo`.
+- Escape mid-hold ⇒ discard + pre-session text restored + **no** space on the trailing keyup.
+  Blur mid-hold with autosend ON ⇒ STOP: mic released, words KEPT (`value==="blur keeps these
+  words"`), **0** dispatch. NOTE: a blur-stop whose only recognition was a *partial* restores the
+  pre-session text (the committed-final evidence rule) — seed a **final** before blurring, as a
+  real `stt_stop` would.
+- Voice-disabled hold (9,610 ms): placeholder stays `search or command` (unarmed), ZERO capture
+  attempt, NO `role="alert"`, keydown NOT consumed.
+
+**Lever notes:** the plan's hold lever works as specified, but `keyboard(press)` performs no native
+text insertion — the literal `value===" "` for the voice-off/model-missing row is a NAMED BLOCKER
+(assert the app's `defaultPrevented:false` + the `type`-inserted burst instead). The host still has
+no physical mic: `stt:transcript` content came from the documented synthetic lever; the capture
+lifecycle/indicator/mic-release legs ran on the real control plane. Taps land because the app
+writes the space itself.
