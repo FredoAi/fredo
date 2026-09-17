@@ -3,6 +3,7 @@
 > **Issue:** #2876 — `[Spike] Select a local-first streaming STT engine and prove live transcription in Fredo`.
 > **Sub-task:** ST-1 of the #2876 Implementation Plan (`## Triage Plan`).
 > **Status:** **BINDING.** The implementation specs **#2877** (local STT foundation) and **#2878** (live STT input surfaces) plan against this document; it does not re-open the decision and contains no "it depends" hedging.
+> **SUPERSEDED IN PART (Spec #2882, 2026-09-16):** #2882 retired the **contextual Ctrl+Space / 3-priority cascade** (§5.1), the Ctrl+Space constraints that followed from it (§5.2, §6's Ctrl+Space rows) and the two-surface transcript routing sketched in §3.1 — see the banner in §5.1. The **engine, capture-path and provisioning decisions (§0–§4) remain binding**; the superseded text below is preserved verbatim as the spike's historical record.
 > **Scope:** engine + capture path + provisioning path for the **English**, **local-first**, **streaming** use case on **Windows x64** with **Tauri v2** / **WebView2**.
 > **Citation convention:** every external claim carries a URL; every in-repo claim carries `path:line` (spot-verified against the `spec/2876` tip).
 
@@ -252,6 +253,13 @@ pub const STT_REVISION: &str = "672fbf1b30579d6585301139bb363f42a0ad4a24"; // HF
 
 ### 5.1 Context-dependent Ctrl+Space model (3 priorities)
 
+> **SUPERSEDED by Spec #2882 — the text below is preserved verbatim as the spike's history; do not implement against it.**
+>
+> The 3-priority cascade below and **every bullet in this §5.1** (together with §5.2's Ctrl+Space constraint and §6's Ctrl+Space rows) described the #2823/#2877/#2878 model. Since **#2882** the shipped behaviour is:
+> - **Ctrl+Space only brings the launcher search bar to the front and focuses it** — it never starts or stops listening, never closes the bar, and the #2823 non-launcher-text-control pass-through carve-out is retained. **No keyboard gesture starts a companion-origin session**; that path and its listening bubble are retired.
+> - **Dictation is hold-Space in the focused, empty launcher search bar**: listening runs only while Space is held, and release finalizes the recognized words into the bar as ordinary editable text. A sub-threshold tap (or a Space in a non-empty query, or with voice disabled / its model not installed) is an ordinary space — no capture and no error.
+> - **A finalized transcript is always Fredo's** and never runs the app-open rule, even after the user edits it.
+
 ```text
 document keydown, exact Ctrl+Space (#2823 matcher, LauncherShell.tsx:562)
   1. if (isTextControl(active) && !activeInLauncher) return;      // #2823 AC3 carve-out, UNCHANGED
@@ -274,7 +282,7 @@ document keydown, exact Ctrl+Space (#2823 matcher, LauncherShell.tsx:562)
 - **STT-only.** No TTS/voice output, no voice-command/intent routing. Any final-text-triggered action/command execution is out of scope.
 - **Autosend is owned by #2877.** The spike assumes **autosend OFF**: on stop/finalize the transcript stays in the input for review and is NOT auto-submitted (R-4.8).
 - **No dedicated Voice settings section.** The control lives under Companion settings; the model step lives in the Companion setup wizard's registry.
-- **Voice is opt-in:** `Fredo_companion_voice_enabled`, boolean, **DEFAULT false** (`usePersistedSetting` pattern, `CompanionContext.tsx:219-229`). WHEN voice input is disabled, Ctrl+Space SHALL NOT start listening.
+- **Voice is opt-in:** `Fredo_companion_voice_enabled`, boolean, **DEFAULT false** (`usePersistedSetting` pattern, `CompanionContext.tsx:219-229`). WHEN voice input is disabled, Ctrl+Space SHALL NOT start listening. *(Superseded by #2882: Ctrl+Space never starts listening in any state — see the §5.1 banner. Dictation is hold-Space in the empty, focused launcher search bar.)*
 - **Budgets (measured on this host, R-2.2/R-2.3):** model on disk = **72,654,782 bytes** (69.28 MiB) exactly; partial-update latency **p50 ≤ 300 ms and p95 ≤ 600 ms**; fredo-process memory delta on model load **≤ 350 MB**; **no measurable idle CPU while not listening** (the engine is created lazily on first `stt_start`, never at app launch). If a metric is not measurable on this host, the artifact/tests state the metric and the reason explicitly — never an adjective.
 - **English-only** for this spike; non-English models are out of scope.
 - **Build hygiene (G-147):** `cargo check --locked`, `cargo test --locked`, `cargo clippy --locked -- -D warnings` (zero warnings), `pnpm --filter @fredo/ui build`, and the shipped Tauri webview build must all be green with the POC merged. Every POC file carries a `// SPIKE #2876 — THROWAWAY POC` header.
@@ -293,7 +301,7 @@ Every failure is a **typed `SttErrorCode`** returned by `stt_start` (and mirrore
 | **Corrupt / oversize model** | size gate mismatch, or streamed SHA-256 mismatch ⇒ delete + `Fatal` (`model_download.rs:376-385`) | `{ started:false, code:"modelCorrupt" }` | Point at the `sttModel` step to re-download; app stays responsive (R-5.4) |
 | **Engine start failure** | `OnlineRecognizer::create() == None` | `{ started:false, code:"engineStartFailed" }` | Report the code; app stays responsive (R-5.5) |
 | **Already listening** | second `stt_start` while active | `{ started:false, code:"AlreadyListening" }` | Idempotent; no double session (contract) |
-| **Voice disabled** | `Fredo_companion_voice_enabled === false` | `{ started:false, code:"Disabled" }` | Ctrl+Space does not start listening (R-5.7) |
+| **Voice disabled** | `Fredo_companion_voice_enabled === false` | `{ started:false, code:"Disabled" }` | Ctrl+Space does not start listening (R-5.7) — still true after #2882; dictation is hold-Space in the empty, focused launcher search bar (see the §5.1 banner) |
 
 Device loss mid-session is also covered by the same contract: the session transitions to an error `stt:state` with a typed code and never panics. Every mode is exercised sequentially in one session; recovery between them is required (no silent hang, no unhandled `Error:`/`Uncaught`).
 
