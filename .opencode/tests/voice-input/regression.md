@@ -220,3 +220,66 @@ Scope: the F-38 fix surface only (`session.rs` state emission + `useVoiceDictati
   **Expected:** all unchanged; ZERO true color literals / no `var(--x)NN` alpha-append in the changed
       files; NO existing assertion weakened, disabled or deleted (G-125) — a moved/renamed frozen hook
       is refreshed in the same scope and named.
+
+---
+
+## #2887 extension — the faster trigger must not move the #2882 contract (G-136)
+
+> Issue #2887 removes the "not yet listening" wait (the recognizer is kept ready/resident while Fredo
+> is idle — PO amendment 1) and makes the indicator honest. **G-136 SUPERSESSION (history preserved):**
+> nothing in #2887 retires a prior row — this extension re-asserts the #2882 hold/release contract and
+> the #2877 privacy/lifecycle invariants against the faster/resident arming. R-1..R-20 remain in force.
+> Run alongside R-21..R-24, `launcher` R-50..R-53, and the new `functional.md` F-74..F-82.
+> **Verification policy: live.**
+
+## R-21 — The #2882 hold/tap/non-empty/voice-off contract is UNCHANGED
+
+- [ ] R-21: Re-run `functional.md` F-66 (hold dictates; listening ONLY while held; release finishes;
+      sub-threshold TAP and never-live hold each land exactly ONE ordinary space with ZERO `stt_start`
+      and the mic never opened), F-67 (Space in a NON-EMPTY field is a literal space — zero lost or
+      converted spaces; the empty-bar TAP is one too), F-68 (voice disabled / model absent → ordinary
+      space, no capture attempt, no error, no `role="alert"`), F-73 (mic never left hot; blur keeps
+      the words) and `launcher` F-64..F-69 on the #2887 tip.
+  **Expected:** byte-for-byte the shipped #2882 outcomes — ZERO regressions. The faster/resident
+      arming changes nothing observable in these rows; over the whole leg a confirmed LOST or
+      CONVERTED space FAILs the round (G-158). **Do not assert a specific readying affordance or a
+      changed short-hold threshold (open items (a)/(b)) — assert only these observable outcomes.**
+  - **Edge:** voice disabled MID-hold; the model removed between probe and hold; a hold whose release
+    lands exactly at the 200 ms threshold; a tap right after a cleared dictated transcript; a hold
+    immediately after a cancelled hold.
+  - **Receipt:** the per-leg `value`/`stt_start` count/cue state/`role="alert"` presence.
+
+## R-22 — Transcript routing + exactly-once dispatch unchanged
+
+- [ ] R-22: Re-run `functional.md` F-69/F-70 (a dictated transcript is ALWAYS Fredo's, even edited;
+      no dictated phrase ever opens an app) + F-51/F-52/F-53 (one dispatch per finalize, N finals +
+      one release = ONE dispatch, no phantom dispatch on a silent session) on the #2887 tip.
+  **Expected:** exactly ONE dispatch per dictated turn; ZERO windows from dictated content; the hint
+      reads `↵ send transcript to Fredo`; the faster arming introduces no second commit path (no
+      duplicate finalize, no commit of a pre-session draft).
+  - **Edge:** a final landing after the `listening:false` state event; a duplicate `stt_start`
+    (`alreadyListening`) during a fast re-arm; clear-to-empty then a hold.
+
+## R-23 — Privacy + the mic-release invariant under the resident lifecycle
+
+- [ ] R-23: With the resident readiness active (nothing dictated), subscribe to `stt:state` and watch
+      for any capture start / mic-in-use indicator / working-set rise; then hold, release, and cancel.
+      Re-assert `functional.md` F-71/F-79 + F-31 cue routing.
+  **Expected:** NO capture and NO mic open while merely resident-ready at idle; the visible indicator
+      is present for the WHOLE capture and cleared on release/cancel with no gap; the mic is released
+      on release/cancel (`stt_status.listening === false`, working set back to the resident baseline);
+      exactly one indicator per origin. A capture without a visible indicator FAILs the round (G-158).
+  - **Edge:** the resident-ready state held across the declared idle window; disable voice while
+    listening; release before the session goes live; a never-live hold (mic never opened).
+
+## R-24 — Idle resource + persisted-key invariants extended to the resident
+
+- [ ] R-24: Extend R-17: with the resident readiness active and the app idle, measure CPU (Get-Process
+      CPU delta over ≥10 s) and working set at t0 and at the END of the declared idle window; enumerate
+      newly persisted keys; sample the console.
+  **Expected:** idle CPU ≤ the plan's bound (default ≤ 1 % avg / 10 s); working set within the
+      resident budget (default Δ ≤ 350 MB); only declared persisted keys; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no polling loop / no effect depending on an
+      array `.length` or a freshly-created object (AGENTS.md #523). Reference R-17.
+  - **Edge:** enable → restart → idle → hold leaves the declared keys consistent; the resident must
+    not rewrite an existing companion/voice key.
