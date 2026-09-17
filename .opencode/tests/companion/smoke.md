@@ -137,3 +137,20 @@
       sentence, no raw backend string, no `happy`, the bar returns usable. Restore the path + relaunch.
   - **#2871 round 2 (spec/2871 @ bd168ee) — PASS.** See functional F-71 round 2 + launcher F-53;
     screenshot `req6-error-bubble2.png`.
+
+## #2882 extension — companion-state independence quick paths
+
+> Issue #2882 makes Enter's app-open rule independent of the companion and retires the Ctrl+Space
+> listening cascade. Quick paths only — the full matrix lives in `functional.md` F-76..F-78 /
+> `regression.md` R-39..R-41. **Verification policy: live.**
+
+- [ ] S-25: **Enter opens the app with the companion AWAY and OFF.** With the companion AWAY
+      (Ctrl+right-click) and again with it OFF, type `set` into `input[role="searchbox"]` and press
+      Enter. **Expected:** the Settings window opens in BOTH states with ZERO Fredo generation —
+      Enter's app-open rule does not depend on the companion; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-26: **Ctrl+Space with the companion AWAY starts no capture.** Voice enabled; teleport the
+      companion AWAY; press Ctrl+Space. **Expected:** the launcher bar appears with the caret in
+      `input[role="searchbox"]`, `stt_status.listening === false`, NO companion listening
+      bubble/dot, ZERO `stt_start`; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
