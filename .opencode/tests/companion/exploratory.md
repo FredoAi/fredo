@@ -249,10 +249,4 @@
 
 ### #2883 testing round 1 — result
 
-- [x] **Round 1 (serving `326822ff`).**
-      - E-45 UNVERIFIED: a new turn while the reader is scrolled back into a long reply was not driven in a single controlled sequence (needs the scrolled-back frame held across a send).
-      - E-46 UNVERIFIED: window resize while scrolled back in a long reply was not driven (the 900×600 resize leg was driven on a settled reply instead — F-80/E-48).
-      - E-47 UNVERIFIED: the protection-vs-idle-auto-return probe (idle timeout 5 s) was not run — the idle timeout was left at its default; the pointer/focus hold itself is covered by F-83/F-84/F-87 (R-4.4 not independently exercised).
-      - E-48 PASS: at 900×600 a ~1 550-char story stayed inside the window, kept the bar clear and scrolled internally; the stream kept advancing (0 out-of-window samples).
-      - E-49 PARTIAL/UNVERIFIED: the labelled `Newest` control was found (labelled/focusable) and activating it returned to the newest content (F-86), but the keyboard-ALONE round-trip could not be driven (MCP keyboard delivers no native keys) — named blocker G-161.
-      - No new exploratory finding promoted beyond the launcher-side **D-1** residual-bar-height defect (launcher E-50).
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
