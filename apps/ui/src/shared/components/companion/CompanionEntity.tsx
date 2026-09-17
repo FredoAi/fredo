@@ -207,7 +207,7 @@ export interface CompanionEntityHandle {
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
-  ({ surface, x, y }, ref) => {
+  ({ surface, x, y, replyBounds }, ref) => {
     const { state, setState, teleport, hideMessage, notifyInteraction, setInUse } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -766,6 +766,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         >
           <SpeechBubble
             {...surfaceProtectionProps}
+            // #2883 ST-4 — the band reaches the bubble (the launcher measured it
+            // and ST-2 handed it to this entity). `undefined` ⇒ today's card.
+            growth={replyBounds}
             positioning={surface === 'seat' ? 'absolute' : 'fixed'}
             message={showTicTacToe ? null : displayMessage}
             companionX={displayPos.x}
