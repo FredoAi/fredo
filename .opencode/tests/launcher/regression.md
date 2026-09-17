@@ -375,3 +375,59 @@
       alpha-append (#2770); the hint chip re-tints token-native with no stale color; no effect/memo
       depending on an array `.length` or a freshly created object (AGENTS.md #523). Reference
       R-13/R-21/R-5/R-31.
+
+---
+
+## #2883 extension — typing more text must not disturb filtering/nav/Enter/chrome (G-136)
+
+> Issue #2883 wraps the bar's input, caps its height then scrolls internally, and adds `Shift+Enter`
+> for a newline (PO clarification #1). **G-136 SUPERSESSION (history preserved):** **R-38 / R-40's**
+> "command-bar `y` constant within ±1 px across every state" is **EXTENDED** — the ±1 px invariant
+> still HOLDS for the EMPTY/short/companion-off states (R-45) and is SUPERSEDED **only for the
+> long-input state**, where bar growth is the REQUIRED behaviour. Historical PASS records above are
+> preserved; do not fail this spec for bar growth on a long query. #2882's F-64..F-69 / R-40..R-43
+> remain IN FORCE (R-44). Run alongside R-1..R-43 and the `companion` R-42..R-45 extensions.
+> **Verification policy: live.**
+
+## R-44 — Typing (incl. newlines) does NOT disturb the filter, nav, hint truth or Enter's rule
+
+- [ ] R-44: With and without a long wrapped query, and with a query containing explicit newlines:
+      inspect the substring FILTER (`filteredEntries`) + the rendered tile order; the keyboard nav
+      (↑↓/←→ clamp, no wrap); the empty-grid no-op + hint-row hiding; the tile `aria-label` set =
+      `SHOWABLE_FEATURES` names; the (hint, action) pair for a typed match / an unmatched query / a
+      dictated transcript. Then run #2882 F-64/F-65/F-74's query set (`set`, `Miss`, `monitor`,
+      `mission monitor`, `Missing all the time`, `MM`).
+  **Expected:** zero drift in filtering/rendering/navigation; the hint still NAMES the app that will
+      open and reads as sending to Fredo otherwise, in the same states as #2882; Enter's app-open
+      rule is unchanged (prefix / whole-word run opens the app; unmatched sends to Fredo; a dictated
+      transcript is always Fredo's; **Enter never inserts a newline**); `Shift+Enter` never sends or
+      launches. Reference #2882 F-64..F-69 + R-40..R-43 (unchanged).
+
+## R-45 — Short/empty-state launcher geometry unchanged (the ±1 px invariant the long query is exempt from)
+
+- [ ] R-45: Measure the command-bar `[data-testid="launcher-command-bar"]`
+      `getBoundingClientRect().y`/height + the field (`[data-testid="launcher-command-input"]`)
+      height + the seat-slot WRAPPER `offsetWidth`/`offsetHeight` + `margin-bottom` in the EMPTY and
+      SHORT (`hi`) states with the companion OFF / ON-home / ON-away; check `scrollHeight`/overflow
+      at the default size AND the shipped minimum **900×600**.
+  **Expected:** the EMPTY/short values are constant within ±1 px across those states and within
+      ±2 px of the BEFORE tip (no permanent growth/shift); the field is exactly **48 px** at one
+      visual line; the seat wrapper stays 80×100 + 16px (`AVATAR_SM_CSS`, the #2870 R-35
+      numeric-token pin); no new scrollbar. The bar height grows ONLY while the input is actually
+      long (up to the bound **108 px** cap — it is NOT a permanent height increase). Reference
+      R-35/R-36/R-37 + companion F-64 + #2870 R-35/R-36.
+
+## R-46 — Console clean / no re-render loop / token-native after the wrap + newline change
+
+- [ ] R-46: Read `tauri_read_logs(source="console")` after every leg (typing, wrapping, the cap,
+      `Shift+Enter`, clearing, rapid growth/shrink churn); static-grep the changed bar files for
+      `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN`; re-theme while a long wrapped query is
+      visible.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); ZERO hardcoded colour literals / no `var(--x)NN`
+      alpha-append (#2770); the bar re-tints token-native in both themes; no effect/memo depending
+      on an array `.length` or a freshly created object (AGENTS.md #523). Reference R-13/R-21/R-43.
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
