@@ -1498,4 +1498,17 @@ Key receipts:
 
 ### #2883 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+- [x] **Round 1 (serving `326822ff`, driver :9224, real managed-`llama-server` streams) — F-79..F-86 PASS · F-87 PASS (name/focus/hold+grace) / reduced-motion leg UNVERIFIED · F-88 PASS · F-89 PASS · F-90 PASS.**
+      - F-79 PASS (real streaming class): base `240×120 @len 28` → grown `560×152 @312` → `560×190 @362` → `560×228 @494` → `560×270 @1694`; ≥5 distinct samples while still arriving, monotonic; `data-reply-kind="reply"`; width `min(560, available)=560`.
+      - F-80 PASS at **900×600**: 28 reply samples, 0 out-of-window; settled `reply{l:170,t:166,rr:730,bt:294}` vs `win{900,600}`.
+      - F-81 PASS: ONE frame with a long wrapped query AND a grown reply — intersections with bar/field/hint/collapse all **0** (reply bottom 435.8 < bar top 485.8); placement `above`.
+      - F-82 PASS: `[data-testid="fredo-reply-scroll"]` `scrollHeight 674 > clientHeight 240`; following pinned `scrollTop 434` (= 674−240, the bottom); tail is the streamed completion.
+      - F-83 PASS: countdown running, then pointer over the surface → **120/120 present samples across 12.0 s** (2.4× the 5 s hold).
+      - F-84 PASS: `pointerout` → still present at leave, cleared between +2488 ms and +2597 ms (bound 2000 ms + the bubble exit transition).
+      - F-85 PASS: `scrollTop` held at 20 and the top-visible character offset at 32 while the reply grew `len 1322→1913` / `scrollHeight 522→712`.
+      - F-86 PASS: labelled `Newest` `<button>` (`aria-label="Jump to the newest part of Fredo's reply"`) → `scrollTop 20 → 472` (bottom) and the control unmounts (`following=true`).
+      - F-87 PASS (a/b/c labels): `role="region"`, `aria-label="Fredo's reply"`, `tabindex="0"`, `aria-busy` while streaming, focusable, no focus trap; **120/120 present over 12 005 ms** under keyboard focus, grace ≈2.5 s after `blur()`; `Newest` is a labelled button, no `aria-live`/`role="log"`. Keyboard scroll-to-end and the reduced-motion flip were not drivable (G-161 / G-148) → those sub-legs UNVERIFIED with pins `ReplyScrollArea.test.tsx`, `SpeechBubble.reducedMotion`.
+      - F-88 PASS: during the scrolled-back window the length advanced monotonically (≥8 increases) and `scrollHeight` grew 522→712; console clean.
+      - F-89 PASS: `"Hi there!"` → `data-reply-tier="base"`, rect **240×120**, no scroll region/scrollbar.
+      - F-90 PASS: `telemetry_spans` 1098 rows, `max(ingested_at)=2026-09-17T08:06:04.286180200+00:00`; `chat_rows` **1** for `e2e-2883-chat` after `fredo emit --event-type chat --session-id e2e-2883-chat --state response --provider internal`; real `llm-token` streams observed in-app.
+      Evidence: https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f79-grown-reply-streaming.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f80-grown-reply-900x600.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f85-f86-scrolled-back-newest-pill.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f81-f71-collision-frame-long-query-long-reply.jpeg
