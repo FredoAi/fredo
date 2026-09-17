@@ -5,9 +5,11 @@
  * This is a THIRD group inside the EXISTING Companion settings section
  * (`CompanionSettingsPanel` ready branch) — no new settings nav item and no
  * dedicated Voice section. It hosts, in order:
- *   1. C1 — the master opt-in enable switch (`Dictate with Ctrl+Space`,
+ *   1. C1 — the master opt-in enable switch (`Hold Space to dictate`,
  *      `aria-label="Enable voice input"`, DEFAULT OFF). Toggling OFF while a
  *      session is live stops it and releases the microphone (DR-2 / R-1.1).
+ *      The label/help teach the SHIPPED gesture — hold Space in the launcher
+ *      search bar — and never claim Ctrl+Space starts dictation (#2882 ST-7).
  *   2. R-1.3 — a compact engine-status line (idle / listening / error + detail).
  *   3. C2 — the "Voice input model" row with DR-3's six states (not-checked /
  *      not-installed / downloading / ready / error / interrupted+resume), ONE
@@ -77,6 +79,19 @@ export const VOICE_ENGINE_NAME = 'Streaming Zipformer (English, on-device)';
 
 /** Human name for the system-default device option. */
 export const SYSTEM_DEFAULT_DEVICE_LABEL = 'System default';
+
+/**
+ * Help copy under the master enable label (#2882 ST-7 / R-7). It teaches the
+ * SHIPPED gesture only: hold Space in the launcher search bar, release for
+ * editable text, Enter to send (or autosend on release), a transcript that is
+ * always Fredo's, and Ctrl+Space as the bar-opening chord — never dictation.
+ */
+const VOICE_ENABLE_HELP_COPY =
+  'In the launcher search bar, hold Space to dictate; release and the words land in the bar as ' +
+  'editable text. Enter then sends them to Fredo — with “Send voice transcripts automatically” ' +
+  'on, they’re sent the moment you release. A dictated transcript always goes to Fredo and never ' +
+  'opens an app, even after you edit it. Ctrl+Space only brings the search bar forward; it never ' +
+  'starts dictation. Transcription runs locally — nothing leaves this machine.';
 
 // ── Model row state (DR-3) ───────────────────────────────────────────────────
 
@@ -204,7 +219,7 @@ export function voiceErrorCopyFor(code: VoiceErrorCode | null): string {
     case 'engineStartFailed':
       return "The voice engine didn't start. Try again; if it persists, re-check the model files.";
     case 'disabled':
-      return 'Voice input is off. Turn on “Dictate with Ctrl+Space” to dictate.';
+      return 'Voice input is off. Turn on “Hold Space to dictate” above, then hold Space in the launcher search bar.';
     case 'alreadyListening':
       return 'A dictation session is already listening.';
     case 'internal':
@@ -586,14 +601,14 @@ export const VoiceInputSettings: React.FC<VoiceInputSettingsProps> = ({
         >
           <VStack align="start" gap={0}>
             <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
-              Dictate with Ctrl+Space
+              Hold Space to dictate
             </Text>
             <Text
               id={VOICE_ENABLE_HELP_ID}
               fontSize="xs"
               color="var(--text-subtle)"
             >
-              Transcribe your voice locally — nothing leaves this machine.
+              {VOICE_ENABLE_HELP_COPY}
             </Text>
           </VStack>
           <Switch.Root
