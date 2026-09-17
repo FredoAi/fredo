@@ -694,3 +694,163 @@ re-confirmed live (exact-name launch zero-generation, non-match send one-generat
 cancel+restore, cascade away-no-focus-steal + bar-focused listen + toggle-cancel). Build
 `test:run` 80 files / 1083 tests green. Full per-AC matrix + live receipts in the issue's
 `## Tests Runs`.
+
+---
+
+## #2882 extension — Enter opens the app a typed query names; hold-Space dictates (G-136 reconciliation)
+
+> Issue #2882 changes **how the bar is triggered and what Enter does** — not how the bar filters or
+> renders apps (out of scope). Rows F-64..F-69 map 1:1 to the QA Plan `REQ-7..REQ-10` + `REQ-1/REQ-2`
+> of `.opencode/tmp/2882/triage.md` `## QA Expert`. **Verification policy: live** — evidence via
+> `tauri_webview_keyboard` (REAL keydown/keyup, a HELD Space with a recorded duration),
+> `tauri_webview_execute_js` (`document.activeElement`, `input[role="searchbox"]`.value,
+> `role="group"][aria-label=...]` window counts), `tauri_webview_dom_snapshot`,
+> `tauri_webview_screenshot`, `tauri_read_logs(source="console")`, plus the mandatory
+> `telemetry_spans` receipt (REQ-17). **Serving checkout:** the `spec/2882` tip.
+>
+> **G-136 SUPERSESSION (recorded here; historical PASS records above are PRESERVED, never rewritten):**
+> - **F-51** pinned "the match is the WHOLE string, never a substring" (exact full-name equality,
+>   `LauncherShell.tsx:430`). **SUPERSEDED for TYPED queries** by the PO amendment: a typed query
+>   matches when, taken AS A WHOLE and case-insensitively, it is a **prefix** of an app's name or a
+>   **whole word / contiguous run of whole words inside** it. The "never a fragment of a sentence"
+>   half of F-51 stands (it is the `Missing all the time` rule).
+> - **R-37** pinned "Enter never opens a tile the text did not exactly name". **SUPERSEDED** by the
+>   broadened typed-query rule + "Enter's app-open rule is independent of the companion" (R-37's
+>   inactive-companion half — filter-only, no dispatch — stays in force).
+> - **F-16 edge (toggle)** pinned "press Ctrl+Space twice — first opens, second closes", and
+>   **F-62 / R-20** pinned the cascade (`companion-listen` away, `launcher-listen` when the bar is
+>   focused). **SUPERSEDED**: Ctrl+Space now ALWAYS shows/focuses the bar, NEVER starts or stops
+>   listening and NEVER closes the bar. F-62's PASS record stands as history; do NOT re-run it.
+> - **F-59** pinned "autosend ON + exact tile name launches through the smart-Enter path" for a
+>   DICTATED final. **SUPERSEDED** — a dictated transcript is a message to Fredo and never opens an
+>   app (`voice-input` F-66..F-69 owns the detail).
+> - **F-18 (the #2823 AC-3 carve-out)** is **NOT superseded** — see QA Discussion point QA-1; the
+>   carve-out's disposition is an Architect binding, so the tester records the OBSERVED behaviour at
+>   that boundary rather than a silent pick.
+
+## F-64 (REQ-7 / AC5) — A typed query opens the app it names: prefix OR whole-word run
+
+- [ ] F-64: Type each of `set`, `Miss`, `miss`, `monitor`, `mission monitor` into
+      `input[role="searchbox"]` with REAL keystrokes; record the rendered results order; press Enter.
+      Repeat every query with the companion **present / away / off / mid-reply**.
+  **Expected:** `set` → the Settings window (`div[role="group"][aria-label="Settings"]`); `Miss` and
+      `miss` → Mission Monitor; `monitor` → Mission Monitor; `mission monitor` → Mission Monitor.
+      The SAME window opens in ALL four companion states, with ZERO dispatch to Fredo (no
+      `runGeneration`) — Enter's app-open rule is independent of the companion. `set` must NOT be
+      sent to Fredo (this is the headline defect being fixed).
+  - **Edge:** surrounding whitespace (`  set  `); an exact full name; a prefix of a NON-showable
+    feature opens nothing; a query that is a whole word inside two names; no aliases (`MM` → F-65).
+  - **Receipt:** the quoted results order + the quoted opened-window title + the window count + the
+    `runGeneration` count, per query, per companion state.
+
+## F-65 (REQ-8 / AC6) — Matching evaluates the WHOLE query, never a fragment; no aliases
+
+- [ ] F-65: Type `Missing all the time` + Enter, then `MM` + Enter, then the CONTROL `Miss` + Enter,
+      then `missing` + Enter. With the companion OFF and AWAY, repeat `Missing all the time`.
+  **Expected:** `Missing all the time` is SENT to Fredo (a chat receipt) with ZERO windows **although
+      it contains `Miss`**; `MM` is sent to Fredo with ZERO windows (**no aliases** — `MM` does not
+      open Mission Monitor); `Miss` OPENS Mission Monitor (the control proving the matcher is not a
+      `contains`); `missing` is sent to Fredo; with no active companion and no match the bar stays
+      FILTER-ONLY (no dispatch, no launch, the text retained).
+  - **Edge:** `Miss all the time` — the first token IS a whole word `Miss`, but the query taken as a
+    whole is neither a prefix nor a whole-word run ⇒ Fredo; `mission` (prefix) vs `missing` (neither
+    prefix nor whole word); mixed case.
+  - **Receipt:** per query — the quoted hint, the observed action, the window count, the chat count.
+
+## F-66 (REQ-7 / clarification #1) — Several matches ⇒ the TOP-RANKED match shown in the results opens
+
+- [ ] F-66: Type `s` (prefix-matches both `Settings` and `Stepper Probe`); DOM-snapshot the rendered
+      results list and record its ORDER; press Enter.
+  **Expected:** the opened window equals the **FIRST entry of the rendered results order** — quote
+      both and show they agree; ZERO dispatch to Fredo. (Ranking source per QA Discussion QA-5 — if
+      the Architect binds a different ranking, this row is re-pointed at that source, not deleted.)
+  - **Edge:** a second ambiguous query (`r` → `Run CLI`); arrow-selecting a different tile then Enter
+    opens the SELECTED tile (the existing keyboard-nav contract), not necessarily the top-ranked one.
+
+## F-67 (REQ-9 / AC6 hint) — The hint always states the action Enter will take, right now
+
+- [ ] F-67: For each state — empty / `set` / `miss` / `monitor` / `Missing all the time` / `MM`
+      (active AND inactive companion) / a dictated transcript sitting uncommitted (`Settings`) / a
+      DICTATED-THEN-EDITED transcript (`Settings`) / busy / **a live launcher-origin capture** — read
+      the hint chip text, the `aria-describedby` mirror `#fredo-command-hint`, and the
+      `aria-keyshortcuts` attribute, then press Enter and record the action.
+  **Expected:** the hint NAMES the app that will open when the query matches (`↵ open Settings`,
+      `↵ open Mission Monitor`) and reads as sending to Fredo when nothing matches OR when the bar
+      holds a dictated transcript (chip `↵ send transcript to Fredo`); it never promises a launch for
+      content that goes to Fredo and never promises Fredo for content that opens an app; the chip is
+      VISIBLE for an app match **even with the companion OFF** (the `chatAvailable` gate is retired —
+      QA-8 CLOSED); while a launcher-origin capture is live the chip reads `release Space to finish`
+      and **Enter is a no-op** (binding QA-10 — the guard lives in the ST-5 wiring);
+      **`aria-keyshortcuts="Control+Space"` is PRESENT and UNCONDITIONAL** (assert it with voice ON
+      AND OFF — it must NOT be removed). **Assert the (hint, action) PAIR per state**, not the string
+      alone — a hint that disagrees with Enter is the FAIL.
+  - **Edge:** busy → `Fredo is replying…`; cleared to empty → no chip; a theme/accent switch re-tints
+    the chip without changing its text; the SR mirror equals the chip char-for-char; the hint for the
+    edited transcript must tell the truth (REQ-10 / F-68); the `Mission Mon` prefix; `no match` with
+    no companion.
+
+## F-68 (REQ-10 / clarification #2) — A dictated transcript is Fredo's, even after the user edits it
+
+- [ ] F-68: Autosend OFF. Hold Space on the focused empty bar; while held inject a synthetic
+      `stt:transcript` final `set`; release (the text waits in the bar). EDIT the bar to `Settings`
+      with REAL keystrokes; press Enter. CONTROL: fully clear the bar, type `Settings` from scratch,
+      press Enter.
+  **Expected:** Leg 1 — exactly ONE dispatch to Fredo carrying `Settings`, ZERO windows, and the hint
+      reads as sending to Fredo. CONTROL — the Settings window OPENS. **The two legs MUST differ**:
+      only text typed from scratch is typed query text; dictation-origin text never runs the
+      app-open rule.
+  - **Edge:** dictation-origin text edited only by appending a space (`Settings `) ⇒ still Fredo;
+    dictated then fully cleared and retyped (`Ctrl+A` + type) ⇒ record the observed classification
+    and report expected-vs-actual (QA Discussion QA-4); dictated text that is unmatched after
+    editing ⇒ Fredo.
+
+## F-69 (REQ-1 / REQ-2) — Ctrl+Space has ONE meaning; the away-dictate path is retired (launcher surface)
+
+- [ ] F-69: From each of 5 contexts — desktop at rest; a maximized feature window; Mission Monitor
+      open; companion AWAY; companion mid-reply — record `document.activeElement`,
+      `elementFromPoint(viewCentre)` and `stt_status`, press a REAL Ctrl+Space, and record again.
+      Then press Ctrl+Space a 2nd time while the bar is open. Subscribe to `stt:state`.
+  **Expected:** the overlay is ON TOP (`elementFromPoint` returns a node inside
+      `div[role="dialog"][aria-label="Fredo launcher"]`) and `document.activeElement` is
+      `input[role="searchbox"]` in EVERY context; `stt_status.listening === false` and ZERO
+      `stt_start` invocations in EVERY context (including companion-away — the retired
+      dictate-to-Fredo-when-he-is-away path); the 2nd press leaves the bar OPEN with the caret still
+      in it (Ctrl+Space never closes the bar).
+  - **Edge:** companion OFF; an already-focused bar; a settings field focused — per the Architect's
+    binding (`selectCtrlSpaceAction` = `open|pass`, `'pass'` preserving the shipped #2823 AC-3
+    carve-out) the chord is a `pass`-through there; **NOTE: the UI/UX Expert's D1 argument (collapse
+    to `open` ALWAYS, PO-amending AC1 if `pass` is kept) is NOT part of the four bound conflicts and
+    remains a convergence item — record the observed behaviour alongside the binding and flag any
+    divergence rather than failing it**; synthetic-chord focus flakiness (fallback = the notch/focus
+    path + record the lever used).
+  - **Receipt:** a `stt:state`/`stt_start` subscription across the whole leg showing ZERO listening
+    emissions — a single "no cue seen" observation is not sufficient.
+
+### #2882 binding addendum (read before executing F-64..F-69)
+
+- **Exact chip copy** (from the UI/UX truth table — assert these strings char-for-char):
+  `↵ open <App name>` on a typed match (visible **even when no companion is present** — the
+  `chatAvailable` gate is retired); `↵ send to Fredo` on unmatched typed text with an active
+  companion; `↵ send transcript to Fredo` for a **dictated** transcript (including after an edit);
+  `no match` for unmatched typed text with no companion; `Fredo is replying…` while busy;
+  `release Space to finish` while a launcher-origin capture is live; NO chip on an empty query.
+- **`Mission Mon`** is a required match (a longer prefix → Mission Monitor), alongside `set` /
+  `Miss` / `monitor` / `mission monitor`.
+- **While `companionBusy`, a typed app MATCH still LAUNCHES** (the old `companionBusy` global Enter
+  no-op becomes SEND-path-only). A typed NON-match while busy must NOT launch.
+- **Enter during a live launcher-origin capture** acts as **nothing** and the chip reads
+  `release Space to finish` — the guard is owned by the ST-5 WIRING (the pure `resolveEnterAction`
+  does not model `listening`). Assert the (hint, action) pair in that state (QA-10 CLOSED).
+- **`aria-keyshortcuts="Control+Space"` is present and UNCONDITIONAL** on the bar (voice ON and OFF)
+  — it advertises the bar-opening chord, which still exists; it is NOT removed. The hint mirror
+  (`aria-describedby`) carries the CURRENT instruction whenever one exists.
+- **All four Architect/UI-UX conflicts are CLOSED against the binding** (see
+  `.opencode/tmp/2882/triage.md` `## QA Expert`): (QA-7) the armed empty bar consumes the keydown and
+  starts a **bounded 200 ms hold** — a release BELOW the threshold is a **TAP that lands exactly one
+  ordinary space** (no capture, no `stt_start`, mic never opened), and a release at/above the
+  threshold with the engine **never live** also lands **exactly one ordinary space** on the rise-edge
+  cancel; only a **LOST or CONVERTED** space is a FAIL (G-158). (QA-8) the chip is label-driven and
+  the #2871 inactive-companion pin (`launcherCommandBarVoice.test.tsx:70-76`) is re-pinned by ST-4.
+  (QA-9) blur mid-hold is a STOP that KEEPS the words with autosend suppressed. (QA-10) the
+  Enter-during-capture guard lives in the wiring. Assert the bound outcomes — do not reconcile
+  against an open question.
