@@ -319,3 +319,29 @@
 ### #2883 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2886 extension — never-cover placement x launcher-chrome probes
+
+> Unscripted probes for issue #2886. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated.
+
+- [ ] E-51: **Tiny window with tiles + bar + a long reply.** At the shipped minimum 900×600, engage
+      the grid (tiles + hint row visible) and hold a long reply. Who gives way first — the reply
+      shrinks and scrolls, or does it collide with a tile/the bar/its controls? Record the exact
+      first collision (rects + intersection area) or confirm none. Promotes to F-79/F-80.
+- [ ] E-52: **Re-anchor while the bar grows underneath.** With a reply displayed and anchored above
+      the seat, grow the bar to its 108 px cap with a long multi-line query. Does the reply
+      re-anchor/re-clamp to stay clear of the grown bar, or does the bar grow into the reply? Any
+      intersection with the bar/field/hint/collapse ⇒ finding. Promotes to F-79.
+- [ ] E-53: **Message-kind churn in one session.** In a single launcher session: joke → welcome
+      (toggle OFF/ON) → short reply → long reply → joke, sampling both rects after each. Does EVERY
+      kind keep clear of Fredo (no stale anchor from the previous kind, no overlapping transition),
+      and is the console clean? Any kind that reuses a stale anchor ⇒ finding. Promotes to
+      companion F-91/F-96.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
