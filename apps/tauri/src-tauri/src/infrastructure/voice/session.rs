@@ -1,11 +1,15 @@
 //! One-session STT state machine + the recognition loop.
 //!
 //! `start` gates on the persisted voice preference, an already-active session,
-//! and model presence, then starts a dedicated worker thread that lazily loads
-//! the engine (never at app launch), opens the `cpal` capture stream for the
-//! persisted input device, and drives `stt:transcript` / `stt:state` events.
-//! `stop` commits the final partial; `cancel` discards it. Every failure is a
-//! typed `VoiceError` — no panics.
+//! and model presence, then starts a dedicated worker thread that opens the
+//! `cpal` capture stream for the persisted input device and drives
+//! `stt:transcript` / `stt:state` events. The engine comes from the
+//! process-resident slot whenever one is parked (ST-3), so only a genuine miss
+//! pays the one-time model load; a hold that lands while the launch warm is IN
+//! FLIGHT joins that single load instead of starting a second one. At session
+//! end the used engine is returned to the slot with a fresh stream, so the next
+//! dictation starts warm (R-7). `stop` commits the final partial; `cancel`
+//! discards it. Every failure is a typed `VoiceError` — no panics.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,6 +26,7 @@ use crate::infrastructure::storage::AppStore;
 use crate::infrastructure::voice::capture::{self, AudioMsg};
 use crate::infrastructure::voice::engine::{self, Recognizer};
 use crate::infrastructure::voice::manifest::resolve_stt_manifest;
+use crate::infrastructure::voice::resident::ResidentEngine;
 use crate::infrastructure::voice::state::{
     SttErrorCode, SttStartResult, SttStateEvent, SttTranscriptEvent, VoiceError,
 };
@@ -42,6 +47,12 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct StartInfo {
     pub device_name: String,
     pub device_sample_rate: u32,
+    /// Milliseconds from the `stt_start` receipt to capture-live, stamped by the
+    /// worker at the instant capture went live (ST-3/R-1). Never a constant and
+    /// never measured from anything but the receipt — a launch-window hold that
+    /// joined an in-flight warm therefore includes that wait, so the residual is
+    /// visible on the wire instead of masked.
+    pub ready_ms: u64,
 }
 
 /// Event sink seam: the real path emits Tauri control-plane events; ST-6 can
@@ -250,8 +261,58 @@ fn already_listening_outcome(
     ))
 }
 
-/// `stt_start`: gate → lazy engine + capture on a worker thread → report ready.
+/// Resolve the engine a starting session will use, plus the truthful
+/// `engineResident` stamp that MUST travel with it (ST-3 / R-1, R-4).
+///
+/// 1. Take the parked resident engine — the one-time model load is already paid,
+///    which is the whole point of the fast path.
+/// 2. When the slot is empty, JOIN a single in-flight warm (the launch window)
+///    and take what it parks — never a second concurrent model load. The stamp
+///    stays `false`: the engine was NOT resident at the receipt, so the launch
+///    residual is reported honestly rather than hidden.
+/// 3. Otherwise hand back `None` and let the worker pay today's cold load, with
+///    the identical typed failures.
+///
+/// `engine_resident` is `true` ONLY for the genuine take in (1) — never on the
+/// joined or cold path.
+async fn acquire_engine(resident: &ResidentEngine) -> (Option<Box<dyn Recognizer>>, bool) {
+    let taken = resident.take();
+    let engine_resident = taken.is_some();
+    if engine_resident {
+        return (taken, true);
+    }
+    // The launch window: the slot is empty. Awaiting the (possibly absent)
+    // in-flight warm here is deliberate — the wait lands inside the `readyMs`
+    // window measured from the receipt.
+    let _ = resident.join_in_flight().await;
+    (resident.take(), false)
+}
+
+/// Return a finished session's engine to the resident slot with a FRESH stream
+/// (R-7): `put_back` renews the stream, so a recognizer that already went
+/// through `input_finished` can serve the next session.
+fn park_in_slot(resident: &ResidentEngine, recognizer: Box<dyn Recognizer>) {
+    resident.put_back(recognizer);
+}
+
+/// Resolve the managed resident state and park the engine there. Fail-soft: a
+/// composition that manages no resident state simply drops the engine exactly
+/// as before (the `warm_at_setup` precedent).
+fn park_engine(app: &AppHandle, recognizer: Box<dyn Recognizer>) {
+    if let Some(resident) = app.try_state::<ResidentEngine>() {
+        park_in_slot(&resident, recognizer);
+    }
+}
+
+/// `stt_start`: gate → resident engine (or a joined launch-window warm, or the
+/// cold-load fallback) + capture on a worker thread → report ready with the
+/// truthful `readyMs`/`engineResident` observables.
 pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
+    // The `stt_start` receipt: `readyMs` is measured from HERE. A launch-window
+    // hold that has to wait on an in-flight warm therefore reports the whole
+    // wait — bounded (T_LAUNCH_COLD_MAX_MS) and visible, never masked.
+    let receipt = Instant::now();
+
     // 1. Disabled gate (R-5.7 backend pin; ST-5 owns the toggle).
     if !voice_enabled(app) {
         let error = VoiceError::disabled();
@@ -280,12 +341,26 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         return error.into_start_result();
     }
 
-    // 4. Worker owns the engine AND the `cpal::Stream` (both stay on one thread).
+    // 4. Resident fast path (ST-3/R-1, R-4): take the parked engine so the
+    // user-visible path only opens capture. A hold inside the launch window
+    // JOINS the single in-flight warm instead of starting a second model load;
+    // `engine_resident` stays false on that path, so residency on the wire is
+    // never optimistic.
+    let (engine, engine_resident) = {
+        let resident = app.state::<ResidentEngine>();
+        acquire_engine(&resident).await
+    };
+
+    // 5. Worker owns the engine AND the `cpal::Stream` (both stay on one thread).
     // The persisted device preference is resolved to a name here, but validated
     // against the live device set inside `capture` on the worker — a vanished
     // device is the typed `NoDevice` naming it (AC4), never a silent fallback.
     let selected_device = persisted_device(app);
     let (tx, rx) = mpsc::channel::<AudioMsg>();
+    // The engine handoff channel: the engine is handed to the worker only AFTER
+    // the thread is spawned, so a failed spawn can re-park it (below) instead of
+    // dropping the process-resident engine.
+    let (engine_tx, engine_rx) = mpsc::channel::<Option<Box<dyn Recognizer>>>();
     let (outcome_tx, outcome_rx) =
         tokio::sync::oneshot::channel::<Result<StartInfo, VoiceError>>();
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -294,25 +369,42 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     let worker = match std::thread::Builder::new()
         .name("fredo-stt".to_string())
         .spawn(move || {
-            worker_main(
-                worker_app,
+            worker_main(WorkerJob {
+                app: worker_app,
                 session_id,
                 models_dir,
                 selected_device,
                 rx,
-                worker_tx,
+                tx: worker_tx,
+                engine_rx,
                 outcome_tx,
-            );
+                receipt,
+            });
         }) {
         Ok(handle) => handle,
         Err(error) => {
+            // Nothing was started: a spawn failure must never cost the residency
+            // (R-7), so the taken engine goes straight back to the slot.
+            if let Some(engine) = engine {
+                park_engine(app, engine);
+            }
             let error = VoiceError::internal(format!("failed to spawn the voice worker: {error}"));
             emit_state(app, &state_event_error(&error, Some(origin)));
             return error.into_start_result();
         }
     };
 
-    // 5. Await readiness off the main thread (engine load is the slow part).
+    // Hand the engine over (the worker blocks for it as its first act). If the
+    // worker is already gone the value comes back and is re-parked.
+    let returned = match engine_tx.send(engine) {
+        Ok(()) => None,
+        Err(mpsc::SendError(engine)) => engine,
+    };
+    if let Some(engine) = returned {
+        park_engine(app, engine);
+    }
+
+    // 6. Await readiness off the main thread (engine load is the slow part).
     // `worker_reported` distinguishes the paths on which the worker has already
     // reported/returned (safe to join) from the timeout path, where the worker
     // may still be blocked inside the native `OnlineRecognizer::create` FFI frame
@@ -347,7 +439,17 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
                     worker,
                 });
             }
-            emit_state(app, &listening_state(Some(origin.to_string())));
+            // The two honest observables: `ready_ms` is the true receipt →
+            // capture-live elapsed time (a joined launch-window wait included),
+            // and `engine_resident` is true only for a genuine slot take.
+            emit_state(
+                app,
+                &listening_state_with(
+                    Some(origin.to_string()),
+                    Some(info.ready_ms),
+                    engine_resident,
+                ),
+            );
             SttStartResult {
                 started: true,
                 code: None,
@@ -433,47 +535,86 @@ pub fn status(app: &AppHandle) -> SttStateEvent {
     }
 }
 
-/// Worker thread body: lazily load the engine, open capture for the persisted
-/// device, report readiness, then drive the recognition loop until Stop/Cancel.
-/// Owns the recognizer and the `cpal::Stream` for its whole lifetime.
-fn worker_main(
+/// Everything one worker thread needs for one session — bundled so the thread
+/// body keeps a small signature (ST-3 added the engine handoff + the receipt).
+struct WorkerJob {
+    /// Owns the engine and the `cpal::Stream` for the session's whole lifetime.
     app: AppHandle,
     session_id: String,
     models_dir: PathBuf,
     selected_device: Option<String>,
     rx: Receiver<AudioMsg>,
     tx: Sender<AudioMsg>,
+    /// The engine handoff from `start` (resident take / joined warm / cold miss).
+    engine_rx: Receiver<Option<Box<dyn Recognizer>>>,
     outcome_tx: tokio::sync::oneshot::Sender<Result<StartInfo, VoiceError>>,
-) {
-    // Lazy engine creation on first start — never at app launch.
-    let mut recognizer = match engine::load_recognizer(&models_dir) {
-        Ok(recognizer) => recognizer,
-        Err(error) => {
-            let _ = outcome_tx.send(Err(error));
-            return;
-        }
+    /// The `stt_start` receipt `readyMs` is measured from.
+    receipt: Instant,
+}
+
+/// Worker thread body: take the engine handed over by `start` (the resident one,
+/// or the cold load on a genuine miss), open capture for the persisted device,
+/// report readiness with the true `readyMs`, then drive the recognition loop
+/// until Stop/Cancel and return the engine to the resident slot. Owns the
+/// recognizer and the `cpal::Stream` for its whole lifetime.
+fn worker_main(job: WorkerJob) {
+    let WorkerJob {
+        app,
+        session_id,
+        models_dir,
+        selected_device,
+        rx,
+        tx,
+        engine_rx,
+        outcome_tx,
+        receipt,
+    } = job;
+
+    // The resident engine `start` took from the slot (or one a joined
+    // launch-window warm parked). `None` ⇒ a genuine miss ⇒ the one-time cold
+    // load, with the identical typed failures.
+    let resident_engine = engine_rx.recv().ok().flatten();
+    let mut recognizer = match resident_engine {
+        Some(recognizer) => recognizer,
+        None => match engine::load_recognizer(&models_dir) {
+            Ok(recognizer) => recognizer,
+            Err(error) => {
+                let _ = outcome_tx.send(Err(error));
+                return;
+            }
+        },
     };
 
     let capture = match capture::start_capture(tx, selected_device.as_deref()) {
         Ok(capture) => capture,
         Err(error) => {
+            // The engine is still good — park it before reporting the failure so
+            // a failed device open never costs the residency (R-7).
+            park_engine(&app, recognizer);
             let _ = outcome_tx.send(Err(error));
             return;
         }
     };
 
+    // Capture is LIVE here (the device stream is playing): `readyMs` is measured
+    // to this instant, from the `stt_start` receipt — so the gate work, a joined
+    // launch-window wait, the spawn and the cold load are all inside the number
+    // rather than hidden.
     let info = StartInfo {
         device_name: capture.device_name.clone(),
         device_sample_rate: capture.device_sample_rate,
+        ready_ms: elapsed_ms(receipt),
     };
     if outcome_tx.send(Ok(info)).is_err() {
-        // The caller gave up; drop capture and exit.
+        // The caller gave up; park the engine, drop capture and exit.
+        park_engine(&app, recognizer);
         return;
     }
 
-    let sink = AppHandleSink::new(app);
+    let sink = AppHandleSink::new(app.clone());
     run_recognition(&sink, &session_id, recognizer.as_mut(), &rx);
     // `capture` (and its device stream) drops here at end of scope.
+    park_engine(&app, recognizer);
 }
 
 fn elapsed_ms(since: Instant) -> u64 {
@@ -571,6 +712,8 @@ mod tests {
     use super::*;
 
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     use crate::infrastructure::companion::models::{file_path, ModelFileSpec};
 
@@ -618,6 +761,8 @@ mod tests {
         decode_calls: u32,
         reset_calls: u32,
         input_finished_calls: u32,
+        /// Shared so the count survives boxing (the resident-slot round trip).
+        new_stream_calls: Arc<AtomicUsize>,
     }
 
     impl FakeRecognizer {
@@ -632,7 +777,13 @@ mod tests {
                 decode_calls: 0,
                 reset_calls: 0,
                 input_finished_calls: 0,
+                new_stream_calls: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        /// The stream-renewal counter, cloned BEFORE boxing the fake.
+        fn stream_counter(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.new_stream_calls)
         }
     }
 
@@ -681,6 +832,7 @@ mod tests {
         fn new_stream(&mut self) {
             // A fresh stream carries no hypothesis, no endpoint and no pending
             // decodes — the reuse seam the resident engine hands a new session.
+            self.new_stream_calls.fetch_add(1, Ordering::SeqCst);
             self.text = None;
             self.endpoint = false;
             self.pending.clear();
@@ -944,12 +1096,124 @@ mod tests {
         assert!(live.code.is_none());
         assert!(live.detail.is_none());
         assert_eq!(live.origin.as_deref(), Some("companion"));
+        // The default builder claims neither readiness nor residency (ST-3):
+        // only the start-success path may stamp them.
+        assert!(live.ready_ms.is_none());
+        assert!(!live.engine_resident);
 
         let idle = listening_state(None);
         assert!(!idle.listening);
         assert!(idle.code.is_none());
         assert!(idle.detail.is_none());
         assert!(idle.origin.is_none());
+        assert!(idle.ready_ms.is_none());
+        assert!(!idle.engine_resident);
+    }
+
+    /// ST-3/R-1: the start-success `stt:state` carries the TRUE receipt-based
+    /// `readyMs` and the honest residency stamp. A joined launch-window start
+    /// reports its whole (longer) wait but is NOT marked resident — the residual
+    /// is visible on the wire, never masked.
+    #[test]
+    fn start_success_state_carries_the_receipt_based_ready_ms_and_residency() {
+        let resident = listening_state_with(Some("launcher".to_string()), Some(137), true);
+        assert!(resident.listening);
+        assert_eq!(resident.origin.as_deref(), Some("launcher"));
+        assert_eq!(resident.ready_ms, Some(137));
+        assert!(resident.engine_resident);
+        assert!(resident.code.is_none());
+        assert!(resident.detail.is_none());
+
+        // The join shape: a large, honest wait that includes the joined warm.
+        let joined = listening_state_with(Some("launcher".to_string()), Some(2_940), false);
+        assert!(joined.listening);
+        assert_eq!(
+            joined.ready_ms,
+            Some(2_940),
+            "the joined launch-window wait must be reported, never masked"
+        );
+        assert!(
+            !joined.engine_resident,
+            "a joined warm is NOT a resident start (never an optimistic stamp)"
+        );
+    }
+
+    /// ST-3/R-1: no error path may claim readiness or residency — the two
+    /// observables stay `None`/`false` off the start-success path.
+    #[test]
+    fn error_states_never_report_readiness_or_residency() {
+        let error = state_event_error(
+            &VoiceError::engine_start_failed("OnlineRecognizer::create returned None"),
+            Some("launcher"),
+        );
+        assert!(!error.listening);
+        assert_eq!(error.code, Some(SttErrorCode::EngineStartFailed));
+        assert!(error.ready_ms.is_none());
+        assert!(!error.engine_resident);
+    }
+
+    /// ST-3/R-4: a parked engine is taken for the session and reported as
+    /// resident, and the slot is empty while the session owns it.
+    #[tokio::test]
+    async fn acquire_engine_takes_the_resident_engine_and_reports_residency() {
+        let resident = ResidentEngine::new();
+        let parked = FakeRecognizer::new(Vec::new(), None);
+        let streams = parked.stream_counter();
+        resident.put_back(Box::new(parked));
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            1,
+            "parking renews the stream exactly once"
+        );
+
+        let (engine, engine_resident) = acquire_engine(&resident).await;
+        assert!(engine.is_some(), "the parked engine is handed to the session");
+        assert!(engine_resident, "a genuine slot take IS residency");
+        assert!(
+            !resident.is_resident(),
+            "at most ONE engine per process: the slot is empty while the session holds it"
+        );
+        assert!(
+            acquire_engine(&resident).await.0.is_none(),
+            "a second acquirer finds no parked engine"
+        );
+    }
+
+    /// ST-3/R-4: an empty slot with no in-flight warm falls back to today's cold
+    /// load — `None` with an honest, never-optimistic `false` residency stamp.
+    #[tokio::test]
+    async fn acquire_engine_falls_back_to_cold_when_nothing_is_warm() {
+        let resident = ResidentEngine::new();
+        let (engine, engine_resident) = acquire_engine(&resident).await;
+        assert!(
+            engine.is_none(),
+            "an empty slot with no in-flight warm ⇒ the worker cold-loads as today"
+        );
+        assert!(!engine_resident, "never an optimistic residency stamp");
+        assert!(!resident.is_resident());
+    }
+
+    /// ST-3/R-7: the engine used by a session is RETURNED to the slot with a
+    /// fresh stream, so the next dictation starts warm instead of re-paying the
+    /// one-time model load.
+    #[tokio::test]
+    async fn a_used_engine_is_returned_to_the_slot_with_a_fresh_stream() {
+        let resident = ResidentEngine::new();
+        let parked = FakeRecognizer::new(Vec::new(), None);
+        let streams = parked.stream_counter();
+        resident.put_back(Box::new(parked));
+
+        let (engine, engine_resident) = acquire_engine(&resident).await;
+        assert!(engine_resident);
+        let engine = engine.expect("the parked engine was taken");
+
+        park_in_slot(&resident, engine);
+        assert!(resident.is_resident(), "retained across the session boundary");
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            2,
+            "the returned engine got a fresh stream (one park + one return)"
+        );
     }
 
     /// F-38: a duplicate `stt_start` MUST keep the `alreadyListening` result
@@ -981,6 +1245,10 @@ mod tests {
         assert_eq!(event.origin.as_deref(), Some("launcher"));
         assert!(event.code.is_none());
         assert!(event.detail.is_none());
+        // ST-3: the duplicate-start re-emit reports no new start, so it claims
+        // neither readiness nor residency.
+        assert!(event.ready_ms.is_none());
+        assert!(!event.engine_resident);
 
         // (b) `stt_status` derives from the SAME builder for the SAME session, so
         // the read path and the emitted state are the identical shape.
