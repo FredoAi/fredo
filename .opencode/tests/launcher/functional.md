@@ -1176,3 +1176,73 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
       20.83–23.46 (was 13.08).
 - [x] **F-81 (E7) — PASS.** Bar `y = 446` in both states (121 with / 180 without → Δ = 0); seat wrapper
       80×100 + 16 px; console clean; token-native.
+
+---
+
+## #2887 extension — the hold starts dictating instantly on the bar (latency + indicator honesty)
+
+> Issue #2887 removes the ~3–5 s "not yet listening" wait on the hold-Space dictation (the recognizer
+> is kept ready/resident while Fredo is idle — PO amendment 1) and makes the bar's listening indicator
+> honest. This file owns the **bar-surface** legs (the press→capture-active bound measured from the
+> command bar, the bar-level cue timeline, the bar text after the opening words); the dictation-domain
+> rows live in `.opencode/tests/voice-input/functional.md` F-74..F-82. Map 1:1 to
+> `.opencode/tmp/2887/triage.md` `## QA Expert` REQ-1..REQ-4.
+> **Verification policy: live** — `tauri_webview_keyboard` with a recorded hold duration +
+> `tauri_webview_execute_js` timestamped press marker, DOM/geometry sampling, `tauri_read_logs`,
+> `tauri_webview_screenshot`, plus the mandatory `telemetry_spans` receipt (voice-input F-81).
+> A static-only PASS is a FALSE PASS.
+>
+> **Do NOT assume the answers to the open items** — whether the short-hold threshold changes, or how
+> the bar acknowledges the hold while readying. Assert only the observable guarantees: no listening
+> affordance before capture is genuinely active; no start/prepare state longer than the bound; no
+> space lost or converted.
+>
+> **Test data:** voice enabled + model ready; a reproducible cold fixture (fresh launch;
+> the declared idle window; a resident-kill lever); the #2882 space/tap/cancel levers.
+
+## F-82 (REQ-1 / AC1) — press→capture-active measured from the command bar (warm)
+
+- [ ] F-82: With voice enabled + model ready and the bar focused + EMPTY, record the press marker
+      (`performance.now()`/`Date.now()`) in the SAME `execute_js` task that dispatches the Space
+      `keydown` (correctly-shaped `KeyboardEvent{key:' ',code:'Space'}` or
+      `tauri_webview_keyboard(action="down", key=" ")` where it delivers); hold 1500 ms; release.
+      Repeat ≥10×. Record the capture-active marker (the FIRST of `stt:state{listening:true}`, the
+      audio-stream-open log line, the first cue frame) with its timestamp and WHICH one was used.
+  **Expected:** warm `T = t_active − t_press` p50 ≤ 250 ms / p95 ≤ 500 ms / max ≤ 750 ms (the
+      architect's `T_FIRST_CAPTURE_BUDGET_MS` governs); raw per-hold numbers quoted; exactly ONE
+      `stt_start` per hold; no "not yet listening" interval beyond the bound; the lever + clock domain
+      named.
+  - **Edge:** auto-repeat keydowns; a hold right after a release; a hold begun while the resident is
+    warming; a pre-measurement/fallback frame → disclose raw numbers (G-171); synthetic keydown
+    failing to focus → record the lever used.
+  - **Receipt:** the raw `T` series + p50/p95/max + the two marker timestamps per hold + the lever.
+
+## F-83 (REQ-3 / AC3) — the bar's cue never claims listening before capture is active
+
+- [ ] F-83: Across ≥10 holds, subscribe to every `stt:state`/`stt:started` emission with timestamps
+      and sample the bar cue (`[data-testid="launcher-command-listening"]` dot + chip + placeholder
+      `Listening…` + `voice-listening-announcer`) at ≤50 ms cadence from press through release
+      + 500 ms.
+  **Expected:** the cue is present in ZERO samples BEFORE the capture-active marker; no interval
+      > 300 ms (`T_MAX_STARTING_STATE_MS`) shows a start/prepare state while capture is NOT active;
+      the state is conveyed as TEXT (chip/placeholder/announcer), never by colour/animation alone;
+      once active the cue is continuous (no gap) until release.
+  - **Edge:** a never-live hold → NO cue at all + exactly one ordinary space; a typed error is a text
+    state, not a stall; rapid re-arm; reduced motion (static CSS pin + NAMED BLOCKER for the live
+    `matchMedia` flip); a cue that disappears while the mic is still hot is a FAIL.
+  - **Receipt:** the frame-by-frame timeline (time, cue present?, cue text, `stt:state`) for each hold.
+
+## F-84 (REQ-2 / AC2 + REQ-1) — the bar carries the words spoken from the first moment of the hold
+
+- [ ] F-84: With the empty focused bar, dispatch the Space `down` and IMMEDIATELY (same tick / next
+      frame) inject the opening marker word through the capture path in use — the deterministic
+      16 kHz mono WAV whose first word starts at sample 0, or a real mic (`alpha bravo charlie`
+      starting on the press); hold ≥4 s, inject/continue the rest, release. Read
+      `[data-testid="launcher-command-input"]`. Repeat 10×.
+  **Expected:** the opening word is present in the bar/transcript 10/10; nothing uttered during the
+      hold is dropped while the system readies; exactly one commit; the bar stays editable.
+  - **Edge:** the word straddling the readiness boundary; a hold whose only word is the opening one;
+    pre-existing bar text; dictated-then-edited (still Fredo's — F-68/F-74). **If the only lever is
+    the synthetic `stt:transcript` injection, this row is a NAMED BLOCKER for the real capture read
+    (never a PASS).**
+  - **Receipt:** the bar/transcript verbatim + the hold duration + the fixture hash + the lever.
