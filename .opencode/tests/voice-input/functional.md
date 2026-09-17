@@ -330,3 +330,196 @@ for the untouched rows and their round-2 spot re-confirmation is recorded in the
 - **Console clean** (0 error-level lines; no `Maximum update depth exceeded` / `Uncaught`).
 - **Environment note:** the app process exited once mid-round (right after a `stt_start {origin:"companion"}` attempt; no panic/abort in `dev-env -Action Logs`, only expected `[stt] audio stream error: buffer underrun` spam from the silent virtual mic). `dev-env -Action Up -Spec 2878` recovered it; the affected REQ-4.3 leg was re-run successfully against the recovered instance. Not reproducible; recorded as an environment event, not a product defect.
 - **F-59 (REQ-NF2 latency) remains UNVERIFIED (named blocker, G-053):** no physical microphone (virtual devices only) and no `cargo` for the `FREDO_STT_TEST_WAV` leg. Residual pin: #2877 F-32 `p50=23 / p95=25 ms` (budget p50 ≤ 300 / p95 ≤ 600). Deliberately not attempted (per the Fix Plan).
+
+---
+
+## #2882 extension — hold-Space dictation + "listening is always Fredo's" (G-136 reconciliation)
+
+> Issue #2882 changes **how dictation is triggered** (hold Space in the focused empty search bar —
+> the Ctrl+Space listening cascade is retired) and **where a transcript goes** (always to Fredo, never
+> an app launch). Rows F-66..F-72 map 1:1 to the QA-Plan `REQ-3..REQ-6` + `REQ-12..REQ-14` of
+> `.opencode/tmp/2882/triage.md` `## QA Expert`. **Verification policy: live** — `tauri_webview_keyboard`
+> with REAL `down`/`up` pairs and a recorded hold duration, `tauri_webview_execute_js`, DOM snapshots,
+> screenshots, `tauri_read_logs(console)`, plus the mandatory `telemetry_spans` receipt.
+> **Serving checkout:** the `spec/2882` tip.
+>
+> **G-136 SUPERSESSION (historical PASS/FAIL records above are PRESERVED, never rewritten):**
+> - **F-42 / F-44 / F-45 / F-47** pinned "autosend ON + exact tile name ⇒ LAUNCH" for a DICTATED
+>   final (e.g. dictated `Settings` opened the Settings window) and "autosend OFF: manual Enter
+>   L AUNCHES". **SUPERSEDED** by PO amendment 1 + the replacement for the last bullet of section B:
+>   a dictated transcript is a **message to Fredo** — autosend ON sends on release, autosend OFF
+>   waits in the bar and **Enter sends it to Fredo**. NO dictated phrase ever opens an app.
+> - **F-52 / F-57 / F-62 / F-65** pinned the Ctrl+Space cascade (`companion-listen` when away,
+>   `launcher-listen`/`launcher-cancel` when the bar is focused) and the companion-origin commit.
+>   **SUPERSEDED** — Ctrl+Space never starts or stops listening; the direct
+>   dictate-to-Fredo-when-he-is-away path is **retired**. Dictation is reachable ONLY through the bar
+>   (Ctrl+Space → hold Space → speak → Enter/the autosend setting). The retired rows' PASS records
+>   stand as history; do NOT re-run them as PASS or FAIL.
+> - **F-39 / F-40 / F-41 / F-48 / F-49 / F-50 / F-51 / F-53 / F-63 / F-64 / F-55 / F-56** remain in
+>   force where they describe the bar live-text landing, the visible cue, the cancel/restore
+>   semantics, the exactly-once dispatch and the announcers — the new trigger must not break them.
+> - **The host has NO physical microphone** (only the silent virtual `Iriun Webcam` /
+>   `Steam Streaming Microphone`). The audible leg is a **NAMED BLOCKER**; the documented #2878
+>   synthetic `stt:transcript` lever over the REAL `adapterBridge.listen` channel supplies transcript
+>   CONTENT only — never the capture-lifecycle/cue evidence.
+
+## F-66 (REQ-3 / AC2 + R-2.6/R-2.7) — Holding Space dictates; listening continues ONLY while Space is held
+
+- [ ] F-66: Focus `input[role="searchbox"]` with an EMPTY value. `tauri_webview_keyboard(action="down",
+      key=" ")` → wait 1500 ms → sample mid-hold → `action="up"`. Leg (b): while held, inject a
+      synthetic `stt:transcript` partial then a final, then release. Leg (c): after the release,
+      inject another transcript. Leg (d): a sub-threshold TAP (`down` → ~80 ms → `up`) with the
+      engine NOT yet live. Leg (e): release at/above the 200 ms threshold while the engine never
+      went live. Record the hold duration and the `stt:state` stream.
+  **Expected:** (a) mid-hold `stt_status.listening === true` + the visible cue, and
+      `listening === false` within ~300 ms of the `up`; (b) the finalized words sit in the bar as
+      ORDINARY EDITABLE TEXT (input NOT `readonly`/`disabled`, `value` equals the final, and a
+      subsequent real keystroke edits it); (c) after the `up` a later transcript mutates nothing and
+      starts no session — listening continued ONLY while Space was held; **(d) the TAP lands exactly
+      ONE ordinary space (`value === ' '`), ZERO `stt_start`, no `stt:state`, and the mic is never
+      opened; (e) a hold that never went live lands exactly ONE ordinary space on the RISE-EDGE
+      cancel (R-2.6) and the mic is released** — both bound by contract 4b (QA-7 CLOSED).
+  - **Edge:** OS auto-repeat `keydown`s (`e.repeat === true`) must NOT restart/duplicate (exactly ONE
+    `stt_start`); the TAP and the never-live hold are **LANDED SPACES, not defects** (only a LOST or
+    CONVERTED space is a FAIL — G-158); a hold after clearing a dictated transcript back to empty;
+    hold with a dictated transcript already in the bar.
+  - **Test data:** voice enabled + model ready; the synthetic-transcript lever (no physical mic).
+
+## F-67 (REQ-4 / AC3 + R-2.7) — Space in a NON-EMPTY query is an ordinary space character; the empty-bar TAP is one too
+
+- [ ] F-67: Type `ab`, then press Space (real keydown). Repeat at 1 char and at 20 chars, and with an
+      app-matching query (`set` → Space). Separately, with an EMPTY armed bar, TAP Space
+      (`down` → ~80 ms → `up`). Count `stt_start` invocations and read the value.
+  **Expected:** every Space lands as a LITERAL character (`ab `, `s` → `s `, `set `) with ZERO
+      `stt_start`, no cue and `listening === false` — a space typed into a non-empty query is never
+      converted into capture (the AC's headline "zero lost spaces"); the EMPTY-bar TAP also lands
+      **exactly one ordinary space** with ZERO `stt_start` and the mic never opened (R-2.7, QA-7
+      CLOSED).
+  - **Edge:** a burst with 3 internal spaces; a query exactly equal to an app name; the
+    delete-back-to-empty boundary (a subsequent HOLD there is F-66's gesture); **a tap must never
+    LOSE or convert its space — the landed space COUNTS as a landed space (G-158)**; a tap right
+    after a cleared dictated transcript.
+
+## F-68 (REQ-5 / R-3.2/R-3.3 + R-2.6) — Voice disabled / model not installed: no capture, no error, and the space LANDS
+
+- [ ] F-68: Leg (i) `Fredo_companion_voice_enabled=false`; leg (ii) voice enabled + model absent
+      (`stt_check_model` → `ready:false`, fail-closed arming gate). For each: focus the EMPTY bar →
+      hold Space 1500 ms → release → read `input[role="searchbox"]`.value. Then press Ctrl+Space.
+  **Expected:** ZERO capture — no capture handle, no session, **no `stt_start` invocation at all**
+      (the gate never arms), no listening cue, NO error dialog and no `role="alert"`; **`value`
+      contains exactly one ordinary space character** — for a hold that never went live the space
+      lands **on the RELEASE** (`value === ' '`), which is the declared behaviour, NOT a defect
+      (R-3.2/R-3.3 + R-2.6; QA-2/QA-7 CLOSED); Ctrl+Space still shows/focuses the bar with
+      `listening === false`. With readiness UNKNOWN the bar is NOT armed — Space is never
+      intercepted and its native default is observed verbatim.
+  - **Edge:** disable voice WHILE holding (session stops, mic released, no phantom dispatch); the
+    model removed between the probe and the hold (the release still lands one space, no error);
+    voice re-enabled mid-hold; a model that goes missing mid-session; `engineStartFailed`.
+
+## F-69 (REQ-6 / AC4 + PO amendment 1) — A transcript ALWAYS goes to Fredo and NEVER opens an app
+
+- [ ] F-69: Autosend ON + companion present: hold Space → synthetic final `Settings` → release.
+      Autosend OFF (shipped default): the same, then a manual Enter. Repeat with the companion AWAY,
+      OFF, and mid-reply. Count `runGeneration` and opened windows.
+  **Expected:** (a) ON → exactly ONE dispatch to Fredo and ZERO windows; (b) OFF → the text WAITS in
+      the bar with ZERO dispatch and ZERO windows, then Enter → ONE dispatch to Fredo and STILL zero
+      windows; (c) AWAY/OFF → no window ever opens, and with no active companion the transcript is
+      simply not delivered; (d) mid-reply → no window opens. **No dictated phrase opens an app.**
+  - **Edge:** dictated `set` / `Settings` / `Miss` / `s` (all app-matching — none may launch);
+    dictated then cleared; dictated text edited by the user ⇒ still Fredo (see F-70/the launcher
+    suite's dictated-then-edited row).
+
+## F-70 (REQ-10 / clarification #2) — A dictated-then-EDITED transcript is still Fredo's
+
+- [ ] F-70: Autosend OFF; hold Space; synthetic final `set`; release (text waits in the bar). Edit
+      the bar to `Settings` with REAL keystrokes; press Enter. CONTROL: clear the bar fully, type
+      `Settings` from scratch, press Enter.
+  **Expected:** Leg 1 → ONE dispatch to Fredo carrying `Settings`, ZERO windows. CONTROL → the
+      Settings window OPENS. The two legs MUST differ — only text typed from scratch is typed query
+      text.
+  - **Edge:** appended-space edit (`Settings `) ⇒ still Fredo; full `Ctrl+A` + retype ⇒ record the
+    observed classification and report expected-vs-actual (QA Discussion QA-4).
+
+## F-71 (REQ-12 / NFR privacy) — Visible for the WHOLE hold; the mic is released on release/cancel
+
+- [ ] F-71: Sample the visible listening indicator at ≤50 ms cadence from the Space `down` through
+      `up` + 500 ms; sample the fredo working set (the #2877 F-28 `measure.mjs` method) at idle /
+      mid-hold / post-release; repeat with a cancel mid-hold. Static pin: grep `infrastructure/voice/**`
+      for remote clients.
+  **Expected:** the indicator is present for the WHOLE capture and cleared on release/cancel with NO
+      gap while capturing; the mic is RELEASED the moment Space is released or the utterance is
+      cancelled (working set back to the idle baseline, `listening === false`, no leaked capture
+      handle); enabling voice alone never captures; ZERO remote endpoints on the audio→text path.
+  - **Edge:** release-and-re-hold ≤3 cycles (no leak, exactly one indicator per session); a silent
+    hold still releases; the live outbound network block stays a NAMED BLOCKER (no elevation lever).
+
+## F-72 (REQ-13/REQ-14 / NFR a11y + scope) — Text-conveyed, keyboard-only, and scoped to the bar
+
+- [ ] F-72: (a) Read the listening/Enter TEXT in every state (chip, `Listening…` placeholder,
+      `voice-listening-announcer`, `#fredo-command-hint` mirror) and perform every F-66..F-70 action
+      KEYBOARD-ONLY (no mouse); re-read with the listening animation suppressed. (b) Hold Space
+      1500 ms in a settings field (`#companion-idle-timeout-seconds`) and in a feature-window
+      textarea/`contenteditable`; then hold on the launcher bar (contrast leg).
+  **Expected:** (a) every state is conveyed as TEXT — never by colour or animation alone — and every
+      behaviour is completable with the keyboard alone; reduced motion leaves the state readable
+      (static pin + a NAMED BLOCKER for the `matchMedia` flip). (b) an ordinary space lands in every
+      NON-launcher-bar field with ZERO `stt_start`/cue/session, while the hold on the launcher bar
+      dictates — hold-Space applies ONLY to the focused launcher search box.
+  - **Edge:** a focused launcher TILE — Space keeps its current meaning ([#2823] `LauncherShell.tsx:887`)
+    and must NOT dictate; the cancel/Stop control focused; `contenteditable`; hint-text contrast in a
+    light preset AND the dark base.
+  - **Test data:** the shipped `ThemePresetSelector` for the light/dark legs; the companion idle-timeout
+    input as the non-launcher field.
+
+## F-73 (REQ-18 / R-2.3/R-2.5/R-2.6/R-2.7) — The microphone is never left hot, and blur KEEPS the words
+
+- [ ] F-73: (a) Release Space BEFORE the backend confirms the start (threshold crossed, engine not yet
+      live) at several offsets (0/50/150/400 ms), then subscribe to `stt:state`; (b) let a hold go
+      LIVE, then blur the input / fire a `window` blur mid-hold with autosend ON; (c) cancel mid-hold
+      with Escape; (d) cancel mid-hold with the visible `×`; (e) a sub-threshold TAP. After each,
+      read `stt_status`, the bar `value`, and the fredo working set.
+  **Expected:** after EVERY leg `stt_status.listening === false` and the working set is back at the
+      idle baseline (no capture handle) — the mic is never left hot. (a) the session that later
+      reports `listening:true` is cancelled on its rise edge and **exactly one ordinary space lands**
+      (R-2.6). (b) the capture **STOPS**, the **recognized words are KEPT in the bar as a dictated
+      transcript**, the **autosend commit is SUPPRESSED** (ZERO dispatch even with autosend ON) and
+      the mic is released — R-2.5 as BOUND (QA-9 CLOSED; this is NOT a discard + restore). (c)/(d)
+      the utterance IS discarded and the pre-session text restored. (e) the mic was **never opened**
+      and exactly one space lands.
+  - **Edge:** release at exactly the 200 ms threshold; blur vs `window` blur vs minimise; cancel in
+    the same tick as the `up`; the blur path with autosend ON (the suppression must hold); 3 repeated
+    (a) cycles to expose a leak or a mic-left-open; a TAP (assert the mic was never opened, not
+    merely "released"); a blur on a cancelled hold.
+  - **Test data:** voice enabled + model ready; the synthetic-transcript lever;
+    `Fredo_companion_voice_autosend=true` for leg (b); the #2877 F-28 working-set measurement method.
+
+### #2882 binding addendum (read before executing F-66..F-73)
+
+- **R-2.4 evidence shape:** the bar must indicate listening for the WHOLE capture — frozen 6px dot +
+  `Listening` chip + `Listening…` placeholder + a tinted border — with the word `Listening`
+  carrying the meaning (the dot is redundant only) and the start/stop announced as text on the
+  polite live region (finals only, never partials — the #2877 announcer contract is unchanged).
+- **TAP vs HOLD — BOUND (QA-7 CLOSED; contract 4b + R-2.1/R-2.2/R-2.6/R-2.7).** The ARMED empty bar
+  consumes the Space keydown and starts a **bounded 200 ms hold**. Release **below** the threshold =
+  TAP → **exactly ONE ordinary space** (`input.value === ' '`), **no capture attempted, no
+  `stt_start`, the mic never opened**, no `stt:state` event. Release **at/above** the threshold with
+  the engine **never live** → the session is cancelled on its rise edge and **exactly ONE ordinary
+  space** lands (declared timing, NOT a defect). Release **while live** → finalize, no space.
+  Assert these bound outcomes; a **lost or converted** space is a FAIL (G-158). The accepted
+  trade-off (an elapsed hold that never goes live yields a space; the first ~200 ms of a hold is not
+  captured) is declared behaviour, not a defect.
+- **Unarmed ⇒ natively ordinary (contract 4c, fail-closed).** Arming requires
+  `voiceEnabled && sttModelReady` (ST-3's probe). Readiness-unknown means NOT armed — Space is never
+  intercepted and its default (auto-repeat included) is observed verbatim; there is no third
+  placeholder state.
+- **Mid-hold blur — BOUND (QA-9 CLOSED; R-2.5 as revised).** Blur / `window` blur mid-hold is a
+  **STOP**: capture stops, **mic released**, **recognized words KEPT in the bar as a dictated
+  transcript**, **autosend commit SUPPRESSED** (zero dispatch even with autosend ON). Discard +
+  restore applies ONLY to an explicit cancel (Escape / the visible `×`).
+- **R-2.6 (mic never left hot) is a PRIVACY invariant — a confirmed violation is a FAIL of the row
+  even if every other row passes (G-158).** `stt_stop` with no active session returns without error
+  (`session.rs:357-388`), so a release that lands before the pending start completes needs an
+  explicit rise-edge cancel guard; drive it as **F-66 leg (e)** / **F-73 leg (a)** with several
+  release offsets, and assert `stt_status.listening === false` afterwards.
+- **Exact dictated chip copy:** `↵ send transcript to Fredo` (including after the user edits the
+  transcript). Never promise an app launch for dictated content.
