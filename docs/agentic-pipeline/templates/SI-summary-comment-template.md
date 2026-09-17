@@ -25,4 +25,13 @@
 
 - Human review initiated. `spec/<N>` retained as evidence.
 
+## For the human (only genuinely human-owned items)
+
+> Anything in the SI's own domain is **applied by the SI**, not listed here — an in-scope gap
+> is a work item, not a decision. List only: review/close of the issue, product decisions,
+> `AGENTS.md` / non-permission `opencode.json` text, and external tooling the pipeline cannot
+> change (e.g. the third-party Tauri MCP driver). If this section would be empty, say so.
+
+- <human-owned item>
+
 *Authored by Self-Improver*

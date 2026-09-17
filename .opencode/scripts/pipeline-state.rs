@@ -2557,6 +2557,18 @@ struct ActionArgs {
     worktree_path: Option<String>,
     image: Option<String>,
     feature: Option<String>,
+    /// `set-permission` target agent (the role whose sandbox is edited). Distinct
+    /// from `--agent` (the calling actor) — the SI edits another agent's rules.
+    role: Option<String>,
+    /// `set-permission` permission category (`bash`, `edit`, `skill`, ...).
+    tool: Option<String>,
+    /// `set-permission` rule pattern (the key inside a per-pattern category map).
+    pattern: Option<String>,
+    /// `set-permission` decision (`allow` | `ask` | `deny`).
+    decision: Option<String>,
+    /// `set-permission` override for the config path (tests/bootstrap target a
+    /// scratch copy); defaults to `<repo>/opencode.json`.
+    config_file: Option<String>,
     all: bool,
     json: bool,
     ghargs: Option<String>,
@@ -3926,6 +3938,29 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(req_issue(a).unwrap_or(0), "close-dependabot-prs", &a.actor, "unknown", "success",
                 &format!("closed {}, skipped {}, failed {}", closed, skipped, failed))?;
         }
+        "set-permission" => {
+            // The SI-owned writer for `opencode.json` agent permission blocks
+            // (the rest of the config stays human-owned). Grants/revokes one
+            // rule for one role, text-surgically, order-preserving. No issue is
+            // required — a sandbox gap is pipeline infrastructure, not spec work.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let role = a.role.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --role <agent>"))?;
+            let tool = a.tool.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --tool <category>"))?;
+            let pattern = a.pattern.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --pattern <glob>"))?;
+            let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny"))?;
+            let path = match a.config_file.as_deref() {
+                Some(p) => PathBuf::from(p),
+                None => project_root()?.join("opencode.json"),
+            };
+            let summary = set_agent_permission(&path, role, tool, pattern, decision)?;
+            println!("{}", summary);
+            if let Some(issue) = a.issue {
+                append_event(issue, "set-permission", &a.actor, "unknown", "success", &summary)?;
+            }
+        }
         other => anyhow::bail!("unknown action: {}", other),
     }
     Ok(())
@@ -3954,6 +3989,11 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "remove-worktree" => actor == "developer",
         "update-plan" => actor == "self-improver",
         "triage-init" => actor == "self-improver",
+        // The ONLY sanctioned writer of `opencode.json` agent `permission` blocks:
+        // the SI grants a missing allowlist verb to a role instead of routing a
+        // sandbox change to the human (G-142). Scoped to permission blocks by
+        // construction — the editor refuses everything else.
+        "set-permission" => actor == "self-improver",
         "tests-commit" => matches!(actor, "tester" | "self-improver"),
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
@@ -3965,6 +4005,288 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
         _ => true,
     }
+}
+
+// ── opencode.json agent-permission editor (`set-permission`) ─────────────────
+//
+// `opencode.json` is human-owned EXCEPT the per-agent `permission` blocks, which
+// the Self-Improver owns through this action: the sandbox is code, so an agent
+// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the SI
+// grant it instead of routing a config change to the human. The editor is
+// TEXT-SURGICAL and never re-serializes the document: opencode evaluates
+// permission rules LAST-match-wins, so member ORDER is semantics — a serde_json
+// round-trip (alphabetical maps) would silently reorder rules and invert a
+// sandbox. The edited document is re-parsed before it is written, so the config
+// can never be left invalid.
+
+fn json_skip_ws(t: &[u8], mut i: usize) -> usize {
+    while i < t.len() && matches!(t[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    i
+}
+
+/// Skip a JSON string whose opening quote sits at `start`; returns the index just
+/// past the closing quote.
+fn json_skip_string(t: &[u8], start: usize) -> anyhow::Result<usize> {
+    if t.get(start) != Some(&b'"') {
+        anyhow::bail!("expected a JSON string at byte {}", start);
+    }
+    let mut i = start + 1;
+    while i < t.len() {
+        match t[i] {
+            b'\\' => i += 2,
+            b'"' => return Ok(i + 1),
+            _ => i += 1,
+        }
+    }
+    anyhow::bail!("unterminated JSON string")
+}
+
+/// Skip a JSON value starting at `start`; returns the index just past it.
+fn json_skip_value(t: &[u8], start: usize) -> anyhow::Result<usize> {
+    let i = json_skip_ws(t, start);
+    match t.get(i) {
+        Some(b'"') => json_skip_string(t, i),
+        Some(b'{') | Some(b'[') => {
+            let (open, close) = if t[i] == b'{' { (b'{', b'}') } else { (b'[', b']') };
+            let mut depth = 0usize;
+            let mut j = i;
+            while j < t.len() {
+                if t[j] == b'"' {
+                    j = json_skip_string(t, j)?;
+                    continue;
+                }
+                if t[j] == open {
+                    depth += 1;
+                } else if t[j] == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(j + 1);
+                    }
+                }
+                j += 1;
+            }
+            anyhow::bail!("unterminated JSON container")
+        }
+        Some(_) => {
+            let mut j = i;
+            while j < t.len() && !matches!(t[j], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n') {
+                j += 1;
+            }
+            Ok(j)
+        }
+        None => anyhow::bail!("unexpected end of JSON"),
+    }
+}
+
+/// Find member `key` of the JSON object whose `{` sits at `obj_start`; returns the
+/// raw byte span of that member's value. `None` when the key is absent.
+fn json_find_member(t: &[u8], obj_start: usize, key: &str) -> anyhow::Result<Option<(usize, usize)>> {
+    let mut i = json_skip_ws(t, obj_start);
+    if t.get(i) != Some(&b'{') {
+        anyhow::bail!("expected '{{' at byte {}", i);
+    }
+    i += 1;
+    loop {
+        i = json_skip_ws(t, i);
+        match t.get(i) {
+            Some(b'}') | None => return Ok(None),
+            Some(b'"') => {
+                let ke = json_skip_string(t, i)?;
+                let found = std::str::from_utf8(&t[i + 1..ke - 1]).ok() == Some(key);
+                i = json_skip_ws(t, ke);
+                if t.get(i) != Some(&b':') {
+                    anyhow::bail!("expected ':' at byte {}", i);
+                }
+                i = json_skip_ws(t, i + 1);
+                let vs = i;
+                let ve = json_skip_value(t, vs)?;
+                if found {
+                    return Ok(Some((vs, ve)));
+                }
+                i = json_skip_ws(t, ve);
+                match t.get(i) {
+                    Some(b',') => i += 1,
+                    Some(b'}') | None => return Ok(None),
+                    _ => anyhow::bail!("expected ',' or '}}' at byte {}", i),
+                }
+            }
+            _ => anyhow::bail!("expected a member key at byte {}", i),
+        }
+    }
+}
+
+/// The one-level indentation unit of an object's members (derived from the first
+/// member's line minus the closing brace's line), falling back to 4 spaces.
+fn json_member_indent_unit(t: &[u8], obj_start: usize, obj_end: usize) -> String {
+    let close = obj_end.saturating_sub(1);
+    let close_line_start = t[..close].iter().rposition(|&c| c == b'\n').map(|p| p + 1).unwrap_or(0);
+    let close_indent = String::from_utf8_lossy(&t[close_line_start..close]).to_string();
+    let mut i = obj_start + 1;
+    while i < close && matches!(t[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    if i >= close {
+        return "    ".to_string();
+    }
+    let member_line_start = t[..i].iter().rposition(|&c| c == b'\n').map(|p| p + 1).unwrap_or(0);
+    let member_indent = String::from_utf8_lossy(&t[member_line_start..i]).to_string();
+    if member_indent.len() > close_indent.len() && member_indent.starts_with(&close_indent) {
+        member_indent[close_indent.len()..].to_string()
+    } else {
+        "    ".to_string()
+    }
+}
+
+/// Append `member` (a `"key": value` fragment) as the LAST member of the object
+/// spanning `t[obj_start..obj_end]`. Appending keeps opencode's last-match-wins
+/// precedence (a new allow beats the preceding catch-all deny) and preserves the
+/// document's existing indentation and line endings (`eol`) — mixing EOLs would
+/// make a one-rule edit show up as a whole-file rewrite.
+fn json_object_append_member(t: &str, obj_start: usize, obj_end: usize, member: &str, eol: &str) -> String {
+    let bytes = t.as_bytes();
+    let close = obj_end - 1;
+    let inner = &t[obj_start + 1..close];
+    let empty = inner.trim().is_empty();
+    if !inner.contains('\n') {
+        let sep = if empty { "" } else { ", " };
+        return format!("{}{}{}{}", &t[..close], sep, member, &t[close..]);
+    }
+    let unit = json_member_indent_unit(bytes, obj_start, obj_end);
+    let close_line_start = t[..close].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let close_indent = &t[close_line_start..close];
+    let elem_indent = format!("{}{}", close_indent, unit);
+    if empty {
+        format!("{}{}{}{}{}{}", &t[..obj_start + 1], eol, elem_indent, member, eol, close_indent)
+            + &t[close..]
+    } else {
+        let nl = t[..close].rfind('\n').unwrap();
+        // Insert before the EOL sequence that precedes the closing brace; the
+        // comma lands at the end of the previous member's line.
+        let eol_start = if nl > 0 && bytes[nl - 1] == b'\r' { nl - 1 } else { nl };
+        format!("{},{}{}{}{}", &t[..eol_start], eol, elem_indent, member, &t[eol_start..])
+    }
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A safe identifier for a role, permission category, or rule pattern: prevents
+/// JSON injection while permitting real glob patterns (`.opencode/tmp/**`,
+/// `git push origin HEAD:spec/* main*`).
+fn permission_token_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, ' ' | '_' | '-' | '*' | '?' | '.' | '/' | ':' | '+' | '=' | '@' | '[' | ']' | '(' | ')')
+        })
+}
+
+/// Rewrite one agent permission rule in `opencode.json` and return a summary of
+/// the change (or `NO-OP: ...` when the rule already holds the requested value).
+fn set_agent_permission(
+    path: &Path,
+    role: &str,
+    tool: &str,
+    pattern: &str,
+    decision: &str,
+) -> anyhow::Result<String> {
+    if !permission_token_ok(role) {
+        anyhow::bail!("set-permission: invalid --role '{}'", role);
+    }
+    if !permission_token_ok(tool) {
+        anyhow::bail!("set-permission: invalid --tool '{}'", tool);
+    }
+    if !permission_token_ok(pattern) {
+        anyhow::bail!("set-permission: invalid --pattern '{}'", pattern);
+    }
+    if !matches!(decision, "allow" | "ask" | "deny") {
+        anyhow::bail!("set-permission: --decision must be allow|ask|deny (got '{}')", decision);
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("set-permission: cannot read {}: {}", path.display(), e))?;
+    let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
+    // Validate BEFORE editing so a corrupt config is never compounded.
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("set-permission: {} is not valid JSON: {}", path.display(), e))?;
+    let agent_exists = parsed
+        .get("agent")
+        .and_then(|a| a.get(role))
+        .map(|_| ())
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}' in {}", role, path.display()))?;
+    let _ = agent_exists;
+    parsed
+        .get("agent")
+        .and_then(|a| a.get(role))
+        .and_then(|r| r.get("permission"))
+        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permission block", role))?;
+
+    let bytes = text.as_bytes();
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let (as_, _) = json_find_member(bytes, 0, "agent")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no 'agent' section"))?;
+    let (rs, _) = json_find_member(bytes, as_, role)?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}'", role))?;
+    let (ps, pe) = json_find_member(bytes, rs, "permission")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permission block", role))?;
+    if bytes[ps] != b'{' {
+        anyhow::bail!("set-permission: agent '{}' permission is not an object", role);
+    }
+
+    let label = format!("agent '{}'.{}['{}']", role, tool, pattern);
+    let new_text = match json_find_member(bytes, ps, tool)? {
+        Some((vs, ve)) if bytes[vs] == b'"' => {
+            let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
+            if current == decision {
+                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+            }
+            anyhow::bail!(
+                "set-permission: '{}.{}' is a flat action ('{}') — only per-pattern maps can be edited; \
+                 change the whole category by hand or via a new action",
+                role, tool, current
+            );
+        }
+        Some((vs, ve)) if bytes[vs] == b'{' => {
+            match json_find_member(bytes, vs, pattern)? {
+                Some((pvs, pve)) => {
+                    let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
+                    if current == decision {
+                        return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+                    }
+                    format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
+                }
+                None => {
+                    let member = format!("\"{}\": \"{}\"", json_escape(pattern), decision);
+                    json_object_append_member(&text, vs, ve, &member, eol)
+                }
+            }
+        }
+        Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
+        None => {
+            let unit = json_member_indent_unit(bytes, ps, pe);
+            let close_line_start = text[..pe - 1].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            let close_indent = &text[close_line_start..pe - 1];
+            let inner_indent = format!("{}{}", close_indent, unit);
+            let obj = if text[ps + 1..pe - 1].contains('\n') {
+                format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(pattern), decision, e0 = eol)
+            } else {
+                format!("{{ \"{}\": \"{}\" }}", json_escape(pattern), decision)
+            };
+            let member = format!("\"{}\": {}", json_escape(tool), obj);
+            json_object_append_member(&text, ps, pe, &member, eol)
+        }
+    };
+
+    // Re-parse the edited document before writing — a config that fails to load
+    // would break every agent's startup, so validity is a hard precondition.
+    serde_json::from_str::<serde_json::Value>(&new_text)
+        .map_err(|e| anyhow::anyhow!("set-permission: edit produced invalid JSON, NOT written: {}", e))?;
+    std::fs::write(path, new_text.as_bytes())
+        .map_err(|e| anyhow::anyhow!("set-permission: cannot write {}: {}", path.display(), e))?;
+    Ok(format!("PERMISSION SET: {} = '{}' in {}", label, decision, path.display()))
 }
 
 // ── Context block ────────────────────────────────────────────────────────────
@@ -4925,6 +5247,11 @@ fn parse_args() -> ActionArgs {
         worktree_path: val("--worktree-path"),
         image: val("--image"),
         feature: val("--feature"),
+        role: val("--role"),
+        tool: val("--tool"),
+        pattern: val("--pattern"),
+        decision: val("--decision"),
+        config_file: val("--config-file"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
         ghargs: val("--ghargs"),

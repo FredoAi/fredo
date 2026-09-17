@@ -48,9 +48,11 @@
   REFUSED. Baseline legs never serve main and never hand-roll a detached
   dev-server spawn; a cross-branch serving need the tool does not cover is a
   tooling request to the Self-Improver (new script/param), not an ad-hoc agent
-  script. The next standard Up (without -At) restores apps/ to the spec/<Spec>
-  tip for the AFTER legs. Without -At the strict G-052 origin-tip check applies
-  (the normal flow).
+  script. The next standard Up (without -At) FULLY restores apps/ to the spec/<Spec>
+  tip for the AFTER legs (G-163: tracked content reset to HEAD, baseline-only files
+  deleted, and the restore fails closed if apps/ still differs from HEAD -- a plain
+  `git checkout HEAD -- apps` left files the tip deletes behind). Without -At the
+  strict G-052 origin-tip check applies (the normal flow).
 
 .PARAMETER VitePort
   Vite dev server port. Default: 5174.
@@ -217,6 +219,43 @@ function Get-PidByPort {
   return $null
 }
 
+# Kill the process listening on $Port (and its tree), retrying because a
+# native-abort instance can survive a first /PID kill and keep the socket, and
+# re-running the targeted /IM fredo.exe pass covers an owner already absent from
+# Win32_Process enumeration. Returns $true when the port is free afterwards.
+function Clear-Port {
+  param([int]$Port)
+
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    if (-not (Test-Port $Port)) { return $true }
+    $owner = Get-PidByPort $Port
+    if ($owner) {
+      $alive = $null -ne (Get-Process -Id $owner -ErrorAction SilentlyContinue)
+      Write-Log "Reclaiming port ${Port}: owner PID $owner (alive: $alive), attempt $attempt"
+      Invoke-NativeQuiet taskkill /PID $owner /T /F | Out-Null
+    }
+    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
+    Start-Sleep -Milliseconds 800
+  }
+  return (-not (Test-Port $Port))
+}
+
+# Last-resort reclaim for bridge/Vite helpers that outlive the app: an
+# npx-launched MCP or Vite server (node.exe/bun.exe) can hold a port after the
+# app is gone. Kill ONLY helpers whose command line references THIS repo, so
+# unrelated Node processes are never touched.
+function Stop-RepoNodeHolders {
+  try {
+    $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+    Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='bun.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -and $_.CommandLine -like "*$root*" } |
+      ForEach-Object {
+        Write-Log "Killing orphaned dev helper PID $($_.ProcessId) on this repo (node/bun)..."
+        Invoke-NativeQuiet taskkill /PID $_.ProcessId /T /F | Out-Null
+      }
+  } catch {}
+}
+
 # -- Root serving currency (G-052) ---------------------------------------------
 
 # The repo root IS the serving checkout: during implementation/testing it must
@@ -302,16 +341,46 @@ function Prepare-BaselineServing {
 # Restore apps/ to the current HEAD (spec/<Spec> tip) after a baseline leg. Runs
 # automatically on the standard Up path when the product tree carries baseline
 # residue; never touches anything outside apps/.
+#
+# G-163: `git checkout HEAD -- apps` alone is NOT a full restore. Files that exist
+# at the baseline (-At) commit but were DELETED at the tip are staged as additions;
+# they are not paths in HEAD, so a checkout of HEAD never removes them -- the
+# serving tree silently kept the pre-fix file set and the AFTER legs could run
+# against contaminated code (observed #2882). Capture those stale paths, force the
+# tree+index back to HEAD, delete the stale files, and FAIL CLOSED if anything
+# under apps/ still differs from HEAD (never serve a contaminated tree).
 function Restore-ProductTree {
   param([uint64]$SpecIssue)
   $dirty = ((& git status --porcelain -- apps 2>$null) | Out-String).Trim()
-  if ($dirty) {
-    Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
-    if ((Invoke-NativeQuiet git checkout HEAD -- apps) -ne 0) {
-      Write-Log "ERROR: could not restore apps/ from HEAD (git checkout failed)." -Level ERROR
-      exit 1
+  if (-not $dirty) { return }
+
+  Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
+  $staleAdds = @(
+    (& git diff --cached --name-only --diff-filter=A -- apps 2>$null) |
+      Where-Object { $_ -and $_.Trim() } |
+      ForEach-Object { $_.Trim() }
+  )
+  if ((Invoke-NativeQuiet git checkout -f HEAD -- apps) -ne 0) {
+    Write-Log "ERROR: could not restore apps/ from HEAD (git checkout failed)." -Level ERROR
+    exit 1
+  }
+  if ((Invoke-NativeQuiet git reset -q HEAD -- apps) -ne 0) {
+    Write-Log "ERROR: could not reset the apps/ index to HEAD (git reset failed)." -Level ERROR
+    exit 1
+  }
+  foreach ($f in $staleAdds) {
+    if (Test-Path -LiteralPath $f) {
+      Write-Log "Removing baseline-only file not present at the tip: $f"
+      Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
     }
   }
+  $leftover = ((& git status --porcelain -- apps 2>$null) | Out-String).Trim()
+  if ($leftover) {
+    Write-Log "ERROR: apps/ still differs from HEAD after the baseline restore -- refusing to serve a contaminated tree:" -Level ERROR
+    Write-Log $leftover -Level ERROR
+    exit 1
+  }
+  Write-Log "Product code (apps/) restored to spec/$SpecIssue tip (G-163 full restore)."
 }
 
 # -- Actions ------------------------------------------------------------------
@@ -466,14 +535,34 @@ switch ($Action) {
       Write-Log "dev:tauri stopped"
     }
 
-    # Verify the app ports actually released. A lingering listener owned by an
-    # absent PID is an OS-level wedge that only a reboot clears -- surface it
-    # loudly instead of leaving the next Up to fail confusingly.
+    # Reclaim any port a wedged instance still holds. Retries the targeted kill,
+    # then sweeps repo-scoped node/bun dev helpers, so a stale :9223/:4318 socket
+    # does not force a reboot (G-163). Only a genuinely orphaned OS socket survives
+    # all of this -- surface that precisely, never vaguely.
     Start-Sleep -Seconds 1
+    $stuck = @()
     foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
       if (Test-Port $port) {
-        $owner = Get-PidByPort $port
-        Write-Log "WARNING: port $port still listening (reported owner PID $owner) after Down -- lingering socket from a wedged instance; a reboot may be required." -Level WARN
+        Write-Log "Port $port still bound after Down -- attempting to reclaim..."
+        if (Clear-Port $port) {
+          Write-Log "Port $port reclaimed."
+          $killed = $true
+        } else {
+          $stuck += $port
+        }
+      }
+    }
+    if ($stuck.Count -gt 0) {
+      Stop-RepoNodeHolders
+      Start-Sleep -Seconds 1
+      foreach ($port in $stuck) {
+        if ((Test-Port $port) -and -not (Clear-Port $port)) {
+          $owner = Get-PidByPort $port
+          Write-Log "WARNING: port $port could not be reclaimed (owner PID $owner). This is an orphaned OS-level socket -- the MCP bridge falls back to the next port and the OTLP receiver cannot bind until it clears. Kill the holder (e.g. a node.exe MCP/Vite helper) or reboot." -Level WARN
+        } else {
+          Write-Log "Port $port reclaimed."
+          $killed = $true
+        }
       }
     }
   }

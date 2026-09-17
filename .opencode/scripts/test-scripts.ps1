@@ -284,6 +284,12 @@ Test-Script "record-improvement posts comment + event + guardrail" {
   $log = ".opencode/state/issues/$issueNum.jsonl"
   $refs = "docs/agentic-pipeline/playbooks/references.md"
   $before = (Select-String -Path $refs -Pattern '^### G-' -ErrorAction SilentlyContinue | Measure-Object).Count
+  # record-improvement appends a guardrail to a TRACKED file. Snapshot it and
+  # restore byte-for-byte in finally: a selective regex-delete left the record's
+  # leading newline behind, so every harness run added a stray blank line
+  # (observed 3 runs -> 3 blank lines before the first guardrail).
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
   try {
     # role-gate: developer cannot record-improvement
     $dev = & rust-script $ps --issue $issueNum --agent developer --action record-improvement --reason "x" 2>&1
@@ -310,20 +316,13 @@ Test-Script "record-improvement posts comment + event + guardrail" {
     if ($after -le $before) { throw "guardrail not appended to references.md (before=$before after=$after)" }
     return "record-improvement: comment + event + guardrail verified"
   } finally {
-    # Remove ONLY the record this test appended (its guardrail line carries the
-    # unique "G-test:" marker). NEVER regex-delete every `on_the_go_improvement`
-    # record (that would wipe SI-recorded improvement guardrails), and NEVER use
-    # Get-Content -Raw (ANSI default in Windows PowerShell 5.1 double-encodes
-    # non-ASCII UTF-8 like em-dashes) — read/write UTF-8 explicitly so the file
-    # is byte-preserved (observed mojibake on #2700).
-    $refsText = [System.IO.File]::ReadAllText($refs)
-    $testRecordPattern = '(?ms)^### G-\d+: on_the_go_improvement\r?\n(?:- \*\*[^*]+\*\*[^\n]*\n)+'
-    foreach ($testMatch in [regex]::Matches($refsText, $testRecordPattern)) {
-      if ($testMatch.Value -match 'G-test:') {
-        $refsText = $refsText.Replace($testMatch.Value, '')
-      }
+    # Restore references.md byte-for-byte (the test's record-improvement appends a
+    # real guardrail record to this TRACKED file). A byte-exact restore keeps the
+    # working tree clean and can never disturb an SI-recorded guardrail.
+    if (Test-Path -LiteralPath $refsBackup) {
+      Copy-Item -LiteralPath $refsBackup -Destination $refs -Force
+      Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue
     }
-    [System.IO.File]::WriteAllText($refs, $refsText, [System.Text.UTF8Encoding]::new($false))
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -1296,6 +1295,67 @@ Test-Script "remove-worktree role-gates" {
   if ($outStr -notmatch "not allowed to remove-worktree") { throw "Expected role-gate block, got: $outStr" }
   return "remove-worktree role-gate verified"
 }
+
+# --- set-permission (the SI's sanctioned writer for agent permission blocks) ---
+# Every edit targets a scratch copy of opencode.json so the real config is never
+# touched by the harness. Asserts: append-last (last-match-wins), rule order and
+# EOLs preserved, document still parses, real config byte-identical, idempotent.
+function New-PermScratch {
+  $p = Join-Path $env:TEMP ("oc-perm-" + [Guid]::NewGuid().ToString("N") + ".json")
+  [System.IO.File]::WriteAllText($p, (Get-Content "opencode.json" -Raw), [System.Text.UTF8Encoding]::new($false))
+  return $p
+}
+
+Test-Script "set-permission appends, preserves order/EOL, never touches the real config" {
+  $real = Get-Content "opencode.json" -Raw
+  $beforeCrlf = ([regex]::Matches($real, "`r`n")).Count
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent self-improver --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $outStr" }
+  if ((Get-Content "opencode.json" -Raw) -ne $real) { throw "real opencode.json was modified" }
+  $edited = Get-Content $scratch -Raw
+  $null = $edited | ConvertFrom-Json
+  $gi = $edited.IndexOf('"zz-perm-harness*"')
+  $last = $edited.IndexOf('"* | *"')
+  if ($gi -lt 0) { throw "rule not inserted" }
+  if ($gi -lt $last) { throw "rule not appended last (last-match-wins order broken)" }
+  $afterLf = ([regex]::Matches($edited, "(?<!`r)`n")).Count
+  if ($afterLf -ne 0) { throw "EOL mixed: $afterLf LF-only line(s) introduced" }
+  if (([regex]::Matches($edited, "`r`n")).Count -le $beforeCrlf) { throw "no line added" }
+  $out2 = & rust-script $ps --agent self-improver --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+  if ($out2Str -notmatch "NO-OP") { throw "expected NO-OP on re-run, got: $out2Str" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  return "append-last; order+EOL preserved; real config untouched; idempotent"
+}
+
+Test-Script "set-permission is self-improver only" {
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent developer --action set-permission --role developer --tool bash --pattern "git rm*" --decision allow --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  if ($outStr -notmatch "not allowed to set-permission") { throw "Expected role-gate block, got: $outStr" }
+  return "set-permission role-gate verified"
+}
+
+Test-Script "set-permission refuses an unknown agent" {
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent self-improver --action set-permission --role nobody --tool bash --pattern "x*" --decision allow --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  if ($outStr -notmatch "no agent 'nobody'") { throw "unknown role not refused, got: $outStr" }
+  return "unknown-agent refusal verified"
+} -ExpectedExitCode 1
+
+Test-Script "set-permission refuses a flat-action category" {
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent self-improver --action set-permission --role developer --tool edit --pattern "x" --decision deny --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  if ($outStr -notmatch "flat action") { throw "flat action not refused, got: $outStr" }
+  return "flat-action refusal verified"
+} -ExpectedExitCode 1
 
 # remove-worktree pre-cleans gitignored build artifacts before removal — the
 # "Directory not empty" failure from #2688/#633/#2700 (node_modules/dist created

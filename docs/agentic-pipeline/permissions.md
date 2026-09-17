@@ -28,6 +28,26 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
   No agent ever calls `gh`/`git` to write (single-writer rule) - draft content and request
   the state-machine action instead.
 
+## Editing agent permissions (the Self-Improver owns this)
+
+An agent that hits a missing allowlist verb (a denied deletion, a new prerequisite command)
+does **not** route the change to the human. The **Self-Improver applies it itself**, through
+the state machine's `set-permission` action:
+
+```
+rust-script .opencode/scripts/pipeline-state.rs --agent self-improver --action set-permission \
+  --role <agent> --tool <category> --pattern "<glob>" --decision allow|deny
+```
+
+- Scope is **agent `permission` blocks only** — the action refuses anything else and refuses
+  a role/category that does not exist. It is text-surgical and order-preserving, because
+  opencode evaluates permission rules **last-match-wins**; a new rule is appended (so an
+  `allow` beats the preceding catch-all `deny`), and the document is re-validated before write.
+- The rest of `opencode.json` (models, MCP servers, tool wiring, top-level settings) and
+  `AGENTS.md` remain **human-owned**. A change there is proposed to the human, not applied.
+- Runtime note: `opencode.json` is read at startup, so a permission change takes effect on the
+  next opencode restart. Record that in the `Status` note when you apply one.
+
 ## Loop mitigation (why deny-by-default + opencode's `doom_loop`)
 
 Subagents (especially `deepseek-v4-flash` planners) can fall into **tool-call loops**: emitting the

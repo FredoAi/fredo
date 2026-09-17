@@ -27,7 +27,7 @@ Research is **input**, never the deliverable — you research to answer a questi
 - **No duplication:** before adding, grep the file for the URL. Reuse and extend an existing entry instead of creating a near-duplicate.
 - **Keep categories tidy:** add under the right category; create a new category only when three or more entries need it.
 - **The `Known Failure Modes` section (guardrails) is SI-owned** — guardrail records (the `### G-0NN` blocks) are written by the Self-Improver at audit (retro-analysis Recipe 6). Do not edit, rename, or remove a `### G-` block; add non-guardrail facts elsewhere in the file.
-- **Do not edit `AGENTS.md` or `opencode.json`** — those are human-owned. A reference or rule you want to propose there goes to the human (or, for the SI, is recorded in `references.md`).
+- **Do not edit `AGENTS.md`; `opencode.json` is human-owned EXCEPT the per-agent `permission` blocks, which the Self-Improver owns.** A permission change is applied by the SI through the state machine's `set-permission` action — never a hand-edit, never a proposal to the human. The rest of `opencode.json` (models, MCP servers, tool wiring, top-level settings) stays human-owned. A rule you want in `AGENTS.md`, or a non-permission `opencode.json` change, goes to the human (or, for the SI, is recorded in `references.md`).
 
 **Permissions:** editing `references.md` is granted to every agent in `opencode.json`. If you find yourself blocked from it, report the gap rather than working around it.
 

@@ -155,6 +155,8 @@ Thumbs.db
 *.bin
 apps/tauri/src-tauri/models/*.tar
 apps/tauri/src-tauri/models/*.zip
+# Root model store (Companion+STT downloads; large binaries, runtime-installed)
+/models/
 
 # Application specific
 uploads/
