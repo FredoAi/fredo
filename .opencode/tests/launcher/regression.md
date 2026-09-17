@@ -472,3 +472,70 @@
 ### #2886 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2887 extension — the faster hold trigger must not move any bar contract (G-136)
+
+> Issue #2887 removes the "not yet listening" wait on the hold-Space dictation (a resident/ready
+> recognizer while idle — PO amendment 1). **G-136:** nothing is retired — R-40..R-49 and the
+> `voice-input` R-18..R-24 rows remain IN FORCE; this extension re-asserts the bar contracts against
+> the faster arming. Run alongside R-1..R-49 and the new `functional.md` F-82..F-84.
+> **Verification policy: live.**
+
+## R-50 — The #2882 hold/tap/non-empty/voice-off contract is UNCHANGED on the bar
+
+- [ ] R-50: Re-run the #2882 bar contract on the #2887 tip: `launcher` F-64..F-69 and
+      `voice-input` F-66/F-67/F-68/F-73. Hold Space in the EMPTY focused bar → dictates, release
+      finishes; sub-threshold TAP and a never-live hold each land exactly ONE ordinary space with
+      ZERO `stt_start` and the mic never opened; Space in a NON-EMPTY field is a literal space;
+      voice-off / model-absent → ordinary space, no capture attempt, no error, no `role="alert"`.
+  **Expected:** byte-for-byte the shipped outcomes; over the whole leg ZERO lost or converted spaces
+      (G-158); Enter's rule, the hint chip and Ctrl+Space = show+focus are unchanged. **Do not assert
+      the open items (a)/(b)** — only these observable outcomes.
+  - **Edge:** a hold whose release lands at the exact threshold; a hold right after a cancelled hold;
+    voice disabled mid-hold; `set`/`Miss`/`monitor` query states re-checked against F-64/F-67.
+  - **Receipt:** per leg — the `value`, the `stt_start` count, the cue state, `role="alert"` presence.
+
+## R-51 — Typing safety: no space lost or converted under the faster re-arm (extends R-41)
+
+- [ ] R-51: With the resident armed, press Space ≥40 times across ≥6 bar states (empty / 1 char /
+      an app-matching query / a non-matching query / just-cleared-to-empty / while listening) and type
+      the burst `the quick brown fox` with REAL keystrokes into a non-empty bar; recount byte-for-byte.
+      Include the rapid re-arm window: a hold started immediately after a release, and a Space pressed
+      in the same tick the bar becomes empty.
+  **Expected:** every space intended as text lands byte-exactly; the ONLY gestures that do not insert
+      a literal space are the intentional HOLD on an EMPTY bar and the TAP (which each land exactly one
+      space); the auto-repeat keydowns during a hold add ZERO extra characters. A single lost or
+      converted space FAILs the round (continuous invariant, G-158).
+  - **Edge:** IME/composition interplay (named blocker if not drivable — record it, never a PASS); a
+    Space at the exact readiness transition.
+
+## R-52 — Bar layout, hint truth and Ctrl+Space unchanged with the resident armed
+
+- [ ] R-52: With the resident readiness active: measure the command-bar `getBoundingClientRect().y`,
+      the field `[data-testid="launcher-command-input"]` height, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight` + `margin-bottom` in the EMPTY/SHORT states (companion OFF /
+      ON-home / ON-away) at the default size AND the shipped minimum 900×600; re-read the (hint,
+      action) pairs for a typed match / an unmatched query / a dictated transcript (#2882/#2883); press
+      Ctrl+Space twice from rest.
+  **Expected:** `|Δy| ≤ 1 px`, field exactly 48 px at one visual line, seat wrapper exactly 80×100
+      + 16 px; the hint NAMES the app Enter will open / reads as sending to Fredo otherwise, and the
+      dictated hint reads `↵ send transcript to Fredo`; Ctrl+Space shows+focuses ONCE, never closes,
+      never listens; no new scrollbar/overflow.
+  - **Edge:** a reply shown; a long wrapped query; re-theme mid-state; 900×600.
+
+## R-53 — Console clean / token-native / no re-render loop with the resident readiness active
+
+- [ ] R-53: Read `tauri_read_logs(source="console")` after every leg (cold warm-up, holds, releases,
+      cancels, idle); static-grep the changed launcher/bar files for `#[0-9a-fA-F]{3,8}` / `rgba(` /
+      `rgb(` / `hsla(` / `var(--x)NN`; re-theme light ↔ dark while any readiness/listening affordance
+      is visible; sample the console through the declared idle window.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); ZERO colour literals / no `var(--x)NN` alpha-append
+      (#2770); any readiness affordance re-tints token-native; NO polling loop / no effect depending on
+      an array `.length` or a freshly-created object (AGENTS.md #523).
+
+### #2887 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
