@@ -113,3 +113,31 @@
       `listening === false`, NO listening cue/chip, ZERO `stt_start`; a 2nd press leaves the bar
       OPEN; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
+## #2883 extension — long-query wrap + Shift+Enter quick paths
+
+> Issue #2883 wraps the bar's input and adds `Shift+Enter` for a newline without changing Enter's
+> rule (#2882). Quick paths only — the full matrix lives in `functional.md` F-70..F-78 /
+> `regression.md` R-44..R-46 and `companion` F-79..F-90 / S-27..S-29. **Verification policy: live.**
+
+- [ ] S-18: **A long query wraps and the controls stay clear.** Companion ACTIVE; insert a ~240-char
+      query into the focused field `[data-testid="launcher-command-input"]` (`role="searchbox"`,
+      `aria-multiline="true"`). **Expected:** the text renders on ≥2 visible lines inside the bar;
+      the Enter hint chip (`[data-testid="launcher-command-hint"]`) AND the collapse/cancel control
+      are both fully visible, with ZERO overlap with the text (measured `getBoundingClientRect`
+      intersection = 0); a 5+ line query pins the field at the bound **108 px** cap and scrolls
+      internally; screenshot (ONE frame containing both the text and the controls) succeeds; console
+      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-19: **Shift+Enter inserts a newline and does not dispatch.** Type `line one`, press
+      `Shift+Enter`, type `line two`. **Expected:** the input value contains an explicit newline and
+      renders as ≥2 lines via the bound **native-insertion** route (return before the Enter branch
+      WITHOUT `preventDefault`, carried by the textarea `onChange` — no manual splice, caret
+      undisturbed); ZERO generations, ZERO windows opened; a subsequent Enter acts on the whole query
+      (typed-match launch / unmatched send per #2882); screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`. (If the synthetic chord cannot be
+      delivered, record the G-161 named blocker + the dispatched-event/unit-pin fallback — never a
+      fabricated PASS.)
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
