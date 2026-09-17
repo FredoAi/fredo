@@ -430,4 +430,8 @@
 
 ### #2883 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+- [x] **Round 1 (serving `326822ff`) — R-44 PASS (Enter contract, via functional F-74) · R-45 FAIL · R-46 PASS (console/tokens) / theme leg UNVERIFIED.**
+      - R-44 PASS: Enter's shipped contract is unchanged — `set`→Settings (0 generations), unmatched typed query→1 generation / 0 windows, multi-line query acts on the whole trimmed text and inserts no newline. Filter/nav drift was **not** re-matrixed → that sub-leg UNVERIFIED.
+      - **R-45 FAIL**: the short/empty bar is not restored to 48 px after a long query (renders 108 px; intrinsic content 46 px). Same root cause as launcher F-72/F-75/F-76 (D-1).
+      - R-46 PASS: console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded` across typing/wrap/cap/clear/bulk-insert; static grep found 0 colour literals and 0 `var(--x)NN`. Re-theme leg not re-driven → UNVERIFIED.
+      Evidence: https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req3-defect-empty-bar-stuck-108px.jpeg
