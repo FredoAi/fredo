@@ -872,3 +872,121 @@ describe('LauncherCommandBar — announcers', () => {
     expect(announcer).toHaveTextContent('hello world');
   });
 });
+
+// ── #2887 follow-up — the cold/cancel live-region contract (UI/UX §4) ────────
+//
+// The shipped announcer only flipped `'' -> Listening -> Stopped listening`. The
+// UI/UX §4 contract adds the two missing transitions: the COLD path announces
+// `Starting voice input` when the bounded chip renders, and S4 CANCEL announces
+// `Dictation cancelled` while SUPPRESSING the S3 stop line. Everything stays
+// transition-driven; the WARM path announces exactly one `Listening`.
+
+describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, UI/UX §4)', () => {
+  it('COLD path: announces `Starting voice input` when the bounded chip renders, then `Listening`', () => {
+    const { rerender } = renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    // The readying window outlived HOLD_PENDING_CUE_MS: the bounded chip renders.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" />);
+    expect(screen.getByTestId('launcher-command-listening-pending')).toBeInTheDocument();
+    expect(announcer).toHaveTextContent('Starting voice input');
+
+    // A chip-only re-render (same cue) must NOT re-announce (transition-driven).
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" holdAvailable />);
+    expect(announcer).toHaveTextContent('Starting voice input');
+
+    // Capture is genuinely live: the S2 announcement replaces the cold one.
+    rerender(
+      <LauncherCommandBar
+        query="live"
+        onQueryChange={vi.fn()}
+        cue="listening"
+        listening
+        onStopListening={vi.fn()}
+      />,
+    );
+    expect(announcer).toHaveTextContent('Listening');
+  });
+
+  it('WARM path: exactly ONE announcement (`Listening`) — the armed window / S1 acknowledgement are NOT announced', () => {
+    const { rerender } = renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    // The keydown edge: `Hold to dictate…` is field TEXT, never a live region.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="acknowledge" />);
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
+    expect(announcer).toHaveTextContent('');
+    // No chip ⇒ no cold announcement either (the warm chip gate is never reached).
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+
+    // Capture is live — the one and only announcement.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" listening />);
+    expect(announcer).toHaveTextContent('Listening');
+
+    // An ordinary release (a stop) reads the S3 line.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />);
+    expect(announcer).toHaveTextContent('Stopped listening');
+  });
+
+  it('CANCEL (S4): a live cancel announces `Dictation cancelled` and SUPPRESSES `Stopped listening` (batched commit)', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />,
+    );
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
+    );
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('Listening');
+
+    // The host bumps `cancelSignal` on the live discard; `listening` may drop in
+    // the SAME commit (the backend confirm) — the cancel still wins.
+    rerender(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />,
+    );
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('CANCEL (S4): the cancel wins when `cancelSignal` lands a commit BEFORE `listening:false`', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />,
+    );
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
+    );
+    const announcer = screen.getByTestId('voice-listening-announcer');
+
+    // The handler runs synchronously; the capture confirm lands later.
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening cancelSignal={1} />,
+    );
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('a cancel never poisons the NEXT session: a fresh capture re-announces `Listening` and its stop reads `Stopped listening`', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />,
+    );
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
+    );
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+
+    // A NEW hold goes live: `Listening` again…
+    rerender(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" listening cancelSignal={1} />,
+    );
+    expect(announcer).toHaveTextContent('Listening');
+    // …and its release is an ordinary stop (the stale cancel flag was cleared).
+    rerender(<LauncherCommandBar query="hello" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
+    expect(announcer).toHaveTextContent('Stopped listening');
+  });
+});

@@ -11,6 +11,19 @@
  *   - when the model probe first reports ready (ST-3's `useSttModelReady`),
  *   - on the summon path (ST-7 calls `warmNow()` alongside `sttModel.refresh()`).
  *
+ * **R-6 release (Spec #2887 follow-up).** This hook is also the OBSERVATION SITE
+ * for the release edge: it is the one frontend module that receives BOTH the
+ * app-global voice-enabled flag (the persisted opt-in, `CompanionContext`) and
+ * the fail-closed STT model-ready probe, and it is mounted for the whole main
+ * window's life (the launcher surface is never unmounted — `LauncherShell.tsx`).
+ * On either 1 -> 0 edge — voice input switched OFF, or the model becoming
+ * unavailable/removed — it invokes the idempotent, engine-only `stt_release`
+ * through the sanctioned `adapterBridge`, so the process-resident recognizer is
+ * dropped and its memory reclaimed. The falling-edge guard means it can NEVER
+ * fire while voice is enabled AND the model is ready (residency is retained for
+ * the process lifetime by design, R-7), and re-enabling simply warms again at
+ * the new resident generation — the release does not poison residency.
+ *
  * Design:
  * - DISABLED / NOT-READY = NO INVOKE. While voice input is off, or while the
  *   model probe has not affirmatively reported ready, nothing is invoked — not
@@ -82,6 +95,10 @@ export function useSttWarm(enabled: boolean, modelReady: boolean): SttWarm {
   const callIdRef = useRef(0);
   // Single-flight: at most one `stt_warm` invocation at a time.
   const inFlightRef = useRef<Promise<void> | null>(null);
+  // The previous render's "voice enabled AND model ready" state. The R-6 release
+  // fires ONLY on a 1 -> 0 edge of this composite, so it can never fire while
+  // residency is wanted (R-7) and never on a mount that starts already disabled.
+  const prevArmedRef = useRef(enabled && modelReady);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -121,20 +138,47 @@ export function useSttWarm(enabled: boolean, modelReady: boolean): SttWarm {
     }
   }, []);
 
+  /**
+   * R-6 — release the process-resident engine and reclaim its memory. Invoked
+   * ONLY on the falling edge of "voice enabled AND model ready" (see the effect
+   * below), never while residency is wanted. Idempotent and engine-only on the
+   * backend (`stt_release`), and silent on failure: a failed release carries no
+   * residency information and must never throw to the caller or surface an
+   * error. The call goes through the sanctioned `adapterBridge` (never a static
+   * `@tauri-apps/api` import).
+   */
+  const release = useCallback(async (): Promise<void> => {
+    try {
+      await adapterBridge.invoke('stt_release');
+    } catch {
+      // Silent by contract: the next `stt_start` cold-loads normally, and a
+      // later warm re-attempts residency. Never throws.
+    }
+  }, []);
+
   // Trigger on the enable 0 -> 1 edge and on the model-ready edge. Disabling
   // drops the observable back to fail-closed and invalidates any in-flight call,
   // so a disabled session can never be re-armed by a late resolution. There is
   // no invoke while disabled and none while the probe is not ready.
+  //
+  // R-6: the SAME composite ("voice enabled AND model ready") drives the release
+  // on its 1 -> 0 edge — voice switched off, or the model removed/unavailable.
+  // The release is issued off the transition, never on a mount that begins
+  // already-unarmed, so an app launched with voice disabled never fires it.
   useEffect(() => {
     enabledRef.current = enabled;
     modelReadyRef.current = modelReady;
+    const armed = enabled && modelReady;
+    const wasArmed = prevArmedRef.current;
+    prevArmedRef.current = armed;
     if (!enabled) {
       callIdRef.current += 1;
       setWarm(false);
-      return;
+    } else if (modelReady) {
+      void warmUp();
     }
-    if (modelReady) void warmUp();
-  }, [enabled, modelReady, warmUp]);
+    if (wasArmed && !armed) void release();
+  }, [enabled, modelReady, warmUp, release]);
 
   const warmNow = useCallback(() => {
     if (!enabledRef.current || !modelReadyRef.current) return;

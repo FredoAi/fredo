@@ -430,6 +430,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // resting z-model (coveredByWindow) applies unchanged.
   const [open, setOpen] = useState(false);
 
+  // Spec #2887 follow-up (UI/UX §4 S4) — the CANCEL signal handed to the bar's
+  // live region. A monotonic counter (never a boolean) so each live Escape / `×`
+  // is a distinct transition the bar announces exactly once. Bumped ONLY when a
+  // GENUINELY LIVE launcher-origin session is discarded (`listeningRef` true): an
+  // Escape that merely disarms a pre-capture hold claims nothing, so it stays
+  // silent (UI/UX §3 flow 6 — nothing to retract).
+  const [cancelSignal, setCancelSignal] = useState(0);
+  const signalCancel = useCallback(() => setCancelSignal((n) => n + 1), []);
+
   // ── Spec #2882 ST-5 — the hold-to-dictate gesture state (never persisted) ────
   // The WHILE-Space-is-held condition is a continuous state machine, not a set of
   // transition call-sites: `holdArmed` is the cue from the keydown moment for the
@@ -1282,7 +1291,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           if (mayStart) cancelOnLiveRef.current = true;
           // A session that raced in before/at the Escape still takes the existing
           // cancel path (suppress the autosend commit, restore the draft).
-          if (listeningRef.current) suppressAutosendAndRestore();
+          if (listeningRef.current) {
+            suppressAutosendAndRestore();
+            // S4 — a genuinely live discard announces `Dictation cancelled`.
+            signalCancel();
+          }
           void cancelVoice();
           return;
         }
@@ -1294,6 +1307,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // commit is suppressed and the pre-session text is restored (R-3.1/3.2).
         if (listeningRef.current) {
           suppressAutosendAndRestore();
+          // S4 — Escape while live: announce `Dictation cancelled`, never the
+          // S3 `Stopped listening` (UI/UX §4).
+          signalCancel();
           void cancelVoice();
           return;
         }
@@ -1487,6 +1503,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       suppressAutosendAndRestore,
       armHold,
       resetHoldGesture,
+      signalCancel,
       voiceEnabled,
       sttModel.ready,
     ],
@@ -1797,8 +1814,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               blurStopIssuedRef.current = true;
               resetHoldGesture();
               suppressAutosendAndRestore();
+              // S4 — the visible `×` discards a LIVE session: the bar announces
+              // `Dictation cancelled` and suppresses `Stopped listening`.
+              signalCancel();
               void cancelVoice();
             }}
+            // Spec #2887 follow-up (UI/UX §4) — the S4 cancel transition (Escape /
+            // `×`) the bar's live region consumes. Bumped only for a live cancel.
+            cancelSignal={cancelSignal}
             // #2878 ST-2 (UX-2) — the user corrected the bar during a live
             // segment: stop partial writes for the session (finals still append).
             onUserEdit={() => {

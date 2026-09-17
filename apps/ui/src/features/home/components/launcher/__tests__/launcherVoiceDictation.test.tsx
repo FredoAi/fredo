@@ -1740,8 +1740,9 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     expect(el).toHaveAttribute('placeholder', 'Hold to dictate…');
     record();
 
-    // The bounded chip renders (the cold/launch-window path): the region is
-    // STILL silent — the chip names what is happening, it does not claim capture.
+    // The bounded chip renders (the cold/launch-window path): per UI/UX §4 the
+    // region announces `Starting voice input` for it — the chip names what is
+    // happening and NEVER claims capture (the assertion below proves it).
     act(() => {
       vi.advanceTimersByTime(HOLD_THRESHOLD_MS + HOLD_PENDING_CUE_MS);
     });
@@ -1761,9 +1762,64 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     });
     record();
 
-    expect(seen).toEqual(['', '', '', 'Listening', 'Stopped listening']);
+    // #2887 follow-up (UI/UX §4 cold path): the bounded chip's rise is announced
+    // as `Starting voice input` (never `Listening`); capture is announced exactly
+    // once; the release reads the S3 stop.
+    expect(seen).toEqual(['', '', 'Starting voice input', 'Listening', 'Stopped listening']);
     // The capture is gone: the acknowledgement is withdrawn with the gesture.
     expect(el).toHaveAttribute('placeholder', 'search or command');
+  });
+
+  // ── #2887 follow-up — the S4 CANCEL announcement (UI/UX §4) ─────────────────
+
+  it('S4: Escape while LIVE announces `Dictation cancelled`, never `Stopped listening`', async () => {
+    await renderArmedShell();
+    focusBar();
+    emitListening(true, 'launcher');
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('Listening');
+
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Escape' });
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('S4: the visible `×` while LIVE announces `Dictation cancelled`, never `Stopped listening`', async () => {
+    await renderArmedShell();
+    emitListening(true, 'launcher');
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('Listening');
+
+    act(() => {
+      fireEvent.click(screen.getByTestId('launcher-command-listening-cancel'));
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('S4: an Escape that disarms a PRE-CAPTURE hold (nothing was live) stays silent — no cancel announcement', async () => {
+    await renderArmedShell('pending');
+    focusBar();
+    spaceDown();
+    // Armed only — no capture yet, so nothing claimed Listening.
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+    });
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Escape' });
+    });
+
+    // The disarm retracts nothing: no `Dictation cancelled`, no listening claim.
+    expect(announcer).toHaveTextContent('');
   });
 
   // ── R-2.6 — the stale-hold guard (the mic-hot race) ─────────────────────────

@@ -74,6 +74,19 @@
  *     dictate`) — shown only while the input is focused and empty with a usable
  *     model, so no promise is made when Space is simply an ordinary space.
  *
+ * #2887 follow-up — the transition-driven live-region contract (UI/UX §4), on the
+ * shipped `voice-listening-announcer`:
+ *   • WARM path: exactly ONE announcement, `Listening`, when capture is genuinely
+ *     live; nothing is announced before it (the S1 `Hold to dictate…`
+ *     acknowledgement is field text, never a live region);
+ *   • COLD path: `Starting voice input` the moment the bounded
+ *     `launcher-command-listening-pending` chip renders, then `Listening`;
+ *   • S3 stop: `Stopped listening`; S4 CANCEL (`cancelSignal`, bumped by the host
+ *     on a live Escape / `×`): `Dictation cancelled` with that stop line
+ *     SUPPRESSED, so a discarded utterance is never reported as finished;
+ *   • announcements stay transition-driven (never per partial/event), and text is
+ *     the honesty channel — colour/motion never carries a state.
+ *
  * #2883 ST-1 — the field WRAPS, GROWS and CAPS (AC1 input side, R-1.1/1.2/1.3/5.3):
  *   • the single-line `Input` becomes a Chakra `Textarea` that KEEPS
  *     `role="searchbox"` (so every #2882 selector/predicate stays tag-agnostic —
@@ -244,6 +257,18 @@ export interface LauncherCommandBarProps {
    * `Control+Space` (it advertises the bar-opening chord, not dictation).
    */
   voiceEnabled?: boolean;
+  /**
+   * Spec #2887 follow-up (UI/UX §4 S4) — the host's CANCEL signal: a monotonic
+   * counter the HOST bumps when an Escape / `×` discards a GENUINELY LIVE
+   * (`captureLive`) session. The bar's live region is transition-driven, so it
+   * announces `Dictation cancelled` on the bump and SUPPRESSES the
+   * `Stopped listening` line for that cancel (S4 must not read as S3). The host
+   * bumps it ONLY for a live-session cancel, so an Escape that disarms a
+   * pre-capture hold stays silent (UI/UX §3 flow 6: nothing claimed Listening,
+   * so there is nothing to retract). Optional: omitted ⇒ the shipped
+   * `Stopped listening` behaviour (inactive-bar invariance).
+   */
+  cancelSignal?: number;
   /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
   ariaLabel?: string;
   /**
@@ -403,6 +428,25 @@ export const HEARING_NOTHING_COPY =
 export const STARTING_VOICE_INPUT_COPY = 'starting voice input…';
 
 /**
+ * Spec #2887 follow-up (UI/UX §4) — the COLD-path live-region announcement,
+ * fired the moment the bounded `starting voice input…` chip renders (the
+ * readying window outlived `HOLD_PENDING_CUE_MS` from threshold-crossed) and
+ * BEFORE capture is live. The warm path never renders the chip, so it never
+ * hears this line — exactly one `Listening` announcement, nothing before
+ * capture. The S1 `Hold to dictate…` acknowledgement is TEXT in the field, never
+ * a live-region announcement (it would double-speak within ≲100 ms).
+ */
+export const STARTING_VOICE_INPUT_ANNOUNCEMENT = 'Starting voice input';
+
+/**
+ * Spec #2887 follow-up (UI/UX §4 S4) — the CANCEL announcement, fired when the
+ * host reports a live-session cancel (`cancelSignal`). It REPLACES the S3
+ * `Stopped listening` line for that transition: a discarded utterance is never
+ * reported as a finished one.
+ */
+export const DICTATION_CANCELLED_ANNOUNCEMENT = 'Dictation cancelled';
+
+/**
  * Spec #2887 ST-5 (UI/UX §1 S1) — the pre-capture acknowledgement placeholder.
  * It describes the user's OWN gesture ("hold to dictate"), so it can never be
  * mistaken for capture and can never read as a stall. It replaces the shipped
@@ -499,6 +543,7 @@ export function LauncherCommandBar({
   voiceErrorMessage,
   finalTranscript = '',
   voiceEnabled = false,
+  cancelSignal = 0,
   ariaLabel,
   ariaDescribedBy,
   newlineHint = false,
@@ -662,17 +707,63 @@ export function LauncherCommandBar({
   // never per event, never per partial. A disable-mid-session wins over the
   // subsequent `Stopped listening` (the sticky `voiceOffRef`) so the region
   // reads exactly once per user-visible transition.
+  //
+  // Spec #2887 follow-up (UI/UX §4): the SAME transition-driven machine now
+  // carries the two missing transitions —
+  //   • COLD path: `Starting voice input` the moment the bounded
+  //     `starting voice input…` chip renders (the readying window outlived
+  //     `HOLD_PENDING_CUE_MS`), then `Listening` once capture is genuinely live.
+  //     The WARM path never renders the chip, so it announces exactly one line
+  //     (`Listening`) and nothing before capture.
+  //   • CANCEL (S4): `Dictation cancelled` on the host's `cancelSignal` bump,
+  //     with the subsequent `Stopped listening` suppressed — a discarded
+  //     utterance is never reported as a finished one.
   const [listenAnnouncement, setListenAnnouncement] = useState('');
   const prevListeningRef = useRef(listening);
   const prevVoiceEnabledRef = useRef(voiceEnabled);
   const voiceOffRef = useRef(false);
+  // Set by the cancel effect and consumed by the listening effect in the SAME
+  // commit when the host batches `cancelSignal` with `listening:false`.
+  const cancelPendingRef = useRef(false);
+
+  // COLD path (UI/UX §4): announce the bounded chip ONCE, on its rise edge. The
+  // S1 `acknowledge` state renders no chip and is deliberately NOT announced.
+  const prevStartingChipRef = useRef(startingChip);
+  useEffect(() => {
+    const was = prevStartingChipRef.current;
+    prevStartingChipRef.current = startingChip;
+    if (startingChip && !was) setListenAnnouncement(STARTING_VOICE_INPUT_ANNOUNCEMENT);
+  }, [startingChip]);
+
+  // CANCEL (S4). Declared BEFORE the listening effect so the flag is already set
+  // when that effect inspects the same commit. The host bumps `cancelSignal`
+  // only for a genuinely live cancel, so no listening check is needed here — and
+  // an armed-window disarm (no bump) stays silent by construction.
+  const prevCancelSignalRef = useRef(cancelSignal);
+  useEffect(() => {
+    const was = prevCancelSignalRef.current;
+    prevCancelSignalRef.current = cancelSignal;
+    if (cancelSignal === was) return;
+    cancelPendingRef.current = true;
+    setListenAnnouncement(DICTATION_CANCELLED_ANNOUNCEMENT);
+  }, [cancelSignal]);
 
   useEffect(() => {
     const was = prevListeningRef.current;
     prevListeningRef.current = listening;
     if (was === listening) return;
+    if (listening) {
+      // A fresh capture clears every prior transition's sticky state.
+      cancelPendingRef.current = false;
+      voiceOffRef.current = false;
+    }
+    // S4 — a cancel already announced `Dictation cancelled`; never follow it
+    // with the S3 stop line for the same transition.
+    if (!listening && cancelPendingRef.current) {
+      cancelPendingRef.current = false;
+      return;
+    }
     if (!listening && voiceOffRef.current) return;
-    if (listening) voiceOffRef.current = false;
     setListenAnnouncement(listening ? 'Listening' : 'Stopped listening');
   }, [listening]);
 

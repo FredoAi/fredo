@@ -181,7 +181,15 @@ describe('useSttWarm — re-attempt edges', () => {
     await act(async () => {
       rerender({ enabled: true, ready: true });
     });
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    // #2887 R-6 re-point: the disable edge now ALSO releases the resident
+    // engine (`stt_warm`, `stt_release`), and re-enabling warms again — the
+    // release never poisons residency. The exact command sequence is the strong
+    // oracle (the bare count would not distinguish a lost warm from a release).
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      'stt_warm',
+      'stt_release',
+      'stt_warm',
+    ]);
     expect(result.current.warm).toBe(true);
   });
 
@@ -202,7 +210,7 @@ describe('useSttWarm — re-attempt edges', () => {
     expect(result.current.warm).toBe(true);
   });
 
-  it('does not invoke on the ready 1 -> 0 edge (readiness loss alone is not a warm)', async () => {
+  it('does not WARM on the ready 1 -> 0 edge (readiness loss alone is not a warm — it is a release)', async () => {
     invokeMock.mockResolvedValue({ warmed: true });
 
     const { rerender } = renderHook(
@@ -210,12 +218,15 @@ describe('useSttWarm — re-attempt edges', () => {
       { initialProps: { enabled: true, ready: true } },
     );
     await flush();
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'stt_warm')).toHaveLength(1);
 
     await act(async () => {
       rerender({ enabled: true, ready: false });
     });
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    // #2887 R-6 re-point: readiness LOSS is the model-unavailable release edge —
+    // no second warm, exactly one release.
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'stt_warm')).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'stt_release')).toHaveLength(1);
   });
 
   it('warmNow() re-attempts on the summon path after a failed warm', async () => {
@@ -265,7 +276,10 @@ describe('useSttWarm — re-attempt edges', () => {
     await act(async () => {
       result.current.warmNow();
     });
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    // #2887 R-6 re-point: the disable edge released the engine (the one extra
+    // call); `warmNow()` itself stays inert while disabled — no second warm.
+    expect(invokeMock).toHaveBeenCalledWith('stt_release');
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'stt_warm')).toHaveLength(1);
   });
 });
 
@@ -401,7 +415,120 @@ describe('useSttWarm — silent failure', () => {
   });
 });
 
-// ── 7. Sanctioned transport ─────────────────────────────────────────────────
+// ── 7. R-6 release (the voice-disabled / model-lost falling edges) ───────────
+
+describe('useSttWarm — R-6 releases the resident engine on the falling edges', () => {
+  const releases = (mock: typeof invokeMock) =>
+    mock.mock.calls.filter(([command]) => command === 'stt_release');
+
+  it('releases on the voice-enabled 1 -> 0 edge', async () => {
+    invokeMock.mockResolvedValue({ warmed: true });
+    const { rerender } = renderHook(
+      ({ enabled, ready }) => useSttWarm(enabled, ready),
+      { initialProps: { enabled: true, ready: true } },
+    );
+    await flush();
+    expect(releases(invokeMock)).toHaveLength(0);
+
+    await act(async () => {
+      rerender({ enabled: false, ready: true });
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith('stt_release');
+    expect(releases(invokeMock)).toHaveLength(1);
+  });
+
+  it('releases on the model-ready 1 -> 0 edge while voice stays enabled', async () => {
+    invokeMock.mockResolvedValue({ warmed: true });
+    const { rerender } = renderHook(
+      ({ enabled, ready }) => useSttWarm(enabled, ready),
+      { initialProps: { enabled: true, ready: true } },
+    );
+    await flush();
+
+    await act(async () => {
+      rerender({ enabled: true, ready: false });
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith('stt_release');
+    // A readiness LOSS never re-attempts a warm (only a ready edge does).
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'stt_warm')).toHaveLength(1);
+  });
+
+  it('NEVER releases while voice is enabled and the model is ready (no accidental idle release)', async () => {
+    invokeMock.mockResolvedValue({ warmed: true });
+    const { rerender } = renderHook(
+      ({ enabled, ready }) => useSttWarm(enabled, ready),
+      { initialProps: { enabled: true, ready: true } },
+    );
+    await flush();
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => {
+        rerender({ enabled: true, ready: true });
+      });
+    }
+    expect(releases(invokeMock)).toHaveLength(0);
+  });
+
+  it('does NOT release on a mount that starts already disabled or not-ready', async () => {
+    invokeMock.mockResolvedValue({ warmed: true });
+    const disabled = renderHook(() => useSttWarm(false, true));
+    await flush();
+    expect(disabled.result.current.warm).toBe(false);
+    cleanup();
+
+    const notReady = renderHook(() => useSttWarm(true, false));
+    await flush();
+    expect(notReady.result.current.warm).toBe(false);
+
+    expect(releases(invokeMock)).toHaveLength(0);
+  });
+
+  it('re-enabling WARMS AGAIN after a release (the release never poisons residency)', async () => {
+    invokeMock.mockResolvedValue({ warmed: true });
+    const { result, rerender } = renderHook(
+      ({ enabled, ready }) => useSttWarm(enabled, ready),
+      { initialProps: { enabled: false, ready: true } },
+    );
+    await flush();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rerender({ enabled: true, ready: true });
+    });
+    expect(result.current.warm).toBe(true);
+
+    await act(async () => {
+      rerender({ enabled: false, ready: true });
+    });
+    expect(result.current.warm).toBe(false);
+
+    await act(async () => {
+      rerender({ enabled: true, ready: true });
+    });
+    expect(result.current.warm).toBe(true);
+    expect(invokeMock).toHaveBeenLastCalledWith('stt_warm');
+  });
+
+  it('a release failure is silent (never throws, no observable change)', async () => {
+    invokeMock.mockResolvedValueOnce({ warmed: true });
+    const { result, rerender } = renderHook(
+      ({ enabled, ready }) => useSttWarm(enabled, ready),
+      { initialProps: { enabled: true, ready: true } },
+    );
+    await flush();
+    expect(result.current.warm).toBe(true);
+
+    invokeMock.mockRejectedValueOnce(new Error('command stt_release not found'));
+    await act(async () => {
+      rerender({ enabled: false, ready: true });
+    });
+
+    expect(result.current.warm).toBe(false);
+  });
+});
+
+// ── 8. Sanctioned transport ─────────────────────────────────────────────────
 
 describe('useSttWarm — transport invariant', () => {
   it('never statically imports @tauri-apps/api and never uses useEventRows', () => {
