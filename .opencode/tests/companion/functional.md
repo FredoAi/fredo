@@ -1496,19 +1496,43 @@ Key receipts:
     arrival is the `llm-token` timeline.
   - **Receipt:** the query outputs verbatim + the raw evidence URLs.
 
-### #2883 testing round 1 — result
+### #2883 testing round 1 — result (tip `326822ff`)
 
-- [x] **Round 1 (serving `326822ff`, driver :9224, real managed-`llama-server` streams) — F-79..F-86 PASS · F-87 PASS (name/focus/hold+grace) / reduced-motion leg UNVERIFIED · F-88 PASS · F-89 PASS · F-90 PASS.**
-      - F-79 PASS (real streaming class): base `240×120 @len 28` → grown `560×152 @312` → `560×190 @362` → `560×228 @494` → `560×270 @1694`; ≥5 distinct samples while still arriving, monotonic; `data-reply-kind="reply"`; width `min(560, available)=560`.
-      - F-80 PASS at **900×600**: 28 reply samples, 0 out-of-window; settled `reply{l:170,t:166,rr:730,bt:294}` vs `win{900,600}`.
-      - F-81 PASS: ONE frame with a long wrapped query AND a grown reply — intersections with bar/field/hint/collapse all **0** (reply bottom 435.8 < bar top 485.8); placement `above`.
-      - F-82 PASS: `[data-testid="fredo-reply-scroll"]` `scrollHeight 674 > clientHeight 240`; following pinned `scrollTop 434` (= 674−240, the bottom); tail is the streamed completion.
-      - F-83 PASS: countdown running, then pointer over the surface → **120/120 present samples across 12.0 s** (2.4× the 5 s hold).
-      - F-84 PASS: `pointerout` → still present at leave, cleared between +2488 ms and +2597 ms (bound 2000 ms + the bubble exit transition).
-      - F-85 PASS: `scrollTop` held at 20 and the top-visible character offset at 32 while the reply grew `len 1322→1913` / `scrollHeight 522→712`.
-      - F-86 PASS: labelled `Newest` `<button>` (`aria-label="Jump to the newest part of Fredo's reply"`) → `scrollTop 20 → 472` (bottom) and the control unmounts (`following=true`).
-      - F-87 PASS (a/b/c labels): `role="region"`, `aria-label="Fredo's reply"`, `tabindex="0"`, `aria-busy` while streaming, focusable, no focus trap; **120/120 present over 12 005 ms** under keyboard focus, grace ≈2.5 s after `blur()`; `Newest` is a labelled button, no `aria-live`/`role="log"`. Keyboard scroll-to-end and the reduced-motion flip were not drivable (G-161 / G-148) → those sub-legs UNVERIFIED with pins `ReplyScrollArea.test.tsx`, `SpeechBubble.reducedMotion`.
-      - F-88 PASS: during the scrolled-back window the length advanced monotonically (≥8 increases) and `scrollHeight` grew 522→712; console clean.
-      - F-89 PASS: `"Hi there!"` → `data-reply-tier="base"`, rect **240×120**, no scroll region/scrollbar.
-      - F-90 PASS: `telemetry_spans` 1098 rows, `max(ingested_at)=2026-09-17T08:06:04.286180200+00:00`; `chat_rows` **1** for `e2e-2883-chat` after `fredo emit --event-type chat --session-id e2e-2883-chat --state response --provider internal`; real `llm-token` streams observed in-app.
-      Evidence: https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f79-grown-reply-streaming.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f80-grown-reply-900x600.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f85-f86-scrolled-back-newest-pill.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f81-f71-collision-frame-long-query-long-reply.jpeg
+- [x] Verdict **FAIL** on the launcher-side D-1 (bar field never shrank). The reply rows all
+      passed live: F-79 (growth), F-80 (inside window), F-81 (collision), F-82 (scroll reach),
+      F-83/F-84 (pointer), F-85 (reading position), F-86 (`Newest`), F-87a/b (name/focus/keyboard
+      protection), F-88, F-89, F-90. The `SpeechBubble.twoTier` height-freeze flake was seen once.
+
+### #2883 testing round 2 — result (tip `9108bfe4`) — ordering fix + regression sweep
+
+- [x] **F-79** PASS — real managed-`llama-server` stream: `base 238×119 @14` → `grown 560×120 @140`
+      → `560×133` → `560×152` → `560×209` → `560×230 @728` … ≥14 distinct increasing samples while
+      still arriving; `data-reply-kind="reply"`; width `min(560, available)`, height clamped.
+- [x] **F-80** PASS — 900×600: 22 samples, 0 outside the window; grown `{170,166,730,294}`.
+- [x] **F-81** PASS — one frame with both surfaces: reply `{420,166,980,396}` vs bar
+      `{252,446,1148,580}`, field, hint and collapse → intersections all 0.
+- [x] **F-82** PASS — scroller `overflow-y auto`, `scrollHeight 579 > clientHeight 200`,
+      `scrollTop` reaches `379 == scrollHeight − clientHeight`; tail is the completion text.
+- [x] **F-83** PASS — pointer enters at t=828 ms on a reply whose countdown had started;
+      **84/84 present over 16.2 s** (>2× the ~5 s period), never dismissed.
+- [x] **F-84** PASS — leave → present immediately, last present +2498 ms, absent +2700 ms
+      ⇒ clear ≈ **2.5 s** = 2000 ms grace + ~0.5 s exit.
+- [x] **F-85** PASS — stepped (user-like) scroll-back; **`scrollTop` held at 0** across arrivals
+      `textLen 1522 → 2205` while `scrollHeight` grew `541 → 769`; `Newest` present throughout.
+      (Round 2 fix: the follow flip is delivered synchronously/change-only, so a measure can never
+      run with a stale follow state; two new honesty pins cover it.)
+- [x] **F-86** PASS — `Newest` labelled button; click → `scrollTop 0→226→360→379` (bottom) and the
+      button unmounts.
+- [x] **F-87a** PASS (name/focus/trap) — `role="region"`, `aria-label="Fredo's reply"`,
+      `tabindex="0"`, wrapper `aria-hidden` dropped; keyboard scroll-to-end UNVERIFIED (G-161).
+- [x] **F-87b** PASS — scroller focused: **57/57 present over 11.25 s**; blur → present at +54…+856,
+      last present +2456 ms, absent +2656 ms ⇒ ≈2.5 s grace.
+- [x] **F-87c** PASS (labels/roles) — labelled `Newest`, `aria-busy`, one polite announcement;
+      reduced-motion flip UNVERIFIED (G-148) with static/unit pins.
+- [x] **F-88** PASS — length advanced monotonically during the scrolled-back window; console clean.
+- [x] **F-89** PASS — `Reply with exactly: Hi there!` → `data-reply-tier="base"`, rect **240×120**,
+      no scroller/`Newest`.
+- [x] **F-90** PASS — `telemetry_spans` 1891 rows, `max(ingested_at)=2026-09-17T08:53:14.601Z`;
+      `chat_rows` 1 for `e2e-2883-chat`.
+- [x] Unit flake gone — two consecutive full runs: 1284/1284 both; `SpeechBubble.twoTier` 13/13,
+      `ReplyScrollArea` 19/19.
