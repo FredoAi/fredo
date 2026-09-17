@@ -26,7 +26,7 @@
 
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -160,6 +160,34 @@ function simulateScroll(
 }
 
 const settleFrames = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+/**
+ * Flush ONE real animation frame through React. Not a fixed millisecond budget:
+ * it resolves on the browser's own frame boundary, so it settles any rAF-
+ * coalesced work the component has already scheduled.
+ */
+const flushAnimationFrame = () =>
+  act(async () => {
+    await new Promise<void>((resolve) => {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => resolve());
+      } else {
+        resolve();
+      }
+    });
+  });
+
+/**
+ * Deterministic barrier: run the pending animation-frame chain (the measurement
+ * the pre-scroll commit registered, plus the re-measure its commit schedules) to
+ * completion. `waitFor(Newest)` only proves the scroller's LOCAL state — not that
+ * the parent's measurement has observed the flip — so it is not a barrier on its
+ * own.
+ */
+const flushAnimationFrames = async () => {
+  await flushAnimationFrame();
+  await flushAnimationFrame();
+};
 
 let rectSpy: ReturnType<typeof vi.spyOn>;
 
@@ -331,6 +359,13 @@ describe('#2883 ST-4 SpeechBubble — the two-tier text reply surface', () => {
         expect(screen.getByTestId(REPLY_SCROLL_NEWEST_TESTID)).toBeInTheDocument(),
       );
 
+      // Deterministic barrier (frame flush, never a bigger fixed sleep): the
+      // `Newest` wait above proves only the scroller's local state, so flush the
+      // pending animation-frame chain and re-assert the freeze is in effect
+      // BEFORE the content grows — no measurement may still be racing the frame.
+      await flushAnimationFrames();
+      expect(lastStyle().height).toBe(300);
+
       // More content arrives while the reader is scrolled back: the height is HELD.
       measurement.textHeight = 520;
       rerender(bubble({ growth: BAND, isStreaming: true, message: 'A longer arriving reply…' }));
@@ -340,6 +375,26 @@ describe('#2883 ST-4 SpeechBubble — the two-tier text reply surface', () => {
       // The deliberate return releases the freeze and re-clamps to the content.
       fireEvent.click(screen.getByTestId(REPLY_SCROLL_NEWEST_TESTID));
       await waitFor(() => expect(lastStyle().height).toBe(520));
+    });
+
+    it('never measures with a stale follow state — content arriving in the scroll task stays frozen', async () => {
+      const { rerender } = renderWithChakra(bubble({ growth: BAND, isStreaming: true }));
+      const region = await screen.findByTestId(REPLY_SCROLL_TESTID);
+      await waitFor(() => expect(lastStyle().height).toBe(300));
+
+      // Scroll back AND deliver the arrival in the SAME task, before any pending
+      // animation frame can run. The scroller's report is synchronous, so the
+      // measurement the pre-scroll commit already registered must observe the
+      // scrolled-back state — not the stale `following: true` it was scheduled
+      // under — and the surface must not grow by one pixel (R-5.1).
+      simulateScroll(region, { clientHeight: 300, scrollHeight: 3000, scrollTop: 500 });
+      fireEvent.scroll(region);
+      measurement.textHeight = 520;
+      rerender(bubble({ growth: BAND, isStreaming: true, message: 'A longer arriving reply…' }));
+
+      await settleFrames();
+      expect(screen.getByTestId(REPLY_SCROLL_NEWEST_TESTID)).toBeInTheDocument();
+      expect(lastStyle().height).toBe(300);
     });
   });
 

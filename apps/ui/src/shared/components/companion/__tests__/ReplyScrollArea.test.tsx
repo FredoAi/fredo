@@ -8,7 +8,11 @@
  *                     reachable, named, no trap (Tab leaves a plain tabIndex node).
  *   - REQ-10 / R-5.1: the at-bottom FOLLOW vs scrolled-back HOLD decision — pinned
  *                     both as a pure function and at DOM level with a simulated
- *                     `scrollTop`/`clientHeight`/`scrollHeight`.
+ *                     `scrollTop`/`clientHeight`/`scrollHeight`. The report to
+ *                     `onFollowingChange` is CHANGE-ONLY and SYNCHRONOUS with the
+ *                     change (never deferred to a later animation frame), so the
+ *                     parent's rAF-coalesced measurement can never run against a
+ *                     stale follow state (round-2 ordering fix).
  *   - REQ-11 / R-5.2: the labelled `Newest` control is the ONLY path back to
  *                     following; a new generation resets to following.
  *   - REQ-17 / REQ-18: reduced motion ⇒ instant jump; the anchor is a ref and the
@@ -219,6 +223,36 @@ describe('ReplyScrollArea (#2883 ST-5)', () => {
       expect(onFollowingChange.mock.calls.length).toBe(callsAtHold);
     });
 
+    it('delivers the flip SYNCHRONOUSLY and change-only — no frame may outrun the report', () => {
+      const onFollowingChange = vi.fn();
+      renderWithChakra(
+        <ReplyScrollArea onFollowingChange={onFollowingChange}>
+          <span>long reply</span>
+        </ReplyScrollArea>,
+      );
+      const region = screen.getByTestId(REPLY_SCROLL_TESTID);
+      const sim = simulateScroll(region, { clientHeight: 100, scrollHeight: 600 });
+
+      // A deliberate scroll back: the parent must observe the flip in the SAME
+      // task as the scroll. A deferred (rAF) report would let a measurement that
+      // was already pending run first and latch an unfrozen surface height while
+      // the reader is scrolled back (round-2 order-independence).
+      sim.setTop(150);
+      fireEvent.scroll(region);
+      expect(onFollowingChange).toHaveBeenLastCalledWith(false);
+
+      // Change-only: repeating the same scrolled-back position reports nothing.
+      const callsAtHold = onFollowingChange.mock.calls.length;
+      fireEvent.scroll(region);
+      expect(onFollowingChange.mock.calls.length).toBe(callsAtHold);
+
+      // A real change still reports — again synchronously.
+      sim.setTop(500);
+      fireEvent.scroll(region);
+      expect(onFollowingChange).toHaveBeenLastCalledWith(true);
+      expect(screen.queryByTestId(REPLY_SCROLL_NEWEST_TESTID)).not.toBeInTheDocument();
+    });
+
     it('stays pinned and offers no control when the reply fits the surface', () => {
       renderArea();
       const region = screen.getByTestId(REPLY_SCROLL_TESTID);
@@ -257,7 +291,8 @@ describe('ReplyScrollArea (#2883 ST-5)', () => {
       fireEvent.click(newest);
 
       expect(sim.top()).toBe(600);
-      // The report is rAF-coalesced by design — await the frame that carries it.
+      // The flip is delivered SYNCHRONOUSLY with the activation (round-2
+      // order-independence) — the parent observes it in the same task.
       await waitFor(() => expect(onFollowingChange).toHaveBeenLastCalledWith(true));
       // Following resumed ⇒ the control is gone; focus stays on the region so the
       // arrow/page keys keep working.

@@ -17,8 +17,10 @@
  * effect, and NO React state is written per token. The one piece of state
  * (`following`) flips ONLY on a real scroll event or on the `Newest` activation,
  * so the streaming cadence is untouched. The parent's height-freeze need is
- * reported through `onFollowingChange` (rAF-coalesced) and is expected to be
- * stored by the parent in a REF — the callback is never a state setter.
+ * reported through `onFollowingChange` — CHANGE-ONLY and delivered
+ * SYNCHRONOUSLY with the change (see `notifyFollowing`), so a measurement can
+ * never run against a stale follow state — and is expected to be stored by the
+ * parent in a REF (the callback is never a state setter).
  *
  * Tier invariant (R-5.3): this component IS the grown tier. `SpeechBubble` mounts
  * it only when the content no longer fits the base 240×120 card, so the base tier
@@ -104,7 +106,9 @@ export interface ReplyScrollAreaProps {
   label?: string;
   /**
    * Reports the follow state so the parent can FREEZE the surface height while
-   * the reader is scrolled back. rAF-coalesced and change-only; the parent is
+   * the reader is scrolled back. CHANGE-ONLY and delivered SYNCHRONOUSLY with
+   * the change — the parent's rAF-coalesced measurement must never be able to
+   * run against a stale follow state (R-5.1 order-independence). The parent is
    * expected to record it in a ref (never a state setter — see the loop guard).
    */
   onFollowingChange?: (following: boolean) => void;
@@ -127,8 +131,6 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
   /** The anchor rule's source of truth — a REF, never state (no per-token write). */
   const atBottomRef = useRef(true);
   const followingCallbackRef = useRef(onFollowingChange);
-  const pendingFollowingRef = useRef<boolean | null>(null);
-  const frameRef = useRef<number | null>(null);
   /** True while a deliberate (smooth) return is animating — see handleScroll. */
   const returningRef = useRef(false);
   const returningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -143,26 +145,30 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
   const [reduceMotion] = useState<boolean>(() => prefersReducedMotion());
 
   // Keep the callback ref current (it is only ever invoked from handlers/effects,
-  // so a post-render refresh is in time) without re-creating `flushFollowing`.
+  // so a post-render refresh is in time) without re-creating `notifyFollowing`.
   useEffect(() => {
     followingCallbackRef.current = onFollowingChange;
   }, [onFollowingChange]);
 
-  /** rAF-coalesced, change-only report; latest value wins. */
-  const flushFollowing = useCallback((next: boolean) => {
-    pendingFollowingRef.current = next;
-    if (frameRef.current !== null) return;
-    const run = () => {
-      frameRef.current = null;
-      const value = pendingFollowingRef.current;
-      pendingFollowingRef.current = null;
-      if (value !== null) followingCallbackRef.current?.(value);
-    };
-    if (typeof requestAnimationFrame === 'function') {
-      frameRef.current = requestAnimationFrame(run);
-    } else {
-      run();
-    }
+  /**
+   * CHANGE-ONLY report of the follow state, delivered SYNCHRONOUSLY to the
+   * parent in the same task as the change (R-5.1 order-independence).
+   *
+   * Deferring this to a `requestAnimationFrame` let a measurement that was
+   * already pending run BEFORE the flip in the same frame (rAF callbacks run in
+   * registration order): it measured the newly arrived content while
+   * `following` still read `true`, applied the UNFROZEN grown height, and the
+   * freeze then latched that height for the whole scrolled-back episode — the
+   * surface grew once and stayed grown while the reader was reading.
+   *
+   * Synchronous delivery costs nothing per frame and nothing per token: it is
+   * only ever reached from a real scroll event, the `Newest` activation, or a
+   * generation reset, and each of those is already change-only (`handleScroll`
+   * early-returns when the value did not change). The parent's own
+   * rAF-coalesced measurement remains THE per-frame layout-read coalescer.
+   */
+  const notifyFollowing = useCallback((next: boolean) => {
+    followingCallbackRef.current?.(next);
   }, []);
 
   /** Releases the in-flight return guard (settled, interrupted, or timed out). */
@@ -176,10 +182,6 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
 
   useEffect(
     () => () => {
-      if (frameRef.current !== null && typeof cancelAnimationFrame === 'function') {
-        cancelAnimationFrame(frameRef.current);
-      }
-      frameRef.current = null;
       if (returningTimerRef.current !== null) {
         clearTimeout(returningTimerRef.current);
         returningTimerRef.current = null;
@@ -201,8 +203,8 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
   useEffect(() => {
     atBottomRef.current = true;
     setFollowing(true);
-    flushFollowing(true);
-  }, [resetKey, flushFollowing]);
+    notifyFollowing(true);
+  }, [resetKey, notifyFollowing]);
 
   // HOLD vs FOLLOW: the ONLY place the anchor is re-decided. A programmatic
   // follow re-fires a scroll event while already at the bottom, so the early
@@ -220,8 +222,11 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
     if (next === atBottomRef.current) return;
     atBottomRef.current = next;
     setFollowing(next);
-    flushFollowing(next);
-  }, [clearReturning, flushFollowing]);
+    // Synchronous on purpose: the parent must observe this flip in the SAME task
+    // as the scroll (see `notifyFollowing`), so a measurement can never latch an
+    // unfrozen height while the reader is scrolled back.
+    notifyFollowing(next);
+  }, [clearReturning, notifyFollowing]);
 
   // DELIBERATE return: the pill is the only path back to following.
   const returnToNewest = useCallback(() => {
@@ -229,7 +234,7 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
     if (!el) return;
     atBottomRef.current = true;
     setFollowing(true);
-    flushFollowing(true);
+    notifyFollowing(true);
     if (reduceMotion) {
       // Reduced motion ⇒ instant jump: `scroll-behavior` is `auto`, so this one
       // assignment lands at the end with no intermediate frames.
@@ -244,7 +249,7 @@ export const ReplyScrollArea: React.FC<ReplyScrollAreaProps> = ({
     // Focus the REGION, not the pill: the pill unmounts as following resumes and
     // the arrow/page keys keep working on the region.
     el.focus({ preventScroll: true });
-  }, [clearReturning, flushFollowing, reduceMotion]);
+  }, [clearReturning, notifyFollowing, reduceMotion]);
 
   return (
     <Box position="relative" width="100%" height="100%" minHeight="0">
