@@ -250,3 +250,36 @@
 ### #2883 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2886 extension — never-cover placement probes
+
+> Unscripted probes for issue #2886 (the surface must never cover Fredo, the tiles or the search
+> bar). A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
+> Live policy; an undrivable lever is a named blocker (G-053) with a static/unit pin — never
+> fabricated.
+
+- [ ] E-50: **An overlapping intermediate frame during a re-anchor.** Watch for a single sampled
+      frame where the surface rect intersects the avatar rect while the surface changes anchor or
+      tier (faster than the ~100 ms sampler). If any intermediate frame overlaps, record
+      `(anchorFrom → anchorTo, t, intersectionArea)` — promotes to F-93. A frame that overlaps only
+      because the avatar is mid-animation (whole-element transform) is still a finding: measure the
+      avatar's RENDERED rect.
+- [ ] E-51: **The genuinely too-small window.** Shrink the viewport below the shipped minimum
+      (dev-advisory) with tiles + bar + a long reply on screen. Does the surface shrink and scroll
+      while keeping clear of Fredo, the tiles and the bar — or does it eventually overlap, clip, or
+      disappear? Record the SMALLEST viewport where full separation is still achievable (data for
+      the Architect's E5 floor). Promotes to F-95.
+- [ ] E-52: **Resize while a reply is displayed.** Resize default → 900×600 → default with a grown
+      reply on screen (and again while the reply is mid-stream). Does the surface re-anchor/re-clamp
+      inside the new viewport with no avatar/bar/tile intersection and no lost reading position?
+      Promotes to F-93/F-94.
+- [ ] E-53: **Candidate-set exhaustion near a corner.** Teleport Fredo into the tightest corner at
+      900×600 (with the bar + tiles visible) and send a reply. Which candidate wins when `above`
+      and one side are blocked — does the selection reject the blocked candidate and stay clear of
+      Fredo, or fall to an overlapping placement? Promotes to F-96/F-95.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
