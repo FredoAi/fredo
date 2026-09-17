@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { useCompanion } from '../../contexts/CompanionContext';
 import type { CompanionPosition, CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
+import type { ReplySurfaceBounds } from './replySurfaceLayout';
 import { TicTacToe } from './features/tictactoe';
 import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
@@ -165,6 +166,15 @@ export interface CompanionEntityProps {
   /** Viewport position for `surface="overlay"` (ignored by `'seat'`). */
   x?: number;
   y?: number;
+  /**
+   * Spec #2883 ST-2 (host side) / ST-6 (forwarding) — the launcher-measured reply
+   * band (viewport pixels: `safeTop` under the notch, `barrierTop` = the command
+   * bar's box top, `boundsLeft`/`boundsRight` = the launcher column's clip box
+   * inset by the margin). Passed only for `surface="seat"`; the entity forwards it
+   * to `SpeechBubble`'s additive `growth` prop. `undefined` ⇒ no measurement yet ⇒
+   * today's fixed rendering exactly (R-5.3).
+   */
+  replyBounds?: ReplySurfaceBounds;
 }
 
 /**

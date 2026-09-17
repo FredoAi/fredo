@@ -17,6 +17,13 @@ import type { LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
+// Spec #2883 ST-2/ST-3 — the reply band's contract type + margin come from the
+// pure reply-layout module (ONE source of truth for the launcher → entity →
+// bubble hand-off; the layout maths itself is ST-3/ST-4's).
+import {
+  REPLY_MARGIN,
+  type ReplySurfaceBounds,
+} from '../../../../shared/components/companion/replySurfaceLayout';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
 // Spec #2877 ST-5 — live dictation into the existing bar input (the launcher-origin
 // listening cue). Spec #2882 ST-4 retires the context-dependent Ctrl+Space cascade.
@@ -101,9 +108,20 @@ const joinBarText = (lead: string, tail: string): string => {
   return `${lead} ${tail}`;
 };
 
-/** The command-bar `role="searchbox"` input is the grid-navigation focus anchor. */
-const SEARCHBOX_SELECTOR = 'input[role="searchbox"]';
+/** The command-bar `role="searchbox"` field is the grid-navigation focus anchor.
+ *  Spec #2883 ST-2: the field became a `Textarea`, so the anchor is the ROLE
+ *  alone (tag-agnostic) — a tag-qualified selector would silently stop matching
+ *  and break Ctrl+Space, hold-Space and the Space-does-not-open-a-tile guard. */
+const SEARCHBOX_SELECTOR = '[role="searchbox"]';
 const NOTCH_SELECTOR = '[role="button"][aria-label="Fredo launcher"]';
+
+/** Spec #2883 ST-2 — the bar field's tag set (`INPUT` before #2883, `TEXTAREA`
+ *  after). Routing every tag-shaped check through this ONE set is what keeps the
+ *  #2882 keyboard contract (hold-Space arming, the Ctrl+Space caret rule, the
+ *  Space-never-opens-a-tile guard) intact across the element swap. `.value` and
+ *  `.setSelectionRange` exist on both tags, so the caret rule is preserved. */
+const BAR_FIELD_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA']);
+const isBarFieldTag = (el: Element | null): boolean => !!el && BAR_FIELD_TAGS.has(el.tagName);
 
 /** Surface stacking: resting Main above the (transparent) window stack when it
  *  is not covered; dropped BELOW it once a maximized feature window covers the
@@ -141,6 +159,40 @@ const isFocusable = (el: HTMLElement | null): boolean =>
   el.tabIndex >= 0 &&
   !(el as HTMLInputElement).disabled &&
   el.getAttribute('aria-disabled') !== 'true';
+
+/**
+ * Spec #2883 ST-2 — the launcher-measured REPLY BAND (`ReplySurfaceBounds`).
+ *
+ * The seat reply surface may grow, but only inside a band the LAUNCHER owns:
+ *   - `safeTop`    — under the chrome notch (58px) plus the band margin;
+ *   - `barrierTop` — the command bar's box top; the reply's bottom edge stays
+ *                    `<= barrierTop - REPLY_MARGIN` (R-2.3, zero intersection
+ *                    with the bar, its field, the hint and the collapse control);
+ *   - `boundsLeft` / `boundsRight` — the launcher column's padding box inset by
+ *                    the margin (the column is `overflow:auto`, so its box is the
+ *                    cross-axis clip box too — R-2.2).
+ *
+ * The TYPE and the margin come from the pure reply-layout module (ST-3), so the
+ * launcher → entity → bubble hand-off has ONE contract. `undefined` = "not
+ * measured yet" and leaves today's fixed rendering exactly (R-5.3).
+ */
+/** The chrome notch's height: the band's `safeTop` is its bottom plus the margin. */
+const NOTCH_HEIGHT_PX = 58;
+
+/**
+ * Numeric equality for the band — the AGENTS.md #523 loop guard. Exported so the
+ * "write the band state only when a number actually changes" contract is
+ * unit-pinned: a re-measure that changed nothing must NOT write state (a state
+ * write per frame/keystroke is exactly the re-render-loop class).
+ */
+export function replyBoundsEqual(a: ReplySurfaceBounds, b: ReplySurfaceBounds): boolean {
+  return (
+    a.safeTop === b.safeTop &&
+    a.barrierTop === b.barrierTop &&
+    a.boundsLeft === b.boundsLeft &&
+    a.boundsRight === b.boundsRight
+  );
+}
 
 /**
  * Spec #2882 ST-4 — Ctrl+Space has ONE meaning: show/focus the bar.
@@ -459,6 +511,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     desktopMoment === 'happy' ? 'happy' : commandActive ? 'thinking' : restingPhase;
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  // ── Spec #2883 ST-2 — the launcher-measured reply band ─────────────────────
+  // The launcher owns the geometry the seat reply surface must stay inside, so it
+  // measures the band and passes it launcher → entity → bubble. Refs (never
+  // render state) for the two measured boxes; `replyBounds` is written ONLY when
+  // a number actually changes (the AGENTS.md #523 loop guard).
+  const columnRef = useRef<HTMLDivElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const [replyBounds, setReplyBounds] = useState<ReplySurfaceBounds | undefined>(undefined);
   const prevWindowCountRef = useRef(currentWindows.length);
   // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
   // command bar) so the grid stays hidden while the surface returns to idle.
@@ -534,7 +594,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // Guard against a within-frame close (rapid double-press): only touch the
       // searchbox if the overlay is STILL open (openRef is read live, not captured).
       if (!openRef.current) return;
-      const input = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
+      // Spec #2883 ST-2 — tag-agnostic: `.value` + `.setSelectionRange` exist on
+      // both the shipped `Input` and the swapped `Textarea`, so the caret-at-end
+      // rule is preserved byte-for-byte across the element swap.
+      const input = overlayRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        SEARCHBOX_SELECTOR,
+      );
       if (!input) return;
       if (document.activeElement !== input) {
         input.focus();
@@ -721,8 +786,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // trigger: a hold/capture must stop there (before the surface-level collapse
   // logic, which only rewrites the overlay state). The capture stop is idempotent
   // per gesture, so the bubbled surface `onBlur` that follows is a no-op.
+  // Spec #2883 ST-2 — the param is `HTMLElement` (not `HTMLInputElement`) so the
+  // handler stays valid for BOTH the shipped `Input` and the swapped `Textarea`.
   const handleBarBlur = useCallback(
-    (e: React.FocusEvent<HTMLInputElement>) => {
+    (e: React.FocusEvent<HTMLElement>) => {
       stopCaptureOnBlur();
       handleSurfaceBlur(e);
     },
@@ -1130,7 +1197,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // re-engaging — the programmatic refocus is suppressed so the grid stays
         // hidden until the user actually focuses/types again.
         window.requestAnimationFrame(() => {
-          const input = overlayRef.current?.querySelector<HTMLInputElement>(SEARCHBOX_SELECTOR);
+          // Spec #2883 ST-2 — tag-agnostic: `.value` + `.setSelectionRange`
+          // exist on both the shipped `Input` and the swapped `Textarea`, so
+          // ESC's refocus is unaffected by the element swap.
+          const input = overlayRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+            SEARCHBOX_SELECTOR,
+          );
           if (input && document.activeElement !== input) {
             skipNextFocusEngageRef.current = true;
             input.focus();
@@ -1139,7 +1211,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         return;
       }
 
-      const isFromInput = (e.target as HTMLElement).tagName === 'INPUT';
+      // Spec #2883 ST-2 — tag-agnostic: a `Textarea` field must be recognised as
+      // "from the text field" too, or Space would fall through to the tile-open
+      // branch while the user is typing a query.
+      const isFromInput = isBarFieldTag(e.target as HTMLElement);
 
       // Spec #2882 ST-4 — smart Enter, evaluated BEFORE the empty-grid guard so a
       // chat send still works when the query filters every tile out. Escape stays
@@ -1152,6 +1227,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       //   typed + app match    → open it, INDEPENDENT of the companion / busy (AC5);
       //   typed, no match      → send when an active companion accepts, else nothing
       //                          (R-6.1 — the retired `openSelected()` fall-through).
+      // Spec #2883 ST-2 (R-1.4) — `Shift+Enter` inserts a newline through the
+      // browser's NATIVE insertion: return BEFORE the Enter branch and WITHOUT
+      // `preventDefault`, so the field edits itself and its `onChange` carries the
+      // newline through the ONE `handleQueryChange` route (no manual splice, no
+      // caret restore). It is evaluated BEFORE the Enter branch so `Enter`'s
+      // shipped #2882 action is untouched (R-1.5); it starts ZERO generations and
+      // opens ZERO windows — a newline can never be a launch or a send.
+      if (e.key === 'Enter' && e.shiftKey) return;
+
       if (e.key === 'Enter') {
         e.preventDefault();
         // Spec #2882 ST-5-fix (QA-10, R-6.3) — the Enter verdict comes from the SAME
@@ -1209,10 +1293,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           holdArmed: holdArmedRef.current,
           // The SEARCHBOX specifically — a tile-focused Space keeps its existing
           // opens-the-tile meaning (the switch below), and hold-Space never
-          // applies to any other Fredo text input (REQ-14).
+          // applies to any other Fredo text input (REQ-14). Spec #2883 ST-2: the
+          // predicate is tag-agnostic (INPUT or TEXTAREA) with `role="searchbox"`
+          // still the anchor, so the swap to a `Textarea` changes nothing here.
           isBarInputTarget:
-            spaceTarget.tagName === 'INPUT' &&
-            spaceTarget.getAttribute('role') === 'searchbox',
+            isBarFieldTag(spaceTarget) && spaceTarget.getAttribute('role') === 'searchbox',
           queryIsEmpty: query === '',
           // The persisted enablement + ST-3's fail-closed readiness probe: unknown
           // readiness ⇒ NOT armed ⇒ Space stays natively ordinary (contract 4c).
@@ -1413,6 +1498,50 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // a single cleared handle per timer, cleared on unmount).
   useEffect(() => () => clearHoldTimers(), [clearHoldTimers]);
 
+  // ── Spec #2883 ST-2 — measure the reply band (R-2.2/R-2.3/R-5.3) ───────────
+  // ONE `ResizeObserver` on the launcher column + the command-bar root (the bar
+  // grows with the query, which moves `barrierTop`), plus a `scroll` listener on
+  // the column (it is the band's clip box) and a window `resize` listener. Every
+  // trigger is rAF-coalesced (≤ 1 layout read per frame — never per token or per
+  // keystroke), and `setReplyBounds` bails out when no number changed, so this
+  // effect can never drive a render loop. `undefined` (before the first
+  // measurement, or without a DOM observer) means "no band" ⇒ today's rendering.
+  useEffect(() => {
+    const column = columnRef.current;
+    if (!column || typeof ResizeObserver === 'undefined') return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const bar = barRef.current;
+      if (!bar) return;
+      const columnRect = column.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      const next: ReplySurfaceBounds = {
+        safeTop: NOTCH_HEIGHT_PX + REPLY_MARGIN,
+        barrierTop: barRect.top,
+        boundsLeft: columnRect.left + REPLY_MARGIN,
+        boundsRight: columnRect.right - REPLY_MARGIN,
+      };
+      setReplyBounds((prev) => (prev && replyBoundsEqual(prev, next) ? prev : next));
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(column);
+    if (barRef.current) observer.observe(barRef.current);
+    column.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    schedule();
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      column.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+    };
+  }, []);
+
   return (
     <>
       {/* Chrome is always visible: FREDO notch trigger + online clock + the
@@ -1450,6 +1579,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         css={DESKTOP_TEXTURE_CSS}
       >
         <Box
+          ref={columnRef}
           display="flex"
           flexDirection="column"
           alignItems="center"
@@ -1487,8 +1617,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             )}
             {/* ON + away: the static vacated-seat placeholder (no motion, inert). */}
             {companionAway && <EmptySeat />}
-            {/* ON + at home: the interactive companion occupying the seat. */}
-            {companionVisible && !companionAway && <CompanionEntity surface="seat" />}
+            {/* ON + at home: the interactive companion occupying the seat.
+                Spec #2883 ST-2 — the launcher-measured reply band flows
+                launcher → entity → bubble so the reply can grow inside the
+                window/column band without ever colliding with the bar. */}
+            {companionVisible && !companionAway && (
+              <CompanionEntity surface="seat" replyBounds={replyBounds} />
+            )}
           </Box>
           <LauncherCommandBar
             query={query}
@@ -1540,6 +1675,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"
+            // Spec #2883 ST-2 — the band measurement roots: the bar root Box's top
+            // edge is the reply's `barrierTop`, and the bar's own resize (it grows
+            // with the query) is a band trigger. The bar attaches this ref to its
+            // root Box (the contract's `containerRef`).
+            containerRef={barRef}
+            // Spec #2883 ST-2 (R-1.4) — derived here (the shell owns presence) and
+            // passed down; ST-1 renders the caption only on 2+ visual lines.
+            newlineHint={companionActive}
           />
           {engaged && (
             <LauncherAppGrid
