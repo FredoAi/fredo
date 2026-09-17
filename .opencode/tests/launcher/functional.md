@@ -1047,16 +1047,37 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
       both themes/accent and stay legible; no effect/memo depending on an array `.length` or a
       freshly created object (AGENTS.md #523). Reference R-43 + F-24.
 
-### #2883 testing round 1 — result
+### #2883 testing round 1 — result (tip `326822ff`)
 
-- [x] **Round 1 (serving `326822ff`, driver :9224) — F-70 PASS · F-71 PASS · F-72 FAIL · F-73 UNVERIFIED (G-161) · F-74 PASS (a,b,d) + dictated (c) UNVERIFIED · F-75 FAIL · F-76 FAIL · F-77 PASS · F-78 PASS (console/tokens) / theme-switch UNVERIFIED.**
-      - F-70 PASS: ~193-char prose query → field `48→108 px`, `scrollWidth 550 == clientWidth 550`, content-box right 976 < hint left 1095.4.
-      - F-71 PASS: ONE frame with the wrapped query + hint + minimize control; content box `{l:720,r:976}` vs hint `{l:1095.4,rr:1195}` and collapse `{l:1205,rr:1228}` → both intersections **0**; controls `opacity 1`.
-      - **F-72 FAIL**: cap 108 + internal scroll PASS (`scrollHeight 146 > clientHeight 106`, `overflow-y auto`), but the clear-to-empty edge is violated — see below.
-      - F-73 UNVERIFIED (G-161): real chord/native insertion undrivable; oracle `dispatchEvent(KeyboardEvent{key:'Enter',code:'Enter',shiftKey:true})` returns `notPrevented:true` (no interception), 0 generations / 0 windows, insert-text `line one\nline two` → 2 lines, intrinsic 66 px.
-      - F-74 PASS: `set`+Enter → hint `↵ open Settings` → Settings panel, 0 generations; `Missing all the time`+Enter → exactly 1 `[companion] runGeneration`, 0 windows; multi-line query+Enter → whole query delivered (reply echoed "…those lines?"), field cleared, no newline inserted. Dictated (c) UNVERIFIED — no microphone on this host.
-      - **F-75 / F-76 FAIL**: the field never shrinks after it has grown. After a long query, the EMPTY field renders **108 px** (`scrollHeight == clientHeight == 106`, `overflow-y auto`) although its intrinsic content is **46 px** (1 line = the 48 px base). Bound = 48 px.
-      - F-77 PASS: `docs/ARCHITECTURE.md:612/:622` + `docs/FAQ.md:220/:224` updated; the still-true 208×268 game-card statement and the ~4 s welcome auto-hide are preserved.
-      - F-78 PASS for console + tokens: only the exempt `motion() is deprecated` WARN; 0 colour literals / 0 `var(--x)NN` in the changed files. Theme-switch leg not re-driven → UNVERIFIED.
-      **Repro (D-1):** insert ~193 chars → 108 px; clear to `""` → still 108 px; with `style.height='auto'` `scrollHeight` = 46. Root cause: `scheduleFieldMeasure` reads `el.scrollHeight` while the element already carries `height: ${fieldHeightPx}px`, so `scrollHeight` floors at `clientHeight` and the clamped result can never fall.
-      **Evidence:** https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req3-defect-empty-bar-stuck-108px.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req2-req3-cap-wrapped-query.jpeg
+- [x] Verdict **FAIL** — the bar field never shrank (D-1): an EMPTY field rendered 108 px against
+      the 48 px bound; intrinsic content 46 px. Broke F-72's clear edge, F-75, F-76/R-45, E-50.
+      All other rows (F-70, F-71, F-73 fallback, F-74, F-77, F-78) passed live.
+
+### #2883 testing round 2 — result (tip `9108bfe4`) — D-1 re-test + regression sweep
+
+- [x] **F-70** PASS — 151-char query wraps in the field content box; `scrollWidth == clientWidth`;
+      field grows 48→68→88→108 in 20 px line steps.
+- [x] **F-71** PASS — one frame: content box `{460…716}` vs hint `822.3` / collapse `945`;
+      intersections 0; both controls visible at every input length (gutter reserved whenever text
+      is present, `padding-right 264px`).
+- [x] **F-72** PASS — cap 108 (`scrollHeight 166 > clientHeight 106`, `overflow-y auto`); **clear
+      to `""` → 48 px, `scrollHeight == clientHeight == 46`, `overflow-y hidden`**; churn
+      108→48→108→48 lands on the bounds every leg. (Round 1: stuck at 108.)
+- [ ] **F-73** UNVERIFIED — G-161 (MCP keyboard delivers no native chord/insertion). Fallback:
+      content `line one\nline two` → 2 lines / 66 px intrinsic; dispatched
+      `KeyboardEvent{key:'Enter',code:'Enter',shiftKey:true}` returns `notPrevented: true`;
+      0 generations, 0 windows. Pin: `launcherCommandBarVoice.test.tsx`.
+- [x] **F-74** PASS — (a) `set` → `↵ open Settings` → Settings panel, **0** `runGeneration`,
+      0 new windows; (b) `Missing all the time` → **1** `runGeneration`, 0 windows;
+      (d) `line one\nline two\nline three` → 1 generation, 0 windows, no newline inserted.
+      (c) UNVERIFIED — no microphone on this host (pin `launcherVoiceDictation.test.tsx`).
+- [x] **F-75** PASS — empty/1-char field exactly 48 px, `scrollHeight == clientHeight`, no
+      scrollbar (round 1: 108 px).
+- [x] **F-76** PASS — empty state: field 48, bar top 446 (1400×900) and **344 (900×600)**, seat
+      slot 80×100 — identical to the round-1 fresh-state values.
+- [x] **F-77** PASS — the four named doc statements still describe the shipped behaviour
+      (`ARCHITECTURE.md:612/616/622`, `FAQ.md:220/224`); 208×268 game card and ~4 s welcome
+      bubble unchanged.
+- [x] **F-78** PASS — console clean (no `Error:`/`Uncaught`/`Maximum update depth exceeded`);
+      static grep of the changed bar/companion files: 0 colour literals, 0 `var(--x)NN`.
+      Theme-switch leg UNVERIFIED (not re-driven; token-native static evidence).
