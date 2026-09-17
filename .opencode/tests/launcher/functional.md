@@ -513,6 +513,13 @@
   - **Edge:** TTFT >1 s (thinking observable); long reply wraps in the fixed-height bubble (no
     resize); bubble re-anchors above the seat (tail down). Reference companion F-69/F-70 +
     llama-setup F-64.
+  - **#2886 SUPERSESSION (extend in place — history preserved).** The "seat-anchored **240×120**
+    bubble" + "long reply wraps in the fixed-height bubble (no resize); bubble re-anchors above the
+    seat (tail down)" half of this row is **SUPERSEDED for the TEXT reply surface** by #2883
+    (companion F-79/F-83) and re-aimed by **#2886**: the seat anchor is now CONSTRAINED to clear
+    Fredo, the app tiles and the search bar/field — it is NOT unconditionally "above the seat". The
+    streaming / single-shot / no-second-surface half remains in force. See the
+    `## #2886 extension` (F-79..F-81) below.
 
 ## F-53 (REQ-5/REQ-6) — Completion clears; error/not-ready is readable and the bar recovers
 
@@ -1081,3 +1088,59 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 - [x] **F-78** PASS — console clean (no `Error:`/`Uncaught`/`Maximum update depth exceeded`);
       static grep of the changed bar/companion files: 0 colour literals, 0 `var(--x)NN`.
       Theme-switch leg UNVERIFIED (not re-driven; token-native static evidence).
+
+---
+
+## #2886 extension — a bar-sent reply never covers Fredo, the tiles or the search bar
+
+> Issue #2886 re-anchors the companion message surface so Fredo stays fully visible: it sits above
+> him or to his SIDES, never over him, never over the app tiles / search bar / its field; in a
+> genuinely too-small window it SHRINKS and SCROLLS. This file owns the LAUNCHER-SURFACE legs (the
+> bar/field/tiles are launcher chrome); the companion-side rows F-91..F-98 own the avatar-footprint
+> guarantee. Map 1:1 to `.opencode/tmp/2886/triage.md` `## QA Expert` E3/E4/E7.
+> **Verification policy: live** — DOM geometry (`getBoundingClientRect`, both rects in the SAME
+> `execute_js` task), retained frames, `tauri_read_logs(source="console")`, and the mandatory
+> `telemetry_spans` receipt in `companion` F-98. A static-only PASS is a FALSE PASS.
+
+## F-79 (E4 / AC-4 + amendment (b)) — the reply never covers the search bar, its field or the tiles
+
+- [ ] F-79: Companion ON at the home seat, launcher ENGAGED (tiles + bar + field visible); send a
+      long reply. Capture ONE frame containing the reply (`[data-testid="fredo-reply-surface"]`) AND
+      the bar chrome; measure the reply vs `[data-testid="launcher-command-bar"]`, the field
+      `[data-testid="launcher-command-input"]`, `[data-testid="launcher-command-hint"]`,
+      `button[aria-label="Minimize launcher"]` and the tile union box
+      (`#fredo-launcher-grid [role="gridcell"]`); compute the intersection areas.
+  **Expected:** intersection area = **0** with the bar, the field, the hint, the collapse control AND
+      the tiles — at every anchor, every reply length and every window size. **Covering the tiles is
+      NOT acceptable** (PO amendment 3). Any collision ⇒ FAIL (G-158).
+  - **Edge:** reply anchored above AND to a side; the bar grown by a long multi-line query
+    (launcher F-72 cap 108 px); the shipped minimum 900×600; the game bubble open; a resize
+    mid-reply; companion away/off (assert no residual surface).
+  - **Receipt:** the named combined frame + the five rects + the intersection areas.
+
+## F-80 (E3/E4 / AC-3 + AC-4) — the reply stays entirely on-screen at every edge and size
+
+- [ ] F-80: Teleport Fredo to each screen edge; at the default size, the shipped minimum **900×600**
+      and a narrow/tall leg (**900×1000**; a 700-wide viewport is a dev ADVISORY only), send a long
+      reply; measure the surface rect + `window.innerWidth`/`innerHeight` (and the avatar rect in
+      the SAME task).
+  **Expected:** `left ≥ 0 && top ≥ 0 && right ≤ innerWidth && bottom ≤ innerHeight` in EVERY case,
+      with `intersectionArea(avatar, surface) === 0` and the separation `dx ≥ S || dy ≥ S` (`S` =
+      the Architect-bound minimum separation).
+  - **Edge:** near each corner; the grown tier; a resize while displayed; the game card (208×268)
+    stays fixed and on-screen too (R-42).
+
+## F-81 (E7 / NF launcher leg) — no CLS / no re-render loop / token-native with a reply shown
+
+- [ ] F-81: Measure the command-bar `getBoundingClientRect().y` + the field height with a reply
+      shown vs. cleared (companion ON, at the default size AND 900×600); read the console after
+      every leg; static-grep the changed launcher/bar files for `#[0-9a-fA-F]{3,8}` / `rgba(` /
+      `rgb(` / `hsla(` / `var(--x)NN`; re-theme light ↔ dark while the reply is visible.
+  **Expected:** `|Δy| ≤ 1 px` and the field at the same height as the no-reply baseline (a reply
+      must not move or resize the bar); no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no
+      effect/memo on array `.length`/freshly-created objects (#523); ZERO colour literals / no
+      `var(--x)NN`; the surfaces re-tint token-native. Reference R-45/R-46.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_

@@ -431,3 +431,44 @@
 ### #2883 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2886 extension — the re-anchored reply must not disturb the bar/input contracts (G-136)
+
+> Issue #2886 changes WHERE the companion message surface sits (never over Fredo/tiles/bar). The
+> bar's typing/wrap/cap/`Shift+Enter`/Enter contracts (#2883, #2882) are NON-GOALS. R-1..R-46 remain
+> in force. Run alongside `companion` R-46..R-49 + `desktop-shell` R-14..R-15. Live policy.
+
+## R-47 — #2883 wrap/cap/`Shift+Enter` + #2882 Enter rule unchanged
+
+- [ ] R-47: With a reply displayed, re-run the bar contracts: a long query wraps onto ≥2 visible
+      lines inside the bar with the hint + collapse control clear (intersection 0); the field caps
+      at **108 px** then scrolls internally; clearing returns it to exactly **48 px**; `Shift+Enter`
+      inserts a newline (never sends/launches); `set` + Enter opens the app with 0 generations; an
+      unmatched query + Enter (companion ACTIVE) = 1 generation, 0 windows.
+  **Expected:** every #2883/#2882 value holds UNCHANGED (F-70..F-78 / R-44..R-46) — a reply on screen
+      must not alter the bar's height, wrap, scroll, controls or Enter rule.
+
+## R-48 — Short/empty launcher geometry unchanged (no CLS from the reply)
+
+- [ ] R-48: Measure the command-bar `y`/height + the field height + the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom` in the reply-shown vs. reply-cleared states
+      (companion ON, at the default size AND the shipped minimum 900×600).
+  **Expected:** `|Δy| ≤ 1 px`, the field exactly **48 px** at rest, and the wrapper exactly 80×100 +
+      16 px — a displayed reply must be layout-neutral for the launcher (the #2870 R-35 / R-45 pin).
+      Reference R-45 + companion R-48.
+
+## R-49 — Console clean / token-native / no re-render loop after the placement change
+
+- [ ] R-49: Read `tauri_read_logs(source="console")` after every leg (show/hide, re-anchor, resize,
+      theme switch mid-reply, grow/shrink churn); static-grep the changed launcher/bar files for
+      `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN`.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); ZERO colour literals / no `var(--x)NN` alpha-append
+      (#2770); no effect/memo depending on an array `.length` or a freshly-created object
+      (AGENTS.md #523). Reference R-43/R-46.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_

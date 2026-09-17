@@ -165,3 +165,46 @@
   - **Edge:** read the console after the FIRST shell render AND after the companion interaction
     legs (a mount-order race between the launcher wrapper and the companion mount only appears
     post-render).
+
+---
+
+## #2886 extension — the shell chrome + seat are never covered by a companion message
+
+> Issue #2886 keeps Fredo fully visible while he speaks. This file owns the SHELL-SURFACE legs: the
+> shell's own chrome (notch, clock/LED, side ticks, dot-grid, rounded frame) and the centre seat
+> slot must be untouched by the reply's placement, and the seat's geometry must not move. Map 1:1 to
+> `.opencode/tmp/2886/triage.md` `## QA Expert` E4/E7. **Verification policy: live** — DOM geometry
+> (both rects in the SAME `execute_js` task) + retained frames + console + the mandatory
+> `telemetry_spans` receipt (F-20). A static-only PASS is a FALSE PASS.
+
+## F-19 (E4/E7 / shell leg) — a displayed reply does not cover or move the shell chrome / seat
+
+- [ ] F-19: Companion ON at the home seat; send a long reply; probe the shell chrome + seat in the
+      SAME task: the notch (`[role="button"][aria-label="Fredo launcher"]`), the clock/LED cluster
+      (`<time>` + the LED trigger), the seat-slot WRAPPER (`offsetWidth`/`offsetHeight` +
+      `margin-bottom`), the command bar `getBoundingClientRect().y`, and the reply
+      (`[data-testid="fredo-reply-surface"]`) + avatar (`.fredo-companion-avatar`) rects.
+  **Expected:** the reply has ZERO intersection with the shell chrome it can reach (notch / clock /
+      rounded frame), `intersectionArea(avatar, surface) === 0`, the seat wrapper stays exactly
+      **80×100 + 16 px**, and the command-bar `y` is within **±1 px** of the no-reply baseline — a
+      displayed message never displaces or covers the shell. `scrollHeight == clientHeight` (no new
+      scrollbar). Reference #2870 R-35 + launcher R-45 / R-48.
+  - **Edge:** at the shipped minimum 900×600; companion teleported near the shell frame; a theme
+    switch mid-reply; the game card open (208×268 unchanged).
+
+## F-20 (E7/E8 / shell leg) — console hygiene + live receipt with a reply displayed
+
+- [ ] F-20: With a reply displayed, read `tauri_read_logs(source="console")` in every open window;
+      inspect the placement code for effect/memo deps; run `fredo emit --event-type chat
+      --session-id e2e-2886-chat` + `--event-type tool_use --session-id e2e-2886-tool`; query
+      `telemetry_spans` (telemetry-query skill); capture a shell screenshot with the reply shown.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); no effect/memo on array `.length`/fresh objects (#523);
+      `telemetry_spans` NON-ZERO with a recent `max(ingested_at)` and the injected rows classified —
+      the mandatory live receipt. A static-only PASS is a **FALSE PASS**.
+  - **Edge:** read the console after the placement leg, not only at boot; both windows if the
+    terminal is open; re-run the receipt on the tested tip; keep the query output verbatim.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_

@@ -91,3 +91,31 @@
 
 - [ ] R-13: Boot the shell (companion OFF and ON) and inspect the FREDO notch, command bar, app grid, keyboard hints, clock/LED chrome, side ticks, dot-grid, rounded frame, and the centre seat slot. Then toggle the companion ON/OFF, teleport him away (Ctrl+right-click), and re-inspect.
   **Expected:** the shell chrome is visually/behaviourally unchanged; the centre seat slot is present in ALL states (never unmounts) and the command-bar `y` is constant within ±1 px across OFF / ON-home / ON-away; no corner Fredo appears; when OFF the seat shows the decorative mascot (not an empty seat). The row-pipeline (R-3) and the token contract (R-8) still hold. Reference launcher R-35 + companion F-64/F-66.
+
+---
+
+## #2886 extension — shell + seat invariants must hold with a message displayed
+
+> Issue #2886 re-anchors the companion message surface so Fredo stays visible. The shell chrome and
+> the seat slot are NON-GOALS. Run alongside R-1..R-13. Live policy.
+
+## R-14 — Shell chrome + seat slot unchanged while a message is displayed
+
+- [ ] R-14: With a reply / welcome / joke displayed, re-inspect the FREDO notch, clock/LED, side
+      ticks, dot-grid, rounded frame, app grid, command bar and the centre seat slot; measure the
+      seat-slot WRAPPER (`offsetWidth`/`offsetHeight`/`margin-bottom`) and the command-bar
+      `getBoundingClientRect().y` with a message shown vs. cleared, at the default size AND 900×600.
+  **Expected:** the shell chrome is visually/behaviourally unchanged; the seat wrapper stays exactly
+      **80×100 + 16 px**; the command-bar `y` is within **±1 px**; no new scrollbar/overflow/clip; no
+      corner Fredo appears; the message never paints over the shell chrome it can reach. Reference
+      R-13 + #2870 R-35 + launcher R-48.
+
+## R-15 — Token contract + no re-render loop across the placement change
+
+- [ ] R-15: Static-grep the changed shell/placement files for hardcoded hex/`rgba(`/`rgb(`/`hsla(`
+      and `var(--x)NN`; read the console in every leg; inspect the placement code for effect/memo
+      deps on array `.length`/freshly-created objects; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (#523); build exit 0;
+      suite green with no weakened assertion (G-125). Reference R-12 + R-9.

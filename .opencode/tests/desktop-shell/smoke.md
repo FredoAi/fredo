@@ -41,3 +41,14 @@
 > shifts. Live policy — screenshot + console-clean.
 
 - [ ] S-9: The shell boots with the companion ON — the centre seat renders the interactive Fredo (not a corner Fredo, not the decorative mascot), the command-bar `getBoundingClientRect().y` is within ±1 px of the OFF baseline, and `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`; a screenshot succeeds.
+
+## #2886 extension — never-cover quick path
+
+> Issue #2886 keeps Fredo fully visible while he speaks. Quick path only — the full matrix lives in
+> `functional.md` F-19/F-20 / `regression.md` R-14/R-15. Live policy — screenshot + console-clean.
+
+- [ ] S-10: With the companion ON at the seat, send `Reply with exactly: Hi there!`; a DOM/geometry
+      probe shows `intersectionArea(.fredo-companion-avatar, [data-testid="fredo-reply-surface"])
+      === 0` (both rects read in the SAME `execute_js` task) and the seat-slot wrapper still 80×100
+      with the command-bar `y` within ±1 px of the no-reply baseline; `tauri_webview_screenshot`
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.

@@ -527,3 +527,58 @@
 ### #2883 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2886 extension — the never-cover placement must not disturb the #2883 reply contracts (G-136)
+
+> Issue #2886 re-anchors WHERE the surface sits; #2883's size / growth / scroll / `Newest` / hover
+> protection are NON-GOALS. R-1..R-45 remain in force; the #2877/#2882 notes stand. Run alongside
+> `.opencode/tests/launcher/` R-47..R-49 + `.opencode/tests/desktop-shell/` R-14..R-15.
+> **Verification policy: live.**
+
+## R-46 — #2883 growth / scroll / `Newest` / hover-protection unchanged
+
+- [ ] R-46: Re-run the #2883 contracts with the new placement active: a long reply grows (≥3
+      distinct samples while still arriving; `data-reply-tier="grown"`), scrolls internally
+      (`[data-testid="fredo-reply-scroll"]` `scrollHeight > clientHeight`, tail reachable), the
+      labelled `Newest` button returns to the newest content, pointer-over suspends an
+      already-started countdown with a FRESH `REPLY_LEAVE_GRACE_MS = 2000 ms` after the leave, and a
+      short reply stays `data-reply-tier="base"` at 240×120.
+  **Expected:** all of the above hold UNCHANGED — the placement change must not alter the tier math,
+      the scroller range, the reading-position/`following` semantics, the protection, or the leave
+      grace. Reference F-79..F-90 + launcher F-70..F-78.
+
+## R-47 — #2882 hold-to-dictate + Enter rule unchanged
+
+- [ ] R-47: With the placement change live: hold Space on the focused empty bar (a HELD `down` →
+      wait → `up` with a recorded duration) and check exactly one dispatch + ZERO listening
+      emissions; type `set` + Enter → the Settings app opens with 0 generations; type an unmatched
+      phrase + Enter (companion ACTIVE) → 1 generation, 0 windows.
+  **Expected:** #2882's contract (R-39..R-41 / launcher R-42..R-44) is unchanged; the placement
+      change touches only WHERE the surface sits. Reference F-76..F-78 + launcher F-69.
+
+## R-48 — No layout shift / CLS introduced by the placement change
+
+- [ ] R-48: Measure the command-bar `getBoundingClientRect().y`, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom`, and `scrollHeight` vs `clientHeight` with a
+      reply shown vs. not, at the default size AND the shipped minimum 900×600; include a resize
+      and a re-anchor.
+  **Expected:** `|Δy| ≤ 1 px` and the wrapper exactly 80×100 + 16 px in every state; no new
+      scrollbar/overflow/clip; the surface does NOT participate in the launcher column's layout
+      (a re-anchor must not move the seat or the bar). Reference R-35 + #2870 R-35 + launcher R-45.
+
+## R-49 — Game card 208×268, on-screen containment, token-native, console clean
+
+- [ ] R-49: Double-click → `[data-testid="fredo-game-bubble"]` is still exactly 208×268 and
+      playable; the reply stays entirely inside the viewport at every edge/size; grep the changed
+      files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` / `var(--x)NN`; read the console
+      after every leg; re-theme light ↔ dark mid-surface.
+  **Expected:** the game card is unchanged (R-42); containment holds (`left ≥ 0 && top ≥ 0 &&
+      right ≤ innerWidth && bottom ≤ innerHeight`); ZERO colour literals / no alpha-append; no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; the surface re-tints token-native with no
+      stale colour. Reference R-42/R-45 + F-97.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_

@@ -182,3 +182,18 @@
 ### #2883 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+## #2886 extension — never-cover-Fredo quick path
+
+> Issue #2886 keeps Fredo fully visible while he speaks (above him or to his sides, never over him).
+> Quick path only — the full matrix lives in `functional.md` F-91..F-98 / `regression.md`
+> R-46..R-49. **Verification policy: live.**
+
+- [ ] S-30: **A short reply renders with Fredo fully visible.** Companion ON at the home seat; send
+      `Reply with exactly: Hi there!` from the bar. **Expected:**
+      `[data-testid="fredo-reply-surface"]` renders the reply and
+      `intersectionArea(.fredo-companion-avatar, [data-testid="fredo-reply-surface"]) === 0` (both
+      rects read in the SAME `execute_js` task) with a visible gap ≥ the bound `S`; Fredo's 80×100
+      footprint is untouched; the command-bar `y` is within ±1 px of the no-reply baseline;
+      screenshot (ONE frame containing both the surface and Fredo) succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
