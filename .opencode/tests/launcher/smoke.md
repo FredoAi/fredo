@@ -141,3 +141,18 @@
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
 
+## #2886 extension — never-cover-Fredo + clear-bar quick path
+
+> Issue #2886 re-anchors the companion reply surface so it never covers Fredo, the tiles or the
+> search bar. Quick path only — the full matrix lives in `functional.md` F-79..F-81 /
+> `regression.md` R-47..R-49 and `companion` F-91..F-98 / S-30. **Verification policy: live.**
+
+- [ ] S-20: **A short reply clears Fredo and the bar.** Companion ON at the home seat; launcher
+      ENGAGED (tiles + bar visible); send `Reply with exactly: Hi there!`. **Expected:** the reply
+      renders in `[data-testid="fredo-reply-surface"]` with
+      `intersectionArea(avatar, surface) === 0` AND `intersectionArea(surface, bar) === 0` (all
+      rects read in the SAME `execute_js` task), the surface fully inside the viewport, and the
+      command-bar `y` within ±1 px of the no-reply baseline; screenshot (ONE frame containing the
+      surface, Fredo AND the bar) succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`.
+
