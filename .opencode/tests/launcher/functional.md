@@ -877,3 +877,176 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
   landing; assert the app's `defaultPrevented` decision (window-level, post-React) + the
   `type`-inserted burst instead. Taps DO land (the app writes the space itself).
 - E-43/E-45/E-46 were not driven this round (time-box).
+
+---
+
+## #2883 extension — the bar shows everything typed (wrap, cap, Shift+Enter)
+
+> Issue #2883 makes the launcher bar's input handle text longer than its width: the query WRAPS onto
+> visible lines, the Enter hint + collapse/cancel control are never covered, a bounded input height
+> then scrolls internally, and `Shift+Enter` inserts a newline (PO clarification #1) without altering
+> #2882's Enter contract. **Verification policy: live.** Map 1:1 to `.opencode/tmp/2883/triage.md`
+> `## QA Expert` REQ-1/REQ-2/REQ-3 (AC1 + section A), REQ-13/REQ-14 (PO #1), REQ-12/REQ-19
+> (the "short content unchanged" restraint legs), REQ-20 (docs), REQ-22 (console/token/theme).
+> The reply-side rows (AC2/AC3/AC4/AC5 stable-reading) live in `.opencode/tests/companion/`
+> functional F-79..F-90.
+>
+> **G-136 reconciliation (historical PASS records above are PRESERVED, never rewritten):**
+> - **F-52's edge** pinned "long reply wraps in the fixed-height bubble (**no resize**)".
+>   **SUPERSEDED** for the reply surface — the reply now grows and scrolls (companion F-79/F-81).
+> - **R-38 / R-40's** "command-bar `getBoundingClientRect().y` constant within ±1 px across every
+>   state" and **companion F-64** pin the RESTING/short state. **EXTENDED** — for the EMPTY/short/
+>   companion-off states the ±1 px invariant still HOLDS (REQ-19 / R-45); it is SUPERSEDED
+>   **only for the long-input state**, where the bar is EXPECTED to grow (a long query must not
+>   leave the bar a single line). Do NOT fail this spec for bar growth on a long query.
+> - **#2882 F-64..F-69 / R-40..R-43** (typed prefix/whole-word Enter rule, hint truth, hold-Space,
+>   Ctrl+Space = show+focus) remain IN FORCE and must not change (REQ-14 / R-44).
+
+## F-70 (REQ-1 / AC1) — A query longer than the bar's width wraps onto visible lines
+
+- [ ] F-70: Companion ACTIVE at home. Focus `input[role="searchbox"]` (the field
+      `[data-testid="launcher-command-input"]`, now a textarea keeping `role="searchbox"` +
+      `aria-multiline="true"`); insert a ~240-char prose query with the insert-text lever;
+      `tauri_webview_execute_js` measure the text content box (all rendered line rects of the text
+      node) and the field's content box; capture the same frame.
+  **Expected:** the query renders on **≥2 visible lines INSIDE the bar box**; every line's right edge
+      ≤ the bar's inner right edge; no line extends past the bar's content box (no clipped tail).
+  - **Edge:** exactly-full-width text (wraps exactly at the edge, no overflow); a 120-char single
+    word with NO spaces (must wrap/chop inside the box, not overflow under a control); an explicit
+    newline query; a dictated multi-line transcript; a query pasted (not typed) in one insert.
+  - **Receipt:** the quoted line count + each line's rect + the bar rect + the screenshot name.
+
+## F-71 (REQ-2 / AC1) — The Enter hint and the collapse/cancel control are NEVER covered
+
+- [ ] F-71: With F-70's long wrapped query still in the bar, capture **ONE frame containing BOTH the
+      wrapped text AND the bar's controls** — the bar `[data-testid="launcher-command-bar"]`, the
+      field `[data-testid="launcher-command-input"]`, the Enter hint (`#fredo-command-hint` /
+      `[data-testid="launcher-command-hint"]`) and the collapse/cancel control
+      (`button[aria-label="Minimize launcher"]` or its successor). In the same task measure
+      `getBoundingClientRect` of the text box, the hint, the collapse control, the bar box, and the
+      window edges; compute the intersection areas.
+  **Expected:** intersection area of the text box with the hint rect = **0** AND with the collapse
+      rect = **0**; the text is NOT rendered beneath/crossing either control at ANY input length;
+      both controls are fully visible (not clipped, `opacity` 1, inside the bar/window). **Any
+      intersection ⇒ FAIL** (G-153 named frame + measured geometry; G-158 — a confirmed overlap is
+      a FAIL even if every other row passes).
+  - **Edge:** empty input; exactly-full-width; 3× width; after internal scroll; at the height cap
+    (F-72, 108 px); the shipped minimum window **900×600** (a 700-wide viewport is a dev-viewport
+    advisory only, never a scoring bound); both themes; the collapse control's hover/active state.
+  - **Receipt:** the named combined frame + the five rect objects + the intersection areas, per
+    input length.
+
+## F-72 (REQ-3 / section A) — Bounded input height, then internal scroll; controls stay put
+
+- [ ] F-72: Grow the bar from one visual line (48 px) past the cap via repeated `Shift+Enter`
+      (REQ-13); step-sample the field's (`[data-testid="launcher-command-input"]`)
+      `getBoundingClientRect().height`, its `scrollHeight`/`clientHeight`, the hint + collapse rects,
+      and the launcher column geometry (notch/grid/hints/clock).
+  **Expected:** the field is exactly **48 px** at one visual line (today's height, no scrollbar) and
+      STOPS at the bound cap **`BAR_FIELD_MAX_H_PX = 108 px`** (base 48 + 5 lines × 20 + 2 × 14
+      padding — the Architect-bound value, not an observed one); beyond the cap
+      `scrollHeight > clientHeight` with `overflow-y: auto` (the field scrolls INTERNALLY); the
+      hint + collapse rects are unchanged (≤1 px) from just-below-cap; the rest of the launcher
+      (notch, grid, hint row, clock/LED) does not move. The cap is a real bound, not an unbounded
+      grow.
+  - **Edge:** `Shift+Enter` at the cap (still inserts a newline, then scrolls); window resize while
+    at the cap (down to 900×600); clearing back to empty (field returns to exactly 48 px, NO
+    residual scrollbar / leftover height).
+  - **Receipt:** the cap height + the `scrollHeight`/`clientHeight` pair above/below the cap + the
+    control rects + the before/after screenshot names.
+
+## F-73 (REQ-13 / PO clarification #1) — Shift+Enter inserts a newline; it never sends or launches
+
+- [ ] F-73: Focused bar; type `line one` (REAL keystrokes); press a REAL `Shift+Enter`; type
+      `line two`. Read the input value + the rendered line count + the hint pair; then press Enter
+      and record the action.
+  **Expected:** the input value (`[data-testid="launcher-command-input"]`) contains an explicit
+      newline (`\n`) between the two lines and renders as ≥2 lines; the bound route is **native
+      insertion** — the handler returns BEFORE the Enter branch WITHOUT `preventDefault`, so the
+      browser inserts the newline and the textarea's `onChange` → `handleQueryChange` carries it
+      through the ONE text route (provenance, the hint memo and `onUserEdit` keep working; the caret
+      is never disturbed); the `Shift+Enter` press starts **ZERO generations and opens ZERO windows**
+      — it NEVER sends or launches; the later Enter acts on the whole (trimmed) query per the #2882
+      rule (REQ-14).
+  - **Lever fallback (G-161):** the MCP keyboard tool can emit a chord whose `code` does not match
+    the handler and performs **no native text insertion**. If a real chord cannot be delivered, drive
+    CONTENT with the insert-text lever and judge INTERCEPTION from a correctly-shaped dispatched
+    `KeyboardEvent` (`key:'Enter', code:'Enter', shiftKey:true`) — the `dispatchEvent()` return value
+    is the `preventDefault` oracle — corroborated by the product unit pin. Record the lever-fidelity
+    gap as a **NAMED BLOCKER**; never a product FAIL and never a fabricated PASS.
+  - **Edge:** `Shift+Enter` at the height cap; on an EMPTY bar (newline only, still no dispatch);
+    with the companion away / off / mid-reply; after a dictated transcript; a newline as the FIRST
+    character; `Shift+Enter` immediately before Enter.
+  - **Receipt:** the input value verbatim (with the escaped newline) + the line count + the
+    `runGeneration` count + the window count.
+
+## F-74 (REQ-14 / PO clarification #1) — Enter's contract is UNCHANGED by this spec
+
+- [ ] F-74: (a) type `set` + Enter; (b) type `Missing all the time` + Enter (companion ACTIVE);
+      (c) place a DICTATED transcript in the bar and EDIT it to `Settings`, then Enter; (d) type a
+      multi-line query containing newlines, then Enter. Record the window count, the `runGeneration`
+      count, and the (hint, action) pair per leg.
+  **Expected:** EXACTLY the #2882 shipped contract — (a) the Settings window opens with **0**
+      generations; (b) one generation to Fredo with **0** windows; (c) one generation carrying
+      `Settings` with **0** windows (a dictated transcript, even edited, is always Fredo's);
+      (d) acts on the whole trimmed query per the same rules and **Enter NEVER inserts a newline**.
+      Any deviation is a FAIL — this spec must not alter #2882's contract.
+  - **Edge:** surrounding whitespace; a prefix that matches one app; `MM` (no alias);
+    companion away/off; Enter while busy (the busy rules from F-58 stand).
+  - **Receipt:** per leg — the quoted hint, the observed action, the window count, the generation
+    count.
+
+## F-75 (REQ-12 / AC5 second half) — Short/empty input renders EXACTLY as today (restraint)
+
+- [ ] F-75: On the AFTER tip and the BEFORE tip (pre-fix, distinct `before-*`/`after-*` dirs per
+      G-135): empty query, then `hi`. Measure the field height
+      (`[data-testid="launcher-command-input"]`), its `scrollHeight`/`clientHeight`, presence
+      of a scrollbar, and the hint/collapse rects.
+  **Expected:** within **±2 px** of the BEFORE values; the field is exactly **48 px** at one visual
+      line; **no** scrollbar appears (`scrollHeight == clientHeight` for the field); no needless
+      resize. A regression here is a FAIL (the restraint leg is explicitly required).
+  - **Edge:** one-char input; a short query then cleared; both themes; **900×600** (a 700-wide
+    viewport is advisory only).
+  - **Receipt:** the BEFORE vs AFTER numbers side by side + both frame names.
+
+## F-76 (REQ-19 / NFR restraint) — No permanent grow/shift of the launcher for short content
+
+- [ ] F-76: On the AFTER and BEFORE tips, measure the launcher geometry in the SHORT/empty state at
+      the default size AND the shipped minimum **900×600**: command-bar top, grid/hints position,
+      notch/clock rects, seat-slot wrapper (`offsetWidth`/`offsetHeight` + `margin-bottom`), field
+      height.
+  **Expected:** equal within **±1 px** — the earlier launcher constant-`y` invariant (R-38/R-40) and
+      the seat-slot 80×100 + `mb="4"` footprint (R-35) HOLD for the short/empty/companion-off
+      states; the field is exactly **48 px** with no new scrollbar; the bar grows ONLY while the
+      input is actually long (F-72, up to the 108 px cap) and returns to 48 px when cleared. (A
+      700-wide viewport is a dev-viewport advisory only, never a scoring bound.)
+  - **Edge:** companion OFF/away; a short query then cleared; a theme switch; a query cleared right
+    after being at the cap (no residual height).
+  - **Receipt:** the BEFORE/AFTER geometry pairs + the cleared-state re-measure.
+
+## F-77 (REQ-20) — The named stale docs statements are updated in-spec
+
+- [ ] F-77: `Read docs/ARCHITECTURE.md` (~612-613, ~622) and `docs/FAQ.md` (~220, ~224); grep them
+      for the stale claims (a fixed-size / does-not-grow reply; a single-line / non-wrapping input).
+  **Expected:** all four named stale statements are UPDATED to describe the growing/scrollable text
+      reply and the wrapping/multiline input; NO stale statement remains in the named ranges. A
+      surviving stale statement ⇒ FAIL. Do NOT change a statement that is still TRUE — the
+      **208×268 GAME bubble** (unchanged — R-42) and the **~4 s welcome-bubble auto-hide** (R-44)
+      stay as shipped.
+  - **Edge:** a statement duplicated elsewhere; a stale claim in a code comment (advisory, not the
+    named doc gate).
+
+## F-78 (REQ-22) — Console clean, token-native, both themes while the input is long
+
+- [ ] F-78: After every leg read `tauri_read_logs(source="console")`; static-grep the changed bar
+      files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` / `var(--x)NN`; re-theme
+      light ↔ dark + a non-default accent while the long wrapped query is visible.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); ZERO hardcoded colour literals (comment issue-refs
+      exempt); NO `var(--x)NN` alpha-append (#2770); the bar chrome + text re-tint token-native in
+      both themes/accent and stay legible; no effect/memo depending on an array `.length` or a
+      freshly created object (AGENTS.md #523). Reference R-43 + F-24.
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
