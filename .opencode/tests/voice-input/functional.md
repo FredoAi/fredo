@@ -546,5 +546,142 @@ Verdict + per-REQ values: the `## Tests Runs (round 1)` comment on #2882. Key re
 text insertion — the literal `value===" "` for the voice-off/model-missing row is a NAMED BLOCKER
 (assert the app's `defaultPrevented:false` + the `type`-inserted burst instead). The host still has
 no physical mic: `stt:transcript` content came from the documented synthetic lever; the capture
-lifecycle/indicator/mic-release legs ran on the real control plane. Taps land because the app
-writes the space itself.
+  lifecycle/indicator/mic-release legs ran on the real control plane. Taps land because the app
+  writes the space itself.
+
+---
+
+## #2887 extension — instant hold-to-dictate: first-capture latency, indicator honesty, cold ≈ warm
+
+> Issue #2887 removes the ~3–5 s "not yet listening" wait on the hold-Space dictation (worst on the
+> cold first dictation after launch/idle), keeps the **#2882 hold-to-dictate contract unchanged**,
+> and makes the listening indicator honest. **The chosen route** (PO amendment 1) keeps the
+> recognizer **ready/resident while Fredo is idle**. Rows F-74..F-82 map 1:1 to
+> `.opencode/tmp/2887/triage.md` `## QA Expert` REQ-1..REQ-4 + REQ-6..REQ-10 (REQ-5 is the
+> regression set in `regression.md` R-21).
+> **Verification policy: live** — `tauri_webview_keyboard`/`execute_js` timestamped markers,
+> `tauri_webview_dom_snapshot`/`getBoundingClientRect`, `tauri_read_logs`, the #2877 F-28
+> `measure.mjs` working-set/CPU method, and the mandatory `telemetry_spans` receipt (F-81).
+> A static-only PASS is a FALSE PASS.
+>
+> **Budget binding (architect to amend):** warm p50 ≤ 250 ms / p95 ≤ 500 ms / max ≤ 750 ms; cold max
+> ≤ 900 ms; `cold − warm` ≤ 250 ms; no non-capturing start/prepare state > 300 ms; idle CPU
+> ≤ 1 %/10 s; resident working-set Δ ≤ 350 MB. **Quote raw numbers — never an adjective (G-171).**
+>
+> **Measurement contract:** press marker = `performance.now()`/`Date.now()` in the SAME
+> `execute_js` task that dispatches the Space `keydown` (`{key:' ',code:'Space'}`; the MCP
+> `keyboard(press, key=" ", Control)` lever emits the wrong `code` — see the #2882 lever notes) +
+> a `fredo emit` marker row; capture-active marker = the FIRST of {`stt:state{listening:true}`,
+> the audio-stream-open app-log line (device + rate), the first cue frame} — **record which**.
+>
+> **Test data:** voice enabled + model ready; a reproducible cold fixture (fresh `dev-env` Down→Up;
+> the declared idle window; a resident-kill lever); a committed 16 kHz mono WAV whose first word
+> starts at sample 0; the synthetic `stt:transcript` lever (content only); the #2882 space/tap/cancel
+> levers. **The host has NO physical mic** (silent virtual devices only) — the real-mic leg is a
+> NAMED BLOCKER.
+
+- [ ] F-74 (REQ-1 / AC1): **Warm press→capture-active latency.** Running app, voice enabled + model
+      ready, `input[role="searchbox"]` focused and EMPTY. For ≥10 holds: emit the press marker in the
+      dispatch task, hold 1500 ms, release; record `T = t_capture_active − t_press` per hold.
+  **Expected:** warm `p50 ≤ 250 ms`, `p95 ≤ 500 ms`, `max ≤ 750 ms` (the architect's
+      `T_FIRST_CAPTURE_BUDGET_MS` governs); raw per-hold numbers quoted; the lever + clock domain
+      named; exactly ONE `stt_start` per hold; no "not yet listening" interval beyond the bound.
+  - **Edge:** OS auto-repeat keydowns; a hold right after a release; device enumeration in flight;
+    synthetic keydown failing to focus → record the lever; a pre-measurement/fallback frame →
+    disclose raw (G-171).
+  - **Receipt:** the 10 raw `T` values + p50/p95/max + the marker timestamps + the lever used.
+
+- [ ] F-75 (REQ-2 / AC2): **No lost opening words.** Feed the deterministic 16 kHz mono WAV whose
+      FIRST marker word starts at sample 0 in the SAME tick as the Space `down` through the SAME
+      capture path; hold ≥4 s; release; read the finalized transcript + bar. Repeat 10×; plus a
+      real-mic leg (`alpha bravo charlie`, starting on the press) where a mic exists.
+  **Expected:** the opening word is present in the finalized transcript/bar 10/10 (fixture) and 3/3
+      (mic); nothing uttered during the hold is dropped while the system readies; one commit.
+  - **Edge:** speaking during the pre-active readiness window; a word straddling the boundary; a hold
+    whose ONLY word is the opening one; pre-existing bar text. **If the only available lever is the
+    synthetic `stt:transcript` injection → NAMED BLOCKER for the real capture read; never a PASS**
+    (the synthetic lever proves only the finalize wiring).
+  - **Receipt:** the transcript verbatim + the marker timestamps + the WAV fixture hash + the lever.
+
+- [ ] F-76 (REQ-3 / AC3): **Indicator honesty.** Subscribe to every `stt:state`/`stt:started`
+      emission with timestamps; sample the cue (`launcher-command-listening` dot/chip/placeholder +
+      `voice-listening-announcer`) at ≤50 ms from press through release + 500 ms. Repeat ≥10 holds.
+  **Expected:** the cue is present in ZERO samples BEFORE the capture-active marker; no interval
+      > 300 ms (the architect's `T_MAX_STARTING_STATE_MS`) shows a start/prepare state while capture
+      is NOT active; every state is text-conveyed (never colour/animation alone); once active the cue
+      is continuous until release.
+  - **Edge:** a hold that never becomes active → NO cue + one ordinary space; a typed error is a text
+    state, not a stall; rapid re-arm; reduced motion is a static CSS pin + a NAMED BLOCKER for the
+    live `matchMedia` flip. **Do NOT assert a specific readying affordance or threshold — only the
+    observable guarantees (open items (a)/(b)).**
+  - **Receipt:** the sample timeline (frame time, cue present?, state text) + the `stt:state` stream.
+
+- [ ] F-77 (REQ-4 / AC4): **Cold ≈ warm.** Force the cold fixture — (1) fresh `dev-env` Down→Up,
+      FIRST dictation with no prior `stt_start` in the process; (2) the declared idle window with the
+      app untouched; (3) a resident-kill lever. Run the F-74 measurement cold and compare with the
+      SAME session's warm numbers; re-check F-75 on the cold run.
+  **Expected:** cold `T ≤ 900 ms` (`T_COLD_MAX_MS`) AND `cold − warm ≤ 250 ms`
+      (`T_COLD_WARM_DELTA_MAX_MS`) — "not noticeably worse"; no opening word lost on the cold run.
+  - **Edge:** OS/model caches evicted (record the lever); cold after a resident kill; a second app
+    instance; a cold run whose resident warm-up is still in flight (must recover, not stall). Repeat
+    cold ≥3× and quote every number.
+  - **Receipt:** the cold/warm pairs + the lever that produced each + the F-75 cold transcript.
+
+- [ ] F-78 (REQ-6 / AC5): **Transcript routing + exactly-once send (unchanged).** Autosend ON/OFF;
+      dictate `Settings` / `set` / `Miss`; companion ACTIVE / AWAY / OFF; dictate then EDIT the bar to
+      `Settings`; multiple finals + one release; a final landing after the `listening:false` event.
+  **Expected:** NO dictated phrase opens an app (zero windows); exactly ONE dispatch per dictated
+      turn (one `runGeneration`); autosend OFF leaves the text waiting/editable with the hint
+      `↵ send transcript to Fredo`; a dictated-then-EDITED transcript still goes to Fredo.
+  - **Edge:** a second dictation while the first reply streams; dictated then cleared and retyped;
+    dictated `set`/`Settings`/`Miss`/`s`. Reference F-66..F-70 + F-51/F-52/F-53.
+  - **Receipt:** per leg — the hint text, the dispatch count, the window count.
+
+- [ ] F-79 (REQ-7 / AC5): **Whole-capture indicator + mic release (privacy invariant).** Sample the
+      indicator ≤50 ms over the whole hold; measure the fredo working set (the #2877 F-28 method) at
+      idle / mid-hold / post-release; cancel mid-hold (Escape + the visible `×`); static-grep
+      `infrastructure/voice/**` for remote clients.
+  **Expected:** the indicator is present for the WHOLE capture with NO gap; the mic is released the
+      moment the hold ends or is cancelled (`stt_status.listening === false`, working set back to the
+      resident-idle baseline, no leaked handle); **the resident-ready idle state opens NO capture**;
+      enabling voice alone never captures; ZERO remote endpoints on the audio→text path.
+  - **Edge:** 3 release-and-re-hold cycles; a silent hold still releases; a never-live hold → the mic
+    was NEVER opened; the resident-ready app left idle for the idle window still opens no capture.
+  - **Receipt:** the working-set triples + the cue timeline + the `stt_status` reads.
+
+- [ ] F-80 (REQ-8 / NFR, G-123): **Resident-ready lifecycle is measured and recoverable.** With the
+      resident active and the app never dictating: sample idle CPU (Get-Process CPU delta over ≥10 s)
+      + working set at t0 and at the END of the declared idle window; close/reopen the bar; kill the
+      resident mid-idle and hold again; enumerate persisted keys.
+  **Expected:** idle CPU ≤ the bound (default ≤ 1 % avg / 10 s); working set within the resident
+      budget (default Δ ≤ 350 MB); NO capture handle at idle; the resident survives a bar
+      close/reopen and the idle window; after a resident kill the next hold RECOVERS (bounded start,
+      typed state, no stuck cue, no error); only declared persisted keys.
+  - **Edge:** machine sleep/resume; a second app instance; a resident-start failure; long idle then a
+    hold.
+  - **Receipt:** both CPU/WS samples + the recovery timeline + the key list.
+
+- [ ] F-81 (REQ-9 / NFR, G-171): **Markers exist, are correct and are live-receipted.** Verify the
+      press/capture-active markers are emitted with timestamps and classify; `fredo emit --event-type
+      chat` marker rows; query `telemetry_spans` + the row tables; re-run the measurement on the
+      tested tip.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; the
+      marker rows are present and ordered; every latency number carries its method (lever + tool +
+      clock domain); a pre-measurement/fallback frame is disclosed with raw numbers.
+  - **Edge:** a marker lost / not classified → FAIL or a NAMED BLOCKER with a fallback method named;
+    clock skew recorded; re-run on the tip.
+  - **Receipt:** the emit output verbatim + the query result + each number's method line.
+
+- [ ] F-82 (REQ-10 / stability): **Back-to-back + cancelled holds.** ≥5 consecutive hold→release
+      cycles with the resident armed, ≥3 cancelled mid-hold (Escape / `×`), and a re-hold immediately
+      after a cancel; measure latency each cycle and the working set after the last.
+  **Expected:** no latency degradation (last ≤ first + the warm p95), no lost opening word, no stuck
+      cue, exactly one indicator per cycle, mic released every time, working set back to the
+      resident-idle baseline — no handle/thread leak.
+  - **Edge:** cancel in the same tick as the release; cancel before capture goes live; a cancel on a
+    never-live hold; 3 rapid press/release churns.
+  - **Receipt:** the per-cycle latency series + the final working set + the cue states.
+
+> **Cross-reference (not a case):** the bar-instrumented press→active bound and the bar-level honesty
+> timeline are owned by `.opencode/tests/launcher/functional.md` F-82..F-84; run both suites in the
+> same round.
