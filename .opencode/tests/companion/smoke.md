@@ -154,3 +154,31 @@
       `input[role="searchbox"]`, `stt_status.listening === false`, NO companion listening
       bubble/dot, ZERO `stt_start`; screenshot succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2883 extension — long-reply growth/scroll + pointer protection smoke
+
+> Issue #2883 makes the companion reply surface grow/scroll and hold still while the reader is on it.
+> Quick paths only — the full matrix lives in `functional.md` F-79..F-90 / `regression.md`
+> R-42..R-45 and `launcher` S-18/S-19. **Verification policy: live.**
+
+- [ ] S-27: **A long reply grows and scrolls.** Companion ON; send a story-length prompt from the
+      bar. **Expected:** `[data-testid="fredo-reply-surface"]` flips to `data-reply-tier="grown"` and
+      grows past the base **240×120** while the stream is still arriving (≥3 distinct size/text
+      samples), stays inside the window, does NOT overlap `[data-testid="launcher-command-bar"]`, and
+      at the shipped minimum **900×600** scrolls `[data-testid="fredo-reply-scroll"]` internally to
+      reach the end of the answer; screenshot (ONE frame containing the reply AND the bar) succeeds;
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-28: **Pointer over the reply protects it.** With the reply displayed and its dismiss
+      countdown running, move the pointer over `[data-testid="fredo-reply-surface"]` and hold ≥2× the
+      dismiss period. **Expected:** the reply stays visible the whole time (a countdown that had
+      already started is suspended) and only after the pointer leaves does the bound
+      **`REPLY_LEAVE_GRACE_MS = 2000 ms`** grace start; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-29: **A short reply is unchanged.** Send `Reply with exactly: Hi there!`. **Expected:**
+      `data-reply-tier="base"` at exactly **240×120** (no scrollbar, no needless resize) within
+      ±2 px of the BEFORE baseline; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
