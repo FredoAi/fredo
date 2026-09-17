@@ -1143,4 +1143,18 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 
 ### #2886 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Served checkout: repo root `spec/2886 @ 0ac6b38a` (G-052). `S = REPLY_AVATAR_CLEARANCE = 14 px`.
+
+- [ ] **F-79 (E4) — FAIL (tiles).** Zero bar/field/hint/collapse intersection and full containment in
+      every sampled placement, but the **tile union box cannot be measured while a reply is shown**:
+      `#fredo-launcher-grid` is removed from the DOM for the entire reply display (436 consecutive
+      30 ms samples: 0 gridcells, grid element absent). Per QA Risk 5 the row cannot pass by hiding the
+      tiles. Evidence: `F79-tiles-collapsed-with-reply.png`.
+- [ ] **F-80 (E3/E4) — PARTIAL.** `onScreen === true` in every leg (1400×900, 900×600, 900×1000, 560×1000,
+      700×600, ADVISORY 700×260); `intersectionArea(avatar, surface) === 0` in every sample. The
+      separation clause `dx ≥ S || dy ≥ S` FAILS at 1400×900 (min `dy` 8.00), 900×600 (12.80),
+      900×1000 (8.04) and the side placement (13.08). Evidence: `F80-900x1000-grown.png`,
+      `F80-narrow-700.png`.
+- [x] **F-81 (E7) — PASS.** Bar `getBoundingClientRect().y = 446` with a reply shown vs. cleared at
+      1400×900 (Δ = 0 ≤ 1 px); console clean after every leg; no colour literals or `var(--x)NN`
+      alpha-append in the changed placement/launcher files.
