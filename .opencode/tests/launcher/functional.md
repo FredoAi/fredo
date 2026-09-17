@@ -854,3 +854,26 @@ cancel+restore, cascade away-no-focus-steal + bar-focused listen + toggle-cancel
   (QA-9) blur mid-hold is a STOP that KEEPS the words with autosend suppressed. (QA-10) the
   Enter-during-capture guard lives in the wiring. Assert the bound outcomes — do not reconcile
   against an open question.
+
+### #2882 round 1 — tester run record (`spec/2882 @ f076fa08`, live)
+
+**All rows above PASS.** Verdict + per-REQ values: the `## Tests Runs (round 1)` comment on #2882.
+Key receipts: `set`/`Miss`/`monitor`/`Settings` each open the named window with `llmChat:0`;
+`Missing all the time`/`MM`/`ission`/`zzqq` never open a window (0 dispatch, text retained);
+`ission` still RENDERS `Mission Monitor` (substring filter) yet the chip reads `no match` — the
+rule-matched-vs-rendered distinction (`s` → chip `↵ open Settings`, tile index 1, Settings opens)
+is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change tip `9e67a88`):
+`set` and `monitor` both → `↵ send to Fredo` + 0 windows.
+
+**Lever notes for the next round (do not re-derive):**
+- The MCP `keyboard(press, key=" ", Control)` emits `code:" "`, NOT `code:"Space"` — the shell
+  correctly matches the physical code, so a **dispatched correctly-shaped `KeyboardEvent`**
+  (`key:' ', code:'Space', ctrlKey:true`) is the chord lever; read `document.dispatchEvent()`'s
+  boolean return as the `preventDefault` oracle.
+- Holding that dispatched chord while a ReactFlow surface is mounted logs one
+  `target.hasAttribute is not a function` error from `reactflow.js:3702` (target === document) —
+  a **lever artifact**, not a product defect.
+- `keyboard(press)` performs NO native text insertion → a non-empty-bar Space cannot be observed
+  landing; assert the app's `defaultPrevented` decision (window-level, post-React) + the
+  `type`-inserted burst instead. Taps DO land (the app writes the space itself).
+- E-43/E-45/E-46 were not driven this round (time-box).
