@@ -318,4 +318,12 @@
 
 ### #2883 testing round 1 — result
 
-- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+- [x] **Round 1 (serving `326822ff`).**
+      - E-47 PASS: a 112-char unbroken token wraps/chops inside the content box — `scrollWidth 558 == clientWidth 558` (no horizontal overflow), hint/collapse clear of the content box (right edge 466 < 585 / 695), no control displacement.
+      - E-48 PASS: a 4 370-char / 60-line blob inserted in 8.9 ms with no stall, no lost text, no console error; field at the cap with internal scroll (`scrollHeight 2426 > clientHeight 106`). IME/CJK leg not driven (no IME lever).
+      - E-49 PASS: resize 900×600 → 1400×900 → 900×600 while at the cap left the field at 108 px, controls clear, `barTop 344` unshifted, no clip/residue.
+      - **E-50 FAIL (finding, promoted below):** the bar height does **not** track back down — rapid growth/shrink churn leaves the field stuck at 108 px once it has grown (the empty field's intrinsic height is 46 px). This is the same defect as F-72/F-75/F-76.
+      Evidence: https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req3-defect-empty-bar-stuck-108px.jpeg
+
+#### Promoted finding (E-50 → functional D-1)
+The field's `scrollHeight` is read while an explicit `height` is applied, so the measured value can never drop below `clientHeight`; `measureFieldHeightPx` therefore clamps back to 108 px forever. Fix direction: measure with `height:auto` (or a hidden clone) before clamping, or compare `scrollHeight` against a temporarily cleared height.
