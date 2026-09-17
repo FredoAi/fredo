@@ -128,7 +128,10 @@ pub(crate) fn parse_device_id(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn voice_enabled(app: &AppHandle) -> bool {
+/// The persisted opt-in flag, shared with the resident warm (ST-1/ST-2) so the
+/// gate is ONE rule: `warm` and `stt_start` can never disagree about whether
+/// voice input is enabled.
+pub(crate) fn voice_enabled(app: &AppHandle) -> bool {
     let value = app
         .state::<std::sync::Arc<AppStore>>()
         .get(VOICE_ENABLED_KEY)
@@ -195,6 +198,9 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
         code: Some(error.code),
         detail: Some(error.detail.clone()),
         origin: origin.map(|value| value.to_string()),
+        // An error path never captured and never consumed a resident engine.
+        ready_ms: None,
+        engine_resident: false,
     }
 }
 
@@ -203,11 +209,26 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
 /// duplicate-start re-emit and the start success path all derive from this one
 /// function, so the read path and the emit path can never disagree (R-5.3/AC5).
 fn listening_state(origin: Option<String>) -> SttStateEvent {
+    listening_state_with(origin, None, false)
+}
+
+/// The truthful `stt:state` builder WITH the timing observables (ST-1):
+/// `ready_ms` (start receipt → capture-live) and `engine_resident` (did the
+/// session start from the resident slot). ST-3 stamps these on the start-success
+/// path; every other path reports `None`/`false`, so residency is never
+/// optimistic.
+fn listening_state_with(
+    origin: Option<String>,
+    ready_ms: Option<u64>,
+    engine_resident: bool,
+) -> SttStateEvent {
     SttStateEvent {
         listening: origin.is_some(),
         code: None,
         detail: None,
         origin,
+        ready_ms,
+        engine_resident,
     }
 }
 
@@ -382,6 +403,9 @@ async fn finish(app: &AppHandle, message: AudioMsg) -> SttStateEvent {
         code: None,
         detail: None,
         origin,
+        // Idle: no start happened, so there is no readiness to report.
+        ready_ms: None,
+        engine_resident: false,
     };
     emit_state(app, &event);
     event
@@ -652,6 +676,14 @@ mod tests {
             if let Some(step) = self.tail.take() {
                 self.pending.push_back(step);
             }
+        }
+
+        fn new_stream(&mut self) {
+            // A fresh stream carries no hypothesis, no endpoint and no pending
+            // decodes — the reuse seam the resident engine hands a new session.
+            self.text = None;
+            self.endpoint = false;
+            self.pending.clear();
         }
     }
 

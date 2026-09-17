@@ -8,7 +8,7 @@
 //! [`super::session`].
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::companion::models::{
     is_step_complete, probe_files, resolve_models_dir, ModelFileStatus,
@@ -16,8 +16,11 @@ use crate::infrastructure::companion::models::{
 
 use super::capture;
 use super::manifest::resolve_stt_manifest;
+use super::resident::ResidentEngine;
 use super::session;
-use super::state::{SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent};
+use super::state::{
+    SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent, SttWarmResult,
+};
 
 /// Per-file STT model probe result returned by [`stt_check_model`].
 #[derive(Serialize, Clone, Debug)]
@@ -90,4 +93,23 @@ pub async fn stt_cancel(app: AppHandle) -> SttStateEvent {
 #[tauri::command]
 pub fn stt_status(app: AppHandle) -> SttStateEvent {
     session::status(&app)
+}
+
+/// Warm the process-resident STT engine (ST-1). Idempotent and engine-only:
+/// it NEVER opens the microphone. It is silent on failure — the failed warm
+/// leaves the resident slot empty, so the next `stt_start` cold-loads and
+/// reports the typed error exactly as today. `warmed:true` is reported only once
+/// the engine is genuinely resident; a warm arriving while a load is in flight
+/// joins that single load instead of starting a second one.
+#[tauri::command]
+pub async fn stt_warm(app: AppHandle) -> SttWarmResult {
+    let resident = app.state::<ResidentEngine>();
+    resident.warm(&app).await
+}
+
+/// Release the resident STT engine and reclaim its memory (the voice-disabled
+/// edge, R-6). Idempotent; returns whether an engine was actually dropped.
+#[tauri::command]
+pub fn stt_release(app: AppHandle) -> bool {
+    app.state::<ResidentEngine>().release()
 }

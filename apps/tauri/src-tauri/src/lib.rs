@@ -283,9 +283,19 @@ pub fn run() {
             app.manage(classifier);
 
             // Voice / STT session state: holds the ONE active listening session.
-            // The engine + capture stream are created lazily on the first
-            // `stt_start`, never at launch.
+            // The microphone is still opened ONLY by `stt_start`; the engine, by
+            // contrast, loads once per process into the resident slot (see
+            // `infrastructure::voice::resident`) so a dictation does not re-pay
+            // the model load (Spec #2887 R-1/R-6/R-7).
             app.manage(infrastructure::voice::session::VoiceState::new());
+            app.manage(infrastructure::voice::resident::ResidentEngine::new());
+
+            // Earliest-safe warm (Spec #2887 ST-1): FIRE-AND-FORGET — nothing on
+            // this path awaits it, so app startup is never blocked or delayed.
+            // Gated on the persisted opt-in flag + model presence, silent on
+            // failure, engine-only (it never touches capture). Spawned AFTER the
+            // state is managed so the background task can always resolve it.
+            infrastructure::voice::resident::ResidentEngine::warm_at_setup(app.handle());
 
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
@@ -356,6 +366,8 @@ pub fn run() {
             infrastructure::voice::commands::stt_stop,
             infrastructure::voice::commands::stt_cancel,
             infrastructure::voice::commands::stt_status,
+            infrastructure::voice::commands::stt_warm,
+            infrastructure::voice::commands::stt_release,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
