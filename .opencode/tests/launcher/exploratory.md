@@ -283,3 +283,39 @@
       presence timeline. Exactly ONE session, one cue, no flicker, and no duplicated transcript is
       expected; a restart, a duplicate session, or a cue gap while capturing is a finding (promotes
       to F-66/REQ-3 + R-41/REQ-12).
+
+---
+
+## #2883 extension — wrapped-input / newline boundary probes
+
+> Issue #2883 wraps the bar's input and adds `Shift+Enter`. A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a
+> named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-47: **A single unbroken token longer than the bar.** Insert a 120-char word with no spaces
+      (and a long URL/path with no spaces) into the focused bar. Does the token WRAP/chop inside the
+      bar's content box, or does it overflow horizontally, push the hint/collapse controls, or get
+      clipped? Any horizontal overflow, any control displacement, or any hidden tail is a finding
+      (promotes to F-70/F-71).
+- [ ] E-48: **Paste / IME composition of a large multi-line blob.** Paste (or insert) a multi-KB
+      multi-line text in one action, and (if drivable) commit an IME/CJK composition in the
+      multiline input. Does the input handle the bulk insert without a re-render stall
+      (`Maximum update depth exceeded`), a lost selection, or a partial first paint? Any stall, lost
+      text, or console error is a finding (promotes to F-72/F-78; the IME leg is a named blocker if
+      the driver has no IME emulation, per the #2882 E-38/E-42 precedent).
+- [ ] E-49: **Resize / fractional DPI while wrapped at the cap.** With the field at the **108 px**
+      cap (5+ visual lines, scrollable internally), resize the window to the shipped minimum
+      **900×600** and run at a fractional OS/webview scale (a 700-wide viewport is a dev-viewport
+      advisory only, never a scoring bound). Does the field stay within the cap, keep the controls
+      clear of the text, and keep the launcher chrome unshifted, with no clipping/scrollbar residue?
+      Any clip, control overlap, or layout shift is a finding (promotes to F-72/F-76).
+- [ ] E-50: **Rapid growth/shrink churn around the cap + hint truth.** Grow the query past the cap
+      and shrink it back repeatedly in one keystroke burst (including deleting through the cap
+      boundary), toggling the companion ON/OFF/away mid-churn. Does the bar height track cleanly
+      (no stuck height, no orphan scrollbar) and does the hint always re-derive to the truth for the
+      action Enter would take right now? Any stuck height, stale chip, or console error is a finding
+      (promotes to F-72/F-76 + F-74).
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
