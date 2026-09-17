@@ -359,6 +359,8 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
       { kind: 'none', reason: 'empty' },
       { kind: 'none', reason: 'busy' },
       { kind: 'none', reason: 'no-match-no-companion' },
+      // ST-5-fix (QA-10) — the live launcher-origin capture row.
+      { kind: 'none', reason: 'listening' },
     ];
     const expected: Record<string, string | undefined> = {
       'launch|false|false': '↵ open Settings',
@@ -382,6 +384,13 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
       // gets the busy copy.
       'none:no-match-no-companion|true|false': ENTER_HINT_COPY.busy,
       'none:no-match-no-companion|false|false': ENTER_HINT_COPY.noMatch,
+      // ST-5-fix (QA-10) — the live-capture row is the ONE no-op whose instruction
+      // survives an EMPTY bar (a hold starts on an empty bar)…
+      'none:listening|false|false': ENTER_HINT_COPY.releaseToFinish,
+      'none:listening|false|true': ENTER_HINT_COPY.releaseToFinish,
+      // …and `busy` (UI/UX §3 row 1) outranks it (row 2).
+      'none:listening|true|false': ENTER_HINT_COPY.busy,
+      'none:listening|true|true': ENTER_HINT_COPY.busy,
     };
 
     for (const action of actions) {
@@ -496,6 +505,43 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
         },
         hint: 'Fredo is replying…',
       },
+      // ── ST-5-fix (QA-10) — the live launcher-origin capture rows ────────────
+      {
+        name: 'live launcher-origin capture on an EMPTY bar (the normal live state)',
+        input: {
+          query: '',
+          entries: ENTRIES,
+          textOrigin: 'typed',
+          companionActive: true,
+          companionBusy: false,
+          captureLive: true,
+        },
+        hint: 'release Space to finish',
+      },
+      {
+        name: 'live capture naming an app — still a no-op, never a promise to launch',
+        input: {
+          query: 'set',
+          entries: ENTRIES,
+          textOrigin: 'typed',
+          companionActive: true,
+          companionBusy: false,
+          captureLive: true,
+        },
+        hint: 'release Space to finish',
+      },
+      {
+        name: 'live capture while busy — `busy` (row 1) outranks the capture (row 2)',
+        input: {
+          query: '',
+          entries: ENTRIES,
+          textOrigin: 'typed',
+          companionActive: true,
+          companionBusy: true,
+          captureLive: true,
+        },
+        hint: 'Fredo is replying…',
+      },
     ];
 
     for (const state of states) {
@@ -506,5 +552,91 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
       });
       expect(label, state.name).toBe(state.hint);
     }
+  });
+});
+
+// ── ST-5-fix (QA-10) — the live launcher-origin capture is a no-op row ────────
+
+describe('resolveEnterAction / enterHintLabel — the live launcher-origin capture (QA-10, ST-5-fix)', () => {
+  const base = {
+    query: 'set',
+    entries: ENTRIES,
+    textOrigin: 'typed' as const,
+    companionActive: true,
+    companionBusy: false,
+  };
+
+  it('pins the EXACT chip copy the tester asserts (char-for-char)', () => {
+    expect(ENTER_HINT_COPY.releaseToFinish).toBe('release Space to finish');
+  });
+
+  it('captureLive ⇒ none/listening in EVERY bar state (Enter acts as nothing)', () => {
+    const states: Array<Partial<Parameters<typeof resolveEnterAction>[0]>> = [
+      { query: '' }, // the normal live state (a hold starts on an empty bar)
+      { query: 'set' }, // a typed app match would otherwise launch
+      { query: 'Settings' },
+      { query: 'Missing all the time' }, // a typed non-match would otherwise send
+      { query: 'set', textOrigin: 'dictated' }, // dictated content would otherwise send
+      { query: 'set', companionActive: false },
+      { query: 'set', companionBusy: true },
+      { query: 'set', textOrigin: 'dictated', companionBusy: true },
+    ];
+    for (const state of states) {
+      expect(
+        resolveEnterAction({ ...base, ...state, captureLive: true }),
+        JSON.stringify(state),
+      ).toEqual({ kind: 'none', reason: 'listening' });
+    }
+  });
+
+  it('captureLive outranks the app-open rule (a partially transcribed live text never launches)', () => {
+    // Without the capture input this very input launches Settings.
+    expect(resolveEnterAction({ ...base, query: 'set' }).kind).toBe('launch');
+    expect(resolveEnterAction({ ...base, query: 'set', captureLive: true })).toEqual({
+      kind: 'none',
+      reason: 'listening',
+    });
+  });
+
+  it('omitting captureLive (or passing false) preserves every pre-existing verdict', () => {
+    const queries = ['', '   ', 'set', 'Missing all the time', 'MM'];
+    for (const query of queries) {
+      for (const textOrigin of ['typed', 'dictated'] as const) {
+        for (const companionActive of [true, false]) {
+          for (const companionBusy of [true, false]) {
+            const input = { ...base, query, textOrigin, companionActive, companionBusy };
+            expect(resolveEnterAction({ ...input, captureLive: false }), query).toEqual(
+              resolveEnterAction(input),
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it('the hint reads `release Space to finish` even on an EMPTY bar (the instruction survives row 7)', () => {
+    expect(enterHintLabel({ kind: 'none', reason: 'listening' }, { busy: false, queryEmpty: true })).toBe(
+      'release Space to finish',
+    );
+    expect(
+      enterHintLabel({ kind: 'none', reason: 'listening' }, { busy: false, queryEmpty: false }),
+    ).toBe('release Space to finish');
+  });
+
+  it('PRECEDENCE: `busy` (UI/UX §3 row 1) outranks the live capture (row 2)', () => {
+    expect(enterHintLabel({ kind: 'none', reason: 'listening' }, { busy: true, queryEmpty: false })).toBe(
+      'Fredo is replying…',
+    );
+    // …including on the empty bar, where row 1 must still win over row 2.
+    expect(enterHintLabel({ kind: 'none', reason: 'listening' }, { busy: true, queryEmpty: true })).toBe(
+      'Fredo is replying…',
+    );
+  });
+
+  it('the (hint, action) pair agrees: while listening both name the SAME no-op', () => {
+    const verdict = resolveEnterAction({ ...base, query: 'set', captureLive: true });
+    const hint = enterHintLabel(verdict, { busy: false, queryEmpty: false });
+    expect(verdict).toEqual({ kind: 'none', reason: 'listening' });
+    expect(hint).toBe('release Space to finish');
   });
 });

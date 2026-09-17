@@ -20,7 +20,7 @@
  *      FINAL segment only (partials never announce).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -1225,6 +1225,209 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
   });
 });
 
+// ── Spec #2882 ST-5-fix — the live-capture Enter guard (QA-10) + §7 selection ─
+// QA-10 (bound): WHILE a launcher-origin capture is live (`voice.listening &&
+// origin === 'launcher'`) Enter acts as NOTHING and the chip reads exactly
+// `release Space to finish`. The guard is owned by the ST-5 WIRING and the hint +
+// handler derive from ONE `resolveEnterAction` verdict (R-6.3), so the shipped
+// chip can never contradict what Enter does. UI/UX §7: the accent-highlighted tile
+// follows the top-ranked match so the tile agrees with the chip and with Enter.
+
+describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selection-follow', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const MISSION_MONITOR = {
+    id: 'mission-monitor',
+    name: 'Mission Monitor',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const QUERY_VIEWER = {
+    id: 'query-viewer',
+    name: 'Query Viewer',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const RUN_CLI = {
+    id: 'run-cli',
+    name: 'Run CLI',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+  const STEPPER_PROBE = {
+    id: 'stepper-probe',
+    name: 'Stepper Probe',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const renderShell = (features: FredoFeatureClass[] = [QUERY_VIEWER, RUN_CLI, STEPPER_PROBE]) => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+
+  const type = (value: string) => {
+    act(() => {
+      fireEvent.change(input(), { target: { value } });
+    });
+  };
+
+  const pressEnter = () => {
+    act(() => {
+      fireEvent.keyDown(input(), { key: 'Enter' });
+    });
+  };
+
+  const pressArrow = (key: 'ArrowLeft' | 'ArrowRight') => {
+    act(() => {
+      fireEvent.keyDown(input(), { key });
+    });
+  };
+
+  const emitListening = (listening: boolean, origin: string | null) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  const setCompanionBusy = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: true,
+    };
+  };
+
+  const hint = () => screen.getByTestId('launcher-command-hint');
+
+  /** The accent-highlighted grid tile is the one carrying the roving `tabIndex={0}`. */
+  const highlightedTiles = () =>
+    within(screen.getByRole('grid'))
+      .getAllByRole('button')
+      .filter((el) => el.getAttribute('tabindex') === '0')
+      .map((el) => el.getAttribute('aria-label'));
+
+  // ── QA-10 — Enter is a NO-OP while a launcher-origin capture is live ────────
+
+  it('QA-10: live text that NAMES an app is neither launched nor sent, the bar is untouched, and the chip reads `release Space to finish`', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    // A partially transcribed live segment that spells an app name — exactly the
+    // text that must NOT be launched while the capture is still running.
+    emitFinal('Miss');
+    expect(input().value).toBe('Miss');
+
+    // Char-for-char: the chip must be EXACTLY the bound copy (no ellipsis, no extra).
+    expect(hint()).toHaveTextContent(/^release Space to finish$/);
+
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('Miss');
+  });
+
+  it('QA-10: the chip reads `release Space to finish` on an EMPTY bar too, and Enter suppresses even the empty-query grid launch', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    // Char-for-char: the chip must be EXACTLY the bound copy (no ellipsis, no extra).
+    expect(hint()).toHaveTextContent(/^release Space to finish$/);
+
+    // Without the guard this empty bar would launch the highlighted first tile.
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('QA-10 PRECEDENCE: `busy` (UI/UX §3 row 1) outranks the live capture (row 2) — chip `Fredo is replying…`, Enter still a no-op', () => {
+    setCompanionBusy();
+    const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
+
+    emitListening(true, 'launcher');
+    emitFinal('Miss');
+
+    expect(hint()).toHaveTextContent(/^Fredo is replying…$/);
+
+    pressEnter();
+
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(input().value).toBe('Miss');
+  });
+
+  // ── UI/UX §7 — the highlighted tile follows the top-ranked match ────────────
+
+  it('UI/UX §7: the accent-highlighted tile follows the top-ranked match and agrees with the chip AND with what Enter opens', () => {
+    const onOpenFeature = renderShell();
+    // Every name contains `r`, so the results list is all three tiles — but only
+    // `Run CLI` rule-matches (`r` is a whole-query prefix there, not a fragment of
+    // `Query Viewer` / `Stepper Probe`). The highlight must land on it.
+    type('r');
+
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(/^↵ open Run CLI$/);
+    expect(highlightedTiles()).toEqual(['Run CLI']);
+
+    pressEnter();
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('run-cli');
+  });
+
+  it('UI/UX §7: arrow-key navigation still wins within a query and is never snapped back', () => {
+    renderShell();
+    type('r');
+    expect(highlightedTiles()).toEqual(['Run CLI']);
+
+    pressArrow('ArrowRight');
+    expect(highlightedTiles()).toEqual(['Stepper Probe']);
+
+    pressArrow('ArrowLeft');
+    expect(highlightedTiles()).toEqual(['Run CLI']);
+  });
+
+  it('the empty-grid and empty-query Enter behaviours do not move (the §7 effect is selection-only)', () => {
+    // Empty GRID: Enter opens nothing (unchanged).
+    const onOpenEmptyGrid = renderShell([]);
+    pressEnter();
+    expect(onOpenEmptyGrid).not.toHaveBeenCalled();
+    cleanup();
+
+    // Empty QUERY: Enter still opens the highlighted tile (the grid's own
+    // keyboard affordance, R-5.1 — never a send).
+    const onOpenFirst = renderShell();
+    pressEnter();
+    expect(onOpenFirst).toHaveBeenCalledTimes(1);
+    expect(onOpenFirst.mock.calls[0][0]).toBe('query-viewer');
+  });
+});
+
 // ── Spec #2882 ST-5 — the hold-to-dictate capture lifecycle ───────────────────
 // R-2.1-2.7 (arm / hold / tap / release-before-live), R-2.5 (blur = stop with the
 // autosend commit suppressed), R-2.4 (the cue spans the WHOLE gesture), R-3.2/3.3
@@ -1473,6 +1676,12 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     act(() => {
       fireEvent.blur(el);
     });
+    // The backend's answer to `stt_stop`: the session ends. ST-5-fix (G-125
+    // re-point — the assertion itself is UNCHANGED): the chip is now also derived
+    // from the live-capture state, so the stop transfer must be driven before the
+    // post-stop chip is asserted. While the session is still reported live the
+    // chip is `release Space to finish` — pinned by the QA-10 tests above.
+    emitListening(false, 'launcher');
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
     // The words are KEPT as a dictated transcript — and never dispatched.
@@ -1609,6 +1818,11 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     emitListening(true, 'launcher');
     emitFinal('set');
     spaceUp();
+    // The backend's answer to the release (`stt_stop` → `listening:false`). ST-5-fix
+    // (G-125 re-point — same assertion): the chip is now derived from the live-capture
+    // state too, so the session end must be driven before asserting the post-capture
+    // chip. The live-capture chip is pinned by the QA-10 tests above.
+    emitListening(false, 'launcher');
 
     expect(el.value).toBe('set');
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(

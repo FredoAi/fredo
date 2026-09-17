@@ -17,10 +17,17 @@
  *     (`Missing all the time` contains `Miss`) and aliases (`MM`) match
  *     nothing. Internal whitespace is `trim()`ed only, never collapsed, so the
  *     matcher and the existing substring filter agree.
- *   - `resolveEnterAction` — the binding precedence table (empty → dictated →
- *     typed match → send → none).
+ *   - `resolveEnterAction` — the binding precedence table (live capture → empty
+ *     → dictated → typed match → send → none).
  *   - `enterHintLabel` — the single-source-of-truth copy derivation so the
  *     chip can never promise a different action than Enter performs.
+ *
+ * ST-5-fix addendum (QA-10 CLOSED): the LIVE launcher-origin capture is modelled
+ * here ADDITIVELY, via the optional `captureLive` input, so the chip and Enter
+ * keep deriving from ONE rule: while a capture is live Enter acts as NOTHING and
+ * the chip reads `release Space to finish`. The wiring feeds the SAME
+ * `captureLive` primitive into this module on both the hint path and the handler
+ * path (R-6.3) — there is no second copy table anywhere.
  *
  * Pure by construction: no React, no DOM, no Tauri, no timers, no state — so
  * every rule is unit-pinned without a rendering harness.
@@ -46,7 +53,16 @@ export type EnterTextOrigin = 'typed' | 'dictated';
 export type LauncherEnterAction =
   | { kind: 'launch'; feature: FredoFeatureClass }
   | { kind: 'send'; textOrigin: EnterTextOrigin }
-  | { kind: 'none'; reason: 'empty' | 'busy' | 'no-match-no-companion' };
+  | {
+      kind: 'none';
+      /**
+       * `listening` (ST-5-fix, QA-10) — a launcher-origin capture is live: Enter
+       * can neither finalize a held capture nor act on the bar's content. It is
+       * the ONE no-op row whose instruction (`release Space to finish`) must
+       * survive an EMPTY bar, which is the normal live-capture state.
+       */
+      reason: 'empty' | 'busy' | 'no-match-no-companion' | 'listening';
+    };
 
 /** The exact chip copy (UI/UX-owned wording, binding derivation). */
 export const ENTER_HINT_COPY = {
@@ -54,6 +70,8 @@ export const ENTER_HINT_COPY = {
   sendTranscript: '↵ send transcript to Fredo',
   noMatch: 'no match',
   busy: 'Fredo is replying…',
+  /** UI/UX §3 row 2 / §1 S3 — the live launcher-origin capture's only exit. */
+  releaseToFinish: 'release Space to finish',
 } as const;
 
 /** `\b`-equivalent word character — the name is already lower-cased. */
@@ -120,11 +138,22 @@ export interface ResolveEnterActionInput {
   textOrigin: EnterTextOrigin;
   companionActive: boolean;
   companionBusy: boolean;
+  /**
+   * ST-5-fix (QA-10) — a launcher-origin capture is live (`voice.listening &&
+   * origin === 'launcher'`). OPTIONAL and additive: omitting it preserves the
+   * pre-ST-5-fix verdict for every input, so the existing pins still hold.
+   */
+  captureLive?: boolean;
 }
 
 /**
- * The binding precedence (R-5/R-6, clarifications #1/#2):
+ * The binding precedence (R-5/R-6, clarifications #1/#2, QA-10):
  *
+ *   0. `captureLive`                     → `{ none, 'listening' }` (a live
+ *                                          capture outranks EVERY content rule:
+ *                                          Enter can never finalize it, launch a
+ *                                          partially transcribed live text, or
+ *                                          dispatch a partial)
  *   1. empty query                       → `{ none, 'empty' }`
  *   2. `textOrigin === 'dictated'`       → `send` when active && !busy, else `none`
  *                                          (a dictated transcript NEVER launches —
@@ -133,8 +162,18 @@ export interface ResolveEnterActionInput {
  *                                          (AC5 "present, away, off, or replying")
  *   4. typed, no match, active && !busy  → `send`
  *   5. otherwise                         → `none`
+ *
+ * `companionBusy` deliberately does NOT gate the app-match rule (row 3): AC5 binds
+ * a typed match to launch while Fredo is replying. The `busy` OVER `listening`
+ * precedence (UI/UX §3 row 1 → row 2) is therefore expressed at the hint layer —
+ * see `enterHintLabel` — where both are no-ops but the copy differs.
  */
 export function resolveEnterAction(input: ResolveEnterActionInput): LauncherEnterAction {
+  // 0. ST-5-fix (QA-10) — a LIVE launcher-origin capture is a hard no-op, in every
+  //    query state: Enter must never launch partially transcribed live text or
+  //    dispatch it as a partial (the bar's content is provisional until release).
+  if (input.captureLive) return { kind: 'none', reason: 'listening' };
+
   const q = input.query.trim();
   if (q === '') return { kind: 'none', reason: 'empty' };
 
@@ -160,6 +199,7 @@ export function resolveEnterAction(input: ResolveEnterActionInput): LauncherEnte
  * while Fredo is replying, so the chip must say so (a `Fredo is replying…` chip
  * there would be exactly the lie this spec removes).
  *
+ *   live capture        → `release Space to finish` (busy outranks it)
  *   launch              → `↵ open <name>`
  *   send (dictated)     → `↵ send transcript to Fredo`
  *   send (typed)        → `↵ send to Fredo`
@@ -171,6 +211,15 @@ export function enterHintLabel(
   action: LauncherEnterAction,
   opts: { busy: boolean; queryEmpty: boolean },
 ): string | undefined {
+  // UI/UX §3 rows 1–2 (QA-10, ST-5-fix) — the live launcher-origin capture is the
+  // ONE no-op row whose instruction must survive an EMPTY bar: a hold starts on an
+  // empty bar, so deferring to the empty-query rule below would hide the single
+  // instruction telling the user how to finish the capture. `busy` (row 1) outranks
+  // it and reads as replying.
+  if (action.kind === 'none' && action.reason === 'listening') {
+    return opts.busy ? ENTER_HINT_COPY.busy : ENTER_HINT_COPY.releaseToFinish;
+  }
+
   if (opts.queryEmpty) return undefined;
 
   if (action.kind === 'launch') return `↵ open ${action.feature.name}`;

@@ -30,6 +30,7 @@ import { useSttModelReady } from '../../../../shared/hooks/useSttModelReady';
 // (R-6.3). The rule is never re-derived locally.
 import {
   enterHintLabel,
+  findTopRankedMatch,
   resolveEnterAction,
   type EnterTextOrigin,
 } from './launcherEnterAction';
@@ -254,6 +255,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // the shell owns the arming gate ST-5 reads (`voiceEnabled && sttModelReady`);
   // refreshed on the summon path. It probes ONLY while voice is enabled.
   const sttModel = useSttModelReady(voiceEnabled);
+  // Spec #2882 ST-5-fix (QA-10) — WHILE a launcher-origin capture is live, Enter is
+  // a NO-OP and the chip reads exactly `release Space to finish`. This ONE primitive
+  // is fed to the SAME `resolveEnterAction` on BOTH the hint path (the memo) and the
+  // handler path (the Enter branch) and drives the bar cue below, so the chip can
+  // never contradict what Enter does (R-6.3) — there is no second copy table.
+  const captureLive = voice.listening && voice.origin === 'launcher';
   // Latest-value ref for the mounted-once listener (mirrors `openRef`): its handler
   // identity is stable, so any non-ref read inside it would be stale. The retired
   // `companionAwayRef` / `voiceEnabledRef` went with the cached cascade branches.
@@ -584,6 +591,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // `entries` is the rendered results list (`filteredEntries`); a rule match is
   // always a substring-filter match (contract 2), so `findTopRankedMatch` settles
   // on the earliest matching entry the grid shows.
+  //
+  // Spec #2882 ST-5-fix (QA-10) — `captureLive` is fed here too: while a launcher-
+  // origin capture is live the verdict is `none/listening`, so the chip reads
+  // `release Space to finish` (or `Fredo is replying…` while busy, UI/UX §3 row 1
+  // outranking row 2). The Enter branch below reads the SAME verdict.
   const commandBar = useMemo<{
     enterMode: LauncherEnterMode;
     hintLabel: string | undefined;
@@ -595,6 +607,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       textOrigin: dictationOrigin ? 'dictated' : 'typed',
       companionActive,
       companionBusy,
+      captureLive,
     });
     const hintLabel = enterHintLabel(action, { busy: companionBusy, queryEmpty });
     const enterMode: LauncherEnterMode =
@@ -606,7 +619,27 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     dictationOrigin,
     companionActive,
     companionBusy,
+    captureLive,
   ]);
+
+  // Spec #2882 ST-5-fix (UI/UX §7) — the accent-highlighted tile follows the
+  // top-ranked rule match, so the tile the grid highlights is the SAME app the chip
+  // names and Enter opens. This is a SEPARATE effect on purpose: the live-text
+  // effect depends on `handleQueryChange`'s identity, so folding this into that
+  // callback would restart partial writes mid-session. Arrow-key navigation is
+  // untouched — it moves the selection WITHIN a query and this effect re-runs only
+  // when the query (or the filtered list it derives from) actually changes.
+  useEffect(() => {
+    const q = query.trim();
+    if (q === '') {
+      setSelectedIndex(0);
+      return;
+    }
+    const match = findTopRankedMatch(q, filteredEntries);
+    if (!match) return;
+    const index = filteredEntries.indexOf(match);
+    if (index !== -1) setSelectedIndex(index);
+  }, [query, filteredEntries]);
 
   // Responsive column count — MUST mirror LauncherAppGrid's
   // `SimpleGrid columns={{ base: 2, sm: 3, md: 4, lg: 6 }}` so ↑↓ leaps a full row.
@@ -1113,12 +1146,31 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // first; arrows/Space keep the empty-grid no-op below. The commit rule lives
       // in ST-1's `resolveEnterAction` (the SAME verdict the chip renders):
       //   empty query          → today's launch of the selected tile (never a send);
+      //   live capture         → NOTHING (ST-5-fix QA-10 — no launch, no send, no
+      //                          mutation of the bar: the live text is provisional);
       //   dictated content     → deliver to Fredo or nothing — NEVER an app (R-4.3);
       //   typed + app match    → open it, INDEPENDENT of the companion / busy (AC5);
       //   typed, no match      → send when an active companion accepts, else nothing
       //                          (R-6.1 — the retired `openSelected()` fall-through).
       if (e.key === 'Enter') {
         e.preventDefault();
+        // Spec #2882 ST-5-fix (QA-10, R-6.3) — the Enter verdict comes from the SAME
+        // pure `resolveEnterAction` the hint chip renders, fed the SAME `captureLive`
+        // primitive. WHILE a launcher-origin capture is live the verdict is
+        // `none/listening` in EVERY query state, so Enter can never open a partially
+        // transcribed live text or dispatch a partial — and the chip, derived from
+        // the identical verdict, can only read `release Space to finish` (or the
+        // busy copy, which outranks it). Both are no-ops, so the pair always agrees.
+        const verdict = resolveEnterAction({
+          query,
+          entries: filteredEntries,
+          textOrigin: dictationOriginRef.current ? 'dictated' : 'typed',
+          companionActive,
+          companionBusy,
+          captureLive,
+        });
+        if (verdict.kind === 'none' && verdict.reason === 'listening') return;
+
         const q = query.trim();
         // The empty branch keeps today's grid launch — it must never be reachable
         // from the autosend path (R-5.1). A generation in flight keeps the pre-#2882
@@ -1226,6 +1278,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       openSelected,
       commitBarQuery,
       companionBusy,
+      companionActive,
+      captureLive,
+      filteredEntries,
       query,
       open,
       closeOverlay,
@@ -1448,8 +1503,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             busy={companionBusy}
             // Spec #2877 ST-5 (R-5.3) — the bar cue is LAUNCHER-origin only, so
             // exactly one indicator shows per session (companion-origin is the
-            // bubble's surface, never the bar).
-            listening={voice.listening && voice.origin === 'launcher'}
+            // bubble's surface, never the bar). ST-5-fix (QA-10): the SAME
+            // `captureLive` primitive the Enter verdict and the hint derive from.
+            listening={captureLive}
             // Spec #2882 ST-5 (R-2.4/S2) — the hold gesture's cue: `holdArmed` shows
             // it from the keydown moment for the WHOLE gesture, `holdPending` adds
             // the bounded `starting voice input…` chip once the engine start
