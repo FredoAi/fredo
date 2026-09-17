@@ -20,13 +20,14 @@
  *   • `enterMode` swaps the prefix glyph: `>` chevron for launch/filter, a small
  *     speech-bubble outline for send (both `aria-hidden`).
  *   • `hintLabel` renders inside the existing `endElement` slot as a flex row
- *     `[hint chip][vertical divider][— minimize]`; the chip is hidden only when
- *     `chatAvailable` is false or `hintLabel` is absent. The host derives the
- *     label per state (#2871 ST-2r: `launch`/`send` when idle, `Fredo is
- *     replying…` while busy), so the visibility rule is label-driven rather than
- *     `enterMode`-driven — state 5 (busy) has no pending Enter action yet still
- *     shows the chip. The `—` MINIMIZE control stays the LAST item in every state
- *     (its existing `borderLeft` is the vertical divider) and is never replaced.
+ *     `[hint chip][vertical divider][— minimize]`; the chip is hidden ONLY when
+ *     `hintLabel` is absent. #2882 ST-4 retires the #2871 `chatAvailable` gate:
+ *     the host derives a label whenever Enter has a promise — including an app
+ *     match with the companion OFF (`↵ open <App>`) and a dictated transcript
+ *     with no companion (`no match`) — so visibility is purely label-driven (a
+ *     `chatAvailable` term would hide exactly the truthful chips this spec
+ *     adds). The `—` MINIMIZE control stays the LAST item in every state (its
+ *     existing `borderLeft` is the vertical divider) and is never replaced.
  *     When the chip shows, the `Input` reserves `paddingEnd` so the typed text
  *     never runs under it.
  *   • State 5 (busy, UI/UX §1): the `Input` becomes `readOnly` and shows the
@@ -58,11 +59,14 @@
  * keystroke during a live segment so the host can stop partial writes (UX-2).
  *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
- * today's rendering (`chatAvailable=false` / `enterMode='launch'` / no
- * `hintLabel` / `busy=false` / `listening=false` / no stop or cancel handler / no
- * error / no final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no
- * reserved padding, and `aria-busy` is omitted (not rendered as `"false"`), so
- * the inactive bar is byte-identical to before this change.
+ * today's rendering (`enterMode='launch'` / no `hintLabel` / `busy=false` /
+ * `listening=false` / no stop or cancel handler / no error / no final transcript
+ * / `voiceEnabled=false`) — no chip, no glyph swap, no reserved padding, and
+ * `aria-busy` is omitted (not rendered as `"false"`). #2882 ST-4 deliberately
+ * supersedes the #2871 `chatAvailable`-gated byte-identity: the chip now shows
+ * whenever the host supplies a label, and `aria-keyshortcuts` is an
+ * unconditional `Control+Space` (the chord always opens/focuses the bar, so it
+ * is no longer a voice affordance).
  *
  * Token-native contract (AC5): every color is a theme CSS var referenced
  * directly (`var(--card-bg)`, `var(--border-color)`, `var(--accent-primary)`),
@@ -95,8 +99,6 @@ export interface LauncherCommandBarProps {
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   /** The `—` minimize control was clicked (#2819 — host collapses the shell to bare chrome). */
   onMinimize?: () => void;
-  /** #2871: companion active in THIS window (host-derived; gates the hint chip). */
-  chatAvailable?: boolean;
   /** #2871: pending Enter action — drives the prefix glyph swap. Defaults to `'launch'`. */
   enterMode?: LauncherEnterMode;
   /** #2871: full hint-chip text (host-derived); absent/empty → no chip. */
@@ -138,8 +140,10 @@ export interface LauncherCommandBarProps {
   /** DR-10: the newest FINAL transcript segment (partials never set this). */
   finalTranscript?: string;
   /**
-   * DR-9/DR-10: voice input enablement. Drives `aria-keyshortcuts` and the
-   * `Voice input is off` announcement when it flips OFF mid-session.
+   * DR-9/DR-10: voice input enablement. Drives the `Voice input is off`
+   * announcement when it flips OFF mid-session. #2882 ST-4: it NO LONGER gates
+   * `aria-keyshortcuts` — that attribute is now an unconditional
+   * `Control+Space` (it advertises the bar-opening chord, not dictation).
    */
   voiceEnabled?: boolean;
   /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
@@ -156,8 +160,12 @@ export interface LauncherCommandBarProps {
  * (`HINT_CHIP_MAX_WIDTH_PX`) plus the end-slot chrome to its right — the
  * minimize control's left margin/border/padding and its 12px `—` glyph.
  * A CSS unit string (G-146) so it is pixels, never a Chakra size token.
+ *
+ * #2882 ST-4 (UI/UX §9): raised 184 → 220 so the longest truthful instruction
+ * (`↵ send transcript to Fredo`) never ellipsizes — a truncated instruction is
+ * a lying instruction (R-6.3).
  */
-const HINT_CHIP_MAX_WIDTH_PX = 184;
+const HINT_CHIP_MAX_WIDTH_PX = 220;
 /** Static `Listening` chip width (12px text) + the Stop control's footprint.
  *  CSS unit strings only (G-146 → exact pixels). */
 const LISTENING_CHIP_WIDTH_PX = 72;
@@ -257,7 +265,6 @@ export function LauncherCommandBar({
   onFocus,
   onBlur,
   onMinimize,
-  chatAvailable = false,
   enterMode = 'launch',
   hintLabel,
   busy = false,
@@ -281,19 +288,17 @@ export function LauncherCommandBar({
   };
 
   // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
-  // Label-driven visibility (#2871 ST-3r state 5): the host omits the label when
-  // no chip should render, so busy still shows the host-supplied `Fredo is
-  // replying…` label; while non-busy only `launch`/`send` yield a label, so that
-  // behavior is unchanged.
-  const showHint = useMemo(
-    () => chatAvailable && Boolean(hintLabel),
-    [chatAvailable, hintLabel],
-  );
+  // #2882 ST-4 (R-6.3 / UI/UX §3): chip visibility is LABEL-DRIVEN — the host
+  // derives the label from the SAME Enter verdict the handler consumes, so the
+  // chip can never promise a different action than Enter performs. The old
+  // `chatAvailable` term (which hid the truthful `↵ open <App>` / `no match`
+  // chips whenever no companion was present) is retired with its prop.
+  const showHint = useMemo(() => Boolean(hintLabel), [hintLabel]);
 
   // #2877 ST-5 (DR-7) / #2878 ST-2: reserve the right gutter for every end-slot
   // affordance that is present, so the typed text never renders underneath them.
-  // With only the hint chip this is `184 + 44 = 228px` — byte-identical to the
-  // pre-ST-5 reserved padding. Nothing present ⇒ omitted entirely.
+  // With only the hint chip this is `220 + 44 = 264px`. Nothing present ⇒
+  // omitted entirely.
   const endPaddingPx = computeEndPaddingPx({ showHint, listening });
   const paddingEnd = endPaddingPx === undefined ? undefined : `${endPaddingPx}px`;
 
@@ -516,7 +521,11 @@ export function LauncherCommandBar({
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
           aria-describedby={showHint ? ariaDescribedBy : undefined}
-          aria-keyshortcuts={voiceEnabled ? 'Control+Space' : undefined}
+          // #2882 ST-4 (UI/UX §8): the chord ALWAYS opens/focuses the bar, so the
+          // shortcut is advertised unconditionally — it is no longer a voice
+          // affordance (the hold-Space long-press is not expressible in ARIA; the
+          // armed mirror sentence carries it).
+          aria-keyshortcuts="Control+Space"
           placeholder={busy ? 'Fredo is replying…' : listening ? 'Listening…' : 'search or command'}
           readOnly={busy}
           value={query}

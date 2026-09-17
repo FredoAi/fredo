@@ -3,6 +3,18 @@
  * contracts, the inactive-bar invariance, the a11y announcers, and the visible
  * cancel/discard affordance.
  *
+ * #2882 ST-4 (G-125 re-points — the superseded #2871 assertions are UPDATED, not
+ * deleted):
+ *   • the hint-chip gutter is `220 + 44` (was `184 + 44`) — UI/UX §9 widened
+ *     `HINT_CHIP_MAX_WIDTH_PX` so the longest truthful instruction
+ *     (`↵ send transcript to Fredo`) can never ellipsize;
+ *   • chip visibility is LABEL-DRIVEN: the #2871 `chatAvailable` gate (chip hidden
+ *     whenever no companion was present) is RETIRED, so a chip shows with the
+ *     companion OFF (the binding `↵ open <App>` / `no match` cases);
+ *   • `aria-keyshortcuts` is an UNCONDITIONAL `Control+Space` (it advertises the
+ *     bar-opening chord, not dictation) — the old `voiceEnabled`-gated pin is
+ *     superseded.
+ *
  * Pins:
  *   1. Live partial text renders in the input and the input stays editable while
  *      listening (only `busy` sets `readOnly`).
@@ -51,8 +63,11 @@ describe('computeEndPaddingPx — the reserved end gutter (ST-2 invariance)', ()
     expect(computeEndPaddingPx({ showHint: false, listening: false })).toBeUndefined();
   });
 
-  it('keeps the pre-ST-5 hint-chip gutter byte-identical', () => {
-    expect(computeEndPaddingPx({ showHint: true, listening: false })).toBe(184 + 44);
+  it('keeps the hint-chip gutter in step with HINT_CHIP_MAX_WIDTH_PX (220 + 44)', () => {
+    // #2882 ST-4 re-point (was `184 + 44`): UI/UX §9 widened the chip so
+    // `↵ send transcript to Fredo` cannot ellipsize — a truncated instruction
+    // would be a lying instruction (R-6.3).
+    expect(computeEndPaddingPx({ showHint: true, listening: false })).toBe(220 + 44);
   });
 
   it('reserves the listening chip + cancel + stop + minimize while listening', () => {
@@ -81,6 +96,68 @@ describe('LauncherCommandBar — inactive-bar invariance (AC5)', () => {
     const input = screen.getByRole('searchbox') as HTMLInputElement;
     expect(input).not.toHaveAttribute('readonly');
     expect(input.value).toBe('typed');
+  });
+});
+
+// ── #2882 ST-4 — label-driven hint chip + the unconditional chord ─────────────
+
+describe('LauncherCommandBar — label-driven hint chip (G-125 re-point of the #2871 chatAvailable gate)', () => {
+  it('shows the chip with NO companion signal at all when the host supplies a label', () => {
+    // The binding app-match case: `↵ open Settings` must reach the user (and AT)
+    // even with the companion OFF. The retired `chatAvailable` prop is NOT passed
+    // (it no longer exists), which is exactly the point.
+    renderWithChakra(
+      <LauncherCommandBar
+        query="set"
+        onQueryChange={vi.fn()}
+        hintLabel="↵ open Settings"
+        ariaDescribedBy="fredo-command-hint"
+      />,
+    );
+
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent('↵ open Settings');
+  });
+
+  it('shows the `no match` chip with no companion — the truthful non-promise', () => {
+    renderWithChakra(
+      <LauncherCommandBar query="MM" onQueryChange={vi.fn()} hintLabel="no match" />,
+    );
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent('no match');
+  });
+
+  it('renders no chip when the host supplies no label', () => {
+    renderWithChakra(<LauncherCommandBar query="set" onQueryChange={vi.fn()} />);
+    expect(screen.queryByTestId('launcher-command-hint')).toBeNull();
+    // No chip ⇒ no reserved gutter and no SR mirror.
+    expect(screen.getByRole('searchbox')).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('mirrors the chip text for AT while a label shows (and reserves the widened gutter)', () => {
+    // The gutter number itself is pinned by `computeEndPaddingPx` above; here the
+    // wiring is pinned: a visible label ⇒ an SR description pointing at the mirror.
+    renderWithChakra(
+      <LauncherCommandBar
+        query="set"
+        onQueryChange={vi.fn()}
+        hintLabel="↵ open Settings"
+        ariaDescribedBy="fredo-command-hint"
+      />,
+    );
+
+    expect(screen.getByRole('searchbox')).toHaveAttribute('aria-describedby', 'fredo-command-hint');
+    expect(screen.getByTestId('fredo-command-hint-sr')).toHaveTextContent('↵ open Settings');
+  });
+
+  it('advertises `Control+Space` UNCONDITIONALLY (G-125 re-point of the voiceEnabled-gated pin)', () => {
+    // The chord always shows/focuses the bar, so it is advertised whether or not
+    // voice input is available; it is no longer a voice affordance.
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} />,
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute('aria-keyshortcuts', 'Control+Space');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} voiceEnabled />);
+    expect(screen.getByRole('searchbox')).toHaveAttribute('aria-keyshortcuts', 'Control+Space');
   });
 });
 
