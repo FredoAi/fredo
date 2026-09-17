@@ -1176,3 +1176,77 @@ F-73..F-75 PASS (live). The round's FAIL is on the launcher surface (`launcher` 
   `document.activeElement` unchanged; final `companion origin probe 3232` + real `stt_stop` with
   autosend ON → exactly ONE `runGeneration`; the bubble cleared. The ST-1r launcher fix does not
   touch the bubble (F-74/F-75 stand from round 1).
+
+---
+
+## #2882 extension — Enter's rule is independent of the companion; no dictation launches an app (G-136)
+
+> Issue #2882 makes Enter's app-open rule independent of the companion (present / away / off /
+> replying) and rules that a dictated transcript is ALWAYS a message to Fredo. Rows F-76..F-78 map
+> 1:1 to the QA-Plan `REQ-6`/`REQ-7`/`REQ-9` of `.opencode/tmp/2882/triage.md` `## QA Expert`.
+> **Verification policy: live** — real keystrokes + a HELD Space (`down` → wait → `up` with a recorded
+> duration), DOM snapshots, screenshots, `tauri_read_logs(console)`, plus the mandatory
+> `telemetry_spans` receipt.
+>
+> **G-136 SUPERSESSION (historical PASS/FAIL records above are PRESERVED):**
+> - **F-73 / F-74 / F-75** pinned a companion-ORIGIN dictation session (`stt_start
+>   {origin:"companion"}`) started by the Ctrl+Space cascade, and F-75's "on Ctrl+Space with the
+>   companion away the same holds". **SUPERSEDED** — the Ctrl+Space listening cascade is RETIRED, so
+>   that ROUTE no longer exists; the rows' PASS records stand as history and are NOT re-run as PASS
+>   or FAIL. Dictation now lives in the bar (Ctrl+Space → hold Space → speak → Enter/the autosend
+>   setting). If the Architect keeps the companion-origin code unreachable, that is a one-line
+>   disposition at convergence (QA Discussion QA-6), not a tester FAIL.
+> - **F-69 / F-70 / F-71 / F-72** (bar sends, streaming, error copy, one-in-flight) remain in force
+>   unchanged — a dictated transcript now reaches Fredo through the SAME dispatch.
+
+## F-76 (REQ-7 / AC5) — Enter opens the typed app in EVERY companion state
+
+- [ ] F-76: For each companion state — present at the seat, AWAY (Ctrl+right-click), OFF
+      (`Fredo_companion_visible=false`), and mid-reply (send a long prompt first) — type `set` with
+      real keystrokes into `input[role="searchbox"]` and press Enter; repeat with `Miss` and
+      `monitor`.
+  **Expected:** the Settings window / Mission Monitor window opens in EVERY state with ZERO dispatch
+      to Fredo (`runGeneration` unchanged); `set` is NEVER sent to Fredo. Enter's app-open rule does
+      not depend on the companion.
+  - **Edge:** away while hosted in `run-cli-terminal`; the busy window; the companion toggled OFF
+    immediately before Enter.
+  - **Receipt:** per state — the quoted window title, the window count, the `runGeneration` count.
+
+## F-77 (REQ-6 / AC4 + PO amendment 1) — A dictated phrase never launches an app, whatever the companion is doing
+
+- [ ] F-77: Autosend ON and OFF. In each companion state (present / away / off / mid-reply), hold
+      Space on the focused empty bar, inject a synthetic final naming an app (`Settings`, `set`,
+      `Miss`), release; with autosend OFF follow with a manual Enter.
+  **Expected:** exactly ONE dispatch to Fredo (autosend ON: on release; OFF: on Enter after the text
+      waits in the bar) and ZERO windows in EVERY state — `Settings`/Mission Monitor NEVER opens from
+      a dictated phrase; with no active companion nothing is launched (the transcript is simply not
+      delivered).
+  - **Edge:** a dictated phrase that would match via prefix AND whole-word run; a dictated phrase
+    edited by the user (still Fredo's); the in-flight busy window during a release.
+
+## F-78 (REQ-9 / AC6 hint) — The hint tells the truth for the companion state actually in effect
+
+- [ ] F-78: With the companion present / away / off / replying, read the hint chip +
+      `#fredo-command-hint` for: a matching typed query (`set`), an unmatched typed query
+      (`Missing all the time`), and a dictated transcript in the bar (`Settings`); then press Enter
+      and record the action.
+  **Expected:** the hint names the app that will open when the typed query matches, and reads as
+      sending to Fredo when nothing matches or when the bar holds a dictated transcript — including
+      when the companion is AWAY or OFF (where the hint must not promise a send that will not happen,
+      nor a launch that will not happen). Assert the (hint, action) PAIR per state.
+  - **Edge:** companion toggled between the sample and the Enter; busy → `Fredo is replying…`; the SR
+    mirror equals the chip char-for-char; a theme/accent switch re-tints without changing the text.
+
+### #2882 binding addendum (read before executing F-76..F-78)
+
+- **Exact chip copy:** `↵ open <App name>` (typed match — visible **even with the companion OFF**;
+  the `chatAvailable` gate is retired), `↵ send to Fredo` (unmatched typed text + active companion),
+  `↵ send transcript to Fredo` (dictated, incl. after an edit), `no match` (unmatched typed text, no
+  companion), `Fredo is replying…` (busy), `release Space to finish` (listening).
+- **While `companionBusy`, a typed app MATCH still LAUNCHES** — the old busy GLOBAL Enter no-op
+  becomes SEND-path-only. A typed NON-match while busy must NOT launch.
+- **`VoiceOrigin` keeps the wire value `'companion'`** even though the frontend never requests it —
+  do not fail on its presence in Rust (`commands.rs:73-74`); the retired surface is the FRONTEND
+  bubble (ST-6 deletes `CompanionListeningBubble`).
+- **`askActiveCompanion` must survive** (the bar's send path uses it) — its removal would be a FAIL
+  of F-77.
