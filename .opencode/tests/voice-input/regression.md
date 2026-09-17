@@ -172,3 +172,51 @@ Scope: the F-38 fix surface only (`session.rs` state emission + `useVoiceDictati
 - **R-10 PASS (regression, partial).** At idle the bar is byte-behavioural as before: `placeholder="search or command"`, no listening cue, no bubble, `stt_status {listening:false}`. With voice enabled + companion away, Ctrl+Space correctly took the companion-listen branch (never the bar) — consistent with R-16/DR-9.
 - **R-16 PASS (regression, live).** Settings → Companion ready branch still renders the voice group inside `companion-controls` (enable checked + model installed/location + device + autosend), no Voice nav item/section added; the not-ready gate still renders the wizard with the optional `sttModel` step additive. Evidence: `r2-regression-voice-settings.jpeg`.
 - **R-17 PASS (regression, measured).** Idle WS 87.2 MB with no recognizer constructed (engine loads only on `stt_start`: 208.9 MB listening → 88.0 MB after stop).
+
+---
+
+## #2882 extension — the trigger changed, the surfaces it rides on must not (G-136)
+
+> Issue #2882 retires the Ctrl+Space listening cascade and moves dictation to HOLD SPACE in the
+> focused empty search bar; transcripts become Fredo-only. **G-136 SUPERSESSION (history preserved):**
+> - **R-2 / R-3 / R-11** pinned the #2823 Ctrl+Space TOGGLE and the context cascade. **EXTENDED /
+>   SUPERSEDED:** Ctrl+Space now ALWAYS shows + focuses the bar, never starts or stops listening and
+>   never closes the bar. The `companion-away` ⇒ `companion-listen` branch and the bar-focused
+>   `launcher-listen`/`launcher-cancel` branches are RETIRED (their R-2/R-11 records stand as history;
+>   do NOT re-run them as PASS or FAIL).
+> - **R-8's** "no voice/STT/autosend section" supersession (from #2877) stands; **R-16/R-17** remain in
+>   force unchanged (voice settings live under Companion; no idle CPU / no undeclared persisted key).
+> Run alongside R-1..R-17, the `launcher` R-40..R-43 extension and the `companion` R-39..R-41
+> extension. **Verification policy: live.**
+
+## R-18 — The spaces that are TEXT still land; the interface stays usable while dictating
+
+- [ ] R-18: With voice enabled and NOT listening, type into `input[role="searchbox"]` (including
+      spaces) — the controlled value updates per keystroke, the grid filters, clearing restores the
+      grid, ESC closes the launcher (R-1 unchanged; the LIVE-TEXT/editable-while-listening behavior
+      of the retired F-41/F-39 rows stays in force for a hold session).
+  **Expected:** no behavioral drift when not listening; the bar is controlled normally and every typed
+      space lands; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## R-19 — Ctrl+Space never starts/stops listening in ANY context; nothing else broke
+
+- [ ] R-19: With voice ENABLED and again with it DISABLED, press Ctrl+Space from (a) the resting
+      desktop, (b) the companion AWAY, (c) the bar already focused, (d) mid-reply. Subscribe to
+      `stt:state`.
+  **Expected:** ZERO `stt_start`/listening emissions in EVERY context (the retired cascade is gone);
+      the bar shows + focuses each time; the 2nd press does NOT close it; the disabled case is
+      indistinguishable from the enabled case for the chord (the DR-9 gate is now vacuous for the
+      chord but must not break it). Reference R-2/R-11 (superseded half) + `launcher` R-42.
+  - **Edge:** synthetic Ctrl+Space may not land focus under automation (R-2/R-3 note) → drive via
+    the notch/focus path + the direct `stt_start` invoke and RECORD the lever; never a silent PASS.
+
+## R-20 — Download engine / companion GGUF / settings / token + build gates unchanged
+
+- [ ] R-20: Re-run the untouched-surface checks: `download_missing_files` semantics (skip-present by
+      exact size, streamed SHA-256, Range resume — R-12); the companion GGUF manifest/`models_dir`
+      layout + the non-gating `sttModel` step (R-12); the Companion settings host with no orphan
+      "Voice" nav item/section (R-14/R-16); the token contract + `pnpm --filter @fredo/ui build` /
+      `test:run` / `pnpm --filter @fredo/tauri build:webview` and the Rust gates (CI) (R-15).
+  **Expected:** all unchanged; ZERO true color literals / no `var(--x)NN` alpha-append in the changed
+      files; NO existing assertion weakened, disabled or deleted (G-125) — a moved/renamed frozen hook
+      is refreshed in the same scope and named.
