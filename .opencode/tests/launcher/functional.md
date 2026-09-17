@@ -1246,3 +1246,38 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
     the synthetic `stt:transcript` injection, this row is a NAMED BLOCKER for the real capture read
     (never a PASS).**
   - **Receipt:** the bar/transcript verbatim + the hold duration + the fixture hash + the lever.
+
+### Run log — #2887 round 1 (`spec/2887 @ 706fcd9d`, 2026-09-17, live)
+
+**Verdict FAIL** — see `## Tests Runs (round 1)` on #2887 for the full per-AC table, raw URLs and the
+`telemetry_spans` receipt. The bar rows were driven on the live command bar
+(`textarea[data-testid="launcher-command-input"] role="searchbox" aria-label="Search, launch, or message Fredo"`
+— note the durable selector `input[role="searchbox"]` is stale) in the same holds as the
+`voice-input` F-74/F-76/F-77 measurement.
+
+- **F-82 (warm press→capture-active from the bar) PASS.** 10 holds, `engineResident:true` 10/10;
+  `T` (capture-phase `keydown` `performance.now()` → the `stt:state{listening:true}` receipt, one
+  webview clock domain) = **275.3 / 226.4 / 230.5 / 231.5 / 231.4 / 230.4 / 225.4 / 225.5 / 233.7 /
+  223.0 ms** ⇒ p50 **230.5** / p95 **275.3** / max **275.3**. Scored against the ARCHITECT's
+  `T_FIRST_CAPTURE_BUDGET_MS` (250/300/320) — **this file's `p95 ≤ 500 / max ≤ 750` is a triage-era
+  placeholder and was NOT used; the file was not edited.** Exactly one `stt_start` per hold; single
+  clock domain; the outlier hold is included (G-171).
+- **F-83 (honest bar cue) PASS.** 25 ms in-page sampler over 13 holds: the listening cue
+  (`launcher-command-listening` dot + `Listening` chip + `Listening…` placeholder + the announcer)
+  appears in **ZERO** samples before capture is active; the first cue frame lands **+15.0 / +17.6 /
+  +23.5 ms AFTER** the live `stt:state` receipt; the pre-capture acknowledgement is the TEXT
+  `Hold to dictate…`; the `starting voice input…` chip rendered **0/12** times on resident holds and
+  only on the not-resident hold (text, 4626.1 ms, honestly bounded by the cold load). Scored against
+  `T_MAX_STARTING_STATE_MS` (1000 ms, resident-scoped) — **this file's `> 300 ms` placeholder was NOT
+  used.** The cue never disappeared while the mic was hot (0.991–1.0 dot fraction while live).
+- **F-84 (bar carries the words) UNVERIFIED (named blocker, G-053).** The deterministic 16 kHz WAV
+  (`FREDO_STT_FEED_WAV`) was NOT exercised — the tester cannot set the app's process env var (no
+  `dev-env.ps1` passthrough; fresh shell per invocation) and the real mic is the silent virtual
+  `Iriun Webcam`. The synthetic `stt:transcript` lever on the real channel carried `alpha bravo
+  charlie` into the bar verbatim with exactly one commit; per this row's own rule that is NOT a PASS
+  for the capture read. Bar stayed editable (`readOnly:false`) with the hint `↵ send transcript to
+  Fredo` under autosend OFF.
+- **REQ-8/REQ-9 legs crossing this file:** idle CPU **1.166 % / 1.27 %** of one core over two 60 s
+  windows (engine resident) vs the plan's 1 % bound — FAIL (the no-engine baseline is 1.218 %, so the
+  resident engine is not the cause); resident delta **112.2 MB** ≤ 350; 10 back-to-back cycles with no
+  degradation; 3 cancels clean.
