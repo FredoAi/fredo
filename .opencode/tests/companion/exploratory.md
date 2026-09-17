@@ -186,3 +186,26 @@
       off cleanly (no stuck status/bubble in the wrong window)?
 - [ ] E-41: Probe a mid-stream error (kill the server) — does the bubble show the readable line
       and recover to rest without a stuck cursor?
+
+---
+
+## #2882 extension — companion-state independence probes
+
+> Issue #2882 makes Enter's app-open rule companion-independent and retires the Ctrl+Space listening
+> cascade. A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
+> Live policy; an undrivable lever is a named blocker (G-053) with a static/unit pin.
+
+- [ ] E-42: **Companion state flipped between the hint sample and Enter.** Read the hint with `set`
+      typed while the companion is present, then teleport it AWAY (or toggle it OFF) and press Enter
+      without retyping. Does the action match the hint as last displayed (stale-hint risk) or the
+      live state? Any (hint, action) disagreement is a finding (promotes to F-78/REQ-9).
+- [ ] E-43: **Companion away/away-return mid-hold.** Start a hold on the bar, teleport the companion
+      (away) while Space is still down, then release with a matching final (`Settings`). Does the
+      dispatch route stay bar/Fredo (correct) with no companion-origin session appearing, no window
+      opening, and no stuck cue? Any companion-origin session or opened window is a finding (promotes
+      to F-77/REQ-6 — the retired route must not resurface).
+- [ ] E-44: **Away-teleport immediately before Ctrl+Space (route-removal race).** Ctrl+right-click to
+      send the companion away, then press Ctrl+Space within the same tick/burst. Does the chord still
+      only show + focus the bar (no listening, no bubble), or does a race re-enter the retired
+      `companion-listen` branch? Any listening emission or companion listening bubble is a finding
+      (promotes to F-76/R-39).
