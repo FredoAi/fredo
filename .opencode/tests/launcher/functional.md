@@ -1049,4 +1049,14 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 
 ### #2883 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+- [x] **Round 1 (serving `326822ff`, driver :9224) — F-70 PASS · F-71 PASS · F-72 FAIL · F-73 UNVERIFIED (G-161) · F-74 PASS (a,b,d) + dictated (c) UNVERIFIED · F-75 FAIL · F-76 FAIL · F-77 PASS · F-78 PASS (console/tokens) / theme-switch UNVERIFIED.**
+      - F-70 PASS: ~193-char prose query → field `48→108 px`, `scrollWidth 550 == clientWidth 550`, content-box right 976 < hint left 1095.4.
+      - F-71 PASS: ONE frame with the wrapped query + hint + minimize control; content box `{l:720,r:976}` vs hint `{l:1095.4,rr:1195}` and collapse `{l:1205,rr:1228}` → both intersections **0**; controls `opacity 1`.
+      - **F-72 FAIL**: cap 108 + internal scroll PASS (`scrollHeight 146 > clientHeight 106`, `overflow-y auto`), but the clear-to-empty edge is violated — see below.
+      - F-73 UNVERIFIED (G-161): real chord/native insertion undrivable; oracle `dispatchEvent(KeyboardEvent{key:'Enter',code:'Enter',shiftKey:true})` returns `notPrevented:true` (no interception), 0 generations / 0 windows, insert-text `line one\nline two` → 2 lines, intrinsic 66 px.
+      - F-74 PASS: `set`+Enter → hint `↵ open Settings` → Settings panel, 0 generations; `Missing all the time`+Enter → exactly 1 `[companion] runGeneration`, 0 windows; multi-line query+Enter → whole query delivered (reply echoed "…those lines?"), field cleared, no newline inserted. Dictated (c) UNVERIFIED — no microphone on this host.
+      - **F-75 / F-76 FAIL**: the field never shrinks after it has grown. After a long query, the EMPTY field renders **108 px** (`scrollHeight == clientHeight == 106`, `overflow-y auto`) although its intrinsic content is **46 px** (1 line = the 48 px base). Bound = 48 px.
+      - F-77 PASS: `docs/ARCHITECTURE.md:612/:622` + `docs/FAQ.md:220/:224` updated; the still-true 208×268 game-card statement and the ~4 s welcome auto-hide are preserved.
+      - F-78 PASS for console + tokens: only the exempt `motion() is deprecated` WARN; 0 colour literals / 0 `var(--x)NN` in the changed files. Theme-switch leg not re-driven → UNVERIFIED.
+      **Repro (D-1):** insert ~193 chars → 108 px; clear to `""` → still 108 px; with `style.height='auto'` `scrollHeight` = 46. Root cause: `scheduleFieldMeasure` reads `el.scrollHeight` while the element already carries `height: ${fieldHeightPx}px`, so `scrollHeight` floors at `clientHeight` and the clamped result can never fall.
+      **Evidence:** https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req3-defect-empty-bar-stuck-108px.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req2-req3-cap-wrapped-query.jpeg
