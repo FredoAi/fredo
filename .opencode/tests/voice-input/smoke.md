@@ -59,3 +59,21 @@
 - **S-9 PASS** — Settings app window → Companion rendered the "Voice input" group (enable switch, engine status, model row ready + location, device select, autosend) inside the Companion section with NO dedicated Voice nav/section; toggling the enable control persisted `Fredo_companion_voice_enabled` and survived a full app restart (control restored `checked`). Screenshot + DOM structure captured; console clean (only the pre-existing `motion() is deprecated` WARN).
 - **S-10 PASS** — the `sttModel` step renders in the wizard's **Optional** group ("Not required for companion chat"); the gating summary stays GGUF-only ("2 of 3 prerequisites ready" / "0 of 3 present") while the optional STT step showed "4 of 4 present"; from an empty scratch `models_dir` (MS-V0) the step exposed ONE "Download voice model" action which acquired all 4 files in one click.
 - **S-11 PASS** — launcher-origin start showed the DR-7 cue (dot + `Listening` chip + Stop + `Listening…` placeholder) exactly while `listening`; stop cleared it. Companion-origin start showed the DR-8 bubble (dot + Listening… + 6 s hearing-nothing hint + Stop) with the launcher cue absent (exactly one indicator per session). Console clean before/after. Real audio absent (silent virtual device) — a named blocker on F-24/F-26, not on the smoke path.
+
+## #2882 extension — hold-Space dictation quick paths
+
+> Issue #2882 moves the dictation trigger to a HELD Space in the focused empty search bar and retires
+> the Ctrl+Space listening cascade. Quick paths only — the full matrix lives in
+> `functional.md` F-66..F-72 / `regression.md` R-18..R-20. **Verification policy: live.**
+
+- [ ] S-12: **Hold Space dictates.** With voice enabled + model ready, focus `input[role="searchbox"]`
+      (EMPTY value), `keyboard(action="down", key=" ")`, hold 1500 ms, then `action="up"`.
+      **Expected:** a visible listening cue (dot/chip/Stop + `Listening…`) appears on the `down` and
+      clears on the `up` (`stt_status.listening` `true` → `false`); exactly ONE `stt_start`;
+      screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+      The audible leg is a NAMED BLOCKER on this host (no physical mic) — use the synthetic
+      `stt:transcript` lever for content and record it.
+- [ ] S-13: **`set` dictated goes to Fredo, not to Settings.** Autosend OFF; hold Space → synthetic
+      final `set` → release; then Enter. **Expected:** the text waits in the bar on release, then ONE
+      dispatch to Fredo and ZERO windows (`Settings` NEVER opens from a dictated phrase); screenshot
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
