@@ -96,5 +96,20 @@
     placeholder + chip, `readOnly`, `aria-busy="true"`) and cleared at `llm-done`; Enter during
     busy was a global no-op. Screenshot succeeded; console error-level only the `[MCP][BRIDGE]`
     instrumentation artifact from a tester synthetic event. Screens `req1-send-streaming.png`,
-    `req14-busy-atomic.png`, `req5-completion-cleared.png`.
+     `req14-busy-atomic.png`, `req5-completion-cleared.png`.
+
+## #2882 extension — smart-Enter + hold-Space quick paths
+
+> Issue #2882 broadens the typed-query match and retires the Ctrl+Space listening cascade.
+> Quick paths only — the full matrix lives in `functional.md` F-64..F-69 / `regression.md` R-40..R-43.
+
+- [ ] S-16: **`set` + Enter opens Settings.** Focus `input[role="searchbox"]`, type `set` with real
+      keystrokes, read the hint chip, press Enter. **Expected:** the chip names the app that will
+      open (`↵ open Settings`, NOT `↵ send to Fredo`); Enter opens
+      `div[role="group"][aria-label="Settings"]` and starts NO Fredo generation; screenshot succeeds;
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-17: **Ctrl+Space = show + focus, no listening.** From the resting desktop, press Ctrl+Space.
+      **Expected:** the bar appears with the caret in `input[role="searchbox"]`, `stt_status`
+      `listening === false`, NO listening cue/chip, ZERO `stt_start`; a 2nd press leaves the bar
+      OPEN; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
