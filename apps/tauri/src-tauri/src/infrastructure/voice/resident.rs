@@ -14,6 +14,15 @@
 //! warm leaves the slot empty and clears the in-flight state, so the next
 //! `stt_start` cold-loads (and reports its typed error) exactly as today.
 //!
+//! **BOTH edges of residency are generation-guarded.** [`ResidentEngine::release`]
+//! bumps the slot generation: a warm that finishes afterwards is dropped rather
+//! than parked, and a session that started before the release — it holds the
+//! engine while the release lands — has its [`ResidentEngine::put_back`] refused,
+//! so its engine is dropped too instead of re-parking what the voice-disabled
+//! edge just reclaimed (R-6). Re-enabling voice warms again at the new generation
+//! and parks normally, so the guard reclaims the memory without permanently
+//! poisoning the module.
+//!
 //! # Layout
 //!
 //! [`ResidentEngine::warm_at_setup`] is the earliest-safe warm, called once from
@@ -183,12 +192,38 @@ impl ResidentEngine {
         lock_inner(self).engine.take()
     }
 
-    /// Return a used engine to the slot with a FRESH stream (R-7: retention). A
+    /// The slot's current generation. A session snapshots this **before** it
+    /// acquires its engine and passes the same value back to
+    /// [`ResidentEngine::put_back`] on every return path.
+    ///
+    /// [`ResidentEngine::release`] bumps the generation, so a session that started
+    /// before a release can never re-park its engine afterwards — R-6's memory
+    /// reclaim survives a live session's return.
+    pub fn generation(&self) -> u64 {
+        lock_inner(self).generation
+    }
+
+    /// Return a used engine to the slot with a FRESH stream (R-7: retention), but
+    /// ONLY while the slot still sits at `generation` — the value the session
+    /// snapshotted with [`ResidentEngine::generation`] when it started. A
     /// recognizer that already went through `input_finished` is not reusable
-    /// without this renewal.
-    pub fn put_back(&self, mut recognizer: Box<dyn Recognizer>) {
+    /// without the renewal.
+    ///
+    /// - **Match** ⇒ the engine is parked exactly as before (the normal path).
+    /// - **Mismatch** ⇒ a [`ResidentEngine::release`] landed while the session was
+    ///   live, so the engine is **dropped here** and the slot stays as the release
+    ///   left it (R-6). The stream is deliberately NOT renewed on this path.
+    ///
+    /// Returns `true` iff the engine was parked. Callers must not retry a refused
+    /// engine — dropping it IS the contract.
+    pub fn put_back(&self, mut recognizer: Box<dyn Recognizer>, generation: u64) -> bool {
+        let mut guard = lock_inner(self);
+        if guard.generation != generation {
+            return false;
+        }
         recognizer.new_stream();
-        lock_inner(self).engine = Some(recognizer);
+        guard.engine = Some(recognizer);
+        true
     }
 
     /// Drop the resident engine and reclaim its memory (the voice-disabled edge,
@@ -298,9 +333,10 @@ impl WarmFlight {
 #[cfg(test)]
 mod tests {
     //! Hermetic resident-lifecycle pins: the single-flight contract, the honest
-    //! residency reporting, the stream renewal on `put_back`, and the
-    //! release-during-load guard all run against an injected loader and a fake
-    //! [`Recognizer`] — no `AppHandle`, no model, no device, no network.
+    //! residency reporting, the stream renewal on `put_back`, the release-during-
+    //! load guard, and the generation-guarded session return (a pre-release
+    //! session can never re-park the engine) all run against an injected loader
+    //! and a fake [`Recognizer`] — no `AppHandle`, no model, no device, no network.
 
     use super::*;
 
@@ -593,17 +629,196 @@ mod tests {
                 .warmed
         );
 
+        let generation = engine.generation();
         let taken = engine.take().expect("the slot holds the engine");
         assert!(!engine.is_resident(), "take empties the slot");
         assert!(engine.take().is_none(), "at most ONE engine per process");
 
-        engine.put_back(taken);
+        assert!(
+            engine.put_back(taken, generation),
+            "a session at the current generation parks normally"
+        );
         assert!(engine.is_resident(), "put_back parks the engine again");
         assert_eq!(
             streams.load(Ordering::SeqCst),
             1,
             "put_back renews the stream exactly once before parking"
         );
+    }
+
+    /// R-6 defect pin: a session that started BEFORE the voice-disabled release
+    /// hands the engine back after the release. The generation-guarded `put_back`
+    /// must REFUSE it — the engine is dropped (memory reclaimed), residency stays
+    /// false, and it is never re-parked.
+    #[tokio::test]
+    async fn a_put_back_from_a_pre_release_session_is_dropped_and_never_re_parks() {
+        let engine = ResidentEngine::new();
+        let streams = Arc::new(AtomicUsize::new(0));
+        let loaded = Arc::clone(&streams);
+        assert!(
+            engine
+                .warm_with(move || async move { Ok(boxed_fake(loaded)) })
+                .await
+                .warmed
+        );
+
+        // The session starts: snapshot the generation and take the engine.
+        let session = engine.generation();
+        let taken = engine.take().expect("the slot holds the engine");
+        assert!(!engine.is_resident(), "the live session owns the engine");
+
+        // The voice-disabled edge lands mid-session: nothing is parked to drop,
+        // but the release must still invalidate this session's claim.
+        assert!(
+            !engine.release(),
+            "release finds the slot empty while the session holds the engine"
+        );
+
+        // The session ends: its engine is dropped, never re-parked.
+        assert!(
+            !engine.put_back(taken, session),
+            "a pre-release session's return must be refused"
+        );
+        assert!(
+            !engine.is_resident(),
+            "residency stays false — the release's reclaim is not undone (R-6)"
+        );
+        assert!(engine.take().is_none(), "nothing was re-parked");
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            0,
+            "a refused return never renews the stream (it never parks)"
+        );
+    }
+
+    /// The normal path must keep working across the release boundary: a session
+    /// that starts after a subsequent re-warm snapshots the NEW generation and
+    /// parks normally.
+    #[tokio::test]
+    async fn a_put_back_from_a_session_started_after_the_re_warm_parks_normally() {
+        let engine = ResidentEngine::new();
+
+        // The voice-disabled edge bumps the generation...
+        assert!(!engine.release(), "nothing was resident yet");
+
+        // ...voice is re-enabled and a fresh warm establishes residency again.
+        let streams = Arc::new(AtomicUsize::new(0));
+        let loaded = Arc::clone(&streams);
+        assert!(
+            engine
+                .warm_with(move || async move { Ok(boxed_fake(loaded)) })
+                .await
+                .warmed
+        );
+
+        // A session that starts now snapshots the post-release generation.
+        let session = engine.generation();
+        let taken = engine.take().expect("the re-warmed engine is parked");
+
+        assert!(
+            engine.put_back(taken, session),
+            "a post-release session parks normally"
+        );
+        assert!(engine.is_resident(), "residency is re-established legitimately");
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            1,
+            "the normal park path renews the stream exactly once"
+        );
+    }
+
+    /// Case 3: `release()` stays idempotent (an empty slot yields `false` every
+    /// time) and the generation match is EXACT — a stale pre-release stamp can
+    /// never re-park, even while a newer, legitimate engine occupies the slot.
+    #[tokio::test]
+    async fn release_is_idempotent_and_a_stale_generation_can_never_re_park() {
+        let engine = ResidentEngine::new();
+        let streams = Arc::new(AtomicUsize::new(0));
+        let loaded = Arc::clone(&streams);
+        assert!(
+            engine
+                .warm_with(move || async move { Ok(boxed_fake(loaded)) })
+                .await
+                .warmed
+        );
+
+        let stale = engine.generation();
+        let stale_return = engine.take().expect("the slot holds the engine");
+        assert!(!engine.release(), "release #1: the session holds the engine");
+        assert!(!engine.release(), "release #2 is a no-op — release is idempotent");
+        assert!(!engine.is_resident());
+
+        // A later, legitimate occupant arrives at the new generation.
+        let fresh = boxed_fake(Arc::clone(&streams));
+        assert!(
+            engine.put_back(fresh, engine.generation()),
+            "the current generation parks normally"
+        );
+        assert!(engine.is_resident());
+
+        // The stale return is still refused, and the legitimate engine survives.
+        assert!(
+            !engine.put_back(stale_return, stale),
+            "an old generation can never displace a newer resident engine"
+        );
+        assert!(engine.is_resident(), "the legitimate engine is untouched");
+    }
+
+    /// Case 4: a release never poisons the module — re-enabling voice warms
+    /// again (a genuine load at the new generation), and that engine serves the
+    /// next session through the normal take/put_back round trip.
+    #[tokio::test]
+    async fn a_release_never_poisons_the_module_and_a_later_warm_serves_the_next_session() {
+        let engine = ResidentEngine::new();
+        let loads = Arc::new(AtomicUsize::new(0));
+        let streams = Arc::new(AtomicUsize::new(0));
+
+        // Voice enabled: warm #1 loads.
+        let counted = Arc::clone(&loads);
+        let loaded = Arc::clone(&streams);
+        assert!(
+            engine
+                .warm_with(move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(boxed_fake(loaded)) }
+                })
+                .await
+                .warmed
+        );
+
+        // A live session takes it; the user disables voice mid-session.
+        let generation = engine.generation();
+        let taken = engine.take().expect("the slot holds the engine");
+        assert!(!engine.release());
+        assert!(
+            !engine.put_back(taken, generation),
+            "the pre-release session cannot re-park the engine"
+        );
+        assert!(!engine.is_resident(), "the memory is reclaimed while disabled");
+
+        // Voice re-enabled: a fresh warm LOADS again and parks at the new
+        // generation — the module is not permanently poisoned.
+        let counted = Arc::clone(&loads);
+        let loaded = Arc::clone(&streams);
+        let rewarm = engine
+            .warm_with(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(boxed_fake(loaded)) }
+            })
+            .await;
+        assert!(rewarm.warmed, "voice re-enabled warms again");
+        assert!(
+            rewarm.warm_ms.is_some(),
+            "the re-warm really paid a load, it did not inherit the dropped one"
+        );
+        assert!(engine.is_resident(), "residency is re-established");
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "exactly one load per warm");
+
+        // And that engine serves the next session through the normal path.
+        let session = engine.generation();
+        let taken = engine.take().expect("the re-warmed engine is parked");
+        assert!(engine.put_back(taken, session));
+        assert!(engine.is_resident());
     }
 
     #[tokio::test]

@@ -291,16 +291,21 @@ async fn acquire_engine(resident: &ResidentEngine) -> (Option<Box<dyn Recognizer
 /// Return a finished session's engine to the resident slot with a FRESH stream
 /// (R-7): `put_back` renews the stream, so a recognizer that already went
 /// through `input_finished` can serve the next session.
-fn park_in_slot(resident: &ResidentEngine, recognizer: Box<dyn Recognizer>) {
-    resident.put_back(recognizer);
+///
+/// `generation` is the slot generation this session snapshotted when it started.
+/// `put_back` refuses it if a `release()` (the voice-disabled edge) landed while
+/// the session was live, dropping the engine instead of re-parking it (R-6) —
+/// the return is the engine's last reference, so refusing IS the reclaim.
+fn park_in_slot(resident: &ResidentEngine, recognizer: Box<dyn Recognizer>, generation: u64) {
+    let _ = resident.put_back(recognizer, generation);
 }
 
 /// Resolve the managed resident state and park the engine there. Fail-soft: a
 /// composition that manages no resident state simply drops the engine exactly
 /// as before (the `warm_at_setup` precedent).
-fn park_engine(app: &AppHandle, recognizer: Box<dyn Recognizer>) {
+fn park_engine(app: &AppHandle, recognizer: Box<dyn Recognizer>, generation: u64) {
     if let Some(resident) = app.try_state::<ResidentEngine>() {
-        park_in_slot(&resident, recognizer);
+        park_in_slot(&resident, recognizer, generation);
     }
 }
 
@@ -346,9 +351,17 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     // JOINS the single in-flight warm instead of starting a second model load;
     // `engine_resident` stays false on that path, so residency on the wire is
     // never optimistic.
-    let (engine, engine_resident) = {
+    //
+    // The slot generation is snapshotted HERE — before the engine is acquired and
+    // before any wait — and every return path hands it back to `put_back`. A
+    // `release()` (voice-disabled edge) landing at any point during this session's
+    // life therefore invalidates the return, so the engine is dropped instead of
+    // re-parked (R-6).
+    let (engine, engine_resident, slot_generation) = {
         let resident = app.state::<ResidentEngine>();
-        acquire_engine(&resident).await
+        let generation = resident.generation();
+        let (engine, engine_resident) = acquire_engine(&resident).await;
+        (engine, engine_resident, generation)
     };
 
     // 5. Worker owns the engine AND the `cpal::Stream` (both stay on one thread).
@@ -379,6 +392,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
                 engine_rx,
                 outcome_tx,
                 receipt,
+                slot_generation,
             });
         }) {
         Ok(handle) => handle,
@@ -386,7 +400,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
             // Nothing was started: a spawn failure must never cost the residency
             // (R-7), so the taken engine goes straight back to the slot.
             if let Some(engine) = engine {
-                park_engine(app, engine);
+                park_engine(app, engine, slot_generation);
             }
             let error = VoiceError::internal(format!("failed to spawn the voice worker: {error}"));
             emit_state(app, &state_event_error(&error, Some(origin)));
@@ -401,7 +415,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         Err(mpsc::SendError(engine)) => engine,
     };
     if let Some(engine) = returned {
-        park_engine(app, engine);
+        park_engine(app, engine, slot_generation);
     }
 
     // 6. Await readiness off the main thread (engine load is the slow part).
@@ -550,6 +564,10 @@ struct WorkerJob {
     outcome_tx: tokio::sync::oneshot::Sender<Result<StartInfo, VoiceError>>,
     /// The `stt_start` receipt `readyMs` is measured from.
     receipt: Instant,
+    /// The slot generation `start` snapshotted before acquisition. Every return
+    /// path hands it back to `put_back`, so a `release()` landing while the
+    /// session is live drops the engine instead of re-parking it (R-6).
+    slot_generation: u64,
 }
 
 /// Worker thread body: take the engine handed over by `start` (the resident one,
@@ -568,6 +586,7 @@ fn worker_main(job: WorkerJob) {
         engine_rx,
         outcome_tx,
         receipt,
+        slot_generation,
     } = job;
 
     // The resident engine `start` took from the slot (or one a joined
@@ -590,7 +609,7 @@ fn worker_main(job: WorkerJob) {
         Err(error) => {
             // The engine is still good — park it before reporting the failure so
             // a failed device open never costs the residency (R-7).
-            park_engine(&app, recognizer);
+            park_engine(&app, recognizer, slot_generation);
             let _ = outcome_tx.send(Err(error));
             return;
         }
@@ -607,14 +626,14 @@ fn worker_main(job: WorkerJob) {
     };
     if outcome_tx.send(Ok(info)).is_err() {
         // The caller gave up; park the engine, drop capture and exit.
-        park_engine(&app, recognizer);
+        park_engine(&app, recognizer, slot_generation);
         return;
     }
 
     let sink = AppHandleSink::new(app.clone());
     run_recognition(&sink, &session_id, recognizer.as_mut(), &rx);
     // `capture` (and its device stream) drops here at end of scope.
-    park_engine(&app, recognizer);
+    park_engine(&app, recognizer, slot_generation);
 }
 
 fn elapsed_ms(since: Instant) -> u64 {
@@ -1159,7 +1178,7 @@ mod tests {
         let resident = ResidentEngine::new();
         let parked = FakeRecognizer::new(Vec::new(), None);
         let streams = parked.stream_counter();
-        resident.put_back(Box::new(parked));
+        resident.put_back(Box::new(parked), resident.generation());
         assert_eq!(
             streams.load(Ordering::SeqCst),
             1,
@@ -1201,18 +1220,53 @@ mod tests {
         let resident = ResidentEngine::new();
         let parked = FakeRecognizer::new(Vec::new(), None);
         let streams = parked.stream_counter();
-        resident.put_back(Box::new(parked));
+        let generation = resident.generation();
+        resident.put_back(Box::new(parked), generation);
 
         let (engine, engine_resident) = acquire_engine(&resident).await;
         assert!(engine_resident);
         let engine = engine.expect("the parked engine was taken");
 
-        park_in_slot(&resident, engine);
+        park_in_slot(&resident, engine, generation);
         assert!(resident.is_resident(), "retained across the session boundary");
         assert_eq!(
             streams.load(Ordering::SeqCst),
             2,
             "the returned engine got a fresh stream (one park + one return)"
+        );
+    }
+
+    /// R-6 defect pin at the session seam: the generation `start` snapshots
+    /// travels with the session, so a `release()` landing while the session is
+    /// live makes the return a DROP — residency stays false and the engine is
+    /// never re-parked. (The `resident.rs` pins cover the slot mechanics; this
+    /// one pins that the session seam passes the generation through.)
+    #[tokio::test]
+    async fn a_session_that_started_before_a_release_drops_its_engine_on_return() {
+        let resident = ResidentEngine::new();
+        let parked = FakeRecognizer::new(Vec::new(), None);
+        let streams = parked.stream_counter();
+        let generation = resident.generation();
+        resident.put_back(Box::new(parked), generation);
+
+        // Session start: snapshot + take (exactly what `start` does).
+        let (engine, engine_resident) = acquire_engine(&resident).await;
+        assert!(engine_resident);
+        let engine = engine.expect("the parked engine was taken");
+
+        // The voice-disabled edge lands while the session is live.
+        assert!(!resident.release(), "the session holds the only engine");
+
+        // Session end: the return drops the engine (R-6), never re-parks it.
+        park_in_slot(&resident, engine, generation);
+        assert!(
+            !resident.is_resident(),
+            "a pre-release session's return must not re-establish residency"
+        );
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            1,
+            "the park's renewal only — a refused return renews nothing"
         );
     }
 
