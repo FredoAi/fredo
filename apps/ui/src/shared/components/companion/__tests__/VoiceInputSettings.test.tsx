@@ -3,9 +3,10 @@
  *
  * Proves the extracted settings group without a Tauri host:
  *   • C1 — the master enable switch (frozen `aria-label="Enable voice input"`,
- *     label `Dictate with Ctrl+Space`, DEFAULT OFF) persists the choice and, on
- *     OFF while a session is live, stops the session + releases the mic (R-1.1 /
- *     DR-2);
+ *     label `Hold Space to dictate` — re-pointed off the retired Ctrl+Space
+ *     dictation promise by #2882 ST-7 / R-7, DEFAULT OFF) persists the choice
+ *     and, on OFF while a session is live, stops the session + releases the mic
+ *     (R-1.1 / DR-2);
  *   • R-1.3 — the engine status line shows idle / listening / error;
  *   • C2 — the model row's six DR-3 states with the single primary action + the
  *     Re-check action, aggregate determinate progress, the resolved location on
@@ -56,6 +57,21 @@ import type {
 } from '@/shared/components/companion/companionReadiness';
 
 const STT_IDS: readonly ModelFileId[] = ['sttTokens', 'sttEncoder', 'sttDecoder', 'sttJoiner'];
+
+// ── #2882 ST-7 pinned copy (R-7) ─────────────────────────────────────────────
+// Literal pins for the re-pointed voice-settings copy (G-125): the enable label
+// teaches hold-Space instead of the retired Ctrl+Space dictation shortcut, the
+// help carries the shipped gesture end to end, and the `disabled` engine error
+// points at the new label rather than the gone shortcut.
+const VOICE_ENABLE_LABEL = 'Hold Space to dictate';
+const VOICE_ENABLE_HELP_TEXT =
+  'In the launcher search bar, hold Space to dictate; release and the words land in the bar as ' +
+  'editable text. Enter then sends them to Fredo — with “Send voice transcripts automatically” ' +
+  'on, they’re sent the moment you release. A dictated transcript always goes to Fredo and never ' +
+  'opens an app, even after you edit it. Ctrl+Space only brings the search bar forward; it never ' +
+  'starts dictation. Transcription runs locally — nothing leaves this machine.';
+const VOICE_DISABLED_ERROR_TEXT =
+  'Voice input is off. Turn on “Hold Space to dictate” above, then hold Space in the launcher search bar.';
 
 function sttFile(
   id: ModelFileId,
@@ -239,6 +255,10 @@ describe('VoiceInputSettings — pure derivations (#2877 ST-4)', () => {
     expect(voiceErrorCopyFor('noDevice')).toMatch(/Connect a microphone/);
     expect(voiceErrorCopyFor('modelCorrupt')).toMatch(/Re-download/);
     expect(voiceErrorCopyFor(null)).toMatch(/unexpected problem/);
+    // #2882 ST-7 re-pinned (G-125): the `disabled` copy points at the new enable
+    // label and never names Ctrl+Space as the dictation shortcut.
+    expect(voiceErrorCopyFor('disabled')).toBe(VOICE_DISABLED_ERROR_TEXT);
+    expect(voiceErrorCopyFor('disabled')).not.toMatch(/Ctrl\+Space/);
   });
 
   it('derives the device sub-states (vanished is never a silent switch)', () => {
@@ -279,10 +299,18 @@ describe('VoiceInputSettings — pure derivations (#2877 ST-4)', () => {
 // ── C1 — master enable (R-1.1 / DR-2) ────────────────────────────────────────
 
 describe('VoiceInputSettings — C1 enable switch (#2877 ST-4)', () => {
-  it('renders the frozen label + aria-label and defaults OFF (opt-in)', async () => {
+  it('renders the re-pinned label + help and defaults OFF (opt-in)', async () => {
     renderSettings();
 
-    expect(screen.getByText('Dictate with Ctrl+Space')).toBeInTheDocument();
+    // #2882 ST-7 re-pinned (G-125): the label no longer promises the retired
+    // Ctrl+Space dictation shortcut — it teaches the hold-Space gesture.
+    expect(screen.getByText(VOICE_ENABLE_LABEL)).toBeInTheDocument();
+    expect(screen.queryByText('Dictate with Ctrl+Space')).toBeNull();
+    // The help copy carries the shipped gesture only (bar cue + Enter + autosend),
+    // and frames Ctrl+Space as the bar-opening chord — never dictation.
+    const help = screen.getByText(VOICE_ENABLE_HELP_TEXT);
+    expect(help).toBeInTheDocument();
+    expect(help).toHaveAttribute('id', 'companion-voice-enable-help');
     const toggle = screen.getByLabelText('Enable voice input');
     expect(toggle).not.toBeChecked();
     expect(localStorage.getItem(VOICE_ENABLED_SETTING_KEY)).toBeNull();
