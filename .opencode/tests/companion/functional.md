@@ -1676,4 +1676,73 @@ Key receipts:
 
 ### #2886 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Served checkout: repo root `spec/2886 @ 0ac6b38a` (G-052). App: Tauri WebView2, MCP bridge 127.0.0.1:9224.
+> `S = REPLY_AVATAR_CLEARANCE = 14 px` (Architect-bound; verified in source `replySurfaceLayout.ts:303`).
+
+- [x] **F-91 (E1) — PASS (intersection) / FAIL (separation)** — every sampled kind (short reply,
+      grown+scrolling reply, joke via single-click) measured `intersectionArea(avatar, surface) === 0`
+      at EVERY sample across 1400×900, 900×600, 900×1000 and 560/700-wide legs (0 area violations in
+      all runs). **Welcome (OFF→ON) leg UNVERIFIED** — see the named blocker below.
+- [ ] **F-92 (E2) — FAIL.** Bound `S = 14`. The surface's *layout* anchor is correct
+      (`bottom = avatar.top − 14` at `transform: none`; measured exactly `dy = 14.00`), **but the
+      avatar's own idle/bob CSS transform moves its `getBoundingClientRect().top` upward, collapsing
+      the live measured gap**: base tier one-liner at 1400×900 sampled `dy` from **16.13 down to
+      8.00 px** (distinct values: 8.00, 8.04, 8.15, 8.34, 8.61, 9.39, 9.89, 10.43, 11.00, 11.57,
+      12.11, 12.61, 13.04, 13.39, 13.66, 14.00, …); grown tier at 1400×900 dipped to **8.00–13.74**
+      (60.6 % of 137 grown samples below 14); 900×600 grown min **12.80**; 900×1000 grown min
+      **8.04**; side placement (ADVISORY 700×260) `dx` pinned at **13.08**. The bounded
+      `REPLY_AVATAR_CLEARANCE` strip does NOT out-run the avatar motion envelope as the plan asserted
+      (the transform acts on the same rect the placement samples). Repro: send
+      `Reply with exactly: Hi there!` at 1400×900, sample `avatar.getBoundingClientRect().top −
+      surface.getBoundingClientRect().bottom` in one `execute_js` task over ~2.5 s → min < 14.
+- [x] **F-93 (E3) — FAIL (facing edge not constant).** 154-sample stream of a 300-word story reply at
+      1400×900: `area = 0` at every sample (no transient overlap), **but the facing edge
+      (surface bottom) moved across 3.37 px** (min 288.63, max 292.00) while the card height grew
+      120 → 226 — e.g. 289.95 (base) → 292 → 289.08 → 288.63 → 290.73 … The UI/UX stability invariant
+      requires the bottom edge pinned constant for the whole generation. Root cause: the placement
+      re-derives from the *transformed* avatar rect each frame, so the pinned edge tracks the bob.
+- [ ] **F-94 (E4) — FAIL (tiles) / PARTIAL.** Zero intersection with the bar, field, hint and
+      collapse control, and full on-screen containment in every sampled placement (above + side).
+      **The app tiles cannot be measured because `#fredo-launcher-grid` is REMOVED FROM THE DOM for
+      the entire time a reply surface is displayed** (436 consecutive 30 ms transition samples: 0
+      gridcells). Per QA Risk 5 / UI/UX point (3), hiding the tiles cannot pass this row.
+      Teleport-away overlay: see named blocker.
+- [ ] **F-95 (E5) — PARTIAL.** One-liner renders as today: `data-reply-tier="base"`, exactly
+      **240×120**, no scroller (`scroller: false`) — PASS. Too-small shrink+scroll: the side-placement
+      leg at the dev-only 700×260 viewport showed `data-reply-placement="right"`, `scrollHeight 104 >
+      clientHeight 90`, `area = 0`, on-screen — ADVISORY (below the shipped 900×600 floor). At
+      **900×600** the grown reply was a `560×121.7` scroller (`scrollHeight 503 > clientHeight 92`),
+      `area = 0`, `above` — reachable and PASSing the shrink+scroll clause.
+- [ ] **F-96 (E6) — PASS (mechanism) / FAIL (separation).** `data-reply-placement` present and matches
+      geometry: `above` in all tall/default legs, `right` at the short viewport; strictly on the
+      reported side of the avatar each time (`strictAbove`/`strictRight` true); `below` never observed
+      at the seat. The 14 px clearance clause fails as F-92 above (`dx = 13.08`).
+- [x] **F-97 (E7) — PASS.** Command-bar `y = 446` with and without a reply (Δ = 0 ≤ 1 px); seat
+      wrapper exactly **80×100 + 16 px `margin-bottom`** in both states (no CLS, #2870 R-35 pin);
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded` after every leg; the
+      placement code has no `useEffect`/`useMemo` dependency on array `.length` or a fresh object.
+- [x] **F-98 (E8) — PASS.** `telemetry_spans` returned **3142** rows with
+      `max(ingested_at) = 2026-09-17T19:32:54.683501+00:00`; `fredo emit --event-type chat
+      --session-id e2e-2886-chat` classified into `chat_rows` (1 row) and
+      `--event-type tool_use --session-id e2e-2886-tool` into `tool_use_rows` (1 row). Every leg
+      above carries a rendered-webview receipt.
+
+**Named blockers (G-053):**
+
+1. **Welcome (OFF→ON) leg UNVERIFIED — Settings app not reachable from the launcher grid.** In
+   `#2886` the Settings modal was replaced by the `SettingsFeature` app (`settings-app/SettingsFeature.tsx`).
+   Clicking the Settings gridcell (`#fredo-launcher-grid [role="gridcell"]`) at 900×600 produced no
+   dialog and no new Tauri window (`tauri_manage_window action=list` → only `main`). Attempted: gridcell
+   click, DOM snapshot (31 elements, no settings dialog), window list. The welcome message could not be
+   triggered without navigating to Settings → Companion. **Not a product FAIL for this spec's ACs** —
+   flagged as a measurement gap; the amendment (a) welcome clause is UNVERIFIED, all reply/joke clauses
+   are covered.
+2. **Away-overlay leg UNVERIFIED.** Ctrl+right-click teleport (dispatched as
+   `mousedown {button:2, ctrlKey:true}` on `.fredo-companion-avatar`) moved Fredo to the away overlay
+   (`[data-state="away"]`, seat `offsetParent === null`). In that state the overlay's DOM contains ONLY
+   the avatar `div` — no `[data-testid="fredo-reply-surface"]` and no `[data-testid="fredo-companion-surface"]`
+   sibling — and bar-Enter dispatch produced no surface (`askActiveCompanion` returned no visible
+   surface). Attempted: bar click + type + Enter, avatar click, escape, reload. ST-4's away-overlay
+   clearance could not be measured at all.
+3. **Tiles not measurable while a reply is displayed** (reported under F-94, not a tool failure — the
+   product removes the grid).
