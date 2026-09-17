@@ -581,4 +581,22 @@
 
 ### #2886 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Served checkout: repo root `spec/2886 @ 0ac6b38a` (G-052).
+
+- [x] **R-46 — PASS.** The long reply grew across distinct heights (120 → 133 → 152 → 171 → 209 →
+      226 px) with `data-reply-tier="grown"` and scrolled internally (`fredo-reply-scroll`
+      `scrollHeight 598 > clientHeight 195`); a short reply stayed `data-reply-tier="base"` at
+      240×120; a single-click joke streamed through the same surface node. The placement change did
+      not alter the tier math or the scroller range.
+- [x] **R-48 — PASS.** Bar `y = 446` with a reply shown vs. cleared; seat wrapper 80×100 + 16 px
+      `margin-bottom` in both states; the surface stays absolutely positioned and out of the launcher
+      column's layout (a re-anchor did not move the seat or the bar).
+- [ ] **R-49 — PARTIAL / UNVERIFIED.** Viewport containment held (`left ≥ 0 && top ≥ 0 && right ≤
+      innerWidth && bottom ≤ innerHeight`) in every leg, console clean, no colour literals. The game
+      card 208×268 clause was **not re-measured this round** (`[data-testid="fredo-game-bubble"]` did
+      not remain mounted long enough to measure with the driver), and the double-click discriminator
+      could not be isolated from the single-click joke in the webview driver. Named blocker: driver
+      could not hold the TicTacToe bubble open for measurement.
+- [ ] **R-47 — UNVERIFIED.** Hold-to-dictate (held Space `down` → wait → `up`) could not be driven —
+      the webview driver's keyboard events do not produce a held-key duration, and no alternative
+      sanctioned path exists this round. Named blocker, no product verdict.
