@@ -345,3 +345,35 @@
 ### #2886 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2887 extension — hold-at-the-readiness-boundary probes
+
+> Issue #2887 keeps the recognizer ready while idle so the hold starts instantly. A confirmed finding
+> PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable
+> lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-54: **Hold at the exact readiness boundary.** Press Space while the resident is cold/warming;
+      release BEFORE capture goes live; press again immediately. Record the press/capture-active
+      timeline, the bar `value` after each leg, the `stt_start` count and the cue samples. Does the
+      never-live hold land exactly one ordinary space, does the immediate re-hold start cleanly, and
+      is there any stale/ghost cue? A lost space, a stuck session, or a cue gap is a finding
+      (promotes to F-82/F-83).
+- [ ] E-55: **Resident killed / crashes while the bar is armed.** Kill the resident process with the
+      bar armed (nothing dictating), then hold. Does the next hold recover with a bounded start, does
+      the failure surface as a TEXT state (never a stuck `Listening…`), is the mic released, and does
+      the console stay clean? Any hang, stuck cue, or dishonest listening claim is a finding
+      (promotes to F-83; cross-ref `voice-input` E-37).
+- [ ] E-56: **Rapid hold/release churn with the resident armed.** ≥10 fast holds/releases (incl. taps)
+      around the readiness transition. Does the cue flap cleanly (no ghost frame), does the mic stay
+      released between holds, does the latency creep, and does any handle/thread leak? Any cue gap
+      while capturing, hot mic, or latency creep is a finding (promotes to F-82/`voice-input` F-82).
+- [ ] E-57: **Contention / sleep-resume on the bar surface.** Hold Space under heavy CPU load and
+      after a sleep→resume with the resident armed. Record the press→active numbers, the cue honesty
+      samples, and whether the opening word lands in the bar. A cold-equivalent regression after
+      resume or a dishonest indicator under load is a finding (promotes to F-82..F-84).
+
+### #2887 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
