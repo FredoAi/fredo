@@ -218,3 +218,15 @@
       `motion() is deprecated` WARN). `fredo emit` chat + tool_use ran; `telemetry_spans` returned
       **3142** rows, `max(ingested_at) = 2026-09-17T19:32:54.683501+00:00`; `chat_rows` and
       `tool_use_rows` each classified 1 row of the injected sessions.
+
+### #2886 testing round 2 — result (re-verified, PASS)
+
+> Served checkout: repo root `spec/2886 @ 9fb2d3a8` (G-052).
+
+- [x] **F-19 (E4/E7) — PASS.** 301-sample NFR recorder at 1400×900: bar `y = 446` in both states
+      (121 samples with a reply shown, 180 without → **Δ = 0**); seat-slot wrapper 80×100 +
+      `margin-bottom: 16px` in both states; no page scrollbar in any sample.
+- [x] **F-20 (E7/E8) — PASS.** `tauri_read_logs(source="console")` `level=error` returned 0 entries and a
+      `Maximum update depth|Uncaught|Error:|Warning:` sweep returned 0 matches. `telemetry_spans`
+      = **3888** rows, newest `2026-09-17T20:13:50Z`; `chat_rows` (session `e2e-2886-chat-r2`) and
+      `tool_use_rows` (session `e2e-2886-tool-r2`) each classified 1 row.
