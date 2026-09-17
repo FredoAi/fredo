@@ -1746,3 +1746,58 @@ Key receipts:
    clearance could not be measured at all.
 3. **Tiles not measurable while a reply is displayed** (reported under F-94, not a tool failure — the
    product removes the grid).
+
+### #2886 testing round 2 — result (all PASS)
+
+> Served checkout: repo root `spec/2886 @ 9fb2d3a8` (G-052, verified by `dev-env.ps1 -Action Status`).
+> MCP bridge `127.0.0.1:9224`; OTLP gRPC `:4317` ingesting. Round-2 fix: commit `d9b227d` (F1 layout-box
+> anchor + F2 22 px placement offset + F3 keep the tiles mounted). Sampling: 100–150 ms via a persistent
+> in-page recorder (one 16 ms leg), avatar + surface rects read in the same task.
+
+- [x] **F-91 (E1) — PASS (all kinds incl. welcome + away joke).** `intersectionArea === 0` in every
+      displayed sample of all 9 legs (grown/base @1400×900, 900×600, 900×1000; welcome OFF→ON; away
+      joke; 700×260 ADVISORY) — zero positive-area samples.
+- [x] **F-92 (E2) — PASS.** 1400×900 grown `dy` **16.15–22.05** (127 samples, 0 < 14); 900×600 grown
+      `dx` **17.78–22.08** (right flip, 84 samples, 0 < 14); 900×1000 grown `dy` **16.04–27.48**
+      (105 samples, 0 < 14); base one-liner 1400×900 `dy` 19.99–21.48; base 900×600 `dx` 19.37–22.07;
+      welcome `dy` 20.00–23.05; away joke `dy` 16.00–23.09. Non-identity avatar matrices recorded
+      (`m11 = 1.00696`, `f = −0.696`, …); the **layout box** stayed constant (`y 306, 80×100`). One
+      ≤16 ms pre-measurement fallback frame measured `dy = 10.19` (legacy no-region CSS path before the
+      first footprint measurement lands) — recorded as a caveat, not a sustained failure.
+- [x] **F-93 (E3) — PASS.** Grown facing edge constant at **284.00 (1400×900) / 512.00 (900×600) /
+      318.00 (900×1000)**, range **0.000** in every grown sample, while the height grew 120 → 218 / 270 /
+      252; `data-reply-placement` stable for the generation; `area = 0` at every intermediate sample.
+- [x] **F-94 (E4) — PASS (tiles mounted + measurable + clickable).** 5 gridcells in every displayed
+      sample (77 streaming + 50 post-`llm-done` hold @1400×900); tile union box `276,546.5 → 980,658.5`;
+      `intersectionArea(surface, tileUnion) = 0`; hit-test at all 5 tile centres → tile/descendant with
+      `pointerEvents: auto`. Away overlay: `area = 0` vs avatar/bar/field/tiles, `dy` 16.00–23.09.
+- [x] **F-95 (E5) — PASS (+ ADVISORY).** One-liner `base` **240×120**, no scroller. Shrink+scroll:
+      380×270 scroller @900×600 (`750 > 240`), 560×252 scroller @900×1000 (`541 > 222`). ADVISORY
+      700×260: `right`, ~284×48 scroller, `area 0`, `dx` **20.83–23.46** (round 1: 13.08).
+- [x] **F-96 (E6) — PASS.** `data-reply-placement` present, matches geometry, strictly on the reported
+      side of the avatar; seat set stays `above > right > left` (`below` never at the seat, `left`
+      observed in the away overlay at 700×260).
+- [x] **F-97 (E7) — PASS.** Bar `y = 446` in both states (121 with / 180 without → Δ 0); seat wrapper
+      80×100 + `mb 16px`; console clean (`level=error` and a `Maximum update depth|Uncaught|Error:`
+      sweep both empty); token-native.
+- [x] **F-98 (E8) — PASS.** `telemetry_spans` = **3888**, newest `2026-09-17T20:13:50Z`;
+      `fredo emit --event-type chat --session-id e2e-2886-chat-r2` → `chat_rows` 1 row;
+      `--event-type tool_use --session-id e2e-2886-tool-r2` → `tool_use_rows` 1 row.
+
+**Reach recipes that now work (record for future rounds):**
+
+- **Welcome (OFF→ON):** `Ctrl+Space` → click the tile **button** `[role="button"][aria-label="Settings"]`
+  inside `#fredo-launcher-grid [role="gridcell"]` (the gridcell wrapper has no handler) → the in-app
+  Settings window `div[role="group"][aria-label="Settings"]` (NOT a dialog / second Tauri window) →
+  Companion section → with llama-server healthy the real
+  `input[aria-label="Show Fredo Companion"][type=checkbox]` renders (click the hidden input
+  programmatically) → toggle OFF then ON → the welcome bubble (`base`/`above`) shows for ~4 s.
+- **Away overlay (ST-4):** engage → `mousedown {button:2, ctrlKey:true}` on `.fredo-companion-avatar` →
+  the avatar becomes `position: fixed`, `offsetParent === null` → **single-click** the overlay
+  `.fredo-companion-avatar` → the joke streams into the overlay's `[data-testid="fredo-reply-surface"]`.
+  A bar dispatch while away produces no surface — **expected** (`companionActive = isVisible && !isAway`).
+
+**Exploratory finding (promoted, out of scope — #2883 growth):** one of four grown runs rendered
+`data-reply-tier="grown"` with width 560 but a **constant 120 px height** (no growth), while the other
+three grew to 218/270/252. Not reproduced; belongs to the #2883 growth/scroll path the spec forbids
+changing. No #2886 verdict attached.
