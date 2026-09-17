@@ -69,6 +69,31 @@
  *     dictate`) — shown only while the input is focused and empty with a usable
  *     model, so no promise is made when Space is simply an ordinary space.
  *
+ * #2883 ST-1 — the field WRAPS, GROWS and CAPS (AC1 input side, R-1.1/1.2/1.3/5.3):
+ *   • the single-line `Input` becomes a Chakra `Textarea` that KEEPS
+ *     `role="searchbox"` (so every #2882 selector/predicate stays tag-agnostic —
+ *     `LauncherShell.tsx:105`, the hold-Space target predicate, `isFromInput`) and
+ *     ADDS `aria-multiline="true"`; the element is a native `<textarea>`;
+ *   • the query wraps INSIDE the field's content box, which is always inset by the
+ *     reserved end-slot gutter (`computeEndPaddingPx` + `hasText`), so no line can
+ *     reach the hint chip or the always-present divider + `—` MINIMIZE control;
+ *   • geometry (bound numbers): border-box height `20n + 28px` for `n = 1..4`
+ *     visual lines → **48 / 68 / 88 / 108 px**, then frozen at the 108 px cap with
+ *     `overflow-y:auto` internal scroll. The 28 px is `2 × 13 px padding + 2 × 1 px
+ *     border` under the Chakra preflight's `box-sizing: border-box` — the 13 px
+ *     padding plus the 1 px border is the design's 14 px visual inset, and it is
+ *     what makes the rendered height land EXACTLY on the bound 48/68/88/108
+ *     (14 px padding would need a 50 px box at one line and would clip the line);
+ *   • `measureFieldHeightPx` maps the field's own content height (rAF-coalesced
+ *     read of `scrollHeight`, ≤1 layout read per frame — never per token/keystroke)
+ *     to the border-box height; the 1 px top/bottom border is added back because
+ *     `scrollHeight` spans the padding box only;
+ *   • `Shift+Enter adds a new line` caption renders ONLY while the field is
+ *     wrapped (≥2 visual lines) AND the host reports `newlineHint` (companion
+ *     active); the static sentence `Shift+Enter starts a new line.` is appended
+ *     INSIDE the existing `fredo-command-hint-sr` mirror so `aria-describedby`
+ *     keeps its shipped value. Enter's wording is owned by #2882 and untouched.
+ *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
  * today's rendering (`enterMode='launch'` / no `hintLabel` / `busy=false` /
  * `listening=false` / no stop or cancel handler / no error / no final transcript
@@ -86,9 +111,9 @@
  * NO `var(--x)NN` alpha-append anywhere in this file.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { Box, Input, InputGroup } from '@chakra-ui/react';
+import { Box, InputGroup, Textarea } from '@chakra-ui/react';
 
 import { tint } from '../../../../shared/utils/colorTint';
 
@@ -186,6 +211,21 @@ export interface LauncherCommandBarProps {
    * the searchbox `aria-describedby`. The element mirrors the visible chip text.
    */
   ariaDescribedBy?: string;
+  /**
+   * #2883 ST-1 (R-1.4/R-1.5) — the companion is active, so the host reports that
+   * `Shift+Enter` is available as a newline affordance. Gates the VISIBLE
+   * `Shift+Enter adds a new line` caption, which renders only when the field is
+   * also wrapped to ≥2 visual lines (restraint: short content never grows a
+   * status row). The hidden newline sentence is static and does not depend on it.
+   * Defaults to `false` — then the caption is never rendered.
+   */
+  newlineHint?: boolean;
+  /**
+   * #2883 ST-1 — the bar root element, exposed so the launcher can measure the
+   * reply band (bar top / collapse control) with one `ResizeObserver` instead of
+   * polling. Optional and inert when omitted.
+   */
+  containerRef?: React.Ref<HTMLDivElement>;
 }
 
 /**
@@ -209,10 +249,78 @@ const STOP_GUTTER_PX = 30;
 const MINIMIZE_GUTTER_PX = 44;
 
 /**
+ * #2883 ST-1 (AC1) — the field's bound geometry. Every value is a plain number so
+ * the arithmetic is unit-pinned; consumers append the `px` unit (G-146).
+ *
+ * Base `48px` is TODAY's rendered (border-box) height, unchanged. The field is a
+ * native `<textarea>` under the Chakra preflight's `box-sizing: border-box`, so a
+ * rendered height of `20n + 28` splits into `20n` content + `2 × 13px` padding +
+ * `2 × 1px` border on top/bottom. The visible inset (13 + 1) is the design's 14 px,
+ * which is why the padding constant is 13 and not 14: with 14 px the one-line box
+ * would have to be 50 px tall, and a 48 px box would clip the line and report
+ * `scrollHeight > clientHeight` (R-5.3's "no scrollbar" pin).
+ */
+export const BAR_FIELD_MIN_H_PX = 48;
+export const BAR_FIELD_MAX_H_PX = 108;
+export const BAR_FIELD_LINE_H_PX = 20;
+/** `1px solid` on each vertical edge — added back to the measured content height. */
+const BAR_FIELD_BORDER_PX = 1;
+/** The design's 14 px visual inset minus the 1 px border. */
+const BAR_FIELD_V_PADDING_PX = 14 - BAR_FIELD_BORDER_PX;
+/**
+ * The `>` chevron's leading gutter, supplied EXPLICITLY because `InputGroup`
+ * injects `ps: calc(var(--input-height) - 0px)` and `--input-height` is defined
+ * ONLY by the input recipe — on a `Textarea` child that declaration is
+ * invalid-at-computed-value-time (→ 0), which would start the query/placeholder
+ * under the chevron (and the end slot) (see the #2883 ST-1 Domain Model note).
+ */
+export const BAR_LEADING_GUTTER_PX = 40;
+/**
+ * #2883 ST-1 (a11y) — the STATIC hidden sentence appended inside the existing
+ * `fredo-command-hint-sr` mirror, describing the multiline field to AT.
+ */
+export const NEWLINE_HINT_COPY = 'Shift+Enter starts a new line.';
+/**
+ * #2883 ST-1 (UI/UX §1) — the CONTEXTUAL visible caption, shown only when the
+ * field is wrapped (≥2 visual lines) and the companion is active. Enter's own
+ * wording stays owned by #2882.
+ */
+export const NEWLINE_CAPTION_COPY = 'Shift+Enter adds a new line';
+
+/**
+ * #2883 ST-1 (R-1.1/R-1.3) — the pure growth rule: the field's measured content
+ * height (`scrollHeight`, which spans the padding box) → its border-box height,
+ * clamped to `[BAR_FIELD_MIN_H_PX, BAR_FIELD_MAX_H_PX]`.
+ *
+ * Identity in the middle (one content line ⇒ one bound height), clamp at both
+ * ends: below the cap the field grows by exactly one line step; above it the
+ * height freezes at the cap and the field scrolls internally.
+ */
+export function measureFieldHeightPx(contentHeightPx: number): number {
+  if (!Number.isFinite(contentHeightPx)) return BAR_FIELD_MIN_H_PX;
+  const borderBox = Math.round(contentHeightPx) + BAR_FIELD_BORDER_PX * 2;
+  return Math.min(BAR_FIELD_MAX_H_PX, Math.max(BAR_FIELD_MIN_H_PX, borderBox));
+}
+
+/** Visual line count implied by the (clamped) field height — ≥1 always. */
+function visualLinesForHeightPx(fieldHeightPx: number): number {
+  const content = fieldHeightPx - BAR_FIELD_V_PADDING_PX * 2 - BAR_FIELD_BORDER_PX * 2;
+  return Math.max(1, Math.round(content / BAR_FIELD_LINE_H_PX));
+}
+
+/**
  * #2878 ST-2 — the reserved right gutter (px) for every end-slot affordance that
  * is present, so the typed text never renders underneath them. Exported as a
  * pure helper so the "zero reserved padding when nothing shows" invariance is
  * unit-pinned. `undefined` = omit the padding entirely (byte-identical idle bar).
+ *
+ * #2883 ST-1 (R-1.2) — the divider + `—` MINIMIZE control is rendered in EVERY
+ * state, so any text or caret in the field must clear its 44px footprint. The
+ * `hasText` input (the host's `query.length > 0`) reserves it while the bar holds
+ * ANY character — the defect this closes is precisely the state where no chip
+ * shows and the helper returned `undefined`, leaving the always-present control
+ * with no gutter. `undefined` is kept ONLY for the truly empty bar (nothing
+ * shows AND no text), which is today's pinned behaviour.
  */
 export function computeEndPaddingPx(options: {
   showHint: boolean;
@@ -223,13 +331,22 @@ export function computeEndPaddingPx(options: {
    * is never rendered while `listening` (the slot is exclusive).
    */
   holdPending?: boolean;
+  /**
+   * #2883 ST-1 (R-1.2) — the field holds text (`query.length > 0`), so the
+   * always-present divider + MINIMIZE control must be reserved even when no chip
+   * shows. A whitespace-only / newline-only query is text (a caret can sit after
+   * it), so it reserves the 44px gutter too.
+   */
+  hasText?: boolean;
 }): number | undefined {
   const pendingChip = !options.listening && options.holdPending === true;
+  const showsAnything = options.showHint || options.listening || pendingChip;
+  const reserveMinimize = showsAnything || options.hasText === true;
   const px =
     (options.showHint ? HINT_CHIP_MAX_WIDTH_PX : 0) +
     (options.listening ? LISTENING_CHIP_WIDTH_PX + CANCEL_GUTTER_PX + STOP_GUTTER_PX : 0) +
     (pendingChip ? LISTENING_CHIP_WIDTH_PX : 0) +
-    (options.showHint || options.listening || pendingChip ? MINIMIZE_GUTTER_PX : 0);
+    (reserveMinimize ? MINIMIZE_GUTTER_PX : 0);
   return px > 0 ? px : undefined;
 }
 
@@ -334,15 +451,73 @@ export function LauncherCommandBar({
   voiceEnabled = false,
   ariaLabel,
   ariaDescribedBy,
+  newlineHint = false,
+  containerRef,
 }: LauncherCommandBarProps) {
-  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     // #2878 ST-2 (UX-2) — a user keystroke during a live segment makes the edit
     // authoritative: the host stops further partial writes for the session.
     // `onChange` fires only for real user input (never for a programmatic value
-    // update), so this is exactly the manual-edit signal.
+    // update), so this is exactly the manual-edit signal. #2883 ST-1: the field
+    // is a `<textarea>` now, so a native `Shift+Enter` insertion lands here too.
     if (listening) onUserEdit?.();
     onQueryChange(e.target.value);
   };
+
+  // #2883 ST-1 (R-1.1/R-1.3) — the field measures ITSELF and grows to fit its own
+  // content. One rAF-coalesced layout read per frame (never per token/keystroke):
+  // the pending frame id is the coalescing key, so a burst of keystrokes reads
+  // `scrollHeight` once. State is written ONLY when the clamped height changes —
+  // the AGENTS.md #523 loop guard (no write per render, no array/object dep).
+  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const measureFrameRef = useRef<number | null>(null);
+  const [fieldHeightPx, setFieldHeightPx] = useState<number>(BAR_FIELD_MIN_H_PX);
+
+  const scheduleFieldMeasure = useCallback(() => {
+    if (measureFrameRef.current !== null) return;
+    measureFrameRef.current = window.requestAnimationFrame(() => {
+      measureFrameRef.current = null;
+      const el = fieldRef.current;
+      if (!el) return;
+      // #2883 round 2 (D-1) — read the INTRINSIC content height, never the
+      // constrained box. Per the CSSOM `scrollHeight` is `max(clientHeight,
+      // contentExtent)`, so while the growth clamp below is applied the read can
+      // never fall below the box: a cleared field reported 106 and
+      // `measureFieldHeightPx(106)` mapped back to the 108px cap, making the
+      // ladder one-way (growth worked, shrink was unreachable). Release the
+      // applied height for THIS read only — `height: auto` lets the class
+      // `min-height: 48px` / `max-height: 108px` bounds stand, so taller content
+      // is still reported above the box (growth is unchanged) — then restore the
+      // saved value verbatim so no other inline height is disturbed. Still one
+      // layout read per frame and a state write only on a real change (#523).
+      const appliedHeight = el.style.height;
+      el.style.height = 'auto';
+      const intrinsic = el.scrollHeight;
+      el.style.height = appliedHeight;
+      const next = measureFieldHeightPx(intrinsic);
+      setFieldHeightPx((prev) => (prev === next ? prev : next));
+    });
+  }, []);
+
+  // Re-measure whenever the controlled query changes (typing, dictation partials,
+  // a host-side set/clear) and on any window resize (the wrap width changed).
+  useEffect(() => {
+    scheduleFieldMeasure();
+  }, [query, scheduleFieldMeasure]);
+  useEffect(() => {
+    window.addEventListener('resize', scheduleFieldMeasure);
+    return () => {
+      window.removeEventListener('resize', scheduleFieldMeasure);
+      if (measureFrameRef.current !== null) {
+        window.cancelAnimationFrame(measureFrameRef.current);
+        measureFrameRef.current = null;
+      }
+    };
+  }, [scheduleFieldMeasure]);
+
+  // The field grows in whole line steps and freezes at the cap (UI/UX §1 S0/S1/S2).
+  const fieldAtCap = fieldHeightPx >= BAR_FIELD_MAX_H_PX;
+  const visualLines = visualLinesForHeightPx(fieldHeightPx);
 
   // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
   // #2882 ST-4 (R-6.3 / UI/UX §3): chip visibility is LABEL-DRIVEN — the host
@@ -367,9 +542,13 @@ export function LauncherCommandBar({
     setInputFocused(true);
     onFocus?.();
   };
-  const handleInputBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+  const handleInputBlur = (e: React.FocusEvent<HTMLTextAreaElement>) => {
     setInputFocused(false);
-    onBlur?.(e);
+    // The `onBlur` prop keeps its SHIPPED signature (the host's handler and its
+    // `handleSurfaceBlur` chain are typed for `HTMLInputElement`; ST-2 owns that
+    // file). The event payload the host consumes (`relatedTarget` containment,
+    // the surface's own focus handling) is tag-agnostic at runtime.
+    onBlur?.(e as unknown as React.FocusEvent<HTMLInputElement>);
   };
 
   // The 4-way placeholder (UI/UX §9): busy > the gesture cue > the S1 promise >
@@ -382,11 +561,17 @@ export function LauncherCommandBar({
         ? HOLD_AVAILABLE_PLACEHOLDER
         : 'search or command';
 
-  // #2877 ST-5 (DR-7) / #2878 ST-2: reserve the right gutter for every end-slot
-  // affordance that is present, so the typed text never renders underneath them.
-  // With only the hint chip this is `220 + 44 = 264px`. Nothing present ⇒
-  // omitted entirely.
-  const endPaddingPx = computeEndPaddingPx({ showHint, listening, holdPending: pendingChip });
+  // #2877 ST-5 (DR-7) / #2878 ST-2 / #2883 ST-1 (R-1.2): reserve the right gutter
+  // for every end-slot affordance that is present, so the typed text never renders
+  // underneath them. With the hint chip this is `220 + 44 = 264px`; with text and
+  // no chip it is the always-present MINIMIZE footprint (`44`); NOTHING showing AND
+  // no text ⇒ omitted entirely (the truly empty bar keeps its shipped rendering).
+  const endPaddingPx = computeEndPaddingPx({
+    showHint,
+    listening,
+    holdPending: pendingChip,
+    hasText: query.length > 0,
+  });
   const paddingEnd = endPaddingPx === undefined ? undefined : `${endPaddingPx}px`;
 
   // #2877 ST-5 (DR-7): the hearing-nothing hint — shown only after
@@ -435,8 +620,24 @@ export function LauncherCommandBar({
   const statusMessage =
     voiceErrorMessage ?? (listening && hearingNothing ? HEARING_NOTHING_COPY : null);
 
+  // #2883 ST-1 (UI/UX §1 / R-1.4) — the CONTEXTUAL `Shift+Enter` caption. It is
+  // rendered ONLY when the host reports the companion active AND the field is
+  // actually wrapped (≥2 visual lines): short or empty content never grows a
+  // status row (restraint NFR, AC5's second half). Precedence in the status slot:
+  // alert (voice error) > hearing-nothing > newline caption — so the caption never
+  // displaces a live message, and Enter's own wording (#2882) is untouched.
+  const showNewlineCaption = newlineHint && visualLines >= 2 && !statusMessage;
+
   return (
-    <Box display="flex" flexDirection="column" alignItems="center" w="100%" px="4">
+    <Box
+      ref={containerRef}
+      data-testid="launcher-command-bar"
+      display="flex"
+      flexDirection="column"
+      alignItems="center"
+      w="100%"
+      px="4"
+    >
       <InputGroup
         width="100%"
         maxWidth="560px"
@@ -624,8 +825,15 @@ export function LauncherCommandBar({
           </Box>
         }
       >
-        <Input
+        <Textarea
+          ref={fieldRef}
+          data-testid="launcher-command-input"
+          // #2883 ST-1 (a11y) — the element is a native `<textarea>` but the ROLE
+          // is unchanged, so every #2882 selector/predicate (`SEARCHBOX_SELECTOR`
+          // in LauncherShell, the hold-Space target predicate, `isFromInput`)
+          // stays tag-agnostic; `aria-multiline` carries the multiline semantics.
           role="searchbox"
+          aria-multiline="true"
           aria-label={ariaLabel ?? 'Search or command'}
           aria-expanded={gridOpen}
           aria-controls="fredo-launcher-grid"
@@ -642,12 +850,50 @@ export function LauncherCommandBar({
           onChange={handleChange}
           onFocus={handleInputFocus}
           onBlur={handleInputBlur}
+          // #2883 ST-1 — BOTH paddings are supplied EXPLICITLY, and they are
+          // supplied as BOTH the longhand (`paddingStart`/`paddingEnd`) and the
+          // SHORTHAND `InputGroup` injects (`ps`/`pe`).
+          //
+          // The trap (traced + unit-probed, NOT hypothetical): `InputGroup` clones
+          // its child with `{...endElement && {pe: 'calc(var(--input-height) - 0px)'}, ...children.props}`
+          // (`input-group.js:38-45`) and `--input-height` is defined ONLY by the
+          // INPUT recipe — on this `<textarea>` the injected `calc()` is
+          // invalid-at-computed-value-time (→ 0). Overriding it needs the SAME key:
+          // `...children.props` is spread last, so a child-supplied `ps`/`pe`
+          // replaces the injected value, while a longhand `paddingStart`/`paddingEnd`
+          // maps to the same canonical property and does NOT displace it (emotion
+          // keeps the LAST assertion in prop order — the injected shorthand). Both
+          // keys carry the same value here, so the result is identical either way.
+          // The leading 40px replaces the input recipe's md `--input-height`; the
+          // end gutter is the computed reservation (omitted only for the truly
+          // empty bar — `undefined` means neither key is rendered).
+          ps={`${BAR_LEADING_GUTTER_PX}px`}
+          pe={paddingEnd}
+          paddingStart={`${BAR_LEADING_GUTTER_PX}px`}
           paddingEnd={paddingEnd}
+          // The field is a wrapping content box: `20n + 28px` border-box for
+          // 1..4 visual lines (48/68/88/108), then frozen at the cap with an
+          // internal scroll. No CSS height transition (a transition would re-wrap
+          // the text every frame — the performance NFR) and no `scrollbar-gutter`.
+          rows={1}
+          lineHeight={`${BAR_FIELD_LINE_H_PX}px`}
+          paddingTop={`${BAR_FIELD_V_PADDING_PX}px`}
+          paddingBottom={`${BAR_FIELD_V_PADDING_PX}px`}
+          minHeight={`${BAR_FIELD_MIN_H_PX}px`}
+          maxHeight={`${BAR_FIELD_MAX_H_PX}px`}
+          height={`${fieldHeightPx}px`}
+          resize="none"
+          overflowX="hidden"
+          // Scrolling is enabled ONLY at the cap; below it the field is exactly as
+          // tall as its content, so `scrollHeight === clientHeight` (R-5.3).
+          overflowY={fieldAtCap ? 'auto' : 'hidden'}
+          // A 200-char URL must never overflow sideways or push text under the
+          // end slot — it breaks instead.
+          overflowWrap="break-word"
           bg="var(--card-bg)"
           border="1px solid"
           borderColor={listening ? tint('var(--accent-primary)', 30) : 'var(--border-color)'}
           borderRadius="8px"
-          height="48px"
           fontFamily="var(--font-primary)"
           fontSize="14px"
           fontWeight="regular"
@@ -665,12 +911,24 @@ export function LauncherCommandBar({
             outline: '2px solid var(--accent-primary)',
             outlineOffset: '2px',
           }}
+          // #2883 ST-1 — the cap's internal scroller reuses the launcher's existing
+          // rail (`LauncherShell.tsx:1466-1470`: 8px thumb `var(--card-hover-bg)`,
+          // transparent track) so the bar never shows a browser-default scrollbar
+          // and needs NO new colour token.
+          css={{
+            '&::-webkit-scrollbar': { width: '8px', height: '8px' },
+            '&::-webkit-scrollbar-thumb': { background: 'var(--card-hover-bg)', borderRadius: '8px' },
+            '&::-webkit-scrollbar-track': { background: 'transparent' },
+          }}
         />
       </InputGroup>
       {/* #2871 a11y (REQ-15/DR-6) — the visually-hidden mirror the searchbox
           `aria-describedby` points at; it mirrors the visible chip text exactly
           so AT gets the pending-Enter action without a second live region.
-          Rendered only while the chip shows (no chip → no description). */}
+          Rendered only while the chip shows (no chip → no description).
+          #2883 ST-1 (a11y): the STATIC newline sentence is appended INSIDE this
+          same mirror, so the searchbox keeps its shipped `aria-describedby` value
+          (`fredo-command-hint`) and no second describedby target is introduced. */}
       {showHint && ariaDescribedBy && (
         <Box
           id={ariaDescribedBy}
@@ -686,6 +944,7 @@ export function LauncherCommandBar({
           borderWidth="0"
         >
           {hintLabel}
+          {` ${NEWLINE_HINT_COPY}`}
         </Box>
       )}
       {/* #2877 ST-5 (DR-7/DR-11) — below the bar: the hearing-nothing hint, or an
@@ -705,6 +964,25 @@ export function LauncherCommandBar({
           color={isAlert ? 'var(--status-error)' : 'var(--text-subtle)'}
         >
           {statusMessage}
+        </Box>
+      )}
+      {/* #2883 ST-1 (R-1.4) — the CONTEXTUAL newline caption, in the SAME status
+          slot (identical `mt`/`maxWidth`/centring/type ramp) and only while the
+          field is wrapped with the companion active. It is plain text (no live
+          region): the growing bar itself is silent to AT, and the static sentence
+          reaches AT through the `fredo-command-hint-sr` mirror. A higher-priority
+          status message suppresses it, so the slot never shows two messages. */}
+      {showNewlineCaption && (
+        <Box
+          data-testid="launcher-command-newline-caption"
+          mt="2"
+          maxWidth="560px"
+          textAlign="center"
+          fontFamily="var(--font-primary)"
+          fontSize="12px"
+          color="var(--text-subtle)"
+        >
+          {NEWLINE_CAPTION_COPY}
         </Box>
       )}
       {/* #2877 ST-5 (DR-10) — persistent polite live regions (always mounted, so

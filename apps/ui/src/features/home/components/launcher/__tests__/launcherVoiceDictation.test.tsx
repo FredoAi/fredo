@@ -28,11 +28,22 @@ import type { FredoFeatureClass } from '@/shared/classes/FredoFeatureClass';
 import { HEARING_NOTHING_COPY, HEARING_NOTHING_MS } from '../LauncherCommandBar';
 import {
   LauncherShell,
+  replyBoundsEqual,
   selectCtrlSpaceAction,
   voiceStartErrorCopy,
   type CtrlSpaceContext,
 } from '../LauncherShell';
 import { HOLD_PENDING_CUE_MS, HOLD_THRESHOLD_MS } from '../launcherSpaceHold';
+
+/**
+ * Spec #2883 ST-2 (G-125 re-point) — the bar field's TAG is no longer assumed.
+ * #2883 swaps the single-line `Input` for a `Textarea` while keeping
+ * `role="searchbox"`, so every harness cast below resolves the field by ROLE and
+ * types it as `BarField` (`.value` and `.setSelectionRange` exist on BOTH tags).
+ * Re-pointed sites: the focus/caret legs (`:268`, `:299`), the live-transcript leg
+ * (`:357`), and the three `input()` accessors (`:642`, `:1269`, `:1466`).
+ */
+type BarField = HTMLInputElement | HTMLTextAreaElement;
 
 // LauncherShell reads the live connection flag via useConnectionStatus (no
 // StreamProvider in this isolated harness) — stub the one consumer.
@@ -59,11 +70,19 @@ vi.mock('@/shared/contexts/CompanionContext', () => ({
 // #2878 ST-1 — the ONE dispatch path (`askActiveCompanion`) is spied so the
 // commit contract (launch vs send vs no-op) is observable without mounting the
 // real entity. `CompanionEntity` is stubbed (the seat render is irrelevant here).
+// Spec #2883 ST-2 — the stub also RECORDS the props it is handed, so the
+// launcher → entity reply-band hand-off is observable without the real bubble.
 const companionDispatchMock = vi.hoisted(() => ({
   askActiveCompanion: vi.fn((_text: string) => true),
 }));
+const companionEntityMock = vi.hoisted(() => ({
+  props: [] as Array<Record<string, unknown>>,
+}));
 vi.mock('@/shared/components/companion', () => ({
-  CompanionEntity: () => null,
+  CompanionEntity: (props: Record<string, unknown>) => {
+    companionEntityMock.props.push(props);
+    return null;
+  },
   askActiveCompanion: companionDispatchMock.askActiveCompanion,
 }));
 
@@ -101,6 +120,7 @@ beforeEach(() => {
   };
   companionDispatchMock.askActiveCompanion.mockReset();
   companionDispatchMock.askActiveCompanion.mockReturnValue(true);
+  companionEntityMock.props.length = 0;
   vi.stubGlobal(
     'matchMedia',
     vi.fn().mockImplementation((query: string) => ({
@@ -265,7 +285,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
   it('Ctrl+Space NEVER cancels and NEVER closes a live session (R-1.2/R-1.3)', () => {
     renderShell();
     emitListening(true, 'launcher');
-    const input = focusBar() as HTMLInputElement;
+    const input = focusBar() as BarField;
 
     act(() => {
       fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
@@ -296,7 +316,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     const nextFrame = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 
     renderShell();
-    const input = screen.getByRole('searchbox') as HTMLInputElement;
+    const input = screen.getByRole('searchbox') as BarField;
 
     // The bar holds an uncommitted transcript.
     act(() => {
@@ -354,7 +374,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
     const onOpenFeature = renderShell();
 
     emitListening(true, 'launcher');
-    const input = screen.getByRole('searchbox') as HTMLInputElement;
+    const input = screen.getByRole('searchbox') as BarField;
 
     act(() => {
       emit('stt:transcript', {
@@ -639,7 +659,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     return onOpenFeature;
   };
 
-  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+  const input = () => screen.getByRole('searchbox') as BarField;
 
   const type = (value: string) => {
     act(() => {
@@ -1266,7 +1286,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     return onOpenFeature;
   };
 
-  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+  const input = () => screen.getByRole('searchbox') as BarField;
 
   const type = (value: string) => {
     act(() => {
@@ -1463,7 +1483,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     });
   };
 
-  const input = () => screen.getByRole('searchbox') as HTMLInputElement;
+  const input = () => screen.getByRole('searchbox') as BarField;
 
   const focusBar = () => {
     const el = input();
@@ -1836,5 +1856,184 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
       '↵ send transcript to Fredo',
     );
+  });
+});
+
+// ── Spec #2883 ST-2 — the #2882 keyboard contract across the field swap ───────
+// R-1.4: `Shift+Enter` inserts a newline through the browser's NATIVE insertion —
+// the handler returns BEFORE the Enter branch WITHOUT `preventDefault`, so the
+// field edits itself and its `onChange` carries the newline through the ONE
+// `handleQueryChange` route. It starts ZERO generations and opens ZERO windows.
+// R-1.5: plain `Enter` still `preventDefault`s and commits the whole trimmed
+// query through the UNCHANGED #2882 `resolveEnterAction`.
+//
+// G-161 oracle: `fireEvent.keyDown`'s RETURN VALUE is the `preventDefault`
+// oracle (`false` ⇔ the handler called `preventDefault`), so interception is
+// judged without relying on jsdom performing a native text insertion (it does
+// not) and without a synthetic-chord `code` assumption.
+
+describe('LauncherShell — #2883 ST-2: Shift+Enter adds a line, Enter is untouched', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const renderShell = () => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={[SETTINGS]} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const type = (value: string) => {
+    act(() => {
+      fireEvent.change(input(), { target: { value } });
+    });
+  };
+
+  /** `true` ⇔ the handler called `preventDefault` (G-161 oracle). */
+  const keydownPrevented = (init: { key: string; code?: string; shiftKey?: boolean }): boolean => {
+    let prevented = false;
+    act(() => {
+      prevented = !fireEvent.keyDown(input(), init);
+    });
+    return prevented;
+  };
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  it('R-1.4: Shift+Enter is NOT intercepted (the browser inserts the newline), sends nothing and opens nothing', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell();
+    // `set` rule-matches Settings — an intercepted (or manual-splice) path would
+    // have launched it.
+    type('set');
+    companionDispatchMock.askActiveCompanion.mockClear();
+
+    expect(keydownPrevented({ key: 'Enter', code: 'Enter', shiftKey: true })).toBe(false);
+
+    // ZERO generations, ZERO windows, and no manual splice of the text (the
+    // handler never edits the value itself — the textarea's onChange does).
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    expect(input().value).toBe('set');
+  });
+
+  it('R-1.5: plain Enter IS intercepted and still opens the matching app', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell();
+    type('set');
+
+    expect(keydownPrevented({ key: 'Enter', code: 'Enter' })).toBe(true);
+
+    expect(onOpenFeature).toHaveBeenCalledTimes(1);
+    expect(onOpenFeature.mock.calls[0][0]).toBe('settings');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('R-1.4: a Shift+Enter never disturbs a later Enter (the #2882 verdict is unchanged)', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell();
+    type('set');
+
+    // Not intercepted: on the real `Textarea` the browser inserts the newline.
+    expect(keydownPrevented({ key: 'Enter', code: 'Enter', shiftKey: true })).toBe(false);
+    // The field's change route then delivers the edited value (jsdom performs no
+    // native insertion), and Shift+Enter must leave no residue behind.
+    type('set more');
+
+    expect(keydownPrevented({ key: 'Enter', code: 'Enter' })).toBe(true);
+    // `set more` does not rule-match Settings ⇒ the UNCHANGED send verdict.
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('set more');
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+
+  it('R-1.4/R-1.5 (REQ-14d): a multi-line query is committed WHOLE by Enter — never a launch, never spliced', () => {
+    seatCompanion();
+    const onOpenFeature = renderShell();
+    // The textarea's OWN value route carries the newline (jsdom cannot perform the
+    // native insertion a real `Shift+Enter` triggers, so it is delivered the way
+    // the field's `onChange` would).
+    type('set\nmore');
+
+    expect(keydownPrevented({ key: 'Enter', code: 'Enter' })).toBe(true);
+    expect(onOpenFeature).not.toHaveBeenCalled();
+    // The whole trimmed text — including both lines — reaches the ONE send path.
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('set\nmore');
+  });
+});
+
+// ── Spec #2883 ST-2 — the reply band's loop guard (AGENTS.md #523) ────────────
+// The launcher re-measures the band from a rAF-coalesced ResizeObserver/scroll/
+// resize trigger; the state write must happen ONLY when a number actually
+// changed, or every frame/keystroke would drive a render (the #523 loop class).
+
+describe('replyBoundsEqual — the band is written ONLY when a number changes', () => {
+  const band = { safeTop: 66, barrierTop: 400, boundsLeft: 100, boundsRight: 860 };
+
+  it('is true iff all four measured numbers are identical', () => {
+    expect(replyBoundsEqual(band, { ...band })).toBe(true);
+  });
+
+  it('is false for a change in ANY one measured number', () => {
+    for (const key of ['safeTop', 'barrierTop', 'boundsLeft', 'boundsRight'] as const) {
+      expect(replyBoundsEqual(band, { ...band, [key]: band[key] + 1 })).toBe(false);
+    }
+  });
+});
+
+// ── Spec #2883 ST-2 — the measured band flows launcher → entity ───────────────
+// R-2.2/R-2.3: the launcher measures the band (the notch offset as `safeTop`, the
+// command bar's box top as `barrierTop`, the launcher column's clip box as
+// `boundsLeft`/`boundsRight`) and hands it to the SEATED entity, which forwards it
+// to the bubble (ST-6). Before the first measurement it is `undefined`, so today's
+// fixed rendering is untouched (R-5.3).
+
+describe('LauncherShell — #2883 ST-2: the measured reply band reaches the seat entity', () => {
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  it('hands a ReplySurfaceBounds to the seated entity once the band is measured', async () => {
+    seatCompanion();
+    // jsdom implements neither `ResizeObserver` nor non-zero layout: stub the
+    // observer so the rAF-coalesced measurement actually runs.
+    class ResizeObserverStub {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+    // The first measurement is rAF-coalesced — wait a real frame.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    const seated = companionEntityMock.props.filter((props) => props.surface === 'seat');
+    expect(seated.length).toBeGreaterThan(0);
+    const handed = seated[seated.length - 1].replyBounds as Record<string, unknown>;
+    // The band's bound `SAFE_TOP` = the chrome notch (58px) + the shared margin.
+    expect(handed.safeTop).toBe(66);
+    // The other three are MEASURED viewport numbers (jsdom has no layout, so only
+    // presence/type is pinned here — the live round owns the real geometry).
+    expect(handed.barrierTop).toEqual(expect.any(Number));
+    expect(handed.boundsLeft).toEqual(expect.any(Number));
+    expect(handed.boundsRight).toEqual(expect.any(Number));
   });
 });

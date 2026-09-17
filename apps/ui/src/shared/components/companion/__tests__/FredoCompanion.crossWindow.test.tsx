@@ -25,9 +25,39 @@ import { DevAdapter } from '@/app/adapters/DevAdapter';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { AVATAR_SM } from '@/shared/components/fredo-avatar/fredoAvatarSizes';
 
-// Force the Tauri branch BEFORE the companion modules are evaluated.
+// Force the Tauri branch BEFORE the companion modules are evaluated — with a
+// FUNCTIONAL internals stub, the same contract `CompanionContext.test.tsx:55-72`
+// carries. The companion plumbing fires-and-forgets its `@tauri-apps/api` dynamic
+// imports (`CompanionContext.tsx:360-365` emitPresence, `:418-431` the presence
+// listener; `FredoCompanion.tsx:61/:149` and `CompanionEntity.tsx:478` likewise),
+// so a continuation can outlive this file's `vi.mock('@tauri-apps/api/event')`
+// registry and the file teardown and then resolve to the REAL module. An EMPTY `{}`
+// stub turns that escaped call into an unhandled rejection —
+// `TypeError: window.__TAURI_INTERNALS__.invoke is not a function`
+// (core.js:202 invoke ← event.js:129 emit ← `CompanionContext.tsx:363`, exactly the
+// `ui-validate` CI annotation) — which vitest reports for this file and exits 1
+// although every test passed. A functional stub makes any escaped real call (emit,
+// listen, its unmount unlisten) resolve harmlessly instead of rejecting.
 vi.hoisted(() => {
-  (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+  (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
+    invoke: async () => undefined,
+    transformCallback: (cb: unknown, once = false) => {
+      const id = Math.floor(Math.random() * 1_000_000_000);
+      const key = `_${id}`;
+      (window as unknown as Record<string, unknown>)[key] = (payload: unknown) => {
+        if (once) delete (window as unknown as Record<string, unknown>)[key];
+        (cb as (p: unknown) => void)(payload);
+      };
+      return id;
+    },
+    convertFileSrc: (filePath: string) => filePath,
+    metadata: {},
+  };
+  // The real `listen()`'s returned unlisten touches this plugin-internals global on
+  // teardown — present it so an escaped real `listen` cannot reject on unmount.
+  (window as unknown as Record<string, unknown>).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: () => {},
+  };
 });
 
 type TeleportPayload = { toWindow: string; x: number; y: number };
@@ -261,5 +291,21 @@ describe('FredoCompanion cross-window companion-teleport listener (#2870 ST-2c)'
     expect(avatars[0].style.left).toBe('320px');
     expect(avatars[0].style.top).toBe('240px');
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  // G-156 / #2883 — HONEST REGRESSION PIN for the harness contract above. The CI
+  // `ui-validate` annotation was an unhandled rejection from the REAL
+  // `@tauri-apps/api` `emit` escaping this file's `vi.mock`; `vi.importActual`
+  // deliberately bypasses the mock to exercise that exact escaped-real-module path.
+  // With an EMPTY internals stub this test fails with the annotation's
+  // `TypeError: window.__TAURI_INTERNALS__.invoke is not a function`; with the
+  // functional stub the escaped real emit/listen (and its unlisten) must resolve.
+  it('harness contract — an escaped REAL @tauri-apps/api emit/listen resolves without rejecting (CI unhandled-rejection guard)', async () => {
+    const realEvent = await vi.importActual<typeof import('@tauri-apps/api/event')>('@tauri-apps/api/event');
+
+    await expect(realEvent.emit('companion-presence', { from: 'main', reason: 'show' })).resolves.toBeUndefined();
+
+    const unlisten = await realEvent.listen('companion-presence', () => {});
+    await expect(unlisten()).resolves.toBeUndefined();
   });
 });
