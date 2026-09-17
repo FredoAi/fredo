@@ -139,5 +139,8 @@
 
 ### #2883 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+- [x] **Round 1 (serving `326822ff`) — S-18 PASS · S-19 UNVERIFIED (G-161).**
+      - S-18 PASS: a ~240-char query wraps inside the bar, the hint chip and the minimize control are both fully visible with measured intersection 0, and a 5+-line query pins the field at the 108 px cap with internal scroll; console clean.
+      - S-19 UNVERIFIED (named blocker G-161): the MCP keyboard did not deliver a real `Shift+Enter` chord or native insertion. Fallbacks: dispatched `keydown {key:'Enter',code:'Enter',shiftKey:true}` on the focused field returns `notPrevented:true`; ZERO generations / ZERO windows; insert-text `line one\nline two` renders as 2 lines (intrinsic 66 px).
+      Evidence: https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-req2-req3-cap-wrapped-query.jpeg
 
