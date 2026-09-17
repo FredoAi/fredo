@@ -271,7 +271,7 @@ describe('#2882 ST-2 — launcherSpaceHold (pure hold-Space gesture)', () => {
     });
   });
 
-  describe('exactly ONE ordinary space on every no-capture release (R-2.6/R-2.7)', () => {
+  describe('exactly ONE ordinary space on every no-capture release (R-2.6/R-2.7/R-5e)', () => {
     it('a tap writes exactly one space (R-2.7) — never zero, never two', () => {
       expect(spaceWriteForVerdict('tap-space')).toBe(' ');
       expect(spaceWriteForVerdict('tap-space')).toHaveLength(1);
@@ -290,13 +290,72 @@ describe('#2882 ST-2 — launcherSpaceHold (pure hold-Space gesture)', () => {
       expect(spaceWriteForVerdict('none')).toBe('');
     });
 
-    it('the write table is total: only the two no-capture verdicts write text', () => {
-      const verdicts: SpaceUpVerdict[] = ['tap-space', 'cancel-pending', 'finalize', 'none'];
+    it('the write table is total: exactly the three no-committed-word verdicts write text', () => {
+      const verdicts: SpaceUpVerdict[] = [
+        'tap-space',
+        'cancel-pending',
+        'no-words-space',
+        'finalize',
+        'none',
+      ];
       const writers = verdicts.filter((verdict) => spaceWriteForVerdict(verdict) !== '');
 
-      expect(writers).toEqual(['tap-space', 'cancel-pending']);
+      expect(writers).toEqual(['tap-space', 'cancel-pending', 'no-words-space']);
       for (const verdict of writers) {
         expect(spaceWriteForVerdict(verdict)).toHaveLength(1);
+      }
+    });
+  });
+
+  describe('R-5e — the generalized one-space rule (no-words-space)', () => {
+    it('a live hold that committed NO final transcript writes exactly one ordinary space', () => {
+      expect(spaceWriteForVerdict('no-words-space')).toBe(' ');
+      expect(spaceWriteForVerdict('no-words-space')).toHaveLength(1);
+      // The write is the SAME single-source constant every other writer uses.
+      expect(spaceWriteForVerdict('no-words-space')).toBe(HOLD_FALLBACK_SPACE);
+    });
+
+    it('is a distinct verdict from finalize: finalize keeps its no-space guarantee (R-2.3)', () => {
+      // The pair is the whole point of R-5e: words landed -> no space; nothing
+      // landed -> exactly one space. Neither may drift into the other.
+      expect(spaceWriteForVerdict('finalize')).toBe('');
+      expect(spaceWriteForVerdict('no-words-space')).toBe(' ');
+      expect(spaceWriteForVerdict('finalize')).not.toBe(spaceWriteForVerdict('no-words-space'));
+    });
+
+    it('is resolved ASYNCHRONOUSLY — resolveSpaceKeyUp never returns it', () => {
+      // The committed final transcript may land AFTER the release, so the PURE
+      // release resolution cannot know: it stays total over the four synchronous
+      // verdicts and the shell resolves no-words-space in the finalize effect.
+      const keys = ['holdArmed', 'captureLive', 'thresholdCrossed'] as const;
+
+      for (let mask = 0; mask < 1 << keys.length; mask += 1) {
+        const input: SpaceKeyUpInput = {
+          holdArmed: false,
+          captureLive: false,
+          thresholdCrossed: false,
+        };
+        keys.forEach((key, index) => {
+          input[key] = ((mask >> index) & 1) === 1;
+        });
+
+        expect(resolveSpaceKeyUp(input)).not.toBe('no-words-space');
+        if (input.captureLive) {
+          // The went-live release still resolves to finalize; only the finalize
+          // EFFECT can decide, after the session ends, that it committed nothing.
+          expect(resolveSpaceKeyUp(input)).toBe('finalize');
+        }
+      }
+    });
+
+    it('every writer returns the SAME single-source character (no drift, no doubled space)', () => {
+      const writers: SpaceUpVerdict[] = ['tap-space', 'cancel-pending', 'no-words-space'];
+      const writes = writers.map((verdict) => spaceWriteForVerdict(verdict));
+
+      expect(new Set(writes)).toEqual(new Set([HOLD_FALLBACK_SPACE]));
+      for (const write of writes) {
+        expect(write).toBe(HOLD_FALLBACK_SPACE);
+        expect(write).toHaveLength(1);
       }
     });
   });

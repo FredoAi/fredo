@@ -15,8 +15,9 @@
  *      OS auto-repeats — so a repeat can never restart a capture and can never
  *      insert a run of spaces (R-2.2);
  *   3. the release resolves to exactly one of `tap-space` / `cancel-pending` /
- *      `finalize` / `none`, and `spaceWriteForVerdict` is the single source of the
- *      "exactly ONE ordinary space" rule (R-2.6/R-2.7).
+ *      `finalize` / `none` (plus the asynchronously-resolved `no-words-space`,
+ *      R-5e), and `spaceWriteForVerdict` is the single source of the
+ *      "exactly ONE ordinary space" rule (R-2.6/R-2.7/R-5e).
  *
  * PURE by design: no DOM, no Tauri/IPC, no listener, no clock, no timer — this
  * module imports NOTHING and is deterministic. It also does NOT model the capture
@@ -26,13 +27,14 @@
  * non-bar-input target resolves to `ordinary-space`, i.e. this module never
  * intercepts a tile-focused Space.
  *
- * "EXACTLY ONE SPACE" CONTRACT (R-2.6/R-2.7): this module decides WHICH release
- * verdict applies and how much text that verdict writes; **ST-5 owns PERFORMING
+ * "EXACTLY ONE SPACE" CONTRACT (R-2.6/R-2.7/R-5e): this module decides WHICH release
+ * verdict applies and how much text that verdict writes; **ST-5/ST-7 own PERFORMING
  * the write**, through the ordinary typed path (`handleQueryChange(query + text)`)
  * so the character lands exactly like a keystroke. `spaceWriteForVerdict` returns
- * `' '` (exactly one character) for `tap-space` and `cancel-pending`, and `''` for
- * every other verdict — so "one space" is pinnable without a DOM and cannot drift
- * into zero (a lost space) or two (a doubled space).
+ * `' '` (exactly one character) for the three no-captured-word verdicts —
+ * `tap-space`, `cancel-pending` and `no-words-space` — and `''` for every other
+ * verdict, so "one space" is pinnable without a DOM and cannot drift into zero
+ * (a lost space) or two (a doubled space).
  */
 
 /**
@@ -57,8 +59,24 @@ export const HOLD_PENDING_CUE_MS = 150;
 /** The keydown verdict: what the shell must do with a Space keydown. */
 export type SpaceDownVerdict = 'hold-arm' | 'hold-suppress' | 'ordinary-space';
 
-/** The keyup verdict: what the shell must do with the release. */
-export type SpaceUpVerdict = 'tap-space' | 'cancel-pending' | 'finalize' | 'none';
+/**
+ * The release verdict: what the shell must do with the release.
+ *
+ * `no-words-space` (R-5e) is the ONE verdict `resolveSpaceKeyUp` can never return:
+ * it is resolved ASYNCHRONOUSLY by the finalize effect's no-produced-final branch
+ * (the committed final transcript may land after the release). It carries R-5e's
+ * generalized one-space guarantee: a hold that crossed `HOLD_THRESHOLD_MS` and went
+ * live, yet committed NO final transcript, still writes exactly one ordinary space —
+ * so a faster/resident engine can never convert an intended space into a lost
+ * character. It is a distinct member from `finalize` because `finalize` means the
+ * utterance landed (no space), while `no-words-space` means nothing landed (one space).
+ */
+export type SpaceUpVerdict =
+  | 'tap-space'
+  | 'cancel-pending'
+  | 'finalize'
+  | 'no-words-space'
+  | 'none';
 
 export interface SpaceKeyDownInput {
   /** A hold is armed and stays armed until the release (R-2.2). */
@@ -154,10 +172,13 @@ export function resolveSpaceKeyUp(input: SpaceKeyUpInput): SpaceUpVerdict {
 
 /**
  * The exact text a release verdict writes into the bar — the out-of-band half of
- * the "exactly ONE ordinary space" contract (R-2.6/R-2.7). ST-5 owns PERFORMING
- * the write through the ordinary typed path; this function owns HOW MUCH:
+ * the "exactly ONE ordinary space" contract (R-2.6/R-2.7/R-5e). ST-5/ST-7 own
+ * PERFORMING the write through the ordinary typed path; this function owns HOW MUCH:
  *  - `tap-space`      -> `' '` (one space: the tap types the character it always did)
  *  - `cancel-pending` -> `' '` (one space: the hold never captured, so it types too)
+ *  - `no-words-space` -> `' '` (one space: R-5e — the hold went live but committed
+ *                               no final transcript, so it captured nothing and
+ *                               types the character it always did)
  *  - `finalize`       -> `''`  (the utterance replaced the text; a space would be a lie)
  *  - `none`           -> `''`  (the keyup is not ours)
  */
@@ -165,6 +186,7 @@ export function spaceWriteForVerdict(verdict: SpaceUpVerdict): string {
   switch (verdict) {
     case 'tap-space':
     case 'cancel-pending':
+    case 'no-words-space':
       return HOLD_FALLBACK_SPACE;
     case 'finalize':
     case 'none':
