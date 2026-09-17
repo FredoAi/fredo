@@ -21,6 +21,8 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 
 Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`, `-At <commit-ish>` (baseline-leg serving, Up only — see the baseline rule below).
 
+> **`-EnvVars` (Up only) — the sanctioned way to drive an ENV-GATED app seam.** `-EnvVars @{ NAME = "value" }` injects extra environment variables into the launched dev instance (and every opencode session it spawns). Agents cannot set a process env var for the app any other way: every script invocation is a fresh shell and shell chaining/metacharacters are sandbox-denied, so an env-gated seam is otherwise undrivable and the row becomes a permanent named blocker. Example (the STT deterministic capture feed): `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvVars @{ FREDO_STT_FEED_WAV = "C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav" }`. Inject a var ONLY from an in-repo value (never a path outside the repo — G-172), and always pair an env-gated leg with an unset-env control run so the observation is non-vacuous.
+
 ## Cleaning the Fredo DB (fresh-slate reset for live e2e)
 
 Single script: `.opencode/scripts/clean-fredo-db.ps1` (allowed for the tester + self-improver).

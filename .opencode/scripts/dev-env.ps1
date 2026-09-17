@@ -93,7 +93,16 @@ param(
   [int]$Lines = 50,
 
   # Hygiene passthrough: forward -Kill as process-hygiene.ps1 -KillOrphans.
-  [switch]$Kill
+  [switch]$Kill,
+
+  # Extra environment variables for the LAUNCHED dev instance (Up only), e.g.
+  #   -EnvVars @{ FREDO_STT_FEED_WAV = "C:\repo\...\fixture.wav" }
+  # The launched app (and the opencode sessions it spawns) inherit them.
+  # This exists because a tester/agent shell has no other way to set a process
+  # env var for the app: every script invocation is a fresh shell and shell
+  # chaining/metacharacters are sandbox-denied, so an env-gated app seam is
+  # otherwise undrivable (see G-172 / the STT deterministic-feed seam).
+  [hashtable]$EnvVars = @{}
 )
 
 $ErrorActionPreference = "Stop"
@@ -476,6 +485,15 @@ switch ($Action) {
     $env:OPENCODE_ENABLE_TELEMETRY = "1"
     $env:OPENCODE_OTLP_ENDPOINT    = "http://localhost:4317"
     $env:OPENCODE_OTLP_PROTOCOL    = "grpc"
+
+    # Extra caller-supplied env vars (e.g. the env-gated STT deterministic feed
+    # seam). Set on THIS process so the child started below inherits them.
+    if ($EnvVars -and $EnvVars.Count -gt 0) {
+      foreach ($envKey in @($EnvVars.Keys)) {
+        [Environment]::SetEnvironmentVariable([string]$envKey, [string]$EnvVars[$envKey], "Process")
+        Write-Log "Injected env var $envKey for the dev instance"
+      }
+    }
 
     $proc = Start-Process -FilePath "cmd" `
       -ArgumentList "/c cd /d `"$PWD`" && pnpm dev:tauri > `"$Stdout`" 2> `"$Stderr`"" `
