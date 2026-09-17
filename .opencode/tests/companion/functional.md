@@ -1272,4 +1272,230 @@ Key receipts:
 
 **Lever note:** the chord had to be a dispatched correctly-shaped `KeyboardEvent`
 (`code:'Space'`) — the MCP keyboard emits `code:" "`. See the `launcher` suite's #2882 round-1
-record for the full lever set. R-40's seat-geometry measurement was not re-run this round.
+      record for the full lever set. R-40's seat-geometry measurement was not re-run this round.
+
+---
+
+## #2883 extension — the reply gets room, stays put while read, and never collides with the bar
+
+> Issue #2883 makes the companion reply surface grow with the reply, stay inside the window, never
+> collide with the command bar, scroll when the answer is longer than the largest surface that fits,
+> hold still while the reader is on it (pointer OR keyboard focus), and keep the scrolled-back
+> reading position stable while new content arrives. Map 1:1 to `.opencode/tmp/2883/triage.md`
+> `## QA Expert` REQ-4..REQ-11, REQ-15..REQ-18, REQ-21 (+ the bar-side rows in
+> `.opencode/tests/launcher/` F-70..F-78). **Verification policy: live** — evidence via the MCP
+> driver (`tauri_webview_execute_js` geometry/scroll samples, `dom_snapshot`, `screenshot`,
+> `interact`, `wait_for`), `tauri_read_logs(source="console")`, per-REQ `upload-evidence --base
+> spec/2883` raw URLs, and the live `telemetry_spans`/`chat_rows` receipt (F-90). Serving checkout:
+> the `spec/2883` tip. Idle timeout 5 s only for the dismissal legs.
+>
+> **G-136 reconciliation (historical PASS records above are PRESERVED, never rewritten):**
+> - **F-61** (welcome bubble 240×120, `showMessage(WELCOME_TEXT, 4000)`) is the AUTO-HIDE reference.
+>   The new dismissal PROTECTION is ADDITIVE (F-83/F-84); the welcome bubble's own ~4 s auto-hide
+>   stays in force when nothing is hovering/focused (R-44).
+> - **F-69** pinned "the reply renders in the SAME seat-anchored **240×120** `SpeechBubble` ... long
+>   reply wraps without resize". **SUPERSEDED for the TEXT reply surface** — the text reply now
+>   grows and scrolls (F-79/F-82). The **208×268 game bubble** is OUT of scope and stays fixed
+>   (R-42). F-69's "same bubble machinery, single-shot, no second surface" half remains in force.
+> - **R-38 / R-40 / F-64** pin the RESTING/short-state geometry; extended, not deleted (see the
+>   launcher #2883 R-45; do NOT fail this spec for reply-surface growth).
+
+## F-79 (REQ-4 / AC2) — The reply surface GROWS with a long streaming reply (real volume class)
+
+- [ ] F-79: Companion ON at the seat, managed `llama-server` healthy. Send
+      `Write a 300-word story about a lighthouse.` from the bar; sample
+      `[data-testid="fredo-reply-surface"]` `getBoundingClientRect` + `data-reply-tier` +
+      `data-reply-kind` + the rendered text length at t0 and ~every 250 ms until done
+      (≥5 samples, ≥3 WHILE still arriving); compare against the BEFORE baseline rect (pre-fix tip,
+      `before-*` frame, distinct dir).
+  **Expected:** the text reply surface GROWS with the arriving content (monotonic size increase;
+      **≥3 distinct rect/text-length samples while the stream is still arriving** — the REAL
+      streaming class, G-130 — not a short pre-filled bubble); it flips to
+      `data-reply-tier="grown"` (`data-reply-kind="reply"`) with width `min(560, available)` and
+      height `clamp(120, contentHeight, available)`, **substantially larger** than the base tier's
+      fixed **240×120** (quote the before/after px); it never remains a fixed box showing only the
+      opening lines while the bar reads `Fredo is replying...`.
+  - **Edge:** TTFT >1 s (the wait is observable); a reply wrapping to ≥20 lines; a new turn
+      REPLACING a long reply (the surface re-derives for the new content); a control token in the raw
+      stream must not inflate the visible size; the game card `[data-testid="fredo-game-bubble"]`
+      must NOT grow.
+  - **Receipt:** the per-sample (t, rect, textLength) table + the before/after rects + the
+    screenshot names.
+
+## F-80 (REQ-5 / AC2) — The reply stays entirely within the window (all four edges)
+
+- [ ] F-80: Capture ONE frame containing `[data-testid="fredo-reply-surface"]` AND all four window
+      edges — at the default size (1400×900), at the shipped minimum **900×600**, and with Fredo
+      teleported to each of the four screen edges (Ctrl+right-click at each corner, then send a long
+      reply). Measure the reply rect + `window.innerWidth`/`innerHeight`.
+  **Expected:** `reply.left ≥ 0`, `reply.top ≥ 0`, `reply.right ≤ innerWidth`,
+      `reply.bottom ≤ innerHeight` in EVERY case — fully inside, nothing off-screen, no clipping at
+      any edge. **900×600 is the scoring bound** (the shipped OS-enforced floor); a 700-wide
+      viewport or the requester's 988×533 capture is a dev-viewport ADVISORY only, never PASS/FAIL.
+  - **Edge:** near each corner — NOTE the SEAT candidate set is **`above > right > left` only**
+    (`below` is exclusive to the fixed away-overlay path, so a seat `below` fall-through is NOT a
+    scoring case; the `below` fall-through is scored by the overlay row, not here); a long reply at
+    900×600; a window resize while the reply is up; both themes.
+  - **Receipt:** the reply rect + the viewport per case + the frame names.
+
+## F-81 (REQ-6 / AC2) — The reply NEVER overlaps or collides with the command bar
+
+- [ ] F-81: In the EXACT state under test (a long wrapped query in the bar AND a long reply on
+      screen), capture ONE frame containing BOTH `[data-testid="fredo-reply-surface"]` AND the bar
+      (`[data-testid="launcher-command-bar"]` / field `[data-testid="launcher-command-input"]` /
+      hint `[data-testid="launcher-command-hint"]` / the `Minimize launcher` control). Measure the
+      reply rect, the bar rect, the field rect, the hint rect; compute the intersection areas.
+  **Expected:** intersection area of the reply with the bar = **0**, with the field = **0**, and
+      with the hint + collapse controls = **0** — the reply anchors per the bound SEAT candidate set
+      **`above > right > left`** (`below` is exclusive to the fixed away-overlay path; do NOT score a
+      seat `below` fall-through); the reply never paints beneath or over the bar at any anchor or
+      window size. **Any collision ⇒ FAIL** (G-153 named combined frame + measured geometry; G-158 —
+      a confirmed collision is a FAIL even if every other row passes).
+  - **Edge:** reply anchored above AND to a side; the reply arriving while the bar GROWS (multi-line
+    query, launcher F-72 cap 108 px); the shipped minimum 900×600; companion away/off (no reply —
+    assert no residual surface); a window resize mid-reply.
+  - **Receipt:** the named combined frame + the four rects + the intersection areas.
+
+## F-82 (REQ-7 / AC3) — A reply longer than the largest surface that fits stays scrollable to the end
+
+- [ ] F-82: At the shipped minimum **900×600**, send a reply longer than the largest surface that
+      fits (heavily wrapped); read `[data-testid="fredo-reply-scroll"]`
+      `scrollHeight`/`clientHeight`/`scrollTop`; set `scrollTop = scrollHeight`; compare the visible
+      tail against the COMPLETED generation text.
+  **Expected:** the grown reply has an internal scroller (`scrollHeight > clientHeight`,
+      `overflow-y: auto`) and the scroll range reaches the end; the LAST words of the completed reply
+      are in view — the whole answer is reachable. No content is clipped behind a fixed frame.
+  - **Edge:** a reply with explicit newlines / list formatting; wheel AND keyboard scroll; after the
+    stream ends; a very long reply at 900×600; a 700-wide viewport is advisory only.
+  - **Receipt:** the `scrollHeight`/`clientHeight` pair + the visible tail text vs the completed
+    text + the screenshot names (top + bottom).
+
+## F-83 (REQ-8 / AC4) — Pointer over the reply suspends a countdown that ALREADY started
+
+- [ ] F-83: Display a reply and let its dismiss countdown START (record the observable — the reply
+      present with the timer armed / the state before the deadline). Move the pointer OVER
+      `[data-testid="fredo-reply-surface"]` BEFORE/AT the deadline; sample presence at ≥3 intervals
+      spanning ≥2× the dismiss period; read `isInUse`.
+  **Expected (the binding scenario):** the reply STAYS visible for the whole time the pointer is over
+      it (every sample present; no hide/remove) — specifically the countdown that had already started
+      is SUSPENDED, not completed; it does not dismiss under the pointer. **R-4.4:** while protected
+      the companion's idle auto-return is suppressed (`isInUse` true, the ONLY writer joins the
+      predicate) — the reply is never unmounted mid-read.
+  - **Edge:** pointer enters mid-countdown (the headline case); pointer enters exactly at the
+    deadline; pointer over the reply while it is still streaming; an idle auto-return deadline in
+    flight simultaneously (suppressed, then re-armed after protection ends); the reply anchored to a
+    side.
+  - **Receipt:** the per-sample (t, present) table across ≥2× the dismiss period + the countdown
+    observable + the frame names.
+
+## F-84 (REQ-9 / AC4) — It dismisses ONLY after the pointer leaves (with the grace period)
+
+- [ ] F-84: From F-83, move the pointer OFF the reply; sample presence immediately after the leave,
+      then across the bound grace period.
+  **Expected:** the reply is still present IMMEDIATELY after the leave (the grace protects a brief
+      off-target move) and is gone after the bound **`REPLY_LEAVE_GRACE_MS = 2000 ms`** — the timer
+      is a FRESH full restart (a due clear is RE-ARMED, never resumed), so it dismisses ONLY after
+      the pointer leaves + 2000 ms. A reply that vanishes the instant the pointer moves (no grace) OR
+      never dismisses at all is a FAIL.
+  - **Edge:** pointer leaves then re-enters within the 2000 ms grace; pointer leaves to another
+    launcher surface; keyboard focus still on the reply while the pointer leaves (F-87's interaction).
+  - **Receipt:** the leave timestamp + the presence samples + the measured clear delay (~2000 ms).
+
+## F-85 (REQ-10 / AC5) — A scrolled-back reading position stays stable while new content arrives
+
+- [ ] F-85: Start a long reply; WHILE it is still arriving, scroll back to an earlier offset in
+      `[data-testid="fredo-reply-scroll"]`; record `scrollTop` + the top visible line text; keep
+      sampling as new tokens arrive (≥3 arrivals). Also read the `atBottom`/`following` ref state.
+  **Expected:** `scrollTop` and the top visible text do NOT jump to the bottom when new content
+      arrives while the reader is scrolled back — the reading position is stable across ≥3 arrivals
+      (no forced auto-scroll; `atBottom=false` ⇒ `scrollTop` kept and `following=false` reported, so
+      the parent freezes the surface height). **A lost reading position ⇒ FAIL** (G-158).
+  - **Edge:** scroll back mid-stream then let it finish; scroll back while a NEW turn starts; the
+    shipped minimum 900×600; keyboard scroll-back; scroll back to the very top.
+  - **Receipt:** the (t, scrollTop, topVisibleText, textLength) table across the arrivals.
+
+## F-86 (REQ-11 / AC5) — A deliberate action returns the reader to the newest content
+
+- [ ] F-86: From F-85's scrolled-back state, invoke the deliberate return-to-newest affordance — the
+      labelled **`Newest`** `<button>` (rendered only when not at bottom) or its bound keyboard
+      action. Read `scrollTop` + the visible text + `following`.
+  **Expected:** the view returns to the newest content (bottom; the newest text + the streaming
+      cursor visible); `following=true` resumes ONLY after this deliberate action (it did not
+      silently resume earlier); a NEW generation resets `following=true`. The affordance is a
+      labelled `<button>` (discoverable and named — REQ-17); under reduced motion the jump is
+      instant (no smooth scroll).
+  - **Edge:** return while still streaming; return after the stream ends; return then scroll back
+    again (the protection re-arms).
+  - **Receipt:** the pre/post `scrollTop` + the visible tail + the affordance's accessible name.
+
+## F-87 (REQ-15/REQ-16/REQ-17) — Keyboard-only reach + keyboard protection + no colour/animation-only state
+
+- [ ] F-87: Keyboard only (no pointer): focus `[data-testid="fredo-reply-scroll"]`
+      (`role="region"` + `aria-label` + `tabIndex={0}`) and scroll to the end via the keyboard
+      (`PageDown`/`ArrowDown`/`End`); record `document.activeElement`, its role/`aria-label`/
+      `tabIndex`, and the `scrollTop`. Separately, while the countdown runs, move keyboard FOCUS onto
+      the reply surface and sample presence across ≥2× the dismiss period, then move focus away. Then
+      inspect the streaming, `Newest` and protected states in both themes + a non-default accent,
+      reading labels/roles/`aria-*`; and under reduced motion.
+  **Expected:** (a) the whole reply is reachable with the keyboard ALONE; the scroller is
+      `role="region"` + `aria-label` + `tabIndex={0}`; Tab leaves it without a focus trap; the
+      wrapper's `aria-hidden` is dropped while it renders a text message and the region is never
+      `aria-live`/`role="log"` (no per-token announcements). (b) the reply stays visible while
+      keyboard focus is inside it and dismisses only after focus leaves + the bound
+      **`REPLY_LEAVE_GRACE_MS = 2000 ms`**; asserted INDEPENDENTLY of F-83/F-84. (c) each state
+      carries a non-colour, non-animation-only affordance (the `Newest` control is a labelled
+      `<button>`; streaming is exposed via `aria-busy`/text; protection is signalled by the reply
+      staying plus ONE polite announcement per generation); under reduced motion the jump is instant
+      and no state depends on motion.
+  - **Edge:** very long reply; a side-anchored reply; while still streaming; companion away/off (no
+    reply ⇒ no trap); reduced-motion `matchMedia` flip is a NAMED BLOCKER if the driver cannot drive
+    it (G-148) → static CSS + a product-unit pin, never a PASS on the live leg alone.
+  - **Receipt:** `activeElement` + `scrollTop` per step; the (t, present) samples for the focus leg;
+    the accessible names/roles read per state.
+
+## F-88 (REQ-18 / NFR perf) — Growing/scrolling/reading must not stall the stream or the bar
+
+- [ ] F-88: Record the `llm-token` arrival timeline / the rendered partial contents (≥3 distinct)
+      while the reader SCROLLS a long reply during ≥ half of the stream; time a bar interaction (a
+      keystroke/click) during the scroll; read the console.
+  **Expected:** the stream keeps advancing at ~the unscrolled cadence — text length increases
+      monotonically and ≥3 distinct partials appear ACROSS the scroll window; the bar responds within
+      a bounded window (record the ms); no dropped-frame stall; no
+      `Maximum update depth exceeded` / re-render loop.
+  - **Edge:** repeated scroll churn; a very long reply at the shipped minimum 900×600; scroll +
+    resize; scroll while the reply is still arriving; a theme switch mid-scroll.
+  - **Receipt:** the (t, textLength, partialCount) table across the scroll window + the bar
+    interaction latency + the console read.
+
+## F-89 (REQ-12 / AC5 second half) — A SHORT reply renders exactly as today (restraint)
+
+- [ ] F-89: On the AFTER tip and the BEFORE tip (pre-fix, distinct `before-*`/`after-*` dirs per
+      G-135): send `Reply with exactly: Hi there!`; measure
+      `[data-testid="fredo-reply-surface"]`'s rect + `data-reply-tier`, the presence of any scrollbar
+      (`scrollHeight` vs `clientHeight`), and the seat/launcher geometry.
+  **Expected:** the short reply renders as today — `data-reply-tier="base"` at exactly **240×120**
+      (the R-1 pin's dimensions) within **±2 px** of the BEFORE values; NO scrollbar appears; no
+      needless resize. The surface grows ONLY when the content needs it. A regression here is a FAIL
+      (explicitly required).
+  - **Edge:** a one-line reply with the pointer over it (still protected, F-83); a short reply after
+    a long one (the surface shrinks back — no residual size); companion away/off.
+  - **Receipt:** the BEFORE/AFTER rects + the scrollHeight/clientHeight pair + both frame names.
+
+## F-90 (REQ-21) — Mandatory live telemetry + rendered-webview receipt
+
+- [ ] F-90: Same run as F-79..F-89: send at least one REAL managed-`llama-server` reply AND
+      `fredo emit --event-type chat --session-id e2e-2883-chat`; query `telemetry_spans` +
+      `chat_rows` (telemetry-query skill); retain every per-REQ `upload-evidence --base spec/2883`
+      raw URL + the DOM/geometry samples.
+  **Expected:** a live-query receipt exists — non-zero `telemetry_spans` with a recent
+      `max(ingested_at)` and the chat row classified under its session id — AND every verdict row
+      carries a rendered-webview receipt (G-108 accepts DOM/screenshot/`getBoundingClientRect` for
+      this pure-rendering feature). **A static-only PASS with no live receipt is a FALSE PASS.**
+      Never fabricate a telemetry query.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; the stream's real
+    arrival is the `llm-token` timeline.
+  - **Receipt:** the query outputs verbatim + the raw evidence URLs.
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
