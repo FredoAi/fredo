@@ -18,9 +18,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
+  AVATAR_MOTION_RESERVE_PX,
   REPLY_AVATAR_CLEARANCE,
+  REPLY_AVATAR_PLACEMENT_OFFSET,
   REPLY_BASE_H,
   REPLY_BASE_W,
   REPLY_GAP,
@@ -100,6 +104,32 @@ describe('#2886 — the bound clearance', () => {
     expect(REPLY_AVATAR_CLEARANCE).toBeGreaterThan(REPLY_GAP);
     expect(REPLY_GAP).toBeGreaterThan(REPLY_MARGIN);
     expect(REPLY_AVATAR_CLEARANCE - REPLY_TAIL).toBeGreaterThanOrEqual(4);
+  });
+
+  // #2886 round 2 (F2) — the PLACEMENT offset is bound + reserve, and the reserve
+  // covers the whole documented avatar motion envelope. These are the pins that
+  // make the round-1 defect (a 6.00 px collapse to 8.00) un-reintroducible: the
+  // reserve is derived from the keyframes, and the facing edge is pinned at the
+  // SUM, so the LIVE separation can never fall below the bound.
+  it('pins the motion reserve as a separate additive placement term', () => {
+    expect(AVATAR_MOTION_RESERVE_PX).toBe(8);
+    expect(REPLY_AVATAR_PLACEMENT_OFFSET).toBe(22);
+    expect(REPLY_AVATAR_PLACEMENT_OFFSET).toBe(
+      REPLY_AVATAR_CLEARANCE + AVATAR_MOTION_RESERVE_PX,
+    );
+    expect(REPLY_AVATAR_PLACEMENT_OFFSET - AVATAR_MOTION_RESERVE_PX).toBe(
+      REPLY_AVATAR_CLEARANCE,
+    );
+    // The documented VERTICAL envelope: `happy` = 3 px translate + 100 × 0.03
+    // top-edge scale lift = 6.0 px. The reserve must cover it (the live measured
+    // separation is `offset − envelope` = 22 − 6.0 = 16.0 ≥ the bound).
+    expect(AVATAR_MOTION_RESERVE_PX).toBeGreaterThanOrEqual(6.0);
+    expect(REPLY_AVATAR_PLACEMENT_OFFSET - 6.0).toBeGreaterThanOrEqual(
+      REPLY_AVATAR_CLEARANCE,
+    );
+    // The bound itself must NOT grow: it stays the UI/UX-ratified 14 px strip the
+    // tester measures as `S`.
+    expect(REPLY_AVATAR_CLEARANCE).toBe(14);
   });
 
   it('binds the shrink+scroll floor', () => {
@@ -190,7 +220,7 @@ describe('#2886 — the acceptance rule (E4/E6)', () => {
 });
 
 describe('#2886 — the two shipped viewports (the plan’s tables)', () => {
-  it('1400×900: `above`, bottom pinned at avatar.top − 14, height capped at 226 and scrolling', () => {
+  it('1400×900: `above`, bottom pinned at avatar.top − 22, height capped at 218 and scrolling', () => {
     const { avatar, region, viewport } = seatScene(1400, 900);
     expect(avatar.top).toBe(306);
     const placement = computeReplyPlacement({
@@ -202,19 +232,33 @@ describe('#2886 — the two shipped viewports (the plan’s tables)', () => {
     });
 
     expect(placement.placement).toBe('above');
-    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_CLEARANCE); // 292
-    expect(placement.bottom).toBe(292);
-    expect(placement.height).toBe(226); // 292 − safeTop 66
+    // The facing edge is the bound (14) PLUS the motion reserve (8) — never the
+    // bound alone: the avatar's own `happy` lift (6.0 px) must not eat the strip.
+    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET); // 284
+    expect(placement.bottom).toBe(284);
+    expect(placement.height).toBe(218); // 284 − safeTop 66
     expect(placement.top).toBe(region.safeTop);
     expect(placement.width).toBe(REPLY_MAX_W);
     expect(placement.scrollable).toBe(true);
-    expect(placement.clearance).toBe(REPLY_AVATAR_CLEARANCE);
+    expect(placement.clearance).toBe(REPLY_AVATAR_PLACEMENT_OFFSET);
+    // The live bar the tester measures: separation ∈ [bound, offset].
+    expect(placement.clearance - 6.0).toBeGreaterThanOrEqual(REPLY_AVATAR_CLEARANCE);
+    expect(placement.clearance).toBeGreaterThanOrEqual(REPLY_AVATAR_CLEARANCE);
     expect(intersectArea(placement, avatar)).toBe(0);
   });
 
-  it('900×600 (shipped minimum): `above`, bottom 190, height capped at 124 and scrolling', () => {
+  it('900×600 (shipped minimum): the reserve flips the card to `right` — deliberate', () => {
     const { avatar, region, viewport } = seatScene(900, 600);
     expect(avatar.top).toBe(204);
+    // The arithmetic that forces the flip: the facing edge moves to
+    // 204 − 22 = 182, so only 116 px of air remain above (< `REPLY_MIN_H` 120).
+    // The 120 px card needs 22 + 120 = 142 px and the shipped-minimum free air is
+    // 138 px. Do NOT “fix” this by shrinking `REPLY_MIN_H`.
+    expect(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET).toBe(182);
+    expect(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET - region.safeTop).toBeLessThan(
+      REPLY_MIN_H,
+    );
+
     const placement = computeReplyPlacement({
       avatar,
       region,
@@ -223,26 +267,29 @@ describe('#2886 — the two shipped viewports (the plan’s tables)', () => {
       allowBelow: false,
     });
 
-    expect(placement.placement).toBe('above');
-    expect(placement.bottom).toBe(190);
-    expect(placement.height).toBe(124);
+    // `right` is in the seat candidate set (E6) and is the design's own fallback
+    // for “free air above < separation + the card's usable minimum”.
+    expect(placement.placement).toBe('right');
+    expect(placement.left).toBe(avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(placement.left - avatar.right).toBeGreaterThanOrEqual(REPLY_AVATAR_CLEARANCE);
+    expect(placement.bottom).toBe(region.barrierTop - REPLY_MARGIN);
     expect(placement.scrollable).toBe(true);
-    expect(placement.clearance).toBe(REPLY_AVATAR_CLEARANCE);
+    expect(placement.clearance).toBe(REPLY_AVATAR_PLACEMENT_OFFSET);
     expect(intersectArea(placement, avatar)).toBe(0);
     // E5: the degraded/scrolling card is never narrower than the usable floor.
     expect(placement.width).toBeGreaterThanOrEqual(REPLY_MIN_USABLE_W);
   });
 
   it('< 900 wide (dev viewport): the sides take over when `above` has no room', () => {
-    // Avatar high in a short window: above-air = 130 − 14 − 66 = 50 < 120.
+    // Avatar high in a short window: above-air = 130 − 22 − 66 = 42 < 120.
     const avatar = avatarAt(410, 130);
     const region: ReplyRegion = { safeTop: 66, barrierTop: 270, boundsLeft: 40, boundsRight: 860 };
     const viewport = { width: 900, height: 600 };
     const placement = computeReplyPlacement({ avatar, region, viewport, contentHeightPx: 5000, allowBelow: false });
 
     expect(placement.placement).toBe('right');
-    expect(placement.left).toBe(avatar.right + REPLY_AVATAR_CLEARANCE);
-    expect(placement.clearance).toBe(REPLY_AVATAR_CLEARANCE);
+    expect(placement.left).toBe(avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(placement.clearance).toBe(REPLY_AVATAR_PLACEMENT_OFFSET);
     expect(placement.bottom).toBe(region.barrierTop - REPLY_MARGIN);
     expect(placement.right).toBeLessThanOrEqual(region.boundsRight);
     expect(intersectArea(placement, avatar)).toBe(0);
@@ -254,7 +301,7 @@ describe('#2886 — the two shipped viewports (the plan’s tables)', () => {
       safeTop: 66,
       barrierTop: 270,
       boundsLeft: 40,
-      boundsRight: avatar.right + REPLY_AVATAR_CLEARANCE,
+      boundsRight: avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET,
     };
     const placement = computeReplyPlacement({
       avatar,
@@ -265,15 +312,15 @@ describe('#2886 — the two shipped viewports (the plan’s tables)', () => {
     });
 
     expect(placement.placement).toBe('left');
-    expect(placement.right).toBe(avatar.left - REPLY_AVATAR_CLEARANCE);
+    expect(placement.right).toBe(avatar.left - REPLY_AVATAR_PLACEMENT_OFFSET);
     expect(placement.left).toBeGreaterThanOrEqual(region.boundsLeft);
     expect(intersectArea(placement, avatar)).toBe(0);
   });
 });
 
-describe('#2886 — a one-liner keeps today’s 240×120 (E5) at the bound clearance', () => {
-  it('renders the base card centred on the avatar, 14 px above it, no scroller', () => {
-    const { avatar, region, viewport } = seatScene(900, 600);
+describe('#2886 — a one-liner keeps today’s 240×120 (E5) at the placement offset', () => {
+  it('1400×900: the base card is centred on the avatar, 22 px above it, no scroller', () => {
+    const { avatar, region, viewport } = seatScene(1400, 900);
     const placement = computeReplyPlacement({
       avatar,
       region,
@@ -283,23 +330,45 @@ describe('#2886 — a one-liner keeps today’s 240×120 (E5) at the bound clear
     });
 
     expect(placement.tier).toBe('base');
+    expect(placement.placement).toBe('above');
     expect(placement.width).toBe(REPLY_BASE_W);
     expect(placement.height).toBe(REPLY_BASE_H);
     expect(placement.scrollable).toBe(false);
     expect(placement.left + placement.width / 2).toBe(avatar.left + avatar.width / 2);
-    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_CLEARANCE);
-    expect(placement.clearance).toBe(REPLY_AVATAR_CLEARANCE);
+    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(placement.clearance).toBe(REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(placement.clearance).toBeGreaterThanOrEqual(REPLY_AVATAR_CLEARANCE);
+  });
+
+  it('900×600: the one-liner ALSO flips to `right` — still 240×120 base, no scroller', () => {
+    const { avatar, region, viewport } = seatScene(900, 600);
+    const placement = computeReplyPlacement({
+      avatar,
+      region,
+      viewport,
+      contentHeightPx: 40,
+      allowBelow: false,
+    });
+
+    expect(placement.placement).toBe('right');
+    expect(placement.tier).toBe('base');
+    expect(placement.width).toBe(REPLY_BASE_W);
+    expect(placement.height).toBe(REPLY_BASE_H);
+    expect(placement.scrollable).toBe(false);
+    expect(placement.left).toBe(avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(placement.left - avatar.right).toBeGreaterThanOrEqual(REPLY_AVATAR_CLEARANCE);
+    expect(intersectArea(placement, avatar)).toBe(0);
   });
 });
 
 describe('#2886 — the facing edge is pinned across the whole generation (E3)', () => {
-  it('holds the bottom edge at avatar.top − 14 and grows only upward', () => {
+  it('holds the bottom edge at avatar.top − 22 and grows only upward', () => {
     const { avatar, region, viewport } = seatScene(1400, 900);
     const heights: number[] = [];
     for (const contentHeightPx of [0, 93, 150, 400, 5000]) {
       const placement = computeReplyPlacement({ avatar, region, viewport, contentHeightPx, allowBelow: false });
       expect(placement.placement).toBe('above');
-      expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_CLEARANCE);
+      expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET);
       expect(placement.top).toBeGreaterThanOrEqual(region.safeTop);
       expect(intersectArea(placement, avatar)).toBe(0);
       heights.push(placement.height);
@@ -309,7 +378,7 @@ describe('#2886 — the facing edge is pinned across the whole generation (E3)',
       expect(heights[i]).toBeGreaterThanOrEqual(heights[i - 1]);
     }
     expect(heights[0]).toBe(REPLY_BASE_H);
-    expect(heights[heights.length - 1]).toBe(226);
+    expect(heights[heights.length - 1]).toBe(218);
   });
 });
 
@@ -362,8 +431,9 @@ describe('#2886 — the never-cover invariant holds for every scene (E1/E4/E6)',
 
     const away = computeReplyPlacement({ avatar, region, viewport, contentHeightPx: 0, allowBelow: true });
     expect(away.placement).toBe('below');
-    expect(away.top).toBe(avatar.bottom + REPLY_AVATAR_CLEARANCE);
-    expect(away.clearance).toBe(REPLY_AVATAR_CLEARANCE);
+    expect(away.top).toBe(avatar.bottom + REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(away.clearance).toBe(REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(away.clearance).toBeGreaterThanOrEqual(REPLY_AVATAR_CLEARANCE);
     expect(intersectArea(away, avatar)).toBe(0);
   });
 });
@@ -383,8 +453,8 @@ describe('#2886 — no viable candidate ⇒ reduced extent + scroll, never an ov
 
     expect(placement.scrollable).toBe(true);
     expect(placement.placement).toBe('above');
-    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_CLEARANCE);
-    expect(placement.clearance).toBe(REPLY_AVATAR_CLEARANCE);
+    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET);
+    expect(placement.clearance).toBe(REPLY_AVATAR_PLACEMENT_OFFSET);
     expect(intersectArea(placement, avatar)).toBe(0);
     // The floor is honoured when the region can afford it; here the region itself
     // is smaller than the floor (the documented dev-only residual).
@@ -400,8 +470,8 @@ describe('#2886 — no viable candidate ⇒ reduced extent + scroll, never an ov
     const region: ReplyRegion = {
       safeTop: 66,
       barrierTop: 148,
-      boundsLeft: avatar.left - REPLY_AVATAR_CLEARANCE,
-      boundsRight: avatar.right + REPLY_AVATAR_CLEARANCE,
+      boundsLeft: avatar.left - REPLY_AVATAR_PLACEMENT_OFFSET,
+      boundsRight: avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET,
     };
     const placement = computeReplyPlacement({
       avatar,
@@ -414,7 +484,7 @@ describe('#2886 — no viable candidate ⇒ reduced extent + scroll, never an ov
     expect(placement.placement).toBe('above');
     expect(placement.height).toBe(REPLY_MIN_USABLE_H);
     expect(placement.scrollable).toBe(true);
-    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_CLEARANCE);
+    expect(placement.bottom).toBe(avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET);
     expect(intersectArea(placement, avatar)).toBe(0);
   });
 });
@@ -448,5 +518,76 @@ describe('#2886 — deriveAwayRegion', () => {
       viewport: { width: 800, height: 600 },
     };
     expect(deriveAwayRegion(published, { width: 800, height: 600 }).barrierTop).toBe(600 - REPLY_MARGIN);
+  });
+});
+
+/**
+ * #2886 round 2 (F1) — the anchor must be the avatar's LAYOUT box, never the
+ * animated wrapper's transformed rect.
+ *
+ * This is a documented STATIC pin (the same pattern the #2883 `SpeechBubble`
+ * suite uses for its source invariants): a jsdom test cannot produce a real CSS
+ * animation, so the binding guarantee is asserted against the ONE function that
+ * produces the placement footprint. The round-1 defect was exactly this read —
+ * `wrapperRef.current.getBoundingClientRect()` returned the IDLE/HAPPY frame, so
+ * the placement tracked a 6.0 px bob (facing edge moved 3.37 px, strip 8.00 px).
+ */
+describe('#2886 — the placement footprint is the MOTION-INVARIANT layout box (static pin)', () => {
+  const ENTITY_PATH = 'src/shared/components/companion/CompanionEntity.tsx';
+  const entitySource = readFileSync(resolve(process.cwd(), ENTITY_PATH), 'utf8').replace(
+    /\/\*[\s\S]*?\*\//g,
+    '',
+  );
+
+  /** The ONE function that builds the placement footprint. */
+  function measureAvatarRectSource(): string {
+    const start = entitySource.indexOf('const measureAvatarRect = useCallback(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const endMarker = '}, [surface, displayPos.x, displayPos.y]);';
+    const end = entitySource.indexOf(endMarker, start);
+    expect(end).toBeGreaterThan(start);
+    return entitySource.slice(start, end);
+  }
+
+  it('derives the seat box from the offset chain and the overlay box from displayPos', () => {
+    const body = measureAvatarRectSource();
+    // The seat: the offsetParent's viewport box + its border + the element's
+    // offsets − its scroll (the same transform-immune source `getAvatarSize` uses).
+    for (const term of [
+      'offsetParent',
+      'clientTop',
+      'clientLeft',
+      'offsetTop',
+      'offsetLeft',
+      'scrollTop',
+      'scrollLeft',
+      'offsetWidth',
+      'offsetHeight',
+    ]) {
+      expect(body).toContain(term);
+    }
+    // The away overlay (`position: fixed`, `offsetParent === null`): the declared
+    // position + size, never the transformed rect.
+    expect(body).toContain('displayPos');
+  });
+
+  it('never reads the ANIMATED wrapper’s getBoundingClientRect', () => {
+    const body = measureAvatarRectSource();
+    // The measured element's own rect IS the animated box — reading it is the
+    // defect. Exactly ONE rect read survives, and it belongs to the (static)
+    // `offsetParent` that supplies the viewport origin — never `el`/`wrapperRef`.
+    const rectReads = body.match(/[\w$.]+\.getBoundingClientRect\(\)/g) ?? [];
+    expect(rectReads).toEqual(['parent.getBoundingClientRect()']);
+    expect(body).not.toMatch(/\bel\s*\.\s*getBoundingClientRect/);
+    // The wrapper's OWN size is read transform-immune (`offsetWidth/offsetHeight`).
+    expect(body).toMatch(/el\.offsetWidth/);
+    expect(body).toMatch(/el\.offsetHeight/);
+  });
+
+  it('keeps the rAF coalescing, the epsilon guard and the degenerate-rect safety net', () => {
+    expect(entitySource).toContain('requestAnimationFrame');
+    expect(entitySource).toContain('nearAvatarRect(prev, next)');
+    expect(entitySource).toContain('AVATAR_RECT_EPSILON_PX');
+    expect(measureAvatarRectSource()).toContain('completeAvatarRect');
   });
 });

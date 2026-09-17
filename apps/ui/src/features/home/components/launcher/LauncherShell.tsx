@@ -524,6 +524,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // reply that respects the barrier is already above every tile row. Measured in
   // the SAME rAF pass as the band (never a second effect/polling chain).
   const gridRef = useRef<HTMLDivElement | null>(null);
+  // #2886 round 2 (F3) — the seat entity reports whether a message surface is on
+  // screen. The tiles must stay MOUNTED (and therefore measurable) for the whole
+  // reply display: the send path collapses `engaged`, and a hide/collapse cannot
+  // pass the AC-4 keep-out check. `engaged` and everything it drives are
+  // untouched — this only widens WHEN the grid renders.
+  const [companionMessageVisible, setCompanionMessageVisible] = useState(false);
+  const handleCompanionMessageVisibility = useCallback((visible: boolean) => {
+    setCompanionMessageVisible(visible);
+  }, []);
   const [replyBounds, setReplyBounds] = useState<ReplySurfaceBounds | undefined>(undefined);
   const prevWindowCountRef = useRef(currentWindows.length);
   // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
@@ -1640,7 +1649,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
                 launcher → entity → bubble so the reply can grow inside the
                 window/column band without ever colliding with the bar. */}
             {companionVisible && !companionAway && (
-              <CompanionEntity surface="seat" replyBounds={replyBounds} />
+              <CompanionEntity
+                surface="seat"
+                replyBounds={replyBounds}
+                // #2886 round 2 (F3) — lets the shell keep the tiles mounted for
+                // the whole reply display (see `companionMessageVisible`).
+                onMessageVisibilityChange={handleCompanionMessageVisibility}
+              />
             )}
           </Box>
           <LauncherCommandBar
@@ -1702,7 +1717,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // passed down; ST-1 renders the caption only on 2+ visual lines.
             newlineHint={companionActive}
           />
-          {engaged && (
+          {(engaged || companionMessageVisible) && (
             <LauncherAppGrid
               entries={filteredEntries}
               selectedIndex={safeSelectedIndex}

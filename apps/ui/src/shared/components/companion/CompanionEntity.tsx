@@ -190,6 +190,15 @@ export interface CompanionEntityProps {
    * today's fixed rendering exactly (R-5.3).
    */
   replyBounds?: ReplySurfaceBounds;
+  /**
+   * #2886 round 2 (F3) — ADDITIVE, optional. Reports whether THIS entity is
+   * currently displaying a message surface (the exact condition the surface exists
+   * under: `displayMessage != null`), so the launcher can keep the app tiles
+   * MOUNTED (and measurable) for the whole reply display instead of unmounting
+   * them at the send instant. Deliberately NOT `isInUse` — that flag clears at
+   * `llm-done` and gates the bar's send. Reports `false` on unmount.
+   */
+  onMessageVisibilityChange?: (visible: boolean) => void;
 }
 
 /**
@@ -222,7 +231,7 @@ export interface CompanionEntityHandle {
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
-  ({ surface, x, y, replyBounds }, ref) => {
+  ({ surface, x, y, replyBounds, onMessageVisibilityChange }, ref) => {
     const { state, setState, teleport, hideMessage, notifyInteraction, setInUse } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -323,30 +332,63 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // ── #2886 ST-2 — the ONE avatar-footprint measurement ──────────────────────
     // The same node whose box already feeds `getAvatarSize()` (above) and
     // `computeTeleportTarget`: the `.fredo-companion-avatar` wrapper. Its
-    // VIEWPORT rect is the placement anchor the message surface must clear — NOT
-    // the `fredo-companion-surface` wrapper (which contains only the absolutely-
-    // positioned bubble, so it measures height 0). rAF-coalesced and epsilon-
-    // compared (no state write when no number changed — AGENTS.md #523), and a
-    // degenerate/hidden box is completed from the declared AVATAR_SM (80×100), so
-    // a zero-height measurement can never collapse the placement again.
+    // VIEWPORT **LAYOUT** box (no CSS transform) is the placement anchor the
+    // message surface must clear — NOT the `fredo-companion-surface` wrapper
+    // (which contains only the absolutely-positioned bubble, so it measures
+    // height 0), and NOT the wrapper's TRANSFORMED rect: the wrapper carries the
+    // avatar's own whole-element motion (`idle` bob, `happy` `translateY(-3px)
+    // scale(1.03)`, `playful`/`joking` sweep, teleport shrink), so
+    // `getBoundingClientRect()` there reports the ANIMATED crown and the surface
+    // would track it. That was the round-1 defect: the facing edge moved 3.37 px
+    // and the bound strip collapsed to 8.00 px (14 − the 6.0 px `happy` lift).
+    //
+    // Seat: the wrapper is `position: relative` in-flow inside the launcher's
+    // `position: relative` 80×100 seat slot, so its layout box is recovered from
+    // the offset chain — the `offsetParent`'s viewport box + its border
+    // (`clientTop`/`clientLeft`) + `offsetTop`/`offsetLeft` − its scroll. The seat
+    // slot IS the avatar's box, so the result is exactly the 80×100 footprint the
+    // placement needs (and it is transform-immune — the same source `getAvatarSize`
+    // already uses).
+    // Away overlay: the wrapper is `position: fixed` at the entity's own inline
+    // `left`/`top` (`offsetParent === null`), so the layout box is `displayPos` +
+    // the declared size.
+    //
+    // rAF-coalesced and epsilon-compared (no state write when no number changed —
+    // AGENTS.md #523), and a degenerate/hidden box is completed from the declared
+    // AVATAR_SM (80×100), so a zero-height measurement can never collapse the
+    // placement again.
     const [avatarRect, setAvatarRect] = useState<ReplyAvatarRect | null>(null);
     const avatarRectRef = useRef<ReplyAvatarRect | null>(null);
     const avatarFrameRef = useRef<number | null>(null);
 
     const measureAvatarRect = useCallback(() => {
       const el = wrapperRef.current;
-      if (!el || typeof el.getBoundingClientRect !== 'function') return;
-      const r = el.getBoundingClientRect();
-      const next = completeAvatarRect(
-        { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
-        AVATAR_SM,
-      );
+      if (!el) return;
+      const width = el.offsetWidth || AVATAR_SM.width;
+      const height = el.offsetHeight || AVATAR_SM.height;
+
+      let raw: ReplyAvatarRect;
+      if (surface === 'overlay') {
+        const left = displayPos.x;
+        const top = displayPos.y;
+        raw = { top, left, right: left + width, bottom: top + height, width, height };
+      } else {
+        const parent = el.offsetParent as HTMLElement | null;
+        // `display: none` — there is no box to report; keep the last known one.
+        if (!parent) return;
+        const parentRect = parent.getBoundingClientRect();
+        const left = parentRect.left + parent.clientLeft + el.offsetLeft - parent.scrollLeft;
+        const top = parentRect.top + parent.clientTop + el.offsetTop - parent.scrollTop;
+        raw = { top, left, right: left + width, bottom: top + height, width, height };
+      }
+
+      const next = completeAvatarRect(raw, AVATAR_SM);
       if (!next) return;
       const prev = avatarRectRef.current;
       if (prev && nearAvatarRect(prev, next)) return;
       avatarRectRef.current = next;
       setAvatarRect(next);
-    }, []);
+    }, [surface, displayPos.x, displayPos.y]);
 
     const scheduleAvatarMeasure = useCallback(() => {
       if (avatarFrameRef.current !== null) return;
@@ -784,6 +826,27 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       }, 250);
     }, [askForJoke, showTicTacToe, notifyInteraction]);
 
+    // Prefer the live streaming message; fall back to context message.
+    // Strip any model control tokens that may leak through (e.g. <end_of_turn>).
+    // #2886 round 2 (F3): computed ABOVE the surface gate so the visibility
+    // reporter below is an UNCONDITIONAL hook (hooks may not sit after an early
+    // return). The gate's own behaviour is unchanged.
+    const displayMessage = (streamingMessage ?? message)
+      ?.replace(/<end_of_turn>|<start_of_turn>/g, '').trimEnd() || null;
+
+    // #2886 round 2 (F3) — ONE reporter for "a message surface is on screen".
+    // The launcher consumes it to keep the app tiles mounted (and measurable) for
+    // the whole reply display. Keyed on `displayMessage != null` — the exact
+    // condition the surface exists under — and reports `false` on the transition
+    // away and on unmount, so the tiles can never stay stuck on.
+    const messageVisible = displayMessage != null;
+    useEffect(() => {
+      onMessageVisibilityChange?.(messageVisible);
+      return () => {
+        if (messageVisible) onMessageVisibilityChange?.(false);
+      };
+    }, [messageVisible, onMessageVisibilityChange]);
+
     // ── Surface-scoped render gate (#2870 ST-2b) ──────────────────────────────
     // `overlay` is the AWAY overlay: it renders only in the window that hosts
     // Fredo, only while the role is ON (`isVisible`) and he is not auto-hidden.
@@ -793,11 +856,6 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     if (surface === 'overlay') {
       if (!isVisible || isAutoHidden || !isHosting) return null;
     }
-
-    // Prefer the live streaming message; fall back to context message.
-    // Strip any model control tokens that may leak through (e.g. <end_of_turn>).
-    const displayMessage = (streamingMessage ?? message)
-      ?.replace(/<end_of_turn>|<start_of_turn>/g, '').trimEnd() || null;
 
     // Real rendered layout size for the bubble anchor + click box (offsetWidth/
     // offsetHeight — immune to the CSS transform animations on the wrapper).

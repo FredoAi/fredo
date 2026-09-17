@@ -43,14 +43,25 @@
  * first-class inputs and returns a VIEWPORT-px border box that
  *
  *   - never intersects the footprint (E1),
- *   - keeps `REPLY_AVATAR_CLEARANCE` (14 px = tail 10 + 4) on the placement axis,
- *     with the FACING edge pinned at `footprint ± clearance` so growth is
- *     one-directional and the separation is constant at every size (E2/E3),
+ *   - keeps the bound `REPLY_AVATAR_CLEARANCE` (14 px = tail 10 + 4) on the
+ *     placement axis at every LIVE sample, with the FACING edge pinned at
+ *     `footprint ± REPLY_AVATAR_PLACEMENT_OFFSET` — the bound PLUS
+ *     `AVATAR_MOTION_RESERVE_PX` (8 px) — so the avatar's own whole-element CSS
+ *     motion can never eat into the bound and growth stays one-directional with a
+ *     constant strip at every size (E2/E3),
  *   - ranks `above > right > left` at the seat (`below` stays exclusive to the
  *     away overlay), rejecting any candidate that intersects the footprint, breaks
- *     the clearance, leaves the region or the viewport (E4/E6),
+ *     the bound clearance, leaves the region or the viewport (E4/E6),
  *   - degrades to the reduced extent + `scrollable` — order height → width →
  *     NEVER the separation — when no candidate is viable (E5).
+ *
+ * Round-2 supersede: round 1 justified the bound against a "≤ ~5 px per side"
+ * motion envelope. That was under-counted. The shipped `happy` keyframe
+ * (`translateY(-3px) scale(1.03)`, origin `50% 100%`) lifts the CROWN by
+ * 3 px translate + `100 × 0.03` = 3 px of top-edge scale lift = 6.0 px, and the
+ * side sweeps (`joking` ±2.5°, `playful` ±3°) reach 4.4 px of corner sweep. The
+ * bound is unchanged (it is the tester's `S`); the RESERVE absorbs the envelope —
+ * see `AVATAR_MOTION_RESERVE_PX`.
  *
  * The size formula is NOT duplicated: the grown size still comes from
  * `grownHeight` / `REPLY_MAX_W` / `REPLY_MIN_H`; only the anchor arithmetic
@@ -295,12 +306,45 @@ export function computeReplyGeometry(input: ReplyGeometryInput): ReplyGeometry {
  * The minimum separation between the surface's border box and the avatar
  * footprint on the placement axis. BINDING value (PO decision 4): 14 px =
  * `REPLY_TAIL` (10) + 4 px of clear air at the tail tip. It out-runs the card's
- * own spacing rhythm (`REPLY_GAP` 10 > `REPLY_MARGIN` 8) and the avatar's own
- * motion envelope (≤ ~5 px per side, `companion.css`), and it is absolute — the
- * avatar is a constant 80×100 at the seat, so the strip is constant at every
- * surface size.
+ * own spacing rhythm (`REPLY_GAP` 10 > `REPLY_MARGIN` 8), and it is absolute —
+ * the avatar is a constant 80×100 at the seat, so the strip is constant at every
+ * surface size. This is the LIVE-separation FLOOR (`acceptsReplyCandidate`
+ * rejects below it) and the tester's `S`; the PLACEMENT edge is pinned further
+ * out by `AVATAR_MOTION_RESERVE_PX` so the floor survives the avatar's motion.
  */
 export const REPLY_AVATAR_CLEARANCE = REPLY_TAIL + 4; // 14
+
+/**
+ * The avatar's whole-element CSS-motion envelope, absorbed by the PLACEMENT
+ * offset (never by the bound). Derived from the shipped keyframes in
+ * `companion.css` / `fredoAvatarIdle.css`, NOT asserted:
+ *
+ *  - VERTICAL 6.0 px — `happy` (`translateY(-3px) scale(1.03)`, origin
+ *    `50% 100%`): 3 px of translate plus `100 × 0.03` = 3 px of top-edge scale
+ *    lift. The live frame the round-1 tester sampled (`scale 1.0298` +
+ *    `translateY(-2.98px)`) is 5.96 px — the same keyframe, and exactly the
+ *    6.00 px shortfall it measured (`14.00 − 8.00`). `idle` (`translateY(-2px)`),
+ *    `talk` (`scaleY(1.02)`), `teleport-in` (`scale(1.04)`) and `thinking` stay
+ *    ≤ 2.0 px.
+ *  - HORIZONTAL 4.4 px — the side sweeps: `joking` `rotate(±2.5°)` about
+ *    `50% 100%` and `playful` `rotate(±3°)` about `50% 85%`; the corner sweep is
+ *    `40·sin 3° + 85·(1−cos 3°) ≈ 4.39 px`.
+ *
+ * 8 = ceil(6.0) + 2 px of sub-pixel headroom, so the LIVE measured separation on
+ * the placement axis never drops below the bound (`22 − 6.0 = 16.0`).
+ */
+export const AVATAR_MOTION_RESERVE_PX = 8;
+
+/**
+ * The facing-edge pin used by every candidate (`facingY` / `belowY`, the
+ * horizontal span and the width budget): the bound PLUS the motion reserve. With
+ * a motion-invariant LAYOUT-box anchor (the entity never samples the animated
+ * rect — see `CompanionEntity.measureAvatarRect`) this makes the facing edge a
+ * constant for the whole generation and keeps the live separation inside
+ * `[bound, offset]`.
+ */
+export const REPLY_AVATAR_PLACEMENT_OFFSET =
+  REPLY_AVATAR_CLEARANCE + AVATAR_MOTION_RESERVE_PX; // 22
 
 /**
  * The shrink+scroll FLOOR (E5): at/below these the surface keeps its size and
@@ -314,10 +358,13 @@ export const REPLY_MIN_USABLE_W = 160;
 export const REPLY_MIN_USABLE_H = 48;
 
 /**
- * #2886 — the avatar's RENDERED footprint (viewport px). Same six fields as
- * `ReplyAnchor`, but the MEANING is the avatar element's box
- * (`.fredo-companion-avatar`) — never the wrapper that contains only the bubble,
- * never the seat slot.
+ * #2886 — the avatar's footprint (viewport px). Same six fields as
+ * `ReplyAnchor`, but the MEANING is the avatar element's **LAYOUT box** (no CSS
+ * transform) — never the wrapper that contains only the bubble, and never the
+ * animated rect. The entity derives it from the offset chain at the seat /
+ * `displayPos` + the declared size in the away overlay, so an idle bob, a `happy`
+ * scale or a `playful` sweep can never move the placement anchor (round-1 defect:
+ * `getBoundingClientRect()` of the animated wrapper WAS the anchor).
  */
 export type ReplyAvatarRect = ReplyAnchor;
 
@@ -456,8 +503,8 @@ function widthBudgetFor(
   region: ReplyRegion,
 ): number {
   if (placement === 'above' || placement === 'below') return region.boundsRight - region.boundsLeft;
-  if (placement === 'right') return region.boundsRight - (avatar.right + REPLY_AVATAR_CLEARANCE);
-  return avatar.left - REPLY_AVATAR_CLEARANCE - region.boundsLeft;
+  if (placement === 'right') return region.boundsRight - (avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET);
+  return avatar.left - REPLY_AVATAR_PLACEMENT_OFFSET - region.boundsLeft;
 }
 
 /** The bar/tiles barrier: the lowest y any surface edge may reach. */
@@ -478,10 +525,10 @@ function horizontalSpan(
     return { left, right: left + width };
   }
   if (placement === 'right') {
-    const left = avatar.right + REPLY_AVATAR_CLEARANCE;
+    const left = avatar.right + REPLY_AVATAR_PLACEMENT_OFFSET;
     return { left, right: left + width };
   }
-  const right = avatar.left - REPLY_AVATAR_CLEARANCE;
+  const right = avatar.left - REPLY_AVATAR_PLACEMENT_OFFSET;
   return { left: right - width, right };
 }
 
@@ -506,8 +553,12 @@ function buildCandidate(
   const content = normalizeContentHeight(contentHeightPx);
 
   const barrier = barrierBottom(region, viewport);
-  const facingY = avatar.top - REPLY_AVATAR_CLEARANCE;
-  const belowY = avatar.bottom + REPLY_AVATAR_CLEARANCE;
+  // #2886 round 2 — the FACING edge is pinned at the bound PLUS the motion reserve
+  // (see `REPLY_AVATAR_PLACEMENT_OFFSET`), so the avatar's own CSS bob/scale can
+  // never eat into the bound `REPLY_AVATAR_CLEARANCE` at a live sample. The
+  // acceptance rule below still tests the BOUND, not the offset.
+  const facingY = avatar.top - REPLY_AVATAR_PLACEMENT_OFFSET;
+  const belowY = avatar.bottom + REPLY_AVATAR_PLACEMENT_OFFSET;
 
   const { left, right } = horizontalSpan(placement, avatar, region, width);
   const maxHeight = placement === 'above' ? facingY - region.safeTop : placement === 'below' ? barrier - belowY : barrier - region.safeTop;

@@ -525,15 +525,16 @@ describe('#2886 SpeechBubble — the avatar-footprint placement contract', () =>
     await waitFor(() => expect(surface).toHaveAttribute('data-reply-tier', 'grown'));
     expect(surface).toHaveAttribute('data-reply-placement', 'above');
 
-    // avatar 80×100 at (460,600), safeTop 66 ⇒ available = 600 − 14 − 66 = 520.
-    // width = min(560, 960) = 560; height = clamp(120, 300, 520) = 300; the facing
-    // edge is pinned at avatar.top − 14 = 586 ⇒ anchor-relative bottom = 114
-    // (avatar.height 100 + the bound 14 — NOT the collapsed `2 × TAIL` = 20).
+    // avatar 80×100 at (460,600), safeTop 66 ⇒ available = 600 − 22 − 66 = 512.
+    // width = min(560, 960) = 560; height = clamp(120, 300, 512) = 300; the facing
+    // edge is pinned at avatar.top − 22 = 578 (the bound 14 + the 8 px motion
+    // reserve) ⇒ anchor-relative bottom = 122 (avatar.height 100 + the offset 22 —
+    // NOT the collapsed `2 × TAIL` = 20, and NOT the bare bound 14).
     await waitFor(() =>
       expect(lastStyle()).toMatchObject({
         position: 'absolute',
         left: -240,
-        bottom: 114,
+        bottom: 122,
         width: 560,
         height: 300,
       }),
@@ -545,22 +546,23 @@ describe('#2886 SpeechBubble — the avatar-footprint placement contract', () =>
     measurement.wrapperHeight = 250;
     rerender(liveBubble({ growth: BAND, isStreaming: true }));
     await settleFrames();
-    expect(lastStyle()).toMatchObject({ left: -240, bottom: 114, width: 560, height: 300 });
+    expect(lastStyle()).toMatchObject({ left: -240, bottom: 122, width: 560, height: 300 });
   });
 
-  it('renders a one-liner at 240×120 with the bound 14 px strip when a region is measured', async () => {
+  it('renders a one-liner at 240×120 with the 22 px placement offset when a region is measured', async () => {
     measurement.textHeight = 40;
     renderWithChakra(liveBubble({ growth: BAND, isStreaming: true }));
 
     const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
     // Wait for the REGION-BASED rect (the CSS branch's `bottom` is a string).
-    await waitFor(() => expect(lastStyle()).toMatchObject({ left: -80, bottom: 114 }));
+    await waitFor(() => expect(lastStyle()).toMatchObject({ left: -80, bottom: 122 }));
 
     expect(surface).toHaveAttribute('data-reply-tier', 'base');
     expect(surface).toHaveAttribute('data-reply-placement', 'above');
     // Centred on the avatar (460 + 40 − 120 = 380 ⇒ −80 anchor-relative) and the
-    // bottom edge 586 ⇒ 114. The #2883 base tier's intent is preserved (240×120,
-    // no scroller); only the strip is the bound 14 px instead of the CSS branch's 10.
+    // bottom edge 578 ⇒ 122. The #2883 base tier's intent is preserved (240×120,
+    // no scroller); only the strip is the placement offset instead of the CSS
+    // branch's 10.
     expect(lastStyle()).toMatchObject({ width: 240, height: 120 });
     expect(screen.queryByTestId(REPLY_SCROLL_TESTID)).toBeNull();
   });
@@ -579,15 +581,15 @@ describe('#2886 SpeechBubble — the avatar-footprint placement contract', () =>
     renderWithChakra(liveBubble({ avatarRect: highAvatar, growth: shortBand, isStreaming: true }));
 
     const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
-    // above-air = 120 − 14 − 66 = 40 < REPLY_MIN_H ⇒ `above` is rejected.
+    // above-air = 120 − 22 − 66 = 32 < REPLY_MIN_H ⇒ `above` is rejected.
     await waitFor(() => expect(surface).toHaveAttribute('data-reply-placement', 'right'));
 
-    // right: left = avatar.right + 14 = 554 ⇒ 94 anchor-relative; width = 1000 − 554
-    // = 446; the barrier is min(barrierTop 500, vh) − 8 = 492 ⇒ bottom = 220 − 492.
-    // The latch opens the tier at the floor (120) and the next frame measures at
-    // the grown width — wait for the settled content height.
+    // right: left = avatar.right + 22 = 562 ⇒ 102 anchor-relative; width = 1000 −
+    // 562 = 438; the barrier is min(barrierTop 500, vh) − 8 = 492 ⇒ bottom = 220 −
+    // 492. The latch opens the tier at the floor (120) and the next frame measures
+    // at the grown width — wait for the settled content height.
     await waitFor(() => expect(lastStyle().height).toBe(300));
-    expect(lastStyle()).toMatchObject({ left: 94, width: 446, bottom: -272 });
+    expect(lastStyle()).toMatchObject({ left: 102, width: 438, bottom: -272 });
     // The card is strictly on that side of the avatar (`left ≥ avatar.right`).
     const style = lastStyle();
     expect((style.left as number) + AVATAR_RECT.left).toBeGreaterThanOrEqual(highAvatar.right);
@@ -617,14 +619,14 @@ describe('#2886 SpeechBubble — the avatar-footprint placement contract', () =>
     );
 
     const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
-    // above: bottom = avatar.top − 14 = 686, height 120 ⇒ top 566; centred on the
+    // above: bottom = avatar.top − 22 = 678, height 120 ⇒ top 558; centred on the
     // avatar clamped inside the region ⇒ left 400. The card keeps its fixed
     // 240×120 (the #2883 grown tier never applies here).
     await waitFor(() =>
       expect(lastStyle()).toMatchObject({
         position: 'fixed',
         left: 400,
-        top: 566,
+        top: 558,
         width: 240,
         height: 120,
       }),

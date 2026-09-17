@@ -47,12 +47,15 @@ export interface SpeechBubbleProps {
   growth?: ReplySurfaceBounds;
   /**
    * #2886 ST-2/ST-4 — the MEASURED avatar footprint (viewport px: the
-   * `.fredo-companion-avatar` wrapper box, 80×100 at the seat), supplied by the
-   * entity. When present, the placement is derived in viewport px from this box
-   * plus the region, so the surface can never be drawn over Fredo (`above` /
-   * `right` / `left` only at the seat, with `REPLY_AVATAR_CLEARANCE` on the
-   * placement axis). Absent ⇒ today's path exactly (the #2883 anchor-relative
-   * geometry / CSS branch), which is what the shipped fixture asserts.
+   * `.fredo-companion-avatar` LAYOUT box, 80×100 at the seat; a transform-immune
+   * source — never the animated rect), supplied by the entity. When present, the
+   * placement is derived in viewport px from this box plus the region, so the
+   * surface can never be drawn over Fredo (`above` / `right` / `left` only at the
+   * seat). The facing edge is pinned at the bound `REPLY_AVATAR_CLEARANCE` plus
+   * `AVATAR_MOTION_RESERVE_PX`, so the LIVE separation never drops below the
+   * bound while the avatar animates. Absent ⇒ today's path exactly (the #2883
+   * anchor-relative geometry / CSS branch), which is what the shipped fixture
+   * asserts.
    */
   avatarRect?: ReplyAvatarRect;
   /**
@@ -108,7 +111,8 @@ interface SeatReplyLayout {
   /**
    * #2886 — true when the geometry came from the avatar-footprint + region
    * contract (viewport px). Such a layout is applied even at the base tier, so
-   * the separation strip is the bound `REPLY_AVATAR_CLEARANCE`.
+   * the FACING edge is `REPLY_AVATAR_PLACEMENT_OFFSET` from the avatar's layout
+   * box and the live separation stays ≥ the bound `REPLY_AVATAR_CLEARANCE`.
    */
   regionBased: boolean;
   geometry: ReplyGeometry;
@@ -483,8 +487,8 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
 
   // The pure module's decision (never re-derived here). A region-based layout is
   // applied even at the BASE tier (#2886: with a measured region the one-liner
-  // also keeps the bound `REPLY_AVATAR_CLEARANCE` strip); `null` ⇒ today's
-  // byte-for-byte CSS branch (no measured band — R-5.3).
+  // also keeps the placement offset — the bound plus the avatar's motion reserve);
+  // `null` ⇒ today's byte-for-byte CSS branch (no measured band — R-5.3).
   const seatGeometry =
     growthApplies && seatLayout !== null && (seatLayout.geometry.tier === 'grown' || seatLayout.regionBased)
       ? seatLayout.geometry
