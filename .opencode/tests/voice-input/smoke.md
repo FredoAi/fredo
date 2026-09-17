@@ -104,6 +104,12 @@
       `## Tests Runs` with a textual description (the live-policy lever); the `## Tests Runs` body also
       references `telemetry_spans` + the timestamped capture markers.
 
-### #2887 testing round 1 — result
+### #2887 testing round 1 — result (`spec/2887 @ 706fcd9d`, 2026-09-17, live)
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+**Verdict FAIL** — 5 PASS / 2 FAIL / 1 UNVERIFIED of 8 requirement rows. Full report: `## Tests Runs (round 1)` on #2887.
+
+- S-14 **PASS** — warm holds, engine resident 10/10 (`engineResident:true`). Press marker = capture-phase `keydown` `performance.now()` in the same dispatch as `tauri_webview_keyboard(action="down", key=" ")`; capture-active = the `stt:state{listening:true}` receipt. `T` series **275.3 / 226.4 / 230.5 / 231.5 / 231.4 / 230.4 / 225.4 / 225.5 / 233.7 / 223.0 ms** ⇒ p50 **230.5** / p95 **275.3** / max **275.3** (plan budget 250/300/320 — PASS against the PLAN constants, not this file's 500/750 placeholders). Cue present in ZERO samples before capture-live; first cue frame +15.0…+23.5 ms AFTER the live event; `launcher-command-listening-pending` never rendered on a resident hold (0/12). Exactly ONE `stt_start` per hold. Console clean.
+- S-15 **FAIL (AC4B)** — the resident-kill lever (the dispatch's sanctioned (B) lever) measured **T = 5019.1 ms** against `T_LAUNCH_COLD_MAX_MS = 3820` (`readyMs` 4816, `engineResident:false`, chip `starting voice input…` for 4626.1 ms, no error, engine re-parked). `T_LAUNCH_WARM_MS` = **4606 ms** (single sample ≤ 5000). `T_LAUNCH_WINDOW_MS` UNVERIFIED: after the mid-round relaunch the MCP bridge only answered after a `driver_session` stop+start, at `performance.now()=32388 ms` — far outside the ≤3500 ms window (by then the engine was already resident). **Do NOT score the launch window against `T_COLD_MAX_MS`.** The cold-idle cohort PASSES: 324 248 ms idle + `engineResident:true` ⇒ T **243.5 ms** ≤ 320, delta vs warm **+13.05 ms** ≤ 50.
+- S-16 **PASS** — 5 captures uploaded serially via `upload-evidence --issue 2887 --base spec/2887` (raw URLs in the `## Tests Runs` table); the report also carries the `telemetry_spans` receipt (4 519 rows, newest `ingested_at` 2026-09-17T23:42:04.914Z) + the `fredo emit` marker rows. **AC2's opening-word read is a NAMED BLOCKER** — the `FREDO_STT_FEED_WAV` seam was not exercised (the tester cannot set the process env var); the synthetic content lever proved only the finalize/commit wiring.
+
+**Suite divergence (reported, not adopted):** this file's S-15 text still carries the triage-era `T_COLD_MAX_MS; default ≤ 900 ms` placeholder. The plan's constants supersede it. The bar selector in S-14 is also stale — the live element is `textarea[data-testid="launcher-command-input"] role="searchbox"`, not `input[role="searchbox"]`.
