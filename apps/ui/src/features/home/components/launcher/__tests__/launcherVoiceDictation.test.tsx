@@ -28,6 +28,7 @@ import type { FredoFeatureClass } from '@/shared/classes/FredoFeatureClass';
 import { HEARING_NOTHING_COPY, HEARING_NOTHING_MS } from '../LauncherCommandBar';
 import {
   LauncherShell,
+  deriveHoldCue,
   replyBoundsEqual,
   selectCtrlSpaceAction,
   voiceStartErrorCopy,
@@ -215,6 +216,68 @@ describe('voiceStartErrorCopy — DR-11 curated start-failure copy', () => {
   it('is null when there is no failure code', () => {
     expect(voiceStartErrorCopy(null)).toBeNull();
     expect(voiceStartErrorCopy('somethingUnknown')).toBeNull();
+  });
+});
+
+// ── Spec #2887 ST-7 — the ONE honest cue derivation (R-3/AC3) ─────────────────
+//
+// The shell no longer hands the bar the shipped `holdArmed`/`holdPending`
+// booleans; it hands ONE derived cue. The rule is pure and pinned here, so the
+// pre-#2887 defect (`holdArmed` → `Listening…` from the keydown, before any
+// capture exists) is a PRECEDENCE PROPERTY rather than a call-site convention.
+
+describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3)', () => {
+  const input = (over: Partial<Parameters<typeof deriveHoldCue>[0]>) => ({
+    captureLive: false,
+    armed: false,
+    pending: false,
+    engineResident: false,
+    ...over,
+  });
+
+  it('R-3: `listening` is reachable ONLY while the capture is live — over every input combination', () => {
+    for (const captureLive of [true, false]) {
+      for (const armed of [true, false]) {
+        for (const pending of [true, false]) {
+          for (const engineResident of [true, false]) {
+            const combo = { captureLive, armed, pending, engineResident };
+            const cue = deriveHoldCue(combo);
+            if (captureLive) {
+              expect(cue, JSON.stringify(combo)).toBe('listening');
+            } else {
+              expect(cue, JSON.stringify(combo)).not.toBe('listening');
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('the keydown edge acknowledges the user\'s own gesture — never a listening claim', () => {
+    expect(deriveHoldCue(input({ armed: true }))).toBe('acknowledge');
+    // Even a known-resident engine changes nothing until the bounded gate: the
+    // armed window is the acknowledgement for the WHOLE pre-gate stretch.
+    expect(deriveHoldCue(input({ armed: true, engineResident: true }))).toBe('acknowledge');
+  });
+
+  it('the bounded pending gate (threshold-crossed + HOLD_PENDING_CUE_MS) selects the chip state', () => {
+    // The launch window: the engine is NOT resident yet (the hold joined the
+    // in-flight setup warm) — the honest cause is `warming`.
+    expect(deriveHoldCue(input({ armed: true, pending: true, engineResident: false }))).toBe('warming');
+    // Resident engine, slow capture-open: `starting`. Both render the SAME
+    // bounded chip, so neither is a longer or different "starting" affordance.
+    expect(deriveHoldCue(input({ armed: true, pending: true, engineResident: true }))).toBe('starting');
+  });
+
+  it('idle resolves to `none` (no cue at all)', () => {
+    expect(deriveHoldCue(input({}))).toBe('none');
+    expect(deriveHoldCue(input({ engineResident: true }))).toBe('none');
+  });
+
+  it('a live capture outranks every readying state (the clamp)', () => {
+    expect(
+      deriveHoldCue(input({ captureLive: true, armed: true, pending: true, engineResident: false })),
+    ).toBe('listening');
   });
 });
 
@@ -1663,6 +1726,46 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     expect(el).not.toHaveAttribute('readonly');
   });
 
+  it('R-3 (announcer): the armed/pending windows are NEVER announced as listening — the live region flips exactly once at capture and once on the stop', async () => {
+    await renderArmedShell('pending');
+    const el = focusBar();
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    const seen: string[] = [];
+    const record = () => seen.push(announcer.textContent ?? '');
+
+    // Idle: silent. The S1 promise/armed placeholder is TEXT in the field — it
+    // is not a live-region announcement.
+    record();
+    spaceDown();
+    expect(el).toHaveAttribute('placeholder', 'Hold to dictate…');
+    record();
+
+    // The bounded chip renders (the cold/launch-window path): the region is
+    // STILL silent — the chip names what is happening, it does not claim capture.
+    act(() => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS + HOLD_PENDING_CUE_MS);
+    });
+    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
+      'starting voice input…',
+    );
+    record();
+
+    emitListening(true, 'launcher');
+    record();
+
+    // Release with words: finalize (no space), and the region announces the stop.
+    emitFinal('hello');
+    spaceUp();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    record();
+
+    expect(seen).toEqual(['', '', '', 'Listening', 'Stopped listening']);
+    // The capture is gone: the acknowledgement is withdrawn with the gesture.
+    expect(el).toHaveAttribute('placeholder', 'search or command');
+  });
+
   // ── R-2.6 — the stale-hold guard (the mic-hot race) ─────────────────────────
 
   it('R-2.6: a release before the engine confirms cancels the late session on its rise edge and writes ONE space', async () => {
@@ -1685,6 +1788,71 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     emitListening(true, 'launcher');
     expect(invokeSpy).toHaveBeenCalledWith('stt_cancel', undefined);
     expect(input().value).toBe(' ');
+  });
+
+  // ── R-5e — the one-space rule for a word-less hold (the typing-safety guard) ─
+  // A threshold-crossed hold that WENT LIVE but committed NO final transcript
+  // captured nothing instead of typing a character. The now-instant resident
+  // engine is what makes that case real, so the release must still land exactly
+  // ONE ordinary space — through the ordinary typed path, once per session.
+
+  it('R-5e: a live hold that produced NO final lands exactly ONE ordinary space on the release, once per session', async () => {
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher'); // the engine is live…
+    expect(startCallCount()).toBe(1);
+    expect(el.value).toBe('');
+
+    spaceUp(); // …the release is the finalize gesture (no words were recognized)
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(el.value).toBe(' '); // exactly one character — never 0, never 2
+
+    // One-shot per session (the `restoredAfterSessionRef` guard): a duplicate
+    // end event can never add a second space…
+    emitListening(false, 'launcher');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(el.value).toBe(' ');
+
+    // …and a later manual edit is never clobbered by a repeated write.
+    act(() => {
+      fireEvent.change(el, { target: { value: 'edited' } });
+    });
+    emitListening(false, 'launcher');
+    expect(el.value).toBe('edited');
+  });
+
+  it('R-5e: a BLUR on a word-less live hold does NOT land a space (a blur is not a release)', async () => {
+    await renderArmedShell();
+    const el = focusBar();
+    spaceDown();
+    await act(async () => {
+      vi.advanceTimersByTime(HOLD_THRESHOLD_MS);
+      await Promise.resolve();
+    });
+    emitListening(true, 'launcher');
+
+    act(() => {
+      fireEvent.blur(el);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The capture stops and the mic is released (R-2.5), but the gesture owns no
+    // finalize: no character is invented (the shipped restore-only behaviour).
+    expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
+    expect(el.value).toBe('');
   });
 
   // ── R-2.5 — blur is a STOP that KEEPS the words (QA-9 CLOSED) ───────────────
@@ -1865,6 +2033,74 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
       '↵ send transcript to Fredo',
     );
+  });
+});
+
+// ── Spec #2887 ST-7 — the warm trigger (retry/re-arm ONLY) ────────────────────
+// The PRIMARY warm is the backend's setup warm (ST-1). The shell mounts ST-6's
+// hook purely as REDUNDANCY, and only ever through the idempotent, engine-only,
+// single-flight `stt_warm` — so a retry can never race the setup warm into a
+// second model load (that single-flight is the backend's, and is authoritative).
+
+describe('LauncherShell — #2887 ST-7: the warm retry/re-arm path', () => {
+  const warmCalls = () => invokeSpy.mock.calls.filter(([command]) => command === 'stt_warm').length;
+
+  const renderShell = () =>
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+
+  it('re-attempts `stt_warm` on the model-ready edge (voice enabled + probe ready)', async () => {
+    invokeSpy.mockImplementation((async (command: string) =>
+      command === 'stt_check_model' ? { ready: true } : undefined) as never);
+
+    renderShell();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The bridge forwards a second (absent) args slot — the shipped call shape.
+    expect(invokeSpy).toHaveBeenCalledWith('stt_warm', undefined);
+  });
+
+  it('re-arms `stt_warm` on the summon path (Ctrl+Space) — idempotent, never a second load', async () => {
+    invokeSpy.mockImplementation((async (command: string) => {
+      if (command === 'stt_check_model') return { ready: true };
+      if (command === 'stt_warm') return { warmed: true, warmMs: 12 };
+      return undefined;
+    }) as never);
+
+    renderShell();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const before = warmCalls();
+
+    act(() => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(warmCalls()).toBeGreaterThan(before);
+  });
+
+  it('never invokes `stt_warm` while voice input is disabled (R-6: no engine work without opt-in)', async () => {
+    companionMock.current.voiceEnabled = false;
+    invokeSpy.mockImplementation((async (command: string) =>
+      command === 'stt_check_model' ? { ready: true } : undefined) as never);
+
+    renderShell();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      fireEvent.keyDown(document, { key: ' ', code: 'Space', ctrlKey: true });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(warmCalls()).toBe(0);
   });
 });
 

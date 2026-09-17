@@ -24,6 +24,10 @@
  * current partial; `stop` commits it (the backend emits the final first —
  * R-4.3). Contract: every method resolves and never throws to the caller, and
  * no state is updated after unmount.
+ *
+ * Spec #2887 ST-7 — the state contract also carries the resident-engine
+ * observable (`engineResident`, ST-3's `stt:state` stamp) that the launcher's
+ * honest hold cue derives from; see the field docs below.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -62,6 +66,17 @@ export interface SttStateEvent {
   code: VoiceErrorCode | null;
   detail: string | null;
   origin: string | null;
+  /**
+   * Spec #2887 ST-1 — start receipt → capture-live elapsed ms. `null` on every
+   * path that did not start a session (idle, error, a status re-emit).
+   */
+  readyMs?: number | null;
+  /**
+   * Spec #2887 ST-3 — did the session's engine come from the resident slot.
+   * `true` only for a genuine take (never optimistic): a launch-window hold that
+   * JOINED the in-flight warm reports `false`, as does every idle/error event.
+   */
+  engineResident?: boolean;
 }
 
 /** Rust `SttStartResult` (camelCase wire). */
@@ -90,6 +105,16 @@ export interface VoiceDictation {
   deviceName: string | null;
   /** Session origin of the active (or last) session. */
   origin: VoiceOrigin | null;
+  /**
+   * Spec #2887 ST-7 (R-1/R-4) — the resident-engine observable the honest hold
+   * cue derives from. It mirrors the residency stamp of the most recent session
+   * START (`stt:state{listening:true}`), which is the truthful answer to "will
+   * the next hold pay a model load?". An idle event NEVER rewrites it (its
+   * `engineResident:false` means "no start happened", not "the resident is
+   * gone"); the typed `disabled` voice-off signal clears it. `false` while no
+   * session has started — the launch window, when the engine is not resident yet.
+   */
+  engineResident: boolean;
   start(origin: VoiceOrigin): Promise<void>;
   /** Commit the final partial (the backend emits the final first). */
   stop(): Promise<void>;
@@ -115,6 +140,9 @@ export function useVoiceDictation(): VoiceDictation {
   const [detail, setDetail] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [origin, setOrigin] = useState<VoiceOrigin | null>(null);
+  // Spec #2887 ST-7 — fail-closed: unknown residency is NOT resident (the cue
+  // therefore says `warming` rather than claiming a warm engine it cannot see).
+  const [engineResident, setEngineResident] = useState(false);
 
   // Cleared on unmount; every async continuation checks it before touching
   // state so a late `stt_start`/`stop`/`cancel` resolution is a no-op.
@@ -160,6 +188,16 @@ export function useVoiceDictation(): VoiceDictation {
       // An error state clears as soon as a session is (re)started.
       setErrorCode(event.listening ? null : event.code ?? null);
       setDetail(event.listening ? null : event.detail ?? null);
+      // Spec #2887 ST-7 (R-1/R-4) — the residency stamp travels ONLY on a START.
+      // An idle event's `engineResident:false` means "no start happened", never
+      // "the resident engine is gone", so it must not clear the last stamp (that
+      // would mislabel every later hold as a launch-window `warming`). The typed
+      // `disabled` signal IS the voice-off/release edge, so it clears it.
+      if (event.listening) {
+        setEngineResident(event.engineResident === true);
+      } else if (event.code === 'disabled') {
+        setEngineResident(false);
+      }
     });
 
     return () => {
@@ -239,10 +277,23 @@ export function useVoiceDictation(): VoiceDictation {
       detail,
       deviceName,
       origin,
+      engineResident,
       start,
       stop,
       cancel,
     }),
-    [listening, committed, partial, errorCode, detail, deviceName, origin, start, stop, cancel],
+    [
+      listening,
+      committed,
+      partial,
+      errorCode,
+      detail,
+      deviceName,
+      origin,
+      engineResident,
+      start,
+      stop,
+      cancel,
+    ],
   );
 }

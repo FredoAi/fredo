@@ -14,7 +14,7 @@ import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
 import { publishLauncherRegion } from '../../../../shared/components/companion/companionGeometry';
 import { LauncherCommandBar } from './LauncherCommandBar';
-import type { LauncherEnterMode } from './LauncherCommandBar';
+import type { HoldCue, LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
@@ -33,6 +33,12 @@ import { useVoiceDictation } from '../../../../shared/hooks/useVoiceDictation';
 // shell owns the arming gate (`voiceEnabled && sttModelReady`) ST-5 reads; the
 // probe is refreshed on the summon path (Ctrl+Space).
 import { useSttModelReady } from '../../../../shared/hooks/useSttModelReady';
+// Spec #2887 ST-6/ST-7 — the warm RETRY/re-arm path. The primary warm is the
+// backend's setup warm (ST-1 `ResidentEngine::warm_at_setup`); this hook only
+// re-attempts the idempotent, engine-only `stt_warm` on the voice-enabled edge,
+// the model-ready edge and the summon path. `stt_warm` is single-flight, so a
+// retry can never race the setup warm into a second model load.
+import { useSttWarm } from '../../../../shared/hooks/useSttWarm';
 // Spec #2882 ST-1 — THE ONE pure Enter decision. Both the hint memo and the commit
 // path consume it, so the chip can never promise a different action than Enter takes
 // (R-6.3). The rule is never re-derived locally.
@@ -227,6 +233,48 @@ export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
 }
 
 /**
+ * Spec #2887 ST-7 (R-3/AC3) — THE ONE honest hold-cue derivation, pure and
+ * unit-pinned so the shell can never hand the bar a cue that claims capture
+ * before it exists:
+ *
+ *   captureLive (the `listening` prop = `voice.listening && origin === 'launcher'`)
+ *       → `'listening'` — the ONLY state that may render `Listening`/`Listening…`
+ *         or the listening announcer (the bar clamps it too, belt-and-braces);
+ *   pending (`holdPending` — the shipped bounded gate, armed INSIDE the
+ *   `HOLD_THRESHOLD_MS` timer's callback, so it is measured from
+ *   THRESHOLD-CROSSED, never from the keydown)
+ *       → `'starting'` when the engine is resident (the hold is paying only the
+ *         capture-open), `'warming'` when it is NOT (`engineResident === false`:
+ *         the launch window, where the hold joined the in-flight setup warm).
+ *         Both render the SAME bounded `starting voice input…` chip — the
+ *         distinction is the honest cause, never a longer "starting" affordance;
+ *   armed (the keydown edge, before the threshold cross)
+ *       → `'acknowledge'` — `Hold to dictate…`, the user's own gesture, no
+ *         capture mark and no listening wording;
+ *   otherwise
+ *       → `'none'`.
+ *
+ * The warm-path turnaround is shorter than the 150 ms bounded cue, so the whole
+ * readying window on a warm/instant start is the single `'acknowledge'` state —
+ * there is no "starting" dwell to be perceived as a stall.
+ */
+export function deriveHoldCue(input: {
+  /** The launcher-origin capture is genuinely live (never inferred from the gesture). */
+  captureLive: boolean;
+  /** A hold is armed (the qualifying keydown happened; the gesture owns the Space). */
+  armed: boolean;
+  /** The bounded pending gate fired: threshold crossed + `HOLD_PENDING_CUE_MS`. */
+  pending: boolean;
+  /** ST-3's `stt:state` stamp: the last start took the resident engine. */
+  engineResident: boolean;
+}): HoldCue {
+  if (input.captureLive) return 'listening';
+  if (input.pending) return input.engineResident ? 'starting' : 'warming';
+  if (input.armed) return 'acknowledge';
+  return 'none';
+}
+
+/**
  * Spec #2877 ST-5 (DR-11) — curated, actionable copy for a failed `stt_start`.
  * The typed `SttErrorCode` is the only primary key; a raw IPC detail is never
  * the primary sentence. Non-blocking: the app stays fully usable, no session
@@ -308,6 +356,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // the shell owns the arming gate ST-5 reads (`voiceEnabled && sttModelReady`);
   // refreshed on the summon path. It probes ONLY while voice is enabled.
   const sttModel = useSttModelReady(voiceEnabled);
+  // Spec #2887 ST-7 (R-1/R-4/R-6/R-7) — mount the warm retry/re-arm path. The
+  // backend setup warm is the PRIMARY trigger (never a second model load: the
+  // backend's `stt_warm` single-flight is authoritative); this only re-attempts
+  // it, so a missed or lost warm recovers. Residency is surfaced separately
+  // through `voice.engineResident` (ST-3's `stt:state` stamp) for the cue.
+  const sttWarm = useSttWarm(voiceEnabled, sttModel.ready);
   // Spec #2882 ST-5-fix (QA-10) — WHILE a launcher-origin capture is live, Enter is
   // a NO-OP and the chip reads exactly `release Space to finish`. This ONE primitive
   // is fed to the SAME `resolveEnterAction` on BOTH the hint path (the memo) and the
@@ -388,6 +442,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // precondition is available (voice on + FAIL-CLOSED model readiness + not busy).
   // Readiness unknown ⇒ no promise is made and Space stays natively ordinary.
   const holdAvailable = voiceEnabled && sttModel.ready && !companionBusy;
+  // Spec #2887 ST-7 (R-3/AC3) — the ONE honest cue, derived from the pure
+  // `deriveHoldCue` rule (see its doc). It replaces the shipped
+  // `holdArmed`/`holdPending` pair at the bar: `'listening'` is reachable ONLY
+  // while `captureLive`, so the pre-#2887 defect (armed → `Listening…`) can
+  // never recur — the armed window acknowledges the gesture in the user's own
+  // words and the readying window names what is actually happening.
+  const holdCue = deriveHoldCue({
+    captureLive,
+    armed: holdArmed,
+    pending: holdPending,
+    engineResident: voice.engineResident,
+  });
   // R-2.5.6 (AC3) — a hold-origin start failure is SILENT (no alert, no error
   // text). Muted from the moment the hold starts the engine and re-armed when the
   // next gesture arms, so a failure arriving with NO hold start in flight (the
@@ -412,6 +478,16 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // R-2.5 — one blur stop per gesture (the input's focusout and a `window` blur
   // can both report the same gesture).
   const blurStopIssuedRef = useRef(false);
+  // Spec #2887 ST-7 (R-5e) — the session-scoped provenance of the END-of-session
+  // finalize. `holdSessionRef` records that THIS session rose from an armed hold
+  // (the threshold-crossed gesture — the only launcher capture entry point), and
+  // `releaseFinalizeRef` records that the session ended by the user's RELEASE
+  // (the finalize gesture) rather than a blur or a cancel. Together they let the
+  // no-produced-final branch tell a word-less HOLD apart from a programmatic /
+  // silent session: only the former lands the one ordinary space. Both are
+  // re-assigned at every session start, so they can never leak across sessions.
+  const holdSessionRef = useRef(false);
+  const releaseFinalizeRef = useRef(false);
 
   // The gesture's two bounded timers — always cleared together (no leaked timer).
   const clearHoldTimers = useCallback(() => {
@@ -605,6 +681,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     // ST-3 contract — the summon path re-probes model readiness (bounded,
     // coalesced, and a no-op while voice is disabled).
     sttModel.refresh();
+    // Spec #2887 ST-7 (ST-6 contract) — and re-arms the engine residency on the
+    // same summon edge. Idempotent + single-flight + no-op while disabled or
+    // not-ready + silent on failure: it can never block or duplicate the load.
+    sttWarm.warmNow();
     window.requestAnimationFrame(() => {
       // Guard against a within-frame close (rapid double-press): only touch the
       // searchbox if the overlay is STILL open (openRef is read live, not captured).
@@ -622,7 +702,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         input.setSelectionRange(end, end);
       }
     });
-  }, [sttModel.refresh]);
+  }, [sttModel.refresh, sttWarm.warmNow]);
 
   // #2823: close (ESC / toggle-off) — drop the overlay to resting (closeSurface) AND
   // restore focus to the pre-open element ONLY if focus was actually inside the
@@ -993,6 +1073,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // R-2.5 — a blur suppression is one-shot per session; a fresh session must
       // never inherit a stale mute.
       suppressAutosendOnceRef.current = false;
+      // R-5e — capture THIS session's provenance before the gesture refs are
+      // cleared by the release (the arm flag is still set while the capture is
+      // live; the release clears it in the same tick as the stop).
+      holdSessionRef.current = holdArmedRef.current;
+      releaseFinalizeRef.current = false;
       preSessionTextRef.current = barTextRef.current;
       sessionBaseCommittedRef.current = voice.committed;
       prevCommittedRef.current = voice.committed;
@@ -1128,6 +1213,20 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // deps). The once-guard stops a later manual edit being clobbered.
       if (!restoredAfterSessionRef.current) {
         restoredAfterSessionRef.current = true;
+        // Spec #2887 ST-7 (R-5e) — a threshold-crossed launcher HOLD that WENT
+        // LIVE and committed NO final transcript captured nothing instead of
+        // typing the character the user's press would have typed. Generalized
+        // from the shipped tap / never-live rules: exactly ONE ordinary space
+        // lands, through the ordinary typed path, ONCE per session (the same
+        // once-guard as the restore — a later manual edit is never clobbered).
+        // The now-instant resident engine is what makes this case real, so this
+        // is the guard that keeps an intended space from becoming a lost
+        // character. A BLUR is not a release (`releaseFinalizeRef`) and a cancel
+        // never reaches here, so both keep the shipped restore-only behaviour.
+        if (holdSessionRef.current && releaseFinalizeRef.current) {
+          handleQueryChange(preSessionTextRef.current + spaceWriteForVerdict('no-words-space'));
+          return;
+        }
         handleQueryChange(preSessionTextRef.current);
       }
       return;
@@ -1466,6 +1565,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // R-2.3 — stop listening. The backend emits the final, the existing
         // live-text effect lands it as ordinary editable text, and the existing
         // finalize effect decides delivery (R-4.1/R-4.2). NO space is inserted.
+        // Spec #2887 ST-7 (R-5e) — the RELEASE is the finalize gesture: mark it
+        // so a word-less hold lands exactly one ordinary space when the finalize
+        // effect finds no committed final. A blur/cancel never sets this (it is
+        // not a release), so their shipped behaviour is untouched.
+        releaseFinalizeRef.current = true;
         void stopVoice();
         return;
       }
@@ -1674,13 +1778,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // bubble's surface, never the bar). ST-5-fix (QA-10): the SAME
             // `captureLive` primitive the Enter verdict and the hint derive from.
             listening={captureLive}
-            // Spec #2882 ST-5 (R-2.4/S2) — the hold gesture's cue: `holdArmed` shows
-            // it from the keydown moment for the WHOLE gesture, `holdPending` adds
-            // the bounded `starting voice input…` chip once the engine start
-            // outlives the cue window. One indicator at a time (the pending chip
+            // Spec #2887 ST-7 (R-3/AC3) — the ONE derived honest cue replaces the
+            // shipped `holdArmed`/`holdPending` pair: `'acknowledge'` at the
+            // keydown edge, the bounded `starting voice input…` chip
+            // (`'starting'`/launch-window `'warming'`) once the pending window
+            // outlives `HOLD_PENDING_CUE_MS`, and `'listening'` ONLY while the
+            // capture is genuinely live. One indicator at a time (the bounded chip
             // and the Listening chip share the slot).
-            holdArmed={holdArmed}
-            holdPending={holdPending}
+            cue={holdCue}
             holdAvailable={holdAvailable}
             // #2878 ST-2 (AC3 resolution) — the Stop control is the FINALIZE/commit
             // control (`stt_stop`), the only autosend trigger; the visible cancel
