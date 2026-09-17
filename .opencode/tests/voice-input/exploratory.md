@@ -183,3 +183,43 @@
       — the Space `up`. Exactly one action is expected (finalize OR discard, never both, never a
       z-ordered second action). Any double action, lost utterance, or console error is a finding
       (promotes to F-66/the launcher REQ-11 row).
+
+---
+
+## #2887 extension — resident-ready recognizer probes
+
+> Issue #2887 keeps the recognizer ready while Fredo is idle so the hold-Space dictation starts
+> instantly; the indicator must stay honest and no word may be lost. A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a
+> named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-37: **Resident dies mid-idle / mid-hold.** Kill the resident recognizer process while the bar
+      is armed (nothing dictating), then hold Space; separately kill it during a live hold. Does the
+      next hold RECOVER with a bounded start and a typed state, does the mic release, and is there any
+      stuck "listening" cue or error dialog? A silent hang, a stuck cue, or a crash is a finding
+      (promotes to F-80/REQ-8).
+- [ ] E-38: **Resource creep over many dictations.** Run ≥20 hold→release cycles with the resident
+      armed; sample the working set and thread/handle counts every 5 cycles. Does the working set
+      return to the resident baseline each time, or does it creep? Any monotonic growth or leaked
+      capture handle is a finding (promotes to F-82/REQ-10).
+- [ ] E-39: **Input device changes while resident-ready.** Warm the resident on device A, switch the
+      OS default input to device B (or unplug A), then hold. Does the hold start on the new device
+      with a bounded time, does `noDevice` come back typed, and is the mic released? A stale device
+      handle, a silent capture, or a hang is a finding (promotes to F-80/REQ-8).
+- [ ] E-40: **Latency under contention / after sleep-resume.** Hold Space while the machine is under
+      heavy CPU load and after a sleep→resume with the resident armed. Record the press→capture-active
+      numbers, the indicator honesty samples, and any lost opening word. A cold-equivalent regression
+      after resume, or a dishonest indicator under load, is a finding (promotes to F-77/F-76).
+- [ ] E-41: **Readiness/indicator boundary race.** Press Space in the same tick as the resident's
+      ready transition, and release before capture goes live. Does the press land exactly one ordinary
+      space (never-live) with no cue ever claiming listening, or is a session started with a
+      dishonest/absent indicator? Any listening claim before capture is active is a finding (promotes
+      to F-76/REQ-3).
+- [ ] E-42: **Second app instance with a resident.** Launch a second Fredo instance (or restart the app
+      mid-warm) and hold Space. Does the hold still work on the focused instance, is there resource
+      contention (port/audio device), and does either instance show a dishonest indicator? Any
+      cross-instance mic conflict or stuck state is a finding (promotes to F-80/R-24).
+
+### #2887 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
