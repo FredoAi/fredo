@@ -209,3 +209,44 @@
       only show + focus the bar (no listening, no bubble), or does a race re-enter the retired
       `companion-listen` branch? Any listening emission or companion listening bubble is a finding
       (promotes to F-76/R-39).
+
+---
+
+## #2883 extension — long-reply growth / read-protection probes
+
+> Issue #2883 grows and scrolls the text reply surface and protects it while the reader is on it.
+> A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Live
+> policy; an undrivable lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-45: **A new turn replaces a long reply mid-read.** While a long reply is displayed and the
+      reader is scrolled back into it, send a NEW message from the bar. Does the surface reset
+      cleanly to the new reply (size/scroll re-derived, no stale content, no orphan scrollbar, no
+      reading position bleeding across turns), or does the old scroll offset/size persist? Any stale
+      content, stuck scroll offset, or orphan scrollbar is a finding (promotes to F-79/F-85).
+- [ ] E-46: **Window resize while scrolled back in a long reply.** With the reply scrolled back and
+      still arriving, resize the window (down to the shipped minimum **900×600** and back; a 700-wide
+      viewport is a dev-viewport advisory only, never a scoring bound). Does the reply re-anchor
+      inside the new viewport (no part off-screen, no bar collision), and does the reading position
+      survive sensibly (record any necessary re-clamp)? Any off-screen part, bar collision, or console
+      error is a finding (promotes to F-80/F-81/F-85).
+- [ ] E-47: **Protection vs the idle auto-return.** With the idle timeout at 5 s, display a reply and
+      put the pointer over it (`[data-testid="fredo-reply-surface"]`) while an idle auto-return
+      deadline is also in flight. Does the protection SUPERSEDE the auto-return (R-4.4: `isInUse`
+      true suppresses it), and does the reply clear only after the pointer leaves + the bound
+      **`REPLY_LEAVE_GRACE_MS = 2000 ms`**? Any lost reply, hidden-under-pointer auto-return, or stuck
+      state is a finding (promotes to F-83/R-43/R-44).
+- [ ] E-48: **Extreme ratio: a very long reply at the smallest window.** At the shipped minimum
+      **900×600** send a reply much longer than the surface (hundreds of wrapped lines). Does the
+      surface stay inside the window, keep the bar clear, scroll `[data-testid="fredo-reply-scroll"]`
+      smoothly to the end, and keep the stream advancing (no proportional size math blowing up, no
+      scroll-hijack)? Any off-screen/colliding/stalled state is a finding (promotes to
+      F-80/F-82/F-88).
+- [ ] E-49: **Return-to-newest discoverability (keyboard round-trip).** Scroll back into an arriving
+      reply using the keyboard only, then find and invoke the labelled **`Newest`** `<button>` (or
+      its bound keyboard action) with the keyboard alone. Is it discoverable (named/focusable), does
+      it return to the newest content, and does it re-arm the protection afterwards? Any
+      unreachable/keyboard-inoperable affordance is a finding (promotes to F-86/F-87).
+
+### #2883 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
