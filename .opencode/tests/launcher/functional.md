@@ -1158,3 +1158,21 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 - [x] **F-81 (E7) — PASS.** Bar `getBoundingClientRect().y = 446` with a reply shown vs. cleared at
       1400×900 (Δ = 0 ≤ 1 px); console clean after every leg; no colour literals or `var(--x)NN`
       alpha-append in the changed placement/launcher files.
+
+### #2886 testing round 2 — result (all PASS)
+
+> Served checkout: repo root `spec/2886 @ 9fb2d3a8` (G-052). Round-2 fix `d9b227d` (F3 keeps the grid
+> mounted while `displayMessage != null`).
+
+- [x] **F-79 (E4) — PASS.** `#fredo-launcher-grid` present with **5 `[role="gridcell"]`** in every
+      displayed sample — 77 streaming + 50 post-`llm-done` hold samples @1400×900, 110 @900×600,
+      105 @900×1000, 40 in the welcome hold. Tile union box `276,546.5 → 980,658.5` @1400×900;
+      `intersectionArea(surface, tileUnion) = 0`; live hit-test on all 5 tile centres returned a
+      tile descendant with `pointerEvents: auto`. The grid unmounts only on the dismissal frames after
+      the message is gone (expected).
+- [x] **F-80 (E3/E4) — PASS.** `onScreen === true` in every leg. Separation now holds: grown `dy`
+      16.15–22.05 @1400×900, `dx` 17.78–22.08 @900×600 (deliberate `right` flip), `dy` 16.04–27.48
+      @900×1000, base one-liner `dy` 19.99–21.48 / `dx` 19.37–22.07, ADVISORY 700×260 `dx`
+      20.83–23.46 (was 13.08).
+- [x] **F-81 (E7) — PASS.** Bar `y = 446` in both states (121 with / 180 without → Δ = 0); seat wrapper
+      80×100 + 16 px; console clean; token-native.
