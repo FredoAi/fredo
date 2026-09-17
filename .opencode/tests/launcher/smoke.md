@@ -155,4 +155,8 @@
       command-bar `y` within ±1 px of the no-reply baseline; screenshot (ONE frame containing the
       surface, Fredo AND the bar) succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
       depth exceeded`.
+      **#2886 round 1 (spec/2886 @ 0ac6b38a): FAIL** — `area = 0` and bar `y` Δ = 0 held, but the
+      launcher DISENGAGES (`#fredo-launcher-grid` removed from the DOM) whenever a reply is shown, so
+      the tiles are never visible in the frame; and the one-liner's measured `dy` fell to 8.00 px
+      (< the bound 14 px).
 
