@@ -318,3 +318,60 @@
   fall-through to `openSelected()` is CLOSED. Console error-level: one `[MCP][BRIDGE]`
   instrumentation artifact from a tester synthetic `document` event (not product code); no
   `Maximum update depth exceeded`.
+
+---
+
+## #2882 extension — typing-safety + Enter/hint invariants (G-136)
+
+> Issue #2882 broadens the typed-query match and makes the hint truthful. **G-136 SUPERSESSION:**
+> **R-37's** frozen "Enter never opens a tile the text did not exactly name" is **SUPERSEDED** by the
+> broadened rule (prefix / whole-word run) + "Enter's app-open rule is independent of the companion";
+> R-37's inactive-companion half (filter-only, never a chat send) REMAINS IN FORCE. **R-20's** "the
+> #2823 Ctrl+Space toggle" wording is **EXTENDED** — the chord now always shows/focuses and never
+> closes or listens. Historical PASS records above are preserved. Run alongside R-1..R-39 and the
+> `voice-input` R-18..R-20 + `companion` R-39..R-41 extensions. **Verification policy: live.**
+
+## R-40 — The typed-query match change does NOT disturb the filter, nav, chrome or seat geometry
+
+- [ ] R-40: With and without a query: the substring FILTER (`filteredEntries`) is unchanged; the
+      keyboard nav (↑↓/←→ clamp, no wrap) is unchanged; the empty-grid no-op and the hint-row
+      hiding are unchanged; the tile `aria-label` set = `SHOWABLE_FEATURES` names; the command-bar
+      `getBoundingClientRect().y` is constant within ±1 px across OFF / ON-home / ON-away (and
+      during a hold); no new scrollbar/overflow at default and 700×900.
+  **Expected:** zero drift in filtering/rendering/navigation/layout — the slice changes only HOW the
+      bar is triggered and WHAT Enter does. Reference R-7/R-33/R-35/R-36/R-38.
+
+## R-41 — Typing safety: no space intended as text is ever lost or converted (the #2882 NFR)
+
+- [ ] R-41: Press Space ≥40 times across ≥6 bar states (empty / 1-char / an app-matching query / a
+      non-matching query / after clearing back to empty / while listening) and type the burst
+      `the quick brown fox` with REAL keystrokes into a non-empty bar; recount the characters
+      byte-for-byte. Record the auto-repeat `keydown` (`e.repeat === true`) count during a HELD Space.
+  **Expected:** every space intended as text lands byte-exactly; the ONLY gesture that does not
+      insert a literal space is the intentional HOLD on an EMPTY bar; the auto-repeat keydowns during
+      a hold add ZERO extra space characters to the finalized text. A single lost or converted space
+      is a FAIL of this row (a continuous invariant, G-158 — it is not excused by other rows passing).
+  - **Edge:** a Space at the exact moment the bar becomes empty; a Space in a query that matches an
+    app; IME/composition interplay (named blocker if not drivable — record it, never a PASS).
+
+## R-42 — Ctrl+Space still shows/focuses ONCE, never closes, never listens; no double action
+
+- [ ] R-42: Press Ctrl+Space from rest (opens + focuses the bar), then a 2nd time (bar stays open,
+      caret stays in it), then ESC (closes, focus restores). Check the retired cascade left no
+      residue: ZERO `stt_start`, no `companion-listen`/`launcher-listen` branch result, no second
+      action per press, and no swipe of the chord by the `pass`-through path.
+  **Expected:** exactly one action per press; the bar never closes on the chord; ZERO listening
+      emissions in a `stt:state` subscription across the whole leg. Reference R-20 (extended) +
+      `voice-input` R-19 + desktop-chrome R-12/R-20.
+
+## R-43 — No re-render loop / console clean / token-native after the Enter + hold-Space change
+
+- [ ] R-43: Read `tauri_read_logs(source="console")` after every leg (including the hold, the
+      release, and rapid Space churn); static-grep the changed launcher files for
+      `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN`; re-theme light ↔ dark while the hint
+      chip is visible.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); ZERO hardcoded color literals / no `var(--x)NN`
+      alpha-append (#2770); the hint chip re-tints token-native with no stale color; no effect/memo
+      depending on an array `.length` or a freshly created object (AGENTS.md #523). Reference
+      R-13/R-21/R-5/R-31.
