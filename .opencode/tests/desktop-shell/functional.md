@@ -207,4 +207,14 @@
 
 ### #2886 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Served checkout: repo root `spec/2886 @ 0ac6b38a` (G-052).
+
+- [x] **F-19 (E4/E7) — PASS.** With a reply displayed at 1400×900: seat-slot wrapper exactly
+      **80×100 + 16 px `margin-bottom`**, command-bar `y = 446` both with and without the reply
+      (Δ = 0 ≤ 1 px), `intersectionArea(avatar, surface) === 0`, no new page scrollbar. A displayed
+      message never displaces or covers the shell chrome.
+- [x] **F-20 (E7/E8) — PASS.** `tauri_read_logs(source="console")` clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded` after every leg (only the pre-existing
+      `motion() is deprecated` WARN). `fredo emit` chat + tool_use ran; `telemetry_spans` returned
+      **3142** rows, `max(ingested_at) = 2026-09-17T19:32:54.683501+00:00`; `chat_rows` and
+      `tool_use_rows` each classified 1 row of the injected sessions.
