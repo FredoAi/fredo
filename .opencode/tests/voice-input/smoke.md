@@ -77,3 +77,33 @@
       final `set` → release; then Enter. **Expected:** the text waits in the bar on release, then ONE
       dispatch to Fredo and ZERO windows (`Settings` NEVER opens from a dictated phrase); screenshot
       succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2887 extension — instant hold-to-dictate quick paths
+
+> Issue #2887 keeps the recognizer ready while idle so the hold-Space dictation starts with no
+> perceptible wait, and keeps the indicator honest. Quick paths only — the full matrix lives in
+> `functional.md` F-74..F-82 / `regression.md` R-21..R-24 and `launcher` F-82..F-84 /
+> R-50..R-53. **Verification policy: live.**
+
+- [ ] S-14: **Resident-ready dictation quick path.** With voice enabled + model ready and the app idle
+      (no dictation yet this session), focus the EMPTY `input[role="searchbox"]`, record the press
+      timestamp in the dispatch task, `keyboard(action="down", key=" ")`, hold 1500 ms, sample the cue
+      mid-hold, `action="up"`. **Expected:** the cue (`launcher-command-listening` dot/chip + `Listening…`
+      placeholder) appears within the warm bound and is present for the whole hold; the cue is NEVER
+      present before the capture-active marker; `stt_status.listening` `true` → `false`; exactly ONE
+      `stt_start`; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`. (Content leg = the synthetic `stt:transcript` lever; the audible leg is a NAMED
+      BLOCKER on this host — no physical mic.)
+- [ ] S-15: **Cold first-dictation quick path.** Restart the app (`dev-env` Down→Up); with voice
+      enabled + model ready, make the FIRST dictation of the process: press the empty focused bar and
+      hold. **Expected:** the cue appears within the cold bound (`T_COLD_MAX_MS`; default ≤ 900 ms) and
+      is never present before capture is active; release releases the mic; the hold dictates; screenshot
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-16: **Evidence upload smoke.** A capture from S-14/S-15 is uploaded via
+      `upload-evidence --issue 2887 --base spec/2887`, the raw URL resolves, and it is embedded in
+      `## Tests Runs` with a textual description (the live-policy lever); the `## Tests Runs` body also
+      references `telemetry_spans` + the timestamped capture markers.
+
+### #2887 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
