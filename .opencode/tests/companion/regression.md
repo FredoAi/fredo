@@ -416,3 +416,47 @@
 > - **Cross-ref:** `.opencode/tests/voice-input/` R-13/R-16 (overlay unchanged; voice settings under
 >   Companion) and functional F-16..F-37; `.opencode/tests/llama-setup/` R-30 (counts stay
 >   GGUF-only).
+
+---
+
+## #2882 extension — the Enter/hold-Space slice must not disturb the companion (G-136)
+
+> Issue #2882 changes the launcher bar's trigger and Enter rule and retires the Ctrl+Space listening
+> cascade. The companion overlay behavior, the persisted keys and the avatar are NON-GOALS.
+> **G-136 SUPERSESSION (history preserved):** the Ctrl+Space `companion-away ⇒ companion-listen`
+> route pinned by `voice-input` F-57 and `companion` F-75 is RETIRED — its PASS records stand as
+> history and must NOT be re-run as PASS or FAIL. R-1..R-38 above remain in force; the #2877
+> additive-voice note stands. Run alongside the `launcher` R-40..R-43 and `voice-input` R-18..R-20
+> extensions. **Verification policy: live.**
+
+## R-39 — Overlay behaviour + persisted keys untouched; the chord no longer reaches the companion
+
+- [ ] R-39: Toggle the companion ON/OFF; exercise single-click joke, double-click TicTacToe
+      (250 ms discriminator), Ctrl+right-click teleport, and the speech bubble; read
+      `Fredo_companion_visible` / `Fredo_companion_idle_timeout` (and confirm `isAway` is NOT
+      persisted). Separately, in the companion-AWAY state, press Ctrl+Space and subscribe to
+      `stt:state`.
+  **Expected:** R-33..R-38 still hold (teleport timing, bubble geometry/anchoring, ranking, persisted
+      keys); the voice slice adds only its declared keys and mutates none of the existing ones; the
+      away-state Ctrl+Space produces ZERO listening emissions and NO companion listening bubble/dot
+      (the retired route) while the launcher bar shows + focuses.
+
+## R-40 — Seat geometry / one-Fredo-at-home unchanged by the hold-Space affordance
+
+- [ ] R-40: Measure the seat-slot WRAPPER `offsetWidth`/`offsetHeight` + the command-bar
+      `getBoundingClientRect().y` with the companion OFF, ON-at-home, ON-away, and DURING a hold
+      (a Space `down` with the bar focused); check `scrollHeight`/overflow at default and 700×900.
+  **Expected:** the wrapper stays exactly 80×100 with `margin-bottom: 16px` and the column centre-x
+      matches within ±1 px; the command-bar `y` is constant within ±1 px in every state INCLUDING
+      during a hold (a listening cue must not shift the layout); no new scrollbar/overflow/clip.
+      Reference R-35 + `launcher` R-35 (the Chakra numeric-token pin).
+
+## R-41 — Console clean / no re-render loop / no leaked listeners from the new trigger
+
+- [ ] R-41: Read `tauri_read_logs(source="console")` after every leg (hold, release, cancel, rapid
+      Space churn, companion toggle mid-hold); inspect the new trigger code for effect/memo deps on
+      array `.length`/fresh refs and for listener registration across cycles.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); no per-keystroke state churn that re-renders the
+      companion; the `stt:state`/`llm-*` listeners register once per lifecycle and are removed —
+      no accumulation. Reference R-17/R-36 + `launcher` R-43.
