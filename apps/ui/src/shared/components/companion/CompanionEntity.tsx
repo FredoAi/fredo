@@ -10,6 +10,23 @@ import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
 import { companionReplyErrorCopy } from './companionReadiness';
+import {
+  REPLY_PROTECTION_ANNOUNCEMENT,
+  shouldAnnounceProtection,
+  useReplyProtection,
+} from './replyProtection';
+
+// #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
+// & Data Models`). Typed here so this workstream compiles before ST-4 attaches
+// them to the bubble's card; the SAME handlers are bound on the entity-owned
+// wrapper, so the reply's pointer/keyboard protection never depends on the bubble
+// change landing.
+type ReplySurfaceProtectionProps = {
+  onSurfaceEnter?: () => void;
+  onSurfaceLeave?: () => void;
+  onSurfaceFocus?: () => void;
+  onSurfaceBlur?: () => void;
+};
 
 // ── Animation timing (preserved from the sprite era — do NOT change) ────────
 export const ANIM_DURATION: Record<CompanionState, number> = {
@@ -216,6 +233,26 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [showTicTacToe, setShowTicTacToe] = useState(false);
     const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    // #2883 ST-6 (AC4) — the ONE hide gate for the reply this entity owns
+    // (`replyProtection.ts`). The happy hold, the error hold and the watchdog all
+    // route their MESSAGE clear through `clearReplyOrDefer`, which synchronously
+    // consults the protection ref: while the reply is being read the clear is
+    // suspended, and the leave-grace re-arms it (never resumes it). `protected`
+    // joins the EXISTING `isInUse` predicate below (R-4.4) — this entity stays the
+    // only writer of `isInUse`.
+    const {
+      protected: replyProtected,
+      enter: enterReplyProtection,
+      leave: leaveReplyProtection,
+      clearOrDefer: clearReplyOrDefer,
+      reset: resetReplyProtection,
+    } = useReplyProtection();
+    // The entity-owned reply is ON SCREEN (this entity streamed it) — NOT the
+    // context-owned welcome bubble and NOT the game card. Exactly this case gains
+    // the region/AT exposure and the protection handlers; the welcome bubble and
+    // the 208×268 game card keep today's handling byte-for-byte.
+    const replyOnScreen = !showTicTacToe && streamingMessage != null;
+
     // currentAnim drives which avatar state (expression) is shown. Widened from
     // `CompanionState` to the shared `FredoAvatarState` (#2854) so the companion's
     // LOCAL flow can hold thinking/joking/happy/playful WITHOUT touching the
@@ -262,13 +299,35 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // auto-return while Fredo is actively engaged — an open TicTacToe, an active
     // joke stream, or the talk hold. `isInUse` is intentionally NOT a dep (same
     // shape as setHosting) so the SET_IN_USE re-render cannot re-run this effect.
+    // #2883 ST-6 (R-4.4): a reply being READ joins the same predicate, so the
+    // context's idle gate (`CompanionContext.tsx:442-447`) can never fire and let
+    // the seat unmount mid-read. This effect remains the ONLY writer of `isInUse` —
+    // the protection hook never calls `setInUse` (no second writer).
     useEffect(() => {
-      setInUse(showTicTacToe || isStreaming || animState === 'talk');
-    }, [showTicTacToe, isStreaming, animState, setInUse]);
+      setInUse(showTicTacToe || isStreaming || animState === 'talk' || replyProtected);
+    }, [showTicTacToe, isStreaming, animState, setInUse, replyProtected]);
 
     // Defensive: never leave the context stuck "in use" if this component unmounts
     // while the predicate is still true (component is mounted at app root).
     useEffect(() => () => setInUse(false), [setInUse]);
+
+    // #2883 ST-6 (UI/UX `Dismissal protection`) — ONE polite announcement on the
+    // FIRST entry to protection per generation (the existing live region below).
+    // Never per token, never on a re-entry inside the same generation.
+    const announcedProtectionGenRef = useRef(-1);
+    useEffect(() => {
+      if (!replyProtected) return;
+      if (!shouldAnnounceProtection(announcedProtectionGenRef.current, generationRef.current)) return;
+      announcedProtectionGenRef.current = generationRef.current;
+      setA11yAnnouncement(REPLY_PROTECTION_ANNOUNCEMENT);
+    }, [replyProtected]);
+
+    // The reply leaving the screen ends protection (it was cleared while the
+    // pointer was still over it, the game opened, or a new turn replaced it) —
+    // protection must never outlive its surface and leave `isInUse` stuck true.
+    useEffect(() => {
+      if (!replyOnScreen) resetReplyProtection();
+    }, [replyOnScreen, resetReplyProtection]);
 
     const clearTimer = () => {
       if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -301,13 +360,19 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         watchdogRef.current = null;
         isGeneratingRef.current = false;
         setIsStreaming(false);
-        setStreamingMessage(null);
         flowOwnsExpressionRef.current = false;
         playAnim('idle');
         setState('idle');
-        hideMessage();
+        // #2883 ST-6 (R-4.1, the ONE hide gate) — a watchdog that comes due while
+        // the reply is being read must NOT take the reply away. The expression and
+        // the busy flag still settle; only the MESSAGE clear is deferred until
+        // protection ends (then it runs on a fresh grace — R-4.2).
+        clearReplyOrDefer(() => {
+          setStreamingMessage(null);
+          hideMessage();
+        });
       }, SAFETY_TIMEOUT_MS);
-    }, [clearWatchdog, playAnim, setState, hideMessage]);
+    }, [clearWatchdog, playAnim, setState, hideMessage, clearReplyOrDefer]);
 
     // Sync position changes from the host (initial placement / external teleport)
     useEffect(() => {
@@ -419,6 +484,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
       isGeneratingRef.current = true;
+      // #2883 ST-6 (UI/UX `Dismissal protection`) — a NEW generation owns the
+      // bubble: protection does not carry over, and a clear stashed by the previous
+      // generation is dropped (it must never wipe this one).
+      resetReplyProtection();
       // #2871 R-5.1 — stamp THIS generation. Any token/done from an earlier
       // generation carries a stale id and is dropped by the guards below.
       const gen = ++generationRef.current;
@@ -501,10 +570,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           playFlowAnim('happy');
           timerRef.current = setTimeout(() => {
             flowOwnsExpressionRef.current = false;
-            setStreamingMessage(null);
             playAnim('idle');
             setState('idle');
-            hideMessage();
+            // #2883 ST-6 (R-4.1, the ONE hide gate) — the shipped 5 s happy hold is
+            // unchanged in VALUE; a reply being read when it comes due is kept, and
+            // the clear runs when protection ends (fresh grace — R-4.2).
+            clearReplyOrDefer(() => {
+              setStreamingMessage(null);
+              hideMessage();
+            });
           }, HAPPY_HOLD_MS);
         },
         // #2871 ST-1r — the typed error channel (distinct from success). Map the
@@ -531,12 +605,17 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             // A newer generation (a subsequent send) owns the bubble now — the
             // stale error hold must never clear it.
             if (gen !== generationRef.current) return;
-            setStreamingMessage(null);
-            hideMessage();
+            // #2883 ST-6 (R-4.1, the ONE hide gate) — the shipped 8 s error hold is
+            // unchanged in VALUE; a reply being read when it comes due is kept, and
+            // the clear runs when protection ends (fresh grace — R-4.2).
+            clearReplyOrDefer(() => {
+              setStreamingMessage(null);
+              hideMessage();
+            });
           }, ERROR_HOLD_MS);
         },
       );
-    }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog]);
+    }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection]);
 
     // #2871 — avatar-click joke: shared persona + a random topic prompt. It does
     // NOT announce into the live region (only a bar send does).
@@ -558,6 +637,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         { role: 'user', content: text },
       ]);
     }, [runGeneration]);
+
+    // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
+    // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the
+    // reply protects it independently of the pointer (and vice-versa). They are
+    // bound on the entity-owned surface wrapper below (the reply's AT + focus
+    // scope) AND forwarded to the bubble through the plan-declared additive props.
+    const handleReplyPointerEnter = useCallback(() => enterReplyProtection('pointer'), [enterReplyProtection]);
+    const handleReplyPointerLeave = useCallback(() => leaveReplyProtection('pointer'), [leaveReplyProtection]);
+    const handleReplyFocus = useCallback(() => enterReplyProtection('focus'), [enterReplyProtection]);
+    const handleReplyBlur = useCallback(() => leaveReplyProtection('focus'), [leaveReplyProtection]);
 
     const handle = useMemo<CompanionEntityHandle>(() => ({
       surface,
@@ -627,16 +716,46 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // offsetHeight — immune to the CSS transform animations on the wrapper).
     const { width: avatarWidth, height: avatarHeight } = getAvatarSize();
 
+    // #2883 ST-6 — the plan-declared ADDITIVE bubble props (ST-4 attaches them to
+    // the card). Passed only for the entity-owned reply: the wrapper-owned copy
+    // (the pointer handlers are idempotent, and the mouse alone must be a no-op on
+    // the welcome bubble / the game). The keyboard source lives on the wrapper.
+    const surfaceProtectionProps: ReplySurfaceProtectionProps = replyOnScreen
+      ? {
+          onSurfaceEnter: handleReplyPointerEnter,
+          onSurfaceLeave: handleReplyPointerLeave,
+          onSurfaceFocus: handleReplyFocus,
+          onSurfaceBlur: handleReplyBlur,
+        }
+      : {};
+
     return (
       <>
         {/* #2871 a11y (REQ-15 / DR-6): the bubble is DECORATIVE to assistive tech —
             its streamed text is announced through the single polite live region
             below, so the reply can never double-announce per token. The wrapper is
             static (the seat bubble still positions against the consumer's
-            `position: relative` slot) and drops `aria-hidden` only while the
-            interactive TicTacToe board is open so the game stays AT-reachable. */}
-        <div aria-hidden={showTicTacToe ? undefined : 'true'}>
+            `position: relative` slot).
+            #2883 ST-6 (R-4.3 / a11y): while THIS entity's reply is on screen the
+            wrapper becomes the reply's AT + focus scope — `aria-hidden` is dropped,
+            and it is a named `role="region"` with `tabIndex={0}` so a screen-reader
+            keyboard user can Tab straight to the reply and re-read it (and so
+            keyboard focus protects it, R-4.3). The TicTacToe case keeps today's
+            handling exactly (interactive board, no reply region), and the
+            context-owned welcome bubble stays byte-identical (aria-hidden kept). */}
+        <div
+          data-testid="fredo-companion-surface"
+          aria-hidden={showTicTacToe || replyOnScreen ? undefined : 'true'}
+          role={replyOnScreen ? 'region' : undefined}
+          aria-label={replyOnScreen ? "Fredo's reply" : undefined}
+          tabIndex={replyOnScreen ? 0 : undefined}
+          onFocus={replyOnScreen ? handleReplyFocus : undefined}
+          onBlur={replyOnScreen ? handleReplyBlur : undefined}
+          onPointerEnter={replyOnScreen ? handleReplyPointerEnter : undefined}
+          onPointerLeave={replyOnScreen ? handleReplyPointerLeave : undefined}
+        >
           <SpeechBubble
+            {...surfaceProtectionProps}
             positioning={surface === 'seat' ? 'absolute' : 'fixed'}
             message={showTicTacToe ? null : displayMessage}
             companionX={displayPos.x}
