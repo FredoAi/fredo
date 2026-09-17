@@ -1250,3 +1250,26 @@ F-73..F-75 PASS (live). The round's FAIL is on the launcher surface (`launcher` 
   bubble (ST-6 deletes `CompanionListeningBubble`).
 - **`askActiveCompanion` must survive** (the bar's send path uses it) — its removal would be a FAIL
   of F-77.
+
+### #2882 round 1 — tester run record (`spec/2882 @ f076fa08`, live)
+
+**Rows F-76..F-78 PASS.** Verdict + per-REQ values: the `## Tests Runs (round 1)` comment on #2882.
+Key receipts:
+- Companion PRESENT: `set`/`Miss`/`monitor` each open the named window (`Settings` group /
+  `mm-canvas-wrapper`) with `llmChat:0`; ambiguous `s` (renders `Mission Monitor, Settings,
+  Stepper Probe`) → chip `↵ open Settings`, `aria-activedescendant="fredo-launcher-tile-1"`,
+  Settings opens — the first RULE-matching entry, not the first rendered one.
+- Companion OFF (`Fredo_companion_visible=false`, `.fredo-companion-avatar` absent): the chip is
+  VISIBLE reading `↵ open Settings` (the `chatAvailable` gate is retired) and Enter opens Settings
+  with 0 dispatch. Unmatched typed text with no companion → chip `no match`, Enter = no-op, text
+  retained.
+- Dictated `Settings` in the bar — companion present, autosend ON — released ⇒ 1 dispatch, ZERO
+  windows; the same holds with autosend OFF (the text waits, then Enter sends it). No dictated
+  phrase opened an app in any state.
+- Away/OFF chord legs: ZERO listening emissions, NO companion listening bubble/dot anywhere in the
+  DOM; `VoiceOrigin` on the wire was `"launcher"` in every observed `stt:state`.
+- `askActiveCompanion` still works (it carried every send leg above).
+
+**Lever note:** the chord had to be a dispatched correctly-shaped `KeyboardEvent`
+(`code:'Space'`) — the MCP keyboard emits `code:" "`. See the `launcher` suite's #2882 round-1
+record for the full lever set. R-40's seat-geometry measurement was not re-run this round.
