@@ -61,8 +61,9 @@ Voice input (Spec #2877) is **local-only by hard requirement**. Microphone captu
 **Protections:**
 - No audio or audio-derived payload is transmitted; the capture/decode path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
 - Voice is **opt-in** (`Fredo_companion_voice_enabled`, default `false`) — nothing is captured before the user enables it
-- Capture can only be started by **holding Space in the focused, empty launcher search bar** (Spec #2882) — no keyboard gesture (Ctrl+Space included) starts a session, so nothing is captured while the user is merely typing or navigating
-- Capture is always visibly indicated for its whole duration by the **launcher bar cue** (the `Listening` chip and placeholder, announced as text), so audio is never captured without a visible active indicator; Spec #2882 retired the companion listening bubble, leaving the bar cue as the only capture indicator
+- Capture can be started ONLY by **holding Space in the focused, empty launcher search bar** (Spec #2882) — no keyboard gesture (Ctrl+Space included) starts a session and **no new capture path exists**, so nothing is captured while the user is merely typing or navigating
+- Capture must be **visibly indicated for its whole duration** by the **launcher bar cue** (the `Listening` chip and placeholder, announced as text), and the cue appears only while capture is genuinely live, so audio is never captured without a visible active indicator; Spec #2882 retired the companion listening bubble, leaving the bar cue as the only capture indicator
+- **Residency is engine-only (Spec #2887):** the STT **engine** is loaded once at setup and may be warm/resident while Fredo is idle, but **no microphone stream exists and no audio is captured until the Space hold** — the resident engine opens no device. Voice stays opt-in (`Fredo_companion_voice_enabled`, default `false`), so with the feature disabled (or its model not installed) there is no resident engine and nothing to capture
 - The microphone is released the moment Space is released, the utterance is cancelled, the bar or window loses focus, or voice is disabled
 - The native WASAPI path needs no CSP widening and no new Tauri capability
 
