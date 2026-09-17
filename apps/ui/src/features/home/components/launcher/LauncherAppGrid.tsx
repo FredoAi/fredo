@@ -21,6 +21,13 @@ export interface LauncherAppGridProps {
   entries: FredoFeatureClass[];
   selectedIndex: number;
   onSelect: (index: number) => void;
+  /**
+   * #2886 ST-4 — the grid root's box. The launcher measures its RESTING top in
+   * the same rAF pass as the reply band and folds it into the barrier, so the
+   * companion's reply surface keeps clear of the app tiles (a tile
+   * hide/collapse cannot pass the check — the keep-out is where the tiles live).
+   */
+  containerRef?: React.Ref<HTMLDivElement>;
 }
 
 const GRID_ID = 'fredo-launcher-grid';
@@ -81,9 +88,10 @@ const LauncherAppTile: React.FC<LauncherAppTileProps> = ({ feature, selected, on
   );
 };
 
-export const LauncherAppGrid: React.FC<LauncherAppGridProps> = ({ entries, selectedIndex, onSelect }) => {
+export const LauncherAppGrid: React.FC<LauncherAppGridProps> = ({ entries, selectedIndex, onSelect, containerRef }) => {
   return (
     <Box
+      ref={containerRef}
       id={GRID_ID}
       role="grid"
       aria-label="Apps"

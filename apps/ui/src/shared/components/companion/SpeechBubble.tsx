@@ -8,11 +8,18 @@ import {
   REPLY_BASE_H,
   REPLY_PAD,
   chooseReplyTier,
+  completeAvatarRect,
   computeReplyGeometry,
+  computeReplyPlacement,
+  deriveAwayRegion,
+  type ReplyAvatarRect,
   type ReplyAnchor,
   type ReplyGeometry,
+  type ReplyPlacementResult,
+  type ReplyRegion,
   type ReplySurfaceBounds,
 } from './replySurfaceLayout';
+import { getLauncherRegion } from './companionGeometry';
 
 export interface SpeechBubbleProps {
   message: string | null;
@@ -38,6 +45,16 @@ export interface SpeechBubbleProps {
    * `undefined` ⇒ today's fixed rendering exactly (no measurement, no growth — R-5.3).
    */
   growth?: ReplySurfaceBounds;
+  /**
+   * #2886 ST-2/ST-4 — the MEASURED avatar footprint (viewport px: the
+   * `.fredo-companion-avatar` wrapper box, 80×100 at the seat), supplied by the
+   * entity. When present, the placement is derived in viewport px from this box
+   * plus the region, so the surface can never be drawn over Fredo (`above` /
+   * `right` / `left` only at the seat, with `REPLY_AVATAR_CLEARANCE` on the
+   * placement axis). Absent ⇒ today's path exactly (the #2883 anchor-relative
+   * geometry / CSS branch), which is what the shipped fixture asserts.
+   */
+  avatarRect?: ReplyAvatarRect;
   /**
    * #2883 ST-4 — the reply surface's identity for the QA collision frames
    * (`data-reply-kind`). Defaults to `'reply'` (the welcome bubble may pass
@@ -84,9 +101,16 @@ export const GAME_BUBBLE_TESTID = 'fredo-game-bubble';
 
 type Side = 'above' | 'below' | 'left' | 'right';
 
-/** #2883 ST-4 — the measured seat slot + the pure module's decision for it. */
+/** #2883 ST-4 / #2886 ST-2 — the measured avatar footprint + the pure module's decision. */
 interface SeatReplyLayout {
+  /** The measured avatar footprint (or, on the legacy no-footprint path, the wrapper box). */
   anchor: ReplyAnchor;
+  /**
+   * #2886 — true when the geometry came from the avatar-footprint + region
+   * contract (viewport px). Such a layout is applied even at the base tier, so
+   * the separation strip is the bound `REPLY_AVATAR_CLEARANCE`.
+   */
+  regionBased: boolean;
   geometry: ReplyGeometry;
 }
 
@@ -117,7 +141,8 @@ function sameSeatReplyLayout(prev: SeatReplyLayout | null, next: SeatReplyLayout
     near(a.height, b.height) &&
     near(a.left, b.left) &&
     near(a.bottom, b.bottom) &&
-    sameAnchor(prev.anchor, next.anchor)
+    sameAnchor(prev.anchor, next.anchor) &&
+    prev.regionBased === next.regionBased
   );
 }
 
@@ -154,6 +179,7 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   isStreaming = false,
   positioning = 'fixed',
   growth,
+  avatarRect,
   replyKind = 'reply',
   onSurfaceEnter,
   onSurfaceLeave,
@@ -174,10 +200,58 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   const ch = companionHeight;
 
   const isAbsolute = positioning === 'absolute';
+
+  // #2886 — the viewport is an INPUT of the placement (both the region maths and
+  // the on-screen guarantee), so a window resize must re-decide it. State, not a
+  // ref (the placement is computed during render), with an equality guard so a
+  // sub-pixel resize never re-renders (AGENTS.md #523).
+  const [viewportSize, setViewportSize] = useState(() => ({
+    width: typeof window === 'undefined' ? 0 : window.innerWidth,
+    height: typeof window === 'undefined' ? 0 : window.innerHeight,
+  }));
+  useEffect(() => {
+    const onResize = () => {
+      setViewportSize((prev) =>
+        prev.width === window.innerWidth && prev.height === window.innerHeight
+          ? prev
+          : { width: window.innerWidth, height: window.innerHeight },
+      );
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // ── #2886 ST-4 — the AWAY overlay ranks the same candidates ────────────────
+  // The fixed path used to clamp to the VIEWPORT edges only, so it could land the
+  // card on Fredo, on the command bar or on the tiles. With a measured footprint
+  // (the overlay's own `.fredo-companion-avatar` box) and the launcher region
+  // published through the #2870 ST-2c-style registry (`main.tsx` renders the
+  // overlay OUTSIDE `LauncherShell`, so a prop cannot reach it), the placement is
+  // the same pure decision the seat uses — with `below` allowed (the legacy
+  // #2850 ranking) and the card kept at its fixed 240×120 (`contentHeightPx: 0`
+  // ⇒ base tier; the #2883 grown tier and its scroller stay seat-only).
+  const awayViewport = viewportSize;
+  const awayFootprint = !isAbsolute && !hasGame && avatarRect
+    ? completeAvatarRect(avatarRect, AVATAR_SM)
+    : null;
+  const awayPlacement: ReplyPlacementResult | null = awayFootprint
+    ? computeReplyPlacement({
+        avatar: awayFootprint,
+        region: deriveAwayRegion(getLauncherRegion(), awayViewport),
+        viewport: awayViewport,
+        contentHeightPx: 0,
+        allowBelow: true,
+      })
+    : null;
+
   // In `absolute` mode the bubble always sits above its parent slot with the
   // tail pointing down, irrespective of viewport space — force the 'above'
   // geometry so the tail + entrance animation match that anchor.
-  const side: Side = isAbsolute ? 'above' : chooseSide(cx, cy, cw, ch, bw, bh);
+  const side: Side = isAbsolute
+    ? 'above'
+    : awayPlacement
+      ? awayPlacement.placement
+      : chooseSide(cx, cy, cw, ch, bw, bh);
 
   let bubbleLeft = 0;
   let bubbleTop  = 0;
@@ -199,6 +273,14 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   bubbleLeft = Math.max(MARGIN, Math.min(bubbleLeft, window.innerWidth  - bw - MARGIN));
   bubbleTop  = Math.max(MARGIN, Math.min(bubbleTop,  window.innerHeight - bh - MARGIN));
 
+  // The verified placement is the LAST word: it already honours the footprint,
+  // the launcher region and the viewport, so it is never re-clamped by the
+  // viewport-only MARGIN rule above.
+  if (awayPlacement) {
+    bubbleLeft = awayPlacement.left;
+    bubbleTop = awayPlacement.top;
+  }
+
   const companionCX = cx + cw / 2;
   const companionCY = cy + ch / 2;
 
@@ -213,12 +295,20 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
   /** Latest layout (mirrors `seatLayout`) — read from the rAF callback. */
   const seatLayoutRef = useRef<SeatReplyLayout | null>(null);
   /**
-   * The card — the anchor is measured from the element that CONTAINS the
-   * absolutely-positioned bubble (the entity's `fredo-companion-surface` wrapper,
-   * whose in-flow box is the seat slot). Deliberately NOT a ref on the motion
-   * element: framer-motion owns that node and the measurement never needs it.
+   * The card — the surface Box the DOM tests query and the element the LEGACY
+   * (no-footprint) path measures the seat wrapper from. #2886: the production
+   * path never measures this node's ancestors; the placement anchor is the
+   * entity-supplied `avatarRect` footprint.
    */
   const surfaceRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * #2886 — the normalized footprint for the rAF callback. A prop object is a new
+   * identity each render, so it is mirrored into a ref rather than a dependency:
+   * the measurement already re-runs on every commit, and the epsilon guard keeps
+   * the state write out of the loop (AGENTS.md #523).
+   */
+  const footprintRef = useRef<ReplyAvatarRect | null>(null);
+  footprintRef.current = avatarRect ? completeAvatarRect(avatarRect, AVATAR_SM) : null;
   /** The streaming `<Text>` — its own rect height is the wrapped content height. */
   const textRef = useRef<HTMLParagraphElement | null>(null);
   /** Latched tier: once grown, the surface stays grown for the generation. */
@@ -238,20 +328,10 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
       if (seatLayoutRef.current !== null) applySeatLayout(null);
       return;
     }
-    const motionEl = surfaceRef.current?.parentElement ?? null;
-    const anchorEl = motionEl?.parentElement ?? null;
     const text = textRef.current;
-    if (!anchorEl || !text) return;
+    if (!text) return;
+    const footprint = footprintRef.current;
 
-    const rect = anchorEl.getBoundingClientRect();
-    const anchor: ReplyAnchor = {
-      top: rect.top,
-      left: rect.left,
-      right: rect.right,
-      bottom: rect.bottom,
-      width: rect.width,
-      height: rect.height,
-    };
     // The `<Text>`'s own border box is its FULL wrapped height even when the
     // base content box clips it — that is the measurement the tier needs.
     const contentHeightPx = text.getBoundingClientRect().height;
@@ -274,15 +354,65 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
         ? BASE_CONTENT_H + 1
         : Math.max(contentHeightPx, BASE_CONTENT_H + 1);
 
-    const geometry = computeReplyGeometry({
-      anchor,
-      bounds: growth,
-      contentHeightPx: measuredContent,
-    });
+    const prev = seatLayoutRef.current;
+    let anchor: ReplyAnchor;
+    let geometry: ReplyGeometry;
+    let regionBased: boolean;
+
+    if (footprint) {
+      // #2886 ST-2/ST-3 — the ONE placement decision: measured footprint + the
+      // launcher-measured region, in VIEWPORT px. `above` / `right` / `left`
+      // only (a seat `below` is the command bar's band); every candidate is
+      // validated against the footprint + the bound clearance before it is
+      // accepted, and the facing edge is pinned at `footprint ± clearance` so
+      // growth is one-directional. The seat slot's content box IS the avatar's
+      // box, so the containing block origin is the footprint: converting the
+      // viewport rect to anchor-relative offsets is the only conversion.
+      const placement = computeReplyPlacement({
+        avatar: footprint,
+        region: growth as ReplyRegion,
+        viewport: viewportSize,
+        contentHeightPx: measuredContent,
+        allowBelow: false,
+      });
+      anchor = footprint;
+      regionBased = true;
+      geometry = {
+        tier: placement.tier,
+        // A seat `below` is unreachable (`allowBelow: false`); narrow the type.
+        placement: placement.placement === 'below' ? 'above' : placement.placement,
+        width: placement.width,
+        height: placement.height,
+        left: placement.left - footprint.left,
+        bottom: footprint.bottom - placement.bottom,
+        scrollable: placement.scrollable,
+      };
+    } else {
+      // Legacy path (no measured footprint — the #2883 unit fixture shape, where
+      // the bubble's direct parent IS the 80×100 seat slot). Absent footprint ⇒
+      // today's anchor-relative geometry exactly.
+      const motionEl = surfaceRef.current?.parentElement ?? null;
+      const anchorEl = motionEl?.parentElement ?? null;
+      if (!anchorEl) return;
+      const rect = anchorEl.getBoundingClientRect();
+      anchor = {
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+      regionBased = false;
+      geometry = computeReplyGeometry({
+        anchor,
+        bounds: growth,
+        contentHeightPx: measuredContent,
+      });
+    }
 
     // Reading position (R-5.1): while the reader is scrolled back, the surface
     // height is FROZEN — arriving tokens only lengthen `scrollHeight` below them.
-    const prev = seatLayoutRef.current;
     const frozenHeight =
       !followingRef.current &&
       prev !== null &&
@@ -295,10 +425,11 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
 
     const next: SeatReplyLayout = {
       anchor,
+      regionBased,
       geometry: frozenHeight === null ? geometry : { ...geometry, height: frozenHeight },
     };
     if (!sameSeatReplyLayout(prev, next)) applySeatLayout(next);
-  }, [applySeatLayout, growth, growthApplies]);
+  }, [applySeatLayout, growth, growthApplies, viewportSize]);
 
   // Perf NFR: the measurement is rAF-coalesced, so many token commits inside one
   // frame cost ONE layout read — never one forced reflow per token.
@@ -350,11 +481,15 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
     streamingRef.current = isStreaming;
   }, [isStreaming, applySeatLayout]);
 
-  // The pure module's grown decision (never re-derived here); `null` ⇒ base tier.
-  const seatGeometry = growthApplies && seatLayout !== null && seatLayout.geometry.tier === 'grown'
-    ? seatLayout.geometry
-    : null;
-  const replyTier = seatGeometry ? 'grown' : 'base';
+  // The pure module's decision (never re-derived here). A region-based layout is
+  // applied even at the BASE tier (#2886: with a measured region the one-liner
+  // also keeps the bound `REPLY_AVATAR_CLEARANCE` strip); `null` ⇒ today's
+  // byte-for-byte CSS branch (no measured band — R-5.3).
+  const seatGeometry =
+    growthApplies && seatLayout !== null && (seatLayout.geometry.tier === 'grown' || seatLayout.regionBased)
+      ? seatLayout.geometry
+      : null;
+  const replyTier = seatGeometry ? seatGeometry.tier : 'base';
   // The tail follows the effective placement (base ⇒ today's `side`).
   const effectiveSide: Side = seatGeometry ? seatGeometry.placement : side;
   const tailOnHoriz = effectiveSide === 'above' || effectiveSide === 'below';
@@ -466,8 +601,8 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
                   position: 'fixed',
                   left: bubbleLeft,
                   top: bubbleTop,
-                  width: bw,
-                  height: bh,
+                  width: awayPlacement ? awayPlacement.width : bw,
+                  height: awayPlacement ? awayPlacement.height : bh,
                   zIndex: 101,
                   pointerEvents: 'auto',
                 }
@@ -478,6 +613,10 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
             data-testid={hasGame ? GAME_BUBBLE_TESTID : REPLY_SURFACE_TESTID}
             data-reply-tier={hasGame ? undefined : replyTier}
             data-reply-kind={hasGame ? undefined : replyKind}
+            // #2886 ST-2 (E6) — the frozen placement hook: the chosen side is
+            // machine-readable next to the tier/kind so a test can assert the
+            // surface is strictly on that side of the avatar.
+            data-reply-placement={hasGame ? undefined : effectiveSide}
             onPointerEnter={hasGame ? undefined : onSurfaceEnter}
             onPointerLeave={hasGame ? undefined : onSurfaceLeave}
             onFocus={hasGame ? undefined : onSurfaceFocus}
@@ -494,10 +633,12 @@ export const SpeechBubble: React.FC<SpeechBubbleProps> = ({
           >
             {hasGame ? (
               children
-            ) : seatGeometry ? (
+            ) : seatGeometry && seatGeometry.tier === 'grown' ? (
               /* #2883 ST-4 grown tier — the surface stops growing at the cap and
                  the scroller takes over (AC3, R-3.1); the streaming Text + cursor
-                 markup above is unchanged and mounts as its children. */
+                 markup above is unchanged and mounts as its children. #2886 keeps
+                 this seat-only: a base-tier region placement (the one-liner) uses
+                 the fixed content box below, never a scroller. */
               <ReplyScrollArea
                 isStreaming={isStreaming}
                 onFollowingChange={handleFollowingChange}

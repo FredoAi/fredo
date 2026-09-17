@@ -36,6 +36,8 @@ import {
   REPLY_SURFACE_TESTID,
   SpeechBubble,
 } from '@/shared/components/companion/SpeechBubble';
+import { publishLauncherRegion } from '@/shared/components/companion/companionGeometry';
+import type { ReplyAvatarRect } from '@/shared/components/companion/replySurfaceLayout';
 import {
   REPLY_SCROLL_NEWEST_TESTID,
   REPLY_SCROLL_TESTID,
@@ -113,6 +115,12 @@ type RectLike = {
 const measurement = {
   slot: { top: 600, left: 460, right: 540, bottom: 700, width: 80, height: 100 } as RectLike,
   textHeight: 300,
+  /**
+   * #2886 — the LIVE height of the `fredo-companion-surface` wrapper (the node
+   * that contains ONLY the absolutely-positioned bubble). It is 0 in the app, and
+   * that is the measurement the #2883 grown card collapsed on.
+   */
+  wrapperHeight: 0,
 };
 
 function rect(r: RectLike): DOMRect {
@@ -195,10 +203,15 @@ beforeEach(() => {
   motionMock.captured.length = 0;
   measurement.slot = { top: 600, left: 460, right: 540, bottom: 700, width: 80, height: 100 };
   measurement.textHeight = 300;
+  measurement.wrapperHeight = 0;
   rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
     this: Element,
   ) {
     if (this.getAttribute('data-testid') === 'seat-slot') return rect(measurement.slot);
+    if (this.getAttribute('data-testid') === 'fredo-companion-surface') {
+      const height = measurement.wrapperHeight;
+      return rect({ top: 600, left: 460, right: 540, bottom: 600 + height, width: 80, height });
+    }
     if (this.tagName === 'P') {
       const height = measurement.textHeight;
       return rect({ top: 0, left: 0, right: 200, bottom: height, width: 200, height });
@@ -209,6 +222,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rectSpy.mockRestore();
+  publishLauncherRegion(null);
   cleanup();
 });
 
@@ -462,5 +476,160 @@ describe('#2883 ST-4 SpeechBubble — the two-tier text reply surface', () => {
       // `var(--x)NN` alpha-append is invalid CSS (#2770) — tints go through tint().
       expect(source).not.toMatch(/var\(--[\w-]+\)\d/);
     });
+  });
+});
+
+/**
+ * #2886 — the avatar-clearance placement (E1/E2/E3/E4/E6 render side).
+ *
+ * The shipped fixture above gave the bubble a DIRECT 80×100 `seat-slot` parent
+ * and zero-rected everything else, so it could never see the live shape: the
+ * bubble lives inside a `fredo-companion-surface` wrapper that contains ONLY the
+ * absolutely-positioned card (height 0), while the 80×100 avatar is a SIBLING.
+ * These cases build that live DOM shape (`liveBubble`) and drive the placement
+ * from the entity-supplied `avatarRect` — the measured footprint.
+ */
+describe('#2886 SpeechBubble — the avatar-footprint placement contract', () => {
+  /** The measured `.fredo-companion-avatar` box at the stubbed seat slot. */
+  const AVATAR_RECT: ReplyAvatarRect = {
+    top: 600,
+    left: 460,
+    right: 540,
+    bottom: 700,
+    width: 80,
+    height: 100,
+  };
+
+  /** The LIVE DOM shape: the surface wrapper (height 0) SIBLINGS the avatar. */
+  const liveBubble = (props: Partial<React.ComponentProps<typeof SpeechBubble>> = {}) => (
+    <div data-testid="seat-slot">
+      <div data-testid="fredo-companion-surface">
+        <SpeechBubble
+          message="A reply that is long enough to be interesting."
+          companionX={500}
+          companionY={660}
+          positioning="absolute"
+          avatarRect={AVATAR_RECT}
+          {...props}
+        />
+      </div>
+      <div className="fredo-companion-avatar" />
+    </div>
+  );
+
+  it('anchors the grown card to the footprint — never to the zero-height bubble wrapper', async () => {
+    measurement.textHeight = 300;
+    const { rerender } = renderWithChakra(liveBubble({ growth: BAND, isStreaming: true }));
+
+    const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
+    await waitFor(() => expect(surface).toHaveAttribute('data-reply-tier', 'grown'));
+    expect(surface).toHaveAttribute('data-reply-placement', 'above');
+
+    // avatar 80×100 at (460,600), safeTop 66 ⇒ available = 600 − 14 − 66 = 520.
+    // width = min(560, 960) = 560; height = clamp(120, 300, 520) = 300; the facing
+    // edge is pinned at avatar.top − 14 = 586 ⇒ anchor-relative bottom = 114
+    // (avatar.height 100 + the bound 14 — NOT the collapsed `2 × TAIL` = 20).
+    await waitFor(() =>
+      expect(lastStyle()).toMatchObject({
+        position: 'absolute',
+        left: -240,
+        bottom: 114,
+        width: 560,
+        height: 300,
+      }),
+    );
+    expect(screen.getByTestId(REPLY_SCROLL_TESTID)).toBeInTheDocument();
+
+    // The root cause: re-measure with a NON-zero wrapper height. The placement
+    // must not move a single pixel — it is derived from the avatar footprint.
+    measurement.wrapperHeight = 250;
+    rerender(liveBubble({ growth: BAND, isStreaming: true }));
+    await settleFrames();
+    expect(lastStyle()).toMatchObject({ left: -240, bottom: 114, width: 560, height: 300 });
+  });
+
+  it('renders a one-liner at 240×120 with the bound 14 px strip when a region is measured', async () => {
+    measurement.textHeight = 40;
+    renderWithChakra(liveBubble({ growth: BAND, isStreaming: true }));
+
+    const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
+    // Wait for the REGION-BASED rect (the CSS branch's `bottom` is a string).
+    await waitFor(() => expect(lastStyle()).toMatchObject({ left: -80, bottom: 114 }));
+
+    expect(surface).toHaveAttribute('data-reply-tier', 'base');
+    expect(surface).toHaveAttribute('data-reply-placement', 'above');
+    // Centred on the avatar (460 + 40 − 120 = 380 ⇒ −80 anchor-relative) and the
+    // bottom edge 586 ⇒ 114. The #2883 base tier's intent is preserved (240×120,
+    // no scroller); only the strip is the bound 14 px instead of the CSS branch's 10.
+    expect(lastStyle()).toMatchObject({ width: 240, height: 120 });
+    expect(screen.queryByTestId(REPLY_SCROLL_TESTID)).toBeNull();
+  });
+
+  it('rejects an `above` candidate with no room and falls through to a side placement', async () => {
+    const highAvatar: ReplyAvatarRect = {
+      top: 120,
+      left: 460,
+      right: 540,
+      bottom: 220,
+      width: 80,
+      height: 100,
+    };
+    const shortBand = { safeTop: 66, barrierTop: 500, boundsLeft: 40, boundsRight: 1000 };
+    measurement.textHeight = 300;
+    renderWithChakra(liveBubble({ avatarRect: highAvatar, growth: shortBand, isStreaming: true }));
+
+    const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
+    // above-air = 120 − 14 − 66 = 40 < REPLY_MIN_H ⇒ `above` is rejected.
+    await waitFor(() => expect(surface).toHaveAttribute('data-reply-placement', 'right'));
+
+    // right: left = avatar.right + 14 = 554 ⇒ 94 anchor-relative; width = 1000 − 554
+    // = 446; the barrier is min(barrierTop 500, vh) − 8 = 492 ⇒ bottom = 220 − 492.
+    // The latch opens the tier at the floor (120) and the next frame measures at
+    // the grown width — wait for the settled content height.
+    await waitFor(() => expect(lastStyle().height).toBe(300));
+    expect(lastStyle()).toMatchObject({ left: 94, width: 446, bottom: -272 });
+    // The card is strictly on that side of the avatar (`left ≥ avatar.right`).
+    const style = lastStyle();
+    expect((style.left as number) + AVATAR_RECT.left).toBeGreaterThanOrEqual(highAvatar.right);
+  });
+
+  it('places the away overlay against the published launcher region and the footprint (ST-4)', async () => {
+    publishLauncherRegion({
+      region: { safeTop: 66, barrierTop: 700, boundsLeft: 8, boundsRight: 1016 },
+      viewport: { width: 1024, height: 768 },
+    });
+    const awayAvatar: ReplyAvatarRect = {
+      top: 700,
+      left: 480,
+      right: 560,
+      bottom: 800,
+      width: 80,
+      height: 100,
+    };
+
+    renderWithChakra(
+      <SpeechBubble
+        message="Fredo is away."
+        companionX={480}
+        companionY={700}
+        avatarRect={awayAvatar}
+      />,
+    );
+
+    const surface = screen.getByTestId(REPLY_SURFACE_TESTID);
+    // above: bottom = avatar.top − 14 = 686, height 120 ⇒ top 566; centred on the
+    // avatar clamped inside the region ⇒ left 400. The card keeps its fixed
+    // 240×120 (the #2883 grown tier never applies here).
+    await waitFor(() =>
+      expect(lastStyle()).toMatchObject({
+        position: 'fixed',
+        left: 400,
+        top: 566,
+        width: 240,
+        height: 120,
+      }),
+    );
+    expect(surface).toHaveAttribute('data-reply-placement', 'above');
+    expect(screen.queryByTestId(REPLY_SCROLL_TESTID)).toBeNull();
   });
 });

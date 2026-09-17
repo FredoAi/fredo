@@ -1,8 +1,9 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useCompanion } from '../../contexts/CompanionContext';
 import type { CompanionPosition, CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
-import type { ReplySurfaceBounds } from './replySurfaceLayout';
+import { completeAvatarRect } from './replySurfaceLayout';
+import type { ReplyAvatarRect, ReplySurfaceBounds } from './replySurfaceLayout';
 import { TicTacToe } from './features/tictactoe';
 import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
@@ -155,6 +156,20 @@ export function computeTeleportTarget(
 
 // ── Component ────────────────────────────────────────────────────────────────
 
+// #2886 ST-2 — the footprint measurement is epsilon-compared so a sub-pixel
+// reflow never writes state (the #523 loop guard; same value as the bubble's
+// layout epsilon).
+const AVATAR_RECT_EPSILON_PX = 0.5;
+
+function nearAvatarRect(a: ReplyAvatarRect, b: ReplyAvatarRect): boolean {
+  return (
+    Math.abs(a.top - b.top) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.left - b.left) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.right - b.right) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.bottom - b.bottom) < AVATAR_RECT_EPSILON_PX
+  );
+}
+
 export interface CompanionEntityProps {
   /**
    * Which seat the entity is rendered at. `'overlay'` is the legacy window-level
@@ -303,6 +318,68 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         width: el ? el.offsetWidth : AVATAR_SM.width,
         height: el ? el.offsetHeight : AVATAR_SM.height,
       };
+    }, []);
+
+    // ── #2886 ST-2 — the ONE avatar-footprint measurement ──────────────────────
+    // The same node whose box already feeds `getAvatarSize()` (above) and
+    // `computeTeleportTarget`: the `.fredo-companion-avatar` wrapper. Its
+    // VIEWPORT rect is the placement anchor the message surface must clear — NOT
+    // the `fredo-companion-surface` wrapper (which contains only the absolutely-
+    // positioned bubble, so it measures height 0). rAF-coalesced and epsilon-
+    // compared (no state write when no number changed — AGENTS.md #523), and a
+    // degenerate/hidden box is completed from the declared AVATAR_SM (80×100), so
+    // a zero-height measurement can never collapse the placement again.
+    const [avatarRect, setAvatarRect] = useState<ReplyAvatarRect | null>(null);
+    const avatarRectRef = useRef<ReplyAvatarRect | null>(null);
+    const avatarFrameRef = useRef<number | null>(null);
+
+    const measureAvatarRect = useCallback(() => {
+      const el = wrapperRef.current;
+      if (!el || typeof el.getBoundingClientRect !== 'function') return;
+      const r = el.getBoundingClientRect();
+      const next = completeAvatarRect(
+        { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+        AVATAR_SM,
+      );
+      if (!next) return;
+      const prev = avatarRectRef.current;
+      if (prev && nearAvatarRect(prev, next)) return;
+      avatarRectRef.current = next;
+      setAvatarRect(next);
+    }, []);
+
+    const scheduleAvatarMeasure = useCallback(() => {
+      if (avatarFrameRef.current !== null) return;
+      const run = () => {
+        avatarFrameRef.current = null;
+        measureAvatarRect();
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        avatarFrameRef.current = requestAnimationFrame(run);
+      } else {
+        run();
+      }
+    }, [measureAvatarRect]);
+
+    // Re-measure on every commit (the seat can scroll / the overlay teleports /
+    // the window resizes) and on the two events that move the box without a
+    // commit; rAF coalescing + the epsilon guard keep this out of the loop.
+    useLayoutEffect(() => {
+      scheduleAvatarMeasure();
+    });
+    useEffect(() => {
+      window.addEventListener('resize', scheduleAvatarMeasure);
+      window.addEventListener('scroll', scheduleAvatarMeasure, true);
+      return () => {
+        window.removeEventListener('resize', scheduleAvatarMeasure);
+        window.removeEventListener('scroll', scheduleAvatarMeasure, true);
+      };
+    }, [scheduleAvatarMeasure]);
+    useEffect(() => () => {
+      if (avatarFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(avatarFrameRef.current);
+      }
+      avatarFrameRef.current = null;
     }, []);
 
     // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
@@ -769,6 +846,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             // #2883 ST-4 — the band reaches the bubble (the launcher measured it
             // and ST-2 handed it to this entity). `undefined` ⇒ today's card.
             growth={replyBounds}
+            // #2886 ST-2 — the measured avatar footprint; the bubble derives the
+            // placement from it (never from the empty `fredo-companion-surface`
+            // wrapper). `undefined` before the first measurement ⇒ today's card.
+            avatarRect={avatarRect ?? undefined}
             positioning={surface === 'seat' ? 'absolute' : 'fixed'}
             message={showTicTacToe ? null : displayMessage}
             companionX={displayPos.x}

@@ -12,6 +12,7 @@ import { tint } from '../../../../shared/utils/colorTint';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
+import { publishLauncherRegion } from '../../../../shared/components/companion/companionGeometry';
 import { LauncherCommandBar } from './LauncherCommandBar';
 import type { LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
@@ -518,6 +519,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // a number actually changes (the AGENTS.md #523 loop guard).
   const columnRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
+  // #2886 ST-4 — the app-tiles grid's RESTING box. The tiles render below the
+  // bar, so folding the grid's top into `barrierTop` is the tiles' keep-out: a
+  // reply that respects the barrier is already above every tile row. Measured in
+  // the SAME rAF pass as the band (never a second effect/polling chain).
+  const gridRef = useRef<HTMLDivElement | null>(null);
   const [replyBounds, setReplyBounds] = useState<ReplySurfaceBounds | undefined>(undefined);
   const prevWindowCountRef = useRef(currentWindows.length);
   // Suppresses re-engaging when focus is moved programmatically (ESC → refocus the
@@ -1516,13 +1522,24 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       if (!bar) return;
       const columnRect = column.getBoundingClientRect();
       const barRect = bar.getBoundingClientRect();
+      const gridRect = gridRef.current ? gridRef.current.getBoundingClientRect() : null;
       const next: ReplySurfaceBounds = {
         safeTop: NOTCH_HEIGHT_PX + REPLY_MARGIN,
-        barrierTop: barRect.top,
+        // #2886 — the bar's box top AND the app-tiles grid's resting top. The
+        // grid sits below the bar, so this is also the tiles' keep-out (E4/E5):
+        // the reply's bottom edge can never reach the first tile row.
+        barrierTop: gridRect ? Math.min(barRect.top, gridRect.top) : barRect.top,
         boundsLeft: columnRect.left + REPLY_MARGIN,
         boundsRight: columnRect.right - REPLY_MARGIN,
       };
       setReplyBounds((prev) => (prev && replyBoundsEqual(prev, next) ? prev : next));
+      // #2886 ST-4 — publish the measured region for the AWAY overlay, which
+      // `main.tsx` renders OUTSIDE this shell (a prop cannot reach it). Same rAF
+      // pass, so the overlay's placement agrees with the seat's band.
+      publishLauncherRegion({
+        region: next,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      });
     };
     const schedule = () => {
       if (frame) return;
@@ -1539,6 +1556,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       observer.disconnect();
       column.removeEventListener('scroll', schedule);
       window.removeEventListener('resize', schedule);
+      publishLauncherRegion(null);
     };
   }, []);
 
@@ -1689,6 +1707,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               entries={filteredEntries}
               selectedIndex={safeSelectedIndex}
               onSelect={handleSelect}
+              containerRef={gridRef}
             />
           )}
         </Box>
