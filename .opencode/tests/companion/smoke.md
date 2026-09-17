@@ -181,4 +181,8 @@
 
 ### #2883 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+- [x] **Round 1 (serving `326822ff`) — S-27 PASS · S-28 PASS · S-29 PASS.**
+      - S-27 PASS: a story-length prompt flipped the surface to `data-reply-tier="grown"` and grew it past 240×120 while arriving (≥5 distinct samples, 560×270 settled), stayed inside the window, never overlapped `[data-testid="launcher-command-bar"]`, and scrolled internally (674 > 240) at 900×600; ONE frame with the reply AND the bar captured.
+      - S-28 PASS: with the dismiss countdown running, the pointer over `[data-testid="fredo-reply-surface"]` held it for 120/120 samples across 12 s; after leaving it cleared at ≈2.5 s (bound 2000 ms + exit).
+      - S-29 PASS: `"Hi there!"` → `data-reply-tier="base"` at exactly **240×120**, no scrollbar, no needless resize.
+      Evidence: https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f79-grown-reply-streaming.jpeg · https://github.com/FredoAi/fredo/raw/spec/2883/.opencode/evidence/2883/after-f89-short-reply-base-240x120.jpeg
