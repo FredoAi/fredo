@@ -253,3 +253,33 @@
       (`FREDO_PERSONA` retained). Reference companion F-71/F-69.
 - [ ] **E-42 (IME/CJK composition in the command bar) — still NOT drivable** (no IME emulation in
       the MCP driver; named blocker, carried over from round 1 E-38).
+
+---
+
+## #2882 extension — hold-Space / typed-match boundary probes
+
+> Issue #2882 makes Space a gesture on an EMPTY bar and broadens the typed-query match. A confirmed
+> finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Live policy; an
+> undrivable lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-43: **Hold-Space on a focused launcher TILE (not the input).** With the engaged grid and a
+      tile focused, hold Space for 1.5 s. Space currently opens the selected tile when the event is
+      NOT from the input (`LauncherShell.tsx:887-895`). Does the hold dictate (WRONG — hold-Space is
+      scoped to the focused search bar), open the tile, or neither? Record the observed branch,
+      `stt_status`, and the window count. Any dictation started from a focused tile is a finding
+      (promotes to F-69/REQ-14).
+- [ ] E-44: **The empty↔non-empty boundary under real typing.** Type a character, delete it, and
+      hold Space in the SAME keystroke burst; then type a character mid-hold. Is the decision made
+      from the value AT keydown (a clean transition), or does a stale value pick the wrong branch
+      (capture when it should be a space, or a space when it should be capture)? Any lost/converted
+      space or a stuck session is a finding (promotes to R-41/REQ-15).
+- [ ] E-45: **Hint truth under churn.** Re-theme (light preset ↔ dark base) and toggle the companion
+      ON/OFF/away WHILE a matching query is typed, and while a dictated transcript sits in the bar.
+      Does the hint always re-derive to the truth for the action Enter would take right now, with no
+      stale chip text and no console error? Any (hint, action) disagreement is a finding (promotes
+      to F-67/REQ-9).
+- [ ] E-46: **Auto-repeat hold survival.** Hold Space for ≥5 s so the OS auto-repeat fires many
+      `keydown` events with `e.repeat === true`; count `stt_start` invocations and the cue's
+      presence timeline. Exactly ONE session, one cue, no flicker, and no duplicated transcript is
+      expected; a restart, a duplicate session, or a cue gap while capturing is a finding (promotes
+      to F-66/REQ-3 + R-41/REQ-12).
