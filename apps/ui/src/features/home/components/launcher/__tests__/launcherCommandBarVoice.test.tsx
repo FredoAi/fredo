@@ -454,11 +454,41 @@ function fieldDeclarations(el: HTMLElement): Record<string, string> {
   return out;
 }
 
-/** Flip the measured content height (jsdom reports `scrollHeight` as 0). */
-function stubScrollHeight(px: number) {
+/**
+ * The browser-equivalent client height of the field's APPLIED border-box: the
+ * rendered `height` declaration (the emotion rule the browser applies) minus the
+ * 2 × 1px border. jsdom has no layout engine, so this is the model the scroll
+ * floor below is built on.
+ */
+function appliedClientHeightPx(el: HTMLElement): number {
+  const declared = fieldDeclarations(el)['height'];
+  const borderBox = declared ? Number.parseFloat(declared) : BAR_FIELD_MIN_H_PX;
+  return borderBox - 2 * 1; // 2 × 1px border
+}
+
+/**
+ * Flip the measured content height and model the browser's scroll floor
+ * (jsdom reports `scrollHeight` as 0).
+ *
+ * #2883 round 2 (D-1) — the round-1 stub returned a FIXED number regardless of
+ * the element's applied height, so it could not model the CSSOM rule
+ * `scrollHeight = max(clientHeight, contentExtent)`. That blind spot is exactly
+ * why the round-1 units passed against a grow-only one-way ladder: while the
+ * growth clamp is applied, a cleared field reports the BOX (106), never the 46px
+ * content it holds. This oracle models the floor from the element's RENDERED
+ * height, and reports the intrinsic extent only when the component has released
+ * the clamp for its read (`el.style.height === 'auto'`). The clear-back pin then
+ * fails against an implementation that measures the constrained box and passes
+ * against the intrinsic measurement.
+ */
+function stubScrollHeight(intrinsicPx: number) {
   Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollHeight', {
     configurable: true,
-    get: () => px,
+    get(this: HTMLTextAreaElement) {
+      // The clamp is released for this read ⇒ intrinsic content, no floor.
+      if (this.style.height === 'auto') return intrinsicPx;
+      return Math.max(appliedClientHeightPx(this), intrinsicPx);
+    },
   });
 }
 
@@ -541,13 +571,14 @@ describe('LauncherCommandBar — #2883 ST-1 the wrapping field (AC1 input side)'
     expect(decl['padding-inline-start']).toBe('40px');
   });
 
-  it('grows one 20px line step per measured line and freezes at the cap with internal scroll (R-1.1/R-1.3)', async () => {
+  it('grows one 20px line step per measured line and shrinks back to 48px when cleared — intrinsic measurement never floors at the applied height (D-1, R-1.1/R-1.3)', async () => {
     stubScrollHeight(66); // 2 visual lines: 40 + 2 × 13
     const { rerender } = renderWithChakra(
       <LauncherCommandBar query="a query that wraps onto two lines" onQueryChange={vi.fn()} />,
     );
     await flushFieldMeasure();
-    let decl = fieldDeclarations(screen.getByTestId('launcher-command-input'));
+    const field = screen.getByTestId('launcher-command-input');
+    let decl = fieldDeclarations(field);
     expect(decl['height']).toBe('68px');
     expect(decl['overflow-y']).toBe('hidden');
 
@@ -556,7 +587,7 @@ describe('LauncherCommandBar — #2883 ST-1 the wrapping field (AC1 input side)'
       <LauncherCommandBar query="a query that wraps onto three lines" onQueryChange={vi.fn()} />,
     );
     await flushFieldMeasure();
-    decl = fieldDeclarations(screen.getByTestId('launcher-command-input'));
+    decl = fieldDeclarations(field);
     expect(decl['height']).toBe('88px');
 
     stubScrollHeight(106); // 4 visual lines — exactly the 108px cap
@@ -564,7 +595,7 @@ describe('LauncherCommandBar — #2883 ST-1 the wrapping field (AC1 input side)'
       <LauncherCommandBar query="a query that wraps onto four lines" onQueryChange={vi.fn()} />,
     );
     await flushFieldMeasure();
-    decl = fieldDeclarations(screen.getByTestId('launcher-command-input'));
+    decl = fieldDeclarations(field);
     expect(decl['height']).toBe('108px');
     // At the cap the field is scroll-ENABLED; at exactly 4 lines there is nothing
     // to scroll (`scrollHeight === clientHeight`), so no scrollbar appears — the
@@ -576,17 +607,77 @@ describe('LauncherCommandBar — #2883 ST-1 the wrapping field (AC1 input side)'
       <LauncherCommandBar query="a query that wraps onto five or more lines" onQueryChange={vi.fn()} />,
     );
     await flushFieldMeasure();
-    decl = fieldDeclarations(screen.getByTestId('launcher-command-input'));
+    decl = fieldDeclarations(field);
     expect(decl['height']).toBe('108px');
     expect(decl['overflow-y']).toBe('auto');
 
-    // Clearing back to empty returns to exactly 48px with no residual scroll (R-1.3 edge).
+    // D-1 — clearing back to empty returns to exactly 48px with no residual scroll
+    // (R-1.3 edge). Against the round-1 implementation this leg reads 108px: the
+    // measurement consumed the CONSTRAINED box (106) and mapped back to the cap.
     stubScrollHeight(46);
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
     await flushFieldMeasure();
-    decl = fieldDeclarations(screen.getByTestId('launcher-command-input'));
+    decl = fieldDeclarations(field);
     expect(decl['height']).toBe('48px');
     expect(decl['overflow-y']).toBe('hidden');
+    // R-5.3 — no scrollbar at the base: the one-line content fits the applied box
+    // exactly (the jsdom-modelled equivalent of `scrollHeight === clientHeight`).
+    expect(field.scrollHeight).toBe(appliedClientHeightPx(field));
+  });
+
+  // ── D-1 (round 2) — the shrink-back regression pins ─────────────────────────
+
+  it('D-1 pin — clears from the CAP straight back to 48px with no residual height (REQ-3 edge)', async () => {
+    stubScrollHeight(126); // 5+ visual lines ⇒ clamped at the 108px cap
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar
+        query="a query long enough to wrap onto five or more visual lines inside the bar"
+        onQueryChange={vi.fn()}
+      />,
+    );
+    await flushFieldMeasure();
+    const field = screen.getByTestId('launcher-command-input');
+    expect(fieldDeclarations(field)['height']).toBe('108px');
+
+    // Clear to empty: intrinsic content is a single line (46px padding-box).
+    stubScrollHeight(46);
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    await flushFieldMeasure();
+    const cleared = fieldDeclarations(field);
+    expect(cleared['height']).toBe('48px');
+    expect(cleared['overflow-y']).toBe('hidden');
+    // No scrollbar: the intrinsic one-line content exactly fills the applied box.
+    expect(field.scrollHeight).toBe(appliedClientHeightPx(field));
+    expect(appliedClientHeightPx(field)).toBe(46);
+  });
+
+  it('E-50 churn — 108 → 48 → 108 → 48 lands on the exact bound heights every leg', async () => {
+    const longQuery = 'a query long enough to wrap onto five or more visual lines inside the bar';
+    stubScrollHeight(126);
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query={longQuery} onQueryChange={vi.fn()} />,
+    );
+    await flushFieldMeasure();
+    const field = screen.getByTestId('launcher-command-input');
+    expect(fieldDeclarations(field)['height']).toBe('108px');
+
+    // A rapid grow → clear → grow → clear churn must land on the exact bounds
+    // every leg — a one-way (grow-only) ladder leaves the cleared legs at 108.
+    const legs: Array<{ query: string; intrinsic: number; bound: string }> = [
+      { query: '', intrinsic: 46, bound: '48px' },
+      { query: longQuery, intrinsic: 126, bound: '108px' },
+      { query: '', intrinsic: 46, bound: '48px' },
+    ];
+    for (const leg of legs) {
+      stubScrollHeight(leg.intrinsic);
+      rerender(<LauncherCommandBar query={leg.query} onQueryChange={vi.fn()} />);
+      await flushFieldMeasure();
+      expect(fieldDeclarations(field)['height']).toBe(leg.bound);
+    }
+
+    // The final cleared leg also leaves no scrollbar behind.
+    expect(fieldDeclarations(field)['overflow-y']).toBe('hidden');
+    expect(field.scrollHeight).toBe(appliedClientHeightPx(field));
   });
 
   it('shows the `Shift+Enter adds a new line` caption ONLY when wrapped AND the companion is active', async () => {

@@ -479,7 +479,22 @@ export function LauncherCommandBar({
       measureFrameRef.current = null;
       const el = fieldRef.current;
       if (!el) return;
-      const next = measureFieldHeightPx(el.scrollHeight);
+      // #2883 round 2 (D-1) — read the INTRINSIC content height, never the
+      // constrained box. Per the CSSOM `scrollHeight` is `max(clientHeight,
+      // contentExtent)`, so while the growth clamp below is applied the read can
+      // never fall below the box: a cleared field reported 106 and
+      // `measureFieldHeightPx(106)` mapped back to the 108px cap, making the
+      // ladder one-way (growth worked, shrink was unreachable). Release the
+      // applied height for THIS read only — `height: auto` lets the class
+      // `min-height: 48px` / `max-height: 108px` bounds stand, so taller content
+      // is still reported above the box (growth is unchanged) — then restore the
+      // saved value verbatim so no other inline height is disturbed. Still one
+      // layout read per frame and a state write only on a real change (#523).
+      const appliedHeight = el.style.height;
+      el.style.height = 'auto';
+      const intrinsic = el.scrollHeight;
+      el.style.height = appliedHeight;
+      const next = measureFieldHeightPx(intrinsic);
       setFieldHeightPx((prev) => (prev === next ? prev : next));
     });
   }, []);
