@@ -526,8 +526,4 @@
 
 ### #2883 testing round 1 — result
 
-- [x] **Round 1 (serving `326822ff`) — R-42 PASS · R-43 UNVERIFIED · R-44 PASS (reply) / welcome leg UNVERIFIED · R-45 PASS (static).**
-      - R-42 PASS: double-clicking the seat avatar renders `[data-testid="fredo-game-bubble"]` at exactly **208×268**, with no `data-reply-tier`/`data-reply-kind`; the growing text surface does not alter the game card. (Out-of-scope observation: at 900×600 the game card's top sits at `y=-74` because it is anchored above the 34vh seat on the same absolute-anchor path as `main`; #2883 leaves the game card unchanged.)
-      - R-43 UNVERIFIED: no companion OFF/ON/teleport cycle or joke/game lifecycle matrix was re-driven this round.
-      - R-44 PASS for the reply: the unprotected reply auto-dismissed on its normal timer with no pointer/focus in ≥4 runs (`llm-done` → gone ≈5 s). The ~4 s welcome-bubble leg was not re-driven → UNVERIFIED.
-      - R-45 PASS (static + console): console clean across repeated streams / scroll churn; 0 colour literals and 0 `var(--x)NN` in the changed reply/companion files; `ReplyScrollArea` uses an `atBottom` ref and imperatively writes `scrollTop` (no per-token state). The theme-switch-mid-stream leg was not re-driven.
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
