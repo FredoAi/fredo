@@ -165,6 +165,13 @@
     square — the derived anchor keeps the tail on the figure (no floating tail); the bubble stays
     within the viewport at 1920×1080 AND a small/narrow window; the game bubble (208×268) at each
     edge stays on-screen too.
+  - **#2886 GAP CLOSED (read before executing).** This row (referenced as **F-13** in the #2886
+    brief; it is **F-11** here) asserts viewport CONTAINMENT + the `above > right > left > below`
+    ranking only — it does **NOT** assert a clear avatar footprint (nothing required the surface to
+    clear the avatar; #2883's tier clamp is against the window + the command bar). The
+    **`## #2886 extension` below (F-91..F-98)** adds the never-cover-Fredo guarantee: avatar-rect
+    ZERO intersection + a minimum separation `S` at every reply length/kind. Do not treat an F-11
+    containment PASS as evidence for #2886.
 
 ## F-12 (Q-14 / AC-5, M8) — Settings → Companion: visibility + teleport tip ONLY
 
@@ -1536,3 +1543,137 @@ Key receipts:
       `chat_rows` 1 for `e2e-2883-chat`.
 - [x] Unit flake gone — two consecutive full runs: 1284/1284 both; `SpeechBubble.twoTier` 13/13,
       `ReplyScrollArea` 19/19.
+
+---
+
+## #2886 extension — the reply/welcome/joke surface NEVER covers Fredo (avatar-footprint guarantee)
+
+> Issue #2886 makes the companion message surface anchor so that Fredo stays fully visible: the
+> surface sits **above him or to his sides**, never over him, never over the app tiles / search bar /
+> its field; in a genuinely too-small window it **SHRINKS and SCROLLS** instead of overlapping.
+> **#2883's size/growth/scroll/`Newest`/hover contracts are UNTOUCHED (R-46).** Map 1:1 to
+> `.opencode/tmp/2886/triage.md` `## QA Expert` **E1..E8** (AC-1..AC-5 + the PO `Status` amendment).
+> **Verification policy: live** — UI rendering; the tester's Evidence MUST reference
+> `telemetry_spans` (F-98). A static-only PASS is a FALSE PASS.
+>
+> **The avatar is the reference.** A window-containment PASS is NOT evidence here — the pass bar is
+> `intersectionArea(avatarRect, surfaceRect) === 0` **AND** `dx ≥ S || dy ≥ S` at every sample,
+> where `S` is the Architect-bound minimum separation (quote the number).
+>
+> **Frozen selectors:** avatar `.fredo-companion-avatar`; reply surface
+> `[data-testid="fredo-reply-surface"]`; scroller `[data-testid="fredo-reply-scroll"]`; game card
+> `[data-testid="fredo-game-bubble"]`; bar `[data-testid="launcher-command-bar"]`; field
+> `[data-testid="launcher-command-input"]`; hint `[data-testid="launcher-command-hint"]`; collapse
+> `button[aria-label="Minimize launcher"]`; tiles `#fredo-launcher-grid [role="gridcell"]` (union
+> box). Read BOTH rects in the SAME `tauri_webview_execute_js` task.
+
+## F-91 (E1 / AC-1 + amendment (a)) — every message kind clears the avatar
+
+- [ ] F-91: For EACH kind — short reply, long grown+scrolling reply, welcome (`OFF→ON`), joke
+      (single-click) — sample the avatar + surface rects in the same task at ≥5 points across the
+      display/stream; compute `intersectionArea` (QA Plan metric).
+  **Expected:** `intersectionArea === 0` px² at EVERY sample of EVERY kind — reply, welcome AND joke
+      (the amendment's row (a)). Fredo's full 80×100 footprint is visible; nothing paints over him.
+  - **Edge:** welcome at its ~4 s hold; a live joke stream; the grown+scrolled maximum; a re-anchor
+    while growing; companion toggled ON with a feature window open. Reference F-11 (containment
+    only) — do NOT accept an F-11 containment PASS as evidence here.
+
+## F-92 (E2 / AC-2) — a visible minimum gap at every reply length
+
+- [ ] F-92: At each reply length compute
+      `dx = max(avatar.left − surface.right, surface.left − avatar.right, 0)` and
+      `dy = max(avatar.top − surface.bottom, surface.top − avatar.bottom, 0)`.
+  **Expected:** `dx ≥ S` OR `dy ≥ S` (`S` = the Architect-bound minimum separation; quote the number
+      and record the measured gap) at EVERY length from a one-liner to grown-and-scrolling. A 0/1 px
+      touch ⇒ FAIL even when the intersection is 0.
+  - **Edge:** the base→grown tier flip; the largest grown size; both themes; the bubble tail/pointer
+    must not enter the avatar rect.
+
+## F-93 (E3 / AC-3, G-130 real stream class) — clear at EVERY growth step
+
+- [ ] F-93: Sample both rects every ~100–250 ms across the WHOLE stream (**≥5 samples, ≥3 while
+      still arriving**) and across a window resize + a re-anchor; compute the intersection per
+      sample and record the FACING edge (the card edge nearest Fredo) per sample.
+  **Expected:** zero intersection in EVERY intermediate sample — no frame or intermediate size
+      transiently covers Fredo while the surface grows, re-anchors, or is resized — AND the FACING
+      edge stays CONSTANT for the whole generation (growth along the away axis only: for `above` the
+      bottom edge is pinned and growth extends upward — the UI/UX stability invariant). One
+      overlapping intermediate frame or a moving facing edge ⇒ FAIL.
+  - **Edge:** the tier flip; an `above`→side re-anchor; resize mid-stream (900×600 ↔ default); a new
+    turn replacing a long reply; a control token must not inflate size; sample during the avatar's
+    idle bob (a NON-`transform:0` frame — the guarantee holds on every animation frame, cf.
+    `AVATAR_MOTION_RESERVE`).
+
+## F-94 (E4 / AC-4 + amendment (b)) — edge/narrow ⇒ side with room; tiles + bar clear
+
+- [ ] F-94: Teleport Fredo to each screen edge (Ctrl+right-click at each corner); at the default
+      size, the shipped minimum **900×600** and a narrow/tall leg (**900×1000**; a 700-wide viewport
+      is a dev-viewport ADVISORY only), with the launcher ENGAGED (tiles + bar visible) send a long
+      reply; measure the surface vs the avatar, the tile union box, the bar, the field, the hint and
+      the collapse control; check containment (`innerWidth`/`innerHeight`).
+  **Expected:** the surface repositions to a side with room, stays ENTIRELY on-screen, and has ZERO
+      intersection with the avatar, the tiles, the search bar AND its field (the amendment's row
+      (b)). Any collision ⇒ FAIL (G-158).
+  - **Edge:** near each corner; tiles hidden vs revealed; a long query growing the bar; the game
+    bubble open; companion away/off (no surface — assert no residual).
+
+## F-95 (E5 / AC-5 + amendment (c)) — too-small ⇒ shrink + scroll; a one-liner as today
+
+- [ ] F-95: At **900×600** with tiles + bar visible, force a reply that cannot fit with full
+      separation; read `[data-testid="fredo-reply-scroll"]`
+      `scrollHeight`/`clientHeight`/`scrollTop` and the avatar/bar/tile rects. Separately send
+      `Reply with exactly: Hi there!`.
+  **Expected:** in the too-small state the surface SHRINKS (down to its bound minimum) and SCROLLS
+      internally (`scrollHeight > clientHeight`, tail reachable) — keeping clear of Fredo, the
+      search bar AND the tiles, never overlapping either (the amendment's row (c)). A short one-line
+      reply still renders as today: `data-reply-tier="base"` at exactly **240×120 ±2 px**, no
+      scrollbar, no needless resize.
+  - **Edge:** the genuinely-too-small degraded state (drive it at a dev-only narrower viewport and
+    mark the receipt ADVISORY if unreachable at 900×600 — never a fabricated PASS); one unbroken
+    long line; clearing the reply (no residual size). Reference F-89.
+
+## F-96 (E6 / amendment 2) — placement is above-or-sides; an overlapping candidate is never chosen
+
+- [ ] F-96: For each message kind read the chosen anchor — the UI/UX-requested hook
+      `data-reply-placement="above|right|left"` on the surface — and assert the surface is strictly
+      on that side of the avatar (`surface.bottom ≤ avatar.top` = above; `surface.left ≥
+      avatar.right` = right; `surface.right ≤ avatar.left` = left). Step the candidate selection so a
+      rank-1 candidate whose rect WOULD intersect the avatar is rejected.
+  **Expected:** no anchor ever places the surface over Fredo; `data-reply-placement` ∈
+      {`above`,`right`,`left`} and matches the geometrically-derived side (the seat candidate set
+      bound by #2883 F-80 and confirmed by the UI/UX design — `below` stays exclusive to the
+      away-overlay path); when every candidate is blocked the E5 shrink+scroll path is taken instead
+      of an overlapping placement.
+  - **Edge:** a would-overlap rank-1 candidate falls through; all candidates blocked; a candidate
+    that would cover the bar/tiles is rejected; the anchor re-derives after a resize.
+
+## F-97 (E7 / NF) — no CLS, no re-render loop, keyboard focus, reduced motion, token-native
+
+- [ ] F-97: (a) measure the command-bar `y` + the seat-slot wrapper
+      `offsetWidth`/`offsetHeight`/`margin-bottom` with a reply shown vs. not (ON / OFF / away);
+      (b) read `tauri_read_logs(source="console")` after every leg and inspect the placement code
+      for effect/memo deps; (c) Tab-reach the reply region + the labelled `Newest` button;
+      (d) reduced-motion pass (else named blocker G-148 + static/product-unit pin); (e) grep the
+      changed files for colour literals + `var(--x)NN`.
+  **Expected:** `|Δy| ≤ 1 px` and the wrapper exactly **80×100 + 16 px** in every state (a reply must
+      not displace the launcher — the #2870 R-35 pin); no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no effect/memo on array `.length`/fresh objects (#523); the region is
+      keyboard-reachable and `Newest` is a labelled `<button>`; under reduced motion the entry is
+      fade-only and the POSITION is identical (positioning never motion-dependent); ZERO hardcoded
+      colour literals / no `var(--x)NN` (#2770).
+  - **Edge:** theme switch mid-stream; grow/shrink churn; resize while shown; companion toggled
+    mid-reply; comment issue-refs are not literals.
+
+## F-98 (E8 / LIVE) — mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-98: Same run as F-91..F-97: `fredo emit --event-type chat --session-id e2e-2886-chat` +
+      `--event-type tool_use --session-id e2e-2886-tool`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows` (telemetry-query skill); retain the per-case screenshots/DOM.
+  **Expected:** `telemetry_spans` NON-ZERO with a recent `max(ingested_at)`; the rows classify under
+      their session ids; every row carries a rendered receipt. **A static-only PASS with no live
+      receipt is a FALSE PASS.** Never fabricate a telemetry query.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim.
+
+### #2886 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
