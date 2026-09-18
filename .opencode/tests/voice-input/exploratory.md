@@ -223,3 +223,60 @@
 ### #2887 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2888 extension — casing / name / normalization probes
+
+> Issue #2888 normalizes the dictated transcript (sentence case, intentional capitals, the name
+> `Fredo`). A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note).
+> Live policy; an undrivable lever is a named blocker (G-053) with a static/unit pin — never
+> fabricated. Content probing uses the L3 synthetic `stt:transcript` lever on the REAL
+> `adapterBridge.listen` channel (functional.md `#2888` testability contract).
+
+- [ ] E-43: **Name at the boundaries.** Inject finals where `FREDO` is the FIRST token, the LAST token,
+      possessive (`FREDO'S`), quoted (`"FREDO"`), hyphenated (`FREDO-LIKE`), and immediately followed by
+      , `.` `!` `?`. Does every occurrence survive with the right case and the punctuation intact? A
+      lowercased/dropped/duplicated occurrence is a finding (promotes to F-86..F-88).
+- [ ] E-44: **Capitals the rule does NOT know.** Inject a mixed raw segment containing `NASA`,
+      `iPhone`, `McDonald`, `OK`, `I`, `I'M`, `USB-C`, `10GB`, `2FA`. Compare against the Architect's
+      TWO declared tables (`transcriptCase.ts` `PRESERVED_TOKENS` + `FREDO_CONFUSABLES`). Record exactly
+      which tokens survive and which are flattened. Distinguish a *declared* boundary (a token absent
+      from `PRESERVED_TOKENS` — expected to flatten, e.g. `NASA`) from an *undeclared* over-reach (a
+      token that IS in the table but still flattens, or a table member rewritten) — the latter is a
+      finding (promotes to F-84). Never widen the table yourself to make a probe pass.
+- [ ] E-45: **Idempotence / mixed-case raw.** Inject an ALREADY sentence-cased final, then an ALL-CAPS
+      one, then a mixed `dEpLoY tHe bUiLd`. Is the transform idempotent (a second pass changes nothing)
+      and does the mixed case land in the ONE declared output? A transform that oscillates between
+      partials (each partial re-casing differently) is a finding (promotes to F-83/F-85).
+- [ ] E-46: **Streaming partials under the transform.** Drive a partial sequence (`HELLO` → `HELLO
+      WORLD` → `HELLO WORLD AGAIN`) and watch the bar at each revision. Does the field grow
+      monotonically and stably (no flicker between `Hello world` and `Hello World`), and does the final
+      match the last partial plus the declared rule? Any re-casing churn per partial is a finding.
+- [ ] E-47: **User edits are never re-cased.** During/after a dictation, type real keystrokes into the
+      bar (including lowercase and all-caps text) and let a further final arrive. Is the user's own
+      typing left BYTE-EXACT (no normalization applied to their keystrokes), and does the app's own
+      rule apply only to the dictated content? Any re-casing of typed text is a finding.
+- [ ] E-48: **Non-letter content survives.** Inject finals with digits/decimals, `+`/`%`/`$`,
+      emoji, non-ASCII accents, and a URL-ish token. Is everything except letter case byte-preserved
+      (no mojibake, no lossy encoding, no crash)? Any dropped/modified non-letter content is a finding
+      (promotes to F-85).
+- [ ] E-49: **Multi-segment turn (segment vs turn casing).** Inject two finals of one turn —
+      `HELLO` then `WORLD` — and read the joined bar. The Architect's declared rule (`atUtteranceStart`)
+      says the opening capital is derived ONCE per session, so the expected result is **`Hello world`**
+      (a mid-utterance endpoint must not manufacture a new sentence). Any other result — or a
+      `Hello World` — is a finding against the declaration (promotes to F-85/F-100); if the shipped
+      behaviour differs from the declaration, report expected-vs-actual and escalate rather than
+      choosing a winner.
+- [ ] E-50: **Long / repeated-token transcript.** Inject a ~120-word final and one with a word repeated
+      200×. Does the interval stay bounded (cross-ref F-95), does memory return, and does the bar value
+      remain complete (no truncation at the field's 108 px cap — the value, not the rendered height)?
+      Unbounded growth, a truncated value, or a dropped tail is a finding.
+- [ ] E-51: **Session churn under the transform.** Run ≥ 10 hold→inject→release cycles with varied
+      casing; confirm each fresh session starts from a clean normalization state (no carry-over of the
+      previous session's casing decision, e.g. a leading capital leaking into a mid-turn injection).
+      Any cross-session carry-over is a finding (promotes to F-83).
+
+### #2888 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
