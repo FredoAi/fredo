@@ -1281,3 +1281,93 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
   windows (engine resident) vs the plan's 1 % bound — FAIL (the no-engine baseline is 1.218 %, so the
   resident engine is not the cause); resident delta **112.2 MB** ≤ 350; 10 back-to-back cycles with no
   degradation; 3 cancels clean.
+
+---
+
+## #2893 extension — the Companion opens an app named in a message (bar intake)
+
+> Issue #2893 adds a Companion open-app capability: a message naming a Fredo app (typed via the bar,
+> e.g. `open Mission Monitor`, or dictated) is recognized by the Companion, resolved to the feature,
+> and its window opens with no further action; the Companion replies that it opened it. This file owns
+> the **bar-intake** legs (how the phrase is classified and routed) + the #2882/#2883 direct-matcher
+> regression; the skill contract, the reply copy and the stability rows live in `companion`
+> F-99..F-105; the CLI legs live in the new `fredo-cli` suite. Map 1:1 to the QA Plan `R-1..R-5`
+> (the Architect's EARS ids for AC-1..AC-5). **Verification policy: live** — the insert-text
+> lever, DOM/screenshot, the live managed `llama-server`, and the `telemetry_spans` receipt
+> (companion F-104). A static-only PASS is a FALSE PASS. **Serving checkout:** the `spec/2893` tip.
+> **G-136 reconciliation:** nothing is retired — the #2882 typed whole-query matcher and the
+> #2871/#2883 bar contracts remain IN FORCE and are re-asserted by R-54..R-56.
+
+## F-85 (R-1) — A typed `open Mission Monitor` reaches the Companion and the app opens
+
+- [ ] F-85: Companion ACTIVE at home + ready. Insert `open Mission Monitor` into
+      `[data-testid="launcher-command-input"]` with the INSERT-TEXT lever; read the hint chip; press
+      Enter. Snapshot the DOM + window list after.
+  **Expected:** `open Mission Monitor` is NOT the direct #2882 match (the whole query is neither a
+      prefix nor a whole-word run of the app name) → the hint reads `↵ send to Fredo`, exactly ONE
+      Companion generation starts, and the Companion's open execution opens exactly ONE Mission
+      Monitor window whose identity fingerprint (aria-label + header title) is byte-equal to the
+      surface the Mission Monitor TILE opens in the same session; the reply text in
+      `[data-testid="fredo-reply-surface"]` is EXACTLY `Opening Mission Monitor`; **no further user
+      action**; the reply is PERCEIVABLE (not fully occluded by the new window, or displayed before
+      the open — record which; bound ordering: the reply is committed first and the open is dispatched
+      after `APP_OPEN_REPLY_BEAT_MS = 800` (Architect QA-6)); the bar busy state clears; success uses
+      the `happy` beat.
+  - **Edge:** `OPEN mission monitor` / `mission-monitor` (id form) / leading+trailing whitespace;
+    target already open → re-invoke focuses the SAME window (no duplicate); a second app request with
+    the first window open; a reply rendered entirely behind the maximized window = FAIL/UNVERIFIED.
+  - **Lever note (G-161):** the MCP `keyboard` tool performs no native text insertion — use the
+    insert-text lever; a synthetic-keystroke-only failure is a lever limitation, not a product FAIL.
+
+## F-86 (R-1) — A dictated `open Mission Monitor` opens the app through the Companion
+
+- [ ] F-86: Autosend ON; hold Space on the focused EMPTY bar with the synthetic `stt:transcript`
+      final `open Mission Monitor` injected on the real channel; release. Snapshot after.
+  **Expected:** the transcript is Fredo's message (the #2882/#2883 dictated rule — it never runs the
+      direct app-open matcher), the Companion recognizes the open intent, exactly ONE Mission Monitor
+      window opens with no further action, and the reply is EXACTLY `Opening Mission Monitor` with the
+      same perceivability check as F-85; 1 generation.
+  - **Edge:** autosend OFF + manual Enter; transcript case variants; a dictated transcript naming TWO
+    apps (record the observed classification).
+  - **Named blocker:** no physical mic on this host → the REAL-capture read is a NAMED BLOCKER
+    (G-053); the synthetic-transcript lever carries CONTENT, per the `voice-input` convention.
+
+## F-87 (R-1/R-4 regression) — #2882's direct matcher is UNCHANGED
+
+- [ ] F-87: Type each of `set`, `Miss`, `monitor`, `Mission Mon`, `mission monitor` + Enter; then
+      `open Mission Monitor` + Enter; then `Missing all the time`, `MM` + Enter; companion ACTIVE and
+      OFF. Record per leg: hint chip, generations, windows opened.
+  **Expected:** the #2882 contract byte-for-byte — `set`/`Miss`/`monitor`/`Mission Mon`/
+      `mission monitor` open the named app with **0 generations** (chip `↵ open <App>`);
+      `open Mission Monitor` is a MESSAGE (≥1 generation) and opens the app only through the
+      Companion; `Missing all the time` / `MM` → 1 generation, 0 windows; the matcher/evaluation is
+      unchanged by this spec.
+  - **Edge:** companion OFF/away for every typed query; surrounding whitespace; exact full name; the
+    `s` prefix (direct-matcher path → #2882 top-ranked; the Companion path's ambiguity rule is disjoint
+    by construction; cross-ref F-88 + Architect QA-3).
+
+## F-88 (R-4) — Unknown / ambiguous requests open NOTHING via the bar
+
+- [ ] F-88: Companion ACTIVE; send `open NotARealApp` + Enter; then an ambiguous request (the
+      bound form, or the mocked-registry component pin — Architect QA-8); record window count
+      before/after, the reply text, and the console.
+  **Expected:** ZERO windows open in BOTH legs; the unknown reply is EXACTLY
+      `I couldn't find "NotARealApp"` (unresolved name verbatim, ASCII quotes); the ambiguous reply
+      asks which (UI/UX copy); the direct matcher is untouched (the text still filters the grid
+      normally); avatar `idle` with no `happy`; desktop stable.
+  - **Edge:** gibberish; a typo of a real name; a real non-showable feature id; repeated unknown
+    requests; ambiguity = `appNameMatches` candidates > 1 after the R-2.7 normalization (Architect
+    QA-3); the live ambiguity leg is a NAMED BLOCKER with a mocked-registry pin.
+
+## F-89 (R-1 NF) — Repeatability + latency + no stuck bar after an open request
+
+- [ ] F-89: Run F-85 five times from a clean state; record opened/not per attempt, the
+      request-commit→window-present and request-commit→first-reply-token wall-clock numbers; after
+      each, sample `data-streaming`, the cursor, the bar `aria-busy`/`readOnly`.
+  **Expected:** the window opens ≥4/5 (Architect-bound, QA-5); raw N/M quoted;
+      the target window is present ≤2 s after skill selection (Architect-bound, QA-5; <400 ms perceived
+      for a local resolve); after every outcome `data-streaming`
+      is absent, the cursor hidden, the bar `aria-busy` false / `readOnly` cleared, and the Companion
+      back at rest; no wrong window ever opens.
+  - **Edge:** a retry immediately after a missed selection; a request while a generation is in
+    flight; a cold managed `llama-server`.
