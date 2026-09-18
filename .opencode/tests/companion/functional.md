@@ -2144,4 +2144,13 @@ clean.
 
 ### #2892 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Round 1 @ `spec/2892 bf3b3e80`: **FAIL** (AC9 settings display clamp; interrupt live leg
+> harness-limited). Detail in `.opencode/tmp/2892/tests-runs.md`.
+
+- **F-106 PASS (live).** `replyInFlight` true only while streaming; at `llm-done` it cleared even with the pointer resting on `fredo-reply-surface`.
+- **F-107 PASS (live).** Pointer on a completed reply changed only the hold window; status untouched.
+- **F-108 PASS (mechanism, live).** A held reply survived past the 5 s happy-hold (bubble present after a 7 s bounded wait) → `isInUse` suppression active. Idle-timeout=5 s variant not executed (time-box).
+- **F-109 PASS (mechanism, live).** A queued send was accepted, auto-dispatched on settle, and produced exactly one reply (`alpha`). Exact indicator literal pinned.
+- **F-111 UNVERIFIED (live).** Interrupt supersession not exercised: 3 attempts all landed after `llm-done` (`isGenerating: false` in the console). Pinned by `companionDispatch.test.ts` + `CompanionEntity.dispatch.test.tsx` (13 tests).
+- **F-112 PARTIAL (live).** Both settings persist (`localStorage` + Tauri `get_setting`); full cold restart not performed.
+- **F-115 PASS (static).** Zero colour literals / no `var(--x)NN` in the changed companion files; console clean (no re-render loop).

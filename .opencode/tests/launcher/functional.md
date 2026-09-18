@@ -1584,4 +1584,14 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 
 ### #2892 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Round 1 @ `spec/2892 bf3b3e80`: **FAIL** (driver-cadence gaps + the AC9 settings clamp; the
+> core bar behavior passes). Detail in `.opencode/tmp/2892/tests-runs.md`.
+
+- **F-90 PASS (live).** Streaming + completed-held: `readOnly=false`, `disabled=false`; typed mid-stream and with a reply on screen; focus stayed in the TEXTAREA.
+- **F-91 PASS (live).** Hovering a completed reply changed only the hold window — resting placeholder, no `aria-busy`, no send gate.
+- **F-92 PASS (live).** Streaming placeholder EXACTLY `Fredo is replying…` + `aria-busy="true"`; cleared at settle with the pointer resting while the reply stayed displayed.
+- **F-93 PARTIAL (live).** Accepted sends cleared the bar; `[data-testid="launcher-command-queued"]` was found live; drain announcer fired; a queued `alpha` auto-dispatched to reply `alpha`. The exact on-screen literal was not captured (sub-second queue window vs driver cadence) — pinned by `companionDispatch.test.ts` + `launcherCommandBarVoice.test.tsx`.
+- **F-94 UNVERIFIED (live).** 3 attempts; each console read `runGeneration called — … isGenerating: false` (send landed 0.2–0.3 s after `llm-done`). Pinned by `companionDispatch.test.ts` + `CompanionEntity.dispatch.test.tsx`.
+- **F-95 PASS (live).** Companion OFF: `hello there friend` + Enter preserved the text, no generation.
+- **F-96 PASS (live).** No "busy" send gate: typed sends dispatched while a reply was on screen.
+- **F-100 PASS (static/build).** Zero colour literals / no `var(--x)NN` in the changed launcher files; build + full suite green; console clean.

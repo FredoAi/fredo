@@ -596,5 +596,15 @@
 
 ### #2892 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Round 1 @ `spec/2892 bf3b3e80`: **FAIL**. Live on the running dev app (MCP driver
+> `com.fredo.app`) + `telemetry_spans` receipt (10673 spans, `max(ingested_at)`
+> 2026-09-18T20:26:11.94Z; `chat_rows`/`tool_use_rows` markers 1/1). Full report:
+> `.opencode/tmp/2892/tests-runs.md`.
+
+- **F-41 PASS (live).** `[data-testid="companion-send-during-reply"]` is a real `<select>` with options `Queue until Fredo finishes` / `Interrupt and send now`; fresh default `queue`; changing to `interrupt` committed immediately to `localStorage` AND Tauri `get_setting`.
+- **F-42 FAIL (live).** Persisted clamp + persistence work (`10`→10000, `2`→2000, `999999`→60000, `-5`→0), **but the field display does NOT clamp/heal**: after committing `999999` the input still showed `999999` (`aria-invalid="false"`, normal help) while persisted = `60000`; after `-5` it showed `-5` while persisted = `0`. Contradicts the binding "clamps display [0,60] s" contract. See the round-1 report for the repro.
+- **F-43 PASS (live).** Both keys held the chosen values after commit without the Save footer.
+- **F-45 PASS (live/static).** Control re-tints token-native; grep of the changed files for hex/rgba/hsla + `var(--x)NN` = zero true literals.
+- **F-47 PASS (live).** `telemetry_spans` non-zero with a recent `max(ingested_at)`; both markers classified.
+- **Console:** clean across every leg (`tauri_read_logs`).
 - **Console:** clean after every interaction (`tauri_read_logs`); one MCP-bridge wedge on the Telemetry section (pre-existing #2864 E-3 tooling issue) recovered by driver stop/start.
