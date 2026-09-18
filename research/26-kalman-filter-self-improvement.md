@@ -6,6 +6,8 @@
 **Model evaluated:** The append-only per-issue JSONL event log (`.opencode/state/issues/*.jsonl`), 87 issue logs, ~5.7 weeks, 10,79x events, plus the naive guardrail-effectiveness classifier in Recipe 1.
 **Method:** Six independent parallel research tracks (A–F), one deliberately adversarial; synthesis below resolves contradictions and marks single-track claims.
 
+> **Premise correction (operator challenge, 2026-09-17).** The first draft treated internal tester pass/fail, `rework`, and `blocked` events as the primary outcome signal. The operator points out the pipeline does not run on internal "bugs": specs proceed straight forward, and dissatisfaction is expressed as a **follow-up spec**. Re-reading the transition record confirms it — the audit verdict passes 76/77 and `done → planning` reopen fired once, while the outcome that actually matters (human acceptance) is not recorded at all. The report is amended in §4.6 and the recommendation is reordered around it. The Kalman-specific conclusions in §1–3 are unaffected.
+
 ---
 
 ## Executive Summary (Top 8 Findings)
@@ -22,9 +24,9 @@
 
 6. **There is no prior art for Kalman/state-space filtering of LLM-agent reliability as a self-improvement measure.** The Kalman-family prior art is online competitive skill rating (Elo/Glicko/TrueSkill; Duffield et al. 2024 explicitly frames Glicko as a local EKF) and very recent cross-sectional latent-reliability models (HMM/DTMC). The field's established estimators are anytime-valid confidence sequences, SPRT, Bayesian credible intervals, and bandits [Herbrich et al. 2006; arXiv:2308.02414; arXiv:2607.22951; arXiv:2604.24579]. Novel ≠ impossible, but it means no proven playbook.
 
-7. **The pipeline can support a *filtered* estimate today, with zero schema changes — and the naive method is provably stale.** On real data, the raw cumulative rework mean (1.425/issue) overstates current intensity by ~2–3× versus a trailing window (~0.5); a filtered estimate tracks the recent regime. But the series is heavy-tailed (2 issues = 32% of all rework) and clustered, so at n=87 only a large shift (≈rate halving) is detectable [Track E, recomputed from `.opencode/state/issues/*.jsonl`].
+7. **The signal a filter would estimate is barely instrumented — and the abundant signal is the wrong one.** On real data the audit verdict is near-degenerate (**76/77 pass**; one `failed` in the entire log), `rework` (testing→implementation, **124**) is a *process-friction* signal (tester/QA churn, CI/environment, technique) rather than a product-quality one, and `blocked` is dominated by guard refusals (**1,405** `outcome=="blocked"` vs **21** `block` actions). The outcome that actually matters — did the human accept the delivery, or ask for a follow-up spec — is **not recorded**: dissatisfaction arrives as a *new issue* with no back-link, and `done → planning` reopen fired **once**. So the real blocker for any latent-state measure is **data capture, not estimation**.
 
-8. **Honest recommendation: adopt the *ideas* (latent state, explicit uncertainty, process vs measurement noise, innovation monitoring), not the *filter*, as the primary measure.** Stage 1 (now): run chart + CUSUM + Crow-AMSAA + Beta intervals replacing Recipe 1's hard thresholds. Stage 2 (if continuous metrics land): EWMA, then a regime-aware state-space filter only if genuine multi-signal fusion is needed. Stage 3 (defer): closed-loop tuning — not computable until token telemetry and machine-readable guardrail linkage exist.
+8. **Honest recommendation: first record the outcome, then estimate it — with the simplest matched method, not a filter.** **Stage 0 (now, the real blocker): instrument human acceptance** — link each follow-up spec to the feature it revises and record an explicit accepted/rejected marker; without it every estimator fits process noise. **Stage 1:** replace Recipe 1's hard thresholds with Beta–Bernoulli intervals + a change-point test, add a Crow-AMSAA reliability-growth slope *over the recorded acceptance outcome*, and keep a run chart + CUSUM on `rework` as the internal process surface. **Stage 2** (if continuous metrics land): EWMA, then a regime-aware state-space filter only for genuine multi-signal fusion. **Stage 3** (defer): closed-loop tuning — not computable until token telemetry and machine-readable guardrail linkage exist.
 
 ---
 
@@ -184,6 +186,29 @@ Raw series: 87 issues ordered by first event timestamp. Total rework **124**, me
 | Continuous-metric smoothing | **Yes** (durations derived, rework/blocked counts) | Emit `startTs`/`endTs`/`durationMs` so in-flight durations aren't inferred |
 | Closed-loop tuning | **No** | `gen_ai.usage.*` tokens; per-agent outcome/latency attribution; machine-readable `guardrail_id`↔failure linkage; `sequence` |
 
+### 4.6 Premise correction — what the pipeline actually records
+
+An operator challenge ("we don't have bugs; specs go straight forward, and if I don't like something I ask with another spec") prompted a re-read of the transition record. The internal health signals the first draft leaned on are **not the signals that matter most**, and the audit channel is nearly degenerate.
+
+| Transition (from → to) | Count |
+|---|---|
+| implementation → testing | 202 |
+| testing → implementation (`rework`) | 124 |
+| planning → implementation | 81 |
+| backlog → planning | 79 |
+| testing → audit | 77 |
+| audit → cleanup (success) | 76 |
+| audit → planning (auto restart) | 1 |
+| done → planning (reopen) | 1 |
+| implementation → planning (rescope) | 1 |
+
+- **The audit verdict carries almost no signal.** `audit.verdict outcome=failed` occurs **once** in the whole log; 76/77 audits pass. Using "audit failure" as the reliability observation channel is effectively fitting a constant.
+- **`rework` is real and frequent (124 across 44 issues) but it is a *process* signal**, not product truth: tester/QA friction, CI/environment, technique. Its own reason is half-unlabelled — `rework.rootcause` exists for only 79 of the 124 (defect 36 / technique 24 / environment 15 / scope 4). The operator's "we don't have bugs" is consistent with this distribution.
+- **The true "this did not land" signal is the human follow-up spec — and it is entirely unrecorded.** Post-delivery dissatisfaction is expressed as a *new issue*, not a `done → planning` reopen (1 occurrence). The event log has no field linking a follow-up spec to the feature it revises.
+- **`blocked` is not a clean stall signal either** — 1,405 `outcome=="blocked"` (mostly guard refusals) versus 21 `block` actions.
+
+**Consequence for the research question:** a filtered estimator is only as good as the observation it filters. The pipeline's *outward-facing* outcome (was the delivery accepted?) is essentially unrecorded, while its *inward-facing* process signal (tester/`rework` churn) is abundant but weakly related to product quality. The naive Recipe-1 rework series is still stale (see §4.4), but the priority is not to filter it — it is to **record the acceptance outcome first**. This is a data-capture problem, not an estimation problem, and it is the same conclusion whether the estimator is a Kalman filter, a Beta posterior, or a run chart.
+
 ---
 
 ## 5. Anti-Patterns / Goodhart Cautions
@@ -200,7 +225,10 @@ Raw series: 87 issues ordered by first event timestamp. Total rework **124**, me
 
 ## 6. Honest Opinion & Staged Recommendation
 
-**Bottom line: the Kalman filter is the wrong *primary* measure, but its conceptual vocabulary is right.** The pipeline's real constraint is sample size and non-stationarity, not estimator sophistication. Adopt the ideas — latent state, explicit uncertainty, process-vs-measurement noise, innovation monitoring — and implement them with the simplest method that matches each signal. Do not build a filter to smooth discrete small-N data the pipeline already logs plainly.
+**Bottom line: the Kalman filter is the wrong *primary* measure, but its conceptual vocabulary is right.** The pipeline's real constraints are (1) it does not record the outcome it wants to improve, and (2) sample size and non-stationarity — not estimator sophistication. Adopt the ideas — latent state, explicit uncertainty, process-vs-measurement noise, innovation monitoring — and implement them with the simplest method that matches each signal. Do not build a filter to smooth discrete small-N data the pipeline already logs plainly.
+
+**Stage 0 — now, and the actual bottleneck: record the outcome before estimating it.**
+0. **Instrument human acceptance.** The pipeline cannot measure self-improvement because it does not record whether a delivered feature was accepted. Concretely: (a) when a new spec revises or supersedes an earlier feature, stamp the link (a `revises: #N` field on the issue / a `feature.revised` event); (b) add an explicit human acceptance/rejection marker at human review so `done → planning`-style dissatisfaction is captured even when it arrives as a brand-new issue. Without this, every estimator below is fitting process noise — Kalman included.
 
 **Stage 1 — now, in-domain, low-cost (recommended):**
 1. Replace Recipe 1's raw before/after thresholds with **Beta–Bernoulli posteriors + credible intervals** (so "0/2" stops reading as zero) and a **change-point test** (did the post-activation interval exclude the pre-rate?).
@@ -302,4 +330,4 @@ Raw series: 87 issues ordered by first event timestamp. Total rework **124**, me
 
 ## Verdict Note
 
-The highest-leverage change is **not** adding a Kalman filter — it is replacing Recipe 1's un-intervaled before/after threshold with a **Beta posterior + change-point test**, adding a **Crow-AMSAA reliability-growth slope** as the headline improvement metric, and fixing the measurement plumbing (`startTs`/`endTs`/`durationMs`, `guardrail_id` linkage, un-conflating "blocked"). Those are cheap, auditable, and directly attack why 52% of guardrails remain `Pending`. A state-space filter becomes worth its cost only when the pipeline has continuous, multi-signal telemetry and a stable enough dynamic story to make `Q` meaningful — today it does not.
+The highest-leverage change is **not** adding a Kalman filter. It is, first, **recording human acceptance** — today a follow-up spec is an unlinked new issue, so the pipeline cannot tell whether a feature landed; second, replacing Recipe 1's un-intervaled before/after threshold with a **Beta posterior + change-point test** over that recorded outcome; third, adding a **Crow-AMSAA reliability-growth slope** as the headline improvement metric; and fourth, fixing the measurement plumbing (`startTs`/`endTs`/`durationMs`, `guardrail_id` linkage, un-conflating "blocked", and treating the near-degenerate audit verdict as a formality rather than a quality signal). Those are cheap, auditable, and directly attack why 52% of guardrails remain `Pending`. A state-space filter becomes worth its cost only when the pipeline has continuous, multi-signal telemetry and a stable enough dynamic story to make `Q` meaningful — today it does not.
