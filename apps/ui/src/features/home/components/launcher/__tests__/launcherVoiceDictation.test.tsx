@@ -2340,3 +2340,196 @@ describe('LauncherShell — #2883 ST-2: the measured reply band reaches the seat
     expect(handed.boundsRight).toEqual(expect.any(Number));
   });
 });
+
+// ── Spec #2888 ST-3 — the bar-level regression pins ──────────────────────────
+//
+// The developer-runnable half of ST-3: the form the seam produces, as the
+// launcher bar actually renders it (`data-testid="launcher-command-input"`) plus
+// the dictated-provenance hint the send path derives from it. It pins the
+// user-visible outcome of REQ-1..REQ-5 and the untouched #2882 routing (REQ-8) so
+// no later change can silently re-introduce ALL CAPS or flatten the declared
+// capitals.
+//
+// The LIVE execution of the QA rows (F-83..F-101) is the TESTER's: the real hold
+// gesture, the `stt_start|stop|cancel|status` control plane, and synthetic
+// `stt:transcript` on the app's own `adapterBridge.listen` channel. It is never
+// duplicated here as a spoken-mic attempt (no microphone, model or WAV asset
+// exists in this repository — a missing asset is a tooling gap, never a hunt).
+
+describe('LauncherShell — #2888 ST-3: a dictated transcript reads as written text in the bar', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const renderShell = (features: FredoFeatureClass[] = []) => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  /** The LIVE bar field — resolved by its named observable, not by tag. */
+  const bar = () => screen.getByTestId('launcher-command-input') as BarField;
+
+  const emitListening = (listening: boolean) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin: 'launcher' });
+    });
+
+  const emitPartial = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: false,
+        latencyMs: 1,
+      });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const type = (value: string) =>
+    act(() => {
+      fireEvent.change(bar(), { target: { value } });
+    });
+
+  const hint = () => screen.getByTestId('launcher-command-hint');
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  it('renders the named bar observables the QA rows assert', () => {
+    renderShell([SETTINGS]);
+    expect(screen.getByTestId('launcher-command-input')).toBeInTheDocument();
+    expect(screen.getByTestId('voice-transcript-announcer')).toBeInTheDocument();
+
+    // The hint renders once there is a query worth hinting about (a tile match).
+    type('set');
+    expect(screen.getByTestId('launcher-command-hint')).toBeInTheDocument();
+
+    emitListening(true);
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+  });
+
+  it('REQ-1 / no-ALL-CAPS: a raw uppercase segment is written in sentence case at the PARTIAL', () => {
+    renderShell();
+    emitListening(true);
+
+    emitPartial('DEPLOY THE BUILD TONIGHT');
+
+    expect(bar().value).toBe('Deploy the build tonight');
+    // No shouted run is ever visible in the bar.
+    expect(bar().value).not.toMatch(/[A-Z]{2,}/);
+
+    // …and the final does not re-case what the partial already rendered.
+    emitFinal('DEPLOY THE BUILD TONIGHT', 2);
+    expect(bar().value).toBe('Deploy the build tonight');
+  });
+
+  it('REQ-2/REQ-5: the merged-tip string `CALL THE API FREDO` is case-correct live and byte-stable at the final', () => {
+    renderShell();
+    emitListening(true);
+
+    emitPartial('CALL THE API FREDO');
+    expect(bar().value).toBe('Call the API Fredo');
+
+    emitFinal('CALL THE API FREDO', 2);
+    expect(bar().value).toBe('Call the API Fredo');
+    // The accessible transcript equals the visible one (same normalised value).
+    expect(screen.getByTestId('voice-transcript-announcer')).toHaveTextContent('Call the API Fredo');
+  });
+
+  it('REQ-5: the declared acronyms survive mid-sentence while the words around them are lowercased', () => {
+    renderShell();
+    emitListening(true);
+
+    emitFinal('EXPORT THE API SPEC AND RUN SQL');
+
+    expect(bar().value).toBe('Export the API spec and run SQL');
+  });
+
+  it('REQ-4: the product name lands as `Fredo` alone, embedded and for every occurrence', () => {
+    const cases: Array<[string, string]> = [
+      ['FREDO', 'Fredo'],
+      ['ASK FRITO TO OPEN THE LOGS', 'Ask Fredo to open the logs'],
+      ['TELL FREDO THAT FREDO SAID YES', 'Tell Fredo that Fredo said yes'],
+      ['FREDO FREDO ARE YOU THERE', 'Fredo Fredo are you there'],
+    ];
+
+    for (const [raw, expected] of cases) {
+      cleanup();
+      renderShell();
+      emitListening(true);
+      emitFinal(raw);
+      expect(bar().value, raw).toBe(expected);
+    }
+  });
+
+  it('REQ-3: casing is the ONLY change — the case-insensitive bar value equals the injected raw', () => {
+    renderShell();
+    emitListening(true);
+    const raw = 'REMEMBER TO REVIEW THE RELEASE NOTES BEFORE THE STANDUP TOMORROW MORNING';
+
+    emitFinal(raw);
+
+    expect(bar().value.toLowerCase()).toBe(raw.toLowerCase());
+    expect(bar().value).not.toMatch(/[A-Z]{2,}/);
+  });
+
+  it('REQ-1: a continuation segment appends without manufacturing a mid-sentence capital', () => {
+    renderShell();
+    emitListening(true);
+
+    emitFinal('HELLO');
+    emitFinal('WORLD', 2);
+
+    expect(bar().value).toBe('Hello world');
+  });
+
+  it('REQ-8: a dictated `Fredo` transcript stays Fredo-bound — the hint names the send before AND after an app-name edit', () => {
+    seatCompanion();
+    renderShell([SETTINGS]);
+    emitListening(true);
+    emitFinal('FREDO');
+    emitListening(false);
+
+    expect(bar().value).toBe('Fredo');
+    expect(hint()).toHaveTextContent('↵ send transcript to Fredo');
+
+    // The user edits it into an exact app name — provenance survives the edit.
+    type('Settings');
+    expect(hint()).toHaveTextContent('↵ send transcript to Fredo');
+  });
+
+  it('REQ-8: autosend ON dispatches the normalised `Fredo` transcript exactly once and opens no app', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    const onOpenFeature = renderShell([SETTINGS]);
+    emitListening(true);
+    emitFinal('FREDO');
+    emitListening(false);
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Fredo');
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+});
