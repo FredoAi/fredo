@@ -44,6 +44,7 @@ import {
   useReplyProtection,
 } from '@/shared/components/companion/replyProtection';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
+import type { LlmSkillCall } from '@/app/adapters/HostAdapter';
 
 // ── Module mocks ───────────────────────────────────────────────────────────────
 // framer-motion is replaced with plain elements (the bubble's spring is not under
@@ -100,6 +101,7 @@ function ApiProbe() {
 type LlmDriver = {
   onToken: (token: string) => void;
   onDone: () => void;
+  onSkillCall: (call: LlmSkillCall) => void;
   onError: (message: string) => void;
 };
 let llm: LlmDriver | null = null;
@@ -157,7 +159,17 @@ beforeEach(() => {
   adapterBridge.setInvoke(async () => undefined);
   adapterBridge.setListen(() => Promise.resolve(() => {}));
   adapterBridge.setLlmChat(async (_messages, onToken, onDone, onError) => {
-    llm = { onToken, onDone, onError: (message: string) => onError?.(message) };
+    llm = {
+      onToken,
+      onDone,
+      onSkillCall: () => {},
+      onError: (message: string) => onError?.(message),
+    };
+  });
+  // #2893 ST-7 — the bar's `ask` path is now skill-aware; the harness must
+  // capture that driver too (the joke path above stays on `llmChat`).
+  adapterBridge.setLlmChatWithSkills(async (_messages, onToken, onDone, onSkillCall, onError) => {
+    llm = { onToken, onDone, onSkillCall, onError: (message: string) => onError?.(message) };
   });
 });
 

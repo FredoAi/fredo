@@ -23,6 +23,9 @@ const adapter = isTauri ? new TauriAdapter() : new DevAdapter();
 adapterBridge.setInvoke(adapter.invoke.bind(adapter));
 adapterBridge.setLlmChat(adapter.llmChat.bind(adapter));
 adapterBridge.setLlmChatWithImage(adapter.llmChatWithImage.bind(adapter));
+// #2893 ST-7 — the skill-aware path is optional on HostAdapter; in-repo adapters
+// (TauriAdapter/DevAdapter) implement it, so this is always registered in practice.
+adapterBridge.setLlmChatWithSkills(adapter.llmChatWithSkills?.bind(adapter));
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

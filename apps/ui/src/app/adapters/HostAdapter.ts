@@ -45,10 +45,38 @@ export interface HostAdapter {
     onToken: (token: string) => void,
     onDone: () => void,
   ): Promise<void>;
+
+  /**
+   * #2893 ST-7 — the skill-aware streaming variant. Token/done/error semantics are
+   * identical to `llmChat`; the ADDITIVE `onSkillCall` channel carries a VALIDATED
+   * `llm-skill-call` (`{ skill, arguments }`) when the model selects a registered
+   * companion skill. Raw tool-call JSON is NEVER streamed as a token, so a caller
+   * that ignores `onSkillCall` sees an ordinary (silent) generation.
+   *
+   * Optional so existing `HostAdapter` implementations and test doubles stay valid;
+   * in-repo adapters (`TauriAdapter`, `DevAdapter`) implement it.
+   */
+  llmChatWithSkills?(
+    messages: LlmMessage[],
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onSkillCall: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void>;
 }
 
 /** A single turn in an LLM conversation. */
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+}
+
+/**
+ * #2893 ST-7 — a VALIDATED companion-skill selection delivered by the skill-aware
+ * inference path (mirrors the backend `SkillCall` wire struct: `skill` + parsed
+ * `arguments`, e.g. `{ skill: 'open_app', arguments: { app: 'Mission Monitor' } }`).
+ */
+export interface LlmSkillCall {
+  skill: string;
+  arguments: Record<string, unknown>;
 }

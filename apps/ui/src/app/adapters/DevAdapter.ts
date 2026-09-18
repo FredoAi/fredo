@@ -1,4 +1,4 @@
-import type { HostAdapter, LlmMessage } from './HostAdapter';
+import type { HostAdapter, LlmMessage, LlmSkillCall } from './HostAdapter';
 
 /**
  * DevAdapter — HostAdapter implementation for the standalone Vite dev server.
@@ -80,5 +80,20 @@ export class DevAdapter implements HostAdapter {
     const mock = '4'; // dev: always pick center cell
     for (const ch of mock) onToken(ch);
     onDone();
+  }
+
+  /**
+   * #2893 ST-7 — skill-aware parity for the dev mock. The dev server never
+   * performs a real selection (no backend tools path), so it streams an ordinary
+   * mock reply through the unchanged `llmChat` and never emits a skill call.
+   */
+  async llmChatWithSkills(
+    messages: LlmMessage[],
+    onToken: (token: string) => void,
+    onDone: () => void,
+    _onSkillCall: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    return this.llmChat(messages, onToken, onDone, onError);
   }
 }

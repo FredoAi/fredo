@@ -10,7 +10,9 @@ import type { FredoAvatarState } from '../fredo-avatar';
 import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
-import type { LlmMessage } from '../../../app/adapters/HostAdapter';
+import type { LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
+import { registerAppOpenReplyPusher } from './skillBridge';
+import type { AppOpenReply } from './appOpenReply';
 import { companionReplyErrorCopy } from './companionReadiness';
 import {
   REPLY_PROTECTION_ANNOUNCEMENT,
@@ -261,6 +263,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // follow-up `finish()`) early-returns on it so an error can NEVER re-play the
     // success `happy` beat. Reset at the start of every generation.
     const generationErroredRef = useRef(false);
+    // #2893 ST-7 — the skill-aware generation bookkeeping:
+    //  - `generationUsesSkillsRef` — this generation went through the skill-aware
+    //    path, so it may receive a pushed deterministic reply.
+    //  - `skillPendingRef` — the model selected a skill; the settle is DEFERRED
+    //    until the pushed reply lands (or the watchdog fires — R-1.4).
+    //  - `generationSettledRef` — exactly ONE settle per generation (a pushed reply
+    //    and the follow-up `llm-done` must not both settle).
+    const generationUsesSkillsRef = useRef(false);
+    const skillPendingRef = useRef(false);
+    const generationSettledRef = useRef(false);
     // True while the CURRENT generation was started by the bar's `ask` path —
     // only that path announces (the avatar-click joke stays silent).
     const announceGenerationRef = useRef(false);
@@ -488,6 +500,12 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       watchdogRef.current = setTimeout(() => {
         watchdogRef.current = null;
         isGeneratingRef.current = false;
+        // #2893 ST-7 (R-1.4) — the watchdog is the backstop for a skill-pending
+        // generation whose pushed reply never arrives (bridge unmounted, resolver
+        // threw): clear the pending/settled flags so the generation can never stay
+        // stuck and a later stale push is dropped.
+        generationSettledRef.current = true;
+        skillPendingRef.current = false;
         setIsStreaming(false);
         flowOwnsExpressionRef.current = false;
         playAnim('idle');
@@ -609,8 +627,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // single-in-flight guard, the stale-token counter, the thinking→joking
     // expression flow, the 15 s watchdog, and the happy-hold settle. Extracted
     // from the former `askForJoke` so the joke path is behavior-identical.
-    const runGeneration = useCallback((messages: LlmMessage[]) => {
-      console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
+    const runGeneration = useCallback((messages: LlmMessage[], withSkills = false) => {
+      console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current, 'withSkills:', withSkills);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
       isGeneratingRef.current = true;
       // #2883 ST-6 (UI/UX `Dismissal protection`) — a NEW generation owns the
@@ -625,6 +643,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       generationTextRef.current = '';
       streamingTextRef.current = '💭 Thinking...';
       generationErroredRef.current = false;
+      // #2893 ST-7 — reset the skill bookkeeping for THIS generation.
+      generationUsesSkillsRef.current = withSkills;
+      skillPendingRef.current = false;
+      generationSettledRef.current = false;
       if (announceGenerationRef.current) setA11yAnnouncement('Message sent to Fredo');
       firstTokenRef.current = false;
       setStreamingMessage('💭 Thinking...');
@@ -637,10 +659,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       setState('talk');
       startWatchdog();
 
-      console.log('[companion] calling adapterBridge.llmChat');
-      adapterBridge.llmChat(
-        messages,
-        (token) => {
+      // ── #2893 ST-7 — the shared per-generation callbacks ──────────────────
+      const onToken = (token: string) => {
           // #2871 R-5.1 — a superseded generation's token must never be applied.
           if (gen !== generationRef.current) return;
           console.log('[companion] llm-token:', token.slice(0, 40));
@@ -667,8 +687,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           streamingTextRef.current = next;
           generationTextRef.current = next;
           setStreamingMessage(next);
-        },
-        () => {
+      };
+
+      const onDone = () => {
           // #2871 R-5.1 — a superseded generation's completion must not settle
           // the current one.
           if (gen !== generationRef.current) return;
@@ -677,6 +698,14 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           // must not settle again: doing so would re-play the success `happy` beat
           // after the error path already returned to idle.
           if (generationErroredRef.current) return;
+          // #2893 ST-7 — a pushed skill reply already settled this generation, and
+          // a skill-pending generation defers its settle until the push lands (the
+          // watchdog is the backstop). Raw tool-call JSON was never a token, so
+          // there is nothing to show here.
+          if (generationSettledRef.current) return;
+          if (skillPendingRef.current) return;
+          generationSettledRef.current = true;
+          skillPendingRef.current = false;
           console.log('[companion] llm-done received');
           isGeneratingRef.current = false;
           // #2871 a11y (REQ-15 / DR-6) — announce the SETTLED reply ONCE, never per
@@ -709,13 +738,17 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               hideMessage();
             });
           }, HAPPY_HOLD_MS);
-        },
-        // #2871 ST-1r — the typed error channel (distinct from success). Map the
-        // RAW backend/IPC detail to a readable sentence, return the expression to
-        // idle PROMPTLY (never a `happy` beat), announce the readable sentence once
-        // (bar path only), then hold it briefly before clearing.
-        (raw) => {
+      };
+
+      // #2871 ST-1r — the typed error channel (distinct from success). Map the
+      // RAW backend/IPC detail to a readable sentence, return the expression to
+      // idle PROMPTLY (never a `happy` beat), announce the readable sentence once
+      // (bar path only), then hold it briefly before clearing.
+      const onError = (raw: string) => {
           if (gen !== generationRef.current) return;
+          if (generationSettledRef.current) return;
+          generationSettledRef.current = true;
+          skillPendingRef.current = false;
           const readable = companionReplyErrorCopy(raw);
           isGeneratingRef.current = false;
           generationErroredRef.current = true;
@@ -742,9 +775,78 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               hideMessage();
             });
           }, ERROR_HOLD_MS);
-        },
-      );
+      };
+
+      // #2893 ST-7 — a VALIDATED skill selection (backend already validated it
+      // against the registry). Mark the generation skill-pending: its settle now
+      // waits for the deterministic pushed reply (or the watchdog). Raw tool-call
+      // JSON is NEVER rendered — the thinking placeholder stays until the push.
+      const onSkillCall = (_call: LlmSkillCall) => {
+          if (gen !== generationRef.current) return;
+          if (generationSettledRef.current) return;
+          skillPendingRef.current = true;
+      };
+
+      if (withSkills) {
+        console.log('[companion] calling adapterBridge.llmChatWithSkills');
+        adapterBridge.llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
+      } else {
+        console.log('[companion] calling adapterBridge.llmChat');
+        adapterBridge.llmChat(messages, onToken, onDone, onError);
+      }
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection]);
+
+    // #2893 ST-7 — apply the deterministic app-open reply pushed by ST-6's
+    // `useAppOpenRequests` hook to the SAME reply channel a streamed reply uses
+    // (`streamingMessage` / `streamingTextRef` / the one polite live region). The
+    // success kind settles with the shipped `happy` beat; every non-success kind
+    // settles `idle` with the shipped `ERROR_HOLD_MS` hold — never a celebration.
+    // Ref-guarded so a stale push (a settled/non-skill generation) is dropped.
+    const applyAppOpenReply = useCallback((reply: AppOpenReply) => {
+      if (!generationUsesSkillsRef.current) return;
+      if (!isGeneratingRef.current || generationSettledRef.current) return;
+      const gen = generationRef.current;
+      generationSettledRef.current = true;
+      skillPendingRef.current = false;
+      isGeneratingRef.current = false;
+      clearWatchdog();
+      setIsStreaming(false);
+      // Both refs assigned synchronously (same contract as the stream path).
+      streamingTextRef.current = reply.text;
+      generationTextRef.current = reply.text;
+      setStreamingMessage(reply.text);
+      if (announceGenerationRef.current) setA11yAnnouncement(reply.text);
+      setState('idle');
+      if (reply.kind === 'success') {
+        flowOwnsExpressionRef.current = true;
+        playFlowAnim('happy');
+        timerRef.current = setTimeout(() => {
+          if (gen !== generationRef.current) return;
+          flowOwnsExpressionRef.current = false;
+          playAnim('idle');
+          setState('idle');
+          clearReplyOrDefer(() => {
+            setStreamingMessage(null);
+            hideMessage();
+          });
+        }, HAPPY_HOLD_MS);
+      } else {
+        flowOwnsExpressionRef.current = false;
+        playFlowAnim('idle');
+        timerRef.current = setTimeout(() => {
+          if (gen !== generationRef.current) return;
+          clearReplyOrDefer(() => {
+            setStreamingMessage(null);
+            hideMessage();
+          });
+        }, ERROR_HOLD_MS);
+      }
+    }, [clearWatchdog, playFlowAnim, playAnim, setState, hideMessage, clearReplyOrDefer]);
+
+    // Register this entity as the active reply receiver (mirrors the
+    // `askActiveCompanion` registry above; exactly ONE entity per window is active
+    // at a time). The bridge no-ops safely when nothing is mounted.
+    useEffect(() => registerAppOpenReplyPusher(applyAppOpenReply), [applyAppOpenReply]);
 
     // #2871 — avatar-click joke: shared persona + a random topic prompt. It does
     // NOT announce into the live region (only a bar send does).
@@ -757,6 +859,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // general assistant persona (`FREDO_CHAT_PERSONA` — no joke instruction), ONE
     // fresh user turn (no transcript/memory), streamed into THIS entity's
     // SpeechBubble. A no-op while a generation is already in flight (R-5.1).
+    // #2893 ST-7 — this path is SKILL-AWARE (`llmChatWithSkills`): a validated
+    // `open_app` selection is marked skill-pending and its settle is deferred until
+    // the pushed deterministic reply lands (or the watchdog fires). The joke path
+    // above stays on the unchanged `llmChat`.
     const ask = useCallback((text: string) => {
       // #2871 a11y — mark this generation as the bar-send path so it announces
       // "Message sent to Fredo" + the settled reply in the live region.
@@ -764,7 +870,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       runGeneration([
         { role: 'system', content: FREDO_CHAT_PERSONA },
         { role: 'user', content: text },
-      ]);
+      ], true);
     }, [runGeneration]);
 
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
