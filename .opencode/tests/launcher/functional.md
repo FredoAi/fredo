@@ -1435,3 +1435,37 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
   `APP_OPEN_REPLY_BEAT_MS = 800`), `aria-busy` clears, companion back at rest. Root cause = the
   Mission Monitor window mount long task (~2.18 s) in the served dev artifact (Vite + StrictMode);
   the open dispatch itself is inside the bound. **This is the round's only failing row.**
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+> **Verdict: PASS.** The RD-1..RD-4 cost-only fix (`rowDerivation.ts` WeakMap `rawJson` parse memo +
+> source guard, duplicate tool-summary removed, plain comparator) landed the Q-15 row. Served tip
+> `spec/2893 @ cf25127c` (full stop/start after the tip change). Input lever: insert-text
+> (`launcher-command-input` TEXTAREA) + dispatched Enter (`prevented=true`).
+
+- **F-85 PASS (re-confirmed).** Typed `open Mission Monitor` → hint `↵ send to Fredo`; ONE window
+  (`Sessions` / `FSessions`, byte-equal fingerprint); reply EXACTLY `Opening Mission Monitor`;
+  success beat `happy`; ordering: reply committed +10…+24 ms after `llm-skill-call`, open dispatched
+  +819…+827 ms (the 800 ms beat), window present +870…+1132 ms.
+- **F-86 PASS (re-confirmed).** `stt_start{origin:"launcher"}` → synthetic final `stt:transcript`
+  (`text:"open Mission Monitor", isFinal:true`) on the real channel → `stt_stop`; bar normalised to
+  `Open mission monitor`; exactly ONE generation; reply EXACTLY `Opening Mission Monitor`; one window.
+  **Physical-mic real capture remains a NAMED BLOCKER.**
+- **F-87 PASS (re-confirmed).** `set` → hint `↵ open Settings`, Settings window, 0 generations;
+  `Miss` → `↵ open Mission Monitor`, 0 generations, no duplicate; `monitor` → `↵ open Mission Monitor`,
+  0 generations, window count stayed 1; `Missing all the time` / `MM` → `↵ send to Fredo`, 1 generation,
+  0 windows. #2882's whole-query matcher unchanged.
+- **F-88 PASS (re-confirmed).** `open NotARealApp` → ZERO new windows; reply EXACTLY
+  `I couldn't find "NotARealApp"`; avatar `idle` (no `happy`); exactly ONE generation. Live ambiguity
+  leg stays a NAMED BLOCKER (one addressable app).
+- **F-89 PASS** (was FAIL — latency clause only). Repeatability **5/5** typed (raw 5/5) + no duplicate
+  on re-open. **window-present ≤2000 ms after skill selection: MET** — raw series
+  **888 / 1132 / 1128 / 1103 / 1099 / 1097 / 1105 ms** (7 pre-restart clean runs) + **870 ms**
+  (fresh restart). Open-phase max main-thread gap (10 ms sampler, skill→window):
+  **313.6 / 314.6 / 282.8 / 284.6 / 285.4 / 287.4 / 57.0 ms** — **no ≥500 ms gap during the open**
+  (bound clause met). Reply +10…+24 ms; open dispatch +819…+827 ms (the intentional
+  `APP_OPEN_REPLY_BEAT_MS = 800`); `aria-busy` clears on `llm-done`; companion back at rest.
+  **Disclosed raw (G-171):** post-open gaps ~600–642 ms at ~+1.8 / +3.1 / +6.6 s (outside the open
+  window); an idle-with-Mission-Monitor-open control measured a max gap of **11.5 ms** over 4.0 s.
+  Derive output parity: same 2 sessions / 4 react-flow nodes / 3 edges and the same window
+  fingerprint as round 2 — no session/node lost or reordered.
