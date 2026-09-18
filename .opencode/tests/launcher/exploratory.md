@@ -431,3 +431,36 @@
 - **O-1 (observation, tester instrument — not a product finding).** The `reading 'slice'` console
   bursts this round came from the tester's own MutationObserver scripts (null reply text at
   bubble-clear); they disappeared after a page reload. See `companion` exploratory round 2.
+
+---
+
+## #2892 extension — always-editable bar / queue-race probes
+
+> Unscripted probes for issue #2892. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated. Cross-ref `companion` E-58..E-63 + `settings` E-17..E-20.
+
+- [ ] E-62: **Enter spam at machine speed.** Under `queue`, dispatch Enter ~10x in one burst during a
+      single stream (synthetic keydowns via `execute_js`). Record the queue size samples and the final
+      reply set. Exactly ONE reply per accepted send, in order, with no interleaved streams and no
+      double clear is expected; any drop, duplicate, or interleave is a finding (promotes to F-93/F-98).
+- [ ] E-63: **Send landing exactly at the settle race.** Time a send to land within ~50 ms of
+      `llm-done` (poll `data-streaming`). Does the message dispatch (queue vs immediate) without a
+      double generation and without a lost message? Any zero/duplicate generation is a finding
+      (promotes to F-93/F-98).
+- [ ] E-64: **Hover leave/enter at the clear boundary.** With a displayed reply, leave the pointer
+      within a few ms of the grace expiring, then re-enter. Does the reply survive (fresh grace) or
+      get cleared mid-re-entry? A cleared-then-returned reply or a stuck pinned reply is a finding
+      (promotes to companion F-113).
+- [ ] E-65: **Disposition flips between sends.** Send under `queue`, change to `interrupt` before the
+      queued item drains, then send again. Does the queued item still drain FIFO while the new send
+      interrupts, with no stale-mode dispatch and no orphaned indicator? Any wrong-mode dispatch,
+      orphaned queue entry, or stuck indicator is a finding (promotes to F-93/F-94).
+- [ ] E-66: **Indicator vs the status-slot precedence.** Show an alert / hearing-nothing status while a
+      queued message waits. Does the queue indicator yield to the higher-precedence status without
+      hiding the queue entirely (and without relayout), or does one clobber the other? Any lost status
+      or displaced geometry is a finding (promotes to F-93/R-58/R-59).
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
