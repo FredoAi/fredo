@@ -127,17 +127,41 @@ export function nsToIso(ns: number | null): string | undefined {
   return new Date(Math.round(ns / 1e6)).toISOString();
 }
 
+/**
+ * Per-row-object parse cache (RD-1, #2893). `deriveRowGraphState` (and the
+ * counters/session-meta passes) read the SAME row's `rawJson` several times per
+ * derive — and re-derive on every mount/render. On the live corpus (~60k rows,
+ * ~338 MB of `rawJson`) that is hundreds of MB of redundant `JSON.parse` inside
+ * one synchronous task. The cache is keyed by the ROW OBJECT (a WeakMap, so the
+ * cache is proportional to the row store that already retains the rows — it
+ * adds no unbounded structure) and guarded by the `rawJson` string: the row
+ * store writes a NEW merged object on every real mutation (`StreamContext.tsx`
+ * insert/update), and an in-place `rawJson` rewrite is caught by the source
+ * compare, so the parsed value can never go stale.
+ *
+ * Callers only READ the returned object — the cache hands back ONE shared
+ * reference per (row object, rawJson); never mutate it.
+ */
+const rawPayloadCache = new WeakMap<object, { source: string; parsed: Record<string, any> }>();
+
 /** Parse a row's `rawJson` escape hatch (the latest raw delivery payload).
  *  A parse failure degrades to `{}` — the rawJson is written by the ingest
  *  classifier from a serde-serialized payload, so this never fires on
- *  backend-written rows. */
+ *  backend-written rows. Parses at most once per (row object, rawJson) pair
+ *  per page session (RD-1) — see `rawPayloadCache`. */
 export function rawPayload(row: { rawJson: string }): Record<string, any> {
+  const cached = rawPayloadCache.get(row);
+  if (cached !== undefined && cached.source === row.rawJson) return cached.parsed;
+
+  let parsed: Record<string, any> = {};
   try {
-    const parsed = JSON.parse(row.rawJson) as unknown;
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, any>) : {};
+    const value = JSON.parse(row.rawJson) as unknown;
+    if (typeof value === 'object' && value !== null) parsed = value as Record<string, any>;
   } catch {
-    return {};
+    parsed = {};
   }
+  rawPayloadCache.set(row, { source: row.rawJson, parsed });
+  return parsed;
 }
 
 /**
@@ -564,8 +588,11 @@ export function deriveRowGraphState(chatRows: ChatRow[], toolRows: ToolUseRow[])
   // child-keyed ORIGINAL overwrites them (original beats copy — the copy was
   // frozen at re-key time; the original keeps receiving live patches).
   const sortedToolRows = [...toolRows].sort((a, b) => {
-    const ca = a.sessionId.localeCompare(b.sessionId);
-    if (ca !== 0) return ca;
+    // Plain code-unit comparison (RD-3): session ids are ASCII (`ses_…`), where
+    // it is byte-identical to locale collation, and it avoids the costly locale
+    // collator over ~34k rows. Ties fall through to the same correlationId
+    // comparator as before.
+    if (a.sessionId !== b.sessionId) return a.sessionId < b.sessionId ? -1 : 1;
     return a.correlationId < b.correlationId ? -1 : a.correlationId > b.correlationId ? 1 : 0;
   });
 
@@ -576,7 +603,7 @@ export function deriveRowGraphState(chatRows: ChatRow[], toolRows: ToolUseRow[])
    *  derivation-local flag map — never on the summaries themselves (the
    *  payload signatures must stay primitive-clean). */
   const copyFlags = new Map<string, boolean>();
-  const upsertChildActivity = (row: ToolUseRow, isTask: boolean): void => {
+  const upsertChildActivity = (row: ToolUseRow, isTask: boolean, summary: ToolCallSummary): void => {
     const owner = ownerSessionIdFromCorrId(row.correlationId) ?? row.sessionId;
     const outer = isTask ? state.subagentDispatches : state.subagentToolCalls;
     let sessionCalls = outer.get(owner);
@@ -589,12 +616,12 @@ export function deriveRowGraphState(chatRows: ChatRow[], toolRows: ToolUseRow[])
     const newIsCopy = row.sessionId !== owner;
     if (existing) {
       if (copyFlags.get(bucketKey) === true && !newIsCopy) {
-        sessionCalls.set(row.correlationId, toolSummaryFromToolRow(row));
+        sessionCalls.set(row.correlationId, summary);
         copyFlags.set(bucketKey, false);
       }
       return;
     }
-    sessionCalls.set(row.correlationId, toolSummaryFromToolRow(row));
+    sessionCalls.set(row.correlationId, summary);
     copyFlags.set(bucketKey, newIsCopy);
   };
 
@@ -602,8 +629,9 @@ export function deriveRowGraphState(chatRows: ChatRow[], toolRows: ToolUseRow[])
     const summary = toolSummaryFromToolRow(row);
     if (row.isSubagent === true) {
       // Child-session activity — task dispatches and the child's own tools
-      // split at collection time (the tool name rides the row).
-      upsertChildActivity(row, summary.toolName === 'task');
+      // split at collection time (the tool name rides the row). The
+      // already-computed summary is passed through (RD-2) — no second parse.
+      upsertChildActivity(row, summary.toolName === 'task', summary);
     } else {
       // The session's own tool call (v1 tool-use-lifecycle path — the engine
       // excluded is_subagent spans; the row's flag column does it now).
