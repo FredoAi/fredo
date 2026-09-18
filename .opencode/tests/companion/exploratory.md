@@ -313,3 +313,37 @@
   .llmChatWithSkills` is never registered in `apps/tauri/src/main.tsx`, so no live generation ever
   reaches the model and no skill output can be probed. Root cause recorded in `functional.md`
   #2893 results (F-99/F-100). Re-run after the wiring fix.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **E-54 PARTIAL (fail-closed confirmed for the unknown case).** `open NotARealApp` →
+  `llm-skill-call` selected `open_app`; the resolver failed closed (`I couldn't find "NotARealApp"`,
+  0 windows, `idle`). A *model non-selection* (reply without any `open_app` call) was not separately
+  forced this round — the model selected `open_app` on every open-shaped prompt (8/8 open-shaped
+  generations across the round).
+- **E-55 NOT DRIVEN.** A malformed/partial skill argument could not be forced through the live model
+  this round (the model always emitted valid `{app:"…"}`); the fail-closed table test
+  (`every_spurious_open_app_selection_is_fail_closed_and_settles`, ST-8) remains the residual pin.
+- **E-56 PARTIAL.** `hi`, `tell me a joke`, `Missing all the time`, `MM` all produced a chat reply
+  with **0 windows** and **no** `open_app` call (page listener: `__EV.skill` grew only on the
+  open-shaped prompts). `open the door` / `can you monitor this` were not separately driven.
+- **E-57 NOT DRIVEN.** Rapid churn (two open requests in one turn / back-to-back different ones) was
+  not run this round (budget went to the decisive rows); the single-in-flight guard + the prior
+  round's bounded-confirm observation remain the residual pins.
+- **O-1 (observation, tester artifact — NOT a product finding; promotes nothing).** During the round
+  the console showed bursts of `Uncaught TypeError: Cannot read properties of null (reading 'slice')`
+  attributed to `http://localhost:5174/:39-42`. Root cause: the round's own MutationObserver scripts
+  call `JSON.stringify(t.slice(0, n))` on the reply text, which is `null` when the bubble clears
+  (~5 s after each settle) — one throw per still-registered observer per clear. After a page reload
+  (observers gone) a full clean generation produced ZERO errors. Recorded so a future round does not
+  misattribute it to the product.
+- **O-2 (observation, promotes to F-100 note).** In one typed run the bubble streamed the model's
+  raw **reasoning** tokens (`"The user wants to open the \"Mission Monitor\". I have a tool
+  `open_app` …"`) for ~400 ms before the `llm-skill-call` landed, then the deterministic reply
+  replaced them. The settled reply was exact and the raw tool-call JSON was never rendered (R-1.1
+  holds for JSON). Reasoned tokens are model reasoning content, not tool-call JSON; recorded for the
+  Architect as a copy/hygiene observation (the UI/UX S1 spec says the thinking placeholder stays).
+- **O-3 (observation, CLI/edge).** `fredo open-app "Mission Monitor"` run through a `shell:true`
+  spawn helper split the quoted display name into two argv tokens → clap exit 2. Re-run with
+  `shell:false` → exit 0 `{"displayName":"Mission Monitor","outcome":"opened"}`. Tester-helper
+  artifact, not a product defect.

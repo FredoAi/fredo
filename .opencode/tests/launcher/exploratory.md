@@ -413,3 +413,21 @@
   the 5 s bound (`confirm_app_open_request failed No pending app-open request`). The CLI's reported
   outcome can therefore disagree with the actual window state under load; recorded for the
   architect/fix round.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **E-58 NOT DRIVEN.** `open Mission Monitor and Settings` (two apps in one message) was not sent this
+  round; the fail-closed resolver (`appNameMatches` candidates ≤1) remains the residual pin.
+- **E-59 NOT DRIVEN.** An open request during an in-flight generation was not exercised; the
+  single-in-flight `isGeneratingRef` guard + the ST-9 settle tests remain the residual pins.
+- **E-60 PASS.** Target window already open: a second `open Mission Monitor` left the window count
+  unchanged (no duplicate; the dock entry stayed 1) and the existing window was focused. Reply
+  exactly `Opening Mission Monitor`. The window title lifecycle is `Sessions` on a fresh mount
+  (`MissionMonitorPanel` sets it) and `Mission Monitor` on a re-open of an already-mounted window —
+  the SAME `openFeatureWindow(id, feature)` opener in both cases, so the identity is the same window
+  keyed by `mission-monitor`.
+- **E-61 PARTIAL.** Unknown/malformed selections fail closed (see `companion` E-54/E-55); a live
+  malformed argument was not forceable through the model.
+- **O-1 (observation, tester instrument — not a product finding).** The `reading 'slice'` console
+  bursts this round came from the tester's own MutationObserver scripts (null reply text at
+  bubble-clear); they disappeared after a page reload. See `companion` exploratory round 2.

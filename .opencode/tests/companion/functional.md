@@ -1940,3 +1940,55 @@ changing. No #2886 verdict attached.
   SSE with a real `tool_calls` delta `{"name":"open_app"}` and `finish_reason:"tool_calls"`, the
   `response_format` variant `{"app":"Mission Monitor"}`), plus the server log's
   `chat format: peg-gemma4` line and the launch bat's `--jinja`.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+> **Verdict: FAIL — non-functional latency only.** The round-1 wiring defect is FIXED and verified:
+> `apps/tauri/src/main.tsx:27` registers `adapterBridge.setLlmChatWithSkills(adapter.llmChatWithSkills.bind(adapter))`.
+> Every live companion generation now reaches `llm_chat_with_skills` (console
+> `[companion] calling adapterBridge.llmChatWithSkills` with **no**
+> `called before adapter registered` warning) and the model selects `open_app` (live `llm-skill-call`
+> payload `{"skill":"open_app","arguments":{"app":"Mission Monitor"}}`). All functional rows PASS;
+> the ONE failing row is the non-functional Q-15 latency bound (recorded in `launcher` F-89).
+
+- **F-99 PASS** (was FAIL). Live generation → `llm-skill-call` captured on the real channel:
+  `{"skill":"open_app","arguments":{"app":"Mission Monitor"}}` (page listener on `llm-skill-call`
+  via `__TAURI__.event.listen`), immediately followed by `llm-done`. The registry is offered
+  (`open_app` first, declared `{app:string}` — see F-105/Q-14) AND selected AND executed (the window
+  opened — R-1/Q-1/Q-2).
+- **F-100 PASS** (was FAIL). Exact-copy matrix observed live: success `Opening Mission Monitor`
+  (Q-1/Q-2 frames), unknown `I couldn't find "NotARealApp"` (Q-9 frame), non-app-open → normal chat
+  replies (`Hi there! How can I help you today?`, `I'm sorry to hear that…`, `Hello! How can I help
+  you today?`, the joke). Success avatar `happy`; unknown/non-app-open `idle` with **no** `happy`.
+  A transient pre-selection reasoning stream was observed in the bubble in one run (see
+  `exploratory.md` round 2, observation O-2) and is not the settled reply.
+- **F-101 PASS** (was FAIL). Zero spurious windows across every failure-ish leg: Q-9 unknown, Q-12
+  `Missing all the time`/`MM`/`hi`/`tell me a joke` all left the window count unchanged (raw counts
+  in the round-2 verdict).
+- **F-102 PASS.** After every outcome: `[data-streaming]` absent, `.fredo-cursor` absent, bar
+  `aria-busy` null/cleared, avatar back at rest; no stuck streaming anywhere in the run.
+- **F-103 PASS** (was UNVERIFIED). One polite live region (`role="status" aria-live="polite"`,
+  `data-testid="fredo-companion-live-region"`, exactly 1 instance), carrying the settled reply text
+  exactly once; zero `role="alert"` in the whole DOM; reply region `aria-label="Fredo's reply"`
+  `tabindex="0"`; dark contrast **14.05:1**, light-default palette **17.83:1**; live var-swap proved
+  the bubble re-tints from `--card-bg`/`--accent-primary` with no stale colour (see the round-2
+  verdict, Q-16).
+- **F-104 PASS.** `fredo emit --event-type chat --session-id e2e-2893-r2-chat` and
+  `--event-type tool_use --session-id e2e-2893-r2-tool --tool-name read_file` → both `{"queued":true}`;
+  `chat_rows` marker `e2e-2893-r2-chat|init`; `tool_use_rows` marker `e2e-2893-r2-tool|read_file|init`;
+  `telemetry_spans` = **7536** rows, newest `ingested_at` `2026-09-18T17:07:32.387140+00:00`.
+- **F-105 PASS.** Re-ran the live probe `probe_companion_skills` (raw output quoted in the round-2
+  verdict): `nativeToolsUsable: true`, `tools.toolCallsEmitted: true`,
+  `tools.finishReason: "tool_calls"`, `tools.terminated: true`; the offered request carries
+  `tools[0].function.name === "open_app"` with `parameters {app:string, required:[app]}`,
+  `tool_choice:"auto"`, `parallel_tool_calls:false`; the raw SSE fragment carries
+  `"tool_calls":[{…"function":{"name":"open_app","arguments":"{"}}]`; server log
+  `.runtime/companion/llama-server.log:469` = `1.49.864.619 I srv operator(): chat format: peg-gemma4`.
+
+**Console check (round 2):** a clean leg was driven after a page reload with no tester
+instrumentation attached (a full companion generation: `runGeneration … withSkills: true` →
+streamed tokens → `llm-done`): **zero** `level=error` entries since the reload. The earlier
+`Uncaught TypeError: Cannot read properties of null (reading 'slice')` bursts in this round were
+**tester-instrumentation artifacts** (the round's MutationObserver callbacks called `String.slice()`
+on a `null` reply text when the bubble cleared) — they disappeared after the reload and are NOT a
+product defect (see `exploratory.md` round 2, observation O-1).
