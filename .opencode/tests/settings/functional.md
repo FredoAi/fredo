@@ -608,3 +608,16 @@
 - **F-47 PASS (live).** `telemetry_spans` non-zero with a recent `max(ingested_at)`; both markers classified.
 - **Console:** clean across every leg (`tauri_read_logs`).
 - **Console:** clean after every interaction (`tauri_read_logs`); one MCP-bridge wedge on the Telemetry section (pre-existing #2864 E-3 tooling issue) recovered by driver stop/start.
+
+### #2892 testing round 2 — result
+
+> Round 2 @ `spec/2892 7e93892f` (cold-started dev app). **PASS** — the round-1 F-42 display-clamp
+> defect is fixed live. Full report: `.opencode/tmp/2892/tests-runs.md`.
+
+- **F-42 PASS (live, decisive).** `#companion-reply-leave-grace` default `2`. Uncommitted out-of-range draft `999999` → `aria-invalid="true"` + help EXACTLY `Enter 0–60 s`. Commit (`Enter`): displayed value becomes **`60`**, `aria-valuenow="60"`, `aria-invalid="false"`, normal help, persisted `localStorage`/`get_setting` = `60000`. `-5` → invalid draft, commit → displays **`0`**, persisted `0`. `2` → displays `2`, persisted `2000`. Screenshot `r2-ac9-999999-clamped-60.png`.
+- **F-41 PASS (re-verified live).** Real `<select>`, options `queue`/`interrupt`, change commits immediately to `localStorage` + `get_setting`.
+- **F-43 PASS (re-verified live).** Both keys hold without the Save footer.
+- **F-45 PASS (re-verified live/static).** Zero hex/rgba/hsla/`var(--x)NN` in the companion/launcher TSX; select bg `rgb(16,24,43)` / fg `rgb(220,230,245)` (token-derived); disposition renders a real `<select>`, never `NativeSelect`.
+- **QA-33 cold-restart leg PASS (live).** Set non-defaults (`interrupt`, grace `10`); ran `dev-env.ps1 -Action Restart -Spec 2892` (full cold app restart); re-opened Settings → Companion: select reads `Interrupt and send now`, grace reads `10`; `localStorage` `interrupt`/`10000` and Tauri `get_setting` `interrupt`/`10000` all survived. Screenshot `r2-qa33-after-restart.png`.
+- **F-47 PASS (live).** `telemetry_spans` = 11336, `max(ingested_at)=2026-09-18T20:59:30.4Z`; markers classified 1/1.
+- **Console:** clean after every interaction (only the pre-existing `motion() is deprecated` WARN).
