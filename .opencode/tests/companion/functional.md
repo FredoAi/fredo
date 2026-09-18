@@ -2031,3 +2031,117 @@ product defect (see `exploratory.md` round 2, observation O-1).
 sweep and after a fresh restart. The round's samplers use a plain guarded `setInterval` (no
 MutationObserver), so the round-2 `reading 'slice'` tester artifact did NOT reproduce — product console
 clean.
+
+---
+
+## #2892 extension — reply-in-flight truth split + send-during-reply dispatch (G-136)
+
+> Issue #2892 decouples the "replying" status (`replyInFlight` = `isStreaming`) from the read-hold
+> suppression (`isInUse`, unchanged), makes the launcher input always editable, and adds
+> queue/interrupt dispatch for a send during a reply + two persisted settings. Companion-side rows
+> below; launcher rows live in `.opencode/tests/launcher/` F-90..F-100 and settings rows in
+> `.opencode/tests/settings/` F-41..F-47. **Verification policy: live** — the mandatory receipt is
+> F-114; a static-only PASS is a FALSE PASS.
+> **G-136 supersession (history preserved):** companion **F-72**'s "a 2nd Enter while streaming is
+> ignored" clause is SUPERSEDED for the bar send (now accepted + queued under the default
+> disposition); **F-70** (the `data-streaming`/`data-state` flow) and **F-83/F-84** (hover protection
+> + leave grace) remain IN FORCE, with the grace now configurable and its default unchanged.
+> **Test data:** companion ON at the home seat, managed `llama-server` running + model present, the
+> deterministic prompt `Reply with exactly: Hi there!`, and a long prompt
+> (`Write 400 words about the history of the bicycle.`) as the streaming reply to type during.
+
+## F-106 (REQ-3 / AC3) — `replyInFlight` is the streaming truth; a completed held reply does not fake it
+
+- [ ] F-106: sample the entity status surface (`data-streaming`, the seat's busy affordance) in
+      three states — idle, streaming, and completed-but-held (pointer resting on
+      `[data-testid="fredo-reply-surface"]` via `tauri_webview_interact hover`).
+  **Expected:** the marker is true iff a generation is in flight; at `llm-done` it clears even
+      though the pointer still rests on the bubble and the reply stays displayed. A held-COMPLETE
+      reply never re-fakes the replying state.
+  - **Edge:** error settle; watchdog settle; TicTacToe streaming (still a generation in flight);
+    sample between `llm-done` and the next clock tick.
+
+## F-107 (REQ-2 / AC2) — pointer/focus on a completed reply changes ONLY the hold window
+
+- [ ] F-107: with no generation in flight, hover then keyboard-focus the displayed reply; read
+      `data-streaming`, the busy affordance, and the bubble lifetime before / during / after.
+  **Expected:** only the reply hold-open window changes (the reply stays longer); `replyInFlight`
+      stays false; the status surface is untouched; pointer and focus protect independently.
+  - **Edge:** hover re-entry; rapid hover churn; focus then pointer on the same bubble.
+
+## F-108 (REQ-4 / AC4) — a completed reply held open keeps `isInUse` suppression (no idle auto-return)
+
+- [ ] F-108: with `Fredo_companion_idle_timeout` = 5, display a reply, hover it, and wait well past
+      the timeout.
+  **Expected:** the companion does NOT auto-return while `replyProtected` (`isInUse` remains true);
+      it returns only after the pointer leaves + the grace + a full quiet period.
+  - **Edge:** focus-only protection; hover right at the deadline; hover after an auto-return re-show.
+  - **Cross-ref:** #2883 R-43/R-44, `launcher` F-79..F-81.
+
+## F-109 (REQ-5 / AC5) — a send during a reply is accepted and drains FIFO
+
+- [ ] F-109: default disposition (`queue`); start the long stream; while `data-streaming`, send
+      `Reply with exactly: alpha`, then `Reply with exactly: beta`, then `Reply with exactly: gamma`.
+  **Expected:** every send is accepted (the bar clears; launcher side shows the waiting indicator);
+      on each settle the next prompt dispatches; the replies arrive in FIFO order `alpha`, `beta`,
+      `gamma`, each EXACTLY once.
+  - **Edge:** send during the ~5 s happy hold; send at the exact settle boundary; refill the queue
+    while it drains.
+
+## F-110 (REQ-6 / AC5) — dequeue-before-dispatch exactly-once under rapid sends
+
+- [ ] F-110: unit-pin `createCompanionSendQueue()` (`dequeue()` removes synchronously and returns the
+      item before its generation starts; `enqueue` never throws) and run the rapid 5-send live leg.
+  **Expected:** exactly 5 generations, one per queued item, in order — none dropped, none dispatched
+      twice; the indicator count matches the queue size.
+  - **Edge:** Enter spam; a send landing exactly at the settle race; unmount mid-queue.
+
+## F-111 (REQ-7 / AC6) — interrupt supersedes the in-flight generation and its hold timers
+
+- [ ] F-111: set disposition `interrupt`; start the long stream; send
+      `Reply with exactly: INTERRUPTED`; then wait at least 6 s (past `HAPPY_HOLD_MS = 5000`).
+  **Expected:** the settled reply is EXACTLY `INTERRUPTED`; stale callbacks never append; the
+      superseded generation's happy-hold timer does NOT clear the new reply (generation guard +
+      `clearTimer()`); no queued indicator.
+  - **Edge:** interrupt near settle; interrupt during the error hold; back-to-back interrupts.
+
+## F-112 (REQ-9 / REQ-10 / AC8 + AC9) — both settings persist durably and drive behavior
+
+- [ ] F-112: in Settings -> Companion set the disposition to `interrupt` and the grace to `10000`;
+      reload the webview; fully restart the app; re-read both; then hover/leave a reply and measure.
+  **Expected:** both persist (AppStore `save_setting`/`get_setting` + localStorage fallback) and are
+      EFFECTIVE after restart; the measured leave grace is ~10000 ms.
+  - **Edge:** fresh-profile defaults (`queue` / `2000`); a stale/invalid stored value; clamp values.
+
+## F-113 (REQ-11 / AC11) — default hold rules unchanged apart from the configurable grace
+
+- [ ] F-113: with the grace at its default `2000`, re-run the shipped rules: (a) a due clear is
+      suspended while protected; (b) a leave arms a FRESH full grace; (c) pointer and focus protect
+      independently; (d) `reset()` per new generation drops a stashed clear.
+  **Expected:** all four hold; `REPLY_LEAVE_GRACE_MS = 2000` remains the shipped default and is
+      exported unchanged.
+  - **Edge:** the setting left at default across a restart; themed/accent change mid-hold.
+
+## F-114 (REQ-LIVE / NF) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-114: same run as F-106..F-113: `fredo emit --event-type chat --session-id e2e-2892-chat` +
+      `--event-type tool_use --session-id e2e-2892-tool --tool-name read_file`; query
+      `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill).
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered receipt.
+      **A static-only PASS with no live receipt is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+## F-115 (NF) — token-native, console clean, no re-render loop
+
+- [ ] F-115: static-grep the changed companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after EVERY leg; inspect the new status/queue code
+      for effect/memo deps on array `.length`/fresh objects.
+  **Expected:** ZERO hardcoded colour literals (comment issue-refs exempt); no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (AGENTS.md #523).
+  - **Edge:** theme switch mid-stream; reduced motion is a NAMED BLOCKER (driver cannot flip
+    `matchMedia`) with a static-CSS + product-unit pin (G-148/G-053).
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
