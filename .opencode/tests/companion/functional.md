@@ -1889,7 +1889,7 @@ changing. No #2886 verdict attached.
 
 ## F-104 (AC-1..AC-5 LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
 
-- [ ] F-104: Same run as F-85..F-103: `fredo emit --event-type chat --session-id e2e-2893-chat` +
+- [x] F-104: Same run as F-85..F-103: `fredo emit --event-type chat --session-id e2e-2893-chat` +
       `--event-type tool_use --session-id e2e-2893-tool`; query `telemetry_spans` +
       `chat_rows`/`tool_use_rows` (telemetry-query skill); keep the per-row DOM/screenshot/CLI output
       and the raw exit codes.
@@ -1900,7 +1900,7 @@ changing. No #2886 verdict attached.
 
 ## F-105 (AC-5) — The spike findings are documented, evidence-backed, and cited
 
-- [ ] F-105: Read this plan's `### Spike Findings (AC-5)` section + ST-1's `probe_companion_skills`
+- [x] F-105: Read this plan's `### Spike Findings (AC-5)` section + ST-1's `probe_companion_skills`
       output (the developer's report / `## Development Summary`) and the cited sources; grep them for
       the three findings and quote the exact lines (G-178).
   **Expected:** (a) the model's tool/function-calling support + the chosen mechanism; (b) what the
@@ -1911,3 +1911,32 @@ changing. No #2886 verdict attached.
       with no citation/check is a FAIL.
   - **Edge:** a missing launch-config delta; a design that contradicts the provider-agnostic contract
     (F-99); a citation that answers a different question.
+
+### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
+
+> **Verdict: FAIL.** The skill-aware adapter is never registered in the Tauri runtime entry, so the
+> companion's `ask` path is inert live (no model request, no skill selection, no reply, no window).
+> Consoles: `[adapterBridge] llmChatWithSkills called before adapter registered`.
+> **Root cause:** `apps/tauri/src/main.tsx` (the real runtime entry per `apps/tauri/index.html`) never
+> calls `adapterBridge.setLlmChatWithSkills(...)`; ST-7 added the registration only to
+> `apps/ui/src/main.tsx:28`, which is NOT the Tauri webview entry (served module sourcemap:
+> `apps/tauri/src/main.tsx`). No other call site exists (repo grep for `setLlmChatWithSkills`).
+
+- **F-99 FAIL.** Static registry/offer layer is correct (ST-3/ST-5 pins + the live probe's offered
+  `tools` request = `open_app` first with a declared `{app:string}` contract), but the app NEVER
+  invokes `llm_chat_with_skills` at runtime → the skill is never offered to a live generation.
+- **F-100 FAIL.** No outcome renders any reply: after `open Mission Monitor` and after `hi`,
+  `[data-testid="fredo-reply-surface"]` = null (observed in the live DOM); the avatar settled `idle`;
+  the live region only carried `Message sent to Fredo`. No exact-copy assertion could be satisfied.
+- **F-101 FAIL (reply half).** Zero windows opened for the unknown/non-open requests, but no reply
+  copy rendered (the feature never reaches resolution).
+- **F-102 PASS (stability only).** After both sends, `data-streaming` absent, bar cleared/usable,
+  companion `idle`, no stuck state, no re-render loop. Stability holds; the feature simply never runs.
+- **F-103 UNVERIFIED.** No reply surface rendered to read; the a11y/theme assertion is blocked by F-100.
+- **F-104 PASS.** `fredo emit --event-type chat --session-id e2e-2893-chat` → `{"queued":true}` →
+  `chat_rows` n=1; `--event-type tool_use --session-id e2e-2893-tool --tool-name read_file` →
+  `tool_use_rows` n=1; `telemetry_spans` = **6891** rows, `max(ingested_at)=2026-09-18T16:33:55`.
+- **F-105 PASS.** Spike findings cited in the plan + the live probe output (raw `/props`, raw `tools`
+  SSE with a real `tool_calls` delta `{"name":"open_app"}` and `finish_reason:"tool_calls"`, the
+  `response_format` variant `{"app":"Mission Monitor"}`), plus the server log's
+  `chat format: peg-gemma4` line and the launch bat's `--jinja`.
