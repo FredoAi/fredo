@@ -58,16 +58,34 @@
  * only the host's commit step dispatches. `onUserEdit` reports the first manual
  * keystroke during a live segment so the host can stop partial writes (UX-2).
  *
- * #2882 ST-5 — the hold-Space cue (R-2.4):
- *   • `holdArmed` shows the cue from the KEYDOWN moment for the whole gesture
- *     (`Listening…`), so the state is never silent while Space is held;
- *   • `holdPending` (the host gates it on `HOLD_PENDING_CUE_MS`) adds the bounded
- *     `starting voice input…` chip (`launcher-command-listening-pending`) in the
- *     SAME slot as the Listening chip — the two are mutually exclusive, so exactly
- *     ONE indicator ever shows, and the reserved gutter accounts for whichever it is;
+ * #2882 ST-5 — the hold-Space cue (R-2.4); #2887 ST-5 — the cue is now HONEST (R-3):
+ *   • `cue: HoldCue` is the binding contract. `'listening'` is reachable ONLY while
+ *     `captureLive` (the `listening` prop); the armed window (`'acknowledge'`) and
+ *     the bounded start window (`'starting'` / the launch-window `'warming'`) render
+ *     the non-listening acknowledgement (`Hold to dictate…`) and never `Listening…`;
+ *   • `'starting'`/`'warming'` add the bounded `starting voice input…` chip
+ *     (`launcher-command-listening-pending`) in the SAME slot as the Listening chip
+ *     — the two are mutually exclusive, so exactly ONE indicator ever shows, and
+ *     the reserved gutter accounts for whichever it is;
+ *   • the shipped #2882 caller passes the legacy `holdArmed`/`holdPending` booleans;
+ *     they map onto `'acknowledge'`/`'starting'` (never a listening claim) and are
+ *     superseded by `cue` (ST-7 passes `cue` directly);
  *   • `holdAvailable` drives the S1 promise placeholder (`search, or hold Space to
  *     dictate`) — shown only while the input is focused and empty with a usable
  *     model, so no promise is made when Space is simply an ordinary space.
+ *
+ * #2887 follow-up — the transition-driven live-region contract (UI/UX §4), on the
+ * shipped `voice-listening-announcer`:
+ *   • WARM path: exactly ONE announcement, `Listening`, when capture is genuinely
+ *     live; nothing is announced before it (the S1 `Hold to dictate…`
+ *     acknowledgement is field text, never a live region);
+ *   • COLD path: `Starting voice input` the moment the bounded
+ *     `launcher-command-listening-pending` chip renders, then `Listening`;
+ *   • S3 stop: `Stopped listening`; S4 CANCEL (`cancelSignal`, bumped by the host
+ *     on a live Escape / `×`): `Dictation cancelled` with that stop line
+ *     SUPPRESSED, so a discarded utterance is never reported as finished;
+ *   • announcements stay transition-driven (never per partial/event), and text is
+ *     the honesty channel — colour/motion never carries a state.
  *
  * #2883 ST-1 — the field WRAPS, GROWS and CAPS (AC1 input side, R-1.1/1.2/1.3/5.3):
  *   • the single-line `Input` becomes a Chakra `Textarea` that KEEPS
@@ -120,6 +138,33 @@ import { tint } from '../../../../shared/utils/colorTint';
 /** Pending Enter action, derived by the host (UI/UX §1); presentational only. */
 export type LauncherEnterMode = 'launch' | 'send' | 'none';
 
+/**
+ * Spec #2887 ST-5 (R-3/AC3) — the BINDING honest hold-cue contract.
+ *
+ *   'none'        → no cue (idle / promise / non-empty field / voice unavailable)
+ *   'acknowledge' → the non-listening acknowledgement (from the keydown edge):
+ *                   `Hold to dictate…` in the field; no dot, no accent tint
+ *   'starting'    → the bounded `starting voice input…` chip (engine-resident slow
+ *                   start, bounded by `T_MAX_STARTING_STATE_MS`) + the acknowledgement
+ *   'warming'     → the launch-window acknowledgement (engine NOT resident: the hold
+ *                   joined — or started — the single-flight warm; bounded by
+ *                   `T_LAUNCH_COLD_MAX_MS` = 5320 ms = `T_LAUNCH_WARM_MS.max`
+ *                   + `T_FIRST_CAPTURE_BUDGET_MS.max`, i.e. ONE model load plus the
+ *                   capture budget). It
+ *                   shares the shipped bounded chip because that is the only honest
+ *                   "what is actually happening" copy UI/UX specified for a
+ *                   non-listening start — and it never says `Listening`.
+ *   'listening'   → the ONLY state that may render the `Listening` chip, the
+ *                   `Listening…` placeholder, the accent dot/border tint, the
+ *                   Stop/`×` controls or the listening announcement
+ *
+ * Invariant (R-3): `'listening'` is reachable ONLY while `captureLive` (the
+ * `listening` prop = `voice.listening && origin === 'launcher'`, `LauncherShell.tsx`).
+ * `holdArmed`/`holdPending` alone MUST NOT claim listening, and `'warming'`/
+ * `'starting'`/`'acknowledge'` are never rendered as the listening cue.
+ */
+export type HoldCue = 'none' | 'acknowledge' | 'starting' | 'warming' | 'listening';
+
 export interface LauncherCommandBarProps {
   /** Live query string (controlled by the host). */
   query: string;
@@ -153,18 +198,29 @@ export interface LauncherCommandBarProps {
    */
   listening?: boolean;
   /**
-   * Spec #2882 ST-5 (R-2.4) — a HOLD is armed: the qualifying Space keydown
-   * happened and the bounded threshold timer is running. The bar shows the cue
-   * from this moment for the WHOLE gesture (the `Listening…` placeholder), so the
-   * state is never silent while Space is held. Defaults to `false`.
+   * Spec #2887 ST-5 (R-3) — the host-derived honest cue (see `HoldCue`). When
+   * supplied it is authoritative; the bar clamps `'listening'` to a live capture
+   * (`listening`), so no caller can make it claim listening early. The host gates
+   * the `'starting'`/`'warming'` windows (ST-7). Defaults to the legacy derivation
+   * below so the shipped #2882 caller keeps working.
+   */
+  cue?: HoldCue;
+  /**
+   * Spec #2882 ST-5 (R-2.4); superseded by `cue` (Spec #2887 ST-5). A HOLD is
+   * armed: the qualifying Space keydown happened and the bounded threshold timer
+   * is running. It maps to `'acknowledge'` — the `Hold to dictate…` placeholder
+   * from this moment for the WHOLE gesture, so the state is never silent while
+   * Space is held, and it NEVER claims listening (the #2882 defect this spec
+   * fixes). Defaults to `false`.
    */
   holdArmed?: boolean;
   /**
-   * Spec #2882 ST-5 (UI/UX §1 S2) — the hold crossed the 200 ms threshold and the
-   * engine is not live yet: the bounded `starting voice input…` pending chip,
-   * shown only once the pending window outlives `HOLD_PENDING_CUE_MS` (the host
-   * owns that gate). It occupies the SAME end slot as the `Listening` chip (never
-   * both). Defaults to `false`.
+   * Spec #2882 ST-5 (UI/UX §1 S2); superseded by `cue` (Spec #2887 ST-5). The hold
+   * crossed the 200 ms threshold and the engine is not live yet: it maps to
+   * `'starting'` — the bounded `starting voice input…` chip, shown only once the
+   * pending window outlives `HOLD_PENDING_CUE_MS` (the host owns that gate). It
+   * occupies the SAME end slot as the `Listening` chip (never both). Defaults to
+   * `false`.
    */
   holdPending?: boolean;
   /**
@@ -204,6 +260,18 @@ export interface LauncherCommandBarProps {
    * `Control+Space` (it advertises the bar-opening chord, not dictation).
    */
   voiceEnabled?: boolean;
+  /**
+   * Spec #2887 follow-up (UI/UX §4 S4) — the host's CANCEL signal: a monotonic
+   * counter the HOST bumps when an Escape / `×` discards a GENUINELY LIVE
+   * (`captureLive`) session. The bar's live region is transition-driven, so it
+   * announces `Dictation cancelled` on the bump and SUPPRESSES the
+   * `Stopped listening` line for that cancel (S4 must not read as S3). The host
+   * bumps it ONLY for a live-session cancel, so an Escape that disarms a
+   * pre-capture hold stays silent (UI/UX §3 flow 6: nothing claimed Listening,
+   * so there is nothing to retract). Optional: omitted ⇒ the shipped
+   * `Stopped listening` behaviour (inactive-bar invariance).
+   */
+  cancelSignal?: number;
   /** #2871 a11y (REQ-15/DR-6): accessible name for the searchbox (host-derived). */
   ariaLabel?: string;
   /**
@@ -363,6 +431,34 @@ export const HEARING_NOTHING_COPY =
 export const STARTING_VOICE_INPUT_COPY = 'starting voice input…';
 
 /**
+ * Spec #2887 follow-up (UI/UX §4) — the COLD-path live-region announcement,
+ * fired the moment the bounded `starting voice input…` chip renders (the
+ * readying window outlived `HOLD_PENDING_CUE_MS` from threshold-crossed) and
+ * BEFORE capture is live. The warm path never renders the chip, so it never
+ * hears this line — exactly one `Listening` announcement, nothing before
+ * capture. The S1 `Hold to dictate…` acknowledgement is TEXT in the field, never
+ * a live-region announcement (it would double-speak within ≲100 ms).
+ */
+export const STARTING_VOICE_INPUT_ANNOUNCEMENT = 'Starting voice input';
+
+/**
+ * Spec #2887 follow-up (UI/UX §4 S4) — the CANCEL announcement, fired when the
+ * host reports a live-session cancel (`cancelSignal`). It REPLACES the S3
+ * `Stopped listening` line for that transition: a discarded utterance is never
+ * reported as a finished one.
+ */
+export const DICTATION_CANCELLED_ANNOUNCEMENT = 'Dictation cancelled';
+
+/**
+ * Spec #2887 ST-5 (UI/UX §1 S1) — the pre-capture acknowledgement placeholder.
+ * It describes the user's OWN gesture ("hold to dictate"), so it can never be
+ * mistaken for capture and can never read as a stall. It replaces the shipped
+ * `Listening…` for the armed/pending window — the honesty defect #2887 fixes
+ * (`Listening`/`Listening…` are reserved for a genuinely live capture, S2).
+ */
+export const HOLD_ACKNOWLEDGE_PLACEHOLDER = 'Hold to dictate…';
+
+/**
  * Spec #2882 ST-5 (UI/UX §1 S1) — the promise placeholder shown while the bar is
  * focused and empty and holding Space WOULD dictate (voice on + model ready + not
  * busy). Readiness unknown ⇒ this is never shown (contract 4c: no promise made).
@@ -440,6 +536,7 @@ export function LauncherCommandBar({
   hintLabel,
   busy = false,
   listening = false,
+  cue,
   holdArmed = false,
   holdPending = false,
   holdAvailable = false,
@@ -449,6 +546,7 @@ export function LauncherCommandBar({
   voiceErrorMessage,
   finalTranscript = '',
   voiceEnabled = false,
+  cancelSignal = 0,
   ariaLabel,
   ariaDescribedBy,
   newlineHint = false,
@@ -527,13 +625,31 @@ export function LauncherCommandBar({
   // chips whenever no companion was present) is retired with its prop.
   const showHint = useMemo(() => Boolean(hintLabel), [hintLabel]);
 
-  // Spec #2882 ST-5 (R-2.4) — THE ONE CUE. It is shown from the armed moment
-  // (`holdArmed`), stays through the bounded pending window (`holdPending`) and
-  // the live capture (`listening`), and is gone the moment the gesture is over.
-  // The CHIP slot holds at most one indicator: the pending chip and the Listening
-  // chip are mutually exclusive (never both).
-  const cueActive = holdArmed || holdPending || listening;
-  const pendingChip = holdPending && !listening;
+  // Spec #2887 ST-5 (R-3/AC3) — THE ONE CUE, and it may never lie.
+  //
+  // `holdCue` is the binding honesty contract. The armed window (`'acknowledge'`)
+  // and the bounded start window (`'starting'` / the launch-window `'warming'`) are
+  // non-listening acknowledgements; `'listening'` is reachable ONLY while
+  // `captureLive` (the `listening` prop). The clamp below is what fixes the shipped
+  // #2882 defect: `holdArmed` is true from the KEYDOWN (before any capture exists),
+  // so it can no longer select the `Listening…` placeholder.
+  const captureLive = listening;
+  const requestedCue: HoldCue =
+    cue ?? (holdPending ? 'starting' : holdArmed ? 'acknowledge' : 'none');
+  const holdCue: HoldCue = captureLive
+    ? 'listening'
+    : requestedCue === 'listening'
+      ? 'acknowledge' // an upstream `'listening'` without a live capture never claims listening
+      : requestedCue;
+  // The pre-capture acknowledgement states — no listening wording, no capture mark.
+  const cueReadying =
+    holdCue === 'acknowledge' || holdCue === 'starting' || holdCue === 'warming';
+  // The CHIP slot holds at most one indicator: the bounded `starting voice input…`
+  // chip and the Listening chip are mutually exclusive (never both). The
+  // launch-window `warming` state shares the shipped chip — the only honest
+  // "what is actually happening" copy UI/UX specified for a non-listening start —
+  // and it never says `Listening`.
+  const startingChip = (holdCue === 'starting' || holdCue === 'warming') && !captureLive;
 
   // S1 vs S0 (UI/UX §1): the promise placeholder is offered only while the search
   // input actually holds focus, is empty, and holding Space would dictate.
@@ -551,15 +667,18 @@ export function LauncherCommandBar({
     onBlur?.(e as unknown as React.FocusEvent<HTMLInputElement>);
   };
 
-  // The 4-way placeholder (UI/UX §9): busy > the gesture cue > the S1 promise >
-  // the legacy resting copy.
+  // The placeholder (UI/UX §9): busy > the LIVE capture > the pre-capture
+  // acknowledgement > the S1 promise > the legacy resting copy. Only `captureLive`
+  // may produce `Listening…` (R-3); the armed/pending windows say `Hold to dictate…`.
   const placeholder = busy
     ? 'Fredo is replying…'
-    : cueActive
+    : captureLive
       ? 'Listening…'
-      : holdAvailable && inputFocused && query === ''
-        ? HOLD_AVAILABLE_PLACEHOLDER
-        : 'search or command';
+      : cueReadying
+        ? HOLD_ACKNOWLEDGE_PLACEHOLDER
+        : holdAvailable && inputFocused && query === ''
+          ? HOLD_AVAILABLE_PLACEHOLDER
+          : 'search or command';
 
   // #2877 ST-5 (DR-7) / #2878 ST-2 / #2883 ST-1 (R-1.2): reserve the right gutter
   // for every end-slot affordance that is present, so the typed text never renders
@@ -569,7 +688,7 @@ export function LauncherCommandBar({
   const endPaddingPx = computeEndPaddingPx({
     showHint,
     listening,
-    holdPending: pendingChip,
+    holdPending: startingChip,
     hasText: query.length > 0,
   });
   const paddingEnd = endPaddingPx === undefined ? undefined : `${endPaddingPx}px`;
@@ -591,17 +710,63 @@ export function LauncherCommandBar({
   // never per event, never per partial. A disable-mid-session wins over the
   // subsequent `Stopped listening` (the sticky `voiceOffRef`) so the region
   // reads exactly once per user-visible transition.
+  //
+  // Spec #2887 follow-up (UI/UX §4): the SAME transition-driven machine now
+  // carries the two missing transitions —
+  //   • COLD path: `Starting voice input` the moment the bounded
+  //     `starting voice input…` chip renders (the readying window outlived
+  //     `HOLD_PENDING_CUE_MS`), then `Listening` once capture is genuinely live.
+  //     The WARM path never renders the chip, so it announces exactly one line
+  //     (`Listening`) and nothing before capture.
+  //   • CANCEL (S4): `Dictation cancelled` on the host's `cancelSignal` bump,
+  //     with the subsequent `Stopped listening` suppressed — a discarded
+  //     utterance is never reported as a finished one.
   const [listenAnnouncement, setListenAnnouncement] = useState('');
   const prevListeningRef = useRef(listening);
   const prevVoiceEnabledRef = useRef(voiceEnabled);
   const voiceOffRef = useRef(false);
+  // Set by the cancel effect and consumed by the listening effect in the SAME
+  // commit when the host batches `cancelSignal` with `listening:false`.
+  const cancelPendingRef = useRef(false);
+
+  // COLD path (UI/UX §4): announce the bounded chip ONCE, on its rise edge. The
+  // S1 `acknowledge` state renders no chip and is deliberately NOT announced.
+  const prevStartingChipRef = useRef(startingChip);
+  useEffect(() => {
+    const was = prevStartingChipRef.current;
+    prevStartingChipRef.current = startingChip;
+    if (startingChip && !was) setListenAnnouncement(STARTING_VOICE_INPUT_ANNOUNCEMENT);
+  }, [startingChip]);
+
+  // CANCEL (S4). Declared BEFORE the listening effect so the flag is already set
+  // when that effect inspects the same commit. The host bumps `cancelSignal`
+  // only for a genuinely live cancel, so no listening check is needed here — and
+  // an armed-window disarm (no bump) stays silent by construction.
+  const prevCancelSignalRef = useRef(cancelSignal);
+  useEffect(() => {
+    const was = prevCancelSignalRef.current;
+    prevCancelSignalRef.current = cancelSignal;
+    if (cancelSignal === was) return;
+    cancelPendingRef.current = true;
+    setListenAnnouncement(DICTATION_CANCELLED_ANNOUNCEMENT);
+  }, [cancelSignal]);
 
   useEffect(() => {
     const was = prevListeningRef.current;
     prevListeningRef.current = listening;
     if (was === listening) return;
+    if (listening) {
+      // A fresh capture clears every prior transition's sticky state.
+      cancelPendingRef.current = false;
+      voiceOffRef.current = false;
+    }
+    // S4 — a cancel already announced `Dictation cancelled`; never follow it
+    // with the S3 stop line for the same transition.
+    if (!listening && cancelPendingRef.current) {
+      cancelPendingRef.current = false;
+      return;
+    }
     if (!listening && voiceOffRef.current) return;
-    if (listening) voiceOffRef.current = false;
     setListenAnnouncement(listening ? 'Listening' : 'Stopped listening');
   }, [listening]);
 
@@ -685,7 +850,7 @@ export function LauncherCommandBar({
                 hold crossed the threshold but the engine is not live yet. It is a
                 clone of the Listening chip (same box, same slot) and the two are
                 never rendered together (exactly ONE indicator). */}
-            {pendingChip && (
+            {startingChip && (
               <Box
                 as="span"
                 data-testid="launcher-command-listening-pending"

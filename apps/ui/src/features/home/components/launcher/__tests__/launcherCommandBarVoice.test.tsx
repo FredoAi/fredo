@@ -15,6 +15,12 @@
  *     bar-opening chord, not dictation) — the old `voiceEnabled`-gated pin is
  *     superseded.
  *
+ * #2887 ST-5 (the honest hold cue): the armed/pending windows are re-pointed from
+ * `Listening…` to the acknowledgement (`Hold to dictate…`), and the binding
+ * `HoldCue` contract (`'listening'` ONLY while `captureLive`) is pinned — including
+ * the clamp that makes a `cue="listening"` without a live capture a non-listener, so
+ * the #2882 defect (armed → `Listening…`) can never recur.
+ *
  * Pins:
  *   1. Live partial text renders in the input and the input stays editable while
  *      listening (only `busy` sets `readOnly`).
@@ -148,34 +154,44 @@ describe('measureFieldHeightPx — the pure growth rule (#2883 ST-1, R-1.1/R-1.3
   });
 });
 
-// ── #2882 ST-5 — the hold-Space cue (R-2.4) ───────────────────────────────────
+// ── #2882 ST-5 / #2887 ST-5 — the hold-Space cue (R-2.4 → R-3) ────────────────
+//
+// #2887 ST-5 re-points the copy: the ARMED window and the bounded start window
+// are NON-listeners. `Listening…` is reserved for a genuinely live capture (S2),
+// so the two stale `Listening…`-for-armed expectations are updated (G-125 — the
+// #2882 gesture contract they sat next to is untouched).
 
-describe('LauncherCommandBar — the hold-Space cue (ST-5)', () => {
-  it('shows the cue from the ARMED moment, with no live indicator yet', () => {
+describe('LauncherCommandBar — the honest hold-Space cue (#2887 ST-5)', () => {
+  it('R-3: the ARMED window shows the acknowledgement, never `Listening…` and no live indicator', () => {
     renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} holdArmed />);
 
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
+    // #2887 ST-5 (was `Listening…` — the honesty defect): the armed window is a
+    // non-listening acknowledgement of the user's own gesture.
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
     // Armed is not live: the dot, the Listening chip and its controls stay absent
-    // (nothing may be stopped before a session exists).
+    // (nothing may be stopped before a session exists), and no chip shows.
     expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-cancel')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
   });
 
-  it('renders the bounded `starting voice input…` chip while the hold is pending', () => {
+  it('R-3: the bounded `starting voice input…` chip renders while pending — with the acknowledgement, never `Listening…`', () => {
     renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} holdPending />);
 
     expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
       'starting voice input…',
     );
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
+    // #2887 ST-5 (was `Listening…`): the field still acknowledges the gesture; the
+    // chip says what is actually happening. Neither claims capture.
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
     // Exactly ONE indicator: no Listening chip / dot / controls in this state.
     expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
   });
 
-  it('never renders the pending chip and the Listening chip together (one slot)', () => {
+  it('R-3: never renders the pending chip and the Listening chip together (one slot)', () => {
     renderWithChakra(
       <LauncherCommandBar
         query=""
@@ -204,9 +220,10 @@ describe('LauncherCommandBar — the hold-Space cue (ST-5)', () => {
     });
     expect(input).toHaveAttribute('placeholder', 'search, or hold Space to dictate');
 
-    // The cue outranks the promise: an armed hold shows the gesture, not the offer.
+    // The cue outranks the promise: an armed hold shows the gesture acknowledgement,
+    // not the offer — and not a listening claim (#2887 ST-5, was `Listening…`).
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} holdAvailable holdArmed />);
-    expect(input).toHaveAttribute('placeholder', 'Listening…');
+    expect(input).toHaveAttribute('placeholder', 'Hold to dictate…');
 
     // Once the bar holds text the promise is withdrawn (the gesture is unavailable).
     rerender(<LauncherCommandBar query="set" onQueryChange={vi.fn()} holdAvailable />);
@@ -221,6 +238,96 @@ describe('LauncherCommandBar — the hold-Space cue (ST-5)', () => {
       fireEvent.focus(input);
     });
     expect(input).toHaveAttribute('placeholder', 'search or command');
+  });
+});
+
+// ── #2887 ST-5 — the binding `HoldCue` contract (R-3/AC3) ─────────────────────
+
+describe('LauncherCommandBar — the `cue` contract may never claim listening early (#2887 ST-5)', () => {
+  it('`acknowledge` is a pure acknowledgement: no dot, no chip, no controls, no accent tint', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="acknowledge" />);
+
+    const input = screen.getByTestId('launcher-command-input');
+    expect(input).toHaveAttribute('placeholder', 'Hold to dictate…');
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-cancel')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    // The accent border tint is a capture-only mark (`tint` colour-mix) — the
+    // acknowledgement keeps the shipped neutral border token.
+    expect(fieldDeclarations(input)['border-color']).toBe('var(--border-color)');
+  });
+
+  it('`starting` (engine-resident slow start) shows the bounded chip + the acknowledgement, never `Listening`', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" />);
+
+    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
+      'starting voice input…',
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+  });
+
+  it('`warming` (launch window, engine NOT resident) is a non-listening state — no listening wording at all', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="warming" />);
+
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
+    // The launch window has no capture and no resident engine: it answers with the
+    // same honest bounded text state UI/UX specified for a non-listening start.
+    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
+      'starting voice input…',
+    );
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByText('Listening')).toBeNull();
+    expect(screen.queryByText('Listening…')).toBeNull();
+  });
+
+  it('`listening` renders the listening cue ONLY with a live capture', () => {
+    renderWithChakra(
+      <LauncherCommandBar
+        query="live"
+        onQueryChange={vi.fn()}
+        cue="listening"
+        listening
+        onStopListening={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+  });
+
+  it('CLAMP: a `listening` cue WITHOUT a live capture never claims listening (the shipped defect)', () => {
+    // The honesty invariant (R-3) is enforced by the bar itself: capture is not
+    // live, so the cue is clamped to the acknowledgement — the pre-#2887 defect
+    // (`holdArmed` → `Listening…`) cannot recur through the new prop either.
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" />);
+
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+    expect(screen.queryByText('Listening')).toBeNull();
+  });
+
+  it('`cue` is authoritative over the legacy `holdArmed`/`holdPending` booleans', () => {
+    renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="acknowledge" holdPending />,
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+  });
+
+  it('reserves the chip gutter for the `starting` cue (typed text never runs under the chip)', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" />);
+    const decl = fieldDeclarations(screen.getByTestId('launcher-command-input'));
+    expect(decl['padding-inline-end']).toBe('116px'); // 72 chip + 44 minimize
   });
 });
 
@@ -763,5 +870,123 @@ describe('LauncherCommandBar — announcers', () => {
       />,
     );
     expect(announcer).toHaveTextContent('hello world');
+  });
+});
+
+// ── #2887 follow-up — the cold/cancel live-region contract (UI/UX §4) ────────
+//
+// The shipped announcer only flipped `'' -> Listening -> Stopped listening`. The
+// UI/UX §4 contract adds the two missing transitions: the COLD path announces
+// `Starting voice input` when the bounded chip renders, and S4 CANCEL announces
+// `Dictation cancelled` while SUPPRESSING the S3 stop line. Everything stays
+// transition-driven; the WARM path announces exactly one `Listening`.
+
+describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, UI/UX §4)', () => {
+  it('COLD path: announces `Starting voice input` when the bounded chip renders, then `Listening`', () => {
+    const { rerender } = renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    // The readying window outlived HOLD_PENDING_CUE_MS: the bounded chip renders.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" />);
+    expect(screen.getByTestId('launcher-command-listening-pending')).toBeInTheDocument();
+    expect(announcer).toHaveTextContent('Starting voice input');
+
+    // A chip-only re-render (same cue) must NOT re-announce (transition-driven).
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" holdAvailable />);
+    expect(announcer).toHaveTextContent('Starting voice input');
+
+    // Capture is genuinely live: the S2 announcement replaces the cold one.
+    rerender(
+      <LauncherCommandBar
+        query="live"
+        onQueryChange={vi.fn()}
+        cue="listening"
+        listening
+        onStopListening={vi.fn()}
+      />,
+    );
+    expect(announcer).toHaveTextContent('Listening');
+  });
+
+  it('WARM path: exactly ONE announcement (`Listening`) — the armed window / S1 acknowledgement are NOT announced', () => {
+    const { rerender } = renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    // The keydown edge: `Hold to dictate…` is field TEXT, never a live region.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="acknowledge" />);
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
+    expect(announcer).toHaveTextContent('');
+    // No chip ⇒ no cold announcement either (the warm chip gate is never reached).
+    expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
+
+    // Capture is live — the one and only announcement.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" listening />);
+    expect(announcer).toHaveTextContent('Listening');
+
+    // An ordinary release (a stop) reads the S3 line.
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />);
+    expect(announcer).toHaveTextContent('Stopped listening');
+  });
+
+  it('CANCEL (S4): a live cancel announces `Dictation cancelled` and SUPPRESSES `Stopped listening` (batched commit)', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />,
+    );
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
+    );
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('Listening');
+
+    // The host bumps `cancelSignal` on the live discard; `listening` may drop in
+    // the SAME commit (the backend confirm) — the cancel still wins.
+    rerender(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />,
+    );
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('CANCEL (S4): the cancel wins when `cancelSignal` lands a commit BEFORE `listening:false`', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />,
+    );
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
+    );
+    const announcer = screen.getByTestId('voice-listening-announcer');
+
+    // The handler runs synchronously; the capture confirm lands later.
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening cancelSignal={1} />,
+    );
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('a cancel never poisons the NEXT session: a fresh capture re-announces `Listening` and its stop reads `Stopped listening`', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />,
+    );
+    rerender(
+      <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
+    );
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
+    expect(announcer).toHaveTextContent('Dictation cancelled');
+
+    // A NEW hold goes live: `Listening` again…
+    rerender(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" listening cancelSignal={1} />,
+    );
+    expect(announcer).toHaveTextContent('Listening');
+    // …and its release is an ordinary stop (the stale cancel flag was cleared).
+    rerender(<LauncherCommandBar query="hello" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
+    expect(announcer).toHaveTextContent('Stopped listening');
   });
 });

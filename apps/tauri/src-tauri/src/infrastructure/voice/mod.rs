@@ -13,6 +13,7 @@ pub mod capture;
 pub mod commands;
 pub mod engine;
 pub mod manifest;
+pub mod resident;
 pub mod session;
 pub mod state;
 
@@ -22,8 +23,9 @@ pub use manifest::{
     resolve_stt_manifest, STT_DEFAULT_MANIFEST, STT_HF_REPO, STT_REVISION, STT_SUBDIR,
     STT_TOTAL_BYTES,
 };
+pub use resident::ResidentEngine;
 pub use session::{AppHandleSink, TranscriptSink, VoiceState, VOICE_DEVICE_KEY, VOICE_ENABLED_KEY};
 pub use state::{
     SttDeviceInfo, SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent,
-    SttTranscriptEvent, VoiceError,
+    SttTranscriptEvent, SttWarmResult, VoiceError,
 };

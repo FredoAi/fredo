@@ -9,10 +9,13 @@
 //! - **R-3.3 LOCAL-ONLY** — the capture/engine/session decode path references no
 //!   network client, socket, or process-spawn symbol; the feature's only
 //!   network-capable component is model acquisition (outside `voice/`).
-//! - **R-4.6 NO IDLE RESOURCE** — the recognizer and the `cpal` stream are
-//!   constructed only inside the session worker (`worker_main`); `VoiceState`
-//!   holds neither, and no other module constructs them (nothing is held or
-//!   built at app launch).
+//! - **R-4.6 NO IDLE RESOURCE** — no recognizer and no `cpal` stream is held
+//!   idle: the recognizer is DEFINED once (`engine.rs`) and BUILT only by the
+//!   two sanctioned loaders — the process-resident warm (`resident.rs`, added by
+//!   Spec #2887 ST-1/ST-2) and the session worker's cold-load fallback
+//!   (`session.rs`) — while the `cpal` stream is still constructed ONLY inside
+//!   the session worker (`worker_main`). `VoiceState` holds neither, and the mic
+//!   is never opened by the resident warm (the residency is ENGINE-ONLY).
 //! - **R-5.4 OPT-IN** — the frontend voice defaults are `false` and are the
 //!   values actually handed to `usePersistedSetting`.
 //! - **REQ-NF5 NO-PANIC** — the shipped voice region contains no `unwrap()` /
@@ -310,8 +313,13 @@ fn voice_state_holds_no_engine_and_the_worker_is_the_only_construction_site() {
     );
 }
 
-/// R-4.6 crate-wide: nothing outside the session worker builds the engine or
-/// opens a device, so a cold app holds no recognizer and no microphone.
+/// R-4.6 crate-wide: the recognizer is defined once and built only by the two
+/// sanctioned loaders — the process-resident warm (`resident.rs`, Spec #2887
+/// ST-1/ST-2) and the session worker's cold-load fallback (`session.rs`) — and
+/// nothing outside the session worker opens a device. Spec #2887 moves the
+/// ENGINE load to app setup, but the MICROPHONE is still opened only by the
+/// session worker: `resident.rs` must therefore never appear in the capture or
+/// cpal sets below. A cold app holds no recognizer-in-flight and no microphone.
 #[test]
 fn engine_and_capture_construction_is_confined_crate_wide() {
     let mut engine_files = Vec::new();
@@ -334,9 +342,10 @@ fn engine_and_capture_construction_is_confined_crate_wide() {
         engine_files,
         vec![
             "infrastructure/voice/engine.rs",
+            "infrastructure/voice/resident.rs",
             "infrastructure/voice/session.rs"
         ],
-        "the recognizer may only be defined in engine.rs and built in the session worker (R-4.6)"
+        "the recognizer may only be defined in engine.rs and built by the resident warm or the session worker (R-4.6)"
     );
     assert_eq!(
         capture_files,

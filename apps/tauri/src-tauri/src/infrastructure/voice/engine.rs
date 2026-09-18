@@ -2,9 +2,11 @@
 //!
 //! [`Recognizer`] is the seam the hermetic session pins inject a fake through
 //! (no model, no mic, CI-green); [`SherpaRecognizer`] is the real int8 Zipformer
-//! transducer. The engine is created lazily on the first `stt_start` — never at
-//! app launch — and only after the SHA-256 content gate has verified the pinned
-//! bytes (a size-valid/content-invalid model must never reach the native parser).
+//! transducer. [`Recognizer::new_stream`] renews only the per-session stream, so
+//! one recognizer can be reused by the process-resident engine (R-7); when the
+//! resident slot is empty the engine is still loaded lazily on `stt_start`. The
+//! SHA-256 content gate runs BEFORE `OnlineRecognizer::create` (a size-valid /
+//! content-invalid model must never reach the native parser).
 //! API verified live against sherpa-onnx 1.13.8.
 
 use std::fs::File;
@@ -46,6 +48,11 @@ pub trait Recognizer: Send {
     fn reset(&mut self);
     /// Mark end of input so trailing context is flushed.
     fn input_finished(&mut self);
+    /// Replace the active stream with a fresh one so a RESIDENT recognizer can
+    /// serve another session (R-7). Creation stays the ONE-time cost; only the
+    /// stream is renewed. A recognizer that has already been through
+    /// [`Recognizer::input_finished`] is NOT reusable without this reset.
+    fn new_stream(&mut self);
 }
 
 /// The real `OnlineRecognizer` + its single `OnlineStream`.
@@ -84,6 +91,12 @@ impl Recognizer for SherpaRecognizer {
 
     fn input_finished(&mut self) {
         self.stream.input_finished();
+    }
+
+    fn new_stream(&mut self) {
+        // The `OnlineRecognizer` (the expensive, verified model load) is kept;
+        // only the per-session `OnlineStream` is replaced.
+        self.stream = self.recognizer.create_stream();
     }
 }
 
@@ -312,11 +325,15 @@ mod tests {
     fn decode_pcm(body: &[u8], audio_format: u16, bits: u16) -> Vec<f32> {
         match (audio_format, bits) {
             (3, 32) => body
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             (1, 16) => body
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0)
                 .collect(),
             (format, width) => panic!("unsupported WAV format {format} with {width}-bit samples"),

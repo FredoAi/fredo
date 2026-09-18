@@ -8,6 +8,9 @@
  * lifecycle methods never throwing to the caller, the final-before-idle
  * ordering (R-4.3), cancel discarding the in-flight partial (R-4.4), and the
  * unmount contract (unlisten + no state update / no throw after unmount).
+ *
+ * Spec #2887 ST-7 adds the resident-engine observable (`engineResident`, ST-3's
+ * `stt:state` start stamp) the launcher's honest hold cue derives from.
  */
 
 import { readFileSync } from 'node:fs';
@@ -105,6 +108,8 @@ describe('useVoiceDictation — control-plane subscription', () => {
     expect(result.current.detail).toBeNull();
     expect(result.current.deviceName).toBeNull();
     expect(result.current.origin).toBeNull();
+    // #2887 ST-7 — fail-closed: unknown residency is NOT resident.
+    expect(result.current.engineResident).toBe(false);
   });
 
   it('never statically imports @tauri-apps/api, never uses useEventRows, no auto-submit, no POC residue', () => {
@@ -204,6 +209,92 @@ describe('useVoiceDictation — stt:state', () => {
 
     emit('stt:state', { listening: true, code: null, detail: null, origin: 'bogus' });
     expect(result.current.origin).toBe('launcher');
+  });
+});
+
+// ── 3b. The resident-engine observable (Spec #2887 ST-7) ─────────────────────
+//
+// ST-3 stamps `engineResident` (and `readyMs`) on the START-success
+// `stt:state`. The launcher's honest hold cue derives from it: `false` = the
+// engine was NOT resident at the start (the launch window) ⇒ `warming`; `true`
+// ⇒ `starting`. These pins fix the mirror rule (a START writes it, an IDLE
+// event must not clear it, the typed voice-off signal does).
+
+describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', () => {
+  it('mirrors the START stamp and is fail-closed while unknown', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      readyMs: 118,
+      engineResident: true,
+    });
+    expect(result.current.engineResident).toBe(true);
+
+    // A launch-window start JOINED the in-flight warm: never an optimistic stamp.
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      readyMs: 2_940,
+      engineResident: false,
+    });
+    expect(result.current.engineResident).toBe(false);
+  });
+
+  it('an idle state event never clears the last START stamp (its false means "no start happened")', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      readyMs: 90,
+      engineResident: true,
+    });
+    expect(result.current.engineResident).toBe(true);
+
+    // The session ended: the SWEEPING event clears `listening`/errors, but the
+    // engine stays parked — clearing residency here would mislabel every later
+    // hold as a launch-window `warming`.
+    emit('stt:state', {
+      listening: false,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      readyMs: null,
+      engineResident: false,
+    });
+    expect(result.current.listening).toBe(false);
+    expect(result.current.engineResident).toBe(true);
+  });
+
+  it('the typed `disabled` voice-off signal clears it (the voice-disabled edge)', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      readyMs: 90,
+      engineResident: true,
+    });
+    expect(result.current.engineResident).toBe(true);
+
+    emit('stt:state', {
+      listening: false,
+      code: 'disabled',
+      detail: 'Voice input is disabled in Companion settings.',
+      origin: 'launcher',
+    });
+    expect(result.current.errorCode).toBe('disabled');
+    expect(result.current.engineResident).toBe(false);
   });
 });
 
