@@ -71,3 +71,26 @@
 - **S-11 PASS (live).** No floating gear (`button[aria-label="Settings"]` = 0) and no settings `chakra-dialog__content`; the launcher tile is the sole entry.
 - **S-12 PASS (live).** Minimize → restore via the launcher tile (same single window) → Close (frame + `useWindows()` entry gone) → re-open works; console clean.
 - **S-13 PASS (live).** On first open (probe in flight) the Companion section rendered `companion-setup-wizard` ONLY; on ready it swapped to `companion-controls`; console clean.
+
+## #2892 extension — send-during-reply settings quick paths
+
+> Quick paths for the two new Companion settings. The full matrix lives in `functional.md`
+> F-41..F-47 / `regression.md` R-17..R-20. **Verification policy: live.**
+
+- [ ] S-14: **Both controls render with defaults.** Open Settings -> Companion on a fresh profile;
+      read `[data-testid="companion-send-during-reply"]` and
+      `[data-testid="companion-reply-leave-grace"]`. **Expected:** the select reads `queue`, the
+      grace number input reads `2` (seconds); screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-15: **Persistence quick path.** Set the select to `interrupt` and the grace field to `10`
+      (seconds = 10000 ms); reload the webview; re-open Settings -> Companion. **Expected:** both
+      values are still shown (`interrupt` / `10`), and `localStorage` holds
+      `Fredo_companion_send_during_reply='interrupt'` +
+      `Fredo_companion_reply_leave_grace_ms='10000'`; screenshot succeeds; console clean.
+- [ ] S-16: **Theme quick path.** With the section open, switch dark↔light and a non-default accent.
+      **Expected:** both controls re-tint token-native with no stale color and the select stays a
+      themed control (NOT a native unstyled `<select>`); screenshot succeeds; console clean.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
