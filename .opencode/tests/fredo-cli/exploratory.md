@@ -30,3 +30,18 @@
   (trim, fails closed); `Mission Mon` → `opened` (display-name prefix via `appNameMatches`); a
   non-showable/unknown identity → `unknown`, zero windows.
 - **E-4 PASS.** No app / stale socket: exit **2**, no hang (same as F-4).
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **E-1 PASS (bounded).** App DOWN: `fredo open-app mission-monitor` exit **2** immediately (33 ms),
+  no hang/panic. Kill-mid-call was not separately timed; the design bounds (child ≤10 s, confirm
+  ≤5 s) stand.
+- **E-2 PASS (no duplicate/lost/crash).** 3 open invocations back-to-back (cold + warm +
+  display-name) produced one window, no duplicate, no crash; warm calls 43–76 ms, cold 842 ms.
+- **E-3 PASS.** `MM` → `unknown`; `""` → clap exit 2; `Mission Mon` (round 1 + the resolver pins) →
+  `opened`; unknown identity → `unknown`, zero windows.
+- **E-4 PASS.** No app / stale socket → exit **2**, no hang.
+- **O-1 (helper artifact, not a product finding).** `spawnSync(shell:true)` joined the quoted
+  `"Mission Monitor"` into two argv tokens (clap exit 2). With `shell:false`: exit 0
+  `{"displayName":"Mission Monitor","outcome":"opened"}`. The helper was corrected
+  (`.opencode/tmp/2893/cli-probe2.cjs`).
