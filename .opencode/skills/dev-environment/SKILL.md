@@ -16,7 +16,7 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 | Up | `powershell -File .opencode/scripts/dev-env.ps1 -Action Up` | Ensure dev instance is running AND ready. Auto-starts if not running. Polls ports until responsive. |
 | Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. |
 | Status | `powershell -File .opencode/scripts/dev-env.ps1 -Action Status` | Read-only: `running` / `starting` / `stopped`. |
-| Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart` | Down then Up. |
+| Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart -Spec <N>` | Down then Up. **`-Spec` (or a repo root already on `spec/<N>`) is resolved BEFORE anything is stopped** — a missing `-Spec` now exits with a clear error and leaves the running instance up, instead of killing it and then failing the Up leg's range guard. |
 | Logs | `powershell -File .opencode/scripts/dev-env.ps1 -Action Logs` | Tail process stdout/stderr. |
 
 Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`, `-At <commit-ish>` (baseline-leg serving, Up only — see the baseline rule below).

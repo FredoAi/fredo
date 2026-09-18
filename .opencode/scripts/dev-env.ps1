@@ -605,6 +605,21 @@ switch ($Action) {
 
   # -- Restart -----------------------------------------------------------------
   "Restart" {
+    # -Spec is required by the Up leg. Resolve it BEFORE stopping anything: with
+    # the caller's omission previously forwarded as Spec=0, the Up re-invoke hit
+    # the ValidateRange guard AFTER the running app had been killed, leaving the
+    # instance DOWN (observed #2887 round 2).
+    if ($Spec -eq 0) {
+      $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+      if ($branch -match '^spec/(\d+)$') {
+        $Spec = [uint64]$Matches[1]
+        Write-Log "Resolved -Spec $Spec from the current branch ($branch)"
+      } else {
+        Write-Log "ERROR: -Action Restart requires -Spec <N> (the repo root is on '$branch', not spec/<N>). Nothing was stopped." -Level ERROR
+        exit 1
+      }
+    }
+
     Write-Log "Restarting dev:tauri..."
 
     foreach ($port in @($McpPort, $VitePort)) {
@@ -617,8 +632,8 @@ switch ($Action) {
 
     Start-Sleep -Seconds 2
 
-    # Re-invoke Up
-    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs
+    # Re-invoke Up (forwarding -EnvVars so injected seams survive a Restart)
+    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs -EnvVars $EnvVars
     exit $LASTEXITCODE
   }
 
