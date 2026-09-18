@@ -637,3 +637,19 @@
   **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded`; ZERO colour literals / no
       alpha-append; no re-render loop (#523); listeners register once per lifecycle and are removed.
       Reference R-45/R-49.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **R-50 PASS.** Presence/visibility/idle contracts held across the round: the companion stayed
+  present, an open request did not mutate the persisted keys (`Fredo_companion_visible`,
+  `Fredo_companion_idle_timeout` unchanged in `localStorage`), and the companion returned to `idle`
+  after every outcome.
+- **R-51 PASS.** `hi` / `tell me a joke` streamed into the reply surface and settled normally
+  (240×120 reply bubble; `happy` beat on content); no stray joke fired on an open request; the
+  reply-region/`data-testid` contracts were unchanged.
+- **R-52 PASS (with one disclosed tester artifact).** No `Error:`/`Uncaught`/`Maximum update depth
+  exceeded` in a clean leg driven with **no tester instrumentation** (after a page reload:
+  generation → tokens → `llm-done`, zero error entries). The `Uncaught TypeError … reading 'slice'`
+  bursts seen earlier in the round were traced to the round's OWN MutationObserver scripts
+  (`String.slice()` on a `null` reply text at bubble-clear) and vanished on reload — NOT a product
+  defect. No re-render loop; no colour literals introduced by the #2893 diff.
