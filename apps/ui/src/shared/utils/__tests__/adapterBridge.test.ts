@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { adapterBridge } from '../adapterBridge';
-import type { LlmMessage } from '../../../app/adapters/HostAdapter';
+import type { LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,6 +27,7 @@ describe('adapterBridge', () => {
     adapterBridge.setListen(undefined as any);
     adapterBridge.setLlmChat(undefined as any);
     adapterBridge.setLlmChatWithImage(undefined as any);
+    adapterBridge.setLlmChatWithSkills(undefined);
     vi.clearAllMocks();
   });
 
@@ -116,6 +117,76 @@ describe('adapterBridge', () => {
       expect(onToken).toHaveBeenCalledTimes(1);
       expect(onToken).toHaveBeenCalledWith('img-token');
       expect(onDone).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // #2893 ST-7 — the skill-aware forwarding path.
+  describe('setLlmChatWithSkills', () => {
+    it('forwards messages + the skill-call channel and completes the caller', async () => {
+      const onToken = vi.fn();
+      const onDone = vi.fn();
+      const onSkillCall = vi.fn();
+      const call: LlmSkillCall = { skill: 'open_app', arguments: { app: 'Mission Monitor' } };
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+          _onSkillCall: (c: LlmSkillCall) => void,
+        ) => {
+          _onSkillCall(call);
+          _onDone();
+        },
+      );
+      adapterBridge.setLlmChatWithSkills(mockChat);
+
+      const messages = createMockMessages();
+      await adapterBridge.llmChatWithSkills(messages, onToken, onDone, onSkillCall);
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      expect(mockChat).toHaveBeenCalledWith(messages, onToken, onDone, onSkillCall);
+      expect(onSkillCall).toHaveBeenCalledWith(call);
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it('forwards the optional error channel only when supplied', async () => {
+      const onError = vi.fn();
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+          _onSkillCall: (c: LlmSkillCall) => void,
+          _onError?: (message: string) => void,
+        ) => {
+          _onError?.('boom');
+        },
+      );
+      adapterBridge.setLlmChatWithSkills(mockChat);
+
+      await adapterBridge.llmChatWithSkills(createMockMessages(), vi.fn(), vi.fn(), vi.fn(), onError);
+
+      expect(mockChat).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        onError,
+      );
+      expect(onError).toHaveBeenCalledWith('boom');
+    });
+
+    it('unregistered — warns and still completes (never hangs)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const onDone = vi.fn();
+
+      await adapterBridge.llmChatWithSkills(createMockMessages(), vi.fn(), onDone, vi.fn());
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[adapterBridge] llmChatWithSkills called before adapter registered',
+      );
+      expect(onDone).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
     });
   });
 

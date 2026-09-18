@@ -6,8 +6,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 
-use crate::infrastructure::ipc::{send_cli_command, CliCommand};
+use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
 use commands::emit::EmitArgs;
+use commands::open_app::OpenAppArgs;
 use commands::setup::SetupArgs;
 
 /// fredo — infrastructure AI CLI
@@ -27,6 +28,8 @@ pub enum Commands {
     Emit(EmitArgs),
     /// Check or perform Fredo setup operations (PATH, plugin, model, OTEL)
     Setup(SetupArgs),
+    /// Open a Fredo app window by stable id or display name
+    OpenApp(OpenAppArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -44,19 +47,31 @@ async fn run_async(cli: Cli) -> Result<()> {
     }
 
     let ipc_cmd = build_ipc_command(cli.command);
-    match send_cli_command(&ipc_cmd).await? {
-        Some(resp) if resp.ok => {
-            if let Some(data) = resp.data {
-                println!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                println!("ok");
+    let response = send_cli_command(&ipc_cmd).await?;
+
+    match exit_code_for_response(response.as_ref()) {
+        0 => {
+            if let Some(resp) = response {
+                match resp.data {
+                    Some(data) => println!("{}", serde_json::to_string_pretty(&data)?),
+                    None => println!("ok"),
+                }
             }
         }
-        Some(resp) => {
-            tracing::error!(target: "fredo::cli", message = %resp.message.as_deref().unwrap_or("unknown error"), "CLI error response");
+        1 => {
+            // Machine-readable failure data (e.g. the app-open outcome) goes to
+            // stdout; the human-readable message stays on the log line.
+            if let Some(data) = response.as_ref().and_then(|resp| resp.data.clone()) {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            }
+            let message = response
+                .as_ref()
+                .and_then(|resp| resp.message.clone())
+                .unwrap_or_else(|| "unknown error".to_string());
+            tracing::error!(target: "fredo::cli", message = %message, "CLI error response");
             std::process::exit(1);
         }
-        None => {
+        _ => {
             if std::io::stderr().is_terminal() {
                 tracing::error!(target: "fredo::cli", "IPC socket not found");
                 tracing::info!(target: "fredo::cli", "Tip: run `fredo` to launch the desktop app.");
@@ -66,6 +81,17 @@ async fn run_async(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The CLI process exit code for an IPC round trip:
+/// `0` — the command succeeded; `1` — the app handled it but reported failure;
+/// `2` — the app is not running (the unchanged fallback).
+pub fn exit_code_for_response(response: Option<&CliResponse>) -> i32 {
+    match response {
+        Some(resp) if resp.ok => 0,
+        Some(_) => 1,
+        None => 2,
+    }
 }
 
 fn build_ipc_command(cmd: Commands) -> CliCommand {
@@ -79,6 +105,9 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
             tracing::debug!(target: "fredo::cli", json = %json_truncated, "CLI event JSON");
             CliCommand::EmitEvent { event }
         }
+        Commands::OpenApp(args) => CliCommand::OpenApp {
+            identity: args.identity,
+        },
         Commands::Setup(_) => {
             // Setup commands are handled locally in run_async, not via IPC.
             unreachable!("Setup command should be handled before IPC dispatch")
@@ -106,7 +135,10 @@ mod tests {
         let cmd = Commands::Emit(args);
         let ipc_cmd = build_ipc_command(cmd);
 
-        let CliCommand::EmitEvent { event } = ipc_cmd;
+        let event = match ipc_cmd {
+            CliCommand::EmitEvent { event } => event,
+            other => panic!("expected CliCommand::EmitEvent, got {other:?}"),
+        };
         assert_eq!(
             event.event_type,
             crate::infrastructure::comm::event::EventType::ToolUse
@@ -132,5 +164,61 @@ mod tests {
         };
         let cmd = Commands::Setup(args);
         build_ipc_command(cmd);
+    }
+
+    #[test]
+    fn build_ipc_command_open_app_maps_identity() {
+        let cmd = Commands::OpenApp(commands::open_app::OpenAppArgs {
+            identity: "Mission Monitor".into(),
+        });
+        match build_ipc_command(cmd) {
+            CliCommand::OpenApp { identity } => assert_eq!(identity, "Mission Monitor"),
+            other => panic!("expected CliCommand::OpenApp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_help_lists_open_app_emit_and_setup() {
+        use clap::CommandFactory;
+
+        let mut root = Cli::command();
+        let help = root.render_long_help().to_string();
+        assert!(help.contains("open-app"), "`fredo --help` must list open-app:\n{help}");
+        assert!(help.contains("emit"), "`fredo --help` must keep listing emit:\n{help}");
+        assert!(help.contains("setup"), "`fredo --help` must keep listing setup:\n{help}");
+
+        let sub = root
+            .find_subcommand_mut("open-app")
+            .expect("open-app is a registered subcommand");
+        let sub_help = sub.render_long_help().to_string();
+        assert!(
+            sub_help.contains("IDENTITY"),
+            "`fredo open-app --help` must name the identity argument:\n{sub_help}"
+        );
+    }
+
+    #[test]
+    fn open_app_subcommand_parses_quoted_display_name() {
+        let cli = Cli::try_parse_from(["fredo", "open-app", "Mission Monitor"])
+            .expect("a quoted display name parses as ONE positional");
+        match cli.command {
+            Commands::OpenApp(args) => assert_eq!(args.identity, "Mission Monitor"),
+            other => panic!("expected OpenApp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exit_code_for_response_maps_all_three_outcomes() {
+        let ok = CliResponse::ok(serde_json::json!({ "outcome": "opened" }));
+        assert_eq!(exit_code_for_response(Some(&ok)), 0);
+
+        let failed = CliResponse {
+            ok: false,
+            message: Some("unknown app".into()),
+            data: Some(serde_json::json!({ "outcome": "unknown" })),
+        };
+        assert_eq!(exit_code_for_response(Some(&failed)), 1);
+
+        assert_eq!(exit_code_for_response(None), 2);
     }
 }

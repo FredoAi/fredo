@@ -1,4 +1,4 @@
-import type { HostAdapter, LlmMessage } from './HostAdapter';
+import type { HostAdapter, LlmMessage, LlmSkillCall } from './HostAdapter';
 
 /**
  * TauriAdapter — HostAdapter implementation for the Tauri desktop app.
@@ -102,6 +102,84 @@ export class TauriAdapter implements HostAdapter {
         setTimeout(() => this.llmChat(messages, onToken, onDone, onError), 3000);
       } else {
         console.error('[TauriAdapter] llm_chat error:', err);
+        onError?.(msg);
+        finish();
+      }
+    }
+  }
+
+  /**
+   * #2893 ST-7 — the skill-aware streaming path. Same listener lifecycle, single
+   * `finish()` guard and "still loading" retry as `llmChat`, plus the additive
+   * `llm-skill-call` listener registered BEFORE the invoke so a fast selection is
+   * never missed. `onSkillCall` receives the validated `{ skill, arguments }`;
+   * tool-call JSON is never routed to `onToken` (backend guarantees it).
+   */
+  async llmChatWithSkills(
+    messages: LlmMessage[],
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onSkillCall: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    const { listen } = await import('@tauri-apps/api/event');
+    const { invoke } = await import('@tauri-apps/api/core');
+
+    let unlistenToken: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    let unlistenSkill: (() => void) | undefined;
+    let settled = false;
+
+    // Complete exactly once (see `llmChat`): a server failure emits `llm-error`
+    // followed by `llm-done`, so a double `onDone` is impossible.
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      unlistenToken?.();
+      unlistenDone?.();
+      unlistenError?.();
+      unlistenSkill?.();
+      onDone();
+    };
+
+    unlistenToken = await listen<string>('llm-token', (event) => {
+      onToken(event.payload);
+    });
+
+    // Additive server-error channel: route ONE raw failure line through the typed
+    // `onError` channel when the caller provides it, then complete — never hang.
+    // Callers without `onError` keep the legacy behavior (the line arrives via
+    // `onToken`).
+    unlistenError = await listen<string>('llm-error', (event) => {
+      if (onError) onError(event.payload);
+      else onToken(event.payload);
+      finish();
+    });
+
+    // The validated selection channel — never a token.
+    unlistenSkill = await listen<LlmSkillCall>('llm-skill-call', (event) => {
+      onSkillCall(event.payload);
+    });
+
+    unlistenDone = await listen<void>('llm-done', () => {
+      finish();
+    });
+
+    try {
+      await invoke('llm_chat_with_skills', { messages });
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes('still loading')) {
+        unlistenToken?.();
+        unlistenDone?.();
+        unlistenError?.();
+        unlistenSkill?.();
+        console.warn('[TauriAdapter] model still loading, retrying in 3s...');
+        onToken('⏳ Loading model...');
+        setTimeout(() => this.llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError), 3000);
+      } else {
+        console.error('[TauriAdapter] llm_chat_with_skills error:', err);
         onError?.(msg);
         finish();
       }

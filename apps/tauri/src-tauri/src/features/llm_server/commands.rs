@@ -199,6 +199,9 @@ struct LlamaServerArgsOverride {
     top_p: Option<f32>,
     top_k: Option<u32>,
     parallel: Option<u32>,
+    jinja: Option<bool>,
+    chat_template: Option<String>,
+    chat_template_file: Option<String>,
     kv_unified: Option<bool>,
     log_verbosity: Option<u32>,
     alias: Option<String>,
@@ -259,6 +262,15 @@ fn apply_args_override(base: &mut LlamaServerConfig, json: Option<&str>) -> Resu
     }
     if let Some(value) = over.parallel {
         base.parallel = value;
+    }
+    if let Some(value) = over.jinja {
+        base.jinja = value;
+    }
+    if let Some(value) = over.chat_template {
+        base.chat_template = Some(value);
+    }
+    if let Some(value) = over.chat_template_file {
+        base.chat_template_file = Some(value);
     }
     if let Some(value) = over.kv_unified {
         base.kv_unified = value;
@@ -907,6 +919,51 @@ mod tests {
         assert_eq!(config.top_p, 0.95);
         assert_eq!(config.spec_type, "draft-mtp");
         assert!(config.kv_unified);
+    }
+
+    #[test]
+    fn args_override_threads_jinja_and_template_fields() {
+        let mut config = LlamaServerConfig::default();
+        apply_args_override(
+            &mut config,
+            Some(
+                r#"{"jinja":false,"chatTemplate":"{{ messages }}","chatTemplateFile":"C:\\t\\tool.jinja"}"#,
+            ),
+        )
+        .expect("valid override");
+
+        assert!(!config.jinja);
+        assert_eq!(config.chat_template.as_deref(), Some("{{ messages }}"));
+        assert_eq!(config.chat_template_file.as_deref(), Some(r"C:\t\tool.jinja"));
+
+        let args = config.to_args();
+        assert!(args.iter().any(|arg| arg == "--no-jinja"), "args: {args:?}");
+        assert!(!args.iter().any(|arg| arg == "--jinja"), "args: {args:?}");
+        assert!(args.iter().any(|arg| arg == "--chat-template"), "args: {args:?}");
+        assert!(
+            args.iter().any(|arg| arg == "--chat-template-file"),
+            "args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn args_override_keeps_jinja_on_and_templates_unset_when_absent() {
+        let mut config = LlamaServerConfig::default();
+        apply_args_override(&mut config, Some(r#"{"ctxSize":4096}"#)).expect("valid override");
+
+        assert!(config.jinja, "absent jinja keeps the documented default");
+        assert!(config.chat_template.is_none());
+        assert!(config.chat_template_file.is_none());
+
+        let args = config.to_args();
+        assert!(args.iter().any(|arg| arg == "--jinja"), "args: {args:?}");
+        assert!(!args.iter().any(|arg| arg == "--no-jinja"), "args: {args:?}");
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--chat-template" || arg == "--chat-template-file"),
+            "unset templates emit nothing: {args:?}"
+        );
     }
 
     #[test]

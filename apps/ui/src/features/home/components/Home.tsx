@@ -14,6 +14,7 @@ import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
+import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
 // Features self-register via allFeatures.ts — no manual list needed.
@@ -136,6 +137,14 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
       }
     }, 0);
   }, [openWindow, closeWindow, updateWindow]);
+
+  // #2893 ST-6 — the ONE app-open request/confirm loop: the CLI `open-app`
+  // round trip (`app-open-request`) and the companion skill selection
+  // (`llm-skill-call`) both resolve through `resolveAppIdentity` and open
+  // through THIS full-lifecycle `openFeatureWindow` (never a raw `openWindow`).
+  // The backend addresses the `main` window only, so the terminal route never
+  // receives these events.
+  useAppOpenRequests({ openFeatureWindow, features: SHOWABLE_FEATURES });
 
   // Keep the ref in sync so transition callbacks always call the latest version, and
   // register the opener with the Home-level ref so the sibling LauncherShell (which

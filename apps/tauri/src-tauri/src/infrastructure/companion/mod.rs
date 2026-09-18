@@ -8,12 +8,17 @@
 
 pub mod models;
 pub mod resolver;
+pub mod skills;
 
 pub use models::{
     default_manifest, file_path, is_step_complete, load_manifest, missing_files, models_subdir,
     parse_manifest, probe_files, resolve_manifest, resolve_models_dir, FileState, ModelFileSpec,
     ModelFileStatus, ModelManifest, DEFAULT_MANIFEST, MODEL_MANIFEST_PATH_KEY, MODEL_REVISION,
     MODEL_SUBDIR, MODELS_DIR_KEY,
+};
+pub use skills::{
+    open_app_parameters, validate, CompanionSkill, RegisteredSkill, SkillInvocation, SkillRegistry,
+    SkillValidationError, OPEN_APP_ARGUMENT, OPEN_APP_DESCRIPTION, OPEN_APP_SKILL,
 };
 pub use resolver::{
     resolve_llama_server, resolve_llama_server_order, LLAMA_SERVER_BIN,

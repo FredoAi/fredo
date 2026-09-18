@@ -61,6 +61,26 @@ pub struct LlamaServerConfig {
     pub top_k: u32,
     /// Parallel sequences.
     pub parallel: u32,
+    /// Enables the Jinja chat-template engine: `true` emits the bare `--jinja`,
+    /// `false` the bare `--no-jinja` (the documented function-calling path on
+    /// the managed sidecar, Spec #2893 ST-2). Like `kv_unified` this is a
+    /// value-less boolean switch: the switch is ALWAYS present so the generated
+    /// config is deterministic and self-describing, and it is NEVER given a
+    /// value.
+    ///
+    /// An absent `jinja` key in legacy persisted JSON deserializes to the
+    /// documented default (`true`).
+    #[serde(default = "default_jinja")]
+    pub jinja: bool,
+    /// Optional `--chat-template` override (a raw Jinja template string). This is
+    /// the ST-1 contingency for a GGUF whose bundled template lacks
+    /// `chat_template_tool_use`. Emitted only when set to a non-empty value;
+    /// `None` (or empty) emits nothing.
+    pub chat_template: Option<String>,
+    /// Optional `--chat-template-file` override (absolute path to a Jinja
+    /// template file). Emitted only when set to a non-empty value; `None` (or
+    /// empty) emits nothing.
+    pub chat_template_file: Option<String>,
     /// Unified KV cache. This is a value-less boolean switch: `true` emits the
     /// bare `--kv-unified`; `false` emits the bare `--no-kv-unified` (the
     /// switch is ALWAYS present so the generated config is deterministic and
@@ -70,6 +90,12 @@ pub struct LlamaServerConfig {
     pub log_verbosity: u32,
     /// Server model alias reported to clients.
     pub alias: String,
+}
+
+/// Serde default for [`LlamaServerConfig::jinja`]: a legacy persisted JSON that
+/// predates the field keeps the documented function-calling path ENABLED.
+fn default_jinja() -> bool {
+    true
 }
 
 impl Default for LlamaServerConfig {
@@ -97,6 +123,9 @@ impl Default for LlamaServerConfig {
             top_p: 0.95,
             top_k: 64,
             parallel: 1,
+            jinja: true,
+            chat_template: None,
+            chat_template_file: None,
             kv_unified: true,
             log_verbosity: 4,
             alias: "Gemma-4-E2B".to_string(),
@@ -114,26 +143,31 @@ impl LlamaServerConfig {
     /// `--model`, `--mmproj`, `--model-draft`, `--spec-type`, `--spec-draft-n-max`,
     /// `--fit`, `--load-mode`, `--gpu-layers`, `--threads`, `--threads-batch`,
     /// `--reasoning`, `--ctx-size`, `--temp`, `--top-p`, `--top-k`, `--parallel`,
+    /// `--jinja`, the optional `--chat-template` / `--chat-template-file`,
     /// `--kv-unified`, `--log-verbosity`, `--alias`, plus the server binding
     /// `--host` and `--port` appended last.
     ///
-    /// `kv_unified` is a value-less boolean switch (documented above): `true`
-    /// maps to the bare `--kv-unified`; `false` maps to the bare
-    /// `--no-kv-unified`. No value element is ever attached.
+    /// `kv_unified` and `jinja` are value-less boolean switches (documented
+    /// above): `true` maps to the bare `--kv-unified` / `--jinja`; `false` maps
+    /// to the bare `--no-kv-unified` / `--no-jinja`. No value element is ever
+    /// attached. The two optional template flags are emitted only when set to a
+    /// non-empty value — an unset field contributes no tokens.
     pub fn to_args(&self) -> Vec<String> {
         self.arg_groups().into_iter().flatten().collect()
     }
 
     /// Group the launch parameters, one entry per flag: `[flag, value]` for the
     /// value-taking flags and a single-element `[switch]` for the value-less
-    /// boolean switch (`--kv-unified` / `--no-kv-unified`).
+    /// boolean switches (`--kv-unified` / `--no-kv-unified`, `--jinja` /
+    /// `--no-jinja`). The optional `--chat-template` / `--chat-template-file`
+    /// groups are present only when set to a non-empty value.
     ///
     /// This is the ONE grouping both the spawned argv ([`Self::to_args`]) and
     /// the `.bat` text ([`Self::to_bat`]) derive from, so they can never drift
     /// (NFR-6). Grouping (rather than pairing raw argv tokens) keeps the `.bat`
-    /// renderer aligned now that a bare switch is in the set.
+    /// renderer aligned now that bare switches and optional groups are in the set.
     fn arg_groups(&self) -> Vec<Vec<String>> {
-        vec![
+        let mut groups = vec![
             vec!["--model".to_string(), self.model.clone()],
             vec!["--mmproj".to_string(), self.mmproj.clone()],
             vec!["--model-draft".to_string(), self.model_draft.clone()],
@@ -150,16 +184,37 @@ impl LlamaServerConfig {
             vec!["--top-p".to_string(), format_float(self.top_p)],
             vec!["--top-k".to_string(), self.top_k.to_string()],
             vec!["--parallel".to_string(), self.parallel.to_string()],
-            vec![if self.kv_unified {
-                "--kv-unified".to_string()
+            // The explicit Jinja switch (the documented function-calling path).
+            vec![if self.jinja {
+                "--jinja".to_string()
             } else {
-                "--no-kv-unified".to_string()
+                "--no-jinja".to_string()
             }],
-            vec!["--log-verbosity".to_string(), self.log_verbosity.to_string()],
-            vec!["--alias".to_string(), self.alias.clone()],
-            vec!["--host".to_string(), self.host.clone()],
-            vec!["--port".to_string(), self.port.to_string()],
-        ]
+        ];
+
+        // Optional template overrides: emitted only when actually set to a
+        // non-empty value, so an unset field contributes no tokens at all.
+        if let Some(template) = self.chat_template.as_deref().filter(|value| !value.is_empty()) {
+            groups.push(vec!["--chat-template".to_string(), template.to_string()]);
+        }
+        if let Some(file) = self
+            .chat_template_file
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            groups.push(vec!["--chat-template-file".to_string(), file.to_string()]);
+        }
+
+        groups.push(vec![if self.kv_unified {
+            "--kv-unified".to_string()
+        } else {
+            "--no-kv-unified".to_string()
+        }]);
+        groups.push(vec!["--log-verbosity".to_string(), self.log_verbosity.to_string()]);
+        groups.push(vec!["--alias".to_string(), self.alias.clone()]);
+        groups.push(vec!["--host".to_string(), self.host.clone()]);
+        groups.push(vec!["--port".to_string(), self.port.to_string()]);
+        groups
     }
 
     /// Render a runnable Windows `.bat` referencing the SAME argv as
@@ -252,6 +307,9 @@ mod tests {
             top_p: 0.95,
             top_k: 64,
             parallel: 1,
+            jinja: true,
+            chat_template: None,
+            chat_template_file: None,
             kv_unified: true,
             log_verbosity: 4,
             alias: "Gemma-4-E2B".to_string(),
@@ -316,6 +374,9 @@ mod tests {
         assert_eq!(config.top_p, 0.95);
         assert_eq!(config.top_k, 64);
         assert_eq!(config.parallel, 1);
+        assert!(config.jinja, "the documented function-calling path is on by default");
+        assert!(config.chat_template.is_none());
+        assert!(config.chat_template_file.is_none());
         assert!(config.kv_unified);
         assert_eq!(config.log_verbosity, 4);
         assert_eq!(config.alias, "Gemma-4-E2B");
@@ -357,6 +418,7 @@ mod tests {
             "64",
             "--parallel",
             "1",
+            "--jinja",
             "--kv-unified",
             "--log-verbosity",
             "4",
@@ -426,10 +488,10 @@ mod tests {
             "--kv-unified must be bare; next token = {next:?}"
         );
 
-        // 41 argv tokens = 17 AC1 pairs (34) + 1 bare switch + 3 extra pairs
-        // (--alias/--host/--port = 6).
+        // 41 AC1 argv tokens = 17 AC1 pairs (34) + 1 bare switch + 3 extra pairs
+        // (--alias/--host/--port = 6); plus the ST-2 `--jinja` switch = 42.
         assert_eq!(expected.len() + 1, 18, "18 AC1 flags expected");
-        assert_eq!(args.len(), 41);
+        assert_eq!(args.len(), 42);
     }
 
     #[test]
@@ -491,6 +553,151 @@ mod tests {
             assert_ne!(next, "0", "switch {switch} must not carry 0");
             assert_ne!(next, "1", "switch {switch} must not carry 1");
         }
+    }
+
+    #[test]
+    fn jinja_defaults_true_and_emits_the_bare_switch() {
+        let config = reference_config();
+        let args = config.to_args();
+
+        let index = args
+            .iter()
+            .position(|arg| arg == "--jinja")
+            .expect("--jinja present by default");
+        assert!(
+            !args.iter().any(|arg| arg == "--no-jinja"),
+            "--no-jinja must be absent when jinja is true: {args:?}"
+        );
+        let next = args.get(index + 1).expect("token after --jinja");
+        assert!(
+            next.starts_with("--"),
+            "--jinja must be a bare switch carrying no value; next token = {next:?}"
+        );
+    }
+
+    #[test]
+    fn jinja_false_emits_the_bare_negated_switch() {
+        let mut config = reference_config();
+        config.jinja = false;
+        let args = config.to_args();
+
+        let index = args
+            .iter()
+            .position(|arg| arg == "--no-jinja")
+            .expect("--no-jinja present when disabled");
+        assert!(
+            !args.iter().any(|arg| arg == "--jinja"),
+            "--jinja must be absent when false: {args:?}"
+        );
+        let next = args.get(index + 1).expect("token after --no-jinja");
+        assert!(
+            next.starts_with("--"),
+            "--no-jinja must be a bare switch carrying no value; next token = {next:?}"
+        );
+    }
+
+    #[test]
+    fn chat_template_flags_are_emitted_only_when_set() {
+        // Default (`None`): neither template flag appears.
+        let config = reference_config();
+        let args = config.to_args();
+        assert!(
+            !args.iter().any(|arg| arg == "--chat-template"),
+            "unset chat-template must be absent: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--chat-template-file"),
+            "unset chat-template-file must be absent: {args:?}"
+        );
+
+        // `chat_template` only.
+        let mut config = reference_config();
+        config.chat_template = Some("{{ messages }}".to_string());
+        let args = config.to_args();
+        let index = args
+            .iter()
+            .position(|arg| arg == "--chat-template")
+            .expect("--chat-template present when set");
+        assert_eq!(args.get(index + 1).map(String::as_str), Some("{{ messages }}"));
+        assert!(
+            !args.iter().any(|arg| arg == "--chat-template-file"),
+            "chat-template-file must stay absent: {args:?}"
+        );
+
+        // `chat_template_file` only.
+        let mut config = reference_config();
+        config.chat_template_file = Some(r"C:\templates\tool-use.jinja".to_string());
+        let args = config.to_args();
+        let index = args
+            .iter()
+            .position(|arg| arg == "--chat-template-file")
+            .expect("--chat-template-file present when set");
+        assert_eq!(
+            args.get(index + 1).map(String::as_str),
+            Some(r"C:\templates\tool-use.jinja")
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--chat-template"),
+            "chat-template must stay absent: {args:?}"
+        );
+
+        // An empty value counts as unset — no dangling flag with an empty token.
+        let mut config = reference_config();
+        config.chat_template = Some(String::new());
+        config.chat_template_file = Some(String::new());
+        let args = config.to_args();
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--chat-template" || arg == "--chat-template-file"),
+            "empty template values must not emit dangling flags: {args:?}"
+        );
+    }
+
+    #[test]
+    fn to_bat_derives_the_jinja_and_template_flags_from_the_same_arg_groups() {
+        let mut config = reference_config();
+        config.jinja = false;
+        config.chat_template_file = Some(r"C:\templates\tool-use.jinja".to_string());
+
+        let bat = config.to_bat();
+        let tokens = parse_bat_tokens(&bat);
+        let mut expected = vec![config.executable.clone()];
+        expected.extend(config.to_args());
+        assert_eq!(tokens, expected, "the .bat must reference the same argv (NFR-6)");
+        assert!(tokens.contains(&"--no-jinja".to_string()), "bat: {bat:?}");
+        assert!(!tokens.contains(&"--jinja".to_string()), "bat: {bat:?}");
+        assert!(tokens.contains(&"--chat-template-file".to_string()), "bat: {bat:?}");
+        assert!(
+            tokens.contains(&r"C:\templates\tool-use.jinja".to_string()),
+            "bat: {bat:?}"
+        );
+
+        // The default config derives the bare `--jinja` and no template flags.
+        let default_bat = reference_config().to_bat();
+        let default_tokens = parse_bat_tokens(&default_bat);
+        assert!(default_tokens.contains(&"--jinja".to_string()), "bat: {default_bat:?}");
+        assert!(!default_tokens.contains(&"--no-jinja".to_string()), "bat: {default_bat:?}");
+        assert!(
+            !default_tokens
+                .iter()
+                .any(|token| token == "--chat-template" || token == "--chat-template-file"),
+            "bat: {default_bat:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_json_without_jinja_deserializes_to_the_documented_default() {
+        let mut value = serde_json::to_value(LlamaServerConfig::default()).expect("serialize");
+        let object = value.as_object_mut().expect("object");
+        object.remove("jinja");
+        object.remove("chatTemplate");
+        object.remove("chatTemplateFile");
+
+        let restored: LlamaServerConfig = serde_json::from_value(value).expect("legacy json");
+        assert!(restored.jinja, "absent jinja keeps the function-calling path on");
+        assert!(restored.chat_template.is_none());
+        assert!(restored.chat_template_file.is_none());
     }
 
     #[test]
@@ -591,6 +798,9 @@ mod tests {
         assert!(value.get("ctxSize").is_some());
         assert!(value.get("kvUnified").is_some());
         assert!(value.get("logVerbosity").is_some());
+        assert!(value.get("jinja").is_some());
+        assert!(value.get("chatTemplate").is_some());
+        assert!(value.get("chatTemplateFile").is_some());
         assert!(value.get("spec_draft_n_max").is_none());
     }
 }

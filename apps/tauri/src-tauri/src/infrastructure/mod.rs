@@ -1,3 +1,4 @@
+pub mod app_open;
 pub mod cli;
 pub mod comm;
 pub mod companion;

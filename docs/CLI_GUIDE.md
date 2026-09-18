@@ -48,6 +48,42 @@ Settings are managed via Tauri commands invoked from the UI Settings panel, not 
 |-----|-------------|
 | `llm_model` | Selected LLM model (`gemma-4-e2b` or `minicpm-v-4-6`) |
 
+### `fredo open-app`
+
+Opens (or raises) a Fredo app window by identity. `<IDENTITY>` is a feature's **stable id** (`mission-monitor`) or its **display name** (`Mission Monitor`) — matching is case-insensitive, quotes are allowed, and there is no alias table. The running app's webview performs the ONE identity resolution and opens the window through the same kernel opener the launcher grid uses.
+
+```bash
+fredo open-app <IDENTITY>
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<IDENTITY>` | Yes | Feature stable id (`mission-monitor`) or display name (`Mission Monitor`) |
+
+**Outcome and exit codes**
+
+| Exit | Meaning | stdout |
+|------|---------|--------|
+| `0` | Resolved uniquely — the window was opened/raised | `{"outcome":"opened","displayName":"Mission Monitor"}` |
+| `1` | Not uniquely resolved, or the open failed | `{"outcome":"unknown","spokenName":"Narnia"}`, `{"outcome":"ambiguous","spokenName":"monitor","candidates":[...]}`, or `{"outcome":"unavailable","spokenName":"mission-monitor"}` |
+| `2` | Fredo app is not running | _(the fallback message below)_ |
+
+**Examples**
+
+```bash
+# By stable id
+fredo open-app mission-monitor
+
+# By display name (quote it on the shell)
+fredo open-app "Mission Monitor"
+
+# Case-insensitive
+fredo open-app "OPEN MISSION MONITOR"
+```
+
+> The CLI never blocks unbound: the app confirmation is bounded at 5 s and the spawned child is bounded at 10 s, after which the outcome degrades to `unavailable`.
+
+
 ---
 
 ## Setup (via UI)

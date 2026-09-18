@@ -6,7 +6,7 @@
  * available before any feature class calls it.
  */
 
-import type { LlmMessage } from '../../app/adapters/HostAdapter';
+import type { LlmMessage, LlmSkillCall } from '../../app/adapters/HostAdapter';
 
 type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 type LlmChatFn = (
@@ -21,10 +21,20 @@ type LlmChatWithImageFn = (
   onToken: (token: string) => void,
   onDone: () => void,
 ) => Promise<void>;
+// #2893 ST-7 — the skill-aware variant. Same token/done/error channel, plus the
+// validated selection callback (raw tool-call JSON is never a token).
+type LlmChatWithSkillsFn = (
+  messages: LlmMessage[],
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onSkillCall: (call: LlmSkillCall) => void,
+  onError?: (message: string) => void,
+) => Promise<void>;
 
 let _invoke: InvokeFn | undefined;
 let _llmChat: LlmChatFn | undefined;
 let _llmChatWithImage: LlmChatWithImageFn | undefined;
+let _llmChatWithSkills: LlmChatWithSkillsFn | undefined;
 
 type UnlistenFn = () => void;
 type ListenFn = <T>(event: string, handler: (payload: T) => void) => Promise<UnlistenFn>;
@@ -42,6 +52,11 @@ export const adapterBridge = {
 
   setLlmChatWithImage(fn: LlmChatWithImageFn): void {
     _llmChatWithImage = fn;
+  },
+
+  /** #2893 ST-7 — register the skill-aware streaming implementation. */
+  setLlmChatWithSkills(fn: LlmChatWithSkillsFn | undefined): void {
+    _llmChatWithSkills = fn;
   },
 
   setListen(fn: ListenFn): void {
@@ -96,6 +111,28 @@ export const adapterBridge = {
     // invocation contract (the existing `adapterBridge` test pins it).
     if (onError) return _llmChat(messages, onToken, onDone, onError);
     return _llmChat(messages, onToken, onDone);
+  },
+
+  /**
+   * #2893 ST-7 — the skill-aware streaming path. Mirrors `llmChat`'s forwarding
+   * (the optional error channel is passed only when supplied) and adds the
+   * `onSkillCall` selection channel. A missing implementation is a safe no-op that
+   * still completes (`onDone`) — never a hang.
+   */
+  async llmChatWithSkills(
+    messages: LlmMessage[],
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onSkillCall: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    if (!_llmChatWithSkills) {
+      console.warn('[adapterBridge] llmChatWithSkills called before adapter registered');
+      onDone();
+      return;
+    }
+    if (onError) return _llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
+    return _llmChatWithSkills(messages, onToken, onDone, onSkillCall);
   },
 
   async llmChatWithImage(
