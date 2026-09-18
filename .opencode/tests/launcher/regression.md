@@ -589,3 +589,18 @@
 - **R-56 PASS (no product errors).** Console clean in a no-instrumentation leg; the round's
   `reading 'slice'` errors were tester-artifact (see `companion` regression round 2). No colour
   literals or `var(--x)NN` introduced by the #2893 diff; no re-render loop.
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+- **R-54 PASS (re-confirmed).** `set`/`Miss`/`monitor` each opened the named app with **0 generations**
+  and the truthful hint (`↵ open Settings` / `↵ open Mission Monitor` / `↵ open Mission Monitor`);
+  `Missing all the time`/`MM` were sent to Fredo with 0 windows. The #2882 direct matcher, ranking,
+  alias ban and hint truth are unchanged.
+- **R-55 PASS (re-confirmed).** Non-app-open messages (`hi` / `tell me a joke` / `Missing all the time`
+  / `MM`) each produced exactly one generation, a chat reply, and **0 windows**; busy cleared at
+  completion. The open path reuses the ONE companion generation channel (`llmChatWithSkills`) and adds
+  no launcher dispatch.
+- **R-56 PASS (no product errors).** `tauri_read_logs(source="console", level="error")` was **empty**
+  after the sweep and after a fresh restart. This round's samplers use a plain guarded `setInterval`
+  (no MutationObserver), so the round-2 `reading 'slice'` tester artifact did not reproduce. No colour
+  literals or `var(--x)NN` introduced by the #2893 diff; no re-render loop.
