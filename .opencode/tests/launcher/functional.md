@@ -1595,3 +1595,21 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 - **F-95 PASS (live).** Companion OFF: `hello there friend` + Enter preserved the text, no generation.
 - **F-96 PASS (live).** No "busy" send gate: typed sends dispatched while a reply was on screen.
 - **F-100 PASS (static/build).** Zero colour literals / no `var(--x)NN` in the changed launcher files; build + full suite green; console clean.
+
+### #2892 testing round 2 — result
+
+> Round 2 @ `spec/2892 7e93892f` (cold-started dev app). **PASS.** The round-1 harness gaps
+> (sub-second queue window vs driver cadence) were closed by driving the two sends **in one in-page
+> async script** (`execute_js`) / a real-keyboard second send against a deliberately long first
+> generation, rather than two serial driver round-trips (~6 s each).
+
+- **F-90 PASS (live).** Streaming: `readOnly=false`, `disabled=false`, placeholder `Fredo is replying…`, a DIV carries `aria-busy="true"`; typed `abc`/`next message` into the bar with a reply on screen — value accepted, focus stayed in the field. Screenshot `r2-ac1-editable.png`.
+- **F-91 PASS (live).** Pointer resting on a completed reply: placeholder `search, or hold Space to dictate`, no `[aria-busy]` element, `readOnly=false`; only the hold window changed (bubble persisted). Screenshot `r2-ac2-ac3-hover-resting.png`.
+- **F-92 PASS (live).** Streaming `aria-busy="true"` + replying placeholder; at settle with the pointer resting on `[data-testid="fredo-reply-surface"]` the placeholder/`aria-busy` cleared while the reply stayed displayed. Same screenshot as F-91.
+- **F-93 PASS (live, decisive).** Long first generation (`count from 1 to 500, one number per line`); while streaming, the second prompt was sent in-page. `[data-testid="launcher-command-queued"]` read **EXACTLY** `Queued — waiting for Fredo…` (the hidden `launcher-queued-announcer` carried the same literal), the bar cleared, and on the first generation's settle the queued item auto-dispatched to reply `alpha` (exactly once) with the indicator clearing. Screenshot `r2-ac5-queued-literal.png`.
+- **F-94 PASS (live, decisive).** Disposition `interrupt`; long first generation (>1 s in flight); second prompt `Reply with exactly: INTERRUPTED` sent via real keyboard while the count still streamed. The bubble content was REPLACED by the new generation and settled **EXACTLY** `INTERRUPTED`; `queuedSeen=false` (no queued indicator at any sample); superseded count tokens never appended. Screenshot `r2-ac6-interrupted.png`.
+- **F-95 PASS (live).** Companion OFF: `hello there friend` + Enter left the bar value UNCHANGED, no generation, `no match` hint, avatar unmounted. Screenshot `r2-ac7-preserved.png`.
+- **F-96 PASS (live).** No busy send gate: typed sends dispatch while a reply is on screen.
+- **F-99 PASS (live).** `telemetry_spans` = 11336, `max(ingested_at)=2026-09-18T20:59:30.4Z`; `chat_rows`/`tool_use_rows` markers (`e2e-2892-r2-chat`/`-tool`) each = 1.
+- **F-100 PASS (static/build/console).** Zero colour literals in the changed launcher/companion TSX; console clean (only the pre-existing `motion() is deprecated` WARN); round-1 `pnpm` build/test gates unchanged (the fix touched only `CompanionSettingsPanel.tsx` + its test).
+- **Harness note (promoted technique):** the AC5/AC6 in-flight legs are ONLY reachable by issuing both sends in a single in-page script (or a real-keyboard second send against a long generation) — two serial driver round-trips are ~6 s each and always land after `llm-done`. Recorded in `exploratory.md` round 2.
