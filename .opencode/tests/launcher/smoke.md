@@ -190,3 +190,20 @@
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
 
+## #2893 extension — Companion open-app quick paths
+
+> Issue #2893 lets the Companion open an app named in a message. Quick paths only — the full matrix
+> lives in `functional.md` F-85..F-89 / `regression.md` R-54..R-56, `companion` F-99..F-105 and the new
+> `fredo-cli` suite. **Verification policy: live.**
+
+- [ ] S-24: **A typed `open Mission Monitor` opens the app.** Companion ACTIVE + ready; insert
+      `open Mission Monitor` into `[data-testid="launcher-command-input"]`; Enter. **Expected:** exactly
+      one Mission Monitor window opens with no further action and the reply is exactly
+      `Opening Mission Monitor` and perceivable (not fully behind the new window); screenshot
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-25: **A non-app-open message opens nothing.** Send `Missing all the time`. **Expected:**
+      1 Companion generation, ZERO windows; screenshot succeeds; console clean.
+- [ ] S-26: **Unknown name quick path.** Send `open NotARealApp`. **Expected:** ZERO windows, the
+      reply `I couldn't find "NotARealApp"`, companion back at rest (no `happy`); screenshot
+      succeeds; console clean.
+
