@@ -403,6 +403,49 @@ fn mock_ref_delete(branch: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Local-branch refs (`refs/heads/*`) are stored separately from remote refs
+/// (`refs/*`) so the mock can represent a local branch whose upstream is GONE —
+/// the state `prune` must clean. `git branch`/`checkout -b` write here; `git push`
+/// writes the remote store; `git push origin --delete` removes the remote only.
+fn mock_local_ref_path(branch: &str) -> PathBuf {
+    mock_file(&["local-refs", branch])
+}
+
+fn mock_local_ref_exists(branch: &str) -> bool {
+    mock_local_ref_path(branch).exists()
+}
+
+fn mock_local_ref_write(branch: &str) -> anyhow::Result<()> {
+    mock_write(&mock_local_ref_path(branch), "")
+}
+
+fn mock_local_ref_delete(branch: &str) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(mock_local_ref_path(branch));
+    Ok(())
+}
+
+/// Recursively list ref files under a store dir, returning `a/b`-joined names
+/// (the store nests `spec/5` as `spec/5` on disk).
+fn mock_list_refs(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()).unwrap_or_default();
+            if name.is_empty() { continue; }
+            if p.is_dir() {
+                for sub in mock_list_refs(&p) {
+                    out.push(format!("{}/{}", name, sub));
+                }
+            } else {
+                out.push(name);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn mock_commits_ahead(branch: &str) -> u64 {
     mock_read(&mock_file(&["commits", branch]))
         .and_then(|c| c.trim().parse::<u64>().ok())
@@ -434,8 +477,21 @@ fn mock_gh(args: &[&str]) -> anyhow::Result<String> {
         "issue" => mock_gh_issue(args),
         "pr" => mock_gh_pr(args),
         "api" => mock_gh_api(args),
+        "image" => mock_gh_image(args),
         _ => anyhow::bail!("mock gh: unsupported subcommand `{}` ({})", sub, args.join(" ")),
     }
+}
+
+/// Emulate `gh image <file> [--repo owner/repo]` (the gh-image extension) — returns
+/// the same reference shape it prints for an image so `upload-evidence` can parse the
+/// `user-attachments` URL offline without touching the network.
+fn mock_gh_image(args: &[&str]) -> anyhow::Result<String> {
+    let file = args.get(1).copied().unwrap_or("image.png");
+    let name = std::path::Path::new(file).file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image.png".to_string());
+    let n = mock_next_counter("asset");
+    Ok(format!("![{}](https://github.com/user-attachments/assets/mock-{})", name, n))
 }
 
 fn mock_gh_issue(args: &[&str]) -> anyhow::Result<String> {
@@ -918,6 +974,15 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
                 }
                 anyhow::bail!("git ls-remote --exit-code: branch `{}` not found", branch);
             }
+            // git ls-remote --heads origin — every remote head, one line each:
+            // `<40-hex-sha>\trefs/heads/<branch>`.
+            if args.iter().any(|a| *a == "--heads") {
+                let mut out = String::new();
+                for name in mock_list_refs(&mock_file(&["refs"])) {
+                    out.push_str(&format!("{}\trefs/heads/{}\n", "0".repeat(40), name));
+                }
+                return Ok(out.trim_end().to_string());
+            }
             Ok(String::new())
         }
         "rev-parse" => {
@@ -925,7 +990,7 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             if args.iter().any(|a| *a == "--verify") {
                 let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
                 let branch = branch.strip_prefix("refs/heads/").map(|s| s.to_string()).unwrap_or(branch);
-                if mock_ref_exists(&branch) {
+                if mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
                     return Ok("mock-sha".into());
                 }
                 anyhow::bail!("git rev-parse --verify: branch `{}` not found", branch);
@@ -933,19 +998,27 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "checkout" => {
-            // git checkout -b spec/N main  (create ref) / git checkout main (no-op)
+            // git checkout -b spec/N main  (create a LOCAL ref) / git checkout main (no-op)
             if args.iter().any(|a| *a == "-b") {
                 let branch = args.get(2).copied().unwrap_or("");
-                mock_ref_write(branch)?;
+                mock_local_ref_write(branch)?;
             }
             Ok(String::new())
         }
         "push" => {
-            // git push -u origin spec/N — mark the branch ref (simulated push)
+            // git push -u origin spec/N            → write the REMOTE ref
+            // git push origin --delete spec/N      → remove the REMOTE ref (local stays,
+            //                                         i.e. a GONE upstream)
+            let deleting = args.iter().any(|a| *a == "--delete" || *a == "-d");
             if let Some(branch) = args.last() {
                 let branch = branch.strip_prefix("origin/").map(|s| s.to_string()).unwrap_or_else(|| branch.to_string());
-                if !branch.is_empty() && !branch.contains(':') {
-                    mock_ref_write(&branch)?;
+                if !branch.is_empty() && !branch.contains(':') && branch != "origin" {
+                    if deleting {
+                        mock_ref_delete(&branch)?;
+                    } else {
+                        mock_ref_write(&branch)?;
+                        let _ = mock_local_ref_write(&branch);
+                    }
                 }
             }
             Ok(String::new())
@@ -997,21 +1070,10 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "for-each-ref" => {
-            // git for-each-ref --format=%(refname:short) refs/heads
-            let mut out = String::new();
-            let dir = mock_file(&["refs"]);
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                let mut names: Vec<String> = entries.flatten()
-                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                    .filter(|s| s.starts_with("spec/"))
-                    .collect();
-                names.sort();
-                for n in names {
-                    out.push_str(&n);
-                    out.push('\n');
-                }
-            }
-            Ok(out.trim_end().to_string())
+            // git for-each-ref --format=%(refname:short) refs/heads → LOCAL branches
+            let mut names = mock_list_refs(&mock_file(&["local-refs"]));
+            names.sort();
+            Ok(names.join("\n"))
         }
         "merge-base" => {
             // git merge-base --is-ancestor <name> main
@@ -1021,12 +1083,16 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "branch" => {
-            // git branch <name> <start> (create ref) / git branch -D <name> (delete)
-            if !args.iter().any(|a| *a == "-D" || *a == "-d") {
-                if let Some(name) = args.get(1) {
+            // git branch <name> <start> (create LOCAL ref) / git branch -D <name> (delete LOCAL)
+            if args.iter().any(|a| *a == "-D" || *a == "-d") {
+                if let Some(name) = args.get(2) {
                     if !name.is_empty() && !name.starts_with('-') {
-                        mock_ref_write(name)?;
+                        mock_local_ref_delete(name)?;
                     }
+                }
+            } else if let Some(name) = args.get(1) {
+                if !name.is_empty() && !name.starts_with('-') {
+                    mock_local_ref_write(name)?;
                 }
             }
             Ok(String::new())
@@ -2124,7 +2190,7 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         // required ahead > 0), the guard passes, mirroring a root checkout at
         // the spec tip.
         let branch = format!("spec/{}", issue);
-        if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) {
+        if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
             return Ok(());
         }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
@@ -2313,13 +2379,14 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         // `telemetry_spans` query. The documented policy (tester playbook +
         // qa-expert playbook) accepts "telemetry_spans OR DOM/screenshot receipts"
         // for a live-verified UI feature. Recognize ONLY a receipt that a tester who
-        // actually drove the running webview can produce: an `upload-evidence` raw
-        // URL committed to `.opencode/evidence/<issue>/` on `spec/<N>`, a live
-        // `tauri_webview_*` tool receipt (DOM snapshot / screenshot), or a live
+        // actually drove the running webview can produce: a `user-attachments` URL
+        // (the `upload-evidence` output, plus legacy `.opencode/evidence/` raw URLs),
+        // a live `tauri_webview_*` tool receipt (DOM snapshot / screenshot), or a live
         // rendered-geometry measurement (`getBoundingClientRect`). Never a bare
         // screenshot filename or a local scratch path — those are unviewable dead
         // strings (refused earlier by the upload-evidence guard) and do NOT count.
-        t.contains(".opencode/evidence/")
+        t.contains("user-attachments")
+            || t.contains(".opencode/evidence/")
             || t.contains("tauri_webview_")
             || t.contains("getboundingclientrect")
     });
@@ -2559,7 +2626,6 @@ struct ActionArgs {
     reason: Option<String>,
     verdict: Option<String>,
     section: Option<String>,
-    base: Option<String>,
     worktree_path: Option<String>,
     image: Option<String>,
     feature: Option<String>,
@@ -2577,6 +2643,8 @@ struct ActionArgs {
     config_file: Option<String>,
     all: bool,
     json: bool,
+    /// `prune --remote`: also delete `origin/spec/<N>` branches for CLOSED specs.
+    remote: bool,
     ghargs: Option<String>,
     gitargs: Option<String>,
     branch: Option<String>,
@@ -2655,10 +2723,9 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             // Evidence-renderability guard (#2756): a screenshot referenced by bare
             // filename or local scratch path can never render or even open as a link
             // on GitHub — repo members see only a dead string. Every image reference
-            // in a verdict MUST be an `https://` URL (the raw URL `upload-evidence`
-            // prints after committing the file to `.opencode/evidence/<issue>/` on
-            // `spec/<N>`). Refused (draft kept) so the timeline never carries
-            // unviewable evidence.
+            // in a verdict MUST be an `https://` URL (the `user-attachments` URL
+            // `upload-evidence` prints via `gh image`). Refused (draft kept) so the
+            // timeline never carries unviewable evidence.
             let has_dead_image_ref = body.lines().any(|l| {
                 let t = l.to_lowercase();
                 (t.contains(".jpeg") || t.contains(".jpg") || t.contains(".png") || t.contains(".webp") || t.contains(".gif"))
@@ -2666,7 +2733,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             });
             if has_dead_image_ref {
                 let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)");
-                println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// raw URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
+                println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// user-attachment URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
                 continue;
             }
         }
@@ -3537,27 +3604,75 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "tests-commit", &a.actor, phase.as_str(), "success", &format!("feature '{}' ({} file(s)) -> main", feature, count))?;
         }
         "prune" => {
-            // Local hygiene after merges: remove stale feat/ branches and orphaned
-            // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
-            // spec/ integration branches are never pruned (they carry the evidence).
-            // Local-only (no GitHub/state writes); gated to the orchestrator.
+            // Branch + worktree hygiene after merges. Idempotent. Gated to the
+            // orchestrator. Local by default; `--remote` also deletes `origin/spec/<N>`
+            // for every CLOSED spec (merged PRs auto-delete via the repo setting;
+            // this sweep catches abandoned/cancelled specs and stragglers).
+            // Local deletes: any local `spec/*`/`feat/*` whose remote counterpart is
+            // gone (already deleted upstream), plus legacy merged `feat/*`.
             if a.actor != "self-improver" {
                 println!("BLOCKED: actor {} not allowed to prune", a.actor);
                 return Ok(());
             }
+            // Refresh remote-tracking so the remote head set is current.
+            let _ = run_cmd("git", &["fetch", "--prune", "origin"]);
+            // One network call: the current remote head set.
+            let remote_heads_raw = run_cmd("git", &["ls-remote", "--heads", "origin"]).unwrap_or_default();
+            let remote_set: std::collections::HashSet<String> = remote_heads_raw.lines()
+                .filter_map(|l| l.split_whitespace().nth(1))
+                .filter_map(|r| r.strip_prefix("refs/heads/"))
+                .map(|s| s.to_string())
+                .collect();
+            // Remote sweep (opt-in): delete origin/spec/<N> for every spec whose issue
+            // is NOT open. FAIL-SAFE: a failed OR unparseable open-issue read skips the
+            // sweep entirely (never delete blind).
+            let mut pruned_remote: Vec<String> = Vec::new();
+            if a.remote {
+                match run_gh(&["issue", "list", "--state", "open", "--limit", "500", "--json", "number"]) {
+                    Ok(out) => {
+                        let parsed = serde_json::from_str::<serde_json::Value>(&out).ok()
+                            .and_then(|v| v.as_array().cloned());
+                        match parsed {
+                            Some(arr) => {
+                                let open: std::collections::HashSet<u64> = arr.iter()
+                                    .filter_map(|i| i.get("number").and_then(|n| n.as_u64()))
+                                    .collect();
+                                let mut specs: Vec<String> = remote_set.iter()
+                                    .filter(|n| n.starts_with("spec/"))
+                                    .cloned()
+                                    .collect();
+                                specs.sort();
+                                for branch in specs {
+                                    let Ok(num) = branch.trim_start_matches("spec/").parse::<u64>() else { continue; };
+                                    if open.contains(&num) { continue; }
+                                    if run_cmd("git", &["push", "origin", "--delete", &branch]).is_ok() {
+                                        pruned_remote.push(branch);
+                                    }
+                                }
+                            }
+                            None => println!("WARNING: could not parse the open-issue list — skipping the remote sweep (never delete blind)"),
+                        }
+                    }
+                    Err(e) => println!("WARNING: could not read open issues ({}) — skipping the remote sweep (never delete blind)", e),
+                }
+            }
+            // Local sweep: delete local `spec/*`/`feat/*` whose upstream is gone (not
+            // in the remote set, or just deleted by the sweep above) — plus legacy
+            // `feat/*` merged into main or a spec branch. Never main/master/other.
             let branches = run_cmd("git", &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
-            let spec_branches: Vec<&str> = branches.lines().map(|l| l.trim()).filter(|n| n.starts_with("spec/")).collect();
-            let mut pruned: Vec<String> = Vec::new();
-            for line in branches.lines() {
-                let name = line.trim();
-                if name.is_empty() || name == "main" || name == "master" { continue; }
-                if !name.starts_with("feat/") { continue; }
-                let merged_into_main = run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok();
-                let merged_into_spec = spec_branches.iter().any(|sb|
-                    run_cmd("git", &["merge-base", "--is-ancestor", name, sb]).is_ok());
-                if merged_into_main || merged_into_spec {
-                    run_cmd("git", &["branch", "-D", name]).ok();
-                    pruned.push(name.to_string());
+            let local: Vec<String> = branches.lines().map(|l| l.trim().to_string()).filter(|n| !n.is_empty()).collect();
+            let spec_branches: Vec<String> = local.iter().filter(|n| n.starts_with("spec/")).cloned().collect();
+            let mut pruned_local: Vec<String> = Vec::new();
+            for name in &local {
+                if name == "main" || name == "master" { continue; }
+                if !(name.starts_with("spec/") || name.starts_with("feat/")) { continue; }
+                let gone = !remote_set.contains(name) || pruned_remote.iter().any(|b| b == name);
+                let merged_legacy = name.starts_with("feat/") && (
+                    run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok()
+                    || spec_branches.iter().any(|sb| run_cmd("git", &["merge-base", "--is-ancestor", name, sb]).is_ok())
+                );
+                if (gone || merged_legacy) && run_cmd("git", &["branch", "-D", name]).is_ok() {
+                    pruned_local.push(name.clone());
                 }
             }
             run_cmd("git", &["worktree", "prune"])?;
@@ -3596,7 +3711,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     println!("SWEPT: orphaned worktree dirs removed: {}", swept.join(", "));
                 }
             }
-            println!("PRUNED: {}", if pruned.is_empty() { "no stale feat/ branches".into() } else { pruned.join(", ") });
+            println!(
+                "PRUNED: local=[{}] remote=[{}]",
+                if pruned_local.is_empty() { "none".to_string() } else { pruned_local.join(", ") },
+                if pruned_remote.is_empty() { "none".to_string() } else { pruned_remote.join(", ") }
+            );
         }
         "metrics" => {
             // Fold-in of pipeline-metrics.rs
@@ -3759,54 +3878,45 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             post_pending_comments(issue, &a.actor, "audit", None)?;
         }
         "upload-evidence" => {
-            // Posts an Evidence comment for a test case, committing the screenshot
-            // to the spec's integration branch `spec/<parent>` (so the image renders
-            // inline for repo members even on a private repo) and embedding the raw
-            // URL. Gated to the tester (and self-improver).
+            // Uploads a screenshot to GitHub as a `user-attachments` asset via the
+            // `gh-image` extension and prints the resulting
+            // `https://github.com/user-attachments/...` URL for the tester to embed in
+            // the SINGLE `## Tests Runs` comment. Nothing is written to the repo, so
+            // evidence never bloats `main` or the spec branch. Upload-ONLY: no comment
+            // is posted per upload. Gated to the tester (and self-improver).
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --body-file"))?;
             let image = a.image.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --image <path>"))?;
-            // The body-file is kept for backward-compat (validates the file exists);
-            // it is NOT posted anywhere — upload-evidence is upload-only.
-            let _body = std::fs::read_to_string(body_file)
-                .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
-            let bytes = std::fs::read(image)
-                .map_err(|e| anyhow::anyhow!("cannot read image {}: {}", image, e))?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let repo = gh_repo()?;
-            let branch = match a.base.as_deref() {
-                Some(b) => b.to_string(),
-                None => {
-                    let plan = parent_spec(issue).map_err(|_|
-                        anyhow::anyhow!("cannot resolve parent plan for #{}; pass --base <spec-branch>", issue))?;
-                    // The tester issue references the PLAN; the evidence lands on
-                    // `spec/<feature>` — map plan → feature.
-                    let feature = plan_feature(plan).unwrap_or(plan);
-                    format!("spec/{}", feature)
-                }
-            };
-            let ref_exists = gh_api_raw_opt(&[format!("repos/{}/git/ref/heads/{}", repo, branch)])?;
-            if ref_exists.is_none() {
-                anyhow::bail!("spec branch {} does not exist on origin — transition the spec to implementation to auto-create it", branch);
+            // `--body-file` is accepted for backward-compat (validated to exist) but
+            // is no longer required and is never posted.
+            if let Some(body_file) = a.body_file.as_deref() {
+                let _ = std::fs::read_to_string(body_file)
+                    .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
             }
-            let fname = std::path::Path::new(image).file_name()
-                .map(|s| s.to_string_lossy().replace([' ', '\\', '/', ':', '*', '?', '"', '<', '>', '|'], "-"))
-                .ok_or_else(|| anyhow::anyhow!("cannot derive a filename from {}", image))?;
-            let path = format!(".opencode/evidence/{}/{}", issue, fname);
-            upsert_file(&repo, &branch, &path, &encoded, &format!("evidence: {} for #{}", fname, issue))?;
-            let url = format!("https://github.com/{}/raw/{}/{}", repo, branch, path);
-            // Upload-ONLY: the raw URL is printed for the tester to embed in the
-            // SINGLE `## Tests Runs` comment. No per-upload `## Evidence` comment is
-            // posted — a separate screenshot comment per AC clutters the timeline;
-            // the one consolidated verdict comment per round carries all screenshots
-            // (user feedback on #2723). The `comment` action already refuses
-            // verdict-less `## Evidence` posts, so this was the only path producing
-            // screenshot-only comments.
+            if !std::path::Path::new(image).exists() {
+                anyhow::bail!("upload-evidence: screenshot not found: {}", image);
+            }
+            let repo = gh_repo()?;
+            // `gh image` (drogers0/gh-image) uploads with the gh token for a repo we
+            // can push to and prints `![name](https://github.com/user-attachments/...)`.
+            let out = run_gh(&["image", image, "--repo", &repo]).map_err(|e| anyhow::anyhow!(
+                "gh image failed ({}). The `gh-image` extension is required: `gh extension install drogers0/gh-image`, authenticated with push access to {}.",
+                e, repo
+            ))?;
+            let url = out
+                .split("](").nth(1)
+                .and_then(|s| s.split(')').next())
+                .filter(|u| u.starts_with("https://"))
+                .map(|u| u.to_string())
+                .or_else(|| out.split_whitespace().find(|t| t.starts_with("https://")).map(|t| t.to_string()))
+                .ok_or_else(|| anyhow::anyhow!("gh image produced no upload URL (output: {})", out))?;
+            // Upload-ONLY: the user-attachment URL is printed for the tester to embed
+            // in the SINGLE `## Tests Runs` comment (one consolidated verdict comment
+            // per round — never a per-screenshot comment).
             println!("EVIDENCE UPLOADED: #{} -> {} ({})", issue, url, image);
             append_event(issue, "upload-evidence", &a.actor, "testing", "success", &format!("uploaded evidence {} for {}", image, issue))?;
         }
@@ -5249,7 +5359,6 @@ fn parse_args() -> ActionArgs {
         verdict: val("--verdict"),
         root_cause: val("--root-cause"),
         section: val("--section"),
-        base: val("--base"),
         worktree_path: val("--worktree-path"),
         image: val("--image"),
         feature: val("--feature"),
@@ -5260,6 +5369,7 @@ fn parse_args() -> ActionArgs {
         config_file: val("--config-file"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
+        remote: args.iter().any(|a| a == "--remote"),
         ghargs: val("--ghargs"),
         gitargs: val("--gitargs"),
         branch: val("--branch"),

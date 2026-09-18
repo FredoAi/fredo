@@ -398,6 +398,60 @@ Test-Script "Prune stale branches (idempotent)" {
   return "PRUNED"
 }
 
+Test-Script "prune deletes local spec branches whose upstream is gone" {
+  $u1 = Mock-IssueCreate "temp: prune-gone" "prune scratch" ""
+  $n1 = [int]([regex]::Match(($u1 -join ''), "issues/(\d+)").Groups[1].Value)
+  $u2 = Mock-IssueCreate "temp: prune-keep" "prune scratch" ""
+  $n2 = [int]([regex]::Match(($u2 -join ''), "issues/(\d+)").Groups[1].Value)
+  try {
+    # Local-only branch (no remote) → gone upstream → prune must delete it.
+    & rust-script $ps --action mock-git --gitargs "branch spec/$n1 origin/main" 2>&1 | Out-Null
+    # Local branch WITH a live remote → must be kept.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n2" 2>&1 | Out-Null
+    $out = & rust-script $ps --action prune --agent self-improver 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "prune failed: $outStr" }
+    if ($outStr -notmatch "spec/$n1") { throw "gone-upstream branch spec/$n1 should be pruned, got: $outStr" }
+    if ($outStr -match "spec/$n2") { throw "branch spec/$n2 with a live remote must be kept, got: $outStr" }
+    return "gone-upstream local branch pruned; live remote kept"
+  } finally {
+    Remove-Item (Mock-StorePath "local-refs\spec\$n1") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$n2") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$n2") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n1
+    Mock-Cleanup $n2
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "prune --remote deletes closed-spec remote branches, keeps open" {
+  $uOpen = Mock-IssueCreate "temp: prune-open" "prune scratch" ""
+  $nOpen = [int]([regex]::Match(($uOpen -join ''), "issues/(\d+)").Groups[1].Value)
+  $uClosed = Mock-IssueCreate "temp: prune-closed" "prune scratch" ""
+  $nClosed = [int]([regex]::Match(($uClosed -join ''), "issues/(\d+)").Groups[1].Value)
+  try {
+    Mock-IssueClose $nClosed | Out-Null
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$nOpen" 2>&1 | Out-Null
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$nClosed" 2>&1 | Out-Null
+    $out = & rust-script $ps --action prune --agent self-improver --remote 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "prune --remote failed: $outStr" }
+    if ($outStr -notmatch "spec/$nClosed") { throw "closed-spec remote spec/$nClosed should be deleted, got: $outStr" }
+    if ($outStr -match "spec/$nOpen") { throw "open-spec remote spec/$nOpen must be kept, got: $outStr" }
+    if (Test-Path (Mock-StorePath "refs\spec\$nClosed")) { throw "remote ref spec/$nClosed should be gone" }
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$nOpen"))) { throw "remote ref spec/$nOpen should still exist" }
+    return "closed-spec remote deleted; open-spec remote kept"
+  } finally {
+    Remove-Item (Mock-StorePath "local-refs\spec\$nOpen") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$nClosed") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$nOpen") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$nClosed") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $nOpen
+    Mock-Cleanup $nClosed
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "Prune sweeps orphaned worktree dirs (no .git) but keeps git-marked dirs" {
   # Hardening (#2688): `git worktree prune` clears metadata but never the worktree
   # directory, so unregistered `.worktrees/*` dirs linger. prune must remove pure
@@ -455,7 +509,7 @@ Test-Script "upload-evidence role-gates + validates" {
   return "upload-evidence validation verified"
 } -ExpectedExitCode 1
 
-Test-Script "upload-evidence requires a parent spec without --base" {
+Test-Script "upload-evidence uploads via gh image (user-attachments URL)" {
   $img = Join-Path $env:TEMP "fredo-ev-test.png"
   Add-Type -AssemblyName System.Drawing
   $bmp = New-Object System.Drawing.Bitmap(10, 10)
@@ -464,17 +518,23 @@ Test-Script "upload-evidence requires a parent spec without --base" {
   $bmp.Save($img, [System.Drawing.Imaging.ImageFormat]::Png)
   $g.Dispose()
   $bmp.Dispose()
-  $bodyFile = Join-Path $env:TEMP "fredo-ev-body.md"
-  Set-Content -Path $bodyFile -Value "AC-1: passes" -Encoding UTF8
-  # Issue $TestIssue has no 'Parent: Implementation Plan #N', so without --base the
-  # action must refuse to guess the spec branch rather than commit somewhere random.
-  $out = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --body-file $bodyFile --image $img 2>&1
+  # Evidence is uploaded as a GitHub user-attachment (no repo commit, no --base); the
+  # mock `gh image` returns the `![name](https://github.com/user-attachments/...)`
+  # reference the action parses and prints.
+  $out = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --image $img 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
-  if ($outStr -notmatch "cannot resolve parent plan") { throw "Expected parent-resolution failure, got: $outStr" }
-  Remove-Item $img, $bodyFile -ErrorAction SilentlyContinue
-  return "parent-resolution failure verified"
-} -ExpectedExitCode 1
+  if ($LASTEXITCODE -ne 0) { throw "upload-evidence failed: $outStr" }
+  if ($outStr -notmatch "EVIDENCE UPLOADED") { throw "Expected EVIDENCE UPLOADED, got: $outStr" }
+  if ($outStr -notmatch "github.com/user-attachments/assets/") { throw "Expected a user-attachments URL, got: $outStr" }
+  # A missing screenshot file is rejected before any upload.
+  $missing = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --image "$env:TEMP\fredo-does-not-exist-xyz.png" 2>&1
+  $missingStr = if ($missing -is [array]) { $missing -join "`n" } else { "$missing" }
+  if ($LASTEXITCODE -eq 0) { throw "Expected failure for a missing screenshot, got exit 0" }
+  if ($missingStr -notmatch "screenshot not found") { throw "Expected 'screenshot not found', got: $missingStr" }
+  Remove-Item $img -ErrorAction SilentlyContinue
+  $global:LASTEXITCODE = 0
+  return "upload-evidence user-attachments upload verified"
+}
 
 Test-Script "set-label is removed (labels are state-machine side-effects)" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action set-label --label in-progress-dev 2>&1
@@ -1810,7 +1870,8 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
 
   # Evidence-renderability guard (#2756): a tests-runs.md draft that references
   # screenshots by bare filename or local scratch path is REFUSED (kept for the
-  # tester) — only https:// raw URLs (from upload-evidence) render or open on GitHub.
+  # tester) — only https:// URLs (the upload-evidence user-attachment URL) render
+  # or open on GitHub.
   Test-Script "Tests Runs draft with bare screenshot filenames is not posted" {
     $url = Mock-IssueCreate "temp: tests-runs evidence urls" "evidence scratch" ""
     if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -1831,8 +1892,8 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
       $cmts = Mock-IssueComments $issueNum
       $joined = $cmts -join "`n"
       if ($joined -match "Tests Runs") { throw "verdict with dead evidence refs must NOT be posted: $joined" }
-      # Fix: embed the upload-evidence raw URL — the draft now goes through.
-      [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/o/r/raw/spec/1/.opencode/evidence/1/ac1-force.jpeg) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+      # Fix: embed the upload-evidence user-attachment URL — the draft now goes through.
+      [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/user-attachments/assets/00000000-0000-0000-0000-000000000000) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
       $out2 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
       $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
       if ($out2Str -notmatch "COMMENTED: Tests Runs") { throw "draft with https evidence URLs should post, got: $out2Str" }

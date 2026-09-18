@@ -96,7 +96,7 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 | `Status` | The ONLY agent-facing prefix: blockers, escalations, and state changes — never routine progress (a push is visible via commits/CI) | Any pipeline agent | `Status-comment-template.md` |
 
 **Removed prefixes** (PO decision, #2756 data — 1 Question + 1 Decision across a 2,826-comment spec):
-- `Evidence` — the canonical verdict is the `## Tests Runs` timeline draft (machine round-stamped); screenshots go through `upload-evidence` (upload-only). Caused the G-006/G-020/G-029 bug class.
+- `Evidence` — the canonical verdict is the `## Tests Runs` timeline draft (machine round-stamped); screenshots go through `upload-evidence` (upload-only, uploaded as `gh image` user-attachments). Caused the G-006/G-020/G-029 bug class.
 - `Question` — genuine ambiguity IS a blocker until answered: use the `block` action (`--reason`, label + SLA); the orchestrator resolves and re-dispatches with the answer inlined in the brief. A parallel Q/A channel nobody reads (workers get answers via briefs, never by scanning threads).
 - `Decision` (free-form) — MACHINE-ONLY: posted by the `audit-record` verdict. Decisions reach the record via `audit-record --reason` or a PO amendment through `Status`.
 
