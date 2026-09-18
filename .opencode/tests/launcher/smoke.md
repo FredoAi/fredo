@@ -207,3 +207,14 @@
       reply `I couldn't find "NotARealApp"`, companion back at rest (no `happy`); screenshot
       succeeds; console clean.
 
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **S-24 PASS.** Typed `open Mission Monitor` (insert-text lever) → exactly ONE Mission Monitor
+  window (DOM `.fredo-window__surface` 0→1) with no further action; reply exactly
+  `Opening Mission Monitor` and perceivable (reply committed first; the window is dispatched after
+  the 800 ms beat — see F-89); screenshot succeeded; console clean.
+- **S-25 PASS.** `Missing all the time` → 1 Companion generation, ZERO windows; screenshot succeeded;
+  console clean.
+- **S-26 PASS.** `open NotARealApp` → ZERO new windows, reply exactly `I couldn't find "NotARealApp"`,
+  companion back at rest (no `happy`); screenshot succeeded; console clean.
+
