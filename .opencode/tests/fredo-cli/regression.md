@@ -41,3 +41,17 @@
     6891 rows with a recent `max(ingested_at)=2026-09-18T16:33:55`. The `open-app` round-trip
     (`{"type":"open_app","identity":…}`) did not disturb the row pipeline (subsequent emits still
     classify). Wire shape for `emit` unchanged (same clap args, same JSON).
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **R-1 PASS.** App DOWN: `fredo emit --event-type chat --session-id e2e-2893-r2-down` → exit **2**
+  (34 ms, no hang). App UP: `fredo emit --event-type chat --session-id e2e-2893-r2-chat` and
+  `--event-type tool_use --session-id e2e-2893-r2-tool --tool-name read_file` → both
+  `{"queued":true}` and classified into `chat_rows` / `tool_use_rows`. `fredo setup --check`
+  unchanged (round 1 + the same binary).
+- **R-2 PASS.** `fredo --help` exit 0 lists exactly `emit`, `setup`, `open-app`, `help` — `open-app`
+  is the only added subcommand; nothing removed/renamed. Error surface: missing arg + unknown flag
+  both exit **2** with clap usage.
+- **R-3 PASS.** Emits classified into `chat_rows`/`tool_use_rows` in the same round the `open-app`
+  round trip ran; `telemetry_spans` = 7536 rows with a recent `max(ingested_at)
+  = 2026-09-18T17:07:32.387140+00:00`. The `open-app` wire shape did not disturb the row pipeline.
