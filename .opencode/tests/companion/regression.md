@@ -667,3 +667,65 @@
   after the sweep and after a fresh restart. The round's samplers use a plain guarded `setInterval`
   (no MutationObserver), so the round-2 `reading 'slice'` tester artifact did NOT reproduce. No colour
   literals or `var(--x)NN` introduced by the #2893 diff; no re-render loop.
+
+---
+
+## #2892 extension — the reply-in-flight / dispatch slice must not disturb the companion (G-136)
+
+> Issue #2892 splits `replyInFlight` from `isInUse`, makes the bar always editable, and adds
+> queue/interrupt dispatch + two persisted settings. The companion overlay behavior, presence
+> lifecycle, gesture set and the EXISTING persisted keys are NON-GOALS. **G-136 supersession (history
+> preserved):** companion **F-72**'s "2nd Enter while streaming is ignored" clause is SUPERSEDED for
+> the bar send (now accepted + queued). **F-70/F-83/F-84** remain in force (the grace default is
+> unchanged). R-1..R-52 above otherwise remain in force. Run alongside `launcher` R-57..R-61 and
+> `settings` R-17..R-20. **Verification policy: live.**
+
+## R-53 — `isInUse` / presence / idle auto-return unchanged by the `replyInFlight` split
+
+- [ ] R-53: toggle the companion ON/OFF and away; let a short idle auto-return fire; read
+      `Fredo_companion_visible` + `Fredo_companion_idle_timeout`; hover a completed reply and wait
+      past the timeout.
+  **Expected:** the `isInUse` predicate is byte-identical (`isStreaming || replyProtected ||
+      showTicTacToe || animState==='talk'`); auto-return stays transient; the persisted keys/ranges
+      are untouched; a held reply still suppresses the auto-return (F-108).
+  - **Edge:** hover at the deadline; away/teleport; OFF while a reply is displayed.
+
+## R-54 — Shipped hold rules (F-83/F-84) unchanged at the default grace
+
+- [ ] R-54: with the grace left at default, re-run hover-protection + leave-grace: a due clear is
+      suspended while protected, and the reply dismisses only after the pointer leaves + a fresh
+      full `REPLY_LEAVE_GRACE_MS = 2000` ms.
+  **Expected:** identical to the shipped #2883 behavior; the configurable grace defaults to the same
+      2000 ms (no silent behavior change).
+  - **Edge:** focus-only protection; re-entry during the grace.
+
+## R-55 — Joke / TicTacToe / teleport / bubble / avatar behaviors untouched
+
+- [ ] R-55: single-click joke; double-click TicTacToe (250 ms discriminator); Ctrl+right-click
+      teleport (same-window + cross-window); drive the reply surface (growth/scroll/never-cover).
+  **Expected:** R-33..R-49 still hold — the 240×120 base / grown+scroll reply, the 208×268 game card,
+      the `above > right > left` placement, the streaming cursor, teleport timing, and the frozen 58
+      rects are unchanged.
+  - **Edge:** a send during a joke/game; teleport mid-queue; theme switch mid-stream.
+
+## R-56 — Existing persisted keys are not mutated by the two new keys
+
+- [ ] R-56: read `Fredo_companion_visible`, `Fredo_companion_idle_timeout`, and the
+      `Fredo_companion_voice_*` keys before/after changing the two new settings and after a restart.
+  **Expected:** the new keys (`Fredo_companion_send_during_reply`, `Fredo_companion_reply_leave_grace_ms`)
+      are ADDITIVE; the pre-existing keys keep their values/defaults/ranges; `isAway` stays transient.
+  - **Edge:** legacy/malformed values on the existing keys; a fresh profile.
+
+## R-57 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-57: static-grep the changed companion files for colour literals + `var(--x)NN`; read the
+      console after every leg; inspect the new status/queue code for effect/memo deps and listener
+      registration across cycles; run `pnpm --filter @fredo/ui build` + `test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); listeners register once and are removed; build exit 0;
+      suite green without weakening any assertion (refreshed ones owned per G-125).
+  - **Edge:** the F-72 clause refresh is an intentional in-scope update, not a deletion.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
