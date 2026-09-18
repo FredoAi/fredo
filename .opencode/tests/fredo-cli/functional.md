@@ -111,3 +111,26 @@
 - **F-5 PASS.** Repeated invocations (same + display-name identities, plus the round's CLI opens)
   produced no duplicate window, consistent exit codes, and no console
   `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+> Raw exit codes captured with the `shell:false` `spawnSync` helper (`.opencode/tmp/2893/cli-probe2.cjs`)
+> run via `bun` (the `node` executable is sandbox-denied this round; the helper is runtime-agnostic).
+
+- **F-1 PASS (re-confirmed).** `fredo --help` exit **0**, lists `emit`/`setup`/`open-app`/`help`;
+  `fredo open-app --help` exit **0**, `Usage: fredo open-app <IDENTITY>` + the id/display-name
+  description; `fredo help open-app` exit **0**; `--bogus-flag` exit **2** + clap usage on stderr.
+- **F-2 PASS (re-confirmed).** `fredo open-app mission-monitor` → `{"displayName":"Mission Monitor","outcome":"opened"}`,
+  exit **0** (332 ms cold); `fredo open-app "Mission Monitor"` → exit **0**
+  `{"displayName":"Mission Monitor","outcome":"opened"}` (39 ms); re-invoke exit **0** (36 ms), window
+  count stayed 1 (no duplicate). The fresh window's identity fingerprint is aria-label `Sessions` +
+  header `Sessions` — byte-equal to the companion-opened surface.
+- **F-3 PASS (re-confirmed).** `fredo open-app not-a-real-app` → `{"outcome":"unknown","spokenName":"not-a-real-app"}`
+  exit **1**; `MM` → `unknown` exit **1**; `""` → `unknown`/`spokenName:""` exit **1**; zero windows
+  opened; app stayed responsive.
+- **F-4 PASS (re-confirmed).** App DOWN (`dev-env -Action Down`): `fredo open-app mission-monitor` →
+  exit **2**, 21 ms, no hang, nothing opened. The documented fallback message stays TTY-gated
+  (`cli/mod.rs:75`) and is silent under the non-TTY harness (pre-existing, not a #2893 regression).
+- **F-5 PASS (re-confirmed).** Repeated invocations (same + display-name identities, plus the round's
+  CLI opens) produced no duplicate window, consistent exit codes, and no console
+  `Error:`/`Uncaught`/`Maximum update depth exceeded`.
