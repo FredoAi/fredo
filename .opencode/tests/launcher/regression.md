@@ -539,3 +539,39 @@
 ### #2887 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2893 extension — the open-app capability must not change the bar contracts (G-136)
+
+> Issue #2893 adds the Companion open-app capability. Nothing is retired: the #2882 typed match +
+> hint truth, the #2871 bar-chat/busy semantics and the #2883 wrap/cap/Shift+Enter contracts remain
+> IN FORCE. Run alongside R-1..R-53 and the new `functional.md` F-85..F-89. **Verification policy: live.**
+
+## R-54 — #2882 typed whole-query matcher + hint truth unchanged
+
+- [ ] R-54: Re-run the #2882 contract: `set`/`Miss`/`monitor`/`Mission Mon`/`mission monitor` + Enter
+      (companion present/away/off) open the named app with 0 generations; `Missing all the time`/`MM`
+      are sent to Fredo with 0 windows; the hint chip always states the action Enter will take.
+  **Expected:** byte-for-byte the shipped #2882 outcomes (launcher F-64..F-69 + F-87) — the open-app
+      capability must not alter the direct matcher, the ranking, the alias ban, or the hint truth.
+  - **Edge:** `s` (ambiguous); whitespace; lowercase; exact full name.
+
+## R-55 — #2871 bar-chat / busy semantics unchanged
+
+- [ ] R-55: Send a non-app-open message with the companion ACTIVE; sample the busy frame
+      (`data-streaming`, `aria-busy`, `readOnly`, the busy chip) and the completion; send again after
+      `llm-done`.
+  **Expected:** the #2871/#2883 contract holds (launcher F-52/F-53/F-55/F-58) — one generation in
+      flight, busy cleared at completion, a 2nd send re-enters busy, no listener accumulation.
+  - **Edge:** the new open path must not add a second dispatch; OFF/away takes no chat path.
+
+## R-56 — Console clean / token-native / no re-render loop after the open-app slice
+
+- [ ] R-56: Read `tauri_read_logs(source="console")` after every leg (open/unknown/ambiguous/repeat,
+      theme switch mid-reply); static-grep the changed launcher/companion files for
+      `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` / `var(--x)NN`; inspect the new code for
+      effect/memo deps on array `.length`/fresh objects.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); ZERO colour literals / no `var(--x)NN` (#2770); no
+      re-render loop (#523). Reference R-49/R-53.
