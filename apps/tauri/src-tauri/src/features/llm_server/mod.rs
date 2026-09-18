@@ -12,6 +12,7 @@ pub mod commands;
 pub mod config;
 pub mod health;
 pub mod process;
+pub mod probe;
 pub mod state;
 
 // ── AppStore keys (AppStore remains the single source of truth) ────────────────

@@ -408,6 +408,9 @@ pub fn run() {
             features::llm_server::commands::launch_llama_server,
             features::llm_server::commands::stop_llama_server,
             features::llm_server::commands::get_llama_server_status,
+            // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
+            // `/props` + `tools`/`response_format` probe; no window, no state write.
+            features::llm_server::probe::probe_companion_skills,
             features::screenshot::commands::capture_screen_region,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,

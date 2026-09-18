@@ -35,8 +35,36 @@ use super::{DEFAULT_LLAMA_SERVER_HOST, LLAMA_SERVER_HOST_KEY};
 /// Maximum completion tokens per request (mirrors the legacy in-process cap).
 pub const MAX_TOKENS: u32 = 1024;
 
+/// Path of the OpenAI-compatible chat-completions endpoint.
+pub const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
+
+/// Path of the llama.cpp server properties endpoint (`GET /props`).
+pub const PROPS_PATH: &str = "/props";
+
 /// Maximum characters of a non-200 body included in the readable error line.
 const ERROR_TAIL_CHARS: usize = 400;
+
+// ── Pure URL / host helpers (unit-tested seam) ────────────────────────────────
+
+/// The OpenAI-compatible chat-completions URL for a bound host/port.
+pub fn chat_completions_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}{CHAT_COMPLETIONS_PATH}")
+}
+
+/// The llama.cpp `/props` URL for a bound host/port.
+pub fn props_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}{PROPS_PATH}")
+}
+
+/// Pure host resolution: a non-blank, trimmed configured value wins; otherwise
+/// the product default. Shared by the chat path and the ST-1 probe, so both
+/// address the same server.
+pub fn resolve_host(configured: Option<&str>) -> String {
+    configured
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_LLAMA_SERVER_HOST.to_string())
+}
 
 /// A single message in an LLM conversation.
 ///
@@ -113,14 +141,16 @@ struct ChatDelta {
 
 // ── Request body (pure) ────────────────────────────────────────────────────────
 
-/// Build the OpenAI-compatible request body.
+/// Render `LlmMessage`s into the OpenAI wire shape WITHOUT any request options.
 ///
-/// `stream: true` and `max_tokens: 1024` are fixed; sampling parameters are the
-/// server defaults from the generated config and are deliberately NOT set. When
-/// `image_base64` is present, the LAST user message's `content` becomes the
+/// When `image_base64` is present, the LAST user message's `content` becomes the
 /// multimodal array `[{"type":"text",…},{"type":"image_url",…}]` (R-3.2); every
-/// other message keeps its plain string content.
-pub fn build_request_body(messages: &[LlmMessage], image_base64: Option<&str>) -> serde_json::Value {
+/// other message keeps its plain string content. Pure and shared by every request
+/// builder, so the legacy chat body and the ST-1 probe bodies render identically.
+pub fn render_messages(
+    messages: &[LlmMessage],
+    image_base64: Option<&str>,
+) -> Vec<serde_json::Value> {
     let mut rendered: Vec<serde_json::Value> = messages
         .iter()
         .map(|message| {
@@ -143,10 +173,62 @@ pub fn build_request_body(messages: &[LlmMessage], image_base64: Option<&str>) -
         }
     }
 
+    rendered
+}
+
+/// Build the OpenAI-compatible request body.
+///
+/// `stream: true` and `max_tokens: 1024` are fixed; sampling parameters are the
+/// server defaults from the generated config and are deliberately NOT set. When
+/// `image_base64` is present, the LAST user message's `content` becomes the
+/// multimodal array `[{"type":"text",…},{"type":"image_url",…}]` (R-3.2); every
+/// other message keeps its plain string content.
+pub fn build_request_body(messages: &[LlmMessage], image_base64: Option<&str>) -> serde_json::Value {
     serde_json::json!({
-        "messages": rendered,
+        "messages": render_messages(messages, image_base64),
         "stream": true,
         "max_tokens": MAX_TOKENS,
+    })
+}
+
+/// Build a streaming body that OFFERS JSON-Schema `tools` to the model
+/// (native OpenAI-style tool calling). Pure — the ST-1 probe uses this to test
+/// the managed server's `tools` path without changing the legacy chat body.
+///
+/// `tool_choice` is forwarded verbatim (`"auto"` in the probe);
+/// `parallel_tool_calls` is explicit so the documented Gemma4 parallel-call
+/// loop hazard is mitigated at the request (spike finding b).
+pub fn build_tools_request_body(
+    messages: &[LlmMessage],
+    tools: &serde_json::Value,
+    tool_choice: &str,
+    parallel_tool_calls: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "messages": render_messages(messages, None),
+        "stream": true,
+        "max_tokens": MAX_TOKENS,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "parallel_tool_calls": parallel_tool_calls,
+    })
+}
+
+/// Build a streaming body constrained to a JSON Schema via `response_format`
+/// (the documented fallback mechanism). Pure — the ST-1 probe uses this to test
+/// the schema-constrained path.
+pub fn build_response_format_request_body(
+    messages: &[LlmMessage],
+    schema: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "messages": render_messages(messages, None),
+        "stream": true,
+        "max_tokens": MAX_TOKENS,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": { "name": "fredo_probe", "schema": schema },
+        },
     })
 }
 
@@ -192,13 +274,12 @@ async fn ensure_healthy(app: &AppHandle) -> Result<u16, String> {
 
 /// The configured bind host (localhost in the reference deployment).
 fn server_host(app: &AppHandle) -> String {
-    app.state::<Arc<AppStore>>()
+    let configured = app
+        .state::<Arc<AppStore>>()
         .get(LLAMA_SERVER_HOST_KEY)
         .ok()
-        .flatten()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_LLAMA_SERVER_HOST.to_string())
+        .flatten();
+    resolve_host(configured.as_deref())
 }
 
 /// POST the chat request and stream the SSE frames to the webview.
@@ -209,7 +290,7 @@ async fn stream_completion(
     messages: &[LlmMessage],
     image_base64: Option<&str>,
 ) -> Result<(), String> {
-    let endpoint = format!("http://{host}:{port}/v1/chat/completions");
+    let endpoint = chat_completions_url(host, port);
     let body = build_request_body(messages, image_base64);
 
     let client = reqwest::Client::builder()
@@ -447,5 +528,22 @@ mod tests {
     fn truncate_is_utf8_safe() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("héllo world", 5), "héllo…");
+    }
+
+    #[test]
+    fn resolve_host_prefers_a_non_blank_trimmed_value() {
+        assert_eq!(resolve_host(Some("192.168.0.9")), "192.168.0.9");
+        assert_eq!(resolve_host(Some("  127.0.0.1  ")), "127.0.0.1");
+        assert_eq!(resolve_host(Some("   ")), DEFAULT_LLAMA_SERVER_HOST);
+        assert_eq!(resolve_host(None), DEFAULT_LLAMA_SERVER_HOST);
+    }
+
+    #[test]
+    fn endpoint_urls_target_the_managed_server() {
+        assert_eq!(
+            chat_completions_url("127.0.0.1", 8080),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        assert_eq!(props_url("127.0.0.1", 8080), "http://127.0.0.1:8080/props");
     }
 }
