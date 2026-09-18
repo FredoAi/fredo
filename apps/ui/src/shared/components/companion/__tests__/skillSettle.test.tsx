@@ -26,7 +26,7 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion } from '@/shared/contexts/CompanionContext';
 import { CompanionEntity } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
-import { pushAppOpenReply } from '@/shared/components/companion/skillBridge';
+import { pushAppOpenReply, registerAppOpenReplyPusher } from '@/shared/components/companion/skillBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { LlmSkillCall } from '@/app/adapters/HostAdapter';
 
@@ -262,6 +262,138 @@ describe('#2893 ST-7 — companion skill-call settle routing', () => {
     act(() => { (skills as unknown as SkillDriver).onDone(); });
     act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Mission Monitor' }); });
     act(() => { vi.advanceTimersByTime(5000); });
+
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Spec #2893 ST-9 — the continuous invariant: ALWAYS settle / never stuck
+ * (`R-1.4`, AC-1). These pins drive every failure branch of a skill-aware
+ * generation and assert the Companion returns to rest: `isStreaming` off (the
+ * avatar's `data-streaming` mark), the context's `isInUse` cleared (which holds
+ * the launcher bar's `aria-busy`), and the single-in-flight guard released so a
+ * later `ask` can start a NEW generation.
+ */
+describe('#2893 ST-9 — always settle / never stuck (R-1.4)', () => {
+  const streamingMark = (container: HTMLElement): boolean =>
+    container.querySelector('.fredo-companion-avatar')?.hasAttribute('data-streaming') ?? false;
+
+  it('re-arms the watchdog backstop when a content token preceded the skill selection', async () => {
+    const view = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { view.ref.current?.ask('open Mission Monitor'); });
+    // A preamble / reasoning token clears the shipped first-token watchdog …
+    act(() => { (skills as unknown as SkillDriver).onToken('Sure, let me '); });
+    // … then the model selects open_app and the backend settles with llm-done.
+    act(() => { (skills as unknown as SkillDriver).onSkillCall(OPEN_APP_CALL); });
+    act(() => { (skills as unknown as SkillDriver).onDone(); });
+
+    expect(surfaceText()).toContain('Sure, let me');
+    expect(api.state.isInUse).toBe(true);
+
+    // No pushed reply ever lands: the RE-ARMED shipped watchdog still settles.
+    act(() => { vi.advanceTimersByTime(15_000); });
+    expect(surfaceText()).not.toContain('Sure, let me');
+    expect(api.state.isInUse).toBe(false);
+    expect(streamingMark(view.container)).toBe(false);
+  });
+
+  it('releases isInFlight/busy after a pushed success reply and accepts a later ask', async () => {
+    const view = await mountEntity();
+    vi.useFakeTimers();
+
+    startSkillGeneration(view.ref);
+    act(() => { (skills as unknown as SkillDriver).onDone(); });
+    act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Mission Monitor' }); });
+
+    expect(api.state.isInUse).toBe(false);
+    expect(streamingMark(view.container)).toBe(false);
+    expect(avatarState(view.container)).toBe('happy');
+
+    // The single-in-flight guard is released: a later ask runs a NEW generation.
+    skills = null;
+    act(() => { view.ref.current?.ask('hello again'); });
+    expect(skills).not.toBeNull();
+    expect(surfaceText()).toContain('Thinking');
+  });
+
+  it('releases isInFlight/busy after a non-success reply and accepts a later ask', async () => {
+    const view = await mountEntity();
+    vi.useFakeTimers();
+
+    startSkillGeneration(view.ref);
+    act(() => { (skills as unknown as SkillDriver).onDone(); });
+    act(() => {
+      pushAppOpenReply({
+        kind: 'failed',
+        text: `I couldn't open Mission Monitor. Try again from the launcher grid.`,
+      });
+    });
+
+    expect(api.state.isInUse).toBe(false);
+    expect(streamingMark(view.container)).toBe(false);
+    expect(avatarState(view.container)).not.toBe('happy');
+
+    skills = null;
+    act(() => { view.ref.current?.ask('hello again'); });
+    expect(skills).not.toBeNull();
+  });
+
+  it('settles and clears busy on the backend failure path (llm-error then llm-done)', async () => {
+    const view = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { view.ref.current?.ask('open Mission Monitor'); });
+    act(() => {
+      (skills as unknown as SkillDriver).onError('the companion server returned HTTP 500');
+    });
+    // The transport's follow-up llm-done must not re-settle or re-play a beat.
+    act(() => { (skills as unknown as SkillDriver).onDone(); });
+
+    expect(api.state.isInUse).toBe(false);
+    expect(streamingMark(view.container)).toBe(false);
+    expect(avatarState(view.container)).not.toBe('happy');
+
+    skills = null;
+    act(() => { view.ref.current?.ask('hello again'); });
+    expect(skills).not.toBeNull();
+  });
+
+  it('a throwing pusher leaves the generation to the watchdog backstop (never stuck)', async () => {
+    const view = await mountEntity();
+    vi.useFakeTimers();
+
+    startSkillGeneration(view.ref);
+    act(() => { (skills as unknown as SkillDriver).onDone(); });
+
+    // A pusher whose resolve throws: the bridge contains it, so nothing applies.
+    const off = registerAppOpenReplyPusher(() => {
+      throw new Error('the resolve threw');
+    });
+    expect(() =>
+      pushAppOpenReply({ kind: 'success', text: 'Opening Mission Monitor' }),
+    ).not.toThrow();
+    off();
+    expect(surfaceText()).toContain('Thinking');
+
+    // The shipped watchdog is still the backstop: the Companion returns to rest.
+    act(() => { vi.advanceTimersByTime(15_000); });
+    expect(surfaceText()).not.toContain('Thinking');
+    expect(api.state.isInUse).toBe(false);
+    expect(streamingMark(view.container)).toBe(false);
+  });
+
+  it('reports a clean console across the ST-9 termination paths', async () => {
+    const view = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { view.ref.current?.ask('open Mission Monitor'); });
+    act(() => { (skills as unknown as SkillDriver).onToken('preamble '); });
+    act(() => { (skills as unknown as SkillDriver).onSkillCall(OPEN_APP_CALL); });
+    act(() => { (skills as unknown as SkillDriver).onDone(); });
+    act(() => { vi.advanceTimersByTime(15_000); });
 
     expect(consoleError).not.toHaveBeenCalled();
   });

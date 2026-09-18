@@ -285,15 +285,53 @@ pub fn plan_terminal_events(
     events
 }
 
+/// The terminal events for a failed skill-aware stream (transport / launch /
+/// non-200): a readable `llm-error` followed by `llm-done`.
+///
+/// The stream died before any accumulated call could be finalized, so there is
+/// no plan to run — but a failed generation MUST still settle (R-1.4): a
+/// `llm-done` is always the last event. Pure so the never-hang guarantee is
+/// pinned without a live `AppHandle`.
+pub fn plan_stream_error_events(detail: &str) -> Vec<TerminalEvent> {
+    vec![
+        TerminalEvent::Error(detail.to_string()),
+        TerminalEvent::Done,
+    ]
+}
+
 /// Kick off a skill-aware streaming chat on a background task and return
 /// immediately (never blocks the IPC call).
 pub fn spawn_chat_with_skills(app: AppHandle, messages: Vec<LlmMessage>) {
     tauri::async_runtime::spawn(async move {
         if let Err(detail) = run_skill_chat(&app, messages).await {
-            let _ = app.emit("llm-error", detail);
-            let _ = app.emit("llm-done", ());
+            // The transport failed before any accumulated call existed — still
+            // settle on the SAME terminal vocabulary so the frontend's `llm-done`
+            // handler always fires (ST-9 / R-1.4: never hang, whatever the
+            // failure). HTTP / connection / launch failure all land here.
+            for event in plan_stream_error_events(&detail) {
+                emit_terminal_event(&app, event);
+            }
         }
     });
+}
+
+/// Emit one terminal event on its wire channel (`llm-skill-call` / `llm-error` /
+/// `llm-done`).
+///
+/// The ONE terminal-emit site, shared by the normal plan and the stream-failure
+/// path — so no backend branch can emit a `Done`-less terminal sequence.
+fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
+    match event {
+        TerminalEvent::SkillCall(call) => {
+            let _ = app.emit("llm-skill-call", call);
+        }
+        TerminalEvent::Error(detail) => {
+            let _ = app.emit("llm-error", detail);
+        }
+        TerminalEvent::Done => {
+            let _ = app.emit("llm-done", ());
+        }
+    }
 }
 
 /// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
@@ -318,17 +356,7 @@ async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<()
     .await?;
 
     for event in plan_terminal_events(&registry, &accumulator) {
-        match event {
-            TerminalEvent::SkillCall(call) => {
-                let _ = app.emit("llm-skill-call", call);
-            }
-            TerminalEvent::Error(detail) => {
-                let _ = app.emit("llm-error", detail);
-            }
-            TerminalEvent::Done => {
-                let _ = app.emit("llm-done", ());
-            }
-        }
+        emit_terminal_event(app, event);
     }
     Ok(())
 }
@@ -748,5 +776,83 @@ mod tests {
                 "{label}: every path must settle with llm-done"
             );
         }
+    }
+
+    // ── ST-9: continuous invariant — always settle / never stuck (R-1.4) ──────
+
+    /// R-1.4 — EVERY backend termination branch emits exactly ONE `llm-done`
+    /// and emits it LAST: a validated tool call, an ordinary content turn, a
+    /// parse failure, a rejected/fail-closed selection, a tool-call turn with no
+    /// call, and an empty stream. One extra or missing `Done` would either
+    /// double-settle or hang the Companion.
+    #[test]
+    fn every_backend_path_settles_with_exactly_one_done() {
+        let registry = SkillRegistry::with_open_app();
+
+        let mut valid = ToolCallAccumulator::new();
+        valid.push(fragment(0, Some("open_app"), Some("{\"app\":\"Mission Monitor\"}")));
+        valid.set_finish_reason("tool_calls");
+
+        let mut content = ToolCallAccumulator::new();
+        content.push(ChatStreamEvent::Delta("hello".to_string()));
+        content.set_finish_reason("stop");
+
+        let mut parse_failure = ToolCallAccumulator::new();
+        parse_failure.push(fragment(0, Some("open_app"), Some("{\"app\": ")));
+        parse_failure.set_finish_reason("tool_calls");
+
+        let mut rejected = ToolCallAccumulator::new();
+        rejected.push(fragment(0, Some("open_the_pod_bay"), Some("{\"app\":\"x\"}")));
+        rejected.set_finish_reason("tool_calls");
+
+        let mut no_call = ToolCallAccumulator::new();
+        no_call.set_finish_reason("tool_calls");
+
+        let empty = ToolCallAccumulator::new();
+
+        for (label, accumulator, expect_skill_call) in [
+            ("valid tool call", valid, true),
+            ("ordinary content", content, false),
+            ("parse failure", parse_failure, false),
+            ("rejected selection", rejected, false),
+            ("tool-call turn with no call", no_call, false),
+            ("empty stream", empty, false),
+        ] {
+            let events = plan_terminal_events(&registry, &accumulator);
+            let done_count = events
+                .iter()
+                .filter(|event| matches!(event, TerminalEvent::Done))
+                .count();
+            assert_eq!(done_count, 1, "{label}: exactly one llm-done: {events:?}");
+            assert_eq!(
+                events.last(),
+                Some(&TerminalEvent::Done),
+                "{label}: llm-done is always last: {events:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+                expect_skill_call,
+                "{label}: skill-call presence: {events:?}"
+            );
+        }
+    }
+
+    /// R-1.4 — a transport/launch failure (the `Err` return of the stream) still
+    /// settles: a readable `llm-error` followed by exactly one `llm-done`, and
+    /// never a `llm-skill-call` (nothing can execute on a dead stream).
+    #[test]
+    fn a_failed_stream_plan_settles_with_error_then_done() {
+        let events = plan_stream_error_events("the companion server returned HTTP 500");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], TerminalEvent::Error(_)));
+        assert_eq!(events[1], TerminalEvent::Done);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+            "a dead stream must not execute a skill: {events:?}"
+        );
     }
 }

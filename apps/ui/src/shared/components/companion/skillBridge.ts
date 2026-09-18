@@ -41,9 +41,19 @@ export function registerAppOpenReplyPusher(pusher: AppOpenReplyPusher): () => vo
 /**
  * Push a composed reply to the active companion. Returns `true` iff a pusher
  * was registered; a `false` return is a safe no-op (no companion mounted).
+ *
+ * R-1.4 (Spec #2893 ST-9) — the bridge NEVER throws. A pusher that throws (a
+ * resolve during teardown, a state update on an unmounted tree) must not abort
+ * the caller: the reply is simply not applied, and the companion's shipped
+ * `SAFETY_TIMEOUT_MS` watchdog settles the still-pending generation. The
+ * failure is diagnostic noise, never a stuck-state or a caller crash.
  */
 export function pushAppOpenReply(reply: AppOpenReply): boolean {
   if (!activePusher) return false;
-  activePusher(reply);
+  try {
+    activePusher(reply);
+  } catch (error) {
+    console.warn('[skillBridge] app-open reply pusher threw', error);
+  }
   return true;
 }

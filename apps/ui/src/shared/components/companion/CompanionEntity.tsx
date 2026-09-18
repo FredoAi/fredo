@@ -785,6 +785,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           if (gen !== generationRef.current) return;
           if (generationSettledRef.current) return;
           skillPendingRef.current = true;
+          // #2893 ST-9 (R-1.4) — the watchdog backstop MUST be armed while this
+          // generation waits for the pushed deterministic reply. A content /
+          // reasoning token that preceded the tool call already cleared the
+          // first-token watchdog (`onToken`), so re-arm the SAME shipped timer
+          // here (no new timer, no value change); when it is still armed the
+          // existing bound is left untouched. Without this, a skill-pending
+          // generation that streamed ANY token before the selection could wait
+          // forever for a reply that never arrives (bridge unmounted / a
+          // throwing pusher) — the stuck-state the invariant forbids.
+          if (watchdogRef.current === null) startWatchdog();
       };
 
       if (withSkills) {

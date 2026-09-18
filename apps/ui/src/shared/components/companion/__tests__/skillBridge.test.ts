@@ -18,6 +18,7 @@ let unregister: (() => void) | null = null;
 afterEach(() => {
   unregister?.();
   unregister = null;
+  vi.restoreAllMocks();
 });
 
 describe('skillBridge', () => {
@@ -58,5 +59,20 @@ describe('skillBridge', () => {
     expect(pushAppOpenReply(REPLY)).toBe(true);
     expect(second).toHaveBeenCalledTimes(1);
     expect(first).not.toHaveBeenCalled();
+  });
+
+  // #2893 ST-9 (R-1.4) — the bridge is the push path for a skill-pending
+  // generation. A pusher whose resolve throws must never break the caller (the
+  // Home request loop) and must never throw itself: the reply is simply not
+  // applied, and the companion's shipped watchdog remains the backstop.
+  it('contains a throwing pusher instead of propagating it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    unregister = registerAppOpenReplyPusher(() => {
+      throw new Error('the resolve threw');
+    });
+
+    expect(() => pushAppOpenReply(REPLY)).not.toThrow();
+    expect(pushAppOpenReply(REPLY)).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });
