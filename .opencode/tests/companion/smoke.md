@@ -223,3 +223,14 @@
   entry present) with no further action; reply EXACTLY `Opening Mission Monitor` (screenshot).
 - **S-33 PASS.** `open NotARealApp` → ZERO new windows, reply EXACTLY `I couldn't find "NotARealApp"`,
   companion at rest (avatar `idle`, no `happy`); screenshot succeeded; console clean.
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+- **S-31 PASS (re-confirmed).** Non-app-open message (`hi`) → reply streamed into
+  `[data-testid="fredo-reply-surface"]` (`Hello! How can I help you today?`), companion returned to
+  rest, screenshot succeeded, console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- **S-32 PASS (re-confirmed).** `open Mission Monitor` → ONE Mission Monitor window (DOM surface count
+  0→1, dock entry present) with no further action; reply EXACTLY `Opening Mission Monitor`.
+- **S-33 PASS (re-confirmed).** `open NotARealApp` → ZERO new windows, reply EXACTLY
+  `I couldn't find "NotARealApp"`, companion at rest (avatar `idle`, no `happy`); screenshot succeeded;
+  console clean.
