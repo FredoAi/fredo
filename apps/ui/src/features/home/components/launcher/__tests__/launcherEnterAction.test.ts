@@ -253,7 +253,7 @@ describe('resolveEnterAction — precedence (R-5/R-6, clarifications #1/#2)', ()
     });
   });
 
-  it('4. typed, no match, active && !busy → send (origin typed)', () => {
+  it('4. typed, no match, active → send (origin typed)', () => {
     expect(resolveEnterAction({ ...base, query: 'Missing all the time' })).toEqual({
       kind: 'send',
       textOrigin: 'typed',
