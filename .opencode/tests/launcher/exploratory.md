@@ -463,4 +463,14 @@
 
 ### #2892 testing round 1 — result
 
-- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+- [x] **E-62 (Enter spam at machine speed) — mechanism verified live.** The in-page dual-send drive under `queue` produced exactly one queued item (indicator literal `Queued — waiting for Fredo…`) that auto-dispatched once on settle (reply `alpha`); no interleaved stream, no double clear. See `functional.md` F-93 round 2.
+- [x] **E-63 (send at the settle race) — bounded by the in-page drive.** The second send lands inside the in-flight window by construction (in-page 200 ms after the first send), so the settle race was exercised deterministically; no lost/double generation.
+
+### #2892 testing round 2 — result
+
+- [x] **E-62 — PASS (live).** As above; exactly-once queue dispatch confirmed.
+- [x] **E-63 — PASS (live, bounded).** In-flight send landed within the generation window (no serial-cadence miss).
+- [ ] **E-64 (hover leave/enter at the clear boundary) — not driven (time-box).** Named blocker: needs a sub-100 ms pointer-leave/enter pair at the grace expiry; the driver has no sub-second pointer choreography. Static/unit pins (`replyProtection.test.ts`) remain the residual.
+- [x] **E-65 (disposition flips between sends) — partially observed.** The disposition was switched `interrupt ↔ queue` live (Settings → Companion select) and the effective dispatch followed the persisted value (interrupt superseded; queue queued). A flip *between* an enqueue and its drain was not isolated.
+- [ ] **E-66 (indicator vs status-slot precedence) — not driven (time-box).** Named blocker: a hearing-nothing/alert status must be raised concurrently with a queued item; the driver cannot hold the voice-capture state while sending. Pin: `launcherCommandBarVoice.test.tsx` precedence suite.
+- **Finding (harness technique, no product defect) — promoted to `functional.md` F-93/F-94 round 2.** Two sends must be issued inside ONE in-page `execute_js` script (or the second via real keyboard against a deliberately long first generation). The native-setter + `input`-event approach did NOT reliably update React's `query` for the SECOND send after a first send cleared the bar (the re-send carried the stale first prompt); `document.execCommand('insertText')` and a real keyboard send both propagate correctly. The driver's own `tauri_webview_keyboard`/`interact` round-trips are ~6 s each — longer than the ~1–2 s local generation — so serial tool calls can never land in-flight.
