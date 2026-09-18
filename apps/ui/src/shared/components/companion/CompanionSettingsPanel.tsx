@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, HStack, Heading, Icon, Text, VStack, Switch, NumberInput,
+  Box, HStack, Heading, Icon, Text, VStack, Switch, NumberInput, chakra,
 } from '@chakra-ui/react';
 import { LuBot } from 'react-icons/lu';
 import {
   useCompanion, MIN_IDLE_TIMEOUT_S, MAX_IDLE_TIMEOUT_S, clampIdleTimeout,
+  clampReplyLeaveGraceMs, MIN_REPLY_LEAVE_GRACE_MS, MAX_REPLY_LEAVE_GRACE_MS,
+  REPLY_LEAVE_GRACE_STEP_MS,
 } from '../../contexts/CompanionContext';
+import type { CompanionSendDisposition } from '../../contexts/CompanionContext';
 import { CompanionSetupWizard } from './CompanionSetupWizard';
 import type { CompanionSetupWizardPrerequisite } from './CompanionSetupWizard';
 import { COMPANION_SETUP_STEPS } from './companionSetupSteps';
@@ -40,9 +43,46 @@ const IDLE_TIMEOUT_HELP_ID = 'companion-idle-timeout-help';
 /** How long the transient commit confirmation stays in the live region. */
 const IDLE_COMMIT_CONFIRMATION_MS = 2500;
 
+// ── Send-during-reply + reply hold-open grace (#2892 ST-6) ───────────────────
+// The two AC8/AC9 controls inside the SAME "Behavior" group, after the idle
+// auto-return row. Both commit immediately (no Save footer) and announce through
+// ONE shared polite live region.
+
+/** Frozen accessibility ids (QA-bound — do not rename). */
+const SEND_DURING_REPLY_INPUT_ID = 'companion-send-during-reply';
+const SEND_DURING_REPLY_HELP_ID = 'companion-send-during-reply-help';
+const REPLY_GRACE_INPUT_ID = 'companion-reply-leave-grace';
+const REPLY_GRACE_HELP_ID = 'companion-reply-leave-grace-help';
+
+/** Shared commit confirmation lifetime (matches the idle control's region). */
+const SETTINGS_COMMIT_CONFIRMATION_MS = 2500;
+
+/** Exact copy (UI/UX §1d/§5) — sentence case, no exclamation marks. */
+const SEND_DURING_REPLY_LABEL = 'Sending while Fredo is replying';
+const SEND_DURING_REPLY_HELP =
+  'Choose what happens when you send a message before Fredo finishes the last one.';
+const SEND_DURING_REPLY_OPTION_QUEUE = 'Queue until Fredo finishes';
+const SEND_DURING_REPLY_OPTION_INTERRUPT = 'Interrupt and send now';
+
+const REPLY_GRACE_LABEL = 'Keep replies open after the pointer leaves';
+/** The `aria-label` names the FIELD unit; the visible label stays unit-free. */
+const REPLY_GRACE_ARIA_LABEL = `${REPLY_GRACE_LABEL} (seconds)`;
+const REPLY_GRACE_HELP =
+  'Fredo keeps a finished reply on screen for this long after your pointer leaves it.';
+const REPLY_GRACE_UNIT = 's';
+
+/** SECONDS are the editing unit; the persisted value is integer milliseconds. */
+const REPLY_GRACE_MIN_S = MIN_REPLY_LEAVE_GRACE_MS / 1000;
+const REPLY_GRACE_MAX_S = MAX_REPLY_LEAVE_GRACE_MS / 1000;
+const REPLY_GRACE_STEP_S = REPLY_LEAVE_GRACE_STEP_MS / 1000;
+
+const sendDuringReplyOptionLabel = (disposition: CompanionSendDisposition): string =>
+  (disposition === 'interrupt' ? SEND_DURING_REPLY_OPTION_INTERRUPT : SEND_DURING_REPLY_OPTION_QUEUE);
+
 export const CompanionSettingsPanel: React.FC = () => {
   const {
     state, setVisible, idleTimeoutSeconds, setIdleTimeoutSeconds,
+    sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
   } = useCompanion();
   const { isVisible } = state;
 
@@ -91,6 +131,62 @@ export const CompanionSettingsPanel: React.FC = () => {
     setIdleTimeoutSeconds(resolved);
     setIdleCommitMessage(`Auto-return set to ${resolved} s`);
   }, [setIdleTimeoutSeconds]);
+
+  // ── Send-during-reply disposition + reply hold-open grace (#2892 ST-6) ─────
+  // The disposition commits on change. The grace mirrors the idle draft/commit
+  // pattern (persist ONLY on blur / Enter / stepper, never per keystroke). Both
+  // announce through ONE shared polite live region, cleared after 2500 ms.
+  const [graceDraft, setGraceDraft] = useState<string>(String(replyLeaveGraceMs / 1000));
+  const graceDraftRef = useRef<string>(String(replyLeaveGraceMs / 1000));
+  const [commitMessage, setCommitMessage] = useState('');
+
+  // Re-sync the draft whenever the persisted grace changes (async load on mount,
+  // or a clamp applied on commit). The ref keeps stepper commits from going stale.
+  useEffect(() => {
+    const next = String(replyLeaveGraceMs / 1000);
+    graceDraftRef.current = next;
+    setGraceDraft(next);
+  }, [replyLeaveGraceMs]);
+
+  // Clear the shared transient confirmation shortly after a commit announces it.
+  useEffect(() => {
+    if (!commitMessage) return undefined;
+    const timer = setTimeout(() => setCommitMessage(''), SETTINGS_COMMIT_CONFIRMATION_MS);
+    return () => clearTimeout(timer);
+  }, [commitMessage]);
+
+  const commitSendDuringReply = useCallback((disposition: CompanionSendDisposition) => {
+    setSendDuringReply(disposition);
+    setCommitMessage(
+      `${SEND_DURING_REPLY_LABEL} set to ${sendDuringReplyOptionLabel(disposition)}`,
+    );
+  }, [setSendDuringReply]);
+
+  const handleGraceChange = useCallback((value: string) => {
+    graceDraftRef.current = value;
+    setGraceDraft(value);
+  }, []);
+
+  const commitGrace = useCallback((raw: string) => {
+    // The field is SECONDS; the persisted setting is integer milliseconds. The
+    // clamp heals a cleared / non-numeric / out-of-range entry, and the resolved
+    // value is exactly what `setReplyLeaveGraceMs` stores, so the announcement is
+    // the persisted truth.
+    const resolvedMs = clampReplyLeaveGraceMs(Math.round(Number(raw) * 1000));
+    setReplyLeaveGraceMs(resolvedMs);
+    setCommitMessage(`Reply hold-open grace set to ${resolvedMs / 1000} s`);
+  }, [setReplyLeaveGraceMs]);
+
+  // Invalid draft: non-numeric / outside [0, 60] seconds. The clamp still heals
+  // the persisted value on commit; this only drives the editing treatment.
+  const parsedGraceDraft = Number(graceDraft);
+  const isGraceDraftInvalid = !Number.isFinite(parsedGraceDraft)
+    || parsedGraceDraft < REPLY_GRACE_MIN_S
+    || parsedGraceDraft > REPLY_GRACE_MAX_S;
+  const graceBorderColor = isGraceDraftInvalid ? 'var(--status-error)' : 'var(--border-color)';
+  const graceHighlightColor = isGraceDraftInvalid
+    ? 'var(--status-error)'
+    : 'var(--accent-primary)';
 
   const isReady = !checking && readiness?.ready === true;
 
@@ -279,6 +375,131 @@ export const CompanionSettingsPanel: React.FC = () => {
           >
             {idleCommitMessage}
           </Text>
+
+          {/* Send-during-reply disposition (#2892 ST-6, REQ-9/REQ-12) — a themed
+              native select: it inherits no Chakra tokens, so every color is an
+              explicit CSS var. Commits immediately on change. */}
+          <HStack
+            justify="space-between"
+            p={3}
+            borderRadius="md"
+            background="var(--hover-bg)"
+            border="1px solid var(--border-color)"
+          >
+            <VStack align="start" gap={0}>
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+                {SEND_DURING_REPLY_LABEL}
+              </Text>
+              <Text id={SEND_DURING_REPLY_HELP_ID} fontSize="xs" color="var(--text-subtle)">
+                {SEND_DURING_REPLY_HELP}
+              </Text>
+            </VStack>
+            <chakra.select
+              data-testid="companion-send-during-reply"
+              id={SEND_DURING_REPLY_INPUT_ID}
+              aria-label={SEND_DURING_REPLY_LABEL}
+              aria-describedby={SEND_DURING_REPLY_HELP_ID}
+              value={sendDuringReply}
+              onChange={(e) => commitSendDuringReply(e.target.value as CompanionSendDisposition)}
+              bg="var(--card-bg)"
+              color="var(--text-primary)"
+              border="1px solid"
+              borderColor="var(--border-color)"
+              _hover={{ borderColor: 'var(--accent-primary)' }}
+              _focus={{
+                borderColor: 'var(--accent-primary)',
+                boxShadow: 'none',
+                outline: '2px solid var(--accent-primary)',
+                outlineOffset: '2px',
+              }}
+              borderRadius="md"
+              px="3"
+              height="32px"
+            >
+              <option value="queue">{SEND_DURING_REPLY_OPTION_QUEUE}</option>
+              <option value="interrupt">{SEND_DURING_REPLY_OPTION_INTERRUPT}</option>
+            </chakra.select>
+          </HStack>
+
+          {/* Reply hold-open grace (#2892 ST-6, REQ-10/REQ-12) — the FIELD edits
+              seconds; the persisted setting is integer milliseconds. Commits on
+              blur / Enter / stepper, never per keystroke. */}
+          <HStack
+            justify="space-between"
+            p={3}
+            borderRadius="md"
+            background="var(--hover-bg)"
+            border="1px solid var(--border-color)"
+          >
+            <VStack align="start" gap={0}>
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+                {REPLY_GRACE_LABEL}
+              </Text>
+              <Text
+                id={REPLY_GRACE_HELP_ID}
+                fontSize="xs"
+                color={isGraceDraftInvalid ? 'var(--status-error)' : 'var(--text-subtle)'}
+              >
+                {isGraceDraftInvalid
+                  ? `Enter ${REPLY_GRACE_MIN_S}–${REPLY_GRACE_MAX_S} s`
+                  : REPLY_GRACE_HELP}
+              </Text>
+            </VStack>
+            <HStack gap={1} align="center" flexShrink={0}>
+              <NumberInput.Root
+                data-testid="companion-reply-leave-grace"
+                value={graceDraft}
+                onValueChange={(e) => handleGraceChange(e.value)}
+                onValueCommit={(e) => commitGrace(e.value)}
+                min={REPLY_GRACE_MIN_S}
+                max={REPLY_GRACE_MAX_S}
+                step={REPLY_GRACE_STEP_S}
+                size="sm"
+                width="110px"
+              >
+                {/* Zag only invokes onValueCommit on blur/Enter, so persist the
+                    latest value explicitly when the stepper control is clicked. */}
+                <NumberInput.Control onClick={() => commitGrace(graceDraftRef.current)} />
+                <NumberInput.Input
+                  id={REPLY_GRACE_INPUT_ID}
+                  aria-label={REPLY_GRACE_ARIA_LABEL}
+                  aria-describedby={REPLY_GRACE_HELP_ID}
+                  aria-invalid={isGraceDraftInvalid}
+                  bg="var(--card-bg)"
+                  color="var(--text-primary)"
+                  borderColor={graceBorderColor}
+                  _hover={{ borderColor: graceHighlightColor }}
+                  _focus={{
+                    borderColor: graceHighlightColor,
+                    boxShadow: `0 0 0 1px ${graceHighlightColor}`,
+                  }}
+                />
+              </NumberInput.Root>
+              <Text as="span" fontSize="sm" color="var(--text-subtle)">
+                {REPLY_GRACE_UNIT}
+              </Text>
+            </HStack>
+          </HStack>
+
+          {/* Shared commit confirmation (#2892 ST-6) — ONE politely-announced,
+              visually-hidden live region serving both new controls. */}
+          <Box
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            data-testid="companion-settings-commit-announcer"
+            position="absolute"
+            width="1px"
+            height="1px"
+            padding="0"
+            margin="-1px"
+            overflow="hidden"
+            clipPath="inset(50%)"
+            whiteSpace="nowrap"
+            borderWidth="0"
+          >
+            {commitMessage}
+          </Box>
         </VStack>
       </Box>
 
