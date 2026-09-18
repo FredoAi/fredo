@@ -29,6 +29,9 @@ pub enum CliCommand {
     EmitEvent {
         event: crate::infrastructure::comm::event::FredoEvent,
     },
+    /// Open a Fredo app window by identity (Spec #2893). The server waits for
+    /// the webview's `confirm_app_open_request` before answering the CLI.
+    OpenApp { identity: String },
 }
 
 /// Response the server sends back to the CLI after processing a command.
@@ -127,6 +130,9 @@ async fn handle_connection(conn: Stream, app: AppHandle) {
 async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
     match cmd {
         CliCommand::EmitEvent { event } => dispatch_emit_event(event, app),
+        CliCommand::OpenApp { identity } => {
+            crate::infrastructure::app_open::dispatch_open_app(identity, app).await
+        }
     }
 }
 
@@ -183,6 +189,36 @@ pub async fn send_cli_command(cmd: &CliCommand) -> Result<Option<CliResponse>> {
         Ok(Some(resp))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_app_command_serializes_with_snake_case_tag() {
+        let cmd = CliCommand::OpenApp {
+            identity: "mission-monitor".into(),
+        };
+        let json = serde_json::to_value(&cmd).expect("CliCommand serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "open_app", "identity": "mission-monitor" })
+        );
+    }
+
+    #[test]
+    fn open_app_command_round_trips() {
+        let cmd = CliCommand::OpenApp {
+            identity: "Mission Monitor".into(),
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let decoded: CliCommand = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            CliCommand::OpenApp { identity } => assert_eq!(identity, "Mission Monitor"),
+            other => panic!("expected OpenApp, got {other:?}"),
+        }
     }
 }
 

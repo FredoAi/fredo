@@ -350,6 +350,13 @@ pub fn run() {
                 }
             });
 
+            // -- App-open request registry (Spec #2893 ST-4) -------------------
+            // `fredo open-app <IDENTITY>` emits `app-open-request` to the main
+            // window and waits (bounded 5 s) for the webview's confirmation
+            // through this registry. The Rust side never resolves identities —
+            // the frontend owns the one resolution rule.
+            app.manage(infrastructure::app_open::AppOpenRegistry::new());
+
             // -- OTLP receiver (gRPC :4317 + HTTP :4318) -----------------------
             infrastructure::otlp::start(app.handle().clone());
 
@@ -417,6 +424,11 @@ pub fn run() {
             // Telemetry Logging (Spec #408)
             features::telemetry::commands::telemetry_logging_toggle,
             features::telemetry::commands::telemetry_logging_set_level,
+            // App-open transport (Spec #2893 ST-4): the webview's confirmation
+            // of an emitted `app-open-request`, and the companion's thin CLI
+            // spawn/bound/parse seam.
+            infrastructure::app_open::confirm_app_open_request,
+            infrastructure::app_open::run_open_app_cli,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
