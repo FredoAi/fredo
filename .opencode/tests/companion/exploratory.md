@@ -347,3 +347,24 @@
   spawn helper split the quoted display name into two argv tokens → clap exit 2. Re-run with
   `shell:false` → exit 0 `{"displayName":"Mission Monitor","outcome":"opened"}`. Tester-helper
   artifact, not a product defect.
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+- **E-54 PARTIAL (fail-closed confirmed; model non-selection not forced).** `open NotARealApp` →
+  `llm-skill-call` selected `open_app`; the resolver failed closed
+  (`I couldn't find "NotARealApp"`, 0 windows, `idle`). The model selected `open_app` on every
+  open-shaped prompt this round too, so a *model non-selection* reply was not separately forced; the
+  fail-closed table test (ST-8) remains the residual pin.
+- **E-55 NOT DRIVEN.** A malformed/partial skill argument could not be forced through the live model
+  (it always emitted valid `{app:"…"}`); the ST-8 fail-closed table test remains the residual pin.
+- **E-56 PARTIAL.** `hi`, `tell me a joke`, `Missing all the time`, `MM` all produced a chat reply with
+  **0 windows** and no `open_app` selection. `open the door` / `can you monitor this` were not
+  separately driven.
+- **E-57 NOT DRIVEN.** Rapid churn (two open requests in one turn / back-to-back different ones) was
+  not run this round; the single-in-flight guard + the documented bounded-confirm observation remain
+  the residual pins.
+- **O-4 (observation, NOT a product finding — instrumentation hygiene).** This round's samplers use a
+  plain `setInterval` with every callback wrapped in a guard and no MutationObserver, so the round-2
+  `Uncaught TypeError … reading 'slice'` tester artifact did **not** reproduce; console error-level was
+  empty. Confirms the round-2 attribution (O-1) was correct — the artifact was the observer
+  instrumentation, not the product.
