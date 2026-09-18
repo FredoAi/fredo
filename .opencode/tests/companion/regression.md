@@ -653,3 +653,17 @@
   bursts seen earlier in the round were traced to the round's OWN MutationObserver scripts
   (`String.slice()` on a `null` reply text at bubble-clear) and vanished on reload — NOT a product
   defect. No re-render loop; no colour literals introduced by the #2893 diff.
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+- **R-50 PASS (re-confirmed).** Presence/visibility/idle contracts held across the round: the
+  companion stayed at the seat, the toggle semantics and `Fredo_companion_visible`/`_idle_timeout`
+  were untouched, and every open request was an interaction that left the persisted preference intact.
+- **R-51 PASS (re-confirmed).** Non-app-open messages streamed into the reply surface and settled
+  normally; the reply surface (base tier + live region) was unchanged; no stray joke on an open
+  request. No node/session or graph-output change from the `rowDerivation.ts` cost-only fix —
+  Mission Monitor rendered the same 2 sessions / 4 react-flow nodes / 3 edges as round 2.
+- **R-52 PASS (no product errors).** `tauri_read_logs(source="console", level="error")` was **empty**
+  after the sweep and after a fresh restart. The round's samplers use a plain guarded `setInterval`
+  (no MutationObserver), so the round-2 `reading 'slice'` tester artifact did NOT reproduce. No colour
+  literals or `var(--x)NN` introduced by the #2893 diff; no re-render loop.
