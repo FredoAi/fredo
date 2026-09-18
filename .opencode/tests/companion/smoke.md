@@ -197,3 +197,19 @@
       footprint is untouched; the command-bar `y` is within ±1 px of the no-reply baseline;
       screenshot (ONE frame containing both the surface and Fredo) succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2893 extension — open-app quick paths
+
+> Issue #2893 lets the Companion open an app named in a message. Quick paths only — the full matrix
+> lives in `functional.md` F-99..F-105. **Verification policy: live.**
+
+- [ ] S-31: **Companion still chats.** With the companion ready, send `Reply with exactly: Hi there!`.
+      **Expected:** the reply streams into `[data-testid="fredo-reply-surface"]`, completes, and the
+      companion returns to rest; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum
+      update depth exceeded`.
+- [ ] S-32: **Open quick path.** Send `open Mission Monitor`. **Expected:** the Mission Monitor window
+      opens with no further action and the reply is exactly `Opening Mission Monitor` (perceivable);
+      screenshot succeeds; console clean.
+- [ ] S-33: **Unknown quick path.** Send `open NotARealApp`. **Expected:** ZERO windows, the reply
+      `I couldn't find "NotARealApp"`, companion at rest (no `happy`); screenshot succeeds; console
+      clean.
