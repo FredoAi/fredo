@@ -409,3 +409,13 @@
 ### #2892 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+### #2892 testing round 2 — result
+
+- [x] **E-59 (interrupt during an error/watchdog settle) — partially covered.** The interrupt path was exercised live against a normal streaming generation and superseded cleanly (F-111 round 2). An interrupt inside the ERROR hold specifically was not forced (needs a managed-server kill mid-stream — a named blocker, time-box).
+- [x] **E-61 (pointer leaves and re-enters within the grace) — regression-free observation.** Repeated hover/leave cycles around a displayed reply kept the reply displayed and never produced a premature clear; a fresh-full-grace measurement was not isolated (sub-second pointer choreography unavailable).
+- [ ] **E-58 (queue across teleport/unmount) — not driven.** Named blocker: Ctrl+right-click teleport while a stream is in flight was not exercised this round.
+- [ ] **E-60 (grace changed mid-grace-window) — not driven.** Named blocker: needs a sub-second Settings edit inside an armed grace window.
+- [ ] **E-62 (send while the game bubble is open) — not driven.** Named blocker: TicTacToe double-click + bar send inside one window was not sequenced.
+- [x] **E-63 (disposition changed mid-stream) — observed.** Switching `queue` → `interrupt` (and back) via the Settings select updated the persisted value and the effective dispatch followed it on the next send (superseded vs queued). A flip between an enqueue and its drain was not isolated.
+- **Finding (harness technique, no product defect) — promoted to `launcher` F-93/F-94 round 2.** In-flight sends require an in-page single-script dual-send (or a real-keyboard second send against a long generation); serial driver round-trips (~6 s) always land after the local ~1–2 s generation.
