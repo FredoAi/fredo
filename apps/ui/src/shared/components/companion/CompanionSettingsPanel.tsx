@@ -173,6 +173,13 @@ export const CompanionSettingsPanel: React.FC = () => {
     // value is exactly what `setReplyLeaveGraceMs` stores, so the announcement is
     // the persisted truth.
     const resolvedMs = clampReplyLeaveGraceMs(Math.round(Number(raw) * 1000));
+    // The commit is authoritative over the draft: write the clamped seconds back
+    // immediately so an out-of-range draft is normalized on screen even when the
+    // persisted value is unchanged (the `[replyLeaveGraceMs]` effect does not fire
+    // for a no-op clamp). Without this the NumberInput would keep the typed text.
+    const resolvedSeconds = String(resolvedMs / 1000);
+    graceDraftRef.current = resolvedSeconds;
+    setGraceDraft(resolvedSeconds);
     setReplyLeaveGraceMs(resolvedMs);
     setCommitMessage(`Reply hold-open grace set to ${resolvedMs / 1000} s`);
   }, [setReplyLeaveGraceMs]);
@@ -332,6 +339,7 @@ export const CompanionSettingsPanel: React.FC = () => {
             </VStack>
             <HStack gap={1} align="center" flexShrink={0}>
               <NumberInput.Root
+                ids={{ input: IDLE_TIMEOUT_INPUT_ID }}
                 value={idleDraft}
                 onValueChange={(e) => handleIdleChange(e.value)}
                 onValueCommit={(e) => commitIdleTimeout(e.value)}
@@ -447,6 +455,7 @@ export const CompanionSettingsPanel: React.FC = () => {
             </VStack>
             <HStack gap={1} align="center" flexShrink={0}>
               <NumberInput.Root
+                ids={{ input: REPLY_GRACE_INPUT_ID }}
                 data-testid="companion-reply-leave-grace"
                 value={graceDraft}
                 onValueChange={(e) => handleGraceChange(e.value)}

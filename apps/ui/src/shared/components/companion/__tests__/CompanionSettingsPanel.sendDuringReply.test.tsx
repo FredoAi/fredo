@@ -250,6 +250,87 @@ describe('CompanionSettingsPanel — send-during-reply + grace controls (#2892 S
     );
   });
 
+  // ── #2892 round-2 defect pins ─────────────────────────────────────────────
+  // The displayed input MUST be clamped by the commit, not just the persisted
+  // setting: the NumberInput's machine resolves its input element by id, so an
+  // out-of-range draft used to stay on screen while the persisted value healed.
+
+  it('P1: clamps an out-of-range draft on Enter and heals the displayed value (#2892 defect)', async () => {
+    const user = userEvent.setup();
+    renderReady();
+    await screen.findByTestId('companion-controls');
+
+    const input = graceInput();
+    const help = document.getElementById('companion-reply-leave-grace-help') as HTMLElement;
+    const announcer = screen.getByTestId('companion-settings-commit-announcer');
+
+    await user.clear(input);
+    await user.type(input, '999999');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(help).toHaveTextContent('Enter 0–60 s');
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(localStorage.getItem(REPLY_LEAVE_GRACE_SETTING_KEY)).toBe('60000');
+    });
+    await waitFor(() => {
+      expect(input.value).toBe('60');
+    });
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    expect(help).toHaveTextContent(
+      'Fredo keeps a finished reply on screen for this long after your pointer leaves it.',
+    );
+    expect(announcer).toHaveTextContent('Reply hold-open grace set to 60 s');
+  });
+
+  it('P2: a no-op clamp still normalizes the displayed draft (#2892 defect)', async () => {
+    localStorage.setItem(REPLY_LEAVE_GRACE_SETTING_KEY, '60000');
+    const user = userEvent.setup();
+    renderReady();
+    await screen.findByTestId('companion-controls');
+
+    const input = graceInput();
+    // Wait for the async persisted value (60 s) to load before editing.
+    await waitFor(() => {
+      expect(input.value).toBe('60');
+    });
+
+    await user.clear(input);
+    await user.type(input, '999999');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(input.value).toBe('60');
+    });
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    expect(localStorage.getItem(REPLY_LEAVE_GRACE_SETTING_KEY)).toBe('60000');
+  });
+
+  it('P3: clamps a negative draft to the minimum on Enter (#2892 defect)', async () => {
+    const user = userEvent.setup();
+    renderReady();
+    await screen.findByTestId('companion-controls');
+
+    const input = graceInput();
+    const help = document.getElementById('companion-reply-leave-grace-help') as HTMLElement;
+
+    await user.clear(input);
+    await user.type(input, '-5');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(help).toHaveTextContent('Enter 0–60 s');
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(localStorage.getItem(REPLY_LEAVE_GRACE_SETTING_KEY)).toBe('0');
+    });
+    await waitFor(() => {
+      expect(input.value).toBe('0');
+    });
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+  });
+
   it('clears the shared announcement after 2500 ms', async () => {
     renderReady();
     await screen.findByTestId('companion-controls');
