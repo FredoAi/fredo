@@ -198,13 +198,14 @@ src-tauri/src/
     +-- companion/              — Shared companion runtime helpers (Spec #2857)
     |   +-- resolver.rs         — `llama-server` executable resolution (setting → PATH → winget shim)
     |   +-- models.rs           — required model-file manifest (pinned names/sizes/SHA-256) + on-disk probe
-    +-- voice/                  — Local on-device speech-to-text (Spec #2877): engine + capture + one session
+    +-- voice/                  — Local on-device speech-to-text (Spec #2877; resident engine #2887): engine + capture + one session
     |   +-- manifest.rs         — pinned sherpa-onnx model manifest (4 files / 72,654,782 B / SHA-256)
-    |   +-- capture.rs          — native cpal (WASAPI) input stream → mono-mix + resample → 16 kHz chunks
+    |   +-- capture.rs          — native cpal (WASAPI) input stream → mono-mix + resample → 16 kHz chunks; env-gated deterministic WAV feed seam (#2887 — absent unless the feed variable is set, and it opens no device)
     |   +-- engine.rs           — sherpa-onnx OnlineRecognizer + SHA-256 content gate; created once per process at setup when voice input is enabled (resident), reused across sessions
-    |   +-- session.rs          — single app-global session; the worker owns the engine and the cpal stream
-    |   +-- state.rs            — `Stt*` IPC wire types (camelCase)
-    |   +-- commands.rs         — stt_check_model, stt_list_devices, stt_start, stt_stop, stt_cancel, stt_status
+    |   +-- resident.rs         — the app-global resident engine: single-flight warm, engine-only reuse, release on the voice-disabled edge (#2887)
+    |   +-- session.rs          — single app-global session; the worker takes the resident engine (or joins the in-flight warm) and owns the capture stream
+    |   +-- state.rs            — `Stt*` IPC wire types (camelCase), incl. the `readyMs` / `engineResident` observables
+    |   +-- commands.rs         — stt_check_model, stt_list_devices, stt_start, stt_stop, stt_cancel, stt_status, stt_warm, stt_release
     +-- rtdb/                   — RTDB row store — the production event pipeline
     |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
     |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables

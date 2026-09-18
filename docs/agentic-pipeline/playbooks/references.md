@@ -51,6 +51,38 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-176: on_the_go_script_fixes_apply_the_documented_remedies
+- **activation_date:** 2026-09-18
+- **observed:** #2887 — three documented remedies were still unapplied when the round needed them, and each cost real time before the SI fixed it in-run: (a) the guardrail that lets a developer obtain a worktree while a feature sits in `testing` (so the pipeline's own CI-fix path had no sanctioned entry); (b) the environment's restart action forwarded an empty spec id and therefore stopped the instance BEFORE failing its own argument validation, leaving the app down; (c) the environment's start action had no way to inject an environment variable into the launched app, so an env-gated verification seam could not be driven by any agent (fresh shell per invocation, shell chaining denied) and its rows became permanent named blockers.
+- **target_failure:** a guardrail prescribes an exact script remedy, the remedy is never landed, and the next round that needs it burns a dispatch (or a round) discovering the gap again — the guardrail store then reads as "documented" while the pipeline still cannot do the thing.
+- **guardrail:** When a guardrail's `guardrail:` text names a concrete script change, treat that change as a work item to apply in the SAME run it is observed (documented in the same pass and validated by the harness) rather than a note for later. Before dispatching agents that depend on a script capability, verify the capability exists (not merely that a guardrail mentions it).
+- **home:** .opencode/scripts/pipeline-state.rs (create-worktree guard) + .opencode/scripts/dev-env.ps1 (Restart spec resolution, `-EnvVars` injection) + .opencode/skills/pipeline-state/SKILL.md + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-18, #2887) — all three fixes landed the same run (the G-164 guard, the Restart spec resolution, and the `-EnvVars` passthrough), the harness re-ran at 104/104, and the CI fix then used the sanctioned worktree path.
+
+### G-175: rework_loop_missing_forward_transition_blocks_the_verdict
+- **activation_date:** 2026-09-17
+- **observed:** #2887 round 2 — after a tester FAIL the SI dispatched the fix developer and then the round-2 tester WITHOUT re-running the `implementation → testing` transition. The feature therefore sat on its dev label while the tester drove the app, the machine derived round 1 for the round, and the machine's one-verdict-per-round guard refused the finished PASS verdict; recovery needed an SI transition followed by a manual draft flush, and the tester had burned a full round of work before the block surfaced.
+- **target_failure:** the retry loop skips the transition back into `testing` before re-dispatching the tester, so the new round is never started, the verdict is stamped with the previous round, and a valid verdict is either refused or (worse) mis-attributed.
+- **guardrail:** The rework loop is one cycle: architect fix plan → transition into `implementation` → developer work → **transition into `testing`** → tester. The SI MUST run the forward transition before dispatching the tester (the machine stamps the round from the count of testing entries, and a verdict may be posted once per round). If a verdict is refused for a round mismatch, do NOT re-dispatch the tester and do NOT hand-post the verdict: run the forward transition, then flush the draft.
+- **home:** playbooks/self-improver.md (retry-round steps) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-174: local_build_receipt_from_shared_target_dir_is_untrustworthy
+- **activation_date:** 2026-09-17
+- **observed:** #2887 — the round-1/round-2 local receipts reported a clean clippy while CI failed the clippy gate. Two contributing facts: (a) local runs shared the repo-root build cache across worktrees, and those runs finished in seconds — the signature of a cache-freshness short-circuit rather than a real analysis; (b) the CI toolchain was NEWER than the local one, so a lint that exists only in CI could never appear locally. The eventual CI fix used a private target directory AND a positive control (re-introduce a known lint, watch it fire, then remove it) so the receipt proved the analyzer actually ran.
+- **target_failure:** a build/lint/test receipt is produced from a shared, warm build cache and/or a different toolchain than the gate that will judge it, so the receipt is green while the gate is red — the round then burns on a CI failure that a trustworthy receipt would have caught.
+- **guardrail:** A verification receipt for a gate must come from a build cache that is private to the work being verified, must state the toolchain version, and must include evidence the analyzer actually analyzed the changed code (e.g. a positive control that makes the check fail). A run that finishes suspiciously fast is not a pass — re-run it cold before claiming the gate is green. When the judging gate runs a floating toolchain, prefer the newest-documented idioms over newly-deprecated ones, and treat a local green as necessary-but-not-sufficient.
+- **home:** playbooks/developer.md (verification) + playbooks/tester.md + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-17, #2887) — the private-target + positive-control receipt found and cleared the real CI lint on the first attempt.
+
+### G-173: dev_env_up_fast_path_serves_the_stale_build
+- **activation_date:** 2026-09-17
+- **observed:** #2887 — twice, the serving instance was started before a new tip was pushed; re-running the environment's "up" action took its already-running fast path and reported the NEW serving commit while the process still served the OLD code. The first time, the tester would have tested stale code had it not been caught; the second, a forced stop/start was needed before the round.
+- **target_failure:** the environment's "up" action reports the current branch tip while an already-running process keeps serving the previous build, so a live round silently verifies code that is not the tip and its verdict is void.
+- **guardrail:** After ANY tip change, serve it with a full stop/start (never the already-running fast path), and verify what the process actually serves (the runtime's own status output plus at least one tip-identifying assertion) before dispatching a live round. Treat "the launcher says it is running" as unproven until the served commit is confirmed.
+- **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/self-improver.md (pre-tester serving currency) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-17, #2887) — the second occurrence was caught by the stop/start rule before the round.
+
 ### G-172: missing_in_repo_fixture_triggers_out_of_repo_asset_hunt
 - **activation_date:** 2026-09-17
 - **observed:** #2887 round 1 — two developer capsules (the backend engine seam; the deterministic capture feed + WAV fixture) stalled by hunting for a real speech/audio test asset OUTSIDE the repo: a read of `~\fredo-models`, then `.wav` globs across `~\.cargo`, `node_modules` and `C:\Windows\Media`. Every out-of-repo read is sandbox-denied, so both capsules lost the round with no commit, no report and no gap recorded — the plan capsule asked for a fixture ("a 16 kHz mono WAV whose first spoken word is the assertion token") that cannot exist in-repo on a host with no speech asset. This is the third vector of the out-of-repo failure family (G-009): not a config path named by a brief, and not a self-provisioned tool, but a MISSING FIXTURE the capsule was told to produce.
@@ -97,7 +129,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** the pipeline's own remedy for a CI flake (a test-only fix on the open spec branch during `testing`) has no sanctioned worktree entry, so the fix is either not attempted (the issue blocks) or lands through an unreported ad-hoc worktree.
 - **guardrail:** When the G-156 test-only fix path is used, `create-worktree` MUST accept the `testing` phase (label `testing`) for the issue — the fix changes no product code, so the phase's evidence guard is unaffected. Until the guard is extended, a developer landing such a fix reports the exact denial and the workaround used, and the SI records it. (Script change owned by the SI: accept `testing` in the worktree guard, documented in the `pipeline-state` skill + `state-machine.md`, validated by `test-scripts.ps1`.)
 - **home:** .opencode/scripts/pipeline-state.rs (worktree guard) + .opencode/skills/pipeline-state/SKILL.md + docs/agentic-pipeline/state-machine.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-17, #2887) — the guard now accepts a `testing`-labeled feature; the round-2 CI fix was landed through a sanctioned worktree on the open spec branch instead of an ad-hoc `git worktree add`. Script change documented in the pipeline-state skill, state-machine.md and github.md and validated by the harness (104/104).
 
 ### G-165: ci_flake_family_functional_tauri_internals_stub
 - **activation_date:** 2026-09-17
