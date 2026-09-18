@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { usePersistedSetting } from '../hooks/usePersistedSetting';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -41,6 +41,46 @@ export const DEFAULT_VOICE_AUTOSEND = false;
 
 export const VOICE_DEVICE_ID_SETTING_KEY = 'Fredo_companion_voice_device_id';
 export const DEFAULT_VOICE_DEVICE_ID = '';
+
+// ── Send-during-reply disposition (#2892 ST-1, persisted setting) ────────────
+// `Fredo_companion_send_during_reply`, `'queue' | 'interrupt'`, DEFAULT 'queue'.
+// This module is the ONE owner of the key/constants; the entity + launcher
+// consume the value (their slices). Any stored value that is not the literal
+// `'interrupt'` heals to the default on load (closed two-member set).
+
+export type CompanionSendDisposition = 'queue' | 'interrupt';
+
+export const COMPANION_SEND_DURING_REPLY_KEY = 'Fredo_companion_send_during_reply';
+export const DEFAULT_COMPANION_SEND_DURING_REPLY: CompanionSendDisposition = 'queue';
+
+// ── Reply hold-open grace (#2892 ST-1, persisted setting, integer ms) ────────
+// `Fredo_companion_reply_leave_grace_ms`, default 2000 ms, clamped to
+// [0, 60000]. Consumed by `useReplyProtection` (ST-2); the settings UI (ST-6)
+// displays seconds and persists integer ms through `clampReplyLeaveGraceMs`.
+
+export const REPLY_LEAVE_GRACE_SETTING_KEY = 'Fredo_companion_reply_leave_grace_ms';
+export const DEFAULT_REPLY_LEAVE_GRACE_MS = 2000;
+export const MIN_REPLY_LEAVE_GRACE_MS = 0;
+export const MAX_REPLY_LEAVE_GRACE_MS = 60000;
+export const REPLY_LEAVE_GRACE_STEP_MS = 250;
+
+/**
+ * Resolve a (possibly corrupt) configured reply hold-open grace to a usable
+ * integer ms value. Non-finite → default (2000); otherwise round then clamp to
+ * [MIN_REPLY_LEAVE_GRACE_MS, MAX_REPLY_LEAVE_GRACE_MS]. A cleared / non-numeric
+ * stored value heals to the default on load; an out-of-range value clamps.
+ */
+export const clampReplyLeaveGraceMs = (ms: number): number => {
+  if (!Number.isFinite(ms)) return DEFAULT_REPLY_LEAVE_GRACE_MS;
+  return Math.min(Math.max(Math.round(ms), MIN_REPLY_LEAVE_GRACE_MS), MAX_REPLY_LEAVE_GRACE_MS);
+};
+
+/**
+ * Parse a stored send-during-reply disposition. Anything that is not the exact
+ * `'interrupt'` literal (unknown/stale/cleared) heals to the default `'queue'`.
+ */
+const parseSendDuringReply = (raw: string): CompanionSendDisposition =>
+  raw === 'interrupt' ? 'interrupt' : DEFAULT_COMPANION_SEND_DURING_REPLY;
 
 /**
  * Resolve a (possibly corrupt) configured idle timeout to a usable value.
@@ -159,6 +199,35 @@ interface CompanionContextValue {
    */
   voiceDeviceId: string;
   setVoiceDeviceId: (deviceId: string) => void;
+  /**
+   * #2892 ST-1 (REQ-9): persisted send-during-reply disposition
+   * (`Fredo_companion_send_during_reply`, DEFAULT 'queue'). The SETTING lives
+   * here; its consumption (accept / queue / interrupt) is the entity + launcher.
+   */
+  sendDuringReply: CompanionSendDisposition;
+  setSendDuringReply: (d: CompanionSendDisposition) => void;
+  /**
+   * #2892 ST-1 (REQ-10): persisted reply hold-open grace, integer ms
+   * (`Fredo_companion_reply_leave_grace_ms`, DEFAULT 2000, clamped [0, 60000]).
+   * Feeds `useReplyProtection` (ST-2).
+   */
+  replyLeaveGraceMs: number;
+  setReplyLeaveGraceMs: (ms: number) => void;
+  /**
+   * #2892 ST-1 (REQ-3): transient truth — a reply generation is genuinely in
+   * flight. Written ONLY by the CompanionEntity (mirrors the `isInUse`
+   * single-writer invariant) and cleared on unmount; it never includes the
+   * read-hold `replyProtected` state. NEVER persisted.
+   */
+  replyInFlight: boolean;
+  setReplyInFlight: (v: boolean) => void;
+  /**
+   * #2892 ST-1 (REQ-5): transient count of accepted sends awaiting dispatch
+   * (0 = none). Written by the CompanionEntity; drives the launcher's waiting
+   * indicator. NEVER persisted.
+   */
+  queuedSendCount: number;
+  setQueuedSendCount: (n: number) => void;
   /** Called by FredoCompanion on leave-motion settle; settles hidden + broadcasts. */
   confirmAutoReturn: () => void;
   /** FredoCompanion reports whether this webview currently displays the companion. */
@@ -293,6 +362,30 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     (r) => r,
   );
 
+  // #2892 ST-1 (REQ-9) — persisted send-during-reply disposition. Same
+  // `usePersistedSetting` path as the idle timeout; a stale/unknown stored
+  // value heals to the 'queue' default via `parseSendDuringReply`.
+  const [sendDuringReply, setSendDuringReplyValue] = usePersistedSetting<CompanionSendDisposition>(
+    COMPANION_SEND_DURING_REPLY_KEY, DEFAULT_COMPANION_SEND_DURING_REPLY,
+    (v) => v,
+    (r) => parseSendDuringReply(r),
+  );
+
+  // #2892 ST-1 (REQ-10) — persisted reply hold-open grace (integer ms). Same
+  // path; a non-numeric stored value heals to 2000, out-of-range clamps.
+  const [replyLeaveGraceMs, setReplyLeaveGraceMsValue] = usePersistedSetting<number>(
+    REPLY_LEAVE_GRACE_SETTING_KEY, DEFAULT_REPLY_LEAVE_GRACE_MS,
+    (v) => String(v),
+    (r) => clampReplyLeaveGraceMs(Number(r)),
+  );
+
+  // #2892 ST-1 (REQ-3/REQ-5) — the two transient signals. Plain state, NEVER
+  // persisted: the CompanionEntity is their single writer (reply truth +
+  // queued-send count) and they vanish with the provider, exactly like
+  // `isInUse` above.
+  const [replyInFlight, setReplyInFlight] = useState(false);
+  const [queuedSendCount, setQueuedSendCount] = useState(0);
+
   const [state, dispatch] = useReducer(reducer, {
     ...initialState,
     isVisible: persistedVisible,
@@ -413,6 +506,17 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIdleTimeout(clampIdleTimeout(s));
   }, [setIdleTimeout]);
 
+  // #2892 ST-1 (REQ-9): persist the disposition; a non-disposition value at
+  // runtime heals to the default (mirrors the load-time parse).
+  const setSendDuringReply = useCallback((d: CompanionSendDisposition) => {
+    setSendDuringReplyValue(d === 'interrupt' ? 'interrupt' : DEFAULT_COMPANION_SEND_DURING_REPLY);
+  }, [setSendDuringReplyValue]);
+
+  // #2892 ST-1 (REQ-10): persist the grace as a clamped integer ms.
+  const setReplyLeaveGraceMs = useCallback((ms: number) => {
+    setReplyLeaveGraceMsValue(clampReplyLeaveGraceMs(ms));
+  }, [setReplyLeaveGraceMsValue]);
+
   // Presence sync from other webviews — apply remote show/hide/settle WITHOUT
   // ever writing a persisted key (no echo/persist loop).
   useEffect(() => {
@@ -454,11 +558,15 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
     voiceAutosend, setVoiceAutosend, voiceDeviceId, setVoiceDeviceId,
+    sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
+    replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
     voiceAutosend, setVoiceAutosend, voiceDeviceId, setVoiceDeviceId,
+    sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
+    replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
   ]);
 
   return (
