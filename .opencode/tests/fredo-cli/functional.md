@@ -86,3 +86,28 @@
   `confirm_app_open_request` arrived after the 5 s bound
   (`console: [useAppOpenRequests] confirm_app_open_request failed No pending app-open request with
   id "app-open-…"`). Bounded-confirm design; recorded, not a duplicate/crash.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+> Raw exit codes captured with a Node-style `spawnSync` helper (`.opencode/tmp/2893/cli-probe2.cjs`,
+> now `shell:false`; the earlier `shell:true` helper mis-split the quoted display name — helper
+> artifact, not a product defect).
+
+- **F-1 PASS.** `fredo --help` exit **0**, lists `emit`/`setup`/`open-app`/`help`;
+  `fredo open-app --help` exit **0**, `Usage: fredo open-app <IDENTITY>` with the id/display-name
+  description; `fredo help open-app` exit **0**; missing arg exit **2** + clap usage;
+  unknown flag `--bogus-flag` exit **2** + clap usage.
+- **F-2 PASS.** `fredo open-app mission-monitor` → `{"displayName":"Mission Monitor","outcome":"opened"}`,
+  exit **0**, 842 ms cold then 43 ms warm; `fredo open-app "Mission Monitor"` → exit **0**
+  `{"displayName":"Mission Monitor","outcome":"opened"}` (76 ms); the fresh window's identity
+  fingerprint is aria-label `Sessions` + header `Sessions` — byte-equal to the companion-opened
+  surface; re-invoke focuses the SAME window (window count stayed 1).
+- **F-3 PASS.** `fredo open-app not-a-real-app` → `{"outcome":"unknown","spokenName":"not-a-real-app"}`
+  exit **1**; `MM` → `unknown` exit **1**; `""` → clap exit **2**; zero windows opened; app stayed
+  responsive.
+- **F-4 PASS.** App DOWN (`dev-env -Action Down`): `fredo open-app mission-monitor` → exit **2**,
+  33 ms, no hang, nothing opened. The documented fallback message stays TTY-gated (`cli/mod.rs:75`)
+  and is silent under the non-TTY harness (pre-existing, not a #2893 regression).
+- **F-5 PASS.** Repeated invocations (same + display-name identities, plus the round's CLI opens)
+  produced no duplicate window, consistent exit codes, and no console
+  `Error:`/`Uncaught`/`Maximum update depth exceeded`.
