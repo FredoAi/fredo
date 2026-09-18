@@ -113,3 +113,32 @@
 - S-16 **PASS** — 5 captures uploaded serially via `upload-evidence --issue 2887 --base spec/2887` (raw URLs in the `## Tests Runs` table); the report also carries the `telemetry_spans` receipt (4 519 rows, newest `ingested_at` 2026-09-17T23:42:04.914Z) + the `fredo emit` marker rows. **AC2's opening-word read is a NAMED BLOCKER** — the `FREDO_STT_FEED_WAV` seam was not exercised (the tester cannot set the process env var); the synthetic content lever proved only the finalize/commit wiring.
 
 **Suite divergence (reported, not adopted):** this file's S-15 text still carries the triage-era `T_COLD_MAX_MS; default ≤ 900 ms` placeholder. The plan's constants supersede it. The bar selector in S-14 is also stale — the live element is `textarea[data-testid="launcher-command-input"] role="searchbox"`, not `input[role="searchbox"]`.
+
+## #2888 extension — sentence-case dictation + the name `Fredo` quick paths
+
+> Issue #2888 renders dictated text in ordinary written casing and recognizes the name `Fredo`.
+> Quick paths only — the full matrix lives in `functional.md` F-83..F-101 / `regression.md`
+> R-25..R-29. **Verification policy: live.** Content comes from the L3 synthetic `stt:transcript`
+> lever on the REAL `adapterBridge.listen` channel; the lifecycle/cue comes from the REAL gesture +
+> control plane. **The host has no physical mic and no WAV asset exists in-repo — the audible leg is
+> a named blocker, never a PASS.**
+
+- [ ] S-17: **Sentence-case quick path.** Voice enabled + model ready; focus the EMPTY
+      `textarea[data-testid="launcher-command-input"][role="searchbox"]`; `keyboard(action="down",
+      key=" ")` → hold ≥ 400 ms → inject a final `DEPLOY THE BUILD TONIGHT` on L3 → `action="up"`.
+      **Expected:** the bar `value` is exactly `Deploy the build tonight` (the opening capitalised,
+      ordinary words lowercased); a mid-hold PARTIAL sample shows the normalised form too (never the
+      raw ALL-CAPS); the cue behaved as in S-14; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-18: **`Fredo` quick path — message, never a launch.** Autosend OFF; hold → inject final
+      `ASK FREDO TO OPEN THE LOGS` → release; then Enter. **Expected:** the bar waits as editable text
+      with the hint `↵ send transcript to Fredo`, then exactly ONE dispatch to Fredo and ZERO windows
+      (`Settings`/`Fredo` never open an app); screenshot succeeds; console clean.
+- [ ] S-19: **Evidence upload smoke.** A capture from S-17/S-18 is uploaded via
+      `upload-evidence --issue 2888 --base spec/2888`, the raw URL resolves, and it is embedded in
+      `## Tests Runs` with a textual description (the live-policy lever); the `## Tests Runs` body also
+      references `telemetry_spans` + the round's `fredo emit` marker rows.
+
+### #2888 testing round 1 — result
+
+- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
