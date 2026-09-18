@@ -604,3 +604,65 @@
   after the sweep and after a fresh restart. This round's samplers use a plain guarded `setInterval`
   (no MutationObserver), so the round-2 `reading 'slice'` tester artifact did not reproduce. No colour
   literals or `var(--x)NN` introduced by the #2893 diff; no re-render loop.
+
+---
+
+## #2892 extension — the always-editable bar must not change the shipped bar contracts (G-136)
+
+> Issue #2892 removes the reply-state `readOnly`, re-sources the busy flag from `replyInFlight`, and
+> turns a send during a reply into an accepted queue/interrupt. **G-136 supersession (history
+> preserved):** **R-55**'s "sample `readOnly` during busy" and **F-55/F-58**'s read-only/no-op-on-2nd-
+> Enter clauses are SUPERSEDED — the input is never read-only from reply state and a 2nd send is
+> accepted (queued). Everything else (`#2882` matcher/hint, `#2883` wrap/`Shift+Enter`, `#2886`
+> placement, `#2887` resident hold, `#2871` reply streaming) remains IN FORCE. Run alongside
+> `companion` R-53..R-57 + `settings` R-17..R-20. **Verification policy: live.**
+
+## R-57 — #2882 typed whole-query matcher + hint truth unchanged; no busy fall-through
+
+- [ ] R-57: re-run `set`/`Miss`/`monitor`/`Mission Mon` + Enter (companion present/streaming/away/off)
+      and `Missing all the time`/`MM` + Enter; read the hint chip each time.
+  **Expected:** the named app opens with 0 generations, a non-match is sent with 0 windows, the hint
+      always states the action Enter will take; Enter NEVER launches a tile mid-stream (the retired
+      busy fall-through stays retired).
+  - **Edge:** exact full name; substring; whitespace; streaming in flight.
+
+## R-58 — #2883/#2886 bar-input + reply-surface contracts unchanged
+
+- [ ] R-58: grow the input past the cap and back; `Shift+Enter`; with a reply shown, verify the bar
+      controls are not covered and the reply never intersects the bar/tiles/Fredo.
+  **Expected:** the wrap cap, internal scroll, `Shift+Enter` newline, no-CLS and never-cover
+      placement hold (`#2883`/`#2886`); the new queue indicator must not displace an alert /
+      hearing-nothing status slot nor collide with the reply.
+  - **Edge:** queue indicator + a long reply + a held hint row at 900×600.
+
+## R-59 — Launcher geometry / seat geometry unchanged (no CLS from the queue indicator)
+
+- [ ] R-59: measure the command-bar `getBoundingClientRect().y`, the seat wrapper 80×100 + `mb="4"`,
+      and `scrollHeight` vs `clientHeight` with the queue indicator present vs absent, and across
+      ON/OFF/away states.
+  **Expected:** the bar `y` stays within ±1 px; the seat slot stays 80×100 + 16 px; no new
+      scrollbar/overflow; the indicator renders inside the existing status slot without relayout.
+  - **Edge:** 1 vs N queued; indicator + alert; resize.
+
+## R-60 — Voice/dictation and the resident-hold contracts unchanged
+
+- [ ] R-60: hold Space on the focused empty bar; dictate + autosend; check the hold cue, the hint
+      truth, and `stt_status`.
+  **Expected:** the `#2887` resident hold and the `#2882` hold-Space contract hold — hold-to-dictate
+      is unchanged by the reply-state change; an empty-query Enter gate keying on `replyInFlight`
+      must not break dictation; no listening from a reply state.
+  - **Edge:** hold during a reply; autosend while a reply is in flight (must accept, not drop).
+
+## R-61 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-61: static-grep the changed launcher files for colour literals + `var(--x)NN`; read the console
+      after every leg; inspect the new queue/status code for effect/memo deps and listener counts; run
+      `pnpm --filter @fredo/ui build` + `test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); listeners register once and unlisten; build exit 0; suite
+      green with no weakened assertion (the four superseded pins refreshed, not deleted).
+  - **Edge:** theme switch mid-stream; queue churn; both windows.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
