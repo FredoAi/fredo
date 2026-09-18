@@ -2154,3 +2154,16 @@ clean.
 - **F-111 UNVERIFIED (live).** Interrupt supersession not exercised: 3 attempts all landed after `llm-done` (`isGenerating: false` in the console). Pinned by `companionDispatch.test.ts` + `CompanionEntity.dispatch.test.tsx` (13 tests).
 - **F-112 PARTIAL (live).** Both settings persist (`localStorage` + Tauri `get_setting`); full cold restart not performed.
 - **F-115 PASS (static).** Zero colour literals / no `var(--x)NN` in the changed companion files; console clean (no re-render loop).
+
+### #2892 testing round 2 — result
+
+> Round 2 @ `spec/2892 7e93892f` (cold-started dev app). **PASS** — the round-1 F-111 harness gap is
+> closed live. Full report: `.opencode/tmp/2892/tests-runs.md`.
+
+- **F-106 PASS (live).** Streaming placeholder EXACTLY `Fredo is replying…` with a DIV carrying `aria-busy="true"`; at settle (pointer resting on `fredo-reply-surface`) both cleared while the reply stayed displayed.
+- **F-107 PASS (live).** Pointer on a completed reply: resting placeholder, no `[aria-busy]`, only the hold window changed.
+- **F-108 PASS (live, including the idle=5 s variant).** With `Fredo_companion_idle_timeout=5`, the pointer rested on a completed reply well past 5 s: `.fredo-companion-avatar` present, `.fredo-avatar-idle` absent, reply still displayed → `isInUse` read-hold suppression active. Screenshot `r2-ac4-idle-avatar.png`.
+- **F-109 PASS (live, decisive).** Long first generation; in-flight send → `launcher-command-queued` EXACTLY `Queued — waiting for Fredo…`, auto-dispatched on settle (reply `alpha`, exactly once).
+- **F-111 PASS (live, decisive).** Under `interrupt`, a real-keyboard send during a >1 s in-flight generation superseded it: the bubble settled EXACTLY `INTERRUPTED`, no queued indicator at any sample, and the superseded count tokens never appended. Screenshot `r2-ac6-interrupted.png`.
+- **F-112 PASS (live).** Full cold app restart (`dev-env.ps1 -Action Restart -Spec 2892`): Settings → Companion re-read `Interrupt and send now` + grace `10`; `localStorage`/`get_setting` both `interrupt`/`10000`.
+- **F-115 PASS (static/console).** Zero colour literals in the changed companion/launcher TSX; console clean (pre-existing `motion() is deprecated` WARN only).
