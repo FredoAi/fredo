@@ -701,3 +701,276 @@ no physical mic: `stt:transcript` content came from the documented synthetic lev
 - **F-82 PASS.** 10 back-to-back cycles (first 275.3 → last 223.0, no degradation); **3** Escape cancels mid-hold (each ⇒ `listening:false`, value `""`, announcer `Dictation cancelled`); mic released every time; one indicator per cycle.
 - **AC5 regression spot (F-66/F-67/F-68 equivalents) PASS.** 80 ms TAP ⇒ one space `" "`, ZERO `stt:state`, mic never opened. Space in a non-empty query ⇒ keydown NOT consumed, ZERO `stt:state`. Release-after-live with no committed final ⇒ exactly one space on 12/12 holds (R-5e `no-words-space`). Voice disabled (persisted + frontend) ⇒ no promise placeholder, gesture produces ZERO `stt:state`, typed `{code:"disabled"}` on a direct probe.
 - **Suite divergence (reported, NOT adopted):** this file's F-74/F-76/F-77/F-80 placeholder budgets (p95 500 / max 750 / cold 900 / delta 250 / starting-state 300 / 10 s CPU window) were superseded by the plan's named constants and were NOT used for scoring; the bar selector `input[role="searchbox"]` is stale (live: `textarea[data-testid="launcher-command-input"]`, `role="searchbox"`). No file was edited to match the placeholders.
+
+---
+
+## #2888 extension — ordinary written casing + the name "Fredo" in the dictated transcript
+
+> Issue #2888: dictated text into the launcher command bar must land in **sentence case** with
+> **intentional capitals surviving**, and saying **"Fredo"** must yield `Fredo` in the transcript.
+> Rows F-83..F-101 map 1:1 to the QA-Plan `REQ-1..REQ-9` + `NFR-1..NFR-3` + `DOC`/`EV` in
+> `.opencode/tmp/2888/triage.md` `## QA Expert` (`REQ-1` sentence case; `REQ-2` live parity;
+> `REQ-3` content integrity; `REQ-4` the name; `REQ-5` intentional capitals; `REQ-6` the user's edit
+> wins; `REQ-7` voice-off/model-missing; `REQ-8` Fredo-bound routing; `REQ-9` the unchanged
+> #2882/#2887 contract).
+> **Verification policy: live.** Evidence: the running launcher bar (`value`), the real control
+> plane, DOM snapshots/screenshots, `tauri_read_logs(console)`, the UI unit pins the tester can run
+> (`pnpm --filter @fredo/ui test:run`), and the mandatory `telemetry_spans` receipt (F-99).
+> A static-only PASS is a FALSE PASS.
+>
+> **The three sanctioned levers (there is no fourth):**
+> - **L1 REAL gesture:** `tauri_webview_keyboard(action="down"/"up", key=" ")` on the focused EMPTY
+>   `textarea[data-testid="launcher-command-input"][role="searchbox"]`; record the hold duration.
+> - **L2 REAL control plane:** `stt_start{origin:"launcher"}` / `stt_stop` / `stt_cancel` /
+>   `stt_status` / `stt_check_model` / `stt_list_devices` via `tauri_ipc_execute_command`.
+> - **L3 SYNTHETIC CONTENT (the REAL channel):** `tauri_ipc_emit_event(eventName="stt:transcript",
+>   payload={sessionId, revision, segmentId, text, isFinal, latencyMs})` — the exact event
+>   `useVoiceDictation` subscribes to via `adapterBridge.listen` (`useVoiceDictation.ts:172`).
+>   **Content ONLY — never lifecycle/cue/mic-release evidence.**
+>
+> **FORBIDDEN:** any recorded-speech WAV fixture or out-of-repo asset. None exists under
+> `C:\Code\fredo`; hunting for one is a documented failure mode (G-172/G-009). The acoustic
+> reliability bar is a NAMED BLOCKER (F-89) — never fabricated, never substituted by L3.
+
+- [ ] F-83 (REQ-1): **Sentence-case opening.** Hold Space on the empty bar (L1, ≥ 400 ms) → inject a
+      final on L3 with raw text `DEPLOY THE BUILD TONIGHT` → release → read `value`.
+  **Expected:** the bar is **exactly** `Deploy the build tonight` (opening capitalised, ordinary words
+      lowercased, nothing else changed).
+  - **Edge:** an already-cased raw is idempotent; a one-word utterance (`TONIGHT` → `Tonight`); an
+    empty/whitespace final leaves the bar as before with no crash and no `undefined`; a leading space
+    is not double-counted.
+  - **Receipt:** the raw injected text, the observed `value` verbatim, and the session id.
+
+- [ ] F-84 (REQ-5): **Intentional capitals survive (the AC1-vs-AC2 crux).** Inject the final
+      `EXPORT THE API SPEC AND RUN SQL`; also inject the merged-tip string `CALL THE API FREDO`; read
+      `value`.
+  **Expected:** the bar is **exactly** `Export the API spec and run SQL` — `API` and `SQL` emitted by
+      the declared `PRESERVED_TOKENS` table while `spec`/`and`/`run` are lowercased and the opening is
+      capitalised — and the second string is **exactly** `Call the API Fredo`. A silent `api`/`sql`, or
+      a `FREDO` left shouted, is a **FAIL** of this row.
+  - **Edge:** `SQL` mid-sentence and at the end; `API` as the FIRST word (`API RETURNS SQL` →
+    `API returns SQL`); the preserved `I` token (`I TOLD FREDO` → `I told Fredo`); an ordinary all-caps
+    word (`BUILD` → `build`) must NOT be preserved; a **declared non-member** (`NASA`, `iPhone`, a
+    generic proper name — the Architect's documented boundary) renders lowercased: report it as the
+    declared boundary, not as a defect.
+  - **Receipt:** the raw text, the observed `value` verbatim, and the declared tables' names alongside
+    the two.
+
+- [ ] F-85 (REQ-3): **Casing is the ONLY change.** Inject a long unpunctuated final (§F-95 scale) and
+      diff the bar `value` against the injected raw text **case-insensitively**.
+  **Expected:** the case-insensitive diff is **empty** EXCEPT for tokens the declared
+      `FREDO_CONFUSABLES` mapping rewrites to `Fredo` (the ONE declared non-case change) — no other
+      word added, dropped, reordered, re-spelled, punctuated or summarised; no added terminator.
+  - **Edge:** hyphenated tokens (`WELL-KNOWN`), apostrophes (`DON'T` → `Don't`, `I'M` → `I'm`), digits
+    (`VERSION 2.0`), `SNAKE_CASE`, interior double spaces (not collapsed); **multi-segment turn**
+    (`joinSegments`, `useVoiceDictation.ts:126`): `HELLO` then `WORLD` ⇒ **`Hello world`** (the
+    Architect's `atUtteranceStart` — the opening capital is derived ONCE per session; a continuation
+    segment must NOT manufacture a mid-sentence capital); idempotence
+    (`normalize(normalize(x)) === normalize(x)`); non-ASCII pass-through.
+  - **Receipt:** the raw text, the observed `value`, and the case-insensitive diff result.
+
+- [ ] F-86 (REQ-4): **The name alone.** Hold → inject final `FREDO` → release → read `value`.
+  **Expected:** the bar is exactly `Fredo` — never `FREDO`, never `fredo`.
+  - **Edge:** a trailing/leading space in the raw; the name as the only word after a cleared
+    transcript; the name immediately after a previous session's transcript (no stale casing).
+  - **Receipt:** the raw text + the observed `value` verbatim.
+
+- [ ] F-87 (REQ-4): **The name embedded.** Inject `ASK FREDO TO OPEN THE LOGS` (and one confusable
+      spelling, e.g. `ASK FRITO TO OPEN THE LOGS` — see F-89); read `value`.
+  **Expected:** `Ask Fredo to open the logs` — `Fredo` capitalised mid-sentence, everything else
+      sentence-case; the confusable leg (`ASK FRITO TO OPEN THE LOGS`) renders the **same** string
+      (`Ask Fredo to open the logs`) — the closed spelling mapping and the sentence case in one pass.
+  - **Edge:** name at position 1; name as the last token; `FREDO,` with punctuation; the name after an
+    acronym (`THE API FREDO MADE`); the name adjacent to a hyphen.
+  - **Receipt:** the raw text + the observed `value` verbatim.
+
+- [ ] F-88 (REQ-4): **The name repeated.** Inject `TELL FREDO THAT FREDO SAID YES`; then
+      `FREDO FREDO ARE YOU THERE`.
+  **Expected:** `Tell Fredo that Fredo said yes` / `Fredo Fredo are you there` — **every** occurrence
+      capitalised, none dropped or merged.
+  - **Edge:** three or more occurrences; the repeated name split across two final segments of ONE turn;
+    the name adjacent to itself with punctuation.
+  - **Receipt:** both raw texts + both observed `value`s.
+
+- [ ] F-89 (REQ-4): **Reliability sample (~9/10-class).** **Sampling unit = one utterance = one
+      dictation session**: focus the EMPTY bar → hold Space (L1, ≥ 400 ms) → inject that utterance's
+      final on L3 → release → read `value`. **N = 20**, positions fixed in advance: 7 alone, 7
+      embedded (mid-sentence), 6 repeated; vary the surrounding words (no copied template) and include
+      one occurrence at the very start and one at the very end of an utterance. **Spellings are drawn
+      from the declared closed set `FREDO ∪ FREDO_CONFUSABLES`** — the dominant confusion `FRITO` is
+      mandatory; include at least `FRITO`, `FREITO`, `FREDA`, `FREDDO`, `FREDO`.
+  **Expected:** **≥ 18/20 (90 %)** render the token exactly `Fredo` (capital F, lowercase rest) at
+      **every** occurrence; the raw count, the per-position breakdown, the per-spelling breakdown and
+      **every miss with its raw injected spelling + observed `value`** are disclosed. A bare "PASS" or
+      a "9/10" with no raw numbers is not a result (G-171). The report MUST state the scope: this
+      samples the app's **closed-table spelling canonicalisation + capital preservation**, NOT ASR
+      accuracy (L3 bypasses the acoustic model).
+  - **Edge:** an engine spelling OUTSIDE the closed set (a two-token split `FRED … O`, a novel
+    misspelling) is the Architect's declared **boundary** — report it verbatim, do not count it as a
+    sampled unit and do not silently widen the table to make it pass.
+  - **Edge / NAMED BLOCKER:** the **acoustic** 9/10 (the recognizer actually hearing `Fredo`) is
+    unverifiable on this host — no physical microphone (only the silent virtual `Iriun Webcam` /
+    `Steam Streaming Microphone`), **no WAV asset under the repo**, no `cargo` in the tester sandbox,
+    and the `FREDO_STT_FEED_WAV` seam needs a process env var the tester cannot set. Record it as a
+    NAMED BLOCKER with the closed-table pin as its residual — **a real-mic/spoken-attempt PASS claimed
+    without a real-audio capture is a FALSE PASS** (this restates ST-3's "10 spoken attempts" leg).
+    A miss must never be re-run until it passes or averaged away.
+  - **Receipt:** the 20 raw/observed pairs, the counts (total + per position + per spelling), the
+    misses, and the scope paragraph.
+
+- [ ] F-90 (REQ-9 / REQ-7): **The hold/release/tap contract is intact.** (a) hold 1500 ms on the empty
+      focused bar then release; (b) an ~80 ms TAP with the engine not yet live; (c) a release at/above
+      the 200 ms threshold while the engine never went live. Record the durations + the `stt:state`
+      stream.
+  **Expected:** (a) `stt_status.listening === true` mid-hold with the visible cue, and `false` within
+      ~300 ms of the `up`; the finalized words land as ORDINARY EDITABLE text; (b) the TAP lands
+      **exactly one ordinary space** (`value === " "`), ZERO `stt_start`, no `stt:state`, the mic never
+      opened; (c) one ordinary space on the rise-edge cancel + the mic released.
+  - **Edge:** OS auto-repeat `keydown`s ⇒ exactly ONE `stt_start`; a hold with a dictated transcript
+    already in the bar; a hold right after a cancel. **A lost or converted space FAILs the round (G-158).**
+  - **Test data:** voice enabled + model ready; the L3 lever for content.
+
+- [ ] F-91 (REQ-9 / REQ-7): **Typing safety — no lost or converted space.** Type `ab`, press Space (real
+      keydown); repeat at 1 char, 20 chars and with an app-matching query (`set` → Space); separately
+      TAP Space on the empty bar.
+  **Expected:** every Space in a NON-EMPTY field lands as a literal character (`ab `, `s `, `set `)
+      with ZERO `stt_start`, no cue and `listening === false`; the empty-bar TAP is exactly one
+      ordinary space.
+  - **Edge:** a burst with 3 internal spaces; delete-back-to-empty then hold; a tap right after a
+    cleared dictated transcript. If native insertion is not observable with a synthetic key lever,
+    assert `defaultPrevented === false` and record the lever (#2882 lever note) — never a silent PASS.
+
+- [ ] F-92 (REQ-7): **Voice off / model missing ⇒ ordinary space, no capture, no error.** Leg (i)
+      `Fredo_companion_voice_enabled=false`; leg (ii) voice enabled + model absent
+      (`stt_check_model` → `ready:false`). For each: hold Space ≥ 1500 ms on the empty bar, release;
+      then press Ctrl+Space.
+  **Expected:** ZERO capture — no `stt_start` invocation at all, no cue, no capture handle; NO error
+      dialog and no `role="alert"`; the hold lands exactly one ordinary space; Ctrl+Space still
+      shows/focuses the bar with `listening === false`.
+  - **Edge:** voice disabled MID-hold; the model removed between the probe and the hold; readiness
+    UNKNOWN ⇒ the bar is unarmed and Space keeps its native default verbatim.
+
+- [ ] F-93 (REQ-9): **Cue for the WHOLE capture + the mic released.** Sample the listening indicator
+      at ≤ 50 ms from the `down` through `up` + 500 ms; measure the fredo working set (idle / mid-hold /
+      post-release, the #2877 F-28 `measure.mjs` method); cancel mid-hold with Escape and with the
+      visible `×`.
+  **Expected:** the cue (dot/chip/Stop + `Listening…` + announcer `Listening`) is present for the
+      WHOLE live capture with NO gap and absent whenever capture is not live; cleared on
+      release/cancel; `stt_status.listening === false` after every leg; the working set returns to the
+      idle baseline (no leaked handle); exactly one indicator per session.
+  - **Edge:** release at exactly the 200 ms threshold; a never-live hold (mic NEVER opened — not merely
+    released); 3 release-and-re-hold cycles; a silent hold still releases. **A capture without a
+    visible indicator FAILs the round (G-158).**
+
+- [ ] F-94 (REQ-8): **A "Fredo"-bearing transcript always routes to Fredo, never an app; exactly
+      once.** Autosend ON: hold → inject final `FREDO` (also `SET`, `SETTINGS`, `MISS`) → release.
+      Autosend OFF: the same, then Enter. Edit legs: dictate `Fredo` → edit the bar to `Settings` with
+      REAL keystrokes → Enter; and dictate `set` → edit to `Fredo` → Enter. CONTROL: clear the bar,
+      type `Settings` from scratch, Enter. Count `runGeneration` calls and opened windows.
+  **Expected:** Autosend ON ⇒ exactly ONE dispatch to Fredo (`runGeneration` = 1) and ZERO windows.
+      Autosend OFF ⇒ the text waits editable with the hint `↵ send transcript to Fredo`, ZERO dispatch,
+      then Enter ⇒ exactly ONE dispatch and ZERO windows. Dictated-then-EDITED ⇒ still Fredo, ZERO
+      windows. CONTROL (typed from scratch) ⇒ the Settings window OPENS — the two legs MUST differ.
+      N finals + one release = ONE dispatch; no phantom dispatch on a silent session.
+  - **Edge:** a final landing after the `listening:false` state event (late-final commit, exactly once);
+    a prior-session draft that must NOT dispatch; a typed-error end (`stt:state` with a code) treated as
+    a cancel; an edited-in trailing space (`Fredo `); `Ctrl+A` retype (record the observed
+    classification, expected-vs-actual). Assert the keep-out against a PRESENT element (the visible app
+    grid tiles + the window/dispatch count in the same state) — never by hiding the grid (G-170).
+
+- [ ] F-95 (NFR-1): **The normalization adds no perceptible delay and is bounded on long input.**
+      Over ≥ 10 injected finals (L3), measure `t(bar value visibly updated) − t(inject)` in ONE clock
+      domain; separately inject a ~120-word final and report its interval.
+  **Expected:** raw per-sample numbers + p50/max disclosed; p50 ≤ 50 ms and max ≤ 150 ms (far inside
+      the shipped partial-latency budget p50 ≤ 300 / p95 ≤ 600 ms); the interval does not grow
+      unboundedly with length; each number names its lever + clock domain (G-171).
+  - **Edge:** a long repeated-token utterance (memory/CPU creep); measure after warm-up; a metric not
+    measurable on this host ⇒ named blocker + the unit pin — never an adjective.
+
+- [ ] F-96 (NFR-2): **Local-only, no always-on listening, no wake word, no voice commands,
+      STT-only.** With the app idle (nothing dictated), subscribe to `stt:state` for ≥ 60 s and watch
+      for any capture start / mic-in-use / working-set rise; static-grep the changed modules for remote
+      clients (`reqwest|ureq|hyper|TcpStream|UdpSocket|std::net|Command`) and for
+      TTS/`speechSynthesis`/intent routing.
+  **Expected:** ZERO capture at idle (resident at most — never capturing); ZERO remote endpoints on the
+      transcription/normalization path (the only network use stays the setup-gated model acquisition);
+      no listening trigger derived from transcript content; no wake word; no voice-command surface; no
+      synthesized audio.
+  - **Edge:** **a capture without a visible indicator FAILs the round.** The live outbound block is a
+    NAMED BLOCKER (no elevation/adapter lever — G-053) with the static pin recorded ALONGSIDE it —
+    never as a substitute.
+
+- [ ] F-97 (NFR-3): **A11y / console / build gates + the transform oracle.** Re-read the
+      listening/transcript states as TEXT (chip, placeholder, `voice-listening-announcer`,
+      `voice-transcript-announcer` — finals only, never partials); run `pnpm --filter @fredo/ui build`
+      and `pnpm --filter @fredo/ui test:run`; read the console across every leg.
+  **Expected:** every state conveyed as text (never colour/animation alone); the announcer contract
+      unchanged; UI build + suite green with the new normalization pins present and NO existing
+      assertion weakened/disabled/deleted (G-125); console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`; zero true colour literals / no `var(--x)NN` alpha-append in the changed files.
+  - **Edge:** reduced motion is a static CSS pin + a NAMED BLOCKER for the `matchMedia` flip; the Rust
+    gates are CI (`rust-validate`: check + nextest + clippy `-D warnings`) evidenced because `cargo` is
+    absent from the tester sandbox (named, not skipped silently); a moved/renamed frozen hook is
+    refreshed in the same scope and named.
+
+- [ ] F-98 (DOC): **The documented observable matches the shipped one.** Read
+      `docs/ARCHITECTURE.md` (companion command-bar bullet, ~613-614) and `docs/FAQ.md` (~142): the
+      dictation paragraphs must describe **sentence case with intentional capitals preserved** and the
+      **`Fredo` name behaviour**, including the honest scope (dictation-only; no wake word).
+  **Expected:** both docs state the shipped observable and every claim matches what F-83..F-94 verified
+      this round — no doc claim beyond the implementation (e.g. a blanket "all acronyms and names
+      preserved" when only the named exemplars are). Doc-sync authoring is SI-owned: report a
+      doc/code mismatch, do not silently fix it here.
+  - **Edge:** the doc sentence and the FAQ answer must agree with each other; the `Fredo` scope must
+    read as dictation-only; a doc that still says the transcript arrives as the engine emitted it FAILs.
+
+- [ ] F-99 (EV): **Mandatory LIVE receipts, same round (`telemetry_spans`).** `fredo emit
+      --event-type chat --session-id <marker>` + `--event-type tool_use` per leg group; query the row
+      tables and `telemetry_spans` via the telemetry-query skill
+      (`.opencode/skills/telemetry-query/telemetry-query.ps1`); upload every capture with
+      `upload-evidence --issue 2888 --base spec/2888` and embed the raw URLs + a textual description in
+      `## Tests Runs`.
+  **Expected:** `fredo emit` ⇒ `{"queued":true}` and the marker rows classify into `chat_rows` /
+      `tool_use_rows`; **`telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`**
+      and the literal token `telemetry_spans` appears in the Evidence (the live-policy guard).
+      **Scope it honestly:** `telemetry_spans` evidences APP LIVENESS only — `stt:transcript` is
+      control plane and never reaches it (Architect risk note 5), so there is no dictation span to
+      query; the dictation oracle stays the bar `value` + the app's own decisions, with the round's
+      `fredo emit` markers as the live anchor. Every UI leg's capture is uploaded with a raw URL +
+      description; every latency number carries its
+      method line. A static-only PASS is a FALSE PASS.
+  - **Edge:** a local path never uploaded is not evidence; a screenshot with no description is not
+    evidence; re-run on the tested tip — a stale round's receipt does not clear the round-aware guard.
+
+- [ ] F-100 (REQ-2): **Live parity — no ALL-CAPS is ever visible during a capture, and the casing is
+      stable.** Hold Space (L1, ≥ 400 ms) → inject a PARTIAL on L3
+      (`{text:"CALL THE API FREDO", isFinal:false}`) → sample the bar mid-hold → inject the matching
+      FINAL (`isFinal:true`) → sample again → release. Repeat with a second final in the SAME session
+      (a continuation segment).
+  **Expected:** the bar `value` reads **exactly** `Call the API Fredo` at the PARTIAL sample (never the
+      raw `CALL THE API FREDO`) and is byte-identical after the final — no partial/final re-casing
+      churn and no window in which uppercase engine text is visible; the continuation segment appends
+      WITHOUT a mid-sentence capital (`HELLO` then `WORLD` ⇒ `Hello world`, per `atUtteranceStart`);
+      the `voice-transcript-announcer` carries the SAME normalised final string.
+  - **Edge:** partial→final→partial churn; a partial that is a prefix of the final; a mid-capture user
+    keystroke (the user's edit wins — F-101); release before the first partial (no text, no crash); a
+    typed-clear in the bar during the capture.
+  - **Receipt:** the per-sample `value` + the announcer string + the injected payloads verbatim.
+
+- [ ] F-101 (REQ-6): **The user's edit wins — engine text is never re-cased after a manual edit.**
+      During a live capture, type real keystrokes into the bar (lowercase, then an all-caps run, then
+      an app name); then let a further PARTIAL and a FINAL arrive; then release and re-read `value`.
+      Also edit AFTER the capture (dictate → release → retype the whole value in the user's own casing).
+  **Expected:** text the user typed is preserved **byte-exactly** — no re-casing, no re-normalisation,
+      no re-application of the projection on the next segment or at finalize; only the engine's own
+      emitted segments are normalised.
+  - **Edge:** a user edit that lowers the opening capital (`Hello` → `hello`); an all-caps user edit
+    (`HELLO` stays `HELLO`, never re-normalised to `Hello`); an edit during a live segment (partial
+    writes stop, per UX-2) followed by a final; a full `Ctrl+A` retype; the dictated-provenance
+    hint/label still reads `↵ send transcript to Fredo` after the edit (REQ-8).
+  - **Receipt:** the typed string, the observed `value` after the next segment, and the hint text.
+
+### #2888 run log — testing round 1
+
+- [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED with raw numbers, the levers used,
+      and every miss disclosed; do not pre-fill)_
