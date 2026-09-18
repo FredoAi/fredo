@@ -81,3 +81,42 @@
 - #2791/#2792/#2795 functional legs (ghost sessions, tool-failure reason, real-sessions-only) — run the unaffected legs; the perf fix must not change graph rendering, list qualification, or tool-detail rendering.
 - This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-17..F-24 and N-10..N-15.
 - The AC-4 window-manager/launcher/theming invariants (R-26) overlap the theming (N-4/N-9), launcher (S-8), and window-manager legs.
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2893 — row-derivation cost fix)
+
+> The #2893 RD-1..RD-4 fix is **cost-only** (`rowDerivation.ts` WeakMap `rawJson` parse memo + source
+> guard, duplicate tool-summary removed, plain code-unit comparator in place of `localeCompare`). The
+> derive OUTPUT must be byte-identical; only the parse/sort cost changes. Run on every testing phase
+> that touches the mission-monitor derivation.
+
+## Must NOT change (regression invariants) — Spec #2893
+
+- [x] **R-30 (derive output unchanged):** the panel renders the SAME session list, graph nodes and
+  edges as before the cost fix — no session/node lost, added, or reordered.
+  - **PASS (live, spec/2893 @ cf25127c).** Mission Monitor rendered the same corpus as round 2:
+    2 sessions with the same titles (`hey lets create a spec with our PO. [Im…` / `stuck: Get-Process
+    -Name fredo -ErrorAc…`), the same **4** react-flow nodes (`agent-ses_…_2/_3/_5`,
+    `subagent-ses_…_1`) and **3** edges (`e-chat_2→3`, `e-chat_3→5`, `e-calls_1`), and the same window
+    fingerprint (aria-label `Sessions` + header `FSessions`). The in-repo RD-4 pins (one parse per
+    row per derive; zero on a second derive; re-parse on in-place `rawJson` change) + the corpus-parity
+    and `useMissionMonitor.realCorpus` suites pin the output equivalence.
+- [x] **R-31 (parse memo cannot go stale):** `rawPayload` returns a cached parse only when the row
+  object AND its `rawJson` source string match; a real mutation (new merged row object) or an in-place
+  `rawJson` rewrite re-parses.
+  - **PASS (in-repo RD-4 pin (c), positive control).** The developer's positive control (cache GET
+    forced off) failed all 3 RD-4 pins (single derive parsed 12 vs expected 7; second derive parsed 12
+    vs expected 0; changed-rawJson count 2 vs expected 1), proving the pins detect a reintroduced
+    per-call parse. All callers read the returned object (never mutate) — verified in the diff.
+- [x] **R-32 (no unbounded new structure):** the parse cache is a `WeakMap` keyed by the row object
+  (already retained by the row store) — no new unbounded structure, no retention change.
+  - **PASS (static).** Module-scoped `WeakMap<object, { source, parsed }>` in `rowDerivation.ts`; no
+    array/map growth keyed by anything but row identity.
+
+## Overlapping prior-feature suites (Spec #2893)
+
+- #2835 F-17..F-24 / N-10..N-15 (first-render latency, sustained-run, long-task) — the cost fix is a
+  direct improvement to the F-17/F-23 long-task signal; the remaining #2835 legs are unaffected.
+- This spec's functional suite: `.opencode/tests/launcher/functional.md` F-89 (Q-15 window-present
+  latency, re-measured PASS) + `companion` F-99..F-105.
