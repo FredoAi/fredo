@@ -520,4 +520,81 @@
 - **F-35/F-36 PASS (live + component test).** Probe-in-flight/not-ready → wizard ONLY (`companion-setup-wizard`, `companion-step-*`); ready → `companion-controls` swap in place, no reload. `SettingsSurface.companionGate.test.tsx` 3/3.
 - **F-37/F-38/F-39 PASS (live + static).** Both files deleted; zero source refs; running app shows no gear/modal; launcher tile is the sole entry; capability not lost.
 - **F-40 PASS (live + static).** Dark classic ↔ Light Default + pale `#7dd3fc` accent re-tint token-native; active-nav label vs header 16.33:1; zero hex/rgba/`var(--x)NN` in `features/settings-app/**`.
+
+---
+
+## #2892 extension — the two send-during-reply settings in the Settings app (G-136)
+
+> Issue #2892 adds two controls to the LIVE Companion settings section. **G-136 host note (no
+> supersession of behavior):** the durable host is the Settings feature window
+> (`apps/ui/src/features/settings-app/components/SettingsSurface.tsx` -> `CompanionSettingsPanel`,
+> re-hosted by #2868); the "dialog shell" phrasing in this file's header is historical. The two new
+> controls are ADDITIVE to the existing "Behavior" group; nothing existing is removed or gated.
+> **Verification policy: live** — mandatory receipt F-47; a static-only PASS is a FALSE PASS.
+> **Test data:** a fresh profile for the default legs; app restart capability for F-44.
+
+## F-41 (REQ-9 / AC8) — the send-during-reply disposition control
+
+- [ ] F-41: open Settings -> Companion; inspect + drive `[data-testid="companion-send-during-reply"]`.
+  **Expected:** a real `<select>` (Chakra `chakra.select`) with exactly the options `queue` and
+      `interrupt`; on a fresh profile the value is `queue`; changing it commits immediately.
+  - **Edge:** keyboard selection; rapid option churn; a stale/invalid stored value heals to `queue`.
+
+## F-42 (REQ-10 / AC9) — the reply-bubble hold-open grace control
+
+- [ ] F-42: inspect + drive `[data-testid="companion-reply-leave-grace"]`.
+  **Expected:** a `NumberInput` DISPLAYING SECONDS with default `2` and step `0.25`; commits on
+      blur/Enter/stepper (NEVER per keystroke); clamps the displayed value to `[0, 60]` s
+      (`999999` -> `60`; `-5` -> `0`); the persisted value is integer milliseconds.
+  - **Edge:** cleared/empty field -> default; non-numeric; fractional; theme switch mid-draft.
+
+## F-43 (REQ-9 / REQ-10) — commit + persist under the bound keys
+
+- [ ] F-43: choose `interrupt`; set the grace field to `10` (seconds = 10000 ms); read `localStorage`
+      and the AppStore `get_setting` values for `Fredo_companion_send_during_reply` and
+      `Fredo_companion_reply_leave_grace_ms`.
+  **Expected:** both keys hold the chosen values (`'interrupt'` and `10000`) after commit, WITHOUT
+      depending on the Save footer (persist immediately); no other persisted key is mutated.
+  - **Edge:** commit then immediately re-open the section; a malformed stored value.
+
+## F-44 (REQ-9 / REQ-10 / AC8 + AC9) — reload + restart persistence and effectiveness
+
+- [ ] F-44: set both controls to non-defaults; reload the webview; fully restart the app; re-open
+      Settings -> Companion and re-read; then exercise a send during a reply and measure the leave grace.
+  **Expected:** both values survive the reload AND the restart and are EFFECTIVE after restart
+      (interrupt supersedes; the measured grace matches the set value).
+  - **Edge:** restart mid-edit; a value seeded before boot.
+
+## F-45 (REQ-12 / AC10) — token-native controls; `chakra.select`, never `NativeSelect`
+
+- [ ] F-45: static-grep the changed settings/companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` /
+      `rgb(` / `hsla(` / `var(--x)NN`; live: re-theme dark/light + a non-default accent and read the
+      computed colors of both controls.
+  **Expected:** ZERO true color literals (comment issue-refs exempt); the disposition control renders
+      a themed `<select>` (NOT an unstyled native browser `<select>`); both controls re-tint
+      token-native with no stale color.
+  - **Edge:** pale accent + light preset; comment issue-refs; focus ring.
+
+## F-46 (REQ-9/REQ-10 / NF) — gate + siblings unchanged; console clean
+
+- [ ] F-46: with the backend not ready, open Settings -> Companion; on ready, re-open; read the
+      existing controls (visibility toggle, idle timeout, teleport tip, voice group); read the console
+      across the swap and after each edit.
+  **Expected:** the not-ready gate still renders the wizard ONLY; on ready the controls (including the
+      two new ones) render in place; the existing controls are unchanged; no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (#523).
+  - **Edge:** probe in flight; section churn; theme switch while editing.
+
+## F-47 (REQ-LIVE / NF) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-47: same run as F-41..F-46: `fredo emit --event-type chat --session-id e2e-2892-chat` +
+      `--event-type tool_use --session-id e2e-2892-tool --tool-name read_file`; query
+      `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill).
+  **Expected:** `telemetry_spans` NON-ZERO with a recent `max(ingested_at)`; both markers classify;
+      every live row carries a rendered receipt. **A static-only PASS is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
 - **Console:** clean after every interaction (`tauri_read_logs`); one MCP-bridge wedge on the Telemetry section (pre-existing #2864 E-3 tooling issue) recovered by driver stop/start.
