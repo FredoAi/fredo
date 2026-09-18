@@ -96,8 +96,10 @@ impl ResidentEngine {
     }
 
     /// The single-flight core, parameterised by the loader so it is hermetically
-    /// testable (no `AppHandle`, no model, no device).
-    async fn warm_with<F, Fut>(&self, load: F) -> SttWarmResult
+    /// testable (no `AppHandle`, no model, no device). `pub(crate)` so the
+    /// session-seam pins in `session.rs` can drive the REAL single-flight
+    /// bookkeeping while pinning the cold-fallback acquire race.
+    pub(crate) async fn warm_with<F, Fut>(&self, load: F) -> SttWarmResult
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Box<dyn Recognizer>, VoiceError>>,

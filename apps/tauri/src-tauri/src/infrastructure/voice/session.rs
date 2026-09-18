@@ -4,13 +4,15 @@
 //! and model presence, then starts a dedicated worker thread that opens the
 //! `cpal` capture stream for the persisted input device and drives
 //! `stt:transcript` / `stt:state` events. The engine comes from the
-//! process-resident slot whenever one is parked (ST-3), so only a genuine miss
-//! pays the one-time model load; a hold that lands while the launch warm is IN
-//! FLIGHT joins that single load instead of starting a second one. At session
+//! process-resident slot whenever one is parked (ST-3); a hold that finds the
+//! slot empty resolves through the backend's SINGLE-FLIGHT warm — it joins an
+//! in-flight load, or becomes the registered load itself — so exactly ONE model
+//! load can ever run (R-4) and a concurrent `stt_warm` can only join. At session
 //! end the used engine is returned to the slot with a fresh stream, so the next
 //! dictation starts warm (R-7). `stop` commits the final partial; `cancel`
 //! discards it. Every failure is a typed `VoiceError` — no panics.
 
+use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -265,26 +267,49 @@ fn already_listening_outcome(
 /// `engineResident` stamp that MUST travel with it (ST-3 / R-1, R-4).
 ///
 /// 1. Take the parked resident engine — the one-time model load is already paid,
-///    which is the whole point of the fast path.
-/// 2. When the slot is empty, JOIN a single in-flight warm (the launch window)
-///    and take what it parks — never a second concurrent model load. The stamp
-///    stays `false`: the engine was NOT resident at the receipt, so the launch
-///    residual is reported honestly rather than hidden.
-/// 3. Otherwise hand back `None` and let the worker pay today's cold load, with
-///    the identical typed failures.
+///    which is the whole point of the fast path. This, and ONLY this, is
+///    residency.
+/// 2. When the slot is empty, resolve the engine through the backend's
+///    **single-flight warm** ([`ResidentEngine::warm`]): an in-flight load is
+///    JOINED, and with nothing in flight this call BECOMES the registered load
+///    — so a concurrent `stt_warm` (the summon-path retry) can only join it.
+///    Exactly ONE model load can ever run (R-4). The loaded engine is then taken
+///    from the slot, but the stamp stays `false`: the engine was NOT resident at
+///    the receipt, so the launch residual is reported honestly, never hidden.
+/// 3. A warm that fails leaves the slot empty, so the worker pays today's cold
+///    load with the identical typed failures.
 ///
 /// `engine_resident` is `true` ONLY for the genuine take in (1) — never on the
-/// joined or cold path.
-async fn acquire_engine(resident: &ResidentEngine) -> (Option<Box<dyn Recognizer>>, bool) {
-    let taken = resident.take();
-    let engine_resident = taken.is_some();
-    if engine_resident {
-        return (taken, true);
+/// joined, self-started or cold path.
+async fn acquire_engine(
+    app: &AppHandle,
+    resident: &ResidentEngine,
+) -> (Option<Box<dyn Recognizer>>, bool) {
+    acquire_engine_with(resident, || resident.warm(app)).await
+}
+
+/// [`acquire_engine`]'s single-flight core, parameterised by the warm so the
+/// cold-fallback race is hermetically testable (no `AppHandle`, no model, no
+/// device). See [`acquire_engine`] for the residency contract.
+async fn acquire_engine_with<F, Fut, T>(
+    resident: &ResidentEngine,
+    warm: F,
+) -> (Option<Box<dyn Recognizer>>, bool)
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    if let Some(engine) = resident.take() {
+        // A genuine slot take: the load was already paid before the receipt.
+        return (Some(engine), true);
     }
-    // The launch window: the slot is empty. Awaiting the (possibly absent)
-    // in-flight warm here is deliberate — the wait lands inside the `readyMs`
-    // window measured from the receipt.
-    let _ = resident.join_in_flight().await;
+    // The slot is empty. Awaiting the warm here is deliberate — the wait lands
+    // inside the `readyMs` window measured from the receipt — and it is
+    // SINGLE-FLIGHT: a concurrent `stt_warm` joins this load rather than
+    // starting a second one (R-4).
+    let _ = warm().await;
+    // Whatever the (possibly joined) warm parked is the session's engine. It is
+    // NOT residency: it was not in the slot at the receipt.
     (resident.take(), false)
 }
 
@@ -309,13 +334,16 @@ fn park_engine(app: &AppHandle, recognizer: Box<dyn Recognizer>, generation: u64
     }
 }
 
-/// `stt_start`: gate → resident engine (or a joined launch-window warm, or the
+/// `stt_start`: gate → resident engine (or the single-flight warm, or the
 /// cold-load fallback) + capture on a worker thread → report ready with the
 /// truthful `readyMs`/`engineResident` observables.
 pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
-    // The `stt_start` receipt: `readyMs` is measured from HERE. A launch-window
-    // hold that has to wait on an in-flight warm therefore reports the whole
-    // wait — bounded (T_LAUNCH_COLD_MAX_MS) and visible, never masked.
+    // The `stt_start` receipt: `readyMs` is measured from HERE. A hold that has
+    // to wait on a warm (joined, or started by the acquire below) therefore
+    // reports the whole wait — visible, never masked. The ceiling for a hold that
+    // is NOT resident is T_LAUNCH_COLD_MAX_MS = 5320 ms
+    // (= T_LAUNCH_WARM_MS.max + T_FIRST_CAPTURE_BUDGET_MS.max) — ONE model
+    // load (≤ 5000 ms) plus the capture budget (≤ 320 ms).
     let receipt = Instant::now();
 
     // 1. Disabled gate (R-5.7 backend pin; ST-5 owns the toggle).
@@ -346,11 +374,12 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         return error.into_start_result();
     }
 
-    // 4. Resident fast path (ST-3/R-1, R-4): take the parked engine so the
-    // user-visible path only opens capture. A hold inside the launch window
-    // JOINS the single in-flight warm instead of starting a second model load;
-    // `engine_resident` stays false on that path, so residency on the wire is
-    // never optimistic.
+    // 4. Engine acquisition (ST-3/R-1, R-4): take the parked engine so the
+    // user-visible path only opens capture. When the slot is empty the acquire
+    // resolves through the backend's SINGLE-FLIGHT warm — it joins an in-flight
+    // load, or becomes it — so a concurrent `stt_warm` can only join too: never
+    // a second concurrent model load. `engine_resident` stays false on those
+    // paths, so residency on the wire is never optimistic.
     //
     // The slot generation is snapshotted HERE — before the engine is acquired and
     // before any wait — and every return path hands it back to `put_back`. A
@@ -360,7 +389,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     let (engine, engine_resident, slot_generation) = {
         let resident = app.state::<ResidentEngine>();
         let generation = resident.generation();
-        let (engine, engine_resident) = acquire_engine(&resident).await;
+        let (engine, engine_resident) = acquire_engine(app, &resident).await;
         (engine, engine_resident, generation)
     };
 
@@ -559,7 +588,8 @@ struct WorkerJob {
     selected_device: Option<String>,
     rx: Receiver<AudioMsg>,
     tx: Sender<AudioMsg>,
-    /// The engine handoff from `start` (resident take / joined warm / cold miss).
+    /// The engine handoff from `start` (resident take / warm — joined or
+    /// self-started / cold miss).
     engine_rx: Receiver<Option<Box<dyn Recognizer>>>,
     outcome_tx: tokio::sync::oneshot::Sender<Result<StartInfo, VoiceError>>,
     /// The `stt_start` receipt `readyMs` is measured from.
@@ -571,9 +601,9 @@ struct WorkerJob {
 }
 
 /// Worker thread body: take the engine handed over by `start` (the resident one,
-/// or the cold load on a genuine miss), open capture for the persisted device,
-/// report readiness with the true `readyMs`, then drive the recognition loop
-/// until Stop/Cancel and return the engine to the resident slot. Owns the
+/// or the one the single-flight warm parked), open capture for the persisted
+/// device, report readiness with the true `readyMs`, then drive the recognition
+/// loop until Stop/Cancel and return the engine to the resident slot. Owns the
 /// recognizer and the `cpal::Stream` for its whole lifetime.
 fn worker_main(job: WorkerJob) {
     let WorkerJob {
@@ -589,9 +619,10 @@ fn worker_main(job: WorkerJob) {
         slot_generation,
     } = job;
 
-    // The resident engine `start` took from the slot (or one a joined
-    // launch-window warm parked). `None` ⇒ a genuine miss ⇒ the one-time cold
-    // load, with the identical typed failures.
+    // The engine `start` acquired: the resident take, or the one the
+    // single-flight warm (joined or self-started) parked. `None` ⇒ the warm
+    // left the slot empty ⇒ the one-time cold load, with the identical typed
+    // failures.
     let resident_engine = engine_rx.recv().ok().flatten();
     let mut recognizer = match resident_engine {
         Some(recognizer) => recognizer,
@@ -910,6 +941,58 @@ mod tests {
         }
     }
 
+    /// The warm seam for pins that only exercise a genuine slot take: being
+    /// reached means the acquire consulted the warm on a take — a bug.
+    async fn must_not_warm() {
+        panic!("the acquire consulted the warm on a genuine slot take");
+    }
+
+    /// A release-gated warm (the `resident.rs` single-flight race harness shape):
+    /// `enter` fires when the loader is inside the load and the load then blocks
+    /// until the test releases it, so a concurrent caller can be proven to JOIN
+    /// rather than load.
+    struct WarmGate {
+        entered_tx: tokio::sync::watch::Sender<bool>,
+        entered_rx: tokio::sync::watch::Receiver<bool>,
+        release_tx: tokio::sync::watch::Sender<bool>,
+        release_rx: tokio::sync::watch::Receiver<bool>,
+    }
+
+    impl WarmGate {
+        fn new() -> Self {
+            let (entered_tx, entered_rx) = tokio::sync::watch::channel(false);
+            let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+            Self {
+                entered_tx,
+                entered_rx,
+                release_tx,
+                release_rx,
+            }
+        }
+
+        fn enter(&self) {
+            let _ = self.entered_tx.send(true);
+        }
+
+        fn release(&self) {
+            let _ = self.release_tx.send(true);
+        }
+
+        async fn wait_entered(&self) {
+            let mut rx = self.entered_rx.clone();
+            while !*rx.borrow_and_update() {
+                let _ = rx.changed().await;
+            }
+        }
+
+        async fn wait_release(&self) {
+            let mut rx = self.release_rx.clone();
+            while !*rx.borrow_and_update() {
+                let _ = rx.changed().await;
+            }
+        }
+    }
+
     #[test]
     fn recognition_emits_partial_partial_final_with_increasing_revisions() {
         let mut recognizer = FakeRecognizer::new(
@@ -1172,7 +1255,8 @@ mod tests {
     }
 
     /// ST-3/R-4: a parked engine is taken for the session and reported as
-    /// resident, and the slot is empty while the session owns it.
+    /// resident, and the slot is empty while the session owns it. A genuine take
+    /// never consults the warm (the loader panics if it is ever reached).
     #[tokio::test]
     async fn acquire_engine_takes_the_resident_engine_and_reports_residency() {
         let resident = ResidentEngine::new();
@@ -1185,7 +1269,7 @@ mod tests {
             "parking renews the stream exactly once"
         );
 
-        let (engine, engine_resident) = acquire_engine(&resident).await;
+        let (engine, engine_resident) = acquire_engine_with(&resident, must_not_warm).await;
         assert!(engine.is_some(), "the parked engine is handed to the session");
         assert!(engine_resident, "a genuine slot take IS residency");
         assert!(
@@ -1193,23 +1277,170 @@ mod tests {
             "at most ONE engine per process: the slot is empty while the session holds it"
         );
         assert!(
-            acquire_engine(&resident).await.0.is_none(),
+            acquire_engine_with(&resident, || async {}).await.0.is_none(),
             "a second acquirer finds no parked engine"
         );
     }
 
-    /// ST-3/R-4: an empty slot with no in-flight warm falls back to today's cold
-    /// load — `None` with an honest, never-optimistic `false` residency stamp.
+    /// ST-3/R-4 + F2: an empty slot is resolved through the backend's
+    /// SINGLE-FLIGHT warm — the acquire becomes the registered load, takes what
+    /// it parks, and reports the honest `false` residency stamp (it was NOT
+    /// resident at the receipt).
     #[tokio::test]
-    async fn acquire_engine_falls_back_to_cold_when_nothing_is_warm() {
+    async fn acquire_engine_starts_the_single_flight_warm_when_the_slot_is_empty() {
         let resident = ResidentEngine::new();
-        let (engine, engine_resident) = acquire_engine(&resident).await;
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        let (engine, engine_resident) = acquire_engine_with(&resident, || {
+            resident.warm_with({
+                let loads = Arc::clone(&loads);
+                move || async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    Ok(Box::new(FakeRecognizer::new(Vec::new(), None)) as Box<dyn Recognizer>)
+                }
+            })
+        })
+        .await;
+
+        assert!(
+            engine.is_some(),
+            "the single-flight warm's engine serves the session"
+        );
+        assert!(
+            !engine_resident,
+            "a self-started warm is NOT residency — never an optimistic stamp"
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "exactly one load on this path");
+        assert!(
+            !resident.is_resident(),
+            "the session holds the engine the warm parked"
+        );
+    }
+
+    /// ST-3/R-4 + F2: when the warm FAILS the slot stays empty, so the worker
+    /// pays today's cold load with the identical typed failures — the acquire
+    /// never wedges the session on a failed warm.
+    #[tokio::test]
+    async fn acquire_engine_falls_back_to_the_cold_load_after_a_failed_warm() {
+        let resident = ResidentEngine::new();
+        let (engine, engine_resident) = acquire_engine_with(&resident, || async {}).await;
         assert!(
             engine.is_none(),
-            "an empty slot with no in-flight warm ⇒ the worker cold-loads as today"
+            "a failed warm leaves the slot empty ⇒ the worker cold-loads as today"
         );
         assert!(!engine_resident, "never an optimistic residency stamp");
         assert!(!resident.is_resident());
+    }
+
+    /// ST-3/R-4 + F2: the cold-fallback acquire registers its load in the
+    /// single-flight slot, so a concurrent `stt_warm` (the summon-path retry)
+    /// JOINs it — exactly ONE model load ever runs. The joined session still
+    /// reports `engineResident:false` and its `readyMs` is the true receipt-based
+    /// elapsed wait, never a constant.
+    #[tokio::test]
+    async fn a_cold_fallback_acquire_joins_a_concurrent_warm_with_one_load() {
+        let resident = Arc::new(ResidentEngine::new());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(WarmGate::new());
+        let receipt = Instant::now();
+
+        // The hold arrives at an empty slot: `acquire` starts the single-flight
+        // warm itself and blocks on it (the gate holds the load open).
+        let acquire = {
+            let resident = Arc::clone(&resident);
+            let loads = Arc::clone(&loads);
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                acquire_engine_with(&resident, || {
+                    resident.warm_with({
+                        let loads = Arc::clone(&loads);
+                        let gate = Arc::clone(&gate);
+                        move || async move {
+                            loads.fetch_add(1, Ordering::SeqCst);
+                            gate.enter();
+                            gate.wait_release().await;
+                            Ok(Box::new(FakeRecognizer::new(Vec::new(), None))
+                                as Box<dyn Recognizer>)
+                        }
+                    })
+                })
+                .await
+            })
+        };
+
+        gate.wait_entered().await;
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "the acquire registered ONE single-flight load"
+        );
+        assert!(
+            !acquire.is_finished(),
+            "the hold is waiting on its own in-flight warm"
+        );
+
+        // The concurrent `stt_warm` arrives now. It must JOIN the acquire's
+        // load — its loader panics if it is ever reached.
+        let concurrent = {
+            let resident = Arc::clone(&resident);
+            tokio::spawn(async move {
+                resident
+                    .warm_with(|| async {
+                        panic!("a concurrent warm must JOIN the in-flight load, never load")
+                    })
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "never a second concurrent model load"
+        );
+        assert!(
+            !concurrent.is_finished(),
+            "the concurrent warm joined the in-flight single flight"
+        );
+
+        gate.release();
+        let (engine, engine_resident) = acquire.await.expect("acquire task");
+        let joined = concurrent.await.expect("concurrent warm task");
+
+        assert!(
+            engine.is_some(),
+            "the single load's engine is handed to the session"
+        );
+        assert!(
+            !engine_resident,
+            "a self-started/joined warm is NOT residency (never an optimistic stamp)"
+        );
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "exactly ONE model load for both callers"
+        );
+        assert!(
+            joined.warm_ms.is_none(),
+            "the joining warm performed no load of its own"
+        );
+        assert!(!resident.is_resident(), "the session holds the engine");
+
+        // `readyMs` is the receipt → capture-live elapsed time (worker_main
+        // stamps it from the `stt_start` receipt), so the whole joined wait is
+        // inside it and the value can never be a constant.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let ready_ms = elapsed_ms(receipt);
+        assert!(
+            ready_ms >= 5,
+            "readyMs measures the joined wait; got {ready_ms} ms"
+        );
+        let state =
+            listening_state_with(Some("launcher".to_string()), Some(ready_ms), engine_resident);
+        assert_eq!(state.ready_ms, Some(ready_ms));
+        assert!(
+            !state.engine_resident,
+            "the joined start is never stamped resident on the wire"
+        );
     }
 
     /// ST-3/R-7: the engine used by a session is RETURNED to the slot with a
@@ -1223,7 +1454,7 @@ mod tests {
         let generation = resident.generation();
         resident.put_back(Box::new(parked), generation);
 
-        let (engine, engine_resident) = acquire_engine(&resident).await;
+        let (engine, engine_resident) = acquire_engine_with(&resident, must_not_warm).await;
         assert!(engine_resident);
         let engine = engine.expect("the parked engine was taken");
 
@@ -1250,7 +1481,7 @@ mod tests {
         resident.put_back(Box::new(parked), generation);
 
         // Session start: snapshot + take (exactly what `start` does).
-        let (engine, engine_resident) = acquire_engine(&resident).await;
+        let (engine, engine_resident) = acquire_engine_with(&resident, must_not_warm).await;
         assert!(engine_resident);
         let engine = engine.expect("the parked engine was taken");
 

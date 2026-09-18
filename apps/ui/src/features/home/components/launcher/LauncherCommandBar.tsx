@@ -147,7 +147,10 @@ export type LauncherEnterMode = 'launch' | 'send' | 'none';
  *   'starting'    → the bounded `starting voice input…` chip (engine-resident slow
  *                   start, bounded by `T_MAX_STARTING_STATE_MS`) + the acknowledgement
  *   'warming'     → the launch-window acknowledgement (engine NOT resident: the hold
- *                   joined the in-flight warm; bounded by `T_LAUNCH_COLD_MAX_MS`). It
+ *                   joined — or started — the single-flight warm; bounded by
+ *                   `T_LAUNCH_COLD_MAX_MS` = 5320 ms = `T_LAUNCH_WARM_MS.max`
+ *                   + `T_FIRST_CAPTURE_BUDGET_MS.max`, i.e. ONE model load plus the
+ *                   capture budget). It
  *                   shares the shipped bounded chip because that is the only honest
  *                   "what is actually happening" copy UI/UX specified for a
  *                   non-listening start — and it never says `Listening`.
