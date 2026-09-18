@@ -45,3 +45,14 @@
   `"Mission Monitor"` into two argv tokens (clap exit 2). With `shell:false`: exit 0
   `{"displayName":"Mission Monitor","outcome":"opened"}`. The helper was corrected
   (`.opencode/tmp/2893/cli-probe2.cjs`).
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+- **E-1 PASS (bounded).** App DOWN: `fredo open-app mission-monitor` exit **2** immediately (21 ms),
+  no hang/panic. Kill-mid-call was not separately timed; the design bounds (child ≤10 s, confirm
+  ≤5 s) stand.
+- **E-2 PASS (no duplicate/lost/crash).** Cold (332 ms) + warm display-name (39 ms) + re-invoke
+  (36 ms) produced one window, no duplicate, no crash.
+- **E-3 PASS.** `MM` → `unknown` exit 1; `""` → `unknown`/`spokenName:""` exit 1 (non-zero,
+  fail-closed); unknown identity → `unknown`, zero windows.
+- **E-4 PASS.** No app / stale socket → exit **2**, no hang.
