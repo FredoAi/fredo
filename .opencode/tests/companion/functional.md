@@ -1801,3 +1801,113 @@ Key receipts:
 `data-reply-tier="grown"` with width 560 but a **constant 120 px height** (no growth), while the other
 three grew to 218/270/252. Not reproduced; belongs to the #2883 growth/scroll path the spec forbids
 changing. No #2886 verdict attached.
+
+---
+
+## #2893 extension — Companion open-app skill (reply copy, stability, spike evidence)
+
+> Issue #2893 makes the Companion able to open a Fredo app named in a message, through a registered
+> companion skill offered to the inference path (open-app first). This file owns the SKILL CONTRACT,
+> the reply copy/state matrix, the stability leg and the AC-5 spike-evidence row; the bar-intake legs
+> live in `launcher` F-85..F-89 and the CLI legs in the new `fredo-cli` suite. Map 1:1 to the QA Plan
+> `R-1..R-5` (the Architect's EARS ids for AC-1..AC-5). **Verification policy: live** — a live
+> managed `llama-server`, the rendered reply surface, and the mandatory `telemetry_spans` receipt
+> (F-104). A static-only PASS is a FALSE PASS. **Exact reply copy (UI/UX §1, authoritative):**
+> success `Opening Mission Monitor`; unknown `I couldn't find "<name>"`; ambiguous
+> `I found more than one app matching "<name>". Which one did you mean: A or B?`; open-failed
+> `I couldn't open Mission Monitor. Try again from the launcher grid.` Observables:
+> `[data-testid="fredo-reply-surface"]` (text), `[data-testid="fredo-companion-live-region"]`
+> (single polite announcement), `[data-testid="fredo-companion-surface"]` (region scope);
+> wrapper `role="region" aria-label="Fredo's reply" tabIndex=0`.
+
+## F-99 (AC-3) — At least one registered skill is offered to the inference path (open-app first)
+
+- [ ] F-99: Inspect `infrastructure/companion/skills.rs` (`SkillRegistry::with_open_app` — name/
+      description/parameters), the request the app offers to the inference path (ST-5's
+      `build_skill_request_body`), and ST-1's `probe_companion_skills` output while the Companion is
+      ready. Read the skill's declared input contract and the ordering.
+  **Expected:** ≥1 registered companion skill — a NAMED capability with a DECLARED input contract —
+      is offered to the inference path; the open-app capability is the FIRST skill; selecting it is
+      executed by the app (proven by a real open in F-85/F-86 or the Architect-bound deterministic
+      invocation lever); the contract is provider-agnostic (no provider-specific branch). A registry
+      that exists but is never offered, or an undeclared input contract, is a FAIL.
+  - **Edge:** a malformed/unknown skill selection fails closed (no arbitrary open); the registry
+    survives a reload; the skill set is present before the model loads (record).
+  - **Note:** if the skill mechanism is spike-contingent and the spike fails, this row is BLOCKED
+    (the plan loops) — never silently downgraded.
+
+## F-100 (AC-1/AC-4) — The reply copy/state matrix is exact for every outcome
+
+- [ ] F-100: For each outcome — success (`open Mission Monitor`), unknown (`open NotARealApp`),
+      ambiguous (mocked ≥2-entry registry — QA-8), open-failed (Architect lever — QA-4),
+      non-app-open chat — read the `[data-testid="fredo-reply-surface"]` text verbatim, the avatar
+      state/beat, and the console.
+  **Expected:** success → EXACTLY `Opening Mission Monitor`, avatar `happy` (5 s `HAPPY_HOLD_MS`);
+      unknown → EXACTLY `I couldn't find "NotARealApp"` (name verbatim, plain ASCII quotes), avatar
+      `idle` with **NO `happy`**, ≥8 s `ERROR_HOLD_MS`; ambiguous → the exact UI/UX sentence with the
+      join rule, `idle`, no `happy`; open-failed → EXACTLY
+      `I couldn't open Mission Monitor. Try again from the launcher grid.`, `idle`, no `happy`;
+      non-app-open → the normal chat reply. NEVER a raw stack/IPC dump; NEVER a claim contradicting
+      the observed window count (a reply saying "opened" with 0 windows, or "couldn't find" with a
+      window open, is a FAIL).
+  - **Edge:** gibberish; a typo; a non-showable feature; empty/zero-token generation; the copy must
+    be the WHOLE bubble text (no prefix/suffix); comment-style paraphrase is a FAIL.
+
+## F-101 (AC-4) — Unknown / ambiguous / failure opens NOTHING; no ghost window
+
+- [ ] F-101: For each failure-ish outcome above, count windows before/after
+      (`tauri_manage_window` list + `.fredo-window__surface` count) and capture the DOM/screenshot.
+  **Expected:** ZERO new windows; no ghost/transient window flashes in a rapid sampler; the desktop
+      stays stable; the Companion returns to rest. A partially-open/closed window or a wrong window is
+      a FAIL.
+  - **Edge:** repeated failure requests; failure while the target window is already open; a failure
+    with a theme switch mid-reply.
+
+## F-102 (AC-4 NF) — No stuck streaming state after any outcome; console clean
+
+- [ ] F-102: After EVERY outcome (success / unknown / ambiguous / failure / non-app-open chat), sample
+      the reply surface `data-streaming`, the streaming cursor, the bar `aria-busy`/`readOnly`, and
+      the Companion state until rest; read the console after each leg.
+  **Expected:** `data-streaming` absent, cursor hidden, bar `aria-busy` false / `readOnly` cleared, the
+      Companion back at rest within the Architect-bound window (the shipped `SAFETY_TIMEOUT_MS`
+      watchdog + single-in-flight guard are the backstop); no `Error:`/`Uncaught`/`Maximum update
+      depth exceeded` (the pre-existing `motion() is deprecated` WARN exempt); no re-render loop.
+  - **Edge:** a generation that errors mid-stream; rapid repeat requests; theme switch mid-reply.
+
+## F-103 (AC-1/AC-4 NF) — Reply-surface a11y + theme for the outcome message
+
+- [ ] F-103: For the success and the unknown replies, read `[data-testid="fredo-companion-live-region"]`
+      (count of announcements), the reply region (`fredo-companion-surface`, `role="region"`,
+      `aria-label="Fredo's reply"`, `tabIndex=0`), the computed colours in the dark base + a light
+      preset + a non-default accent, the text contrast, and Tab-reach the region.
+  **Expected:** the outcome is announced ONCE via the single polite live region (never per token, never
+      a second region, never `role="alert"`); conveyed as VISIBLE TEXT (never colour/animation alone);
+      token-native re-tint with no stale colour; text contrast ≥4.5:1; no `var(--x)NN` alpha-append;
+      keyboard-reachable; opening the target window does NOT steal/fight focus.
+  - **Edge:** an error-length reply; a theme/accent switch mid-reply; reduced motion (a named blocker
+    if `matchMedia` cannot be flipped — static CSS + product unit pin).
+
+## F-104 (AC-1..AC-5 LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-104: Same run as F-85..F-103: `fredo emit --event-type chat --session-id e2e-2893-chat` +
+      `--event-type tool_use --session-id e2e-2893-tool`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows` (telemetry-query skill); keep the per-row DOM/screenshot/CLI output
+      and the raw exit codes.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      events classify under their session ids; every row carries a rendered receipt and every CLI row
+      its literal exit code. **A static-only PASS with no live receipt is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+## F-105 (AC-5) — The spike findings are documented, evidence-backed, and cited
+
+- [ ] F-105: Read this plan's `### Spike Findings (AC-5)` section + ST-1's `probe_companion_skills`
+      output (the developer's report / `## Development Summary`) and the cited sources; grep them for
+      the three findings and quote the exact lines (G-178).
+  **Expected:** (a) the model's tool/function-calling support + the chosen mechanism; (b) what the
+      managed `llama-server` exposes today + the required launch-config change; (c) the recommended
+      minimal end-to-end companion-skill design (open-app first) — EACH resting on a documented
+      capability citation or an ACTUAL capability check, not an assumption. A quoted line per finding
+      is required evidence; a paraphrase is not (G-178). A finding resting on "should support it"
+      with no citation/check is a FAIL.
+  - **Edge:** a missing launch-config delta; a design that contradicts the provider-agnostic contract
+    (F-99); a citation that answers a different question.
