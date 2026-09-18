@@ -283,3 +283,66 @@ Scope: the F-38 fix surface only (`session.rs` state emission + `useVoiceDictati
       array `.length` or a freshly-created object (AGENTS.md #523). Reference R-17.
   - **Edge:** enable → restart → idle → hold leaves the declared keys consistent; the resident must
     not rewrite an existing companion/voice key.
+
+---
+
+## Run log — #2887 round 2 (2026-09-18, `spec/2887` @ `ff5962a1`)
+
+Scope: the F2 join + F1 derivation surface re-test (round-1 FAILs: REQ-4B not-resident path, REQ-8
+resident-idle cost) plus a regression sweep, all live on the repo-root-served app
+(`dev-env.ps1 -Action Up -Spec 2887`). App held `spec/2887 @ ff5962a1` for every live leg.
+
+- **R-21 PASS (regression, live).** Tap (100 ms) → exactly ONE ordinary space, ZERO `stt:state` (the
+  mic was never opened), keydown consumed. Non-empty bar → the app does NOT consume the keydown
+  (`defaultPrevented=false`), ZERO capture events, no error. (The literal space *insertion* on a
+  non-empty bar is not observable with a synthetic key lever — recorded, not scored as FAIL.)
+- **R-22 PASS (regression, partial, live).** Dictated `Settings` with autosend OFF: the bar shows the
+  transcript, exactly ONE final, the hint `↵ send transcript to Fredo`, nothing dispatched → no app
+  opened. The autosend-ON dispatch legs were NOT re-driven in round 2 (the routing code is outside
+  the F2/F1 fixed surface).
+- **R-23 PASS (regression, live).** Cue sampled at 20 ms across each hold: ZERO pre-capture listening
+  cues (`cuesBeforeLive: 0` in every sampled hold); placeholder sequence
+  `search, or hold Space to dictate` → `Hold to dictate…` → `Listening…` only after
+  `stt:state{listening:true}`. 3 mid-hold cancels (2 × Escape, 1 × the live `×` control) →
+  `listening:false`, no space, no stuck cue.
+- **R-24 PASS (regression, measured).** Engine-attributable idle CPU = **0.000 %** of one core (the
+  round-2 binding scoring method): engine-absent **1.322 %** (CPU Δ 0.7969 s / wall 60.273 s) vs
+  resident-idle **1.322 %** (0.7969 s / 60.26 s) — same host, same run, two independent 60 s windows,
+  both absolutes disclosed; a 240 s resident window read **1.21 %** (2.9063 s / 240.262 s). WS 93.9 MB
+  engine-absent → 210.7 MB resident = **RSS Δ +116.8 MB** ≤ 350. Residency survived 321.1 s idle
+  (`stt_warm` → `warmMs:null` = no reload); after `stt_release` the next hold recovered in
+  **5034.2 ms** (`readyMs` 4826, `engineResident:false`) with a typed state and no stuck cue. No new
+  persisted key.
+
+### #2887 AC4 latencies re-measured on `ff5962a1`
+
+- Warm, 10 resident holds (400 ms): **p50 214.6 / p95 223.0 / max 223.0 ms** (`readyMs` 9–14 ms),
+  `engineResident:true` 10/10, exactly one `stt_start` per hold.
+- Cold-idle (321.1 s, engine resident): **245.2 ms** (`readyMs` 40, `engineResident:true`);
+  cold−warm delta **+22.2 ms** ≤ 50.
+- AC4B not-resident path: self-start **5034.2 ms** (`readyMs` 4826); single-flight join
+  **4858.2 ms** (`readyMs` 4650) with a concurrent `stt_warm` `warmMs` **4840** — the hold went live
+  18 ms after the single load, i.e. it joined instead of paying a second load. Both ≤
+  `T_LAUNCH_COLD_MAX_MS` 5320.
+- Fresh launch (`Up -Spec 2887`): the FIRST hold was **253.4 ms** (`readyMs` 25,
+  `engineResident:true`) — no hold landed in the launch window on this host.
+
+### Levers added / confirmed (durable)
+
+- **Single-flight join lever:** `stt_release` (drop the resident engine) → immediately `stt_warm` ∥ a
+  Space hold → the hold must JOIN the one load (`engineResident:false`, live ≈ the load's remaining
+  time); a duplicate load would show ≈ 2× the load before capture.
+- **Engine-attributable CPU method:** two independent ≥60 s windows on the SAME host/run —
+  `stt_release` (engine-absent) then `stt_warm` (resident-idle) — scored on the DELTA with both
+  absolutes disclosed; `bun .opencode/tmp/<N>/cpu-window.mjs <secs> fredo` supplies both.
+- **Launch-window ladder:** after `Up`, connect the bridge FIRST (trivial `execute_js`), then read
+  `performance.timeOrigin` / `performance.now()` at the first probe and `stt_warm().warmMs`
+  (`null` ⇒ already resident). A precise first-interactive-frame → resident interval needs a
+  pre-injected frontend probe (named blocker).
+- **Cold-idle discipline:** the AC4A cohort needs ≥300 s (`COLD_IDLE_WINDOW_MS`) with NO capture
+  since the previous session END, engine resident — verify `stt_warm` → `warmMs:null` immediately
+  before the hold.
+- **Tooling notes:** `dev-env.ps1 -Action Restart` is broken (forwards `Spec=0` → `ValidateRange`
+  error) and leaves the app DOWN — use `Down` + `Up -Spec <N>`; `Up` now requires `-Spec <N>`; the
+  MCP script-result channel times out for scripts running ≳5 s (drive long legs fire-and-forget and
+  read the result back from a page probe).

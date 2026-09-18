@@ -1431,8 +1431,14 @@ fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
     let labels: Vec<String> = issue_data.labels.iter().map(|l| l.name.clone()).collect();
     // The developer works directly on the FEATURE issue in the implementation
     // phase (sub-issues were removed) — its phase label is `ready-for-test`; the
-    // legacy dev labels remain accepted too.
-    let actionable = labels.iter().any(|l| l == "ready-for-dev" || l == "in-progress-dev" || l == "ready-for-test");
+    // legacy dev labels remain accepted too. `testing` is accepted for the
+    // CI-fix path (G-164): when a check goes red on the open spec PR the remedy
+    // is a scoped fix landed on the spec branch while the feature is in
+    // `testing`, so a developer MUST be able to obtain a worktree then — a
+    // blocked `create-worktree` previously forced an ad-hoc, unreported worktree.
+    let actionable = labels.iter().any(|l| {
+        l == "ready-for-dev" || l == "in-progress-dev" || l == "ready-for-test" || l == "testing"
+    });
     if !actionable {
         return Ok((false, format!("issue #{} is not actionable (labels: {})", issue, labels.join(", "))));
     }
