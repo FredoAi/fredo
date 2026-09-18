@@ -325,11 +325,15 @@ mod tests {
     fn decode_pcm(body: &[u8], audio_format: u16, bits: u16) -> Vec<f32> {
         match (audio_format, bits) {
             (3, 32) => body
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             (1, 16) => body
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0)
                 .collect(),
             (format, width) => panic!("unsupported WAV format {format} with {width}-bit samples"),
