@@ -346,3 +346,87 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
   error) and leaves the app DOWN — use `Down` + `Up -Spec <N>`; `Up` now requires `-Spec <N>`; the
   MCP script-result channel times out for scripts running ≳5 s (drive long legs fire-and-forget and
   read the result back from a page probe).
+
+---
+
+## #2888 extension — the casing/name change must not move any surface it rides on (G-136)
+
+> Issue #2888 normalizes the dictated transcript (sentence case + intentional capitals + the name
+> `Fredo`) and does not change the trigger, the routing or the privacy invariants. **G-136
+> SUPERSESSION (history preserved):** nothing here retires a prior row — this extension re-asserts
+> the #2882 hold/release contract, the #2887 resident-indicator/latency contract and the
+> #2883/#2886 bar/reply surfaces against the normalized transcript. R-1..R-24 remain in force.
+> Run alongside R-25..R-29, `functional.md` F-83..F-101, and `launcher` R-50..R-53 / F-82..F-84.
+> **Verification policy: live.** The full row set is in the QA Plan (`REQ-1..REQ-9`, `NFR-1..NFR-3`)
+> — these are the no-change baselines.
+
+## R-25 — The #2882 hold/tap/non-empty/voice-off contract is UNCHANGED
+
+- [ ] R-25: Re-run `functional.md` F-90 (hold dictates; listening ONLY while held; release finishes;
+      sub-threshold TAP and never-live hold each land exactly ONE ordinary space with ZERO `stt_start`
+      and the mic never opened), F-91 (Space in a NON-EMPTY field is a literal space — zero lost or
+      converted spaces), F-92 (voice disabled / model absent ⇒ ordinary space, no capture attempt, no
+      error, no `role="alert"`) and F-93 (mic never left hot) on the #2888 tip.
+  **Expected:** byte-for-byte the shipped #2882/#2887 outcomes — ZERO regressions. Over the whole leg a
+      confirmed LOST or CONVERTED space FAILs the round (G-158).
+  - **Edge:** voice disabled MID-hold; the model removed between probe and hold; a release exactly at
+    the 200 ms threshold; a hold immediately after a cancelled hold; a tap right after a cleared
+    dictated transcript.
+  - **Receipt:** per leg — the `value`, the `stt_start` count, the cue state, the `role="alert"` presence.
+  - **Also run (new behaviour must not disturb the old):** `functional.md` **F-100** (live parity — the
+    bar never shows raw ALL-CAPS at any point of a capture; no partial/final re-casing churn) and
+    **F-101** (a user edit is never re-cased). These are #2888 behaviour, but they ride on the #2882
+    live-write path — a re-casing pass over already-rendered text, or a normalised write clobbering a
+    user edit, is a regression of this row as well as a FAIL of theirs.
+
+## R-26 — Transcript routing + exactly-once dispatch UNCHANGED (incl. the name)
+
+- [ ] R-26: Re-run `functional.md` F-94 (a dictated transcript — **including one containing `Fredo`** —
+      is ALWAYS Fredo's, even after editing; no dictated phrase ever opens an app; exactly ONE dispatch
+      per turn; N finals + one release = ONE dispatch; no phantom dispatch on a silent session) on the
+      #2888 tip, plus `launcher` F-64..F-70.
+  **Expected:** exactly ONE dispatch per dictated turn; ZERO windows from dictated content; the hint
+      reads `↵ send transcript to Fredo`; a dictation whose transcript is the product name behaves
+      exactly like any other dictated transcript (a message to Fredo, never a launch and never a
+      special case that skips the dispatch).
+  - **Edge:** a final landing after the `listening:false` state event; a duplicate `stt_start`
+    (`alreadyListening`) during a fast re-arm; clear-to-empty then a hold; the name as the whole
+    transcript with autosend ON and OFF (`Fredo` must NOT be treated as an app name).
+
+## R-27 — Privacy + the mic-release invariant under the normalized transcript
+
+- [ ] R-27: Re-run `functional.md` F-93/F-96 + F-31 cue routing: sample the indicator ≤ 50 ms across a
+      live hold; confirm the mic is released on release/cancel (`stt_status.listening === false`, the
+      working set back to the baseline); confirm NO capture while merely resident-ready at idle.
+  **Expected:** the visible indicator is present for the WHOLE capture and cleared on release/cancel
+      with no gap; exactly one indicator per session; NO capture outside a hold; a capture without a
+      visible indicator FAILs the round (G-158). The normalization is pure text work on the emitted
+      event — it must not touch the capture lifecycle.
+  - **Edge:** the resident-ready state held across the declared idle window; release before the session
+    goes live; 3 release-and-re-hold cycles.
+
+## R-28 — Idle resource + persisted-key invariants (no new key, no latency creep)
+
+- [ ] R-28: Extend R-24: with the resident readiness active and the app idle, measure CPU (Get-Process
+      CPU delta over ≥ 10 s) and the working set at t0 and at the end of the idle window; enumerate
+      newly persisted keys after the casing/name legs; sample the console.
+  **Expected:** idle CPU ≤ the plan's bound; the working set within the resident budget; ONLY declared
+      persisted keys (this spec adds NONE — the normalization is not configurable); console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no polling loop / no effect depending on an
+      array `.length` or a freshly-created object (AGENTS.md #523).
+  - **Edge:** enable → restart → idle → hold leaves the declared keys consistent; a long transcript must
+    not leave a growing buffer (cross-ref F-95).
+
+## R-29 — #2887 latency + #2883/#2886 bar/reply surfaces UNCHANGED
+
+- [ ] R-29: Re-run the #2887 numbers that the normalization must not perturb: the warm hold
+      press→capture-active series (`functional.md` F-74, `launcher` F-82..F-84) and the resident cold
+      path (`F-77`), plus the #2883 wrap/growth ladder and the #2886 reply-band placement
+      (`launcher` R-44..R-49) with a sentence-cased multi-line transcript in the bar.
+  **Expected:** the hold latency budgets and the bar's wrap/cap/`Shift+Enter` geometry are unchanged
+      (the normalization runs on the transcript content, never on the capture-start path); the reply
+      band's placement/geometry is unchanged; a normalized long transcript wraps at the same bound
+      heights (48/68/88/108 px).
+  - **Edge:** a 120-word normalized transcript reaching the 108 px cap with internal scroll; the
+    normalized text re-measured after an edit; the resident armed with a dictated transcript present.
+  - **Receipt:** the latency series + the measured field heights + the reply-band geometry.
