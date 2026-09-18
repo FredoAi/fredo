@@ -306,3 +306,10 @@
       and two different ones back-to-back. Does the final window state match the last request, with no
       duplicate/ghost window and no stuck stream? Any duplicate/ghost is a finding (promotes to
       F-101/F-102).
+
+### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
+
+- **E-54..E-57 BLOCKED (not FAIL).** The skill-aware path is inert live — `adapterBridge
+  .llmChatWithSkills` is never registered in `apps/tauri/src/main.tsx`, so no live generation ever
+  reaches the model and no skill output can be probed. Root cause recorded in `functional.md`
+  #2893 results (F-99/F-100). Re-run after the wiring fix.
