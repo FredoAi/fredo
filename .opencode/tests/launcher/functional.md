@@ -1334,7 +1334,7 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 
 ## F-87 (R-1/R-4 regression) — #2882's direct matcher is UNCHANGED
 
-- [ ] F-87: Type each of `set`, `Miss`, `monitor`, `Mission Mon`, `mission monitor` + Enter; then
+- [x] F-87: Type each of `set`, `Miss`, `monitor`, `Mission Mon`, `mission monitor` + Enter; then
       `open Mission Monitor` + Enter; then `Missing all the time`, `MM` + Enter; companion ACTIVE and
       OFF. Record per leg: hint chip, generations, windows opened.
   **Expected:** the #2882 contract byte-for-byte — `set`/`Miss`/`monitor`/`Mission Mon`/
@@ -1370,4 +1370,31 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
       is absent, the cursor hidden, the bar `aria-busy` false / `readOnly` cleared, and the Companion
       back at rest; no wrong window ever opens.
   - **Edge:** a retry immediately after a missed selection; a request while a generation is in
-    flight; a cold managed `llama-server`.
+      flight; a cold managed `llama-server`.
+
+### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
+
+> **Verdict: FAIL.** The typed `open Mission Monitor` reaches the Companion (`runGeneration …
+> withSkills: true`) but `adapterBridge.llmChatWithSkills` is unregistered in the Tauri runtime
+> entry (`apps/tauri/src/main.tsx`), so the generation ends immediately with no model request, no
+> skill selection, no reply, and no window. Console:
+> `[adapterBridge] llmChatWithSkills called before adapter registered` →
+> `[companion] llm-done received`. Input lever: insert-text (`launcher-command-input` TEXTAREA).
+
+- **F-85 FAIL.** Inserted `open Mission Monitor`; hint chip `↵ send to Fredo` (correct: not a tile
+  match); Enter committed (`Message sent to Fredo`), ONE generation started, but NO window opened and
+  `[data-testid="fredo-reply-surface"]` stayed null — no `Opening Mission Monitor` reply, no
+  perceivability ordering to measure. Screenshot: the resting desktop after the send
+  (https://github.com/user-attachments/assets/4197d11f-b72d-4220-a0d7-c488aae8f5f7).
+- **F-86 FAIL (same root cause).** The dictated path funnels into the same dead `ask` → no reply/no
+  window; the synthetic `stt:transcript` lever was not separately driven because the shared defect
+  already makes the assertion impossible (no physical mic = residual named blocker).
+- **F-87 PASS (direct-matcher regression).** `set` → hint `↵ open Settings` and the Settings window
+  opened; `Missing all the time` → hint `↵ send to Fredo` and ZERO windows. #2882's whole-query
+  matcher is unchanged. (`monitor`/`Miss`/`Mission Mon` verified at the resolver level by
+  `appIdentity`/`launcherEnterAction` unit pins.)
+- **F-88 FAIL (reply half).** `open NotARealApp` opened zero windows, but no
+  `I couldn't find "NotARealApp"` reply rendered (the skill path never runs). No guessed/arbitrary open.
+- **F-89 FAIL.** Repeatability 0/3 (typed open requests produced 0 opens / 0 replies) — the ≤2 s
+  window-present bound is unmet; `data-streaming` absent / bar usable (stability held, but the
+  feature did not execute). Raw N/M: **0/3**.

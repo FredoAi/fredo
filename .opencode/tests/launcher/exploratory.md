@@ -399,3 +399,17 @@
 - [ ] E-61: **Model non-selection / malformed skill output.** With the model answering without
       selecting the skill (or with a malformed identity), does the request fail closed (no arbitrary
       open) and reply readably? Any guessed/arbitrary open is a finding (promotes to F-88/F-100).
+
+### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
+
+- **E-58..E-61 BLOCKED (not FAIL).** The Companion skill path is inert live (skill-aware adapter
+  unregistered in the Tauri runtime entry — see `functional.md` F-85..F-89 / `companion`
+  `functional.md` #2893 results). No live generation reaches the model, so these probes cannot be
+  driven. Re-run after the wiring fix.
+
+- **FINDING observed during the CLI edge probes (promotes as a note, not a spurious-open finding).**
+  A CLI `open-app` issued while the main webview is backgrounded/throttled can return
+  `{"outcome":"unavailable"}` exit 1 even though the window DOES open — the frontend confirms after
+  the 5 s bound (`confirm_app_open_request failed No pending app-open request`). The CLI's reported
+  outcome can therefore disagree with the actual window state under load; recorded for the
+  architect/fix round.
