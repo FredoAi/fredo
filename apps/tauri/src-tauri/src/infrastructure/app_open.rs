@@ -540,6 +540,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn registry_evicts_only_the_oldest_and_keeps_the_newer_requests() {
+        let registry = AppOpenRegistry::new();
+        let mut receivers: Vec<_> = (0..MAX_PENDING_APP_OPEN_REQUESTS)
+            .map(|i| registry.register(format!("req-{i}")))
+            .collect();
+
+        // Two overflows: the two OLDEST are dropped, nothing else.
+        let _ = registry.register("req-overflow-1".into());
+        let _ = registry.register("req-overflow-2".into());
+        assert_eq!(
+            registry.pending_len(),
+            MAX_PENDING_APP_OPEN_REQUESTS,
+            "the registry never exceeds its bound"
+        );
+
+        for evicted in 0..2 {
+            assert!(
+                matches!(
+                    receivers.remove(0).try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "req-{evicted} is the oldest and must be evicted before newer requests"
+            );
+        }
+
+        // The third-oldest request was NOT evicted and is still confirmable.
+        let mut survivor = receivers.remove(0);
+        registry
+            .confirm("req-2", AppOpenConfirmation::opened("Mission Monitor"))
+            .expect("a newer request survives the overflow");
+        assert_eq!(
+            survivor.try_recv().expect("survivor confirmed").outcome,
+            AppOpenOutcome::Opened
+        );
+    }
+
+    /// ST-8 — pin the transport's bounded waits and the registry cap (R-2.4: the
+    /// CLI never blocks unbounded; the registry never grows without bound).
+    #[test]
+    fn the_wait_bounds_and_registry_cap_are_pinned() {
+        assert_eq!(APP_OPEN_CONFIRM_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(APP_OPEN_CLI_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(MAX_PENDING_APP_OPEN_REQUESTS, 64);
+        // The confirmation wait must fit inside the CLI child budget.
+        assert!(
+            APP_OPEN_CONFIRM_TIMEOUT < APP_OPEN_CLI_TIMEOUT,
+            "the confirm wait must not outlast the CLI child bound"
+        );
+    }
+
     // ── CLI child parse / exit-code mapping ───────────────────────────────────
 
     #[test]

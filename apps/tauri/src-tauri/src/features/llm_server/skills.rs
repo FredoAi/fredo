@@ -656,4 +656,97 @@ mod tests {
         assert_eq!(parameters["required"], json!(["app"]));
         assert_eq!(OPEN_APP_ARGUMENT, "app");
     }
+
+    // ── ST-8: continuous invariant — zero spurious opens (R-4.4/R-4.5) ────────
+
+    /// Build the terminal plan for one raw buffered tool call (a tool-call turn).
+    fn plan_for(
+        registry: &SkillRegistry,
+        name: Option<&str>,
+        raw_arguments: &str,
+    ) -> Vec<TerminalEvent> {
+        let mut accumulator = ToolCallAccumulator::new();
+        accumulator.push(fragment(0, name, Some(raw_arguments)));
+        accumulator.set_finish_reason("tool_calls");
+        plan_terminal_events(registry, &accumulator)
+    }
+
+    /// R-4.4 — a content-only turn is exactly `Done`: zero `llm-skill-call`s, so
+    /// the hook never invokes the CLI and zero windows open. Pinned for the
+    /// action's named non-app-open messages (including `Missing all the time`,
+    /// which contains `Miss`, and `MM`, which is not an alias).
+    #[test]
+    fn non_app_open_messages_stream_content_and_never_a_skill_call() {
+        let registry = SkillRegistry::with_open_app();
+        for message in ["tell me a joke", "hi", "Missing all the time", "MM"] {
+            let mut accumulator = ToolCallAccumulator::new();
+            accumulator.push(ChatStreamEvent::Delta(format!("reply about {message}: ")));
+            accumulator.push(ChatStreamEvent::Delta("the normal chat reply".to_string()));
+            accumulator.set_finish_reason("stop");
+
+            let events = plan_terminal_events(&registry, &accumulator);
+            assert_eq!(events, vec![TerminalEvent::Done], "message {message:?}");
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+                "message {message:?} must open zero windows"
+            );
+        }
+    }
+
+    /// R-4.5 — every spurious or malformed `open_app` selection is fail-closed:
+    /// no `SkillCall` (hence no CLI invocation and zero windows) and `Done` last,
+    /// for EVERY argument shape — including the non-string `app` values the
+    /// declared contract forbids.
+    #[test]
+    fn every_spurious_open_app_selection_is_fail_closed_and_settles() {
+        let registry = SkillRegistry::with_open_app();
+
+        let cases: [(&str, Option<&str>, &str); 12] = [
+            (
+                "unknown skill name",
+                Some("open_the_pod_bay"),
+                "{\"app\":\"Mission Monitor\"}",
+            ),
+            ("app is a number", Some("open_app"), "{\"app\":123}"),
+            ("app is a boolean", Some("open_app"), "{\"app\":true}"),
+            ("app is an array", Some("open_app"), "{\"app\":[\"Mission Monitor\"]}"),
+            (
+                "app is an object",
+                Some("open_app"),
+                "{\"app\":{\"name\":\"Mission Monitor\"}}",
+            ),
+            ("app is null", Some("open_app"), "{\"app\":null}"),
+            ("app is missing", Some("open_app"), "{}"),
+            ("app is blank", Some("open_app"), "{\"app\":\"   \"}"),
+            ("arguments are not JSON", Some("open_app"), "not json"),
+            ("arguments are empty", Some("open_app"), ""),
+            ("the call has no name", None, "{\"app\":\"Mission Monitor\"}"),
+            (
+                "an undeclared extra argument",
+                Some("open_app"),
+                "{\"app\":\"Mission Monitor\",\"force\":true}",
+            ),
+        ];
+
+        for (label, name, raw) in cases {
+            let events = plan_for(&registry, name, raw);
+            assert!(
+                matches!(events.first(), Some(TerminalEvent::Error(_))),
+                "{label}: expected a fail-closed error, got {events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+                "{label}: nothing may be executed, got {events:?}"
+            );
+            assert_eq!(
+                events.last(),
+                Some(&TerminalEvent::Done),
+                "{label}: every path must settle with llm-done"
+            );
+        }
+    }
 }

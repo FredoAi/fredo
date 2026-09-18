@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
 import { normalizeAppQuery, resolveAppIdentity } from '../appIdentity';
+import { resolveEnterAction } from '../../components/launcher/launcherEnterAction';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -172,5 +173,77 @@ describe('resolveAppIdentity — ambiguous (QA-8)', () => {
       feature: MISSION_MONITOR,
       displayName: 'Mission Monitor',
     });
+  });
+});
+
+// ── ST-8: non-app-open invariance — zero spurious opens (R-4.4/R-4.5, Q-12) ──
+
+describe('non-app-open messages never resolve (zero spurious opens)', () => {
+  const features = [SETTINGS, MISSION_MONITOR];
+
+  it('refuses ordinary chat, fragments, abbreviations and a bare verb', () => {
+    // `Missing all the time` contains `Miss` and must never open; `MM` is not an
+    // alias; a bare `open` has no name to resolve.
+    for (const message of [
+      'tell me a joke',
+      'hi',
+      'Missing all the time',
+      'MM',
+      "what's the weather",
+      'open',
+    ]) {
+      expect(resolveAppIdentity(message, features)).toEqual({
+        kind: 'unknown',
+        spokenName: message,
+      });
+    }
+  });
+
+  it('treats an empty / whitespace / non-string query as the empty unknown query', () => {
+    // A spurious `open_app` selection carrying no usable `app` must resolve to
+    // nothing: no CLI invocation, no window. Non-string values (wire misuse)
+    // are coerced to the empty query rather than throwing.
+    for (const raw of ['', '   ', null, undefined, 42, {}]) {
+      expect(resolveAppIdentity(raw as unknown as string, features)).toEqual({
+        kind: 'unknown',
+        spokenName: '',
+      });
+    }
+  });
+});
+
+// ── ST-8: launcher direct matches are a DISJOINT path (R-4.4, Q-12) ──────────
+
+describe('launcher direct matches are disjoint from the companion path', () => {
+  const features = [SETTINGS, MISSION_MONITOR];
+
+  it('the #2882 whole-query matcher launches `set` / `Miss` / `monitor` with no generation', () => {
+    // These are the launcher's direct-match path: Enter opens the window
+    // directly, independent of the Companion. They never reach the model.
+    for (const direct of ['set', 'Miss', 'monitor']) {
+      const action = resolveEnterAction({
+        query: direct,
+        entries: features,
+        textOrigin: 'typed',
+        companionActive: false,
+        companionBusy: false,
+      });
+      expect(action.kind).toBe('launch');
+    }
+  });
+
+  it('the companion resolver is fed a model-selected app name, never a launcher phrase', () => {
+    // `set` is a prefix of the display name `Settings`, not an app identity:
+    // against the live single-app registry a spurious open_app selection with
+    // `app: "set"` resolves to nothing and opens zero windows.
+    expect(resolveAppIdentity('set', [MISSION_MONITOR])).toEqual({
+      kind: 'unknown',
+      spokenName: 'set',
+    });
+    // `Miss` / `monitor` DO match the Mission Monitor display name, but only
+    // after the model selected open_app; the direct matcher above handles them
+    // without a generation, which is what keeps the two paths disjoint.
+    expect(resolveAppIdentity('Miss', [MISSION_MONITOR]).kind).toBe('resolved');
+    expect(resolveAppIdentity('monitor', [MISSION_MONITOR]).kind).toBe('resolved');
   });
 });
