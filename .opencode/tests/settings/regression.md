@@ -143,3 +143,50 @@
 - **R-14 PASS (static).** New Settings feature/chrome files carry zero hex/`rgba(`/`rgb(`/`hsla(` and no `var(--x)NN`; `tint()`/CSS vars only (only comment issue-refs matched).
 - **R-15 PASS (live).** Open/close, section churn, theme/accent switch → no `Maximum update depth exceeded`/`Uncaught`/`Error:`.
 - **R-16 PASS (static/build).** `pnpm --filter @fredo/ui build` 0 TS errors/warnings; `pnpm --filter @fredo/ui test:run` 65 files / 863 tests / 0 failed; no assertion weakened; the retired-modal theming guard migrated to `SettingsSurface.theming.test.tsx` (11 tests).
+
+---
+
+## #2892 extension — the two new Companion settings are ADDITIVE to the Settings app (G-136)
+
+> Issue #2892 adds the disposition + grace controls to `CompanionSettingsPanel` inside the Settings
+> feature window. **G-136 (history preserved):** R-1/R-7's retired-modal expectations were already
+> superseded by #2868 R-10..R-16; this extension adds no further supersession — the new controls are
+> additive to the existing "Behavior" group. Run alongside `companion` R-53..R-57 + `launcher`
+> R-57..R-61. **Verification policy: live.**
+
+## R-17 — Existing Companion panel controls unchanged; no nav/section churn
+
+- [ ] R-17: open Settings -> Companion; verify the visibility toggle, the idle-timeout input
+      (`#companion-idle-timeout-seconds`), the Teleport tip, and the voice group still render/commit
+      as before, with the two new controls additive.
+  **Expected:** the existing controls keep their keys/ranges/commit semantics; no new nav item; no
+      removed control; the section still mounts in the Settings window without an orphan/crash.
+  - **Edge:** the not-ready wizard variant; a settings-section list with zero discovered sections.
+
+## R-18 — Readiness gate semantics unchanged
+
+- [ ] R-18: stop the managed `llama-server` -> open Settings -> Companion; relaunch it -> re-open.
+  **Expected:** not ready (or the first probe in flight) renders `[data-testid="companion-setup-wizard"]`
+      ONLY (no toggle/tip/new controls); on ready the controls swap in place with no reload.
+  - **Edge:** the swap with the window open; rapid gate flips.
+
+## R-19 — Save-footer / token contract / build gates unchanged
+
+- [ ] R-19: static-grep the changed files for colour literals + `var(--x)NN`; check the unified Save
+      footer still shows only for registering panels; run `pnpm --filter @fredo/ui build` + `test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; the Save-footer contract is unchanged (the two
+      new controls persist immediately and do NOT register a save fn); build exit 0 / suite green with
+      no weakened assertion (any refreshed assertion owned per G-125).
+  - **Edge:** the two new controls must not force the Save footer to appear.
+
+## R-20 — Console clean / no re-render loop after the additive controls
+
+- [ ] R-20: open/close the Settings window, switch sections, edit both new controls, and switch
+      theme/accent; read the console after each.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (no effect/
+      memo deps on array `.length`/fresh objects); the panel stays responsive.
+  - **Edge:** rapid option churn; a theme switch mid-edit.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
