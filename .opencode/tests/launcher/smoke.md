@@ -230,3 +230,29 @@
   `I couldn't find "NotARealApp"`, companion back at rest (no `happy`); screenshot succeeded;
   console clean.
 
+## #2892 extension — always-editable bar quick paths
+
+> Issue #2892 keeps the bar editable while Fredo replies and makes a send during a reply queue
+> (default) or interrupt. Quick paths only — the full matrix lives in `functional.md` F-90..F-100 /
+> `regression.md` R-57..R-61. **Verification policy: live.**
+
+- [ ] S-27: **Type with a reply on screen.** Companion ON; send `Reply with exactly: Hi there!`;
+      while the reply shows, click `[data-testid="launcher-command-input"]`, type `abc`, read
+      `readOnly`/`disabled`. **Expected:** the field takes focus + text with `readOnly === false` /
+      `disabled === false`; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`.
+- [ ] S-28: **Queue quick path.** Start `Write 400 words about the history of the bicycle.`; send
+      `Reply with exactly: alpha` while streaming. **Expected:** accepted, bar cleared,
+      `[data-testid="launcher-command-queued"]` shows `Queued — waiting for Fredo…`, `alpha` streams
+      exactly once on settle; screenshot succeeds; console clean.
+- [ ] S-29: **Interrupt quick path.** Disposition `interrupt`; start the long stream; send
+      `Reply with exactly: INTERRUPTED`; wait > 6 s. **Expected:** the settled reply is exactly
+      `INTERRUPTED` and survives the superseded hold timer; screenshot succeeds; console clean.
+- [ ] S-30: **`set` + Enter still opens Settings with a reply streaming.** While streaming, insert
+      `set` and press Enter. **Expected:** the Settings window opens with ZERO generations; no tile
+      launch fall-through; screenshot succeeds; console clean.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
