@@ -600,3 +600,40 @@
 - [ ] **R-47 — UNVERIFIED.** Hold-to-dictate (held Space `down` → wait → `up`) could not be driven —
       the webview driver's keyboard events do not produce a held-key duration, and no alternative
       sanctioned path exists this round. Named blocker, no product verdict.
+
+---
+
+## #2893 extension — the open-app skill must not disturb the companion (G-136)
+
+> Issue #2893 adds a companion skill that opens apps. The companion's presence lifecycle, persisted
+> keys, reply surface and gesture behaviors are NON-GOALS. R-1..R-49 remain in force. Run alongside
+> `launcher` R-54..R-56 and `fredo-cli` R-1..R-3. **Verification policy: live.**
+
+## R-50 — Presence / visibility toggle / persisted keys unchanged
+
+- [ ] R-50: Toggle the companion ON/OFF; let a short idle auto-return fire; read
+      `Fredo_companion_visible` + `Fredo_companion_idle_timeout`; confirm `isAway` is not persisted;
+      change the idle value and re-read.
+  **Expected:** the #2853/#2870/#2887 contracts are unchanged (R-12/R-15/R-24/R-34/R-38) — the toggle
+      still shows/hides; auto-return remains transient; the persisted keys/ranges are untouched; an
+      open request is an interaction that resets the idle timer and never mutates the persisted
+      preference.
+  - **Edge:** an open request at the idle deadline; OFF/away → the open request must not run the skill.
+
+## R-51 — Joke / TicTacToe / teleport / reply-surface contracts unchanged
+
+- [ ] R-51: Single-click joke; double-click TicTacToe (250 ms discriminator); Ctrl+right-click
+      teleport; drive the #2883/#2886 reply surface (growth/scroll/never-cover).
+  **Expected:** R-33..R-49 hold — the 240×120 base / grown+scroll reply, the 208×268 game card, the
+      `above > right > left` placement, the streaming cursor, and the teleport timing are unchanged by
+      the skill-registry addition; an open request does not fire a stray joke.
+  - **Edge:** an open request mid-joke/mid-stream; a theme switch mid-open; the game bubble open.
+
+## R-52 — Console clean / token-native / no re-render loop after the skill slice
+
+- [ ] R-52: Read `tauri_read_logs(source="console")` after every leg; static-grep the changed
+      companion/skill files for colour literals + `var(--x)NN`; inspect the new registry/skill code
+      for effect/memo deps and listener registration across cycles.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded`; ZERO colour literals / no
+      alpha-append; no re-render loop (#523); listeners register once per lifecycle and are removed.
+      Reference R-45/R-49.
