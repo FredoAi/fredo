@@ -28,11 +28,20 @@
  * Spec #2887 ST-7 — the state contract also carries the resident-engine
  * observable (`engineResident`, ST-3's `stt:state` stamp) that the launcher's
  * honest hold cue derives from; see the field docs below.
+ *
+ * Spec #2888 ST-2 — this hook is ALSO the single transcript-case seam: every
+ * `stt:transcript` segment is projected through
+ * `normalizeTranscriptSegment` (sentence case, the product name, the declared
+ * intentional capitals) BEFORE it is committed/rendered, so every consumer of
+ * transcript text sees the same normal form and the app's own transport is the
+ * only place the transform lives. The projection is upstream of the bar write,
+ * so `LauncherShell`'s live-write/finalize/provenance logic is untouched.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { adapterBridge } from '../utils/adapterBridge';
+import { normalizeTranscriptSegment } from '../utils/transcriptCase';
 
 /** STT session origin — the context-dependent Ctrl+Space cascade picks one. */
 export type VoiceOrigin = 'launcher' | 'companion';
@@ -148,6 +157,14 @@ export function useVoiceDictation(): VoiceDictation {
   // state so a late `stt_start`/`stop`/`cancel` resolution is a no-op.
   const mountedRef = useRef(true);
 
+  // Spec #2888 ST-2 — has a FINAL segment already been emitted in this session?
+  // The utterance opening is capitalised ONCE per session: until the first final
+  // arrives every segment is the opening (`atUtteranceStart = true`), and any
+  // continuation segment must not manufacture a mid-sentence capital. A ref (not
+  // state) is correct here — it carries no render output and MUST reset per
+  // mount; a new `listening` session re-opens the utterance.
+  const segmentSeenRef = useRef(false);
+
   // ── Event subscriptions (register-once; unlisten on unmount) ───────────────
   useEffect(() => {
     mountedRef.current = true;
@@ -172,17 +189,24 @@ export function useVoiceDictation(): VoiceDictation {
     register('stt:transcript', (payload) => {
       if (disposed || !mountedRef.current) return;
       const event = payload as SttTranscriptEvent;
+      // Spec #2888 ST-2 — the ONE projection point for transcript text.
+      const text = normalizeTranscriptSegment(event.text, !segmentSeenRef.current);
       if (event.isFinal) {
-        setCommitted((prev) => joinSegments(prev, event.text));
+        setCommitted((prev) => joinSegments(prev, text));
         setPartial('');
+        // The utterance opening has been emitted: a later segment is a
+        // continuation and stays lowercase-initial.
+        segmentSeenRef.current = true;
       } else {
-        setPartial(event.text);
+        setPartial(text);
       }
     });
 
     register('stt:state', (payload) => {
       if (disposed || !mountedRef.current) return;
       const event = payload as SttStateEvent;
+      // Spec #2888 ST-2 — a new session re-opens the utterance.
+      if (event.listening) segmentSeenRef.current = false;
       setListening(event.listening);
       if (isVoiceOrigin(event.origin)) setOrigin(event.origin);
       // An error state clears as soon as a session is (re)started.

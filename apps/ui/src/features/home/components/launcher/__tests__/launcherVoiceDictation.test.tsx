@@ -449,7 +449,8 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
         latencyMs: 4,
       });
     });
-    expect(input.value).toBe('hello');
+    // #2888 ST-2/ST-3 — the transcript seam emits the sentence-case form.
+    expect(input.value).toBe('Hello');
 
     act(() => {
       emit('stt:transcript', {
@@ -461,7 +462,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
         latencyMs: 6,
       });
     });
-    expect(input.value).toBe('hello world');
+    expect(input.value).toBe('Hello world');
 
     act(() => {
       emit('stt:transcript', {
@@ -474,7 +475,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
       });
     });
     // Final commits the segment; the text REMAINS in the input (no submit).
-    expect(input.value).toBe('hello world');
+    expect(input.value).toBe('Hello world');
     expect(onOpenFeature).not.toHaveBeenCalled();
   });
 
@@ -693,7 +694,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
         latencyMs: 2,
       });
     });
-    expect(announcer).toHaveTextContent('hello world');
+    expect(announcer).toHaveTextContent('Hello world');
   });
 });
 
@@ -938,7 +939,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(true, 'launcher');
     emitFinal('set');
     emitListening(false, 'launcher');
-    expect(input().value).toBe('set');
+    expect(input().value).toBe('Set');
 
     // The user EDITS it into an exact app name. Provenance survives the edit.
     type('Settings');
@@ -967,7 +968,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(true, 'launcher');
     emitFinal('set');
     emitListening(false, 'launcher');
-    expect(input().value).toBe('set');
+    expect(input().value).toBe('Set');
 
     // Clear the bar completely — the content stopped existing.
     type('');
@@ -1006,7 +1007,8 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     expect(onOpenFeature).not.toHaveBeenCalled();
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Mission Monitor');
+    // #2888 — the dictated string is the NORMALISED one the bar now carries.
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Mission monitor');
   });
 
   it('R-4.4: autosend ON with NO active companion keeps the transcript and opens NOTHING', () => {
@@ -1032,7 +1034,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(false, 'launcher');
 
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('hello there');
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Hello there');
     expect(input().value).toBe('');
   });
 
@@ -1045,7 +1047,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(false, 'launcher');
 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
-    expect(input().value).toBe('hello there');
+    expect(input().value).toBe('Hello there');
   });
 
   it('autosend ON while busy: the finalize is a silent hard drop (no send, no launch, text kept)', () => {
@@ -1064,7 +1066,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
     expect(onOpenFeature).not.toHaveBeenCalled();
-    expect(input().value).toBe('hello there');
+    expect(input().value).toBe('Hello there');
   });
 
   it('autosend ON: a final landing just after the state event still commits (liveText dep)', () => {
@@ -1079,7 +1081,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitFinal('late text');
 
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('late text');
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Late text');
   });
 
   it('autosend ON: commits exactly once per session (one-shot guard)', () => {
@@ -1095,7 +1097,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitFinal('once more');
 
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('once');
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Once');
   });
 
   // ── Cancel suppression + restore (R-3.1/R-3.2) ─────────────────────────────
@@ -1108,7 +1110,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     type('draft I typed');
     emitListening(true, 'launcher');
     emitPartial('hello');
-    expect(input().value).toBe('hello');
+    expect(input().value).toBe('Hello');
 
     act(() => {
       fireEvent.keyDown(input(), { key: 'Escape' });
@@ -1231,7 +1233,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     type('pre-session text');
     emitListening(true, 'launcher');
     emitPartial('e');
-    expect(input().value).toBe('e');
+    expect(input().value).toBe('E');
 
     emitListening(false, 'launcher');
 
@@ -1280,13 +1282,13 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     // ...but a finalized segment still appends.
     emitFinal('hello world', 3);
-    expect(input().value).toBe('hello there hello world');
+    expect(input().value).toBe('hello there Hello world');
 
     emitListening(false, 'launcher');
     // A new session resets the guard: live partials write again.
     emitListening(true, 'launcher');
     emitPartial('fresh', 4);
-    expect(input().value).toBe('fresh');
+    expect(input().value).toBe('Fresh');
   });
 
   it('each session commits only its own utterance (never the accumulated transcript)', () => {
@@ -1303,8 +1305,8 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     const calls = companionDispatchMock.askActiveCompanion.mock.calls;
     expect(calls).toHaveLength(2);
-    expect(calls[0][0]).toBe('first');
-    expect(calls[1][0]).toBe('second');
+    expect(calls[0][0]).toBe('First');
+    expect(calls[1][0]).toBe('Second');
   });
 });
 
@@ -1721,7 +1723,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     spaceUp();
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
-    expect(el.value).toBe('hello there');
+    expect(el.value).toBe('Hello there');
     // The input stays ordinary editable text (AC2).
     expect(el).not.toHaveAttribute('readonly');
   });
@@ -1938,7 +1940,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
     // The words are KEPT as a dictated transcript — and never dispatched.
-    expect(el.value).toBe('set');
+    expect(el.value).toBe('Set');
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
     // Provenance survives, so the hint truthfully names the send.
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
@@ -1947,7 +1949,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
 
     // The trailing release adds nothing and re-stops nothing.
     spaceUp();
-    expect(el.value).toBe('set');
+    expect(el.value).toBe('Set');
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
   });
 
@@ -1969,7 +1971,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     });
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
-    expect(input().value).toBe('miss');
+    expect(input().value).toBe('Miss');
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
   });
 
@@ -2077,7 +2079,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     // chip. The live-capture chip is pinned by the QA-10 tests above.
     emitListening(false, 'launcher');
 
-    expect(el.value).toBe('set');
+    expect(el.value).toBe('Set');
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
       '↵ send transcript to Fredo',
     );
@@ -2336,5 +2338,198 @@ describe('LauncherShell — #2883 ST-2: the measured reply band reaches the seat
     expect(handed.barrierTop).toEqual(expect.any(Number));
     expect(handed.boundsLeft).toEqual(expect.any(Number));
     expect(handed.boundsRight).toEqual(expect.any(Number));
+  });
+});
+
+// ── Spec #2888 ST-3 — the bar-level regression pins ──────────────────────────
+//
+// The developer-runnable half of ST-3: the form the seam produces, as the
+// launcher bar actually renders it (`data-testid="launcher-command-input"`) plus
+// the dictated-provenance hint the send path derives from it. It pins the
+// user-visible outcome of REQ-1..REQ-5 and the untouched #2882 routing (REQ-8) so
+// no later change can silently re-introduce ALL CAPS or flatten the declared
+// capitals.
+//
+// The LIVE execution of the QA rows (F-83..F-101) is the TESTER's: the real hold
+// gesture, the `stt_start|stop|cancel|status` control plane, and synthetic
+// `stt:transcript` on the app's own `adapterBridge.listen` channel. It is never
+// duplicated here as a spoken-mic attempt (no microphone, model or WAV asset
+// exists in this repository — a missing asset is a tooling gap, never a hunt).
+
+describe('LauncherShell — #2888 ST-3: a dictated transcript reads as written text in the bar', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const renderShell = (features: FredoFeatureClass[] = []) => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  /** The LIVE bar field — resolved by its named observable, not by tag. */
+  const bar = () => screen.getByTestId('launcher-command-input') as BarField;
+
+  const emitListening = (listening: boolean) =>
+    act(() => {
+      emit('stt:state', { listening, code: null, detail: null, origin: 'launcher' });
+    });
+
+  const emitPartial = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: false,
+        latencyMs: 1,
+      });
+    });
+
+  const emitFinal = (text: string, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal: true,
+        latencyMs: 1,
+      });
+    });
+
+  const type = (value: string) =>
+    act(() => {
+      fireEvent.change(bar(), { target: { value } });
+    });
+
+  const hint = () => screen.getByTestId('launcher-command-hint');
+
+  const seatCompanion = () => {
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+  };
+
+  it('renders the named bar observables the QA rows assert', () => {
+    renderShell([SETTINGS]);
+    expect(screen.getByTestId('launcher-command-input')).toBeInTheDocument();
+    expect(screen.getByTestId('voice-transcript-announcer')).toBeInTheDocument();
+
+    // The hint renders once there is a query worth hinting about (a tile match).
+    type('set');
+    expect(screen.getByTestId('launcher-command-hint')).toBeInTheDocument();
+
+    emitListening(true);
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+  });
+
+  it('REQ-1 / no-ALL-CAPS: a raw uppercase segment is written in sentence case at the PARTIAL', () => {
+    renderShell();
+    emitListening(true);
+
+    emitPartial('DEPLOY THE BUILD TONIGHT');
+
+    expect(bar().value).toBe('Deploy the build tonight');
+    // No shouted run is ever visible in the bar.
+    expect(bar().value).not.toMatch(/[A-Z]{2,}/);
+
+    // …and the final does not re-case what the partial already rendered.
+    emitFinal('DEPLOY THE BUILD TONIGHT', 2);
+    expect(bar().value).toBe('Deploy the build tonight');
+  });
+
+  it('REQ-2/REQ-5: the merged-tip string `CALL THE API FREDO` is case-correct live and byte-stable at the final', () => {
+    renderShell();
+    emitListening(true);
+
+    emitPartial('CALL THE API FREDO');
+    expect(bar().value).toBe('Call the API Fredo');
+
+    emitFinal('CALL THE API FREDO', 2);
+    expect(bar().value).toBe('Call the API Fredo');
+    // The accessible transcript equals the visible one (same normalised value).
+    expect(screen.getByTestId('voice-transcript-announcer')).toHaveTextContent('Call the API Fredo');
+  });
+
+  it('REQ-5: the declared acronyms survive mid-sentence while the words around them are lowercased', () => {
+    renderShell();
+    emitListening(true);
+
+    emitFinal('EXPORT THE API SPEC AND RUN SQL');
+
+    expect(bar().value).toBe('Export the API spec and run SQL');
+  });
+
+  it('REQ-4: the product name lands as `Fredo` alone, embedded and for every occurrence', () => {
+    const cases: Array<[string, string]> = [
+      ['FREDO', 'Fredo'],
+      ['ASK FRITO TO OPEN THE LOGS', 'Ask Fredo to open the logs'],
+      ['TELL FREDO THAT FREDO SAID YES', 'Tell Fredo that Fredo said yes'],
+      ['FREDO FREDO ARE YOU THERE', 'Fredo Fredo are you there'],
+    ];
+
+    for (const [raw, expected] of cases) {
+      cleanup();
+      renderShell();
+      emitListening(true);
+      emitFinal(raw);
+      expect(bar().value, raw).toBe(expected);
+    }
+  });
+
+  it('REQ-3: casing is the ONLY change — the case-insensitive bar value equals the injected raw', () => {
+    renderShell();
+    emitListening(true);
+    const raw = 'REMEMBER TO REVIEW THE RELEASE NOTES BEFORE THE STANDUP TOMORROW MORNING';
+
+    emitFinal(raw);
+
+    expect(bar().value.toLowerCase()).toBe(raw.toLowerCase());
+    expect(bar().value).not.toMatch(/[A-Z]{2,}/);
+  });
+
+  it('REQ-1: a continuation segment appends without manufacturing a mid-sentence capital', () => {
+    renderShell();
+    emitListening(true);
+
+    emitFinal('HELLO');
+    emitFinal('WORLD', 2);
+
+    expect(bar().value).toBe('Hello world');
+  });
+
+  it('REQ-8: a dictated `Fredo` transcript stays Fredo-bound — the hint names the send before AND after an app-name edit', () => {
+    seatCompanion();
+    renderShell([SETTINGS]);
+    emitListening(true);
+    emitFinal('FREDO');
+    emitListening(false);
+
+    expect(bar().value).toBe('Fredo');
+    expect(hint()).toHaveTextContent('↵ send transcript to Fredo');
+
+    // The user edits it into an exact app name — provenance survives the edit.
+    type('Settings');
+    expect(hint()).toHaveTextContent('↵ send transcript to Fredo');
+  });
+
+  it('REQ-8: autosend ON dispatches the normalised `Fredo` transcript exactly once and opens no app', () => {
+    seatCompanion();
+    companionMock.current.voiceAutosend = true;
+    const onOpenFeature = renderShell([SETTINGS]);
+    emitListening(true);
+    emitFinal('FREDO');
+    emitListening(false);
+
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Fredo');
+    expect(onOpenFeature).not.toHaveBeenCalled();
   });
 });
