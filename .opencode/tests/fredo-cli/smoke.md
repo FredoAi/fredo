@@ -26,3 +26,15 @@
   Monitor"}` exit 0; the `Sessions` (Mission Monitor) window opened; screenshot
   `q5-cli-open-mission-monitor.png` captured.
 - **S-5 PASS.** Screenshots captured under `.opencode/tmp/2893/e2e/` (uploaded as user-attachments).
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **S-1 PASS.** `tauri_webview_dom_snapshot(type="structure")` returned a non-empty body
+  (launcher/companion + window-manager DOM).
+- **S-2 PASS.** Console clean in a no-instrumentation leg (a full companion generation produced zero
+  `level=error` entries); the round's `reading 'slice'` bursts were tester-instrument artifacts.
+- **S-3 PASS.** `fredo --help` exit 0 lists `emit`/`setup`/`open-app`; the binary resolves on PATH.
+- **S-4 PASS.** `fredo open-app mission-monitor` against the running app → `{"outcome":"opened"}`
+  exit 0; the `Sessions` (Mission Monitor) window opened; screenshot captured.
+- **S-5 PASS.** `tauri_webview_screenshot` succeeded; the round's captures were uploaded as
+  user-attachments and embedded in the `## Tests Runs (round 2)` verdict.
