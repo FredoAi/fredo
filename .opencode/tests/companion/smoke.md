@@ -234,3 +234,29 @@
 - **S-33 PASS (re-confirmed).** `open NotARealApp` → ZERO new windows, reply EXACTLY
   `I couldn't find "NotARealApp"`, companion at rest (avatar `idle`, no `happy`); screenshot succeeded;
   console clean.
+
+## #2892 extension — send-during-reply quick paths
+
+> Issue #2892 keeps the launcher input editable while Fredo replies and makes a send during a reply
+> queue (default) or interrupt. Quick paths only — the full matrix lives in `functional.md`
+> F-106..F-115 / `regression.md` R-53..R-57. **Verification policy: live.**
+
+- [ ] S-34: **Reply on screen, input still usable.** Companion ON; send
+      `Reply with exactly: Hi there!`; while the reply is on screen click the bar, type `abc`, read
+      `readOnly`/`disabled` on the field. **Expected:** the field accepts the click + text with
+      `readOnly === false` / `disabled === false`; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-35: **Queue quick path.** Start `Write 400 words about the history of the bicycle.`; while
+      streaming send `Reply with exactly: alpha`. **Expected:** the send is accepted, the bar clears,
+      `[data-testid="launcher-command-queued"]` shows `Queued — waiting for Fredo…`, and on settle
+      `alpha` streams exactly once; screenshot succeeds; console clean.
+- [ ] S-36: **Interrupt quick path.** Set disposition `interrupt`; start the long stream; send
+      `Reply with exactly: INTERRUPTED`; wait > 6 s. **Expected:** the settled reply is EXACTLY
+      `INTERRUPTED` and is not cleared by the superseded generation; screenshot succeeds; console clean.
+- [ ] S-37: **Grace setting quick path.** Set the grace to `10000`; hover then leave a displayed reply.
+      **Expected:** the reply persists clearly longer than the shipped 2 s default and clears well
+      before ~12 s; the value persists after a reload; screenshot succeeds; console clean.
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
