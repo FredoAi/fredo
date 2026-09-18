@@ -377,3 +377,25 @@
 ### #2887 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2893 extension — open-intent edge probes
+
+> Issue #2893 lets the Companion open an app named in a message. A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a
+> named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-58: **Two apps named in one message.** Send `open Mission Monitor and Settings`. Which opens
+      — one, both, or none — and does the reply match? Any wrong/multiple/zero open that contradicts
+      the reply is a finding (promotes to F-85/F-88).
+- [ ] E-59: **Open during an in-flight generation.** Send a long chat message, then immediately send
+      `open Mission Monitor` before `llm-done`. Does the open request queue, preempt, or get dropped,
+      and is the final state coherent (one window, no stuck stream)? Any double dispatch or stuck
+      state is a finding (promotes to F-89/F-102).
+- [ ] E-60: **Target window already open.** With Mission Monitor open, send `open Mission Monitor`.
+      Does it focus/restore the existing window (no duplicate, no stack churn, window count stable)?
+      Any duplicate window is a finding (promotes to F-85/Q-5).
+- [ ] E-61: **Model non-selection / malformed skill output.** With the model answering without
+      selecting the skill (or with a malformed identity), does the request fail closed (no arbitrary
+      open) and reply readably? Any guessed/arbitrary open is a finding (promotes to F-88/F-100).
