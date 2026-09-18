@@ -449,7 +449,8 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
         latencyMs: 4,
       });
     });
-    expect(input.value).toBe('hello');
+    // #2888 ST-2/ST-3 — the transcript seam emits the sentence-case form.
+    expect(input.value).toBe('Hello');
 
     act(() => {
       emit('stt:transcript', {
@@ -461,7 +462,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
         latencyMs: 6,
       });
     });
-    expect(input.value).toBe('hello world');
+    expect(input.value).toBe('Hello world');
 
     act(() => {
       emit('stt:transcript', {
@@ -474,7 +475,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
       });
     });
     // Final commits the segment; the text REMAINS in the input (no submit).
-    expect(input.value).toBe('hello world');
+    expect(input.value).toBe('Hello world');
     expect(onOpenFeature).not.toHaveBeenCalled();
   });
 
@@ -693,7 +694,7 @@ describe('LauncherShell — Ctrl+Space / Escape / live transcript wiring', () =>
         latencyMs: 2,
       });
     });
-    expect(announcer).toHaveTextContent('hello world');
+    expect(announcer).toHaveTextContent('Hello world');
   });
 });
 
@@ -938,7 +939,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(true, 'launcher');
     emitFinal('set');
     emitListening(false, 'launcher');
-    expect(input().value).toBe('set');
+    expect(input().value).toBe('Set');
 
     // The user EDITS it into an exact app name. Provenance survives the edit.
     type('Settings');
@@ -967,7 +968,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(true, 'launcher');
     emitFinal('set');
     emitListening(false, 'launcher');
-    expect(input().value).toBe('set');
+    expect(input().value).toBe('Set');
 
     // Clear the bar completely — the content stopped existing.
     type('');
@@ -1006,7 +1007,8 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     expect(onOpenFeature).not.toHaveBeenCalled();
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Mission Monitor');
+    // #2888 — the dictated string is the NORMALISED one the bar now carries.
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Mission monitor');
   });
 
   it('R-4.4: autosend ON with NO active companion keeps the transcript and opens NOTHING', () => {
@@ -1032,7 +1034,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(false, 'launcher');
 
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('hello there');
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Hello there');
     expect(input().value).toBe('');
   });
 
@@ -1045,7 +1047,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitListening(false, 'launcher');
 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
-    expect(input().value).toBe('hello there');
+    expect(input().value).toBe('Hello there');
   });
 
   it('autosend ON while busy: the finalize is a silent hard drop (no send, no launch, text kept)', () => {
@@ -1064,7 +1066,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
     expect(onOpenFeature).not.toHaveBeenCalled();
-    expect(input().value).toBe('hello there');
+    expect(input().value).toBe('Hello there');
   });
 
   it('autosend ON: a final landing just after the state event still commits (liveText dep)', () => {
@@ -1079,7 +1081,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitFinal('late text');
 
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('late text');
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Late text');
   });
 
   it('autosend ON: commits exactly once per session (one-shot guard)', () => {
@@ -1095,7 +1097,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitFinal('once more');
 
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
-    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('once');
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Once');
   });
 
   // ── Cancel suppression + restore (R-3.1/R-3.2) ─────────────────────────────
@@ -1108,7 +1110,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     type('draft I typed');
     emitListening(true, 'launcher');
     emitPartial('hello');
-    expect(input().value).toBe('hello');
+    expect(input().value).toBe('Hello');
 
     act(() => {
       fireEvent.keyDown(input(), { key: 'Escape' });
@@ -1231,7 +1233,7 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     type('pre-session text');
     emitListening(true, 'launcher');
     emitPartial('e');
-    expect(input().value).toBe('e');
+    expect(input().value).toBe('E');
 
     emitListening(false, 'launcher');
 
@@ -1280,13 +1282,13 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     // ...but a finalized segment still appends.
     emitFinal('hello world', 3);
-    expect(input().value).toBe('hello there hello world');
+    expect(input().value).toBe('hello there Hello world');
 
     emitListening(false, 'launcher');
     // A new session resets the guard: live partials write again.
     emitListening(true, 'launcher');
     emitPartial('fresh', 4);
-    expect(input().value).toBe('fresh');
+    expect(input().value).toBe('Fresh');
   });
 
   it('each session commits only its own utterance (never the accumulated transcript)', () => {
@@ -1303,8 +1305,8 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
 
     const calls = companionDispatchMock.askActiveCompanion.mock.calls;
     expect(calls).toHaveLength(2);
-    expect(calls[0][0]).toBe('first');
-    expect(calls[1][0]).toBe('second');
+    expect(calls[0][0]).toBe('First');
+    expect(calls[1][0]).toBe('Second');
   });
 });
 
@@ -1721,7 +1723,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     spaceUp();
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
-    expect(el.value).toBe('hello there');
+    expect(el.value).toBe('Hello there');
     // The input stays ordinary editable text (AC2).
     expect(el).not.toHaveAttribute('readonly');
   });
@@ -1938,7 +1940,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
     // The words are KEPT as a dictated transcript — and never dispatched.
-    expect(el.value).toBe('set');
+    expect(el.value).toBe('Set');
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
     // Provenance survives, so the hint truthfully names the send.
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
@@ -1947,7 +1949,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
 
     // The trailing release adds nothing and re-stops nothing.
     spaceUp();
-    expect(el.value).toBe('set');
+    expect(el.value).toBe('Set');
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
   });
 
@@ -1969,7 +1971,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     });
 
     expect(invokeSpy).toHaveBeenCalledWith('stt_stop', undefined);
-    expect(input().value).toBe('miss');
+    expect(input().value).toBe('Miss');
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
   });
 
@@ -2077,7 +2079,7 @@ describe('LauncherShell — hold-Space dictates (ST-5: the capture lifecycle)', 
     // chip. The live-capture chip is pinned by the QA-10 tests above.
     emitListening(false, 'launcher');
 
-    expect(el.value).toBe('set');
+    expect(el.value).toBe('Set');
     expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(
       '↵ send transcript to Fredo',
     );
