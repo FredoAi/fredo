@@ -189,4 +189,9 @@
 
 ### #2892 testing round 1 — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+> Round 1 @ `spec/2892 bf3b3e80`: **FAIL** (AC9 grace display clamp). Detail in
+> `.opencode/tmp/2892/tests-runs.md`.
+
+- **R-17 PASS (live).** Existing Companion controls (visibility toggle, `#companion-idle-timeout-seconds`, voice group) unchanged; the two new controls are additive; no new nav item.
+- **R-19 PASS (static/build).** Zero colour literals / no `var(--x)NN` in the changed files; Save-footer contract unchanged (the two new controls persist immediately, no save fn); `pnpm --filter @fredo/ui build` exit 0; `test:run` 98 files / 1645 tests / 0 failed. `pnpm --filter @fredo/tauri build:webview` exit 0.
+- **R-20 PASS (live).** No `Error:`/`Uncaught`/`Maximum update depth exceeded` across open/close, section churn, control edits, theme switch.
