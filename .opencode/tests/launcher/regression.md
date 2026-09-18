@@ -575,3 +575,17 @@
   **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
       `motion() is deprecated` WARN exempt); ZERO colour literals / no `var(--x)NN` (#2770); no
       re-render loop (#523). Reference R-49/R-53.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **R-54 PASS.** `set`/`Miss`/`monitor` each opened the named app with **0 generations** and the
+  truthful hint (`↵ open Settings` / `↵ open Mission Monitor` / `↵ open Mission Monitor`);
+  `Missing all the time`/`MM` were sent to Fredo with 0 windows. The #2882 direct matcher, ranking,
+  alias ban and hint truth are unchanged.
+- **R-55 PASS.** A non-app-open message (`hi`) with the companion active: exactly one generation in
+  flight, `aria-busy`/streaming cleared at completion, companion at rest; no second dispatch path
+  from the open capability. The open path reuses the ONE companion generation channel
+  (`llmChatWithSkills`) and does not add a launcher dispatch.
+- **R-56 PASS (no product errors).** Console clean in a no-instrumentation leg; the round's
+  `reading 'slice'` errors were tester-artifact (see `companion` regression round 2). No colour
+  literals or `var(--x)NN` introduced by the #2893 diff; no re-render loop.
