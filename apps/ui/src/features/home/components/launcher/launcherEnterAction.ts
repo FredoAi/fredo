@@ -137,7 +137,6 @@ export interface ResolveEnterActionInput {
   entries: readonly FredoFeatureClass[];
   textOrigin: EnterTextOrigin;
   companionActive: boolean;
-  companionBusy: boolean;
   /**
    * ST-5-fix (QA-10) — a launcher-origin capture is live (`voice.listening &&
    * origin === 'launcher'`). OPTIONAL and additive: omitting it preserves the
@@ -147,7 +146,7 @@ export interface ResolveEnterActionInput {
 }
 
 /**
- * The binding precedence (R-5/R-6, clarifications #1/#2, QA-10):
+ * The binding precedence (R-5/R-6, clarifications #1/#2, QA-10; #2892 ST-5):
  *
  *   0. `captureLive`                     → `{ none, 'listening' }` (a live
  *                                          capture outranks EVERY content rule:
@@ -155,18 +154,24 @@ export interface ResolveEnterActionInput {
  *                                          partially transcribed live text, or
  *                                          dispatch a partial)
  *   1. empty query                       → `{ none, 'empty' }`
- *   2. `textOrigin === 'dictated'`       → `send` when active && !busy, else `none`
- *                                          (a dictated transcript NEVER launches —
- *                                          clarification #2 / R-4.3)
- *   3. typed + app match                 → `launch`, INDEPENDENT of companion + busy
+ *   2. `textOrigin === 'dictated'`       → `send` when `companionActive`, else
+ *                                          `none` (a dictated transcript NEVER
+ *                                          launches — clarification #2 / R-4.3)
+ *   3. typed + app match                 → `launch`, INDEPENDENT of the companion
  *                                          (AC5 "present, away, off, or replying")
- *   4. typed, no match, active && !busy  → `send`
+ *   4. typed, no match, `companionActive`→ `send`  (#2892 ST-5: a send is gated
+ *                                          ONLY by `companionActive` — never by a
+ *                                          reply in flight; an accepted send is
+ *                                          queued by the entity)
  *   5. otherwise                         → `none`
  *
- * `companionBusy` deliberately does NOT gate the app-match rule (row 3): AC5 binds
- * a typed match to launch while Fredo is replying. The `busy` OVER `listening`
- * precedence (UI/UX §3 row 1 → row 2) is therefore expressed at the hint layer —
- * see `enterHintLabel` — where both are no-ops but the copy differs.
+ * #2892 ST-5 REMOVED the `companionBusy` input: the old busy-gate rows (dictated
+ * no-op, typed non-match no-op) are retired. Replying is no longer a bar-level
+ * send gate — the entity owns accept/queue/interrupt, so Enter keeps its promise.
+ * The `busy` OVER `listening` precedence (UI/UX §3 row 1 → row 2) survives at the
+ * hint layer only (`enterHintLabel`), where both are no-ops but the copy differs.
+ * The `'busy'` reason variant is retained for totality/back-compat; this resolver
+ * no longer emits it.
  */
 export function resolveEnterAction(input: ResolveEnterActionInput): LauncherEnterAction {
   // 0. ST-5-fix (QA-10) — a LIVE launcher-origin capture is a hard no-op, in every
@@ -178,19 +183,19 @@ export function resolveEnterAction(input: ResolveEnterActionInput): LauncherEnte
   if (q === '') return { kind: 'none', reason: 'empty' };
 
   if (input.textOrigin === 'dictated') {
-    if (input.companionActive && !input.companionBusy) {
+    if (input.companionActive) {
       return { kind: 'send', textOrigin: 'dictated' };
     }
-    return { kind: 'none', reason: input.companionBusy ? 'busy' : 'no-match-no-companion' };
+    return { kind: 'none', reason: 'no-match-no-companion' };
   }
 
   const match = findTopRankedMatch(q, input.entries);
   if (match) return { kind: 'launch', feature: match };
 
-  if (input.companionActive && !input.companionBusy) {
+  if (input.companionActive) {
     return { kind: 'send', textOrigin: 'typed' };
   }
-  return { kind: 'none', reason: input.companionBusy ? 'busy' : 'no-match-no-companion' };
+  return { kind: 'none', reason: 'no-match-no-companion' };
 }
 
 /**
@@ -228,6 +233,10 @@ export function enterHintLabel(
   }
 
   if (action.reason === 'empty') return undefined;
-  if (opts.busy || action.reason === 'busy') return ENTER_HINT_COPY.busy;
+  // #2892 ST-5 — `opts.busy` is consulted ONLY in the live-capture branch above
+  // (the one place a reply can outrank a no-op's instruction). It NEVER gates a
+  // send, so a typed non-match during a reply still reads `↵ send to Fredo`.
+  // The `'busy'` reason stays total for a caller that reports it directly.
+  if (action.reason === 'busy') return ENTER_HINT_COPY.busy;
   return ENTER_HINT_COPY.noMatch;
 }

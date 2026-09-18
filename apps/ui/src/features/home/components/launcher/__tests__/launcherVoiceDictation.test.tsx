@@ -62,6 +62,10 @@ const companionMock = vi.hoisted(() => ({
     // #2878 ST-1 — the persisted autosend preference the finalize effect consumes
     // (DEFAULT false).
     voiceAutosend: false,
+    // #2892 ST-5 — the truthful reply-generation primitive (busy) and the accepted
+    // queued-send count, both top-level on the context value.
+    replyInFlight: false,
+    queuedSendCount: 0,
   },
 }));
 vi.mock('@/shared/contexts/CompanionContext', () => ({
@@ -74,7 +78,10 @@ vi.mock('@/shared/contexts/CompanionContext', () => ({
 // Spec #2883 ST-2 — the stub also RECORDS the props it is handed, so the
 // launcher → entity reply-band hand-off is observable without the real bubble.
 const companionDispatchMock = vi.hoisted(() => ({
-  askActiveCompanion: vi.fn((_text: string) => true),
+  // #2892 ST-5 — the ONE dispatch path now returns a typed `CompanionSendResult`
+  // (`dispatched`/`queued`/`rejected`) or `null`; the default stub accepts with
+  // `dispatched`, so the shipped clear-on-accept behaviour is preserved.
+  askActiveCompanion: vi.fn((_text: string) => ({ outcome: 'dispatched' as const })),
 }));
 const companionEntityMock = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
@@ -118,9 +125,11 @@ beforeEach(() => {
     state: { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
     voiceEnabled: true,
     voiceAutosend: false,
+    replyInFlight: false,
+    queuedSendCount: 0,
   };
   companionDispatchMock.askActiveCompanion.mockReset();
-  companionDispatchMock.askActiveCompanion.mockReturnValue(true);
+  companionDispatchMock.askActiveCompanion.mockReturnValue({ outcome: 'dispatched' });
   companionEntityMock.props.length = 0;
   vi.stubGlobal(
     'matchMedia',
@@ -817,6 +826,8 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
       cleanup();
       companionDispatchMock.askActiveCompanion.mockClear();
       companionMock.current.state = state;
+      // #2892 ST-5 — the "replying" variant is a live GENERATION (`replyInFlight`).
+      companionMock.current.replyInFlight = state.isInUse;
       const onOpenFeature = renderShell([MISSION_MONITOR, SETTINGS]);
 
       type('mission');
@@ -892,15 +903,17 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
   });
 
   it('G-125 re-point: busy is NOT a global no-op — a TYPED match still launches while Fredo is replying (AC5)', () => {
-    // Supersedes "busy is a GLOBAL no-op": the busy gate now affects only the
-    // SEND path. This is the exact supersession AC5 names ("…present, away, off,
-    // or replying").
+    // Supersedes "busy is a GLOBAL no-op": the #2882 busy gate was retired, and
+    // #2892 ST-5 removed the last busy term from the resolver, so replying never
+    // blocks a launch. This is the exact supersession AC5 names ("…present, away,
+    // off, or replying").
     companionMock.current.state = {
       isVisible: true,
       isAway: false,
       isAutoHidden: false,
       isInUse: true,
     };
+    companionMock.current.replyInFlight = true;
     const onOpenFeature = renderShell([MISSION_MONITOR]);
 
     type('Miss');
@@ -911,22 +924,21 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
   });
 
-  it('busy: a typed NON-match is a no-op (no send, no launch)', () => {
+  it('ST-5 REFRESHED PIN: while a reply is in flight, a typed NON-match with an active companion SENDS (bar clears)', () => {
+    // Supersedes "busy: a typed NON-match is a no-op" (the old busy-gate pin).
+    // The send is now gated ONLY by `companionActive`; replying is an ENTITY
+    // concern (accept/queue/interrupt), so Enter keeps its promise and the bar
+    // clears on acceptance (AC5/AC7/REQ-2/REQ-7).
     seatCompanion();
-    companionMock.current.state = {
-      isVisible: true,
-      isAway: false,
-      isAutoHidden: false,
-      isInUse: true,
-    };
+    companionMock.current.replyInFlight = true;
     const onOpenFeature = renderShell();
 
     type('hello there');
     pressEnter();
 
-    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('hello there');
     expect(onOpenFeature).not.toHaveBeenCalled();
-    expect(input().value).toBe('hello there');
+    expect(input().value).toBe('');
   });
 
   // ── Clarification #2 — dictation provenance survives editing (R-4.3) ────────
@@ -1050,13 +1062,18 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     expect(input().value).toBe('Hello there');
   });
 
-  it('autosend ON while busy: the finalize is a silent hard drop (no send, no launch, text kept)', () => {
+  it('ST-5 REFRESHED PIN: autosend ON while a reply is in flight ACCEPTS the finalize (sent/queued, bar clears)', () => {
+    // Supersedes "autosend ON while busy: the finalize is a silent hard drop".
+    // #2892 ST-5 removes the busy hard-drop: a dictated transcript with an active
+    // companion is always delivered, and the entity owns queue-vs-interrupt
+    // (AC5/REQ-2/REQ-5).
     companionMock.current.state = {
       isVisible: true,
       isAway: false,
       isAutoHidden: false,
       isInUse: true,
     };
+    companionMock.current.replyInFlight = true;
     companionMock.current.voiceAutosend = true;
     const onOpenFeature = renderShell();
 
@@ -1064,9 +1081,10 @@ describe('LauncherShell — the ONE commit path (Enter) + autosend finalize', ()
     emitFinal('hello there');
     emitListening(false, 'launcher');
 
-    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
+    expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Hello there');
     expect(onOpenFeature).not.toHaveBeenCalled();
-    expect(input().value).toBe('Hello there');
+    expect(input().value).toBe('');
   });
 
   it('autosend ON: a final landing just after the state event still commits (liveText dep)', () => {
@@ -1398,12 +1416,15 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
   };
 
   const setCompanionBusy = () => {
+    // #2892 ST-5 — "busy" is a reply GENERATION in flight (`replyInFlight`); a
+    // seated, in-use companion with a generation running.
     companionMock.current.state = {
       isVisible: true,
       isAway: false,
       isAutoHidden: false,
       isInUse: true,
     };
+    companionMock.current.replyInFlight = true;
   };
 
   const hint = () => screen.getByTestId('launcher-command-hint');

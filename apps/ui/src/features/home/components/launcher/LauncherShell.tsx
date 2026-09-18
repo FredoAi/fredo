@@ -317,7 +317,8 @@ const DESKTOP_TEXTURE_CSS = {
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
-  const { state: companion, voiceEnabled, voiceAutosend } = useCompanion();
+  const { state: companion, voiceEnabled, voiceAutosend, replyInFlight, queuedSendCount } =
+    useCompanion();
 
   // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
   // band (the wrapper below owns the size + `mb="4"`), so the command bar's
@@ -340,8 +341,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // while the interactive seat still renders, so gating on it would dead-lock
   // chat after the first idle return). Home-after-auto-return is ACTIVE.
   const companionActive = companion.isVisible && !companion.isAway;
-  // #2871 ST-3 continuous busy primitive (AGENTS.md #523 — primitive read only).
-  const companionBusy = companion.isInUse;
+  // #2892 ST-5 (AC2/AC3) — the truthful "replying" primitive. `isInUse` (which
+  // ALSO covers the #2883 read-hold when the pointer rests on a completed reply)
+  // no longer fakes a generation: only `replyInFlight` is busy. `isInUse` stays
+  // untouched inside CompanionContext for idle auto-return suppression (AC4).
+  // Primitive read only (AGENTS.md #523).
+  const companionReplying = replyInFlight;
 
   // Spec #2882 ST-4 — Ctrl+Space shows/focuses the bar (see `selectCtrlSpaceAction`);
   // the launcher-origin listening cue (DR-7) is unchanged. `start`/`stop`/`cancel`
@@ -450,7 +455,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // R-2.1 / contract 4c — the promise placeholder is offered only when the whole
   // precondition is available (voice on + FAIL-CLOSED model readiness + not busy).
   // Readiness unknown ⇒ no promise is made and Space stays natively ordinary.
-  const holdAvailable = voiceEnabled && sttModel.ready && !companionBusy;
+  const holdAvailable = voiceEnabled && sttModel.ready && !companionReplying;
   // Spec #2887 ST-7 (R-3/AC3) — the ONE honest cue, derived from the pure
   // `deriveHoldCue` rule (see its doc). It replaces the shipped
   // `holdArmed`/`holdPending` pair at the bar: `'listening'` is reachable ONLY
@@ -775,10 +780,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       entries: filteredEntries,
       textOrigin: dictationOrigin ? 'dictated' : 'typed',
       companionActive,
-      companionBusy,
       captureLive,
     });
-    const hintLabel = enterHintLabel(action, { busy: companionBusy, queryEmpty });
+    // #2892 ST-5 — `busy` is fed ONLY to express the live-capture precedence row
+    // (`release Space to finish` vs `Fredo is replying…`); it never gates a send.
+    const hintLabel = enterHintLabel(action, { busy: companionReplying, queryEmpty });
     const enterMode: LauncherEnterMode =
       action.kind === 'launch' ? 'launch' : action.kind === 'send' ? 'send' : 'none';
     return { enterMode, hintLabel };
@@ -787,7 +793,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     filteredEntries,
     dictationOrigin,
     companionActive,
-    companionBusy,
+    companionReplying,
     captureLive,
   ]);
 
@@ -947,8 +953,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // PROVENANCE (`origin`), which decides whether a launch is even possible.
   //
   // Superseded by this spec (binding contract point 3):
-  //   • the `companionBusy` GLOBAL no-op → busy now affects only the SEND path: a
-  //     TYPED app match launches even while Fredo is replying (AC5);
+  //   • the `companionBusy` GLOBAL no-op → retired in #2882 ST-4; #2892 ST-5
+  //     removes the last busy gate from the resolver, so a TYPED app match always
+  //     launches and a typed non-match with an active companion always sends —
+  //     even while Fredo is replying (AC5/REQ-2);
   //   • the non-empty non-match `openSelected()` fall-through → retired (R-6.1):
   //     unmatched typed text is sent or left alone, NEVER the substring tile;
   //   • "a dictated exact tile name launches" (#2878) → retired (R-4.3): dictated
@@ -956,13 +964,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // The EMPTY-query grid selection stays in the Enter handler (R-5.1) — it is not
   // a commit and never reaches here.
   const commitBarQuery = useCallback(
-    (raw: string, origin: EnterTextOrigin): 'launched' | 'sent' | 'none' => {
+    (raw: string, origin: EnterTextOrigin): 'launched' | 'sent' | 'queued' | 'none' => {
       const action = resolveEnterAction({
         query: raw,
         entries: filteredEntries,
         textOrigin: origin,
         companionActive,
-        companionBusy,
       });
 
       if (action.kind === 'launch') {
@@ -971,26 +978,28 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       }
 
       if (action.kind === 'send') {
-        // `askActiveCompanion` returns true iff this window has an active entity
-        // that accepted the message. A `false` (no active entity) leaves the text
-        // UNTOUCHED — never the retired launch fall-through.
-        if (askActiveCompanion(raw.trim())) {
+        // `askActiveCompanion` returns a typed `CompanionSendResult` iff this
+        // window has an active entity, or `null` otherwise. `rejected` is the ONLY
+        // non-accepting outcome; both `dispatched` and `queued` ACCEPT (the bar
+        // clears and focus stays). `null`/`rejected` leaves the text UNTOUCHED —
+        // never the retired launch fall-through (AC7/REQ-7).
+        const result = askActiveCompanion(raw.trim());
+        if (result && result.outcome !== 'rejected') {
           setQuery('');
           barTextRef.current = '';
           setBarOrigin(false);
           setEngaged(false);
-          return 'sent';
+          return result.outcome === 'queued' ? 'queued' : 'sent';
         }
         return 'none';
       }
 
-      // `none` (empty / busy / no-match-no-companion): the bar keeps its content.
+      // `none` (empty / no-match-no-companion): the bar keeps its content.
       return 'none';
     },
     [
       filteredEntries,
       companionActive,
-      companionBusy,
       launchFeature,
       setBarOrigin,
     ],
@@ -1179,9 +1188,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // Fires once on the `launcher`-origin session's END transition (the
   // `listening:false` state event), reads the CURRENT bar text, and is a one-shot
   // per session. It depends on `voice.liveText` as well as `listening` so a final
-  // transcript landing just after the state event still commits. At finalize while
-  // a generation is in flight `commitBarQuery` is a hard no-op (silent drop, no
-  // queue — R-2.4/R-4.2).
+  // transcript landing just after the state event still commits. #2892 ST-5: a
+  // finalize while a reply generation is in flight is ACCEPTED like any other send
+  // (the entity queues or interrupts per the persisted disposition) — the old
+  // busy hard-drop is retired (R-2.4/R-4.2 superseded by REQ-2/REQ-5).
   //
   // The commit EVIDENCE is session-scoped, never the bar mirror: the session is
   // committable iff its own `voice.committed` FINAL text grew past the baseline
@@ -1380,18 +1390,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           entries: filteredEntries,
           textOrigin: dictationOriginRef.current ? 'dictated' : 'typed',
           companionActive,
-          companionBusy,
           captureLive,
         });
         if (verdict.kind === 'none' && verdict.reason === 'listening') return;
 
         const q = query.trim();
         // The empty branch keeps today's grid launch — it must never be reachable
-        // from the autosend path (R-5.1). A generation in flight keeps the pre-#2882
-        // GLOBAL no-op here (the truth table's `companionBusy` row outranks the
-        // empty-query row); a TYPED app match below still launches while replying.
+        // from the autosend path (R-5.1). A reply GENERATION in flight keeps the
+        // empty-query grid launch a no-op (`replyInFlight`, NOT the read-hold
+        // `isInUse`, #2892 ST-5); a TYPED app match below still launches while
+        // replying (AC5).
         if (q === '') {
-          if (companionBusy) return;
+          if (companionReplying) return;
           openSelected();
           return;
         }
@@ -1432,7 +1442,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           // The persisted enablement + ST-3's fail-closed readiness probe: unknown
           // readiness ⇒ NOT armed ⇒ Space stays natively ordinary (contract 4c).
           voiceUsable: voiceEnabled && sttModel.ready,
-          busy: companionBusy,
+          // #2892 ST-5 — the hold precondition uses the SAME `replyInFlight`
+          // primitive as `holdAvailable` (the promise placeholder), so the offer
+          // and the actual arm can never disagree.
+          busy: companionReplying,
           modified: e.ctrlKey || e.metaKey || e.altKey || e.shiftKey,
           repeat: e.repeat,
         });
@@ -1492,7 +1505,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       entryCount,
       openSelected,
       commitBarQuery,
-      companionBusy,
+      companionReplying,
       companionActive,
       captureLive,
       filteredEntries,
@@ -1789,7 +1802,12 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             onMinimize={handleMinimize}
             enterMode={commandBar.enterMode}
             hintLabel={commandBar.hintLabel}
-            busy={companionBusy}
+            // #2892 ST-5 (AC2/AC3) — the bar's `busy` is a reply GENERATION in
+            // flight (`replyInFlight`), never the read-hold `isInUse`.
+            busy={companionReplying}
+            // #2892 ST-5 (AC5) — the accepted-but-undispatched sends the bar's
+            // waiting indicator reflects (0 = none).
+            queuedCount={queuedSendCount}
             // Spec #2877 ST-5 (R-5.3) — the bar cue is LAUNCHER-origin only, so
             // exactly one indicator shows per session (companion-origin is the
             // bubble's surface, never the bar). ST-5-fix (QA-10): the SAME
