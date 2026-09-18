@@ -368,3 +368,44 @@
   `Uncaught TypeError … reading 'slice'` tester artifact did **not** reproduce; console error-level was
   empty. Confirms the round-2 attribution (O-1) was correct — the artifact was the observer
   instrumentation, not the product.
+
+---
+
+## #2892 extension — send-during-reply / hold-grace edge probes
+
+> Unscripted probes for issue #2892 (reply-in-flight truth split + queue/interrupt dispatch + the two
+> persisted settings). A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the
+> origin note). Live policy; an undrivable lever is a named blocker (G-053) with a static/unit pin —
+> never fabricated. Cross-ref `launcher` E-62..E-66 + `settings` E-17..E-20.
+
+- [ ] E-58: **Queue across a teleport / unmount.** Queue 2-3 sends while streaming, then Ctrl+right-click
+      (or toggle the companion OFF) before the stream settles. Does the queue drain or drop, and is the
+      drop OBSERVABLE (no silent loss)? Record the queued count, the pre/post window state, and whether
+      the bar still holds the last text. The Architect's prose drops the entity-scoped queue on
+      unmount; a documented drop is expected, but a silent drop with no surface signal is a finding
+      (promotes to F-109/F-110).
+- [ ] E-59: **Interrupt during the error hold / watchdog settle.** Set `interrupt`; force an error
+      mid-stream (stop the managed server) and send a new message at the same instant. Does the error
+      hold's generation guard survive, or does a stale error/settle path clear or clobber the new
+      reply? Any stale clear, orphaned hold, or stuck stream is a finding (promotes to F-111).
+- [ ] E-60: **Grace changed DURING an active grace window.** Display a reply, hover, leave (grace
+      armed), then change `Fredo_companion_reply_leave_grace_ms` in Settings mid-grace. Does the
+      already-armed window keep its ORIGINAL duration (a new leave arms the new value only), or does
+      the setting resurrect/re-arm a stale window? A resurrected/duplicated window or a lost reply is
+      a finding (promotes to F-113/REQ-11).
+- [ ] E-61: **Pointer leaves and re-enters within the grace.** Leave the reply (grace starts), re-enter
+      before the grace expires, then leave again. Does the second leave arm a FRESH full grace, and is
+      the reply never cleared mid-grace? Any premature clear or stale timer is a finding (promotes to
+      F-113).
+- [ ] E-62: **Send while the game bubble is open.** Double-click to open TicTacToe, then send a
+      non-tile phrase from the bar. Record the exact outcome and copy — is the send rejected (text
+      preserved, no clear) or does it displace the game? Any phantom clear, spurious generation, or
+      clobbered game is a finding (promotes to F-110/F-112 + QA-7).
+- [ ] E-63: **Disposition changed mid-stream.** Start a long stream under `queue`, then switch the
+      setting to `interrupt` in Settings without stopping the stream, and send. Does the NEXT send
+      honor the live value, with no leftover queued item from the previous mode? Any stale queue entry
+      or wrong-mode dispatch is a finding (promotes to F-109/F-111/F-112).
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
