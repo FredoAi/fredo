@@ -283,3 +283,26 @@
 ### #2886 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2893 extension — open-intent / skill edge probes
+
+> Issue #2893 adds the companion open-app skill. A confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053)
+> with a static/unit pin — never fabricated.
+
+- [ ] E-54: **Model non-selection.** Repeat the open request until the model answers conversationally
+      without selecting the skill (or ask something adjacent). Does the app fail closed (no arbitrary
+      open) and reply readably, with no stuck stream? Any guessed open is a finding (promotes to
+      F-88/F-100).
+- [ ] E-55: **Malformed / partial skill output.** Force a malformed identity/argument from the model
+      path. Does the app reject it readably and open nothing? Any crash/arbitrary open is a finding
+      (promotes to F-99/F-101).
+- [ ] E-56: **Skill vs chat boundary.** Probe near-miss phrasings (`open the door`,
+      `can you monitor this`, `what is Mission Monitor`). Does every non-open intent stay a chat reply
+      with 0 windows? Any spurious open is a finding (promotes to F-87/F-100).
+- [ ] E-57: **Two open requests in one turn / rapid churn.** Send the same open request twice quickly
+      and two different ones back-to-back. Does the final window state match the last request, with no
+      duplicate/ghost window and no stuck stream? Any duplicate/ghost is a finding (promotes to
+      F-101/F-102).
