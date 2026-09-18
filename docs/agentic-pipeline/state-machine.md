@@ -324,11 +324,15 @@ The state machine defends the pipeline against agents that loop on a tool call i
 Two guards live in `pipeline-state.rs` (complementing opencode's own `doom_loop` recovery — see
 `permissions.md` "Loop mitigation"):
 
-- **`context`-read streak guard:** the `context` action refuses a streak of ≥ `CONTEXT_READ_STREAK_LIMIT` (3)
+- **`context`-read streak guard:** the `context` action refuses a streak of ≥ `CONTEXT_READ_STREAK_LIMIT` (8)
   consecutive reads with no intervening state-machine activity by that actor, printing a directive to
   stop re-reading and act. Any non-read event (a write, transition, block) resets the streak, so a
   legitimate agent is never throttled — only a pure read-loop is broken. (#2694: a planner spun 177
-  context reads in ~2 minutes.)
+  context reads in ~2 minutes.) The limit is deliberately **above the largest same-role parallel
+  dispatch wave**: N agents of one role each open with a context read, and no write event exists until
+  the first of them acts, so N consecutive reads accumulate — limit 3 falsely blocked the 4th
+  concurrent developer in #2893 wave 1 (staffing runs up to `ceil(points/5)` developers). A genuine
+  loop still trips the guard quickly; the refusal event resets the streak.
 - **A2A-file-as-comment refusal:** the `comment` action refuses any body file named `triage.md` (or
   carrying the `A2A working file` header marker) — planners edit the A2A file locally; the
   orchestrator assembles and posts the plan. (#2694: the raw template was posted as `Status`/`Question`

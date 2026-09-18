@@ -1860,7 +1860,15 @@ const PLAN_KEYS: &[&str] = &["software-architect", "ui-ux", "qa", "summary", "st
 /// consecutive `state_machine.call` reads with no intervening state-machine
 /// activity means the agent is looping, not working. The `context` action refuses
 /// the read once the streak reaches the limit, with a directive to stop and act.
-const CONTEXT_READ_STREAK_LIMIT: usize = 3;
+///
+/// The limit MUST exceed the largest same-role PARALLEL dispatch wave: a wave of N
+/// agents of one role each begins with one context read, and no write event exists
+/// until the first of them acts — so N consecutive reads accumulate and a limit ≤ N
+/// falsely blocks the (N)th agent. Observed #2893 wave 1: the 4th concurrent
+/// developer was blocked at limit 3; staffing runs up to `ceil(points/5)` (=6)
+/// developers, so the limit is set above that ceiling. A genuine loop still trips
+/// the guard quickly (the refusal is recorded and resets the streak).
+const CONTEXT_READ_STREAK_LIMIT: usize = 8;
 
 /// Assemble the plan at the `triage → implementation` transition into the
 /// `## Triage Plan` timeline-comment draft (`.opencode/tmp/<issue>/triage-plan.md`),

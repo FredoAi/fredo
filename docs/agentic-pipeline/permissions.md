@@ -71,7 +71,7 @@ written. Four layers stop a loop; keep all four enabled:
    summary after N agentic iterations (bounds any loop that doom_loop misses — e.g. variant probes
    with different inputs); `temperature` ≈ 0.1–0.3 keeps planning deterministic. Set both on the
    triage planners in `opencode.json`.
-4. **Pipeline-level guards (state machine).** The `context` action refuses a streak of ≥ 3
+4. **Pipeline-level guards (state machine).** The `context` action refuses a streak of ≥ 8
    consecutive context reads with no intervening action; the `comment` action refuses the A2A
    triage file as a body. Documented in `state-machine.md`.
 

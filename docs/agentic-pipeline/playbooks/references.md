@@ -19,6 +19,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **Build** - `cargo build` from `apps/tauri/src-tauri/`; `pnpm --filter @fredo/ui build` for the UI library; `pnpm dev:ui` for the Vite dev server (port 5174).
 - **Dev server** - `pnpm dev:tauri` runs the Tauri dev app; the MCP bridge binds `127.0.0.1:9223`; OTLP receivers bind `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP).
 - **Telemetry DB** - `fredo.db`; query via `.opencode/skills/telemetry-query/telemetry-query.ps1` (sqlite3 CLI). Inspect `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`.
+- **`fredo` CLI surface** - the binary's clap parser + subcommands live in `apps/tauri/src-tauri/src/infrastructure/cli/` (`emit`, `setup`, `open-app`); the `CliCommand` IPC variant enum + dispatch live in `apps/tauri/src-tauri/src/infrastructure/ipc.rs`. `setup` runs locally without the app; every other command forwards to the running app over the local socket and exits `2` with the documented message when it is not running (`docs/CLI_GUIDE.md`). The durable CLI feature suite lives at `.opencode/tests/fredo-cli/` (seeded at #2893).
 - **Chakra v3 numeric spacing props are SPACE TOKENS, not raw px** - `px={7}`/`py={3}`/`p={3}` on a Chakra `Box` resolve against the theme `space` scale (`space.7`=28px, `space.3`=12px), NOT 7px/3px. To use raw pixels pass a unit string: `p="3px 7px"`, `px="7px"`, `py="3px"` (#2824 round-1 FAIL: a badge sized with `px={7}`/`py={3}` rendered 75×35 px instead of the ~34×17 target; fixed with `p="3px 7px"`). UI/UX + Architect design specs must state padding/sizing as unit strings, and the Developer must verify the rendered `getBoundingClientRect` against the target.
 
 ---
@@ -50,6 +51,46 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+
+### G-185: live_nonfunctional_fail_dismissed_as_dev_artifact
+- **activation_date:** 2026-09-18
+- **observed:** #2893 round 2 — the latency bound failed live (window-present ~3 s against a ≤2 s bound, with a 2185 ms main-thread gap). The first read attributed it to the Mission Monitor mount in the Vite dev artifact; code + telemetry research showed the dominant cost was ordinary product code (the whole row store re-parsed several times inside the mount derive) that also runs in a packaged build, with the dev build only doubling it. The adopted fix was cost-only (parse each row payload at most once per row object) with an explicit output-parity proof.
+- **target_failure:** a live non-functional failure is attributed to a dev-environment artifact and either dismissed or met by relaxing the bound, so a real product long task ships; or a performance fix changes behaviour because output parity was never asserted.
+- **guardrail:** A non-functional live failure must be root-caused with a discriminating trace (source + telemetry) that separates dev-server effects from product code before any bound is reconsidered; the default is a product fix, and "dev artifact" is accepted only when the trace shows the measured quantity itself is dev-only. A performance fix must prove byte-identical output with a regression pin, and the bound is never relaxed to pass.
+- **home:** playbooks/software-architect.md (fix-plan root cause) + playbooks/tester.md (verdict) + playbooks/developer.md (verification) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-184: convergence_leaves_placeholder_bindings_in_machine_parsed_artifacts
+- **activation_date:** 2026-09-18
+- **observed:** #2893 planning — the QA plan and the seeded suites were drafted before the Architect landed its bindings, so machine-parsed placeholders ("pending Architect confirmation", a placeholder CLI subcommand, a pending spike-artifact path) survived into the durable suites; the QA author had to be resumed to realign the requirement column and substitute every placeholder before the transition persisted the suites.
+- **target_failure:** a parallel planning cluster whose sections land at different times leaves placeholders or stale "pending" notes in the machine-parsed artifacts (the plan's requirement column, the seeded suites), so the tester executes unresolved placeholders.
+- **guardrail:** At convergence, before the plan is declared agreed, re-read the QA and UI/UX sections and the seeded suites against the Architect's now-landed contracts and substitute every placeholder or pending binding with the bound literal (command name, observable, bound). Do not declare convergence while a machine-parsed artifact still carries an unresolved placeholder.
+- **home:** playbooks/self-improver.md (convergence) + playbooks/qa-expert.md (suite seeding) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-183: forced_branch_switch_discards_si_tooling_edits
+- **activation_date:** 2026-09-18
+- **observed:** #2893 — the Self-Improver made in-domain pipeline-script and pipeline-doc edits mid-run, validated them with the harness, and then the required forced checkout to the tester-serving spec branch silently discarded every uncommitted edit; the fix had to be re-applied and re-validated later.
+- **target_failure:** pipeline/tooling edits made by the Self-Improver during a run are uncommitted until the end-of-run doc-sync commit, so an intervening forced checkout (serving switch, spec sync) discards them with no signal and the validated fix never lands.
+- **guardrail:** Before any forced checkout that can discard the working tree, preserve pending in-domain edits outside git (copy them under the issue scratch) or commit them; re-apply and re-run the validation harness before the doc-sync commit. A validated-but-uncommitted pipeline change is not landed.
+- **home:** playbooks/self-improver.md (serving switch + doc-sync) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-182: served_webview_entry_missing_adapter_registration
+- **activation_date:** 2026-09-18
+- **observed:** #2893 round 1 — the skill-aware chat adapter was registered only in the standalone UI-library dev entry, not in the Tauri app's served webview entry, so the new companion path warned that it was called before the adapter was registered and silently no-oped. Every functional acceptance criterion failed live while the whole unit suite was green.
+- **target_failure:** a frontend capability that registers through the app's adapter bridge is wired into only one entry point, so a served webview that loads a different entry never gets the registration and the capability is inert live despite green unit tests.
+- **guardrail:** When a change adds or moves an adapter/bridge registration, identify EVERY entry point the app actually serves and register in each, mirroring that entry's established registration pattern; add a source-assertion guard that the served entry registers the capability, so a future removal fails a test rather than only a live round. Treat the entry you edited as unverified until the served entry is identified from the app's own HTML/config.
+- **home:** playbooks/developer.md (verification) + playbooks/self-improver.md (dispatch review) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-181: on_the_go_improvement
+- **activation_date:** 2026-09-18
+- **observed:** #2893 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** context-read guard false-positive on parallel same-role dispatches. The streak is keyed per actor, and a wave of N same-role agents each opens with one context read before any acts, so N consecutive reads accumulate. Limit 3 blocked the 4th concurrent developer in the #2893 wave-1 dispatch with a fresh legitimate session. Raised the context-read streak limit from 3 to 8, above the developer-count ceiling, documented in the state-machine, permissions and self-improver docs, and updated the harness guard test to 8 allowed plus the 9th blocked. test-scripts 106 of 106 passed.
+- **home:** references.md (G-181)
+- **effectiveness:** Pending
 
 ### G-180: gh_image_extension_required_for_evidence_upload
 - **activation_date:** 2026-09-17
@@ -90,6 +131,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When a guardrail's `guardrail:` text names a concrete script change, treat that change as a work item to apply in the SAME run it is observed (documented in the same pass and validated by the harness) rather than a note for later. Before dispatching agents that depend on a script capability, verify the capability exists (not merely that a guardrail mentions it).
 - **home:** .opencode/scripts/pipeline-state.rs (create-worktree guard) + .opencode/scripts/dev-env.ps1 (Restart spec resolution, `-EnvVars` injection) + .opencode/skills/pipeline-state/SKILL.md + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-18, #2887) — all three fixes landed the same run (the G-164 guard, the Restart spec resolution, and the `-EnvVars` passthrough), the harness re-ran at 104/104, and the CI fix then used the sanctioned worktree path.
+- **re-validated:** 2026-09-18, #2893 — the SI applied an on-the-go pipeline fix in the same run it was observed (the context-read guard false positive on parallel same-role dispatches): script + docs + harness regression updated together, validated at 106/106, and recorded through the improvement action.
 
 ### G-175: rework_loop_missing_forward_transition_blocks_the_verdict
 - **activation_date:** 2026-09-17
@@ -107,6 +149,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/developer.md (verification) + playbooks/tester.md + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-17, #2887) — the private-target + positive-control receipt found and cleared the real CI lint on the first attempt.
 - **re-validated:** 2026-09-18, #2888 — the receipt came from a cold worktree with a stated toolchain, an explicit positive control (a stubbed projection failed 97 assertions before the restore re-ran green) and a suspicious-speed check; the judging gate went green on the first attempt.
+- **re-validated:** 2026-09-18, #2893 — every Rust receipt stated the toolchain, used a worktree-private target directory and a positive control (a forced-fail assertion or lint), and stated the no-Rust rounds explicitly; all CI checks passed on the first run of the spec PR.
 
 ### G-173: dev_env_up_fast_path_serves_the_stale_build
 - **activation_date:** 2026-09-17
@@ -187,7 +230,8 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a wave's "file-disjoint" workstream consumes an interface owned by a sibling still in flight; the consumer cannot compile until the owner lands, so it either declares the interface itself (duplication/conflict at merge) or stalls — surfacing as rebase churn instead of a planned ordering edge.
 - **guardrail:** At decomposition, a sub-task that consumes a prop/type/module owned by another sub-task MUST declare a `requires:` edge on that owner (or the owner's interface MUST land in the same sub-task). "Different files" is not sufficient for wave independence — interface direction is.
 - **home:** playbooks/software-architect.md (decompose — interface edges) + playbooks/self-improver.md (dispatch ordering) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-18, #2893) — a plan still declared a reply-push path on a capsule that only integrated after the bridge owner (a consumer→owner cycle), the exact pattern this record targets; the SI resolved it at dispatch time by folding the bridge into the consumer rather than re-planning, so the rule reduced but did not eliminate the recurrence.
+- **re-validated:** 2026-09-18, #2893 — caught by the SI's dispatch review, not by the plan itself; the plan's file lists had contradicted its own dependency edges.
 
 ### G-163: baseline_restore_contaminates_serving_tree
 - **activation_date:** 2026-09-17
@@ -205,6 +249,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/developer.md (verification) + playbooks/self-improver.md (dispatch review) + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-17, #2882) — the grep found the missing `release Space to finish` chip and Enter guard pre-tester; the focused fix landed on the branch and the tester's live round then verified the copy exactly, with no rework round consumed.
 - **re-validated:** 2026-09-18, #2888 — the merged-tip pass grepped all six named observables against source AND the built bundle before dispatch, and the live round then verified them exactly with no copy/guard rework.
+- **re-validated:** 2026-09-18, #2893 — the merged-tip pass grepped every named observable (the four exact reply literals, the CLI subcommand, the reply/live-region/surface testids, the event + command names, the reply-beat constant) against the spec-branch tip before the testing entry; all present, no copy/guard rework consumed.
 
 ### G-161: driver_keyboard_no_native_text_insertion
 - **activation_date:** 2026-09-17
@@ -242,6 +287,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Confirmed (2026-09-15, #2877) — the PASS-with-confirmed-AC-violation was escalated to a rework; the fix landed and round 2 re-verified the invariant live on both origins, so the defect did not ship.
 - **re-validated:** 2026-09-17, #2882 — the audit judged the verdict ROWS against the effective ACs rather than the PASS token: the tester's 4 named-blocker partials are all environment/tooling-limited (no physical mic, undrivable model-removal, reduced-motion flip, network block, driver native-insertion) with unit/static pins, none is a reachable product defect, and all four continuous invariants (no indicator gap while capturing, no lost/converted space, no capture started by Ctrl+Space, no dictated phrase opening an app) were observed to hold. PASS substantiated; nothing escalated.
 - **re-validated:** 2026-09-17, #2883 — round 1's PASS-token did NOT survive independent judgement: the tester's verdict carried a decisive live defect (the bar field never shrank; a continuous short-content/typing-safety invariant violation) with a screenshot and an intrinsic-height oracle, so the SI audited it as a **FAIL** and drove a round-2 Fix Plan instead of accepting the token. Round 2 then verified the invariant live (empty field exactly 48 px, exact 108→48→108 churn) and the audit cleared it. The judge-the-rows rule is what stopped a false PASS from shipping.
+- **re-validated:** 2026-09-18, #2893 — the audit judged the round-3 verdict rows against the effective acceptance criteria rather than the PASS token: the two named-blocker rows (live ambiguity unreachable with one addressable app; no in-app open-failure lever) are environment/scope-limited with in-repo pins, and no AC row carried a confirmed reachable violation, so PASS was substantiated and nothing was escalated.
 
 ### G-157: on_the_go_improvement
 - **activation_date:** 2026-09-15
