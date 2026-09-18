@@ -218,3 +218,15 @@
 - **S-26 PASS.** `open NotARealApp` → ZERO new windows, reply exactly `I couldn't find "NotARealApp"`,
   companion back at rest (no `happy`); screenshot succeeded; console clean.
 
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+- **S-24 PASS (re-confirmed).** Typed `open Mission Monitor` (insert-text lever) → exactly ONE Mission
+  Monitor window (`Sessions`, DOM `.fredo-window__surface` 0→1) with no further action; reply exactly
+  `Opening Mission Monitor` and perceivable (committed +10…+24 ms after `llm-skill-call`, before the
+  window at +870…+1132 ms); screenshot succeeded; console clean.
+- **S-25 PASS (re-confirmed).** `Missing all the time` → 1 Companion generation, ZERO windows;
+  screenshot succeeded; console clean.
+- **S-26 PASS (re-confirmed).** `open NotARealApp` → ZERO new windows, reply exactly
+  `I couldn't find "NotARealApp"`, companion back at rest (no `happy`); screenshot succeeded;
+  console clean.
+
