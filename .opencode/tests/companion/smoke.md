@@ -213,3 +213,13 @@
 - [ ] S-33: **Unknown quick path.** Send `open NotARealApp`. **Expected:** ZERO windows, the reply
       `I couldn't find "NotARealApp"`, companion at rest (no `happy`); screenshot succeeds; console
       clean.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+- **S-31 PASS.** `Reply with exactly: Hi there!` equivalent leg (`hi`): reply streamed into
+  `[data-testid="fredo-reply-surface"]` (`Hi there! How can I help you today?`), companion returned
+  to rest, screenshot succeeded, console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- **S-32 PASS.** `open Mission Monitor` → ONE Mission Monitor window (DOM surface count 0→1, dock
+  entry present) with no further action; reply EXACTLY `Opening Mission Monitor` (screenshot).
+- **S-33 PASS.** `open NotARealApp` → ZERO new windows, reply EXACTLY `I couldn't find "NotARealApp"`,
+  companion at rest (avatar `idle`, no `happy`); screenshot succeeded; console clean.
