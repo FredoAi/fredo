@@ -1398,3 +1398,40 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 - **F-89 FAIL.** Repeatability 0/3 (typed open requests produced 0 opens / 0 replies) — the ≤2 s
   window-present bound is unmet; `data-streaming` absent / bar usable (stability held, but the
   feature did not execute). Raw N/M: **0/3**.
+
+### #2893 testing round 2 (spec/2893 @ 223279d3) — results
+
+> **Verdict: FAIL — non-functional latency only (F-89).** The round-1 wiring defect is fixed: every
+> typed/dictated open request now reaches the model and the `open_app` skill executes. All functional
+> rows PASS; F-89's latency clause fails. Input lever: insert-text (`launcher-command-input` TEXTAREA).
+
+- **F-85 PASS** (was FAIL). Typed `open Mission Monitor` → hint chip `↵ send to Fredo`; Enter
+  committed; ONE Mission Monitor window opened (DOM `.fredo-window__surface` count 0→1; the app's
+  feature windows are in-webview DOM windows, not OS windows — `tauri_manage_window list` shows only
+  the native `main` window, so the DOM count + dock entry are the correct observable); reply in
+  `[data-testid="fredo-reply-surface"]` EXACTLY `Opening Mission Monitor`; success beat `happy`;
+  window closed by its own `Close` control between legs. Identity fingerprint aria-label+header =
+  `Sessions`/`FSessions` — byte-equal to the CLI-opened surface (F-89/Q-5 image).
+- **F-86 PASS** (was FAIL). Autosend ON: `stt_start{origin:"launcher"}` → synthetic
+  `stt:transcript` final (`{sessionId:"tester-2893-q2",revision:1,text:"open Mission Monitor",isFinal:true}`,
+  the L3 lever) → `stt_stop` auto-committed exactly ONE generation → reply EXACTLY
+  `Opening Mission Monitor` + one window, identical to F-85. (#2888 normalization rendered the bar
+  text `Open mission monitor` and the resolver still resolved it.) **Physical-mic real capture
+  remains a NAMED BLOCKER.**
+- **F-87 PASS.** `set` → hint `↵ open Settings`, Settings window opened, **0** generations;
+  `Miss` → hint `↵ open Mission Monitor`, 0 generations, no duplicate window;
+  `monitor` → hint `↵ open Mission Monitor`, 0 generations, no duplicate;
+  `Missing all the time` → hint `↵ send to Fredo`, 1 generation, 0 windows;
+  `MM` → hint `↵ send to Fredo`, 1 generation, 0 windows. #2882's whole-query matcher is unchanged.
+- **F-88 PASS** (was FAIL). `open NotARealApp` → ZERO new windows; reply EXACTLY
+  `I couldn't find "NotARealApp"`; avatar `idle` (no `happy`); exactly ONE generation. The live
+  ambiguous leg stays a NAMED BLOCKER (one addressable app).
+- **F-89 FAIL (latency clause only; all other clauses PASS).** The window opens — repeatability
+  **5/5** typed runs (raw 5/5) and 2/2 dictated; but **window-present = 3003 ms after skill
+  selection** (also 2601/2995/3008/3003 ms across four clean runs) vs the Architect bound
+  **≤2000 ms**, and the main thread is **unresponsive for 2180 ms** during the open (`setInterval`
+  10 ms sampler gap). Ordering clauses hold: reply committed **9 ms** after `llm-skill-call`,
+  open dispatched (`app-open-request`) **823 ms** after skill selection (the intentional
+  `APP_OPEN_REPLY_BEAT_MS = 800`), `aria-busy` clears, companion back at rest. Root cause = the
+  Mission Monitor window mount long task (~2.18 s) in the served dev artifact (Vite + StrictMode);
+  the open dispatch itself is inside the bound. **This is the round's only failing row.**
