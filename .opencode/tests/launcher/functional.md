@@ -1469,3 +1469,119 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
   window); an idle-with-Mission-Monitor-open control measured a max gap of **11.5 ms** over 4.0 s.
   Derive output parity: same 2 sessions / 4 react-flow nodes / 3 edges and the same window
   fingerprint as round 2 — no session/node lost or reordered.
+
+---
+
+## #2892 extension — the bar stays editable and a send during a reply is never lost (G-136)
+
+> Issue #2892 decouples the "Fredo is replying…" status from the read-hold (`replyInFlight` vs
+> `isInUse`), removes the reply-state `readOnly` block, and turns a send during a reply into an
+> accepted queue (default) or an interrupt. Domain rows: `companion` F-106..F-115 /
+> `settings` F-41..F-47. **Verification policy: live** — mandatory receipt F-99; a static-only PASS is
+> a FALSE PASS.
+> **G-136 supersession (history preserved):** **F-55**'s "extra submits ignored (default)" clause and
+> **F-58**'s "busy → input READ-ONLY, Enter no-op" clause are SUPERSEDED (the input is never read-only
+> from reply state; a 2nd send is accepted + queued). **F-52/F-53** (reply stream completion/error)
+> and the #2882 matcher/hint contract remain IN FORCE.
+> **Test data:** companion ON at the home seat, model present, deterministic
+> `Reply with exactly: Hi there!`, and `Write 400 words about the history of the bicycle.` as the
+> streaming reply.
+
+## F-90 (REQ-1 / AC1) — the bar is editable with a reply on screen (streaming AND completed-held)
+
+- [ ] F-90: L1 + L2: with a completed reply displayed, hover it, click the bar, type `abc`; then with
+      a streaming reply, click the bar and type during the stream. Read `readOnly`, `disabled`,
+      `document.activeElement`, and `.value` after each.
+  **Expected:** `document.activeElement` is the bar field on click; `.value === "abc"` in BOTH states;
+      `readOnly === false` and `disabled === false` — no reply state ever writes `readOnly`.
+  - **Edge:** caret placed mid-text; game bubble open; typing while scrolled back in a long reply.
+
+## F-91 (REQ-2 / AC2) — hover/focus changes ONLY the hold window
+
+- [ ] F-91: with no generation in flight, hover then keyboard-focus the reply; sample the placeholder,
+      `aria-busy`, `data-streaming`, and the Enter outcome for a non-tile query — before, during, after.
+  **Expected:** only the hold-open duration changes; the placeholder is the resting copy (NEVER
+      `Fredo is replying…`); `aria-busy` is absent/false; a non-tile Enter still dispatches.
+  - **Edge:** hover churn; hover during streaming; focus then pointer on the same bubble.
+
+## F-92 (REQ-3 / AC3) — the replying status is true iff in flight; it clears at settle with the pointer resting
+
+- [ ] F-92: while `data-streaming` read the placeholder + `aria-busy`; at `llm-done`, with the pointer
+      still resting on `[data-testid="fredo-reply-surface"]`, re-read both while the reply stays visible.
+  **Expected:** streaming -> placeholder EXACTLY `Fredo is replying…`, `aria-busy="true"`; at settle ->
+      resting placeholder, `aria-busy` false/null, reply still displayed.
+  - **Edge:** error settle; watchdog settle; TicTacToe streaming; settle during the happy hold.
+
+## F-93 (REQ-5 / AC5) — default `queue`: accepted, visibly waiting, FIFO auto-dispatch exactly-once
+
+- [ ] F-93: L3: default disposition; start the long stream; while streaming send
+      `Reply with exactly: alpha`, then `beta`, then `gamma`.
+  **Expected:** each accepted (bar clears); `[data-testid="launcher-command-queued"]` present with text
+      EXACTLY `Queued — waiting for Fredo…`; on each settle the next prompt dispatches; the replies
+      arrive in order `alpha`, `beta`, `gamma`, each exactly once; the indicator clears when empty.
+  - **Edge:** 3 rapid sends; send at the settle race; send during the happy hold.
+
+## F-94 (REQ-7 / AC6) — `interrupt`: supersede the in-flight reply and dispatch the new message
+
+- [ ] F-94: L4: set `interrupt`; start the long stream; send `Reply with exactly: INTERRUPTED`; wait
+      at least 6 s.
+  **Expected:** the settled reply is EXACTLY `INTERRUPTED`; the superseded stream stops appending; the
+      new reply is NOT cleared by the superseded generation's 5 s hold timer; no queued indicator.
+  - **Edge:** interrupt near settle; interrupt during the error hold; repeated interrupts.
+
+## F-95 (REQ-8 / AC7) — clear only on acceptance; no phantom clear
+
+- [ ] F-95: L5: companion OFF (and again away) -> type a non-tile phrase -> Enter; plus the component
+      pin of `commitBarQuery` with `askActiveCompanion` returning `{ outcome: 'rejected' }`.
+  **Expected:** OFF/away/rejected leave the bar text UNCHANGED (no clear, no generation); ONLY
+      `dispatched` or `queued` clears the bar.
+  - **Edge:** no entity; rejected; empty query; game bubble open.
+
+## F-96 (REQ-1 / AC1 + #2882) — Enter's rule is unchanged: no "busy" gate, typed non-match still sends
+
+- [ ] F-96: with the companion ACTIVE and a reply streaming, type `set` + Enter (exact tile) and then a
+      typed non-match phrase + Enter; sample the window count and the generation count.
+  **Expected:** `set` OPENS Settings with 0 generations; the typed non-match is SENT with 1 generation
+      and 0 windows (the #2882 rule survives); no tile is launched mid-stream (the old busy
+      fall-through must not return).
+  - **Edge:** exact name while streaming; substring match while streaming; Enter during the happy hold.
+
+## F-97 (REQ-3 / AC3) — the hint stays truthful while a reply is in flight
+
+- [ ] F-97: while streaming, read the hint chip for an empty query, an exact tile name, and a non-tile
+      phrase; separately hold Space on the empty bar while streaming.
+  **Expected:** the hint always states the action Enter would take right now; the live-capture
+      precedence row may read `Fredo is replying…` but the `busy` source is `replyInFlight`, so a
+      completed held reply never shows it.
+  - **Edge:** companion away/OFF mid-hint; theme switch while the hint is visible.
+
+## F-98 (NF) — exactly-once under rapid sends; no silent drop
+
+- [ ] F-98: L6: under `queue`, fire 5 rapid sends during one stream; count the replies and the indicator
+      samples; repeat at six-fold speed.
+  **Expected:** exactly 5 distinct replies, in order, each once — none dropped, none duplicated, no
+      double generation; the indicator count tracks the queue size.
+  - **Edge:** Enter spam; send at the settle boundary; unmount/teleport mid-queue.
+
+## F-99 (REQ-LIVE / NF) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-99: same run as F-90..F-98: `fredo emit --event-type chat --session-id e2e-2892-chat` +
+      `--event-type tool_use --session-id e2e-2892-tool --tool-name read_file`; query
+      `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill).
+  **Expected:** `telemetry_spans` NON-ZERO with a recent `max(ingested_at)`; both markers classify;
+      every live row carries a rendered receipt. **A static-only PASS is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim.
+
+## F-100 (NF) — token-native, console clean, no re-render loop, build gates
+
+- [ ] F-100: static-grep the changed launcher files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the new clear/queue/hint code
+      for effect/memo deps; run `pnpm --filter @fredo/ui build` + `test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); build exit 0; suite green with no weakened assertion
+      (refreshed ones owned per G-125).
+  - **Edge:** theme switch mid-stream; reduced motion (static pin + named blocker).
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
