@@ -4,8 +4,8 @@
  * Contract (Architect, `## API Contracts & Data Models` — `CompanionEntity.tsx`
  * + `replyProtection.ts`):
  *
- *   `REPLY_LEAVE_GRACE_MS = 2000`; `useReplyProtection()` returns
- *   `{ protectedRef, protected, enter, leave, clearOrDefer }`.
+ *   `REPLY_LEAVE_GRACE_MS = 2000`; `useReplyProtection(graceMs = REPLY_LEAVE_GRACE_MS)`
+ *   returns `{ protectedRef, protected, enter, leave, clearOrDefer }`.
  *
  * Semantics (binding — the four AC4 EARS clauses):
  *
@@ -97,13 +97,25 @@ export function shouldAnnounceProtection(
  * The single protection decision for the seat reply. One instance per entity;
  * the entity owns the reply's clear timers and routes their message clear through
  * `clearOrDefer`.
+ *
+ * `graceMs` (REQ-10 / AC9) is the configurable leave grace. It defaults to the
+ * shipped `REPLY_LEAVE_GRACE_MS`; a NEW `leave()` arms exactly the value current
+ * at that moment (see `graceMsRef`).
  */
-export function useReplyProtection(): ReplyProtection {
+export function useReplyProtection(graceMs: number = REPLY_LEAVE_GRACE_MS): ReplyProtection {
   const [isProtected, setIsProtected] = useState(false);
   const protectedRef = useRef(false);
   const sourcesRef = useRef<Set<ReplyProtectionSource>>(new Set());
   const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deferredClearRef = useRef<(() => void) | null>(null);
+  // REQ-10 — read the grace through a ref so the STABLE `leave` callback always
+  // arms a NEW window with the latest value. An already-armed timer keeps the
+  // delay it was scheduled with: a mid-grace setting change can never re-time or
+  // resurrect a stale window (a fresh `leave()` is the only thing that arms).
+  const graceMsRef = useRef(graceMs);
+  useEffect(() => {
+    graceMsRef.current = graceMs;
+  }, [graceMs]);
 
   const clearGraceTimer = useCallback(() => {
     if (graceTimerRef.current) {
@@ -144,7 +156,7 @@ export function useReplyProtection(): ReplyProtection {
     graceTimerRef.current = setTimeout(() => {
       graceTimerRef.current = null;
       release();
-    }, REPLY_LEAVE_GRACE_MS);
+    }, graceMsRef.current);
   }, [clearGraceTimer, release]);
 
   const clearOrDefer = useCallback((clear: () => void) => {

@@ -16,7 +16,9 @@
  * #2871 ST-3 — chat affordances (presentational/controlled; the host derives).
  *   • `busy` holds `aria-busy` on the input group plus a static accent indicator
  *     next to the prefix glyph for the WHOLE stream (reduced-motion-safe — no
- *     required animation).
+ *     required animation). #2892 ST-5: `busy` means a reply GENERATION is in
+ *     flight (the host feeds `replyInFlight`, NOT `isInUse`), so hovering a
+ *     completed reply no longer fakes "replying".
  *   • `enterMode` swaps the prefix glyph: `>` chevron for launch/filter, a small
  *     speech-bubble outline for send (both `aria-hidden`).
  *   • `hintLabel` renders inside the existing `endElement` slot as a flex row
@@ -30,9 +32,25 @@
  *     existing `borderLeft` is the vertical divider) and is never replaced.
  *     When the chip shows, the `Input` reserves `paddingEnd` so the typed text
  *     never runs under it.
- *   • State 5 (busy, UI/UX §1): the `Input` becomes `readOnly` and shows the
- *     `Fredo is replying…` placeholder; `aria-busy` + the accent indicator stay
- *     on for the whole stream.
+ *   • State 5 (busy, UI/UX §1): the field shows the `Fredo is replying…`
+ *     placeholder and `aria-busy` + the accent indicator stay on for the whole
+ *     stream. #2892 ST-5 (AC1): a reply state NEVER sets `readOnly` — the field
+ *     is always focusable and typeable while a bubble is on screen; only the
+ *     placeholder is keyed on `busy`.
+ *
+ * #2892 ST-5 — the queued-message affordance (AC5/AC7):
+ *   • `queuedCount` (0 = none) drives a quiet passive indicator in the below-bar
+ *     status slot (`launcher-command-queued`, id `fredo-command-queued`) whose
+ *     copy comes from ST-3's `queuedWaitingCopy` — the bar never re-derives it;
+ *   • slot precedence is alert (voice error) > hearing-nothing > queued >
+ *     `Shift+Enter` caption, so the queued line never displaces a live message
+ *     and at most one line ever shows (`showNewlineCaption` requires
+ *     `queuedCount === 0`);
+ *   • the searchbox `aria-describedby` is composed from the targets actually
+ *     rendered (the hint mirror and/or the queued indicator) — no dangling ids;
+ *   • a hidden, ALWAYS-mounted polite live region (`launcher-queued-announcer`)
+ *     announces the queue TRANSITIONS only: 0→n and n→m (m≥1) read the waiting
+ *     copy; the drain edge n→0 reads `QUEUED_DISPATCH_ANNOUNCEMENT`.
  *
  * #2877 ST-5 — launcher-origin listening affordance (DR-7/DR-10/DR-11), rendered
  * only while the host reports `listening` (the host gates it to a `launcher`-
@@ -134,9 +152,26 @@ import type { ChangeEvent } from 'react';
 import { Box, InputGroup, Textarea } from '@chakra-ui/react';
 
 import { tint } from '../../../../shared/utils/colorTint';
+import {
+  QUEUED_WAITING_TESTID,
+  queuedWaitingCopy,
+} from '../../../../shared/components/companion/companionDispatch';
 
 /** Pending Enter action, derived by the host (UI/UX §1); presentational only. */
 export type LauncherEnterMode = 'launch' | 'send' | 'none';
+
+/**
+ * #2892 ST-5 — the queued indicator's element id, referenced by the searchbox
+ * `aria-describedby` only while the indicator is actually rendered.
+ */
+export const QUEUED_INDICATOR_ID = 'fredo-command-queued';
+
+/**
+ * #2892 ST-5 — the queue drain-edge announcement (UI/UX §5, bound literal). The
+ * visible indicator is deliberately NOT a live region; this hidden polite region
+ * is the ONE AT channel for the queue, and it fires on transitions only.
+ */
+export const QUEUED_DISPATCH_ANNOUNCEMENT = 'Sending your queued message to Fredo';
 
 /**
  * Spec #2887 ST-5 (R-3/AC3) — the BINDING honest hold-cue contract.
@@ -184,8 +219,22 @@ export interface LauncherCommandBarProps {
   enterMode?: LauncherEnterMode;
   /** #2871: full hint-chip text (host-derived); absent/empty → no chip. */
   hintLabel?: string;
-  /** #2871: generation in flight — holds `aria-busy` + the accent indicator. */
+  /**
+   * #2871; #2892 ST-5 re-scoped — a reply GENERATION is in flight (the host feeds
+   * `replyInFlight`, NOT `isInUse`). Holds `aria-busy` + the accent indicator and
+   * selects the `Fredo is replying…` placeholder. It NEVER sets `readOnly`
+   * (AC1): the field stays editable in every reply state, so hovering a finished
+   * reply (which keeps `isInUse` true) cannot make typing impossible.
+   */
   busy?: boolean;
+  /**
+   * #2892 ST-5 (AC5) — the count of accepted sends awaiting dispatch (0 = none).
+   * While ≥ 1 the bar renders the quiet waiting indicator in the below-bar status
+   * slot (`launcher-command-queued`) with ST-3's `queuedWaitingCopy`, and the
+   * hidden `launcher-queued-announcer` announces queue transitions. Defaults to
+   * `0`, so the inactive bar is byte-identical (AC4).
+   */
+  queuedCount?: number;
   /**
    * Spec #2877 ST-5 (DR-7) — the launcher-origin listening cue. `true` while a
    * `launcher`-origin dictation session owns the bar: swaps the placeholder to
@@ -535,6 +584,7 @@ export function LauncherCommandBar({
   onMinimize,  enterMode = 'launch',
   hintLabel,
   busy = false,
+  queuedCount = 0,
   listening = false,
   cue,
   holdArmed = false,
@@ -785,13 +835,52 @@ export function LauncherCommandBar({
   const statusMessage =
     voiceErrorMessage ?? (listening && hearingNothing ? HEARING_NOTHING_COPY : null);
 
+  // #2892 ST-5 (AC5) — the queued waiting indicator. The below-bar slot shows at
+  // most ONE message; the precedence is alert (voice error) > hearing-nothing >
+  // queued > newline caption. The indicator is therefore suppressed whenever
+  // `statusMessage` is present, and it in turn suppresses the `Shift+Enter`
+  // caption (`showNewlineCaption` requires `queuedCount === 0`). It outranks the
+  // key-hint caption because a pending send matters more than a keyboard hint.
+  const showQueued = queuedCount >= 1 && !statusMessage;
+
   // #2883 ST-1 (UI/UX §1 / R-1.4) — the CONTEXTUAL `Shift+Enter` caption. It is
   // rendered ONLY when the host reports the companion active AND the field is
   // actually wrapped (≥2 visual lines): short or empty content never grows a
   // status row (restraint NFR, AC5's second half). Precedence in the status slot:
-  // alert (voice error) > hearing-nothing > newline caption — so the caption never
-  // displaces a live message, and Enter's own wording (#2882) is untouched.
-  const showNewlineCaption = newlineHint && visualLines >= 2 && !statusMessage;
+  // alert (voice error) > hearing-nothing > queued > newline caption — so the
+  // caption never displaces a live message, and Enter's own wording (#2882) is
+  // untouched.
+  const showNewlineCaption =
+    newlineHint && visualLines >= 2 && !statusMessage && queuedCount === 0;
+
+  // #2892 ST-5 (a11y) — compose the searchbox `aria-describedby` from the targets
+  // ACTUALLY rendered: the hint mirror (only while the chip shows AND the host
+  // supplied its id) and/or the queued indicator. Undefined when neither renders,
+  // so no dangling id is ever referenced.
+  const describedBy =
+    [
+      showHint && ariaDescribedBy ? ariaDescribedBy : null,
+      showQueued ? QUEUED_INDICATOR_ID : null,
+    ]
+      .filter((id): id is string => Boolean(id))
+      .join(' ') || undefined;
+
+  // #2892 ST-5 — the queue announcer is TRANSITION-driven, never per event. Rise
+  // 0→n and decrease n→m (m≥1) announce the waiting copy for the NEW count; the
+  // drain edge →0 announces the dispatch sentence. A no-change re-render is silent.
+  const [queuedAnnouncement, setQueuedAnnouncement] = useState('');
+  const prevQueuedCountRef = useRef(queuedCount);
+  useEffect(() => {
+    const was = prevQueuedCountRef.current;
+    prevQueuedCountRef.current = queuedCount;
+    if (queuedCount > was) {
+      setQueuedAnnouncement(queuedWaitingCopy(queuedCount));
+    } else if (queuedCount < was) {
+      setQueuedAnnouncement(
+        queuedCount >= 1 ? queuedWaitingCopy(queuedCount) : QUEUED_DISPATCH_ANNOUNCEMENT,
+      );
+    }
+  }, [queuedCount]);
 
   return (
     <Box
@@ -1003,14 +1092,18 @@ export function LauncherCommandBar({
           aria-expanded={gridOpen}
           aria-controls="fredo-launcher-grid"
           aria-activedescendant={ariaActivedescendant}
-          aria-describedby={showHint ? ariaDescribedBy : undefined}
+          // #2892 ST-5 — composed from the targets ACTUALLY rendered (hint mirror
+          // and/or the queued indicator); omitted entirely when neither renders.
+          aria-describedby={describedBy}
           // #2882 ST-4 (UI/UX §8): the chord ALWAYS opens/focuses the bar, so the
           // shortcut is advertised unconditionally — it is no longer a voice
           // affordance (the hold-Space long-press is not expressible in ARIA; the
           // armed mirror sentence carries it).
           aria-keyshortcuts="Control+Space"
           placeholder={placeholder}
-          readOnly={busy}
+          // #2892 ST-5 (AC1) — DELETED `readOnly={busy}`: no reply state may
+          // disable the field. Streaming, hovered-complete and queued states all
+          // keep the caret and typing available ("keep composing").
           value={query}
           onChange={handleChange}
           onFocus={handleInputFocus}
@@ -1131,12 +1224,32 @@ export function LauncherCommandBar({
           {statusMessage}
         </Box>
       )}
+      {/* #2892 ST-5 (AC5) — the queued waiting indicator: the SAME box metrics as
+          the newline caption, plain text (NOT a live region — the hidden announcer
+          is the one AT channel, avoiding double-speak). Rendered only while a
+          message is queued AND no higher-priority status message occupies the
+          slot; the id is referenced by `aria-describedby` only in that state. */}
+      {showQueued && (
+        <Box
+          id={QUEUED_INDICATOR_ID}
+          data-testid={QUEUED_WAITING_TESTID}
+          mt="2"
+          maxWidth="560px"
+          textAlign="center"
+          fontFamily="var(--font-primary)"
+          fontSize="12px"
+          color="var(--text-subtle)"
+        >
+          {queuedWaitingCopy(queuedCount)}
+        </Box>
+      )}
       {/* #2883 ST-1 (R-1.4) — the CONTEXTUAL newline caption, in the SAME status
           slot (identical `mt`/`maxWidth`/centring/type ramp) and only while the
           field is wrapped with the companion active. It is plain text (no live
           region): the growing bar itself is silent to AT, and the static sentence
           reaches AT through the `fredo-command-hint-sr` mirror. A higher-priority
-          status message suppresses it, so the slot never shows two messages. */}
+          status message or the queued indicator suppresses it, so the slot never
+          shows two messages. */}
       {showNewlineCaption && (
         <Box
           data-testid="launcher-command-newline-caption"
@@ -1187,6 +1300,27 @@ export function LauncherCommandBar({
         borderWidth="0"
       >
         {finalTranscript}
+      </Box>
+      {/* #2892 ST-5 (AC5) — the queued announcer: ALWAYS mounted (AT registers a
+          persistent polite region) and transition-driven only. The visible
+          indicator is not a live region, so the queue is spoken exactly once per
+          transition and never on a plain re-render. */}
+      <Box
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="launcher-queued-announcer"
+        position="absolute"
+        width="1px"
+        height="1px"
+        padding="0"
+        margin="-1px"
+        overflow="hidden"
+        clipPath="inset(50%)"
+        whiteSpace="nowrap"
+        borderWidth="0"
+      >
+        {queuedAnnouncement}
       </Box>
     </Box>
   );

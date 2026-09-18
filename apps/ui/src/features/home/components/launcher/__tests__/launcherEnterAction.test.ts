@@ -187,7 +187,6 @@ describe('resolveEnterAction — precedence (R-5/R-6, clarifications #1/#2)', ()
     entries: ENTRIES,
     textOrigin: 'typed' as const,
     companionActive: true,
-    companionBusy: false,
   };
 
   it('1. empty query → none/empty (trimmed; independent of every other input)', () => {
@@ -216,35 +215,30 @@ describe('resolveEnterAction — precedence (R-5/R-6, clarifications #1/#2)', ()
     ).toEqual({ kind: 'none', reason: 'no-match-no-companion' });
   });
 
-  it('2. dictated while busy → none/busy (never a second generation)', () => {
+  it('2. dictated + active ⇒ send (a dictated transcript is always deliverable)', () => {
+    // Supersedes "dictated while busy → none/busy": #2892 ST-5 removed the busy
+    // term, so a dictated transcript with an active companion SENDS in every
+    // reply state and the entity decides queue vs interrupt.
     expect(
-      resolveEnterAction({
-        ...base,
-        query: 'Settings',
-        textOrigin: 'dictated',
-        companionBusy: true,
-      }),
-    ).toEqual({ kind: 'none', reason: 'busy' });
+      resolveEnterAction({ ...base, query: 'Settings', textOrigin: 'dictated' }),
+    ).toEqual({ kind: 'send', textOrigin: 'dictated' });
   });
 
   it('3. typed + app match → launch, INDEPENDENT of the companion state (AC5)', () => {
     for (const companionActive of [true, false]) {
-      for (const companionBusy of [true, false]) {
-        expect(
-          resolveEnterAction({
-            ...base,
-            query: 'set',
-            companionActive,
-            companionBusy,
-          }),
-        ).toEqual({ kind: 'launch', feature: SETTINGS });
-      }
+      expect(
+        resolveEnterAction({
+          ...base,
+          query: 'set',
+          companionActive,
+        }),
+      ).toEqual({ kind: 'launch', feature: SETTINGS });
     }
   });
 
-  it('3. typed match while companionBusy ⇒ launch (the old busy no-op is retired)', () => {
+  it('3. typed match ⇒ launch (the old busy no-op is retired; there is no busy input)', () => {
     expect(
-      resolveEnterAction({ ...base, query: 'monitor', companionBusy: true, companionActive: true }),
+      resolveEnterAction({ ...base, query: 'monitor', companionActive: true }),
     ).toEqual({ kind: 'launch', feature: MISSION_MONITOR });
   });
 
@@ -259,7 +253,7 @@ describe('resolveEnterAction — precedence (R-5/R-6, clarifications #1/#2)', ()
     });
   });
 
-  it('4. typed, no match, active && !busy → send (origin typed)', () => {
+  it('4. typed, no match, active → send (origin typed)', () => {
     expect(resolveEnterAction({ ...base, query: 'Missing all the time' })).toEqual({
       kind: 'send',
       textOrigin: 'typed',
@@ -286,18 +280,21 @@ describe('resolveEnterAction — precedence (R-5/R-6, clarifications #1/#2)', ()
     });
   });
 
-  it('5. typed, no match, busy → none/busy', () => {
-    expect(
-      resolveEnterAction({ ...base, query: 'Missing all the time', companionBusy: true }),
-    ).toEqual({ kind: 'none', reason: 'busy' });
+  it('5. typed, no match, companionActive ⇒ send; no companion ⇒ none/no-match-no-companion', () => {
+    // Supersedes "5. typed, no match, busy → none/busy" (the old busy-gate pin).
+    // The send is gated ONLY by `companionActive` — a reply generation is an
+    // ENTITY concern, never a bar-level drop (AC5/REQ-2).
+    expect(resolveEnterAction({ ...base, query: 'Missing all the time' })).toEqual({
+      kind: 'send',
+      textOrigin: 'typed',
+    });
     expect(
       resolveEnterAction({
         ...base,
         query: 'Missing all the time',
-        companionBusy: true,
         companionActive: false,
       }),
-    ).toEqual({ kind: 'none', reason: 'busy' });
+    ).toEqual({ kind: 'none', reason: 'no-match-no-companion' });
   });
 
   it('settles the bar states against the wrong old rule (exact full-name only)', () => {
@@ -379,10 +376,10 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
       'none:empty|true|false': undefined,
       'none:busy|false|false': ENTER_HINT_COPY.busy,
       'none:busy|true|false': ENTER_HINT_COPY.busy,
-      // This pair is unreachable from `resolveEnterAction` (busy always yields
-      // reason 'busy'), but the function is total: a caller that reports busy
-      // gets the busy copy.
-      'none:no-match-no-companion|true|false': ENTER_HINT_COPY.busy,
+      // #2892 ST-5 — `opts.busy` is consulted ONLY in the live-capture branch, so
+      // a caller that reports `no-match-no-companion` gets the truthful `no match`
+      // chip even while a reply is in flight (the old busy override is retired).
+      'none:no-match-no-companion|true|false': ENTER_HINT_COPY.noMatch,
       'none:no-match-no-companion|false|false': ENTER_HINT_COPY.noMatch,
       // ST-5-fix (QA-10) — the live-capture row is the ONE no-op whose instruction
       // survives an EMPTY bar (a hold starts on an empty bar)…
@@ -415,6 +412,8 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
     const states: Array<{
       name: string;
       input: Parameters<typeof resolveEnterAction>[0];
+      /** #2892 ST-5 — the hint-only busy signal (the live-capture precedence row). */
+      hintBusy?: boolean;
       hint: string | undefined;
     }> = [
       {
@@ -424,7 +423,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: false,
         },
         hint: undefined,
       },
@@ -435,7 +433,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: false,
         },
         hint: '↵ open Settings',
       },
@@ -446,8 +443,8 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: true,
         },
+        hintBusy: true,
         hint: '↵ open Settings',
       },
       {
@@ -457,7 +454,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: false,
         },
         hint: '↵ send to Fredo',
       },
@@ -468,7 +464,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: false,
-          companionBusy: false,
         },
         hint: 'no match',
       },
@@ -479,7 +474,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'dictated',
           companionActive: true,
-          companionBusy: false,
         },
         hint: '↵ send transcript to Fredo',
       },
@@ -490,20 +484,21 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'dictated',
           companionActive: true,
-          companionBusy: false,
         },
         hint: '↵ send transcript to Fredo',
       },
       {
+        // #2892 ST-5 REFRESH (was `Fredo is replying…`): the busy gate is retired,
+        // so a dictated transcript still reads as a send while a reply is in flight.
         name: 'dictated transcript while busy',
         input: {
           query: 'set',
           entries: ENTRIES,
           textOrigin: 'dictated',
           companionActive: true,
-          companionBusy: true,
         },
-        hint: 'Fredo is replying…',
+        hintBusy: true,
+        hint: '↵ send transcript to Fredo',
       },
       // ── ST-5-fix (QA-10) — the live launcher-origin capture rows ────────────
       {
@@ -513,7 +508,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: false,
           captureLive: true,
         },
         hint: 'release Space to finish',
@@ -525,7 +519,6 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: false,
           captureLive: true,
         },
         hint: 'release Space to finish',
@@ -537,9 +530,9 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
           entries: ENTRIES,
           textOrigin: 'typed',
           companionActive: true,
-          companionBusy: true,
           captureLive: true,
         },
+        hintBusy: true,
         hint: 'Fredo is replying…',
       },
     ];
@@ -547,7 +540,7 @@ describe('enterHintLabel — derived from the SAME verdict Enter acts on (R-6.3)
     for (const state of states) {
       const action = resolveEnterAction(state.input);
       const label = enterHintLabel(action, {
-        busy: state.input.companionBusy,
+        busy: state.hintBusy ?? false,
         queryEmpty: state.input.query.trim() === '',
       });
       expect(label, state.name).toBe(state.hint);
@@ -563,11 +556,23 @@ describe('resolveEnterAction / enterHintLabel — the live launcher-origin captu
     entries: ENTRIES,
     textOrigin: 'typed' as const,
     companionActive: true,
-    companionBusy: false,
   };
 
   it('pins the EXACT chip copy the tester asserts (char-for-char)', () => {
     expect(ENTER_HINT_COPY.releaseToFinish).toBe('release Space to finish');
+  });
+
+  it('ST-5 REFRESHED PIN: a typed non-match with an active companion SENDS (the busy gate is retired)', () => {
+    // Supersedes the old `{ query: 'Missing all the time', companionBusy: true }`
+    // row: `ResolveEnterActionInput` has no busy field any more, and a send is
+    // gated ONLY by `companionActive` (REQ-2/REQ-5).
+    expect(resolveEnterAction({ ...base, query: 'Missing all the time' })).toEqual({
+      kind: 'send',
+      textOrigin: 'typed',
+    });
+    expect(
+      resolveEnterAction({ ...base, query: 'Missing all the time', companionActive: false }),
+    ).toEqual({ kind: 'none', reason: 'no-match-no-companion' });
   });
 
   it('captureLive ⇒ none/listening in EVERY bar state (Enter acts as nothing)', () => {
@@ -578,8 +583,6 @@ describe('resolveEnterAction / enterHintLabel — the live launcher-origin captu
       { query: 'Missing all the time' }, // a typed non-match would otherwise send
       { query: 'set', textOrigin: 'dictated' }, // dictated content would otherwise send
       { query: 'set', companionActive: false },
-      { query: 'set', companionBusy: true },
-      { query: 'set', textOrigin: 'dictated', companionBusy: true },
     ];
     for (const state of states) {
       expect(
@@ -603,12 +606,10 @@ describe('resolveEnterAction / enterHintLabel — the live launcher-origin captu
     for (const query of queries) {
       for (const textOrigin of ['typed', 'dictated'] as const) {
         for (const companionActive of [true, false]) {
-          for (const companionBusy of [true, false]) {
-            const input = { ...base, query, textOrigin, companionActive, companionBusy };
-            expect(resolveEnterAction({ ...input, captureLive: false }), query).toEqual(
-              resolveEnterAction(input),
-            );
-          }
+          const input = { ...base, query, textOrigin, companionActive };
+          expect(resolveEnterAction({ ...input, captureLive: false }), query).toEqual(
+            resolveEnterAction(input),
+          );
         }
       }
     }

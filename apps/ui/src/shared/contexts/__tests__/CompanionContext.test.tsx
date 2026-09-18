@@ -44,7 +44,16 @@ import {
   MAX_IDLE_TIMEOUT_S,
   IDLE_TIMEOUT_SETTING_KEY,
   WELCOME_TEXT,
+  clampReplyLeaveGraceMs,
+  DEFAULT_REPLY_LEAVE_GRACE_MS,
+  MIN_REPLY_LEAVE_GRACE_MS,
+  MAX_REPLY_LEAVE_GRACE_MS,
+  REPLY_LEAVE_GRACE_STEP_MS,
+  COMPANION_SEND_DURING_REPLY_KEY,
+  DEFAULT_COMPANION_SEND_DURING_REPLY,
+  REPLY_LEAVE_GRACE_SETTING_KEY,
 } from '@/shared/contexts/CompanionContext';
+import type { CompanionSendDisposition } from '@/shared/contexts/CompanionContext';
 import { settingsService } from '@/features/settings';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 
@@ -103,6 +112,10 @@ function PresenceProbe() {
       data-message={message ?? ''}
       data-message-duration={String(messageDuration)}
       data-idle-timeout={String(api.idleTimeoutSeconds)}
+      data-send-during-reply={api.sendDuringReply}
+      data-reply-leave-grace={String(api.replyLeaveGraceMs)}
+      data-reply-in-flight={String(api.replyInFlight)}
+      data-queued-send-count={String(api.queuedSendCount)}
     />
   );
 }
@@ -119,6 +132,10 @@ function presence() {
     present: el.getAttribute('data-present') === 'true',
     message: el.getAttribute('data-message') ?? '',
     messageDuration: Number(el.getAttribute('data-message-duration')),
+    sendDuringReply: (el.getAttribute('data-send-during-reply') ?? '') as CompanionSendDisposition | '',
+    replyLeaveGraceMs: Number(el.getAttribute('data-reply-leave-grace')),
+    replyInFlight: el.getAttribute('data-reply-in-flight') === 'true',
+    queuedSendCount: Number(el.getAttribute('data-queued-send-count')),
   };
 }
 
@@ -132,11 +149,30 @@ function deliverPresence(payload: Record<string, unknown>) {
 /**
  * Mount the real provider + probe, seed the persisted keys, and flush BOTH
  * async persisted-setting loads so the timer gate sees the final values.
+ *
+ * `seedSendDuringReply`/`seedGraceMs` are RAW stored strings for the #2892 ST-1
+ * healing legs; omit them for the default-value legs.
  */
-async function mountProvider({ visible, timeoutS = 5 }: { visible: boolean; timeoutS?: number }) {
+async function mountProvider({
+  visible,
+  timeoutS = 5,
+  seedSendDuringReply,
+  seedGraceMs,
+}: {
+  visible: boolean;
+  timeoutS?: number;
+  seedSendDuringReply?: string;
+  seedGraceMs?: string;
+}) {
   localStorage.clear();
   localStorage.setItem(IDLE_TIMEOUT_SETTING_KEY, String(timeoutS));
   if (visible) localStorage.setItem('Fredo_companion_visible', 'true');
+  if (seedSendDuringReply !== undefined) {
+    localStorage.setItem(COMPANION_SEND_DURING_REPLY_KEY, seedSendDuringReply);
+  }
+  if (seedGraceMs !== undefined) {
+    localStorage.setItem(REPLY_LEAVE_GRACE_SETTING_KEY, seedGraceMs);
+  }
 
   const view = renderWithChakra(
     <CompanionProvider>
@@ -144,9 +180,18 @@ async function mountProvider({ visible, timeoutS = 5 }: { visible: boolean; time
     </CompanionProvider>,
   );
 
+  const expectedDisposition: CompanionSendDisposition =
+    seedSendDuringReply === 'interrupt' ? 'interrupt' : DEFAULT_COMPANION_SEND_DURING_REPLY;
+  const expectedGraceMs = seedGraceMs === undefined
+    ? DEFAULT_REPLY_LEAVE_GRACE_MS
+    : clampReplyLeaveGraceMs(Number(seedGraceMs));
+
   await waitFor(() => {
     expect(screen.getByTestId('presence').getAttribute('data-visible')).toBe(String(visible));
     expect(screen.getByTestId('presence').getAttribute('data-idle-timeout')).toBe(String(timeoutS));
+    // Flush the two #2892 ST-1 async persisted loads as well.
+    expect(screen.getByTestId('presence').getAttribute('data-send-during-reply')).toBe(expectedDisposition);
+    expect(screen.getByTestId('presence').getAttribute('data-reply-leave-grace')).toBe(String(expectedGraceMs));
   });
 
   // Flush the presence-listener registration microtask chain.
@@ -750,5 +795,164 @@ describe('CompanionProvider — welcome on turn-on (#2870 ST-1 / R-2)', () => {
 
     if (speakSpy) expect(speakSpy).not.toHaveBeenCalled();
     expect(presence().message).toBe(WELCOME_TEXT);
+  });
+});
+
+// ── 10. Companion settings primitives (#2892 ST-1) ───────────────────────────
+
+describe('#2892 ST-1 binding constants', () => {
+  it('binds the exact persisted keys, default, range, and step', () => {
+    expect(COMPANION_SEND_DURING_REPLY_KEY).toBe('Fredo_companion_send_during_reply');
+    expect(DEFAULT_COMPANION_SEND_DURING_REPLY).toBe('queue');
+    expect(REPLY_LEAVE_GRACE_SETTING_KEY).toBe('Fredo_companion_reply_leave_grace_ms');
+    expect(DEFAULT_REPLY_LEAVE_GRACE_MS).toBe(2000);
+    expect(MIN_REPLY_LEAVE_GRACE_MS).toBe(0);
+    expect(MAX_REPLY_LEAVE_GRACE_MS).toBe(60000);
+    expect(REPLY_LEAVE_GRACE_STEP_MS).toBe(250);
+  });
+});
+
+describe('clampReplyLeaveGraceMs — persisted grace guard (#2892 ST-1)', () => {
+  it('falls back to the 2000 ms default for non-finite values', () => {
+    expect(DEFAULT_REPLY_LEAVE_GRACE_MS).toBe(2000);
+    expect(clampReplyLeaveGraceMs(Number.NaN)).toBe(DEFAULT_REPLY_LEAVE_GRACE_MS);
+    expect(clampReplyLeaveGraceMs(Number.POSITIVE_INFINITY)).toBe(DEFAULT_REPLY_LEAVE_GRACE_MS);
+    expect(clampReplyLeaveGraceMs(Number.NEGATIVE_INFINITY)).toBe(DEFAULT_REPLY_LEAVE_GRACE_MS);
+  });
+
+  it('clamps below-min values up to 0 ms', () => {
+    expect(MIN_REPLY_LEAVE_GRACE_MS).toBe(0);
+    expect(clampReplyLeaveGraceMs(-1)).toBe(MIN_REPLY_LEAVE_GRACE_MS);
+    expect(clampReplyLeaveGraceMs(-5000)).toBe(MIN_REPLY_LEAVE_GRACE_MS);
+  });
+
+  it('clamps above-max values down to 60000 ms', () => {
+    expect(MAX_REPLY_LEAVE_GRACE_MS).toBe(60000);
+    expect(clampReplyLeaveGraceMs(60001)).toBe(MAX_REPLY_LEAVE_GRACE_MS);
+    expect(clampReplyLeaveGraceMs(999999)).toBe(MAX_REPLY_LEAVE_GRACE_MS);
+  });
+
+  it('rounds fractional values to integer ms', () => {
+    expect(clampReplyLeaveGraceMs(1999.6)).toBe(2000);
+    expect(clampReplyLeaveGraceMs(250.4)).toBe(250);
+    expect(clampReplyLeaveGraceMs(250.6)).toBe(251);
+  });
+
+  it('passes in-range integers through unchanged', () => {
+    expect(clampReplyLeaveGraceMs(0)).toBe(0);
+    expect(clampReplyLeaveGraceMs(1250)).toBe(1250);
+    expect(clampReplyLeaveGraceMs(60000)).toBe(60000);
+  });
+});
+
+describe('CompanionProvider — #2892 ST-1 persisted settings load', () => {
+  it('defaults to queue + 2000 ms on a fresh profile', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    expect(presence().sendDuringReply).toBe('queue');
+    expect(presence().replyLeaveGraceMs).toBe(2000);
+  });
+
+  it('loads a stored interrupt disposition and a stored grace through the SAME path', async () => {
+    await mountProvider({
+      visible: true,
+      timeoutS: 5,
+      seedSendDuringReply: 'interrupt',
+      seedGraceMs: '1500',
+    });
+    expect(presence().sendDuringReply).toBe('interrupt');
+    expect(presence().replyLeaveGraceMs).toBe(1500);
+  });
+
+  it('heals an unknown/stale stored disposition to the queue default', async () => {
+    await mountProvider({ visible: true, timeoutS: 5, seedSendDuringReply: 'supersede' });
+    expect(presence().sendDuringReply).toBe('queue');
+  });
+
+  it('heals a cleared/non-numeric stored grace to the 2000 ms default', async () => {
+    await mountProvider({ visible: true, timeoutS: 5, seedGraceMs: 'abc' });
+    expect(presence().replyLeaveGraceMs).toBe(2000);
+  });
+
+  it('clamps an out-of-range stored grace (negative → 0, above max → 60000)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5, seedGraceMs: '-5' });
+    expect(presence().replyLeaveGraceMs).toBe(0);
+
+    cleanup();
+    await mountProvider({ visible: true, timeoutS: 5, seedGraceMs: '999999' });
+    expect(presence().replyLeaveGraceMs).toBe(60000);
+  });
+});
+
+describe('CompanionProvider — #2892 ST-1 setting setters persist + clamp', () => {
+  it('setSendDuringReply writes the exact key and updates the context value', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    act(() => { api.setSendDuringReply('interrupt'); });
+    expect(presence().sendDuringReply).toBe('interrupt');
+    expect(setSpy).toHaveBeenCalledWith(COMPANION_SEND_DURING_REPLY_KEY, 'interrupt');
+
+    act(() => { api.setSendDuringReply('queue'); });
+    expect(presence().sendDuringReply).toBe('queue');
+    expect(setSpy).toHaveBeenCalledWith(COMPANION_SEND_DURING_REPLY_KEY, 'queue');
+    setSpy.mockRestore();
+  });
+
+  it('setReplyLeaveGraceMs persists a clamped integer ms value', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    act(() => { api.setReplyLeaveGraceMs(1500); });
+    expect(presence().replyLeaveGraceMs).toBe(1500);
+    expect(setSpy).toHaveBeenCalledWith(REPLY_LEAVE_GRACE_SETTING_KEY, '1500');
+
+    act(() => { api.setReplyLeaveGraceMs(-5); });
+    expect(presence().replyLeaveGraceMs).toBe(0);
+
+    act(() => { api.setReplyLeaveGraceMs(999999); });
+    expect(presence().replyLeaveGraceMs).toBe(60000);
+
+    act(() => { api.setReplyLeaveGraceMs(1250.6); });
+    expect(presence().replyLeaveGraceMs).toBe(1251);
+    setSpy.mockRestore();
+  });
+});
+
+describe('CompanionProvider — #2892 ST-1 transient signals', () => {
+  it('replyInFlight flips via setReplyInFlight and is NEVER persisted', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    expect(presence().replyInFlight).toBe(false);
+    act(() => { api.setReplyInFlight(true); });
+    expect(presence().replyInFlight).toBe(true);
+    act(() => { api.setReplyInFlight(false); });
+    expect(presence().replyInFlight).toBe(false);
+    expect(setSpy).not.toHaveBeenCalled();
+    setSpy.mockRestore();
+  });
+
+  it('queuedSendCount flips via setQueuedSendCount and is NEVER persisted', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    const setSpy = vi.spyOn(settingsService, 'set');
+
+    expect(presence().queuedSendCount).toBe(0);
+    act(() => { api.setQueuedSendCount(3); });
+    expect(presence().queuedSendCount).toBe(3);
+    act(() => { api.setQueuedSendCount(0); });
+    expect(presence().queuedSendCount).toBe(0);
+    expect(setSpy).not.toHaveBeenCalled();
+    setSpy.mockRestore();
+  });
+
+  it('the transient signals never touch the presence reducer (#2853 invariants preserved)', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+    act(() => { api.setReplyInFlight(true); });
+    act(() => { api.setQueuedSendCount(2); });
+
+    expect(presence().visible).toBe(true, 'visibility untouched');
+    expect(presence().inUse).toBe(false, 'isInUse untouched');
+    expect(presence().away).toBe(false, 'location untouched');
+    expect(presence().autoHidden).toBe(false);
   });
 });

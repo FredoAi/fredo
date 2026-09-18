@@ -19,6 +19,8 @@ import {
   shouldAnnounceProtection,
   useReplyProtection,
 } from './replyProtection';
+import { createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
+import type { CompanionSendQueue, CompanionSendResult } from './companionDispatch';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -125,18 +127,19 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
  * entity (the home seat at home, the away overlay while away — whichever is
  * mounted). The entity's `ask` streams the reply into its own SpeechBubble.
  *
- * Returns `true` iff this window has an active registered entity that accepted
- * the message; `false` when no companion is mounted in this window, which the
- * caller (the launcher command bar) treats as "companion inactive" and keeps
- * today's filter/launch behavior. This is the ONE dispatch path (G-149) — both
- * surfaces register the same handle into this registry; never add a second,
- * surface-specific route.
+ * #2892 ST-4 (REQ-8) — returns the typed acceptance result, replacing the old
+ * boolean that lied while a generation was already in flight:
+ *   `null`                          → no entity mounted in this window (keep text)
+ *   `{ outcome: 'dispatched' }`     → accepted, generation started (clear bar)
+ *   `{ outcome: 'queued', ... }`    → accepted, waiting FIFO (clear bar)
+ *   `{ outcome: 'rejected' }`       → not accepted (keep text)
+ * This is the ONE dispatch path (G-149) — both surfaces register the same handle
+ * into this registry; never add a second, surface-specific route.
  */
-export function askActiveCompanion(text: string): boolean {
+export function askActiveCompanion(text: string): CompanionSendResult | null {
   const entity = activeCompanionEntity;
-  if (!entity) return false;
-  entity.ask(text);
-  return true;
+  if (!entity) return null;
+  return entity.ask(text);
 }
 
 /**
@@ -227,14 +230,19 @@ export interface CompanionEntityHandle {
   /**
    * #2871 — single-shot user message: runs one fresh generation (shared persona
    * + this one user turn) and streams the reply into THIS entity's SpeechBubble.
-   * A no-op while this entity already has a generation in flight (R-5.1).
+   * #2892 ST-4 (REQ-5/REQ-6/REQ-7/REQ-8) — returns the typed acceptance result;
+   * while a generation is in flight the persisted disposition decides between
+   * queueing (FIFO, auto-drained on settle) and a logical interrupt. Never void.
    */
-  ask: (text: string) => void;
+  ask: (text: string) => CompanionSendResult;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
   ({ surface, x, y, replyBounds, onMessageVisibilityChange }, ref) => {
-    const { state, setState, teleport, hideMessage, notifyInteraction, setInUse } = useCompanion();
+    const {
+      state, setState, teleport, hideMessage, notifyInteraction, setInUse,
+      sendDuringReply, replyLeaveGraceMs, setReplyInFlight, setQueuedSendCount,
+    } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
     const [displayPos, setDisplayPos] = useState({ x: x ?? 0, y: y ?? 0 });
@@ -279,6 +287,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [showTicTacToe, setShowTicTacToe] = useState(false);
     const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    // #2892 ST-4 (REQ-5/REQ-6) — the ONE FIFO of accepted-but-undispatched bar
+    // sends. Entity-scoped: created once, and dropped with the entity on unmount
+    // (cross-seat durability is EXPLICITLY OUT OF SCOPE). `drainSendQueueRef` is
+    // kept current each render so the settle callbacks can start the next queued
+    // generation without a useCallback dependency cycle.
+    const sendQueueRef = useRef<CompanionSendQueue | null>(null);
+    if (sendQueueRef.current === null) sendQueueRef.current = createCompanionSendQueue();
+    const drainSendQueueRef = useRef<() => void>(() => {});
+
     // #2883 ST-6 (AC4) — the ONE hide gate for the reply this entity owns
     // (`replyProtection.ts`). The happy hold, the error hold and the watchdog all
     // route their MESSAGE clear through `clearReplyOrDefer`, which synchronously
@@ -292,7 +309,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       leave: leaveReplyProtection,
       clearOrDefer: clearReplyOrDefer,
       reset: resetReplyProtection,
-    } = useReplyProtection();
+    } = useReplyProtection(replyLeaveGraceMs);
     // The entity-owned reply is ON SCREEN (this entity streamed it) — NOT the
     // context-owned welcome bubble and NOT the game card. Exactly this case gains
     // the region/AT exposure and the protection handlers; the welcome bubble and
@@ -448,9 +465,29 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       setInUse(showTicTacToe || isStreaming || animState === 'talk' || replyProtected);
     }, [showTicTacToe, isStreaming, animState, setInUse, replyProtected]);
 
-    // Defensive: never leave the context stuck "in use" if this component unmounts
-    // while the predicate is still true (component is mounted at app root).
-    useEffect(() => () => setInUse(false), [setInUse]);
+    // #2892 ST-4 (REQ-3) — mirror the reply-generation truth to the context.
+    // `replyInFlight` tracks `isStreaming` EXACTLY: true from a generation's start
+    // and false on EVERY terminal path (onDone / onError / the watchdog / a
+    // pushed-skill settle), because each of those calls `setIsStreaming(false)`.
+    // This entity is its ONLY writer (the `isInUse` single-writer invariant); the
+    // read-hold `replyProtected` NEVER enters this flag — that stays in the
+    // byte-identical `isInUse` predicate above (AC2/AC4).
+    useEffect(() => {
+      setReplyInFlight(isStreaming);
+    }, [isStreaming, setReplyInFlight]);
+
+    // Defensive: never leave the context stuck "in use" / "replying" / "queued"
+    // if this component unmounts while any of those is still true (component is
+    // mounted at app root). #2892 ST-4 — the FIFO is dropped with the entity;
+    // cross-seat durability is EXPLICITLY OUT OF SCOPE, so `drainAll()` is called
+    // here and its return (the accepted-but-undispatched sends) is intentionally
+    // discarded rather than silently leaked.
+    useEffect(() => () => {
+      setInUse(false);
+      setReplyInFlight(false);
+      setQueuedSendCount(0);
+      sendQueueRef.current?.drainAll();
+    }, [setInUse, setReplyInFlight, setQueuedSendCount]);
 
     // #2883 ST-6 (UI/UX `Dismissal protection`) — ONE polite announcement on the
     // FIRST entry to protection per generation (the existing live region below).
@@ -470,9 +507,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (!replyOnScreen) resetReplyProtection();
     }, [replyOnScreen, resetReplyProtection]);
 
-    const clearTimer = () => {
+    const clearTimer = useCallback(() => {
       if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    };
+    }, []);
 
     const playAnim = useCallback((anim: FredoAvatarState) => {
       setCurrentAnim(anim);
@@ -518,6 +555,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           setStreamingMessage(null);
           hideMessage();
         });
+        // #2892 ST-4 (REQ-5) — a settle is a settle: if a bar send was accepted
+        // while this generation was in flight, it dispatches now (exactly once),
+        // even on the watchdog path (never a silent drop).
+        drainSendQueueRef.current();
       }, SAFETY_TIMEOUT_MS);
     }, [clearWatchdog, playAnim, setState, hideMessage, clearReplyOrDefer]);
 
@@ -630,6 +671,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const runGeneration = useCallback((messages: LlmMessage[], withSkills = false) => {
       console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current, 'withSkills:', withSkills);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
+      // #2892 ST-4 — a NEW generation owns the bubble: release any pending hold
+      // timer (happy/error) left by the previous generation so a stale 5 s clear
+      // can never take this reply away (the declared defect fix's guard belt).
+      clearTimer();
       isGeneratingRef.current = true;
       // #2883 ST-6 (UI/UX `Dismissal protection`) — a NEW generation owns the
       // bubble: protection does not carry over, and a clear stashed by the previous
@@ -727,6 +772,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           flowOwnsExpressionRef.current = true;
           playFlowAnim('happy');
           timerRef.current = setTimeout(() => {
+            // #2892 ST-4 declared defect fix (REQ-7) — the same generation guard
+            // the error hold below already has: a superseded generation's 5 s
+            // timer must NEVER clear the NEW reply (interrupt / queue drain).
+            if (gen !== generationRef.current) return;
             flowOwnsExpressionRef.current = false;
             playAnim('idle');
             setState('idle');
@@ -738,6 +787,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               hideMessage();
             });
           }, HAPPY_HOLD_MS);
+          // #2892 ST-4 (REQ-5) — this generation settled; dispatch the oldest
+          // accepted send now (FIFO, exactly once). A queued dispatch supersedes
+          // this settle visually and releases the timer just armed above.
+          drainSendQueueRef.current();
       };
 
       // #2871 ST-1r — the typed error channel (distinct from success). Map the
@@ -775,6 +828,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               hideMessage();
             });
           }, ERROR_HOLD_MS);
+          // #2892 ST-4 (REQ-5) — an error settle also drains: a send accepted
+          // during a failed generation must not be stranded.
+          drainSendQueueRef.current();
       };
 
       // #2893 ST-7 — a VALIDATED skill selection (backend already validated it
@@ -804,7 +860,25 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         console.log('[companion] calling adapterBridge.llmChat');
         adapterBridge.llmChat(messages, onToken, onDone, onError);
       }
-    }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection]);
+    }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection, clearTimer]);
+
+    // #2892 ST-4 (REQ-5/REQ-6) — dequeue-then-dispatch, exactly once. Whatever
+    // generation just settled, if a send is waiting it becomes the current
+    // generation here (the FIFO is entity-scoped and synchronous). Kept in a ref
+    // so the settle callbacks inside `runGeneration` need no dependency edge back
+    // to this callback (no cycle).
+    drainSendQueueRef.current = () => {
+      const queue = sendQueueRef.current;
+      if (!queue) return;
+      const next = queue.dequeue();
+      if (!next) { setQueuedSendCount(0); return; }
+      setQueuedSendCount(queue.size());
+      announceGenerationRef.current = true;
+      runGeneration([
+        { role: 'system', content: FREDO_CHAT_PERSONA },
+        { role: 'user', content: next.text },
+      ], true);
+    };
 
     // #2893 ST-7 — apply the deterministic app-open reply pushed by ST-6's
     // `useAppOpenRequests` hook to the SAME reply channel a streamed reply uses
@@ -851,6 +925,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           });
         }, ERROR_HOLD_MS);
       }
+      // #2892 ST-4 (REQ-5) — the pushed-skill settle is a terminal path too:
+      // drain any send accepted while this generation was in flight.
+      drainSendQueueRef.current();
     }, [clearWatchdog, playFlowAnim, playAnim, setState, hideMessage, clearReplyOrDefer]);
 
     // Register this entity as the active reply receiver (mirrors the
@@ -868,20 +945,51 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // #2871 R-1.1 — the launcher command bar's single-shot message. Uses the
     // general assistant persona (`FREDO_CHAT_PERSONA` — no joke instruction), ONE
     // fresh user turn (no transcript/memory), streamed into THIS entity's
-    // SpeechBubble. A no-op while a generation is already in flight (R-5.1).
+    // SpeechBubble. #2892 ST-4 — it NO LONGER silently no-ops while a generation
+    // is in flight: the persisted disposition decides between queueing the send
+    // (FIFO, auto-drained on settle) and a logical interrupt, and the return value
+    // tells the caller exactly what was accepted (REQ-5/REQ-6/REQ-7/REQ-8).
     // #2893 ST-7 — this path is SKILL-AWARE (`llmChatWithSkills`): a validated
     // `open_app` selection is marked skill-pending and its settle is deferred until
     // the pushed deterministic reply lands (or the watchdog fires). The joke path
     // above stays on the unchanged `llmChat`.
-    const ask = useCallback((text: string) => {
+    const ask = useCallback((text: string): CompanionSendResult => {
       // #2871 a11y — mark this generation as the bar-send path so it announces
       // "Message sent to Fredo" + the settled reply in the live region.
       announceGenerationRef.current = true;
+      // #2892 ST-4 (REQ-8) — a teleport owns the entity: there is no generation
+      // and no settle to drain after, so the send is NOT accepted (the bar keeps
+      // the text) rather than silently dropped.
+      if (isTeleportingRef.current) return { outcome: 'rejected' };
+
+      const decision = resolveSendOutcome(sendDuringReply, isGeneratingRef.current);
+
+      if (decision === 'queue') {
+        const queue = sendQueueRef.current;
+        if (!queue) return { outcome: 'rejected' };
+        // REQ-5/REQ-6 — accept and wait, visibly; the settle handlers drain the
+        // FIFO exactly once (synchronous dequeue before dispatch).
+        const result = queue.enqueue(text);
+        setQueuedSendCount(queue.size());
+        return result;
+      }
+
+      if (decision === 'interrupt') {
+        // #2892 ST-4 declared defect fix (REQ-7) — supersede LOGICALLY: release
+        // the in-flight generation's pending hold timer and invalidate its id so
+        // its late tokens/callbacks and its 5 s happy timer can never mutate or
+        // clear the NEW reply.
+        clearTimer();
+        generationRef.current += 1;
+        isGeneratingRef.current = false;
+      }
+
       runGeneration([
         { role: 'system', content: FREDO_CHAT_PERSONA },
         { role: 'user', content: text },
       ], true);
-    }, [runGeneration]);
+      return { outcome: 'dispatched' };
+    }, [runGeneration, sendDuringReply, clearTimer, setQueuedSendCount]);
 
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
     // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the

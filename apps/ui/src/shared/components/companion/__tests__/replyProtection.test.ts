@@ -321,6 +321,109 @@ describe('#2883 ST-6 — replyProtection contract (AC4)', () => {
   });
 });
 
+// ── 1b. Configurable leave grace (#2892 ST-2) ─────────────────────────────────
+
+describe('#2892 ST-2 — configurable reply hold-open grace (REQ-10/REQ-11)', () => {
+  it('defaults the leave grace to REPLY_LEAVE_GRACE_MS when the parameter is omitted', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useReplyProtection());
+    const clear = vi.fn();
+
+    act(() => { result.current.enter('pointer'); });
+    act(() => { result.current.clearOrDefer(clear); });
+    act(() => { result.current.leave('pointer'); });
+
+    act(() => { vi.advanceTimersByTime(REPLY_LEAVE_GRACE_MS - 1); });
+    expect(clear).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(clear).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors an explicit graceMs when arming the leave window', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useReplyProtection(5000));
+    const clear = vi.fn();
+
+    act(() => { result.current.enter('pointer'); });
+    act(() => { result.current.clearOrDefer(clear); });
+    act(() => { result.current.leave('pointer'); });
+
+    act(() => { vi.advanceTimersByTime(4999); });
+    expect(clear).not.toHaveBeenCalled();
+    expect(result.current.protected).toBe(true);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(result.current.protected).toBe(false);
+  });
+
+  it('does not retroactively re-time an armed window when graceMs changes mid-grace', () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(
+      ({ graceMs }: { graceMs: number }) => useReplyProtection(graceMs),
+      { initialProps: { graceMs: 2000 } },
+    );
+    const clear = vi.fn();
+
+    act(() => { result.current.enter('pointer'); });
+    act(() => { result.current.clearOrDefer(clear); });
+    act(() => { result.current.leave('pointer'); });
+    act(() => { vi.advanceTimersByTime(500); });
+
+    // The setting drops to 100 ms WHILE the 2000 ms window is armed.
+    act(() => { rerender({ graceMs: 100 }); });
+    act(() => { vi.advanceTimersByTime(100); });
+    // The armed window keeps its original delay: a mid-grace change cannot
+    // shorten (or resurrect) it — only a NEW leave() may arm the new value.
+    expect(clear).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(2000 - 500 - 100); });
+    expect(clear).toHaveBeenCalledTimes(1);
+  });
+
+  it('arms a NEW leave with the current graceMs after a setting change', () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(
+      ({ graceMs }: { graceMs: number }) => useReplyProtection(graceMs),
+      { initialProps: { graceMs: 2000 } },
+    );
+    const clear = vi.fn();
+
+    act(() => { result.current.enter('pointer'); });
+    act(() => { result.current.clearOrDefer(clear); });
+    act(() => { result.current.leave('pointer'); });
+    act(() => { vi.advanceTimersByTime(500); });
+
+    // Setting changes, then a fresh protection cycle: the NEXT leave arms 3000.
+    act(() => { rerender({ graceMs: 3000 }); });
+    act(() => { result.current.enter('pointer'); });
+    act(() => { result.current.leave('pointer'); });
+
+    act(() => { vi.advanceTimersByTime(2999); });
+    expect(clear).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(clear).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the suspend/reset semantics under an explicit graceMs (REQ-11)', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useReplyProtection(4000));
+    const clear = vi.fn();
+
+    // R-4.1 — a due clear is suspended while protected, for any grace value.
+    act(() => { result.current.enter('pointer'); });
+    act(() => { result.current.clearOrDefer(clear); });
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(clear).not.toHaveBeenCalled();
+    expect(result.current.protected).toBe(true);
+
+    // reset() (a new generation) still drops the stashed clear and ends protection.
+    act(() => { result.current.reset(); });
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(clear).not.toHaveBeenCalled();
+    expect(result.current.protected).toBe(false);
+    expect(result.current.protectedRef.current).toBe(false);
+  });
+});
+
 // ── 2. Entity integration: the ONE gate, end to end ───────────────────────────
 
 describe('#2883 ST-6 — CompanionEntity hide gate (AC4)', () => {

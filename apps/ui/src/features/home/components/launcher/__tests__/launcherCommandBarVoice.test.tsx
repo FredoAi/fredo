@@ -21,9 +21,13 @@
  * the clamp that makes a `cue="listening"` without a live capture a non-listener, so
  * the #2882 defect (armed → `Listening…`) can never recur.
  *
+ * #2892 ST-5 (AC1/AC2/AC3/AC5/AC7): `busy` means a reply GENERATION is in flight
+ * and NO reply state sets `readOnly`; the below-bar queued indicator + its hidden
+ * transition-driven announcer and the composed `aria-describedby` are pinned.
+ *
  * Pins:
  *   1. Live partial text renders in the input and the input stays editable while
- *      listening (only `busy` sets `readOnly`).
+ *      listening AND while busy (no reply state sets `readOnly` — AC1).
  *   2. `aria-busy` is OMITTED (not `"false"`) when idle.
  *   3. Zero reserved padding when no affordance shows (`computeEndPaddingPx`).
  *   4. The announcers fire once per transition (start/stop) and carry only the
@@ -41,7 +45,11 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
   BAR_FIELD_MAX_H_PX,
   BAR_FIELD_MIN_H_PX,
+  HEARING_NOTHING_COPY,
+  HEARING_NOTHING_MS,
   LauncherCommandBar,
+  QUEUED_DISPATCH_ANNOUNCEMENT,
+  QUEUED_INDICATOR_ID,
   computeEndPaddingPx,
   measureFieldHeightPx,
 } from '../LauncherCommandBar';
@@ -437,15 +445,22 @@ describe('LauncherCommandBar — continuous listening state', () => {
     expect(input).toHaveAttribute('placeholder', 'Listening…');
   });
 
-  it('only `busy` sets readOnly + aria-busy', () => {
+  it('ST-5 REFRESHED PIN: `busy` sets aria-busy + the replying placeholder but NEVER readOnly', () => {
+    // Supersedes "only `busy` sets readOnly + aria-busy": #2892 ST-5 (AC1) deletes
+    // `readOnly={busy}` — the field stays focusable and typeable in every reply
+    // state. Only the placeholder/aria-busy/dot key on `busy`.
+    const onQueryChange = vi.fn();
     const { container } = renderWithChakra(
-      <LauncherCommandBar query="hello" onQueryChange={vi.fn()} busy />,
+      <LauncherCommandBar query="hello" onQueryChange={onQueryChange} busy />,
     );
     // #2883 ST-1 re-point: `as HTMLTextAreaElement` (the element is a textarea).
     const input = screen.getByRole('searchbox') as HTMLTextAreaElement;
-    expect(input).toHaveAttribute('readonly');
+    expect(input).not.toHaveAttribute('readonly');
     expect(container.querySelector('[aria-busy]')).not.toBeNull();
     expect(input).toHaveAttribute('placeholder', 'Fredo is replying…');
+    // The field is still editable: a change is reported to the host.
+    fireEvent.change(input, { target: { value: 'hello again' } });
+    expect(onQueryChange).toHaveBeenCalledWith('hello again');
   });
 
   it('renders the frozen dot + Listening chip + the cancel and Stop controls while listening', () => {
@@ -468,6 +483,187 @@ describe('LauncherCommandBar — continuous listening state', () => {
       'aria-label',
       'Cancel dictation',
     );
+  });
+});
+
+// ── #2892 ST-5 — the queued-message affordance (AC5/AC7, REQ-5/REQ-12) ────────
+
+describe('LauncherCommandBar — the queued waiting indicator + announcer (#2892 ST-5)', () => {
+  const queued = () => screen.queryByTestId('launcher-command-queued');
+  const announcer = () => screen.getByTestId('launcher-queued-announcer');
+
+  afterEach(() => {
+    // Restore the inherited getter so the measurement stub never leaks, and drop
+    // the fake timers the hearing-nothing precedence case arms.
+    delete (HTMLTextAreaElement.prototype as unknown as { scrollHeight?: unknown }).scrollHeight;
+    vi.useRealTimers();
+  });
+
+  it('renders the bound copy + testid + id for a single queued send', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={1} />);
+
+    const el = queued();
+    expect(el).not.toBeNull();
+    expect(el).toHaveTextContent('Queued — waiting for Fredo…');
+    expect(el).toHaveAttribute('id', QUEUED_INDICATOR_ID);
+  });
+
+  it('renders the counted form for two or more queued sends', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={2} />,
+    );
+    expect(queued()).toHaveTextContent('2 queued — waiting for Fredo…');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={5} />);
+    expect(queued()).toHaveTextContent('5 queued — waiting for Fredo…');
+  });
+
+  it('decrements on rerender and unmounts at zero (AC5)', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={2} />,
+    );
+    expect(queued()).toHaveTextContent('2 queued — waiting for Fredo…');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={1} />);
+    expect(queued()).toHaveTextContent('Queued — waiting for Fredo…');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={0} />);
+    expect(queued()).toBeNull();
+  });
+
+  it('does not render when queuedCount is omitted or zero (inactive-bar invariance, AC4)', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    expect(queued()).toBeNull();
+  });
+
+  it('PRECEDENCE: an alert (voice error) suppresses the queued indicator', () => {
+    renderWithChakra(
+      <LauncherCommandBar
+        query=""
+        onQueryChange={vi.fn()}
+        queuedCount={3}
+        voiceErrorMessage="Could not start voice input."
+      />,
+    );
+
+    expect(screen.getByTestId('launcher-command-listening-status')).toHaveTextContent(
+      'Could not start voice input.',
+    );
+    expect(queued()).toBeNull();
+  });
+
+  it('PRECEDENCE: the hearing-nothing hint suppresses the queued indicator', () => {
+    vi.useFakeTimers();
+    renderWithChakra(
+      <LauncherCommandBar
+        query=""
+        onQueryChange={vi.fn()}
+        listening
+        queuedCount={2}
+        onStopListening={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(HEARING_NOTHING_MS);
+    });
+
+    expect(screen.getByTestId('launcher-command-listening-status')).toHaveTextContent(
+      HEARING_NOTHING_COPY,
+    );
+    expect(queued()).toBeNull();
+  });
+
+  it('PRECEDENCE: the queued indicator outranks the newline caption (one line at a time)', async () => {
+    stubScrollHeight(66); // wrapped to 2 visual lines — the caption's precondition
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="a wrapped query" onQueryChange={vi.fn()} newlineHint queuedCount={1} />,
+    );
+    await flushFieldMeasure();
+    expect(queued()).not.toBeNull();
+    expect(screen.queryByTestId('launcher-command-newline-caption')).toBeNull();
+
+    // Draining the queue returns the slot to the caption.
+    rerender(
+      <LauncherCommandBar query="a wrapped query" onQueryChange={vi.fn()} newlineHint queuedCount={0} />,
+    );
+    await flushFieldMeasure();
+    expect(screen.getByTestId('launcher-command-newline-caption')).toHaveTextContent(
+      'Shift+Enter adds a new line',
+    );
+  });
+
+  it('composes aria-describedby from the queued indicator only', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={1} />);
+    expect(screen.getByRole('searchbox')).toHaveAttribute(
+      'aria-describedby',
+      QUEUED_INDICATOR_ID,
+    );
+  });
+
+  it('composes aria-describedby from the hint mirror AND the queued indicator', () => {
+    renderWithChakra(
+      <LauncherCommandBar
+        query="set"
+        onQueryChange={vi.fn()}
+        hintLabel="↵ open Settings"
+        ariaDescribedBy="fredo-command-hint"
+        queuedCount={1}
+      />,
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute(
+      'aria-describedby',
+      'fredo-command-hint fredo-command-queued',
+    );
+  });
+
+  it('omits aria-describedby entirely when neither target is rendered (no dangling ids)', () => {
+    renderWithChakra(
+      <LauncherCommandBar query="set" onQueryChange={vi.fn()} hintLabel="↵ open Settings" />,
+    );
+    expect(screen.getByRole('searchbox')).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('the queued announcer is ALWAYS mounted as a polite atomic status region and starts silent', () => {
+    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
+    const el = announcer();
+    expect(el).toHaveAttribute('role', 'status');
+    expect(el).toHaveAttribute('aria-live', 'polite');
+    expect(el).toHaveAttribute('aria-atomic', 'true');
+    expect(el.textContent).toBe('');
+  });
+
+  it('announces the waiting copy on the 0→n rise and the counted form on n→m (transition-driven)', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} />,
+    );
+    expect(announcer().textContent).toBe('');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={1} />);
+    expect(announcer()).toHaveTextContent('Queued — waiting for Fredo…');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={3} />);
+    expect(announcer()).toHaveTextContent('3 queued — waiting for Fredo…');
+
+    // A no-change re-render is silent (never per event).
+    rerender(<LauncherCommandBar query="x" onQueryChange={vi.fn()} queuedCount={3} />);
+    expect(announcer()).toHaveTextContent('3 queued — waiting for Fredo…');
+  });
+
+  it('announces the decrement, then the drain-edge dispatch sentence at zero', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} />,
+    );
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={2} />);
+    expect(announcer()).toHaveTextContent('2 queued — waiting for Fredo…');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={1} />);
+    expect(announcer()).toHaveTextContent('Queued — waiting for Fredo…');
+
+    rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} queuedCount={0} />);
+    expect(announcer()).toHaveTextContent(QUEUED_DISPATCH_ANNOUNCEMENT);
+    expect(QUEUED_DISPATCH_ANNOUNCEMENT).toBe('Sending your queued message to Fredo');
   });
 });
 
