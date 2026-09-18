@@ -101,4 +101,38 @@
 - **E-13 FINDING — regression-free.** Companion gate flipped wizard → controls in place; reopening re-rendered consistently (controls when ready).
 - **E-14 NOT DRIVEN (live).** Zero-discovered-section live state is structurally unreachable (G-138); covered by the owned component test `SettingsSurface.zeroSections.test.tsx` (2/2).
 - **E-15 FINDING — regression-free.** Minimize keeps the single dock entry `Settings (minimized)`; restore re-raises the same window with content intact.
-- **E-16 (ENV) — Telemetry section wedges the MCP bridge.** Selecting Settings → Telemetry caused a `tauri_webview_execute_js` + `read_logs` timeout (already known from #2864 E-3: Telemetry's full-viewport capture wedges html2canvas/the bridge). Recovered by driver-session stop/start (G-067); no product error in the console. Environment/tooling, not a Settings-as-app defect.
+- **E-16 (ENV) — Telemetry section wedges the MCP bridge.** Selecting Settings → Telemetry caused a
+  `tauri_webview_execute_js` + `read_logs` timeout (already known from #2864 E-3: Telemetry's
+  full-viewport capture wedges html2canvas/the bridge). Recovered by driver-session stop/start (G-067);
+  no product error in the console. Environment/tooling, not a Settings-as-app defect.
+
+---
+
+## #2892 extension — send-during-reply settings edge probes
+
+> Unscripted probes for the two new persisted settings. A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a
+> named blocker (G-053) with a static/unit pin — never fabricated. Cross-ref `companion`
+> E-58..E-63 + `launcher` E-62..E-66.
+
+- [ ] E-17: **Setting changed while a reply is in flight.** Open Settings -> Companion mid-stream and
+      flip the disposition. Does the change persist immediately (no Save dependency) and govern the
+      NEXT send, with no stale in-flight behavior change or console error? Any lost edit or
+      mid-stream crash is a finding (promotes to F-41/F-43).
+- [ ] E-18: **Adversarial stored values.** Seed `Fredo_companion_send_during_reply` = `garbage`
+      and `Fredo_companion_reply_leave_grace_ms` = `abc` / `-99999` / empty in localStorage AND the
+      AppStore, then launch. Does the panel heal to `queue` / `2000` (or clamp) without a crash,
+      and are the seeded keys left inert rather than deleted? Any crash/wedge/re-written garbage is a
+      finding (promotes to F-41/F-42).
+- [ ] E-19: **Settings window closed mid-edit.** Half-type a grace value, close the Settings window
+      without committing, reopen. Is the draft discarded cleanly with the persisted value intact (no
+      phantom save, no stale draft)? Any phantom persistence or resurrected draft is a finding
+      (promotes to F-42/R-19).
+- [ ] E-20: **Theme/accent change with the two controls focused.** Focus the disposition select and
+      the grace input in turn, then switch dark↔light + a non-default accent. Do both re-tint
+      token-native with no lost draft, stale border, or invisible native `<option>` list? Any stale
+      color / unthemed dropdown is a finding (promotes to F-45; NativeSelect fallback check).
+
+### #2892 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
