@@ -411,6 +411,10 @@ pub fn run() {
             // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
             // `/props` + `tools`/`response_format` probe; no window, no state write.
             features::llm_server::probe::probe_companion_skills,
+            // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
+            // registry, validates a selection, emits `llm-skill-call` then
+            // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.
+            features::llm_server::skills::llm_chat_with_skills,
             features::screenshot::commands::capture_screen_region,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,

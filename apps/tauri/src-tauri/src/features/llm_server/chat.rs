@@ -81,49 +81,122 @@ pub struct LlmMessage {
 pub enum ChatStreamEvent {
     /// A content delta to forward as `llm-token`.
     Delta(String),
+    /// One fragment of a model-selected tool call (Spec #2893, ST-5).
+    ///
+    /// `name` is present only on the opening fragment; `arguments_fragment` is a
+    /// RAW piece of the (possibly split) JSON argument string. Callers MUST
+    /// buffer the fragments verbatim and JSON-parse ONCE at the finish — never
+    /// per chunk (#22722 split escapes; #21375 parallel-call loop). Raw
+    /// tool-call text is NEVER forwarded as `llm-token`.
+    ToolCallDelta {
+        index: usize,
+        name: Option<String>,
+        arguments_fragment: Option<String>,
+    },
     /// The `data: [DONE]` terminator.
     Done,
 }
 
+/// Every seam event carried by ONE `data:` payload, plus the chunk's
+/// `finish_reason`.
+///
+/// A single SSE chunk can carry a content delta AND tool-call fragments AND the
+/// terminal `finish_reason`, so the skill-aware path consumes the whole frame.
+/// `parse_sse_data` remains the legacy single-event view (first event).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChatSseFrame {
+    pub events: Vec<ChatStreamEvent>,
+    /// The chunk's `choices[0].finish_reason` when present and non-empty
+    /// (`"tool_calls"` / `"stop"` / `"length"`). Read to know the stream ended
+    /// on a tool call.
+    pub finish_reason: Option<String>,
+}
+
 // ── Pure SSE mapping (unit-tested seam) ───────────────────────────────────────
 
-/// Parse the payload of one `data:` SSE line into a stream event.
+/// Parse the payload of one `data:` SSE line into every event it carries
+/// (content / tool-call fragments / `[DONE]`) plus its `finish_reason`.
 ///
-/// Returns `None` for a blank payload, a malformed JSON chunk, or a chunk whose
-/// `choices[0].delta` carries no `content` (e.g. the role-only opening chunk) —
-/// none of those must ever reach `llm-token`.
-pub fn parse_sse_data(payload: &str) -> Option<ChatStreamEvent> {
+/// Returns an empty frame for a blank payload or a malformed JSON chunk — never
+/// a panic and never a spurious `llm-token`.
+pub fn parse_sse_frame(payload: &str) -> ChatSseFrame {
     let payload = payload.trim();
     if payload.is_empty() {
-        return None;
+        return ChatSseFrame::default();
     }
     if payload == "[DONE]" {
-        return Some(ChatStreamEvent::Done);
+        return ChatSseFrame {
+            events: vec![ChatStreamEvent::Done],
+            finish_reason: None,
+        };
     }
 
-    let chunk: ChatChunk = serde_json::from_str(payload).ok()?;
-    let content = chunk
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|choice| choice.delta)
-        .and_then(|delta| delta.content)?;
-    if content.is_empty() {
-        None
-    } else {
-        Some(ChatStreamEvent::Delta(content))
+    let Ok(chunk) = serde_json::from_str::<ChatChunk>(payload) else {
+        return ChatSseFrame::default();
+    };
+    let Some(choice) = chunk.choices.into_iter().next() else {
+        return ChatSseFrame::default();
+    };
+
+    let mut events = Vec::new();
+    if let Some(delta) = choice.delta {
+        if let Some(content) = delta.content {
+            if !content.is_empty() {
+                events.push(ChatStreamEvent::Delta(content));
+            }
+        }
+        for call in delta.tool_calls.into_iter().flatten() {
+            let (name, arguments_fragment) = match call.function {
+                Some(function) => (
+                    function.name.filter(|name| !name.is_empty()),
+                    function.arguments.filter(|args| !args.is_empty()),
+                ),
+                None => (None, None),
+            };
+            if name.is_some() || arguments_fragment.is_some() {
+                events.push(ChatStreamEvent::ToolCallDelta {
+                    index: call.index.unwrap_or(0),
+                    name,
+                    arguments_fragment,
+                });
+            }
+        }
+    }
+
+    ChatSseFrame {
+        events,
+        finish_reason: choice.finish_reason.filter(|reason| !reason.is_empty()),
     }
 }
 
-/// Parse one complete raw SSE line. Non-`data:` lines (`event:`, `id:`,
-/// `:` comments, blank separators) are ignored.
-pub fn parse_sse_line(line: &str) -> Option<ChatStreamEvent> {
+/// Parse the payload of one `data:` SSE line into the FIRST event it carries.
+///
+/// The legacy single-event view of [`parse_sse_frame`]: `None` for a blank
+/// payload, a malformed JSON chunk, or a chunk with no content/tool-call event.
+/// The shared HTTP/SSE shell streams frames, so this view is test-only.
+#[cfg(test)]
+pub fn parse_sse_data(payload: &str) -> Option<ChatStreamEvent> {
+    parse_sse_frame(payload).events.into_iter().next()
+}
+
+/// Parse one complete raw SSE line into its frame. Non-`data:` lines (`event:`,
+/// `id:`, `:` comments, blank separators) are ignored.
+pub fn parse_sse_frame_line(line: &str) -> Option<ChatSseFrame> {
     let line = line.trim_end_matches(['\r', '\n']);
     let data = line.strip_prefix("data:")?;
-    parse_sse_data(data)
+    Some(parse_sse_frame(data))
 }
 
-/// The OpenAI-compatible chunk envelope, reduced to the fields ST-4 consumes.
+/// Parse one complete raw SSE line into the FIRST event it carries.
+///
+/// The single-event view of [`parse_sse_frame_line`]; test-only because the
+/// shared shell streams frames.
+#[cfg(test)]
+pub fn parse_sse_line(line: &str) -> Option<ChatStreamEvent> {
+    parse_sse_frame_line(line).and_then(|frame| frame.events.into_iter().next())
+}
+
+/// The OpenAI-compatible chunk envelope, reduced to the fields ST-4/ST-5 consume.
 #[derive(Deserialize)]
 struct ChatChunk {
     choices: Vec<ChatChoice>,
@@ -132,11 +205,25 @@ struct ChatChunk {
 #[derive(Deserialize)]
 struct ChatChoice {
     delta: Option<ChatDelta>,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ChatDelta {
     content: Option<String>,
+    tool_calls: Option<Vec<ChatToolCallDelta>>,
+}
+
+#[derive(Deserialize)]
+struct ChatToolCallDelta {
+    index: Option<usize>,
+    function: Option<ChatFunctionCallDelta>,
+}
+
+#[derive(Deserialize)]
+struct ChatFunctionCallDelta {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 // ── Request body (pure) ────────────────────────────────────────────────────────
@@ -282,16 +369,19 @@ fn server_host(app: &AppHandle) -> String {
     resolve_host(configured.as_deref())
 }
 
-/// POST the chat request and stream the SSE frames to the webview.
-async fn stream_completion(
-    app: &AppHandle,
+/// POST a request body and drive `on_frame` for every decoded SSE frame, in
+/// order. `on_frame` returns `true` when the stream is complete (stop early).
+///
+/// This is the ONE HTTP/SSE shell: the legacy chat path and the skill-aware path
+/// (ST-5) both stream through it, so the byte-buffered line handling — including
+/// a UTF-8 character split across two network chunks — exists exactly once.
+async fn stream_chat_frames(
     host: &str,
     port: u16,
-    messages: &[LlmMessage],
-    image_base64: Option<&str>,
+    body: &serde_json::Value,
+    mut on_frame: impl FnMut(ChatSseFrame) -> bool,
 ) -> Result<(), String> {
     let endpoint = chat_completions_url(host, port);
-    let body = build_request_body(messages, image_base64);
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -300,7 +390,7 @@ async fn stream_completion(
 
     let response = client
         .post(&endpoint)
-        .json(&body)
+        .json(body)
         .send()
         .await
         .map_err(|e| format!("Fredo can't reach the companion server at {endpoint}: {e}"))?;
@@ -329,25 +419,69 @@ async fn stream_completion(
             chunk.map_err(|e| format!("the companion server stream failed: {e}"))?;
         buffer.extend_from_slice(&chunk);
         for line in drain_complete_lines(&mut buffer) {
-            if let Some(event) = parse_sse_line(&line) {
-                if apply_event(app, event) {
+            if let Some(frame) = parse_sse_frame_line(&line) {
+                if on_frame(frame) {
                     return Ok(());
                 }
             }
         }
     }
 
-    // A residual line with no trailing newline, then the closed stream: still
-    // signal completion so the UI can never hang (R-4.2).
+    // A residual line with no trailing newline, then the closed stream.
     if !buffer.is_empty() {
         let residual = String::from_utf8_lossy(&buffer).into_owned();
-        if let Some(event) = parse_sse_line(&residual) {
-            if apply_event(app, event) {
+        if let Some(frame) = parse_sse_frame_line(&residual) {
+            if on_frame(frame) {
                 return Ok(());
             }
         }
     }
-    let _ = app.emit("llm-done", ());
+    Ok(())
+}
+
+/// Ensure a healthy managed server, resolve the bound host, then stream `body`
+/// through the shared HTTP/SSE shell.
+///
+/// This is the adapter boundary the ST-5 skill path uses so a mechanism swap
+/// (e.g. the documented `response_format` fallback) is contained to the request
+/// renderer + frame accumulation in `skills.rs` — the HTTP/SSE handling is never
+/// duplicated or scattered.
+pub async fn run_stream(
+    app: &AppHandle,
+    body: &serde_json::Value,
+    on_frame: impl FnMut(ChatSseFrame) -> bool,
+) -> Result<(), String> {
+    let port = ensure_healthy(app).await?;
+    let host = server_host(app);
+    stream_chat_frames(&host, port, body, on_frame).await
+}
+
+/// POST the chat request and stream the SSE frames to the webview.
+async fn stream_completion(
+    app: &AppHandle,
+    host: &str,
+    port: u16,
+    messages: &[LlmMessage],
+    image_base64: Option<&str>,
+) -> Result<(), String> {
+    let body = build_request_body(messages, image_base64);
+    let mut finished = false;
+    stream_chat_frames(host, port, &body, |frame| {
+        for event in frame.events {
+            if apply_event(app, event) {
+                finished = true;
+                return true;
+            }
+        }
+        false
+    })
+    .await?;
+
+    // A stream that closed early without `[DONE]` still signals completion so the
+    // UI can never hang (R-4.2).
+    if !finished {
+        let _ = app.emit("llm-done", ());
+    }
     Ok(())
 }
 
@@ -358,6 +492,10 @@ fn apply_event(app: &AppHandle, event: ChatStreamEvent) -> bool {
             let _ = app.emit("llm-token", delta);
             false
         }
+        // Defensive: the legacy chat path offers no tools, so a tool-call chunk
+        // is unexpected here. It is dropped — raw tool-call JSON is NEVER
+        // forwarded as `llm-token` (ST-5 invariant).
+        ChatStreamEvent::ToolCallDelta { .. } => false,
         ChatStreamEvent::Done => {
             let _ = app.emit("llm-done", ());
             true
@@ -545,5 +683,66 @@ mod tests {
             "http://127.0.0.1:8080/v1/chat/completions"
         );
         assert_eq!(props_url("127.0.0.1", 8080), "http://127.0.0.1:8080/props");
+    }
+
+    // ── ST-5: tool-call seam (additive) ──────────────────────────────────────
+
+    #[test]
+    fn parse_sse_frame_extracts_tool_call_fragments_and_finish_reason() {
+        let opener = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"open_app","arguments":"{\"app\":"}}]},"finish_reason":null}]}"#;
+        let frame = parse_sse_frame(opener);
+        assert_eq!(
+            frame.events,
+            vec![ChatStreamEvent::ToolCallDelta {
+                index: 0,
+                name: Some("open_app".to_string()),
+                arguments_fragment: Some("{\"app\":".to_string()),
+            }]
+        );
+        assert_eq!(frame.finish_reason, None);
+
+        // A later fragment carries only more raw argument text.
+        let closer = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Mission Monitor\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let frame = parse_sse_frame(closer);
+        assert_eq!(
+            frame.events,
+            vec![ChatStreamEvent::ToolCallDelta {
+                index: 0,
+                name: None,
+                arguments_fragment: Some("\"Mission Monitor\"}".to_string()),
+            }]
+        );
+        assert_eq!(frame.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn parse_sse_frame_collects_a_content_delta_and_finish_reason_from_one_chunk() {
+        let payload = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
+        let frame = parse_sse_frame(payload);
+        assert_eq!(frame.events, vec![ChatStreamEvent::Delta("hi".to_string())]);
+        assert_eq!(frame.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn parse_sse_frame_treats_done_blank_and_garbage_as_empty_frames() {
+        assert_eq!(parse_sse_frame("  "), ChatSseFrame::default());
+        assert_eq!(parse_sse_frame("{ not json"), ChatSseFrame::default());
+        assert_eq!(parse_sse_frame(r#"{"choices":[]}"#), ChatSseFrame::default());
+
+        let done = parse_sse_frame("[DONE]");
+        assert_eq!(done.events, vec![ChatStreamEvent::Done]);
+        assert_eq!(done.finish_reason, None);
+    }
+
+    #[test]
+    fn parse_sse_frame_line_ignores_non_data_lines() {
+        assert_eq!(parse_sse_frame_line("event: message"), None);
+        assert_eq!(parse_sse_frame_line(": keep-alive"), None);
+        assert!(parse_sse_frame_line(r#"data: {"choices":[{"delta":{"content":"x"}}]}"#).is_some());
+        // The legacy single-event view still yields the first event.
+        assert_eq!(
+            parse_sse_data(r#"{"choices":[{"delta":{"content":"x"}}]}"#),
+            Some(ChatStreamEvent::Delta("x".to_string()))
+        );
     }
 }
