@@ -1992,3 +1992,42 @@ streamed tokens → `llm-done`): **zero** `level=error` entries since the reload
 **tester-instrumentation artifacts** (the round's MutationObserver callbacks called `String.slice()`
 on a `null` reply text when the bubble cleared) — they disappeared after the reload and are NOT a
 product defect (see `exploratory.md` round 2, observation O-1).
+
+### #2893 testing round 3 (spec/2893 @ cf25127c) — results
+
+> **Verdict: PASS.** Round 3 re-measured the round-2 failing non-functional row (Q-15 window-present
+> latency) on the RD-1..RD-4 cost-only `rowDerivation.ts` fix; every functional row was re-confirmed
+> on the fixed surface. Served tip `spec/2893 @ cf25127c` (full stop/start after the tip change).
+
+- **F-99 PASS (re-confirmed).** Live `llm-skill-call` on the real channel:
+  `{"skill":"open_app","arguments":{"app":"Mission Monitor"}}` (t=1789755174511) immediately followed
+  by `llm-done` (`payload:null`, t=1789755174513). Offered request carries `open_app` first with the
+  declared `{app:string}` contract; execution proven by the opened window + exact reply (F-100).
+- **F-100 PASS (re-confirmed).** Exact-copy matrix live: success `Opening Mission Monitor` (typed +
+  dictated frames), unknown `I couldn't find "NotARealApp"` (trace: `💭 Thinking...` t=26 ms →
+  exact copy t=1340 ms), non-app-open → normal chat replies (`Hello! How can I help you today?`,
+  `Why did the programmer quit his job? Because he didn't get arrays!`, `I'm here to help. …`,
+  `What can I help you with? …`). Success `happy`; unknown/non-app-open `idle` with **no** `happy`.
+- **F-101 PASS (re-confirmed).** Zero spurious windows across every failure-ish leg: Q-9 unknown,
+  Q-12 `Missing all the time`/`MM`/`hi`/`tell me a joke` all left the window count unchanged.
+- **F-102 PASS (re-confirmed).** After every outcome: `[data-streaming]` absent, `.fredo-cursor`
+  absent, bar `aria-busy` null/cleared + `readOnly:false`, avatar back at rest; no stuck streaming.
+- **F-103 PASS (re-confirmed).** One polite live region (`role="status" aria-live="polite"`,
+  `data-testid="fredo-companion-live-region"`, exactly 1), carrying the settled reply once; zero
+  `role="alert"`; reply region `role="region"` + `aria-label="Fredo's reply"` + `tabindex="0"`;
+  dark contrast **14.05:1**, light-default palette **17.83:1**; live var-swap re-tinted with no stale
+  colour and restored exactly.
+- **F-104 PASS (re-confirmed).** `fredo emit --event-type chat --session-id e2e-2893-r3-chat` and
+  `--event-type tool_use --session-id e2e-2893-r3-tool --tool-name read_file` → both `{"queued":true}`;
+  `chat_rows` marker `e2e-2893-r3-chat`; `tool_use_rows` marker `e2e-2893-r3-tool|read_file`;
+  `telemetry_spans` = **8616** rows, newest `ingested_at` `2026-09-18T18:32:20.023174400+00:00`.
+- **F-105 PASS (re-confirmed).** Re-ran `probe_companion_skills`: `tools.toolCallsEmitted: true`,
+  `tools.finishReason: "tool_calls"`, `tools.terminated: true`, `tools.error: null`; offered
+  `tools[0].function.name = "open_app"` with `{app:string, required:[app], additionalProperties:false}`,
+  `tool_choice:"auto"`, `parallel_tool_calls:false`; raw SSE `"tool_calls":[{…"function":{"name":"open_app","arguments":"{"}}]`;
+  `responseFormat.content = "{\"app\": \"Mission Monitor\"}"`; `verdict.nativeToolsUsable: true`.
+
+**Console check (round 3):** `tauri_read_logs(source="console", level="error")` was **empty** after the
+sweep and after a fresh restart. The round's samplers use a plain guarded `setInterval` (no
+MutationObserver), so the round-2 `reading 'slice'` tester artifact did NOT reproduce — product console
+clean.
