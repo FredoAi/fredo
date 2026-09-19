@@ -428,5 +428,73 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
       band's placement/geometry is unchanged; a normalized long transcript wraps at the same bound
       heights (48/68/88/108 px).
   - **Edge:** a 120-word normalized transcript reaching the 108 px cap with internal scroll; the
-    normalized text re-measured after an edit; the resident armed with a dictated transcript present.
+      normalized text re-measured after an edit; the resident armed with a dictated transcript present.
   - **Receipt:** the latency series + the measured field heights + the reply-band geometry.
+
+---
+
+## #2897 extension — adding a speech-handling mode must not move the dictation contract (G-136)
+
+> Issue #2897 adds a **local transcription vs model audio** choice. It is additive: the existing
+> hold/release/indicator/routing/privacy contract for the LOCAL mode is unchanged, and no existing
+> persisted key is mutated. **No prior row is retired** — R-1..R-29 remain in force. Run alongside
+> R-30..R-34, `functional.md` F-102..F-110, the `voice-dictation` F-1..F-4 lever rows, and the
+> `llama-setup` #2897 rows. **Verification policy: live.**
+
+## R-30 — Local-mode dictation contract UNCHANGED
+
+- [ ] R-30: With mode=`local`, re-run `functional.md` F-90 (hold dictates; listening ONLY while held;
+      a sub-threshold TAP and a never-live hold each land exactly ONE ordinary space with ZERO
+      `stt_start` and the mic never opened), F-91 (Space in a NON-EMPTY field is a literal space),
+      F-92 (voice disabled / model absent ⇒ ordinary space, no capture, no error) and F-93 (mic never
+      left hot), plus F-83/F-100/F-101 (casing + the user's edit wins).
+  **Expected:** byte-for-byte the shipped `#2882`/`#2887`/`#2888` outcomes — ZERO regressions; over
+      the whole leg a confirmed LOST or CONVERTED space FAILs the round (G-158); no ALL-CAPS visible
+      at any point of a capture.
+  - **Edge:** voice disabled MID-hold; a release exactly at the 200 ms threshold; a hold right after
+      a cancelled hold; a hold with a dictated transcript present.
+  - **Receipt:** per leg — `value`, `stt_start` count, cue state, `role="alert"` presence.
+
+## R-31 — Persisted keys + the mode addition are non-destructive
+
+- [ ] R-31: Enumerate the persisted voice keys before/after toggling the new mode control and the
+      existing enable/autosend/device controls; restart and re-read.
+  **Expected:** the existing keys (`Fredo_companion_voice_enabled`, `Fredo_companion_voice_autosend`,
+      `Fredo_companion_voice_device_id`) are byte-unchanged by the mode leg; the ONLY new key is the
+      handling key declared by the Architect — `Fredo_companion_voice_handling` (`'local'` default |
+      `'model'`), read per `stt_start`; no existing companion key is rewritten.
+  - **Edge:** mode toggled then the app killed mid-listening; webview reload instead of full restart;
+      legacy/malformed mode values heal to `local`.
+
+## R-32 — No new remote surface; the managed server + chat contract unchanged
+
+- [ ] R-32: With the app idle (not listening) and again during a model-audio turn, watch for outbound
+      connections; read the managed `llama-server` bind/port and the chat transport; corroborate the
+      `llama-setup` R-31/R-32 rows.
+  **Expected:** local-only holds at rest and during a turn; the model server binds `127.0.0.1` and the
+      turn request targets loopback; the chat transport/contract is the existing managed path (no new
+      remote client, no hostname); any model download remains setup-gated.
+  - **Edge:** mode selected but never used adds no connection; a stopped server yields the AC5 message,
+      not a remote retry.
+
+## R-33 — Build gates + no test weakening
+
+- [ ] R-33: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; record the Rust CI
+      result (`rust-validate`) because the tester shell has no `cargo`; grep the changed files for
+      true colour literals and the invalid `var(--x)NN` alpha-append.
+  **Expected:** UI build exit 0 / suite green with the new mode pins present and NO existing assertion
+      weakened, disabled or deleted (G-125); Rust gates green in CI; zero true colour literals / no
+      alpha-append in the changed files; a moved/renamed frozen hook is refreshed in the same scope and
+      named.
+  - **Edge:** a superseded assertion is recorded with the superseding row rather than silently dropped.
+
+## R-34 — Indicator honesty + mic release hold across a mode switch
+
+- [ ] R-34: Start in local mode (indicator on the launcher cue), stop; switch to model audio; start;
+      sample the indicator ≤ 50 ms; stop. Then switch modes while idle and re-run one hold.
+  **Expected:** exactly one honest indicator per session in BOTH modes; the indicator is never shown
+      before capture is live and is cleared on stop/cancel; `stt_status.listening === false` and the
+      working set returns to baseline after every stop; the mode switch adds no stuck cue, no leaked
+      capture handle, no dishonesty window. A capture without a visible indicator FAILs (G-158).
+  - **Edge:** mode switch mid-listen (defined behavior — must not leave a dishonest/orphan indicator);
+      three switch→hold cycles; the resident engine preserved across the switch.
