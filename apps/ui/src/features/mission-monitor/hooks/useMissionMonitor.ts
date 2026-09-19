@@ -2,7 +2,6 @@ import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { useNodesState, useEdgesState } from 'reactflow';
 import type { Node, Edge, NodeChange } from 'reactflow';
 import type { ChatRow, ToolUseRow } from '../../../shared/classes/EventSubscription';
-import type { UseEventRowsResult } from '../../../shared/hooks/useEventRows';
 import {
   type GraphNodeStatus,
   type GraphNodeType,
@@ -878,12 +877,23 @@ function resolveNestedSubagentRootEmit(
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
-/** The typed-row sources the graph derives from (P4.2). Production wires the
- *  panel-level `useEventRows('Chat' | 'ToolUse', { replay: true })` results;
- *  tests inject fixture row stores through the same seam. */
+/** One typed-row source: the live row map + its monotonic mutation epoch. */
+export interface RowGraphSource<Row> {
+  rows: Map<string, Row>;
+  /** Advances only on a real mutation — the recompute signal (#523 rule). */
+  epoch: number;
+}
+
+/** The typed-row sources the graph derives from (P4.2).
+ *
+ *  Spec #2896 ST-6: production wires the SELECTED SESSION's canonical activity
+ *  from `useSessionActivityWatch(selectedSessionId)` (a `{ kind: 'query',
+ *  where: sessionId = S }` watch), so the canvas derives from O(rows of the
+ *  selected session) — never a full-history replay. The structural shape keeps
+ *  the existing `useEventRows`-result / row-patch-store test seams working. */
 export interface RowGraphSources {
-  chat: UseEventRowsResult<ChatRow>;
-  toolUse: UseEventRowsResult<ToolUseRow>;
+  chat: RowGraphSource<ChatRow>;
+  toolUse: RowGraphSource<ToolUseRow>;
 }
 
 interface UseDeliveryGraphOptions {

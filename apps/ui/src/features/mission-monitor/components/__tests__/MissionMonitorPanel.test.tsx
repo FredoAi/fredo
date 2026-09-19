@@ -17,50 +17,72 @@ import { adapterBridge } from '@/shared/utils/adapterBridge';
 
 afterEach(() => cleanup());
 
-// Mock persistence module
-vi.mock('../../lib/persistence', () => ({
-  initMmTables: vi.fn(),
-  persistDelivery: vi.fn(),
-  loadPersistedSessions: vi.fn().mockResolvedValue([]),
-  deleteSessionFromStore: vi.fn(),
-  loadPersistedDeliveries: vi.fn().mockResolvedValue([]),
-  loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
-  markSessionDeleted: vi.fn(),
-  isSessionDeleted: vi.fn(() => false),
-  // Spec #2788 P4.3: tombstone seeding — awaited inside useDeliverySessions' mount load
-  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
-  // ST11: real implementations — pure watermark helpers used by the panel.
-  createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
-  nextUnseenDeliveries: (deliveries, state) => {
-    if (deliveries.length < state.cursor) state.cursor = 0;
-    if (deliveries.length <= state.cursor) return [];
-    const slice = deliveries.slice(state.cursor);
-    state.cursor = deliveries.length;
-    const unseen = slice.filter((d) => !state.seenIds.has(d.id));
-    for (const d of unseen) state.seenIds.add(d.id);
-    return unseen;
-  },
-}));
-
 let mockDeliveries: ContractDelivery[] = [];
 
-// Mock StreamContext — deliveries are swapped per test
+// Spec #2896 ST-6: the session list comes from the declared `sessions` table
+// (`useFeatureRead` + `useFeatureWatch`). Mock both hooks over a mutable row set.
+let mockDeclaredSessions: Array<{ sessionId: string; startTime: number; latestAt: string }> = [
+  { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+];
 
-// P4.2: the panel derives its session metrics from typed rows via
-// useEventRows — mock it to project the SAME fixtures the StreamContext mock
-// serves (rowsFromDeliveries applies the classifier semantics; the epoch is
-// static because tests seed mockDeliveries before render).
-vi.mock('@/shared/hooks/useEventRows', async () => {
+/** S6: force a read/watch failure (the verbatim backend error). */
+let mockSessionsError: string | null = null;
+
+function declaredRows(): Map<string, unknown> {
+  return new Map(
+    mockDeclaredSessions.map((s) => [
+      JSON.stringify([s.sessionId]),
+      {
+        _rowVersion: 1,
+        sessionId: s.sessionId,
+        startedAtNs: s.startTime * 1e6,
+        latestAt: s.latestAt,
+        chatRowCount: 0,
+        nonSubagentChatRowCount: 1,
+        visibleTurnCount: 1,
+        userDispatchCount: 0,
+        derivedName: null,
+        agentName: null,
+        customName: null,
+      },
+    ]),
+  );
+}
+
+vi.mock('@/shared/hooks/useFeatureData', () => ({
+  useFeatureRead: () => ({
+    rows: declaredRows(),
+    version: 1,
+    error: mockSessionsError,
+    loading: false,
+  }),
+  useFeatureWatch: () => ({
+    rows: declaredRows(),
+    epoch: 1,
+    error: mockSessionsError,
+    ready: true,
+  }),
+}));
+
+// Spec #2896 ST-6: the canvas + session metrics source is the selected
+// session's canonical activity watch (ST-9). Project the same fixtures the
+// StreamContext mock serves.
+vi.mock('../../hooks/useSessionActivityWatch', async () => {
   const { rowsFromDeliveries } = await import('../../hooks/__tests__/fixtures/rowsFromDeliveries');
   return {
-    useEventRows: (eventType: 'Chat' | 'ToolUse') => {
+    useSessionActivityWatch: (sessionId: string | null) => {
       const { chatRows, toolRows } = rowsFromDeliveries(mockDeliveries);
-      const rows = eventType === 'Chat' ? chatRows : toolRows;
+      const toMap = (rows: Array<{ sessionId: string; correlationId: string }>) =>
+        new Map(
+          (sessionId === null ? [] : rows.filter((r) => r.sessionId === sessionId)).map(
+            (r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const,
+          ),
+        );
       return {
-        rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+        chatRows: toMap(chatRows),
+        toolUseRows: toMap(toolRows),
         epoch: 1,
         error: null,
-        // P4.3: the replay snapshot phase is settled — the loaded gate opens
         ready: true,
       };
     },
@@ -136,8 +158,6 @@ vi.mock('../../hooks/useMissionMonitor', () => ({
     eventCount: 0,
   }),
 }));
-
-import { loadPersistedSessions } from '../../lib/persistence';
 
 /** Chat-node delivery for the panel's selected session 's1'. */
 function makeChatDelivery(
@@ -233,9 +253,10 @@ describe('MissionMonitorPanel', () => {
     reactflowState.onPaneClick = undefined;
     reactflowState.zoomOnDoubleClick = undefined;
     miniMapState.nodeColor = undefined;
-    vi.mocked(loadPersistedSessions).mockResolvedValue([
-      { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
-    ]);
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    mockSessionsError = null;
   });
 
   it('#2748 AC4 / R-4.1: does NOT render the "Mission Monitor" header strip AND neutralizes the window/dialog identity', () => {
@@ -261,7 +282,7 @@ describe('MissionMonitorPanel', () => {
   });
 
   it('shows empty state when no sessions exist', () => {
-    vi.mocked(loadPersistedSessions).mockResolvedValueOnce([]);
+    mockDeclaredSessions = [];
     renderWithChakra(<MissionMonitorPanel />);
 
     // Empty state shows the waiting message
@@ -269,10 +290,10 @@ describe('MissionMonitorPanel', () => {
   });
 
   it('#2748 AC4 / R-4.1: the no-session state shows no header remnant', async () => {
-    // No persisted sessions and no live deliveries → EmptyState is the topmost
+    // No declared sessions and no live deliveries → EmptyState is the topmost
     // element; the removed header's "Mission Monitor" / "No session" / `·`
     // remnants must never appear, and the bar stays hidden (no session).
-    vi.mocked(loadPersistedSessions).mockResolvedValueOnce([]);
+    mockDeclaredSessions = [];
     const { container } = renderWithChakra(<MissionMonitorPanel />);
     await act(async () => { await Promise.resolve(); });
 
@@ -284,6 +305,31 @@ describe('MissionMonitorPanel', () => {
     // #2748 FIX-3 (AC4-1 letter): no `Mission Monitor` remnant anywhere in the
     // a11y tree — aria-label, title, or text content.
     expect(findMissionMonitorRemnants(container)).toEqual([]);
+  });
+
+  it('Spec #2896 ST-6 (S6/QA-3.5): a read/watch failure renders a role=alert inline status with the verbatim backend error, keeping stored sessions visible (fail-open)', () => {
+    mockSessionsError = 'feature_data_read failed: table sessions is not declared';
+    renderWithChakra(<MissionMonitorPanel />);
+
+    const alert = screen.getByTestId('mm-watch-error');
+    expect(alert.getAttribute('role')).toBe('alert');
+    // Verbatim backend text — never swallowed.
+    expect(alert.textContent).toContain(
+      'feature_data_read failed: table sessions is not declared',
+    );
+    // Fail-open: the stored session row remains visible; never the empty state.
+    expect(screen.getAllByTitle('Delete session').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Waiting for agent activity…')).toBeNull();
+  });
+
+  it('Spec #2896 ST-6 (S6): a disconnected stream renders a role=status warning while stored sessions stay visible', () => {
+    renderWithChakra(<MissionMonitorPanel />);
+
+    const status = screen.getByTestId('mm-watch-disconnected');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toContain('Live updates disconnected');
+    expect(screen.queryByTestId('mm-watch-error')).toBeNull();
+    expect(screen.getAllByTitle('Delete session').length).toBeGreaterThanOrEqual(1);
   });
 
   it('#2748 AC3/AC4 (R-3.1, R-3.2, R-4.2): the bar is the TOP row and shows the wired SUBAGENTS figure', async () => {
