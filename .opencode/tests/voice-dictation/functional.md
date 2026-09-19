@@ -55,3 +55,18 @@
 - **F-3 PASS** — feed seam live via `stt_start` → `{started:true, deviceName:"stt-feed", sampleRate:16000}` (the virtual mic reports 48000 Hz → the feed branch is proven; no `cpal` device).
 - **F-4 PASS** — UNSET-env control: the pre-feed session used the virtual-mic path at 48000 Hz with a hold-length (non-1.6 s) clip → the fed observation is non-vacuous.
 - **Env form used (tooling gap):** the documented `powershell -File dev-env.ps1 -EnvVars @{ … }` form fails (`Cannot convert the "System.Collections.Hashtable" value of type "System.String"`); `FREDO_STT_FEED_WAV` was set in the parent environment of an allowlisted `bun` launcher invoking `dev-env.ps1 -Action Up`. No product change; recommend documenting a string form.
+
+### #2897 run log — testing round 2 (`spec/2897 @ be4d3a73`, 2026-09-19, live; fix `f3394e5`)
+
+- **F-1 PASS** — committed `dictation-phrase-16k-mono.wav`: 51,244 B, SHA-256
+  `33c2f129d17a555b9faad66e21eab5c8069712c8836cc8d363e97c1555343428`, 16 kHz mono 16-bit, 44-byte
+  header, 25,600 samples (1.6 s), first sample 15482 — byte-identical to the developer receipt.
+- **F-2 PASS** — `--seconds 31` → `dictation-31s-16k-mono.wav`, 992,044 B, SHA-256
+  `06a192e647f4c2b1a273c0e4cbf6445e88a8865d021630d89c6006cf51f1cfa1`, 496,000 samples; the 1.6 s
+  fixture and its contract are unchanged.
+- **F-3 PASS** — feed seam live: 1.6 s feed → `{deviceName:"stt-feed", sampleRate:16000}`; 31 s feed →
+  same; virtual mic reports 48,000 Hz → the feed branch is proven (no `cpal` device).
+- **F-4 PASS** — UNSET-env control: the pre-feed sessions used the virtual-mic path at 48,000 Hz with a
+  hold-length clip and produced a reply → the fed observations are non-vacuous.
+- **Env form used (tooling gap):** unchanged from round 1 — `-EnvVars @{ … }` via `powershell -File`
+  stringifies the hashtable; the feed was driven from the parent env of the allowlisted `bun` launcher.
