@@ -307,7 +307,9 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny",
-                    "git rm*": "allow"
+                    "git rm*": "allow",
+                    "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
+                    "sqlite3 -readonly*": "allow"
                 }
             }
         },
