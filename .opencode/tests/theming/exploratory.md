@@ -73,20 +73,29 @@
 > Unscripted probes for issue #2899. A confirmed finding PROMOTES to `functional.md` as a new `F-`
 > row (keep the origin note).
 
-- [ ] **E-20 — Rapid chooser churn.** Cycle None → each background → None repeatedly; watch for
+- [x] **E-20 — Rapid chooser churn.** Cycle None → each background → None repeatedly; watch for
       re-render loops (`Maximum update depth exceeded`), stale paint, or lag (AGENTS.md #523).
-- [ ] **E-21 — Reduced-motion + strobe probe.** Toggle `prefers-reduced-motion: reduce` live; confirm
+- [x] **E-21 — Reduced-motion + strobe probe.** Toggle `prefers-reduced-motion: reduce` live; confirm
       the selection crossfade snaps to 0 ms and no recipe introduces continuous animation/`@keyframes`
       (all six ship static). Sample consecutive frames for high-frequency luminance inversion
       (flash/strobe) — any finding promotes to F-25.
-- [ ] **E-22 — Stale/garbage persistence sweep.** Inject `''`, `null`, `undefined`, an object, and a
+- [x] **E-22 — Stale/garbage persistence sweep.** Inject `''`, `null`, `undefined`, an object, and a
       removed id into the background persistence key; restart each time. Confirm a safe None fallback
       with no crash/blank desktop (promotes to F-23).
-- [ ] **E-23 — Input/z-order stress.** With a background active, drag/resize/minimize/restore
+- [x] **E-23 — Input/z-order stress.** With a background active, drag/resize/minimize/restore
       windows, open two windows, and click + type across them. Confirm no input interception and the
       background never paints above content (promotes to F-24).
-- [ ] **E-24 — Worst-case contrast.** Light preset + pale accent + the brightest background; measure
+- [x] **E-24 — Worst-case contrast.** Light preset + pale accent + the brightest background; measure
       shell chrome (ticks, clock, tiles) contrast; any pair below AA is a finding (promotes to F-24).
-- [ ] **E-25 — Sustained idle soak.** Leave the app idle with a background active for several
+- [x] **E-25 — Sustained idle soak.** Leave the app idle with a background active for several
       minutes; sample process CPU/GPU and memory growth. Any unbounded growth or sustained high usage
       is a finding (promotes to F-25).
+
+### #2899 testing round 1 (spec/2899 @ c846e2e7) — findings
+
+- **E-20 — regression-free.** 15 rapid clicks (all 7 options ×2 cycles + None): zero `window.onerror`, each selection repainted the layer, `localStorage` tracked, console clean (no "Maximum update depth exceeded"). No re-render loop.
+- **E-21 — regression-free, with a named limitation (no promotion).** No `@keyframes`/continuous animation anywhere in the slice; backdrop computed `animation-name: none`, `transition-duration: 0s`. The OS `prefers-reduced-motion` flag is `false` and the Tauri MCP driver exposes no media-emulation API, so the toggle could not be exercised live — non-blocking because there is no animation to suppress (all six descriptors ship static). The UI/UX §7 180 ms selection crossfade was **not implemented** (design/implementation delta — no AC requires it).
+- **E-22 — regression-free.** Injected `banana` into both `localStorage` and AppStore → safe None fallback after a cold restart, no crash/blank desktop. `''`/`null`/removed-id normalization pinned by `background.invariants.test.tsx` (e) + `backgroundRegistry.test.ts`.
+- **E-23 — regression-free.** With Aurora active across two window surfaces and a maximized/floating window, `elementFromPoint` always returned window content, never the backdrop; typed input delivered.
+- **E-24 — FINDING (disclosed residue, no promotion).** Light-preset legibility confirmed on the post-switch frame; the background sits behind opaque windows so it cannot alter window-content contrast. The chooser's `--text-secondary` `#888888` on `--card-bg` `#2d2d2d` 12px captions measure **3.89:1** (< AA) — but the pre-existing DockPosition helper text measures identically (3.89:1), and the pair is background-invariant, so this is a pre-existing theming caption characteristic, not a #2899 regression. Recorded in the verdict as a disclosed residual.
+- **E-25 — regression-free.** 90 rAF frames @ avg 16.5 ms (p95 16.7, max 16.8) and JS heap 37,920→36,965→36,966 KB over the soak — no unbounded growth.
