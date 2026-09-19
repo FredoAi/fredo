@@ -10,13 +10,14 @@
 
 ## REQ-1 — read current data with no watch open (AC1)
 
-- [ ] F-1 (REQ-1): Cold read with no watch open — restart the app, do NOT open any watch, invoke `feature_data_read` for a declared scope (`ref: {source:'feature', featureId:'mission-monitor', table:'sessions'}`); cross-check `telemetry_spans`/the RTDB row store at the same instant.
+- [ ] F-1 (REQ-1, **FAIL 2026-09-19 #2896** — declared table empty; root cause F-19): Cold read with no watch open — restart the app, do NOT open any watch, invoke `feature_data_read` for a declared scope (`ref: {source:'feature', featureId:'mission-monitor', table:'sessions'}`); cross-check `telemetry_spans`/the RTDB row store at the same instant.
+  - ACTUAL: read → `{"retention":{"maxRows":500,"ttlDays":null},"rows":[],"version":0}` while `telemetry_spans`=12,440 and `chat_rows`=29,503/176 sessions. Projection fails every ingest (`no such column: sessionId`). Repro in the #2896 Tests Runs comment.
   - EXPECTED: the read returns the persisted CURRENT rows for the scope and agrees with the most recent change notification for that scope (same current values). No stale snapshot is presented as current. A scope with stored rows never reads as empty.
   - Edge: empty scope → empty result (not an error); a value changed twice → read returns the final value; rapid consecutive mutations → read is never older than the last notification.
 - [ ] F-2 (REQ-1): Read-only consumer (no watch), drive a mutation on the real channel (`fredo emit` unique session or a live drive), then `feature_data_read` the scope.
   - EXPECTED: the read reflects the mutation — the changed field equals the last-notified current value.
   - Edge: a mutation during an in-flight read; a no-op write produces no phantom change; two mutations inside one coalescing window.
-- [ ] F-3 (REQ-1): Restart the app, then first-`feature_data_read` a scope persisted pre-restart with no post-restart mutation (watches do not auto-resume — A-9).
+- [ ] F-3 (REQ-1, **FAIL 2026-09-19 #2896**): Restart the app, then first-`feature_data_read` a scope persisted pre-restart with no post-restart mutation (watches do not auto-resume — A-9).
   - EXPECTED: read returns the persisted post-restart current values, matching the row store / `telemetry_spans` count + max seq at the same instant.
   - Edge: row only in SQLite; row only in the write-behind cache at shutdown; row updated in the final pre-restart second.
 
@@ -52,22 +53,26 @@
 
 ## REQ-4 — declared data: idempotent create, backend-owned, durable, isolated (AC4)
 
-- [ ] F-12 (REQ-4): Launch the app twice (and invoke `feature_data_declare` twice in one session) with the same feature declaration.
+- [ ] F-12 (REQ-4, **PARTIAL 2026-09-19 #2896** — declare IS idempotent (`created:false`, no error) but the LEGACY physical table is silently accepted in place of the declared schema): Launch the app twice (and invoke `feature_data_declare` twice in one session) with the same feature declaration.
   - EXPECTED: created when missing and a no-op when present — no error, no duplicate table/row, no data loss. Inspect the feature-namespaced SQLite table(s) read-only.
   - Edge: declaration changed (added column) after creation; creation raced by a read; creation while a watch is open.
-- [ ] F-13 (REQ-4): Write rows through the layer (projection + `feature_data_write`; removal via `feature_data_delete` tombstone), fully stop/start the app, `feature_data_read` without a full history scan.
+- [ ] F-13 (REQ-4, **FAIL 2026-09-19 #2896**): Write rows through the layer (projection + `feature_data_write`; removal via `feature_data_delete` tombstone), fully stop/start the app, `feature_data_read` without a full history scan.
+  - ACTUAL: declared `sessions` count is 0 before and after a cold restart; `feature_data_tables.last_version=0` with `backfill_done=1`; `feature_data_write` refuses a non-existent key (`record [...] does not exist`).
   - EXPECTED: rows persist and are returned by the first read; updates/deletes survive; no duplicates materialize.
   - Edge: a deletion survives restart (no resurrection); same-session update reflected after restart; torn last write.
-- [ ] F-14 (REQ-4 — Scenario B): Large stored corpus vs small corpus; open the feature; measure Δ mount→first rendered row.
+- [ ] F-14 (REQ-4 — Scenario B, **FAIL 2026-09-19 #2896**): Large stored corpus vs small corpus; open the feature; measure Δ mount→first rendered row.
+  - ACTUAL: MM renders `No sessions yet` + spinner `Waiting for agent activity…` despite 29,503 canonical chat rows / 176 sessions; no first row ever renders, so no Δ is measurable (the AC's "visible 0 sessions/blank phase when stored sessions exist" FAIL condition).
   - EXPECTED: stored entries appear immediately (no blank/"0" phase when data exists); open time does not grow with total stored history: large corpus (≥ 3× rows / ≥ 30 sessions) Δ ≤ **250 ms** absolute AND ≤ **2.0×** the small-corpus Δ, with a 100 ms small-corpus floor (A-14). Record raw ms.
   - Edge: cold vs warm webview; empty store; multi-batch replay drain.
-- [ ] F-15 (REQ-4): Two declared feature scopes (`feature_data_declare` with a second `featureId`); write to A, read/watch B.
+- [x] F-15 (REQ-4, **PASS 2026-09-19 #2896**): Two declared feature scopes (`feature_data_declare` with a second `featureId`); write to A, read/watch B.
+  - EVIDENCE: declared `qa2896probe.chats` (physical `feature_qa2896probe_chats`, correct declared schema incl. `_row_version`/`_updated_at`); read of `qa2896probe.sessions` → hard named error `feature 'qa2896probe' has not declared table 'sessions' (call feature_data_declare first)`. Zero cross-feature bleed; named refusal confirmed. (Note: this scope's own backfill never completed — the MM collision poisons the shared projection engine.)
   - EXPECTED: B never receives A's data (zero cross-feature bleed); a cross-namespace access is refused with a named error; B's table holds only B's rows.
   - Edge: same table name in both; same record key in both; one feature absent/deleted; a hyphenated feature id.
 
 ## REQ-5 — no session selected → no per-session watch (AC5, negative)
 
-- [ ] F-16 (REQ-5): Open the consuming feature with NO session selected (fresh launch).
+- [x] F-16 (REQ-5, **PASS 2026-09-19 #2896** — negative only): Open the consuming feature with NO session selected (fresh launch).
+  - EVIDENCE: Dev Mode → Feature Data shows exactly 1 watch (`mission-monitor · sessions · scope: table`) and no per-session `query` watch with nothing selected. The companion positive (table watch delivers new sessions) is FAIL because the declared table never mutates.
   - EXPECTED: zero per-session activity watches are open (per-session `feature_data_watch` `scope:{kind:'query', where:[{field:'sessionId', eq:S}]}`; zero `featureBatch` deliveries for any per-session `watchId` via `tauri_ipc_monitor`/`tauri_ipc_get_captured`) and no per-session activity is delivered — while the table-level watch stays live and delivers new sessions.
   - Edge: select then deselect; a new session starts while nothing is selected → it appears via the table watch; its activity rows must NOT be delivered as if a session were selected.
 
@@ -87,8 +92,18 @@
 - [ ] F-17 (REQ-3 / S6): Force a watch/read failure and a stream disconnect in the consuming feature.
   - EXPECTED: the failure is surfaced via the bound hook contract (A-13 — `feature_data_read|watch|write|delete` reject with hard named errors; `useFeatureRead`/`useFeatureWatch` expose `error: string | null` verbatim, never swallowed) AND previously stored data remains visible (fail-open) — never an empty result, never console-only. A removed record is `kind:"remove"`, not an error.
   - Edge: failure at mount; failure mid-stream; recovery on re-subscribe.
-- [ ] F-18 (NFR-1 / first meaningful paint): with stored data, the consuming feature's first painted frame contains the stored entries — no backend round-trip/full history scan dependency; record the measured Δ against the A-14 bound (large corpus Δ ≤ 250 ms absolute AND ≤ 2.0× the small-corpus Δ, 100 ms floor).
+- [ ] F-18 (NFR-1 / first meaningful paint, **FAIL 2026-09-19 #2896**): with stored data, the consuming feature's first painted frame contains the stored entries — no backend round-trip/full history scan dependency; record the measured Δ against the A-14 bound (large corpus Δ ≤ 250 ms absolute AND ≤ 2.0× the small-corpus Δ, 100 ms floor).
   - Edge: cold vs warm; multi-batch drain; genuinely empty store.
+  - ACTUAL: first painted frame shows `No sessions yet` + the inline spinner `Waiting for agent activity…`; no Δ measurable (no first row).
+
+## Promoted exploratory finding — #2896 round 1 (2026-09-19)
+
+- [ ] F-19 (REQ-4, **CONFIRMED FAIL**; promoted from E-2869/upgrade-path probe): **The declared physical table name `feature_mission_monitor_sessions` collides with the pre-existing LEGACY Mission Monitor table created by the deleted `lib/persistence.ts`.**
+  - EXPECTED: over an existing `fredo.db`, materialization applies the DECLARED schema (contract A-17: "re-start over an existing fredo.db … re-materialize the persisted declaration and preserve the declared rows").
+  - ACTUAL: `pragma_table_info('feature_mission_monitor_sessions')` → `session_id, label, start_time, end_time, delivery_count` (legacy), NOT the declared `sessionId, startedAtNs, latestAt, chatRowCount, …, _row_version, _updated_at`. `CREATE TABLE IF NOT EXISTS` (`registry.rs:440`) silently no-ops; `compute_plan` compares only the persisted metadata, never the physical schema. Every projection/backfill/prune then fails: `WARN fredo::feature_data declared-table projection failed; canonical ingest unaffected error=no such column: sessionId in SELECT * FROM feature_mission_monitor_sessions WHERE sessionId = ?1 LIMIT 2` (+ `ERROR declared retention prune failed`). `feature_data_read` returns `rows:[]`; `last_version` stays 0.
+  - SCOPE: the collision poisons the shared projection engine for ALL declared tables (the clean `qa2896probe` scope's 29,503-row backfill logged 7,118+ failures and never completed) — not only Mission Monitor.
+  - REPRO: `dev-env.ps1 -Action Up -Spec 2896`; open MM → empty state; `feature_data_read` declared scope → `rows:[]`; check `pragma_table_info` + `dev-env.ps1 -Action Logs` for the `no such column: sessionId` warning. Full evidence: the #2896 `## Tests Runs` comment.
+  - FIX DIRECTION: the registry must validate the ACTUAL physical schema (not just persisted metadata) and either migrate/drop the legacy table or refuse with a hard named error; alternatively rename MM's declared table so it cannot collide. ST-6 removed `persistence.ts` without a migration for the table it had created.
 - [ ] N-7 (NFR-5, interaction budgets): selection feedback <100 ms (no round-trip); scope switch clear ≤100 ms with no stale previous-scope flash beyond one frame; no main-thread sync work >50 ms. Raw ms recorded.
   - Edge: rapid switching; large corpus.
 - [ ] N-8 (NFR-5, reduced motion): any new-entry animation/skeleton shimmer is disabled/reduced under `prefers-reduced-motion`.
