@@ -55,3 +55,22 @@
 - [ ] E-22 (OPEN): High session-count + streaming — with many listed sessions AND a live stream: does interaction latency degrade over time (vs. staying bounded)? Measures O(n²)/per-render identity churn (suspect: O(n²)/per-render identity) rather than an outright loop.
 - [ ] E-23 (OPEN): Repeated select/delete during stream — delete a session while others stream: does a re-render loop or a stale-row hit appear? Cross-check `telemetry_spans` for the deleted sessionId; persistence across mount/unmount (deleted session IDs) must survive (module-scoped state, not `useRef`).
 - [ ] E-24 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` is a defect to report in the verdict (invalidates that leg's evidence). `tauri_read_logs source="console"` clean after every interaction.
+
+---
+
+# Mission Monitor — Exploratory Probes (Spec #2896 — feature-owned realtime data layer)
+
+> Unscripted edge/failure probes for the read/watch layer + Mission Monitor migration. A CONFIRMED finding promotes to `functional.md` as a new `F-` case (keep the origin note). Real-path classes (G-088): multi-hop compositing, contested ownership, mid-switch timing — fixture-only evidence is invalid.
+
+## Probes to run beyond the script
+
+- [ ] E-25 (OPEN): Rapid A↔B session switching while BOTH sessions stream continuously — does any previous-session activity leak into the newly selected session's watch, or does the new watch miss a change during the switch window? Cross-check `telemetry_spans` + IPC captures at the same instant.
+- [ ] E-26 (OPEN): Start a watch, then immediately (same tick) emit a mutation — is the change delivered, or lost in the register-vs-mutate race? Repeat 10×; a single loss is a delivery-guarantee defect (REQ-3).
+- [ ] E-27 (OPEN): Stop a watch while a delivery for it is pending — does a post-stop delivery still arrive (stale delivery), or is it correctly discarded? Repeat across coalescing windows.
+- [ ] E-28 (OPEN): Delete the currently selected session while its watch is open and it is streaming — does the watch close cleanly (no orphan subscription, no delivery for the deleted key), and does the session stay deleted across a restart (no resurrection)?
+- [ ] E-29 (OPEN): Close Mission Monitor mid-stream, keep driving the live session, reopen — is any change missed while the UI was closed (NFR closed-UI correctness)? Compare reopened state vs `telemetry_spans`.
+- [ ] E-30 (OPEN): Restart the app while a write is in flight — does the first read after restart show a torn/partial row presented as current, or does it settle to a consistent current value (REQ-1 no-stale/current guarantee)?
+- [ ] E-31 (OPEN): Two feature scopes with the SAME table name and the SAME record key — verify zero cross-feature bleed and a named refusal on cross-namespace access (REQ-4 isolation).
+- [ ] E-32 (OPEN): Field-watch isolation churn — mutate two sibling fields in alternating order across many writes; does either sibling watch ever fire spuriously (REQ-2 field isolation)? Probe (A-12): `tauri_ipc_execute_command` drives two `feature_data_watch` calls with `fields` narrowing; `tauri_ipc_monitor`/`tauri_ipc_get_captured` and the Dev Mode → Feature Data feed read the deliveries.
+- [ ] E-33 (OPEN): Very large corpus (history far exceeding one replay batch) + no session selected — does the table watch stay live and responsive, and does a newly created session appear without a full-history rescan (REQ-4/REQ-5)?
+- [ ] E-34 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` invalidates that leg's evidence (NFR-3).
