@@ -563,6 +563,408 @@ pub async fn probe_companion_skills(app: AppHandle) -> Result<CompanionSkillProb
     })
 }
 
+// ── ST-0 audio-feasibility probe seam (Spec #2897) ────────────────────────────
+//
+// ST-0 is an enabling gate: prove (or refute) that the pinned managed
+// `llama-server` build accepts an OpenAI-style `input_audio` content part on
+// `POST /v1/chat/completions` BEFORE any transport code is written. The live
+// request is driven from outside the app (the recipe in
+// `docs/research/model-audio-feasibility.md`, executed by the Tester as F-110),
+// because ST-0's non-goals forbid a registered command or any behavior change.
+//
+// This module is the pure, test-pinned seam: it shapes the exact request body,
+// validates it, interprets `/props` + `/v1/models`, and applies the ST-0 decision
+// rule so the recorded receipt is interpreted the same way every time. It is
+// gated to tests so production carries no dead code (ST-0 adds no behavior) and
+// `cargo test` pins the shape.
+#[cfg(test)]
+mod audio_feasibility {
+    use super::chat;
+    use super::truncate;
+    use serde_json::Value;
+
+    /// The OpenAI/llama.cpp multimodal content-part type for inline audio.
+    pub const INPUT_AUDIO_PART_TYPE: &str = "input_audio";
+
+    /// Candidate `format` values the live probe tries, most likely first. This is
+    /// the probe's attempt ORDER, never a claim about what the server accepts —
+    /// the ACCEPTED set is whatever the F-110 receipt records.
+    pub const PROBE_INPUT_AUDIO_FORMATS: [&str; 2] = ["wav", "mp3"];
+
+    /// Minimal probe persona: the model must answer the audio message, not echo
+    /// it. Kept deliberately plain so the probe does not steer the model into
+    /// either "answer" or "transcribe" behavior (that observation is recorded by
+    /// the Tester from the raw reply).
+    pub const AUDIO_PROBE_SYSTEM_PROMPT: &str =
+        "You are Fredo, a desktop companion. Respond to the user's message.";
+
+    /// The single `input_audio` content part carried on the last user message.
+    ///
+    /// Shape (architect contract, exact and unmodified):
+    /// `{ "type": "input_audio",
+    ///    "input_audio": { "data": "<base64 wav>", "format": "wav" } }`
+    pub fn input_audio_content_part(audio_base64: &str, format: &str) -> Value {
+        serde_json::json!({
+            "type": INPUT_AUDIO_PART_TYPE,
+            "input_audio": { "data": audio_base64, "format": format }
+        })
+    }
+
+    /// The ST-0 probe request: a system turn plus ONE user turn whose content IS
+    /// the audio part array. No transcript text accompanies model audio (REQ-3).
+    pub fn build_audio_probe_body(audio_base64: &str, format: &str) -> Value {
+        serde_json::json!({
+            "messages": [
+                { "role": "system", "content": AUDIO_PROBE_SYSTEM_PROMPT },
+                {
+                    "role": "user",
+                    "content": [ input_audio_content_part(audio_base64, format) ],
+                },
+            ],
+            "stream": true,
+            "max_tokens": chat::MAX_TOKENS,
+        })
+    }
+
+    /// Validate the shaped probe body. `Err` carries a precise, actionable reason
+    /// (never a panic) so a malformed probe is caught before it reaches the wire.
+    pub fn validate_audio_probe_body(body: &Value) -> Result<(), String> {
+        let messages = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "body.messages must be an array".to_string())?;
+
+        let last_user = messages
+            .iter()
+            .rev()
+            .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+            .ok_or_else(|| "body.messages must contain a user message".to_string())?;
+
+        let parts = last_user
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                "the last user message content must be an array carrying the audio part".to_string()
+            })?;
+
+        // REQ-3: no transcript text ever accompanies model audio.
+        if parts
+            .iter()
+            .any(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        {
+            return Err(
+                "the audio probe message must not carry a text part (REQ-3 no-transcript)"
+                    .to_string(),
+            );
+        }
+
+        let part = parts
+            .iter()
+            .find(|part| part.get("type").and_then(Value::as_str) == Some(INPUT_AUDIO_PART_TYPE))
+            .ok_or_else(|| {
+                format!("no {INPUT_AUDIO_PART_TYPE} content part on the last user message")
+            })?;
+
+        let audio = part
+            .get("input_audio")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "the input_audio part must carry an input_audio object".to_string())?;
+
+        if audio
+            .get("data")
+            .and_then(Value::as_str)
+            .map(str::is_empty)
+            .unwrap_or(true)
+        {
+            return Err(
+                "the input_audio part must carry a non-empty base64 data string".to_string(),
+            );
+        }
+        if audio
+            .get("format")
+            .and_then(Value::as_str)
+            .map(str::is_empty)
+            .unwrap_or(true)
+        {
+            return Err("the input_audio part must carry a non-empty format string".to_string());
+        }
+
+        Ok(())
+    }
+
+    /// The `/v1/models` view (llama.cpp returns the OpenAI list shape).
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct ModelsEvidence {
+        pub object: Option<String>,
+        pub ids: Vec<String>,
+    }
+
+    /// Parse `/v1/models` defensively: a missing/renamed `object` or malformed
+    /// entries are skipped, never a panic — the raw payload is the evidence.
+    pub fn models_from_v1_models(payload: &Value) -> ModelsEvidence {
+        let object = payload
+            .get("object")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let ids = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        ModelsEvidence { object, ids }
+    }
+
+    /// A `/props` key whose NAME suggests a multimodal projector / audio support.
+    /// The scan RECORDS what the running build reports; it never asserts a key a
+    /// different build may lack, and it never infers capability from a name.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct PropsMarker {
+        pub path: String,
+        pub value: String,
+    }
+
+    /// Recursively collect scalar `/props` entries whose key mentions
+    /// `mmproj`, `projector`, or `audio` (case-insensitive), sorted by path.
+    pub fn props_audio_markers(props: &Value) -> Vec<PropsMarker> {
+        fn walk(value: &Value, prefix: &str, out: &mut Vec<PropsMarker>) {
+            match value {
+                Value::Object(map) => {
+                    for (key, child) in map {
+                        let path = if prefix.is_empty() {
+                            key.clone()
+                        } else {
+                            format!("{prefix}.{key}")
+                        };
+                        let lower = key.to_ascii_lowercase();
+                        if lower.contains("mmproj")
+                            || lower.contains("projector")
+                            || lower.contains("audio")
+                        {
+                            let rendered = match child {
+                                Value::String(text) if !text.is_empty() => Some(text.clone()),
+                                Value::Bool(flag) => Some(flag.to_string()),
+                                Value::Number(number) => Some(number.to_string()),
+                                _ => None,
+                            };
+                            if let Some(value) = rendered {
+                                out.push(PropsMarker {
+                                    path: path.clone(),
+                                    value,
+                                });
+                            }
+                        }
+                        walk(child, &path, out);
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        walk(child, &format!("{prefix}[{index}]"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(props, "", &mut out);
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    }
+
+    /// What the live `input_audio` POST returned — the AUTHORITATIVE ST-0 signal.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum AudioProbeOutcome {
+        /// HTTP 2xx — the server accepted the audio part and began a completion.
+        Accepted { status: u16 },
+        /// HTTP 4xx — the server rejected the part/format for this build.
+        Rejected { status: u16, detail: String },
+        /// HTTP 5xx — the server errored while handling an otherwise valid shape.
+        ServerError { status: u16, detail: String },
+        /// No HTTP response (connection refused / timeout) — server not running.
+        Unreachable { detail: String },
+    }
+
+    /// Classify the live response. `status == 0` models "no HTTP response".
+    pub fn classify_audio_probe_response(status: u16, body: &str) -> AudioProbeOutcome {
+        let detail = truncate(body.trim(), 400);
+        if (200..300).contains(&status) {
+            AudioProbeOutcome::Accepted { status }
+        } else if (400..500).contains(&status) {
+            AudioProbeOutcome::Rejected { status, detail }
+        } else if status == 0 {
+            AudioProbeOutcome::Unreachable { detail }
+        } else {
+            AudioProbeOutcome::ServerError { status, detail }
+        }
+    }
+
+    /// The ST-0 decision rule. FEASIBLE iff the live POST was 2xx-accepted.
+    /// `/props` + `/v1/models` are recorded evidence but never sufficient: a
+    /// model id or a projector file name is NOT proof (QA F-110 forbids
+    /// inferring capability from a model name). Anything but `Accepted` is
+    /// `unresolved` — a negative receipt loops the spec back to Phase 2.
+    pub fn audio_feasibility(outcome: &AudioProbeOutcome) -> &'static str {
+        match outcome {
+            AudioProbeOutcome::Accepted { .. } => "feasible",
+            AudioProbeOutcome::Rejected { .. } => "infeasible",
+            _ => "unresolved",
+        }
+    }
+
+    // ── Tests: the ST-0 shape + decision rule (CI-pinned) ─────────────────────
+
+    #[test]
+    fn audio_content_part_matches_the_architect_contract_exactly() {
+        let part = input_audio_content_part("QUJD", "wav");
+        assert_eq!(part["type"], INPUT_AUDIO_PART_TYPE);
+        assert_eq!(part["input_audio"]["data"], "QUJD");
+        assert_eq!(part["input_audio"]["format"], "wav");
+        assert_eq!(part.as_object().map(|object| object.len()), Some(2));
+    }
+
+    #[test]
+    fn candidate_formats_are_wav_first_and_include_mp3() {
+        assert_eq!(PROBE_INPUT_AUDIO_FORMATS[0], "wav");
+        assert!(PROBE_INPUT_AUDIO_FORMATS.contains(&"mp3"));
+    }
+
+    #[test]
+    fn audio_probe_body_is_a_streaming_audio_only_user_turn() {
+        let body = build_audio_probe_body("QUJD", "wav");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], chat::MAX_TOKENS);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], AUDIO_PROBE_SYSTEM_PROMPT);
+
+        let parts = body["messages"][1]["content"]
+            .as_array()
+            .expect("content must be an array");
+        assert_eq!(parts.len(), 1, "exactly one content part (the audio)");
+        assert_eq!(parts[0]["type"], INPUT_AUDIO_PART_TYPE);
+        // REQ-3: no transcript text is fabricated into the request.
+        assert!(!body.to_string().contains("\"type\":\"text\""));
+        assert!(validate_audio_probe_body(&body).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_non_audio_malformed_and_text_bearing_bodies() {
+        // A plain string user message is not the multimodal shape.
+        let string_body = serde_json::json!({
+            "messages": [{ "role": "user", "content": "hello" }]
+        });
+        assert!(validate_audio_probe_body(&string_body).is_err());
+
+        // A text part beside the audio part violates REQ-3.
+        let text_body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "what did I say?" },
+                    input_audio_content_part("QUJD", "wav"),
+                ],
+            }],
+        });
+        let error = validate_audio_probe_body(&text_body).expect_err("text part must be rejected");
+        assert!(error.contains("no-transcript"), "unexpected error: {error}");
+
+        // Empty data / empty format are rejected with a precise reason.
+        let empty_data = serde_json::json!({
+            "messages": [{ "role": "user", "content": [ input_audio_content_part("", "wav") ] }],
+        });
+        assert!(validate_audio_probe_body(&empty_data).is_err());
+        let empty_format = serde_json::json!({
+            "messages": [{ "role": "user", "content": [ input_audio_content_part("QUJD", "") ] }],
+        });
+        assert!(validate_audio_probe_body(&empty_format).is_err());
+
+        // Missing messages array.
+        assert!(validate_audio_probe_body(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn models_reader_takes_the_openai_list_shape_and_skips_malformed_entries() {
+        let payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "Gemma-4-E2B", "object": "model" },
+                { "object": "model" },
+                { "id": "B" },
+                "not-an-object",
+            ],
+        });
+        let evidence = models_from_v1_models(&payload);
+        assert_eq!(evidence.object.as_deref(), Some("list"));
+        assert_eq!(evidence.ids, vec!["Gemma-4-E2B".to_string(), "B".to_string()]);
+
+        let empty = models_from_v1_models(&serde_json::json!({}));
+        assert_eq!(empty, ModelsEvidence::default());
+    }
+
+    #[test]
+    fn props_marker_scan_records_projector_keys_without_asserting_them() {
+        let props = serde_json::json!({
+            "build_info": "b1",
+            "mmproj": "C:/models/mmproj-BF16.gguf",
+            "chat_template_tool_use": true,
+            "default_generation_settings": { "n_ctx": 131072 },
+            "nested": { "supports_audio": false, "audio_projector": "" },
+        });
+        let markers = props_audio_markers(&props);
+        let paths: Vec<&str> = markers.iter().map(|marker| marker.path.as_str()).collect();
+        assert_eq!(paths, vec!["mmproj", "nested.supports_audio"]);
+        assert_eq!(markers[0].value, "C:/models/mmproj-BF16.gguf");
+        assert_eq!(markers[1].value, "false");
+        // An empty string value is not recorded (it is not evidence of support).
+        assert!(!paths.contains(&"nested.audio_projector"));
+        // Unrelated keys are ignored.
+        assert!(!paths.contains(&"build_info"));
+        // A props payload with no audio markers yields an empty record.
+        assert!(props_audio_markers(&serde_json::json!({ "build_info": "b1" })).is_empty());
+    }
+
+    #[test]
+    fn response_classification_and_the_feasibility_decision_rule() {
+        assert_eq!(
+            classify_audio_probe_response(200, "ok"),
+            AudioProbeOutcome::Accepted { status: 200 }
+        );
+        let rejected = classify_audio_probe_response(400, "unsupported content part");
+        assert!(matches!(rejected, AudioProbeOutcome::Rejected { status: 400, .. }));
+        let server_error = classify_audio_probe_response(500, "boom");
+        assert!(matches!(server_error, AudioProbeOutcome::ServerError { status: 500, .. }));
+        let unreachable = classify_audio_probe_response(0, "ECONNREFUSED");
+        assert!(matches!(unreachable, AudioProbeOutcome::Unreachable { .. }));
+
+        assert_eq!(audio_feasibility(&AudioProbeOutcome::Accepted { status: 200 }), "feasible");
+        assert_eq!(
+            audio_feasibility(&AudioProbeOutcome::Rejected {
+                status: 400,
+                detail: String::new()
+            }),
+            "infeasible"
+        );
+        assert_eq!(
+            audio_feasibility(&AudioProbeOutcome::ServerError {
+                status: 500,
+                detail: String::new()
+            }),
+            "unresolved"
+        );
+        assert_eq!(
+            audio_feasibility(&AudioProbeOutcome::Unreachable {
+                detail: "ECONNREFUSED".to_string()
+            }),
+            "unresolved"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
