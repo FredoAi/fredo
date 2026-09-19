@@ -8,6 +8,9 @@
 //! Registered as Tauri state in lib.rs and consumed by the RTDB flush loop.
 
 use tauri::{AppHandle, Emitter};
+use crate::infrastructure::feature_data::envelope::{
+    FeatureDeliveryBatch, FeatureRowNotification,
+};
 use crate::infrastructure::rtdb::project::{RowDelivery, RowDeliveryBatch};
 
 /// EventBus emits RTDB row batches on the "fredo-stream-event" Tauri channel.
@@ -44,6 +47,24 @@ impl EventBus {
         };
         if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
             tracing::error!(target: "fredo::comm", error = %e, "emit RowDelivery batch failed");
+        }
+    }
+
+    /// Emit a BATCH of feature-data notifications as ONE
+    /// "fredo-stream-event" IPC event (Spec #2896 ST-4): the wire envelope is
+    /// the camelCase `{"featureBatch": FeatureRowNotification[]}` struct
+    /// (`FeatureDeliveryBatch` in `feature_data/envelope.rs`), discriminated by
+    /// the `featureBatch` field in AppProvider BEFORE the RTDB `rowBatch`
+    /// validators.
+    ///
+    /// This is the ONLY sanctioned feature-data emission path (declared-table
+    /// watches never call `app_handle.emit` directly) and it rides the SAME
+    /// channel as [`Self::emit_row_delivery_batch`] — the RTDB `rowBatch`
+    /// contract and its emission path are unchanged.
+    pub fn emit_feature_delivery_batch(&self, notifications: &[FeatureRowNotification]) {
+        let envelope = FeatureDeliveryBatch::new(notifications.to_vec());
+        if let Err(e) = self.app.emit("fredo-stream-event", &envelope) {
+            tracing::error!(target: "fredo::comm", error = %e, "emit featureBatch failed");
         }
     }
 }

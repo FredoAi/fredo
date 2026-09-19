@@ -7,6 +7,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::RunCliState;
 use infrastructure::comm::bus::EventBus;
+use infrastructure::feature_data::commands::FeatureDataState;
+use infrastructure::feature_data::envelope::FeatureRowNotification;
+use infrastructure::feature_data::projection::{install_row_upsert_observer, ProjectionEngine, RowUpsertObserver};
+use infrastructure::feature_data::registry::DeclarationRegistry;
+use infrastructure::feature_data::store::FeatureDataStore;
+use infrastructure::feature_data::watch::{run_watch_flush_task, NotificationSink, WatchRegistry};
+use infrastructure::rtdb::commands::IngestRow;
 use infrastructure::rtdb::cache::{
     prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
 };
@@ -31,6 +38,60 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+/// A `NotificationSink` that emits feature-data batches through the `EventBus`
+/// (the ONLY sanctioned emission path) on the `"fredo-stream-event"` channel.
+struct EventBusSink {
+    app: tauri::AppHandle,
+}
+
+impl NotificationSink for EventBusSink {
+    fn emit(&self, notifications: &[FeatureRowNotification]) {
+        let bus = self.app.state::<EventBus>();
+        bus.emit_feature_delivery_batch(notifications);
+    }
+}
+
+/// The ONE canonical-upsert observer: feeds canonical-table watches AND the
+/// declared-row projection engine (which then fans declared changes back into
+/// the same watch registry).
+struct FeatureDataUpsertObserver {
+    engine: Arc<ProjectionEngine>,
+    watches: Arc<WatchRegistry>,
+}
+
+impl RowUpsertObserver for FeatureDataUpsertObserver {
+    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
+        self.watches.on_canonical_row(row, changed_fields);
+        self.engine.on_row_upsert(row, changed_fields);
+    }
+}
+
+/// One declared-table retention prune cycle; every eviction fans out into the
+/// watch registry as a `remove` notification (the function itself returns the
+/// evictions and emits nothing).
+fn prune_feature_data(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<Arc<FeatureDataState>>() else {
+        return;
+    };
+    match infrastructure::feature_data::lifecycle::prune_declared_tables(
+        &state.meta,
+        &state.tables,
+        &state.app_store,
+    ) {
+        Ok(evicted) if !evicted.is_empty() => {
+            let removed = evicted.len();
+            state.watches.handle_declared_changes(&evicted);
+            tracing::info!(target: "fredo::feature_data", removed, "declared retention prune");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!(
+            target: "fredo::feature_data",
+            error = %e,
+            "declared retention prune failed"
+        ),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _runtime = AppRuntime::new();
@@ -52,13 +113,16 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("Failed to resolve app data dir");
-            let store = AppStore::open(data_dir.clone()).expect("Failed to open settings store");
-            app.manage(Arc::new(store));
+            let app_store = Arc::new(
+                AppStore::open(data_dir.clone()).expect("Failed to open settings store"),
+            );
+            app.manage(app_store.clone());
 
             // -- FeatureStore (generic typed-column SQLite store for features) --
-            let feature_store =
-                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore");
-            app.manage(Arc::new(feature_store));
+            let feature_store = Arc::new(
+                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore"),
+            );
+            app.manage(feature_store.clone());
 
             // -- Tracing subscriber initialization (Spec #408) -----------------
             // Initialize before any tracing::info!/warn!/error! calls.
@@ -252,7 +316,7 @@ pub fn run() {
             rtdb_store
                 .ensure_schema()
                 .expect("Failed to create rtdb schema");
-            let (rtdb_cache, rtdb_rx) = RtdbCache::new(rtdb_store);
+            let (rtdb_cache, rtdb_rx) = RtdbCache::new(Arc::clone(&rtdb_store));
             app.manage(rtdb_cache.clone());
 
             // -- RTDB live pipeline (Spec #2788 P2.3) --------------------------
@@ -281,6 +345,87 @@ pub fn run() {
             let classifier = IngestClassifierState::new(IngestClassifier::new(Arc::clone(&rtdb)));
             app.manage(rtdb);
             app.manage(classifier);
+
+            // -- Feature-owned data layer (Spec #2896 ST-4) --------------------
+            // Declared, backend-owned, persistent per-feature tables: compose
+            // the declaration registry + projection engine here, install the
+            // projection observer UNCONDITIONALLY (never gated by a watch/read/
+            // open UI — R-4.2), and make the watch registry the declared-row
+            // sink. Canonical-table watches are fed by the same observer.
+            let feature_meta = Arc::new(
+                FeatureDataStore::open(data_dir.clone()).expect("Failed to open FeatureDataStore"),
+            );
+            feature_meta
+                .ensure_schema()
+                .expect("Failed to create feature data schema");
+            let feature_registry = Arc::new(DeclarationRegistry::new(
+                feature_meta.clone(),
+                feature_store.clone(),
+            ));
+            // Re-materialize every persisted declaration (R-4.4: a restart over
+            // an existing fredo.db preserves the declared rows).
+            match feature_registry.materialize_persisted() {
+                Ok(materialized) if !materialized.is_empty() => tracing::info!(
+                    target: "fredo::feature_data",
+                    tables = materialized.len(),
+                    "persisted declared tables re-materialized"
+                ),
+                Ok(_) => {}
+                Err(errors) => tracing::warn!(
+                    target: "fredo::feature_data",
+                    error = %errors.join("; "),
+                    "declared table re-materialization reported errors"
+                ),
+            }
+            let feature_engine = Arc::new(
+                ProjectionEngine::new(
+                    data_dir.clone(),
+                    feature_meta.clone(),
+                    feature_store.clone(),
+                )
+                .expect("Failed to open feature-data projection engine"),
+            );
+            let feature_watches = Arc::new(WatchRegistry::new(Arc::new(EventBusSink {
+                app: app.handle().clone(),
+            })));
+            feature_engine.set_declared_row_observer(feature_watches.clone());
+            // ONE observer slot: a composite feeding canonical watches AND the
+            // projection engine. Installing the ST-3 engine alone would leave
+            // canonical-table watches (contract (c) `featureId: null`) un-fed.
+            install_row_upsert_observer(Arc::new(FeatureDataUpsertObserver {
+                engine: feature_engine.clone(),
+                watches: feature_watches.clone(),
+            }));
+            app.manage(Arc::new(FeatureDataState {
+                data_dir: data_dir.clone(),
+                meta: feature_meta.clone(),
+                tables: feature_store.clone(),
+                app_store: app_store.clone(),
+                registry: feature_registry,
+                engine: feature_engine.clone(),
+                watches: feature_watches.clone(),
+                rtdb_store: rtdb_store.clone(),
+            }));
+            // Watch flush task: emits due coalescing windows (~5 ms cadence).
+            let feature_flush = feature_watches.clone();
+            tauri::async_runtime::spawn(async move {
+                run_watch_flush_task(feature_flush).await;
+            });
+            // One-time declared-table projection backfill (A-17): spawned,
+            // never awaited on the read path.
+            let backfill_dir = data_dir.clone();
+            let backfill_meta = feature_meta.clone();
+            let backfill_engine = feature_engine.clone();
+            let backfill_store = rtdb_store.clone();
+            tauri::async_runtime::spawn(async move {
+                infrastructure::feature_data::backfill::run_backfill(
+                    backfill_dir,
+                    backfill_meta,
+                    backfill_engine,
+                    backfill_store,
+                )
+                .await;
+            });
 
             // Voice / STT session state: holds the ONE active listening session.
             // The microphone is still opened ONLY by `stt_start`; the engine, by
@@ -320,6 +465,20 @@ pub fn run() {
             // the writer task re-prunes on a 60-minute interval). P2.3: the
             // evicted keys route `kind: remove` deliveries through Rtdb.
             prune_with_knobs(app.handle());
+
+            // Declared-table retention prune: once at startup, then on the same
+            // 60-minute cadence as the RTDB writer prune (ST-7 supplies the
+            // function; evictions fan out as `remove` notifications here).
+            prune_feature_data(app.handle());
+            let feature_prune_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+                interval.tick().await; // consume the immediate first tick
+                loop {
+                    interval.tick().await;
+                    prune_feature_data(&feature_prune_handle);
+                }
+            });
 
             // RTDB write-behind task: drains the bounded queue in ~30 ms
             // batches; overflow sheds the storage write, never in-memory state.
@@ -366,6 +525,14 @@ pub fn run() {
             // RTDB (Spec #2788 P2.3)
             infrastructure::rtdb::commands::subscribe_events,
             infrastructure::rtdb::commands::unsubscribe_events,
+            // Feature-owned data layer (Spec #2896 ST-4): read/watch/unwatch +
+            // write/delete/declare over declared and canonical tables.
+            infrastructure::feature_data::commands::feature_data_read,
+            infrastructure::feature_data::commands::feature_data_watch,
+            infrastructure::feature_data::commands::feature_data_unwatch,
+            infrastructure::feature_data::commands::feature_data_write,
+            infrastructure::feature_data::commands::feature_data_delete,
+            infrastructure::feature_data::commands::feature_data_declare,
             // Voice / STT (local, opt-in transcription; control-plane events)
             infrastructure::voice::commands::stt_check_model,
             infrastructure::voice::commands::stt_list_devices,
