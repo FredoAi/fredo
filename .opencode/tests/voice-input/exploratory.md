@@ -280,3 +280,52 @@
 ### #2888 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2897 extension — speech-handling mode probes (local ↔ model audio)
+
+> Issue #2897 adds the mode choice. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a static
+> pin — never fabricated. Content/audio via L3/L4; lifecycle via L1/L2 (see `functional.md` `#2897`).
+
+- [ ] E-52: **Switch mode MID-listen.** Start a local capture, then select `model audio` while
+      listening (and the reverse). Does the session end cleanly with no orphan capture, no stuck/
+      dishonest indicator, and no half-committed transcript? A continued capture in the old mode, a
+      stuck cue, or a silent discard is a finding (promotes to F-102/F-104).
+- [ ] E-53: **Server dies during processing.** Submit a model-audio turn, then stop/kill the managed
+      `llama-server` while the UI is in `processing`. Does it transition to the `error` state with an
+      actionable message and no crash/hang, and is the captured audio accounted for (retry/fallback)? A
+      freeze, an unhandled console error, or a silent loss is a finding (promotes to F-104/F-107).
+- [ ] E-54: **Cancel during processing.** Cancel/stop while the model-audio turn is `processing`. Is the
+      turn cancelled exactly once, the indicator cleared, and no late model reply dispatched after a
+      cancel? A post-cancel reply, a duplicate dispatch, or a stuck `processing` state is a finding
+      (promotes to F-104).
+- [ ] E-55: **Over-limit then immediate re-listen.** After a `>30 s` clipped/rejected turn, immediately
+      start a fresh model-audio turn. Does the surface clear, the buffer reset, and the next turn
+      behave normally (no stale clip, no compounding bound)? A stale/second clip silently attached, or
+      a persistent error state, is a finding (promotes to F-106).
+- [ ] E-56: **Rapid mode toggling + persistence churn.** Toggle the mode ≥10× rapidly (idle, and around
+      a hold), then restart and read the persisted value. Is the final value coherent and persisted, with
+      no leaked listener/effect loop and no console `Maximum update depth exceeded`? Any duplicate
+      listener, run-away re-render, or incoherent persisted value is a finding (promotes to R-31).
+
+- [ ] E-57: **Capability-probe honesty.** Force each `stt_audio_capability` state (`ready` / `unsupported` /
+      `serverUnavailable` / `unknown`) and cross-check the readiness row's copy + action against what the
+      pinned model/server can ACTUALLY do (ST-0's receipts). Does the UI ever claim `ready` for a model that
+      cannot take audio, or infer capability from the model name? A false `ready`, a missing `Use local
+      transcription` action, or an action that does nothing is a finding (promotes to F-107/F-110).
+      Reference `functional.md` F-110.
+  - Prompt: stop the server → read the row; start it on the non-audio model → read the row; compare to the
+    `/props` + `input_audio` receipts.
+
+- [ ] E-58: **Mode-audio failure copy + surface.** Kill the managed server AT SUBMIT (after a clip is captured)
+      and separately revoke/close the active companion mid-turn. Is the failure surfaced as the typed code with
+      CURATED copy (never the raw IPC string), is the fallback offered inline and functional, and does NO
+      transcript text appear while the mode is still `model`? A raw error dump, a vanished toast, a stuck
+      `processing` state, or a transcript leak is a finding (promotes to F-107/F-109).
+  - Prompt: read the `role="alert"` node's exact text; click `Use local transcription`; re-read the persisted key.
+
+### #2897 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
