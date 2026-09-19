@@ -23,3 +23,10 @@
 - [ ] S-10 (open for #2795): Select a listed session — the canvas renders ≥1 node; NEVER a silent blank canvas and NEVER the #2791 "No graph content for this session" explanatory state.
 - [ ] S-11 (open for #2795): Session list — every listed session is a real session (renders ≥1 node once its rows land); no listed session is a ghost. Cross-check `telemetry_spans` at the same instant.
 - [ ] S-12 (open for #2795): Live drive — launch a session via Run CLI and confirm it appears in the sidebar and resolves to content; no ghost entry appears at any point; no real session is dropped.
+
+## Mission Monitor realtime-data quick path (Spec #2896)
+
+- [ ] S-13: Open Mission Monitor with stored history — the session list renders persisted sessions immediately; no visible "0 sessions"/blank phase (`tauri_webview_wait_for` on the first session row succeeds before any blank state is observable); screenshot captured.
+- [ ] S-14: With no session selected, the session list is live — emit an `agent_session`/`chat` event via `fredo emit` with a unique `e2e-<guid8>` session id; the new session appears in the list without reopening, and no per-session detail is delivered as if selected (REQ-5).
+- [ ] S-15: Select a session, switch to a second live session — the first session's activity stops updating and the second's stays live; console clean (`tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`).
+- [ ] S-16: Fully restart the app and reopen Mission Monitor — stored sessions are present on open with no missing/duplicate entries; a previously deleted session stays absent.
