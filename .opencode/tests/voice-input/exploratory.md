@@ -336,3 +336,22 @@
 - **E-57 PASS.** `ready` when the server is up, `serverUnavailable` when down, never inferred from the model name; consistent with the ST-0 receipts.
 - **E-58 PASS.** Curated `role="alert"` copy + a working inline `Use local transcription`; no transcript while mode=`model`.
 - **Promoted finding → `functional.md` F-104 (FAIL):** the model-audio `processing` indicator never clears after the turn completes (no turn-completion signal; `stopped` unreachable).
+
+### #2897 testing round 2 — result (`spec/2897 @ be4d3a73`, 2026-09-19, live; fix `f3394e5`)
+
+- **E-52 UNVERIFIED (named, carry-forward).** Same wizard/unmounted-selector blocker as round 1 (with
+  the managed server down the Settings Companion section renders the wizard); the per-`stt_start`
+  mode-reader contract stays ST-7 CI-pinned. Accepted as a PO-visible limitation in the round-2 Fix Plan.
+- **E-53 Observed (re-confirmed).** `stop_llama_server` → typed `modelAudioUnavailable` alert at submit,
+  no hang/crash; a true mid-`processing` kill still not isolated from the managed-server auto-relaunch.
+- **E-54 Not driven (named).** `processing` deliberately renders no Stop/Cancel (the clip is already
+  delivered), so no user cancel exists in that state.
+- **E-55 Observed (re-confirmed).** After the 30 s auto-stop a fresh `stt_start` opened cleanly
+  (`phase:"capturing"`, reset buffer); no stale clip attached.
+- **E-56 UNVERIFIED (named).** Same wizard/unmounted-selector blocker as E-52.
+- **E-57 PASS (re-confirmed).** `ready` when the server is up, `serverUnavailable` when down; never
+  inferred from the model name.
+- **E-58 PASS (re-confirmed).** Curated `role="alert"` copy + a working inline `Use local
+  transcription`; no transcript while mode=`model`. Also observed on the null-clip path.
+- **Round-2 resolution of the round-1 promoted F-104 finding:** the model-audio `stopped` state is now
+  reachable — the chip clears on `llm-done` within the same session (`F-104 PASS`).
