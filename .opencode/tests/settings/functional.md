@@ -631,7 +631,7 @@
 > `.opencode/tmp/2899/triage.md`. This row owns the HOST integration; the background behavior itself
 > lives in `.opencode/tests/theming/` F-20..F-27. **Verification policy: live.**
 
-- [ ] **F-48 (REQ-1 / AC1 host):** Open the Settings window → Appearance; DOM-snapshot + screenshot
+- [x] **F-48 (REQ-1 / AC1 host):** Open the Settings window → Appearance; DOM-snapshot + screenshot
       the section. Confirm the **"Desktop Background"** selector renders alongside the existing
       theming controls (preset selector, base theme, per-token colors, readout) without displacing or
       breaking them; select a background, switch to another section and back, then reload.
@@ -642,3 +642,7 @@
       `get_setting`); no console `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **Edge:** reopen the Settings window; reload the webview; change theme while the selector is
     focused; a stale stored value heals to None.
+
+### #2899 testing round 1 (spec/2899 @ c846e2e7) — result
+
+- **F-48 PASS (live).** Settings → Appearance renders the `Desktop Background` radiogroup FIRST alongside the intact theming controls (Theme Presets selector with 21 options incl. 2 user presets; Accent Colors / Backgrounds / Text / Status groups). Fresh profile → None selected; selecting Aurora then switching Companion → Appearance preserves Aurora (`data-selected="true"`) with the backdrop still active; the value persists under `Fredo_desktop_background` (`localStorage` + AppStore `settings` table); a stale `banana` heals to None on boot; console clean. Screenshot: AC1 row of `## Tests Runs (round 1)`.
