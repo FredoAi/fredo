@@ -7,20 +7,26 @@
 //! projection engine over the canonical history:
 //!
 //! - a `row` projection feeds every canonical row of its `from` source through
-//!   [`ProjectionEngine::project`];
-//! - a `sessionRollup` projection feeds ONE representative canonical row per
-//!   distinct `sessionId` so the group is recomputed (bounded per-group reads).
+//!   [`ProjectionEngine::project_row_sources`] (row declarations only — never a
+//!   `sessionRollup`);
+//! - a `sessionRollup` projection is recomputed ONCE per distinct canonical
+//!   `sessionId` through [`ProjectionEngine::project_session_rollups`] (bounded
+//!   per-group reads — total O(Σ group), never one group read per canonical row).
 //!
 //! The runner only ever SELECTs canonical rows ([`RtdbStore::select_snapshot`]
 //! and a `PRAGMA query_only=ON` connection for session-id enumeration); it
 //! never writes a canonical table. The declared-table writes and version bumps
 //! all go through the engine's existing path, so a backfilled row is
-//! byte-identical to a live-projected one. `backfill_done` is set ONLY for a
-//! table whose projections recorded no failure (a `source: None` table or a
-//! source with zero canonical rows completes immediately); a table with a
+//! byte-identical to a live-projected one. `backfill_done` is set as soon as a
+//! table's OWN leg completes with no recorded failure (per-table incremental,
+//! ST-4S) — a row-sourced table is marked even if a later rollup leg fails, and
+//! vice versa; a `source: None` table completes immediately. A table with a
 //! failed projection keeps its marker unset and retries on the next startup
 //! (ST-4R). Failures are attributed per `(feature_id, table)` so one broken
 //! declared table never suppresses a sibling.
+//!
+//! Each leg logs an INFO progress line every [`PROGRESS_EVERY`] fed units plus a
+//! boundary line, so a slow backfill is distinguishable from a wedged one.
 //!
 //! The runner is spawned, never awaited on the read path — a `feature_data_read`
 //! returns whatever is currently persisted and never blocks on the backfill.
@@ -28,9 +34,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
-use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 
 use crate::infrastructure::feature_data::declaration::{
@@ -41,8 +47,12 @@ use crate::infrastructure::feature_data::store::{FeatureDataStore, TableMeta};
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore, StoredRow};
 
+/// Fed units (canonical rows / distinct sessions) between INFO progress lines.
+const PROGRESS_EVERY: usize = 5_000;
+
 /// Backfill every persisted declared table whose `backfill_done` marker is
-/// unset. Returns the number of canonical rows fed through the engine.
+/// unset. Returns the number of fed units: canonical rows fed through the row
+/// leg plus one recompute per distinct session fed through the rollup leg.
 pub fn backfill_pending(
     data_dir: &Path,
     meta: &Arc<FeatureDataStore>,
@@ -59,23 +69,34 @@ pub fn backfill_pending(
     }
 
     let mut needed_sources: BTreeSet<u8> = BTreeSet::new();
-    let mut needs_rollup = false;
+    let mut row_tables: Vec<TableMeta> = Vec::new();
+    let mut rollup_tables: Vec<TableMeta> = Vec::new();
+    let mut completed = 0usize;
     for table in &pending {
         match serde_json::from_str::<FeatureDataTableDeclaration>(&table.declaration_json) {
             Ok(declaration) => match &declaration.source {
                 Some(DataSource::Row(projection)) => {
                     needed_sources.insert(source_tag(projection.from));
+                    row_tables.push(table.clone());
                 }
-                Some(DataSource::SessionRollup(_)) => needs_rollup = true,
-                None => {}
+                Some(DataSource::SessionRollup(_)) => rollup_tables.push(table.clone()),
+                None => {
+                    // Nothing to feed — the table completes immediately.
+                    meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
+                    completed += 1;
+                }
             },
-            Err(e) => tracing::warn!(
-                target: "fredo::feature_data",
-                feature_id = %table.feature_id,
-                table = %table.table_name,
-                error = %e,
-                "persisted declaration is unreadable; backfill skipped for this table"
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    target: "fredo::feature_data",
+                    feature_id = %table.feature_id,
+                    table = %table.table_name,
+                    error = %e,
+                    "persisted declaration is unreadable; backfill skipped for this table"
+                );
+                meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
+                completed += 1;
+            }
         }
     }
 
@@ -85,47 +106,99 @@ pub fn backfill_pending(
     // `backfill_done = false` and retries on the next startup (ST-4R).
     let mut failures: BTreeMap<(String, String), String> = BTreeMap::new();
 
-    // Row projections: every canonical row of each needed source.
+    // ── Row leg: every canonical row of each needed source, row projections only.
+    // Cost O(rows of the source) — a `sessionRollup` declaration is never run
+    // here, so a sibling row-source table can no longer make the rollup
+    // quadratic (ST-4S).
+    let row_leg_start = Instant::now();
+    let mut row_fed = 0usize;
     for tag in &needed_sources {
         let kind = kind_of_tag(*tag);
         for row in rtdb_store.select_snapshot(kind, "1=1", Vec::new())? {
+            row_fed += 1;
             fed += 1;
+            if row_fed.is_multiple_of(PROGRESS_EVERY) {
+                tracing::info!(
+                    target: "fredo::feature_data",
+                    leg = "row",
+                    fed = row_fed,
+                    pending = row_tables.len(),
+                    elapsed_ms = row_leg_start.elapsed().as_millis() as u64,
+                    "declared-table backfill progress"
+                );
+            }
             record_outcomes(
-                &engine.project_reporting(&to_ingest_row(&row), &[]),
+                &engine.project_row_sources(&to_ingest_row(&row)),
                 &mut failures,
             );
         }
     }
+    tracing::info!(
+        target: "fredo::feature_data",
+        leg = "row",
+        fed = row_fed,
+        pending = row_tables.len(),
+        elapsed_ms = row_leg_start.elapsed().as_millis() as u64,
+        "declared-table backfill leg complete"
+    );
+    // Mark the row-sourced tables that completed BEFORE the rollup leg runs, so
+    // a later rollup failure cannot un-complete them (ST-4S).
+    for table in &row_tables {
+        if failures.contains_key(&(table.feature_id.clone(), table.table_name.clone())) {
+            continue;
+        }
+        meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
+        completed += 1;
+    }
 
-    // sessionRollup: one representative row per distinct sessionId.
-    if needs_rollup {
+    // ── Rollup leg: one recompute per distinct canonical session, rollup
+    // declarations only. Total cost O(Σ group).
+    if !rollup_tables.is_empty() {
+        let rollup_leg_start = Instant::now();
+        let mut rollup_fed = 0usize;
         for session_id in distinct_session_ids(data_dir)? {
-            if let Some(row) = representative_row(rtdb_store, &session_id)? {
-                fed += 1;
-                record_outcomes(
-                    &engine.project_reporting(&to_ingest_row(&row), &[]),
-                    &mut failures,
+            rollup_fed += 1;
+            fed += 1;
+            if rollup_fed.is_multiple_of(PROGRESS_EVERY) {
+                tracing::info!(
+                    target: "fredo::feature_data",
+                    leg = "rollup",
+                    fed = rollup_fed,
+                    pending = rollup_tables.len(),
+                    elapsed_ms = rollup_leg_start.elapsed().as_millis() as u64,
+                    "declared-table backfill progress"
                 );
             }
+            record_outcomes(&engine.project_session_rollups(&session_id), &mut failures);
+        }
+        tracing::info!(
+            target: "fredo::feature_data",
+            leg = "rollup",
+            fed = rollup_fed,
+            pending = rollup_tables.len(),
+            elapsed_ms = rollup_leg_start.elapsed().as_millis() as u64,
+            "declared-table backfill leg complete"
+        );
+        for table in &rollup_tables {
+            if failures.contains_key(&(table.feature_id.clone(), table.table_name.clone())) {
+                continue;
+            }
+            meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
+            completed += 1;
         }
     }
 
-    // Set the marker ONLY for pending tables with no recorded failure. A table
-    // whose declaration has `source: None`, or whose source has zero canonical
-    // rows, records no failure and therefore completes successfully.
-    let mut completed = 0usize;
+    // Per-failed-table attribution over the PENDING set (a table that completed
+    // above is never re-attributed): a damaged table keeps `backfill_done`
+    // unset and retries while its healthy siblings stay completed (ST-4R).
     let mut failed_tables: Vec<(String, String, String)> = Vec::new();
     for table in &pending {
-        match failures.get(&(table.feature_id.clone(), table.table_name.clone())) {
-            Some(error) => failed_tables.push((
+        if let Some(error) = failures.get(&(table.feature_id.clone(), table.table_name.clone())) {
+            failed_tables.push((
                 table.feature_id.clone(),
                 table.table_name.clone(),
                 error.clone(),
-            )),
-            None => {
-                meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
-                completed += 1;
-            }
+            ));
         }
     }
 
@@ -224,31 +297,17 @@ fn distinct_session_ids(data_dir: &Path) -> Result<Vec<String>> {
     Ok(rows)
 }
 
-/// The first canonical row for `session_id` (chat preferred, then tool, then
-/// agent) — enough to recompute the group in [`ProjectionEngine::project`].
-fn representative_row(rtdb_store: &Arc<RtdbStore>, session_id: &str) -> Result<Option<StoredRow>> {
-    for kind in [RowKind::Chat, RowKind::ToolUse, RowKind::AgentSession] {
-        let rows = rtdb_store.select_snapshot(
-            kind,
-            "session_id = ?1",
-            vec![SqlValue::Text(session_id.to_string())],
-        )?;
-        if let Some(row) = rows.into_iter().next() {
-            return Ok(Some(row));
-        }
-    }
-    Ok(None)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     use crate::infrastructure::feature_data::declaration::{
         ColumnOwner, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration, FieldMapping,
         Retention, RowProjection, RowProjectionKind, SessionRollupKind, SessionRollupProjection,
     };
+    use crate::infrastructure::feature_data::projection::{DeclaredRowChange, DeclaredRowObserver};
     use crate::infrastructure::feature_data::registry::DeclarationRegistry;
     use crate::infrastructure::feature_data::store::FeatureDataStore;
     use crate::infrastructure::rtdb::rows::{ChatRow, RowState};
@@ -419,6 +478,20 @@ mod tests {
             .backfill_done
     }
 
+    #[derive(Default)]
+    struct CollectingObserver {
+        changes: Mutex<Vec<DeclaredRowChange>>,
+    }
+
+    impl DeclaredRowObserver for CollectingObserver {
+        fn on_declared_row_change(&self, change: &DeclaredRowChange) {
+            match self.changes.lock() {
+                Ok(mut changes) => changes.push(change.clone()),
+                Err(poisoned) => poisoned.into_inner().push(change.clone()),
+            }
+        }
+    }
+
     #[test]
     fn backfill_projects_pending_rows_and_sets_the_marker() {
         let h = setup(row_declaration());
@@ -473,6 +546,153 @@ mod tests {
             .expect("session b");
         assert_eq!(first.get("chatRowCount"), Some(&serde_json::json!(1)));
         assert!(marker(&h, "sessions"));
+    }
+
+    /// The discriminating ST-4S test: with BOTH a `row` table and a
+    /// `sessionRollup` table pending, the rollup is recomputed once per distinct
+    /// session (M), never once per canonical row (N). On the pre-fix code the row
+    /// leg routed every row through `project_reporting`, so the counter would be
+    /// N and the row-notification/rollup-notification split would collapse.
+    #[test]
+    fn rollup_is_recomputed_once_per_session_not_per_row() {
+        let h = setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.row+rollup.v1".to_string(),
+            tables: vec![
+                row_table("turns", ActivitySource::Chat),
+                rollup_declaration(),
+            ],
+        });
+        // N = 6 canonical chat rows across M = 2 sessions (N > M).
+        h.rtdb_store
+            .upsert_chat_rows(&[
+                chat_row("ses_a", "ses_a_1", 1, "a1"),
+                chat_row("ses_a", "ses_a_2", 2, "a2"),
+                chat_row("ses_a", "ses_a_3", 3, "a3"),
+                chat_row("ses_b", "ses_b_1", 1, "b1"),
+                chat_row("ses_b", "ses_b_2", 2, "b2"),
+                chat_row("ses_b", "ses_b_3", 3, "b3"),
+            ])
+            .unwrap();
+
+        let observer = Arc::new(CollectingObserver::default());
+        h.engine
+            .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
+
+        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+
+        assert_eq!(
+            h.engine.rollup_recompute_count(),
+            2,
+            "the rollup is recomputed once per distinct session (M), never once per canonical row (N=6)"
+        );
+        assert_eq!(fed, 6 + 2, "6 canonical rows + 2 distinct-session recomputes");
+        assert_eq!(
+            declared(&h, "turns").len(),
+            6,
+            "the row-sourced table projected every canonical row"
+        );
+        assert_eq!(declared(&h, "sessions").len(), 2, "both sessions qualify");
+
+        let changes = observer.changes.lock().unwrap();
+        let rollup_notifications = changes
+            .iter()
+            .filter(|change| change.table == "sessions")
+            .count();
+        assert_eq!(
+            rollup_notifications, 2,
+            "one rollup notification per distinct session"
+        );
+        assert!(marker(&h, "turns"), "the row leg completes");
+        assert!(marker(&h, "sessions"), "the rollup leg completes");
+    }
+
+    /// `fed` observably separates the two legs: rows fed through the row
+    /// projections + one recompute per distinct session.
+    #[test]
+    fn fed_counts_row_rows_plus_distinct_sessions() {
+        let h = setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.row+rollup.fed.v1".to_string(),
+            tables: vec![
+                row_table("turns", ActivitySource::Chat),
+                rollup_declaration(),
+            ],
+        });
+        h.rtdb_store
+            .upsert_chat_rows(&[
+                chat_row("ses_a", "ses_a_1", 1, "a1"),
+                chat_row("ses_a", "ses_a_2", 2, "a2"),
+                chat_row("ses_b", "ses_b_1", 1, "b1"),
+            ])
+            .unwrap();
+
+        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(
+            fed,
+            3 + 2,
+            "3 canonical rows fed through the row leg + 2 distinct-session rollup recomputes"
+        );
+        assert_eq!(h.engine.rollup_recompute_count(), 2);
+    }
+
+    /// Per-leg incremental markers (ST-4S): the row-sourced sibling is marked as
+    /// soon as the row leg completes, so a LATER rollup-leg failure cannot
+    /// un-complete it; the damaged rollup table stays `false` and a second run
+    /// retries only it.
+    #[test]
+    fn completed_table_is_marked_before_a_later_leg_fails() {
+        let h = setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.row+broken-rollup.v1".to_string(),
+            tables: vec![
+                row_table("turns", ActivitySource::Chat),
+                rollup_declaration(),
+            ],
+        });
+        h.rtdb_store
+            .upsert_chat_rows(&[
+                chat_row("ses_a", "ses_a_1", 1, "a1"),
+                chat_row("ses_a", "ses_a_2", 2, "a2"),
+                chat_row("ses_b", "ses_b_1", 1, "b1"),
+            ])
+            .unwrap();
+        // Damage the rollup physical table: recreate it WITHOUT the declared
+        // `chatRowCount` column, so every rollup projection fails.
+        h.tables
+            .execute_batch(
+                "DROP TABLE feature_probe_sessions; \
+                 CREATE TABLE feature_probe_sessions \
+                 (sessionId TEXT PRIMARY KEY, _row_version INTEGER, _updated_at TEXT);",
+            )
+            .unwrap();
+
+        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(fed, 3 + 2, "both legs are fed in one run");
+        assert_eq!(
+            declared(&h, "turns").len(),
+            3,
+            "the row-sourced sibling projected every row"
+        );
+        assert!(
+            marker(&h, "turns"),
+            "the row leg's table is marked before the rollup leg fails"
+        );
+        assert!(
+            !marker(&h, "sessions"),
+            "the damaged rollup table keeps backfill_done unset"
+        );
+
+        // A second run retries ONLY the damaged rollup table: the row leg has no
+        // pending row-sourced table left, so it feeds nothing.
+        let retry = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(retry, 2, "only the still-pending rollup table is re-fed");
+        assert_eq!(
+            declared(&h, "turns").len(),
+            3,
+            "no duplicate row projection on retry"
+        );
+        assert!(!marker(&h, "sessions"), "still unset until it can project");
     }
 
     #[test]

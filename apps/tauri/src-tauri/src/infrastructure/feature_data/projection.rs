@@ -40,6 +40,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
@@ -181,6 +182,9 @@ pub struct ProjectionEngine {
     observer: Mutex<Option<Arc<dyn DeclaredRowObserver>>>,
     observed: Mutex<ObservedState>,
     dispatch: Mutex<()>,
+    /// Monotonic count of `sessionRollup` group recomputations (observability /
+    /// test aid for the O(Σ group) backfill invariant, ST-4S).
+    rollup_recomputes: AtomicUsize,
 }
 
 impl ProjectionEngine {
@@ -203,6 +207,7 @@ impl ProjectionEngine {
             observer: Mutex::new(None),
             observed: Mutex::new(ObservedState::default()),
             dispatch: Mutex::new(()),
+            rollup_recomputes: AtomicUsize::new(0),
         })
     }
 
@@ -260,14 +265,12 @@ impl ProjectionEngine {
 
         let mut outcomes = Vec::new();
         for decl in &declarations {
-            let result = match &decl.declaration.source {
-                Some(DataSource::Row(projection)) if projection.from == source => {
-                    self.apply_row_projection(decl, projection, row)
-                }
-                Some(DataSource::SessionRollup(config)) => {
-                    self.apply_session_rollup(decl, config, &session_id)
-                }
-                _ => continue,
+            let result = if let Some(projection) = row_projection_for(decl, source) {
+                self.apply_row_projection(decl, projection, row)
+            } else if let Some(config) = session_rollup_for(decl) {
+                self.apply_session_rollup(decl, config, &session_id)
+            } else {
+                continue;
             };
             outcomes.push(DeclTableOutcome {
                 feature_id: decl.meta.feature_id.clone(),
@@ -299,6 +302,82 @@ impl ProjectionEngine {
         } else {
             Err(anyhow::anyhow!(failures.join("; ")))
         }
+    }
+
+    /// Feed one canonical row through ONLY the `row`-source declarations whose
+    /// `from` source matches it (the backfill row leg, ST-4S). Unlike
+    /// [`Self::project_reporting`] this never touches a `sessionRollup`
+    /// declaration and never records an in-flight observation, so the backfill
+    /// cost is O(rows of the source) — no per-row group recomputation.
+    pub fn project_row_sources(&self, row: &IngestRow) -> Vec<DeclTableOutcome> {
+        let _dispatch = self.lock_dispatch();
+        let declarations = match self.persisted_declarations() {
+            Ok(declarations) => declarations,
+            // No per-declaration attribution is possible when the declaration
+            // list itself is unreadable — surface it as one engine-level failure
+            // (mirrors `project_reporting`).
+            Err(e) => {
+                return vec![DeclTableOutcome {
+                    feature_id: String::new(),
+                    table: String::new(),
+                    result: Err(e),
+                }];
+            }
+        };
+        if declarations.is_empty() {
+            return Vec::new();
+        }
+        let source = source_of(row);
+        let mut outcomes = Vec::new();
+        for decl in &declarations {
+            if let Some(projection) = row_projection_for(decl, source) {
+                outcomes.push(DeclTableOutcome {
+                    feature_id: decl.meta.feature_id.clone(),
+                    table: decl.meta.table_name.clone(),
+                    result: self.apply_row_projection(decl, projection, row),
+                });
+            }
+        }
+        outcomes
+    }
+
+    /// Recompute ONLY the `sessionRollup` declarations for `session_id` (the
+    /// backfill rollup leg, ST-4S) — one call per distinct canonical session, so
+    /// the total rollup cost becomes O(Σ group) instead of one full-group read
+    /// per canonical row. This never records an in-flight observation: at startup
+    /// SQLite is authoritative and the overlay exists only for write-behind lag.
+    pub fn project_session_rollups(&self, session_id: &str) -> Vec<DeclTableOutcome> {
+        let _dispatch = self.lock_dispatch();
+        let declarations = match self.persisted_declarations() {
+            Ok(declarations) => declarations,
+            Err(e) => {
+                return vec![DeclTableOutcome {
+                    feature_id: String::new(),
+                    table: String::new(),
+                    result: Err(e),
+                }];
+            }
+        };
+        if declarations.is_empty() {
+            return Vec::new();
+        }
+        let mut outcomes = Vec::new();
+        for decl in &declarations {
+            if let Some(config) = session_rollup_for(decl) {
+                outcomes.push(DeclTableOutcome {
+                    feature_id: decl.meta.feature_id.clone(),
+                    table: decl.meta.table_name.clone(),
+                    result: self.apply_session_rollup(decl, config, session_id),
+                });
+            }
+        }
+        outcomes
+    }
+
+    /// Monotonic count of `sessionRollup` group recomputations performed by this
+    /// engine (observability / test aid for the O(Σ group) backfill invariant).
+    pub fn rollup_recompute_count(&self) -> usize {
+        self.rollup_recomputes.load(Ordering::Relaxed)
     }
 
     fn persisted_declarations(&self) -> Result<Vec<PersistedDecl>> {
@@ -384,6 +463,7 @@ impl ProjectionEngine {
         config: &super::declaration::SessionRollupProjection,
         session_id: &str,
     ) -> Result<()> {
+        self.rollup_recomputes.fetch_add(1, Ordering::Relaxed);
         let group = self.load_group(session_id)?;
         let facts = session_rollup::compute_facts(&group, config);
         let key = vec![JsonValue::String(session_id.to_string())];
@@ -630,6 +710,29 @@ impl RowUpsertObserver for ProjectionEngine {
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
+
+/// The ONE shared source-matching rule: `Some` iff `decl` is a `row`
+/// declaration whose `from` source equals `source`. Used by
+/// [`ProjectionEngine::project_reporting`] and
+/// [`ProjectionEngine::project_row_sources`] so the two can never diverge.
+fn row_projection_for(decl: &PersistedDecl, source: ActivitySource) -> Option<&RowProjection> {
+    match &decl.declaration.source {
+        Some(DataSource::Row(projection)) if projection.from == source => Some(projection),
+        _ => None,
+    }
+}
+
+/// The ONE shared source-matching rule: `Some` iff `decl` is a `sessionRollup`
+/// declaration. Used by [`ProjectionEngine::project_reporting`] and
+/// [`ProjectionEngine::project_session_rollups`].
+fn session_rollup_for(
+    decl: &PersistedDecl,
+) -> Option<&super::declaration::SessionRollupProjection> {
+    match &decl.declaration.source {
+        Some(DataSource::SessionRollup(config)) => Some(config),
+        _ => None,
+    }
+}
 
 fn source_of(row: &IngestRow) -> ActivitySource {
     match row {
