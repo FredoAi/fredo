@@ -130,11 +130,33 @@
  *     INSIDE the existing `fredo-command-hint-sr` mirror so `aria-describedby`
  *     keeps its shipped value. Enter's wording is owned by #2882 and untouched.
  *
+ * Spec #2897 ST-4 (REQ-3/REQ-4) — the MODEL-AUDIO indicator (`voiceMode='model'`),
+ * gated by the ONE pure `deriveModelAudioPhase`:
+ *   • `listening` → the accent dot (`launcher-command-listening`) + the
+ *     `Fredo is listening` chip (`launcher-command-model-listening-chip`) + the
+ *     `×` Cancel / `■` Stop controls + the `Fredo is listening…` placeholder;
+ *   • `processing` (Stop delivered the clip; the backend is interpreting) → the
+ *     accent dot + the `Fredo is processing your speech…` chip
+ *     (`launcher-command-model-processing-chip`) with a decorative `Spinner`
+ *     (text carries the state) + the `Fredo is processing…` placeholder, and NO
+ *     Stop/Cancel (there is nothing left to cancel);
+ *   • `stopped`/`idle` → chip/indicator removed, resting placeholder;
+ *   • `error` → the shipped below-bar `role="alert"` surface
+ *     (`launcher-command-listening-status`); the curated copy is owned elsewhere.
+ *   The mode-agnostic ids (`launcher-command-listening`,
+ *   `launcher-command-listening-stop`, `launcher-command-listening-cancel`) are
+ *   unchanged in BOTH modes, so keyboard/mouse targets stay stable, and the
+ *   shipped `Listening` chip/`Listening…` copy is the ONLY indicator in `'local'`
+ *   mode (the `voiceMode` prop defaults to `'local'` — omitted ⇒ byte-identical).
+ *   ZERO transcript text: `finalTranscript` is host-suppressed in model mode, and
+ *   the transcript announcer stays mounted-but-empty.
+ *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
- * today's rendering (`enterMode='launch'` / no `hintLabel` / `busy=false` /
- * `listening=false` / no stop or cancel handler / no error / no final transcript
- * / `voiceEnabled=false`) — no chip, no glyph swap, no reserved padding, and
- * `aria-busy` is omitted (not rendered as `"false"`). #2882 ST-4 deliberately
+ * today's rendering (`voiceMode='local'` / `enterMode='launch'` / no `hintLabel` /
+ * `busy=false` / `listening=false` / no stop or cancel handler / no error / no
+ * final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no reserved
+ * padding, and `aria-busy` is omitted (not rendered as `"false"`). #2882 ST-4
+ * deliberately
  * supersedes the #2871 `chatAvailable`-gated byte-identity: the chip now shows
  * whenever the host supplies a label, and `aria-keyshortcuts` is an
  * unconditional `Control+Space` (the chord always opens/focuses the bar, so it
@@ -149,9 +171,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { Box, InputGroup, Textarea } from '@chakra-ui/react';
+import { Box, InputGroup, Spinner, Textarea } from '@chakra-ui/react';
 
 import { tint } from '../../../../shared/utils/colorTint';
+import type { VoiceModelAudioPhase } from '../../../../shared/hooks/useVoiceDictation';
 import {
   QUEUED_WAITING_TESTID,
   queuedWaitingCopy,
@@ -159,6 +182,66 @@ import {
 
 /** Pending Enter action, derived by the host (UI/UX §1); presentational only. */
 export type LauncherEnterMode = 'launch' | 'send' | 'none';
+
+/**
+ * Spec #2897 ST-4 (REQ-3/REQ-4) — the DERIVED model-audio phase the launcher bar
+ * renders. Never stored: `deriveModelAudioPhase` maps the host's signals onto it
+ * each render. `'stopped'` is deliberately observationally identical to `'idle'`
+ * (the indicator is removed and the resting placeholder returns), so the
+ * derivation collapses it to `'idle'`; it is named here because it is a state of
+ * the machine the user passes through (stop → no indicator, never a stale chip).
+ */
+export type ModelAudioPhase =
+  | 'idle'
+  | 'starting'
+  | 'listening'
+  | 'processing'
+  | 'stopped'
+  | 'error';
+
+/**
+ * Spec #2897 ST-4 (UI/UX §4) — model-audio copy. The state is ALWAYS carried by
+ * text (never colour/animation alone); the processing `Spinner` is decoration.
+ */
+export const MODEL_AUDIO_LISTENING_CHIP_COPY = 'Fredo is listening';
+export const MODEL_AUDIO_LISTENING_PLACEHOLDER = 'Fredo is listening…';
+export const MODEL_AUDIO_PROCESSING_CHIP_COPY = 'Fredo is processing your speech…';
+export const MODEL_AUDIO_PROCESSING_PLACEHOLDER = 'Fredo is processing…';
+/** Live-region lines (transitions only, exactly once each). */
+export const MODEL_AUDIO_LISTENING_ANNOUNCEMENT = 'Fredo is listening';
+export const MODEL_AUDIO_PROCESSING_ANNOUNCEMENT = 'Fredo is processing your speech';
+
+/**
+ * Spec #2897 ST-4 — the PURE `ModelAudioPhase` derivation (UI/UX §4). It is the
+ * ONE place the model-audio state is decided, so the indicator cannot drift from
+ * the signals ST-2 exposes on `useVoiceDictation`:
+ *
+ *   local mode          → `'idle'` (the shipped transcription cue is untouched —
+ *                          this derivation never fires for `'local'`);
+ *   typed error         → `'error'` (the below-bar `role="alert"`);
+ *   `processing`        → the stop delivered the clip; the backend is interpreting;
+ *   `listening`         → capture live (`listening && origin === 'launcher'`);
+ *   `starting`          → the shipped bounded `starting voice input…` window;
+ *   otherwise           → `'idle'` (includes `'stopped'`: indicator removed).
+ */
+export function deriveModelAudioPhase(input: {
+  voiceMode: 'local' | 'model';
+  /** `captureLive` — the launcher-origin capture is genuinely live. */
+  listening: boolean;
+  /** ST-2's `voice.modelAudioPhase` (backend `stt:state.phase`). */
+  modelAudioPhase: VoiceModelAudioPhase | null;
+  /** The shipped bounded starting window (`startingChip`). */
+  starting: boolean;
+  /** A typed failure is being surfaced (`voiceErrorMessage !== null`). */
+  error: boolean;
+}): ModelAudioPhase {
+  if (input.voiceMode !== 'model') return 'idle';
+  if (input.error) return 'error';
+  if (input.modelAudioPhase === 'processing') return 'processing';
+  if (input.listening) return 'listening';
+  if (input.starting) return 'starting';
+  return 'idle';
+}
 
 /**
  * #2892 ST-5 — the queued indicator's element id, referenced by the searchbox
@@ -343,6 +426,20 @@ export interface LauncherCommandBarProps {
    * polling. Optional and inert when omitted.
    */
   containerRef?: React.Ref<HTMLDivElement>;
+  /**
+   * Spec #2897 ST-4 (REQ-3/REQ-4) — the persisted speech-handling mode. `'local'`
+   * (default) renders the shipped transcription cue EXACTLY as before; `'model'`
+   * swaps the capture cue for the model-audio indicator (`deriveModelAudioPhase`)
+   * with ZERO transcript text. Omitted ⇒ `'local'` (byte-identical rendering).
+   */
+  voiceMode?: 'local' | 'model';
+  /**
+   * Spec #2897 ST-4 — ST-2's `voice.modelAudioPhase` (the backend
+   * `stt:state.phase`): `'capturing'` while the clip accumulates, `'processing'`
+   * once a stop committed it, `null` on every legacy/local path. It is consumed
+   * by `deriveModelAudioPhase`; the bar never re-derives it from scratch.
+   */
+  modelAudioPhase?: VoiceModelAudioPhase | null;
 }
 
 /**
@@ -359,6 +456,15 @@ const HINT_CHIP_MAX_WIDTH_PX = 220;
 /** Static `Listening` chip width (12px text) + the Stop control's footprint.
  *  CSS unit strings only (G-146 → exact pixels). */
 const LISTENING_CHIP_WIDTH_PX = 72;
+/**
+ * Spec #2897 ST-4 — the model-audio chip reservations. The listening chip
+ * (`Fredo is listening`) and the processing chip
+ * (`Fredo is processing your speech…`, plus its decorative `Spinner`) are wider
+ * than the shipped 72px `Listening` chip, so the end-slot gutter is sized to
+ * whichever one renders — the typed text can never run under the indicator.
+ */
+const MODEL_AUDIO_LISTENING_CHIP_WIDTH_PX = 136;
+const MODEL_AUDIO_PROCESSING_CHIP_WIDTH_PX = 248;
 /** #2878 ST-2 — the cancel/discard control's gutter (24px + `ml="6px"`). */
 const CANCEL_GUTTER_PX = 30;
 const STOP_GUTTER_PX = 30;
@@ -455,14 +561,41 @@ export function computeEndPaddingPx(options: {
    * it), so it reserves the 44px gutter too.
    */
   hasText?: boolean;
+  /**
+   * Spec #2897 ST-4 — the derived model-audio phase (see `deriveModelAudioPhase`).
+   * In `'listening'` the model chip + the Cancel/Stop controls are reserved; in
+   * `'processing'` the (wider) processing chip is reserved and NO controls are
+   * (nothing is left to cancel). Omitted/`'idle'` ⇒ the shipped arithmetic.
+   */
+  modelPhase?: ModelAudioPhase;
 }): number | undefined {
-  const pendingChip = !options.listening && options.holdPending === true;
-  const showsAnything = options.showHint || options.listening || pendingChip;
+  const modelListening = options.modelPhase === 'listening';
+  const modelProcessing = options.modelPhase === 'processing';
+  // The bounded hold chip occupies the SAME slot as the capture chips and is
+  // never rendered while one of them is up (exactly ONE indicator).
+  const pendingChip =
+    !options.listening && !modelListening && !modelProcessing && options.holdPending === true;
+  // The chip slot holds AT MOST ONE chip: the shipped `Listening` chip (local
+  // mode), the model listening chip, the model processing chip, or the bounded
+  // pending chip — never together.
+  const chipPx = modelListening
+    ? MODEL_AUDIO_LISTENING_CHIP_WIDTH_PX
+    : modelProcessing
+      ? MODEL_AUDIO_PROCESSING_CHIP_WIDTH_PX
+      : options.listening
+        ? LISTENING_CHIP_WIDTH_PX
+        : pendingChip
+          ? LISTENING_CHIP_WIDTH_PX
+          : 0;
+  // Cancel + Stop render only while a capture is live (both modes). `processing`
+  // deliberately has none.
+  const controlPx = options.listening || modelListening ? CANCEL_GUTTER_PX + STOP_GUTTER_PX : 0;
+  const showsAnything = options.showHint || chipPx > 0 || controlPx > 0;
   const reserveMinimize = showsAnything || options.hasText === true;
   const px =
     (options.showHint ? HINT_CHIP_MAX_WIDTH_PX : 0) +
-    (options.listening ? LISTENING_CHIP_WIDTH_PX + CANCEL_GUTTER_PX + STOP_GUTTER_PX : 0) +
-    (pendingChip ? LISTENING_CHIP_WIDTH_PX : 0) +
+    chipPx +
+    controlPx +
     (reserveMinimize ? MINIMIZE_GUTTER_PX : 0);
   return px > 0 ? px : undefined;
 }
@@ -601,6 +734,8 @@ export function LauncherCommandBar({
   ariaDescribedBy,
   newlineHint = false,
   containerRef,
+  voiceMode = 'local',
+  modelAudioPhase = null,
 }: LauncherCommandBarProps) {
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     // #2878 ST-2 (UX-2) — a user keystroke during a live segment makes the edit
@@ -701,6 +836,23 @@ export function LauncherCommandBar({
   // and it never says `Listening`.
   const startingChip = (holdCue === 'starting' || holdCue === 'warming') && !captureLive;
 
+  // Spec #2897 ST-4 (REQ-3/REQ-4) — the DERIVED model-audio phase. Local mode is
+  // `'idle'` by construction, so the shipped transcription cue is untouched. Read
+  // off ST-2's signals (never re-derived): `modelAudioPhase` is the backend's
+  // `stt:state.phase`, `listening` is the live capture, and the bounded hold
+  // window is the shipped `startingChip`. `'stopped'` collapses to `'idle'` (the
+  // indicator is removed and the resting placeholder returns — no stale chip).
+  const isModelVoice = voiceMode === 'model';
+  const modelPhase = deriveModelAudioPhase({
+    voiceMode,
+    listening,
+    modelAudioPhase,
+    starting: startingChip,
+    error: Boolean(voiceErrorMessage),
+  });
+  const modelListening = modelPhase === 'listening';
+  const modelProcessing = modelPhase === 'processing';
+
   // S1 vs S0 (UI/UX §1): the promise placeholder is offered only while the search
   // input actually holds focus, is empty, and holding Space would dictate.
   const [inputFocused, setInputFocused] = useState(false);
@@ -720,15 +872,28 @@ export function LauncherCommandBar({
   // The placeholder (UI/UX §9): busy > the LIVE capture > the pre-capture
   // acknowledgement > the S1 promise > the legacy resting copy. Only `captureLive`
   // may produce `Listening…` (R-3); the armed/pending windows say `Hold to dictate…`.
+  // Spec #2897 ST-4: in model mode the capture placeholder is `Fredo is listening…`
+  // and the interpreting window is `Fredo is processing…` (never `Listening…` —
+  // model audio opens no recogniser, so a `Listening…` claim would imply words).
   const placeholder = busy
     ? 'Fredo is replying…'
-    : captureLive
-      ? 'Listening…'
-      : cueReadying
-        ? HOLD_ACKNOWLEDGE_PLACEHOLDER
-        : holdAvailable && inputFocused && query === ''
-          ? HOLD_AVAILABLE_PLACEHOLDER
-          : 'search or command';
+    : isModelVoice
+      ? modelListening
+        ? MODEL_AUDIO_LISTENING_PLACEHOLDER
+        : modelProcessing
+          ? MODEL_AUDIO_PROCESSING_PLACEHOLDER
+          : cueReadying
+            ? HOLD_ACKNOWLEDGE_PLACEHOLDER
+            : holdAvailable && inputFocused && query === ''
+              ? HOLD_AVAILABLE_PLACEHOLDER
+              : 'search or command'
+      : captureLive
+        ? 'Listening…'
+        : cueReadying
+          ? HOLD_ACKNOWLEDGE_PLACEHOLDER
+          : holdAvailable && inputFocused && query === ''
+            ? HOLD_AVAILABLE_PLACEHOLDER
+            : 'search or command';
 
   // #2877 ST-5 (DR-7) / #2878 ST-2 / #2883 ST-1 (R-1.2): reserve the right gutter
   // for every end-slot affordance that is present, so the typed text never renders
@@ -740,6 +905,7 @@ export function LauncherCommandBar({
     listening,
     holdPending: startingChip,
     hasText: query.length > 0,
+    modelPhase,
   });
   const paddingEnd = endPaddingPx === undefined ? undefined : `${endPaddingPx}px`;
 
@@ -817,8 +983,33 @@ export function LauncherCommandBar({
       return;
     }
     if (!listening && voiceOffRef.current) return;
-    setListenAnnouncement(listening ? 'Listening' : 'Stopped listening');
-  }, [listening]);
+    if (listening) {
+      // Spec #2897 ST-4 — in model mode the capture is an audio capture, so the
+      // announcement names it exactly (`Fredo is listening`); the shipped
+      // transcription line stays for local mode.
+      setListenAnnouncement(isModelVoice ? MODEL_AUDIO_LISTENING_ANNOUNCEMENT : 'Listening');
+      return;
+    }
+    // Falling edge. Spec #2897 ST-4 — a model-audio STOP hands over to the
+    // `processing` window, whose own rise edge announces (`Fredo is processing
+    // your speech`); one stop must never announce twice.
+    if (isModelVoice && modelAudioPhase === 'processing') return;
+    setListenAnnouncement('Stopped listening');
+  }, [listening, isModelVoice, modelAudioPhase]);
+
+  // Spec #2897 ST-4 (UI/UX §4) — the `processing` rise edge, announced ONCE.
+  // Declared AFTER the listening effect so that on the stop commit (listening
+  // false + phase `processing`) this line is the one the region reads. It is
+  // model-mode only: local mode never has a backend `processing` phase.
+  const prevModelAudioPhaseRef = useRef<VoiceModelAudioPhase | null>(modelAudioPhase);
+  useEffect(() => {
+    const was = prevModelAudioPhaseRef.current;
+    prevModelAudioPhaseRef.current = modelAudioPhase;
+    if (!isModelVoice) return;
+    if (modelAudioPhase === 'processing' && was !== 'processing') {
+      setListenAnnouncement(MODEL_AUDIO_PROCESSING_ANNOUNCEMENT);
+    }
+  }, [modelAudioPhase, isModelVoice]);
 
   useEffect(() => {
     const was = prevVoiceEnabledRef.current;
@@ -904,7 +1095,7 @@ export function LauncherCommandBar({
             color="accent.default"
             display="flex"
             alignItems="center"
-            gap={busy || listening ? '6px' : undefined}
+            gap={busy || listening || modelProcessing ? '6px' : undefined}
             aria-hidden="true"
           >
             {enterMode === 'send' ? <SpeechGlyph /> : <ChevronGlyph />}
@@ -919,8 +1110,11 @@ export function LauncherCommandBar({
                 flexShrink={0}
               />
             )}
-            {/* #2877 ST-5 (DR-7) — FROZEN static listening dot (no pulse/loop). */}
-            {listening && (
+            {/* #2877 ST-5 (DR-7) — FROZEN static listening dot (no pulse/loop).
+                Spec #2897 ST-4 — the SAME dot marks the model-audio capture AND
+                the interpreting window (`processing`), so the indicator is
+                continuous from capture through interpretation. */}
+            {(listening || modelProcessing) && (
               <Box
                 as="span"
                 data-testid="launcher-command-listening"
@@ -939,7 +1133,7 @@ export function LauncherCommandBar({
                 hold crossed the threshold but the engine is not live yet. It is a
                 clone of the Listening chip (same box, same slot) and the two are
                 never rendered together (exactly ONE indicator). */}
-            {startingChip && (
+            {startingChip && !modelProcessing && (
               <Box
                 as="span"
                 data-testid="launcher-command-listening-pending"
@@ -959,8 +1153,10 @@ export function LauncherCommandBar({
               </Box>
             )}
             {/* #2877 ST-5 (DR-7) — visible `Listening` chip + Stop control, before
-                the existing hint chip / divider / `—` minimize (which stays LAST). */}
-            {listening && (
+                the existing hint chip / divider / `—` minimize (which stays LAST).
+                Spec #2897 ST-4 — `'local'` mode ONLY; model mode renders its own
+                chip below (never the transcription wording). */}
+            {listening && !isModelVoice && (
               <Box
                 as="span"
                 data-testid="launcher-command-listening-chip"
@@ -977,6 +1173,63 @@ export function LauncherCommandBar({
                 flexShrink={0}
               >
                 Listening
+              </Box>
+            )}
+            {/* Spec #2897 ST-4 (UI/UX §4, REQ-3) — the MODEL-AUDIO capture chip.
+                Text carries the state; the mode-agnostic dot above is the mark.
+                It occupies the SAME single chip slot as the local Listening chip
+                (never both). */}
+            {modelListening && (
+              <Box
+                as="span"
+                data-testid="launcher-command-model-listening-chip"
+                display="block"
+                height="24px"
+                lineHeight="24px"
+                px="8px"
+                borderRadius="4px"
+                bg="accent.subtle"
+                color="fg.default"
+                fontFamily="var(--font-primary)"
+                fontSize="12px"
+                whiteSpace="nowrap"
+                maxWidth={`${MODEL_AUDIO_LISTENING_CHIP_WIDTH_PX}px`}
+                overflow="hidden"
+                textOverflow="ellipsis"
+                flexShrink={0}
+              >
+                {MODEL_AUDIO_LISTENING_CHIP_COPY}
+              </Box>
+            )}
+            {/* Spec #2897 ST-4 (UI/UX §4, REQ-4) — the interpreting window: the
+                stop delivered the clip and the backend is responding to it. The
+                `Spinner` is decoration only (the text carries the state) so
+                `prefers-reduced-motion` changes nothing about the meaning, and NO
+                Stop/Cancel renders (there is nothing left to cancel). */}
+            {modelProcessing && (
+              <Box
+                as="span"
+                data-testid="launcher-command-model-processing-chip"
+                display="flex"
+                alignItems="center"
+                gap="6px"
+                height="24px"
+                lineHeight="24px"
+                px="8px"
+                borderRadius="4px"
+                bg="accent.subtle"
+                color="fg.default"
+                fontFamily="var(--font-primary)"
+                fontSize="12px"
+                whiteSpace="nowrap"
+                maxWidth={`${MODEL_AUDIO_PROCESSING_CHIP_WIDTH_PX}px`}
+                overflow="hidden"
+                flexShrink={0}
+              >
+                <Spinner size="xs" color="accent.default" aria-hidden="true" />
+                <Box as="span" overflow="hidden" textOverflow="ellipsis">
+                  {MODEL_AUDIO_PROCESSING_CHIP_COPY}
+                </Box>
               </Box>
             )}
             {/* #2878 ST-2 (AC3 resolution) — the visible CANCEL/DISCARD affordance

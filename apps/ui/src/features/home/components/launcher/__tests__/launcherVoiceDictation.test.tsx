@@ -66,6 +66,9 @@ const companionMock = vi.hoisted(() => ({
     // queued-send count, both top-level on the context value.
     replyInFlight: false,
     queuedSendCount: 0,
+    // Spec #2897 ST-1/ST-4 — the persisted speech-handling mode (DEFAULT 'local');
+    // ST-4 gates every transcript write + the bar cue on it.
+    voiceHandling: 'local' as 'local' | 'model',
   },
 }));
 vi.mock('@/shared/contexts/CompanionContext', () => ({
@@ -127,6 +130,7 @@ beforeEach(() => {
     voiceAutosend: false,
     replyInFlight: false,
     queuedSendCount: 0,
+    voiceHandling: 'local',
   };
   companionDispatchMock.askActiveCompanion.mockReset();
   companionDispatchMock.askActiveCompanion.mockReturnValue({ outcome: 'dispatched' });
@@ -2552,5 +2556,162 @@ describe('LauncherShell — #2888 ST-3: a dictated transcript reads as written t
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Fredo');
     expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+});
+
+// ── Spec #2897 ST-4 — model-audio mode at the shell (REQ-3/REQ-4) ─────────────
+//
+// `voiceHandling === 'model'` means the captured audio IS the turn's input: the
+// shell must suppress every transcript write at its SOURCE (the live-text effect,
+// the finalize/restore/autosend effect, and the `finalTranscript` prop) so no
+// audio-derived word can reach the bar or any announcer, while the launcher shows
+// the model-audio indicator and keeps the shipped cancel/stop controls.
+describe('LauncherShell — model-audio mode (#2897 ST-4)', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const renderShell = () => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={[SETTINGS]} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  const emitState = (payload: Record<string, unknown>) =>
+    act(() => {
+      emit('stt:state', { code: null, detail: null, origin: 'launcher', ...payload });
+    });
+
+  const emitTranscript = (text: string, isFinal: boolean, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal,
+        latencyMs: 1,
+      });
+    });
+
+  beforeEach(() => {
+    companionMock.current.voiceHandling = 'model';
+  });
+
+  it('renders the MODEL listening chip (never the shipped `Listening` chip) and the model placeholder', () => {
+    renderShell();
+    emitState({ listening: true, phase: 'capturing' });
+
+    const chip = screen.getByTestId('launcher-command-model-listening-chip');
+    expect(chip).toHaveTextContent('Fredo is listening');
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+    expect(input()).toHaveAttribute('placeholder', 'Fredo is listening…');
+    // The shipped transcription wording is NEVER rendered in model mode.
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByText('Listening')).toBeNull();
+    // The stop/cancel controls keep their mode-agnostic ids + semantics.
+    expect(screen.getByTestId('launcher-command-listening-stop')).toHaveAttribute(
+      'aria-label',
+      'Stop listening',
+    );
+    expect(screen.getByTestId('launcher-command-listening-cancel')).toHaveAttribute(
+      'aria-label',
+      'Cancel dictation',
+    );
+  });
+
+  it('renders the MODEL processing chip with NO stop/cancel once the stop delivered the clip', () => {
+    renderShell();
+    emitState({ listening: true, phase: 'capturing' });
+
+    // The backend answers the stop with `listening:false` + `phase:'processing'`.
+    emitState({ listening: false, phase: 'processing' });
+
+    const chip = screen.getByTestId('launcher-command-model-processing-chip');
+    expect(chip).toHaveTextContent('Fredo is processing your speech…');
+    expect(input()).toHaveAttribute('placeholder', 'Fredo is processing…');
+    // The accent dot persists through interpretation (continuous indicator).
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+    // Nothing is left to cancel while the clip is being interpreted.
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-cancel')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+  });
+
+  it('suppresses the transcript at the SOURCE: the bar keeps the typed draft and the announcer stays EMPTY', () => {
+    const onOpenFeature = renderShell();
+
+    act(() => {
+      fireEvent.change(input(), { target: { value: 'draft I typed' } });
+    });
+    emitState({ listening: true, phase: 'capturing' });
+
+    // Partial + final transcript events arrive on the control plane — but model
+    // mode never renders them.
+    emitTranscript('secret dictated words', false);
+    emitTranscript('secret dictated words', true, 2);
+
+    expect(input().value).toBe('draft I typed');
+    const transcriptAnnouncer = screen.getByTestId('voice-transcript-announcer');
+    // The announcer is MOUNTED (AT registration) but never fed a segment.
+    expect(transcriptAnnouncer).toBeInTheDocument();
+    expect(transcriptAnnouncer.textContent).toBe('');
+
+    // The finalize/restore effect is gated too: ending the session neither
+    // restores nor dispatches.
+    emitState({ listening: false, phase: 'processing' });
+    expect(input().value).toBe('draft I typed');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+
+  it('never autosends a transcript in model mode even with autosend ON (the backend owns delivery)', () => {
+    companionMock.current.voiceAutosend = true;
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitTranscript('deliver me', true);
+    emitState({ listening: false, phase: 'processing' });
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('announces the model transitions ONCE each: `Fredo is listening`, then `Fredo is processing your speech`', () => {
+    renderShell();
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    emitState({ listening: true, phase: 'capturing' });
+    expect(announcer).toHaveTextContent('Fredo is listening');
+
+    // A no-change phase tick must NOT re-announce.
+    emitState({ listening: true, phase: 'capturing' });
+    expect(announcer).toHaveTextContent('Fredo is listening');
+
+    emitState({ listening: false, phase: 'processing' });
+    expect(announcer).toHaveTextContent('Fredo is processing your speech');
+    // A stop hand-over never reads as the shipped transcription stop line.
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('LOCAL mode is unchanged: the shipped `Listening` chip + placeholder still render', () => {
+    companionMock.current.voiceHandling = 'local';
+    renderShell();
+    emitState({ listening: true });
+
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(input()).toHaveAttribute('placeholder', 'Listening…');
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
   });
 });

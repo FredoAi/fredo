@@ -317,8 +317,14 @@ const DESKTOP_TEXTURE_CSS = {
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
-  const { state: companion, voiceEnabled, voiceAutosend, replyInFlight, queuedSendCount } =
+  const { state: companion, voiceEnabled, voiceAutosend, replyInFlight, queuedSendCount, voiceHandling } =
     useCompanion();
+  // Spec #2897 ST-4 (REQ-3/REQ-4) — the persisted speech-handling mode. In
+  // `'model'` mode the backend hands the captured audio to the model as the
+  // turn's input: there is NO transcript, so this shell suppresses every
+  // transcript write at its SOURCE (the bar keeps the pre-session typed text)
+  // and renders the model-audio indicator instead of the transcription cue.
+  const modelVoice = voiceHandling === 'model';
 
   // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
   // band (the wrapper below owns the size + `mb="4"`), so the command bar's
@@ -1145,6 +1151,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // is the #2878 one (`committed` grew past the session baseline); a partial-only
   // session never flips provenance, and a LATER USER EDIT never clears it.
   useEffect(() => {
+    // Spec #2897 ST-4 (REQ-3) — model-audio mode has NO transcript: this effect is
+    // the transcript → bar write path, so it is short-circuited at the SOURCE
+    // (BEFORE the `voice.origin` check) and the bar keeps the pre-session typed
+    // text. A model-audio session emits no `stt:transcript` at all (ST-2 opens no
+    // recogniser); this guard is the belt-and-braces that no transcript-shaped
+    // event can ever reach the bar while the method is `'model'`.
+    if (modelVoice) return;
     if (voice.origin !== 'launcher') return;
     if (cancelledRef.current) return;
     const prevCommitted = prevCommittedRef.current;
@@ -1167,7 +1180,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         ? voice.committed.slice(base.length).trimStart()
         : voice.committed;
     handleQueryChange(joinBarText(scoped, voice.partial));
-  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange, setBarOrigin]);
+  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange, setBarOrigin, modelVoice]);
 
   // Spec #2877 ST-5 (DR-10) — the newest FINAL segment, derived from the hook's
   // append-only `committed` text (a final APPENDS its segment; a partial only ever
@@ -1199,6 +1212,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // exactly what separates Stop from Cancel at the source, so any DOM↔mirror
   // divergence can never become a phantom dispatch (the #2878 round-2 defect).
   useEffect(() => {
+    // Spec #2897 ST-4 (REQ-3/REQ-4) — model-audio mode owns delivery in the BACKEND
+    // (the clip is the turn's input). This finalize/restore/autosend effect must do
+    // NOTHING there: no `spaceWriteForVerdict` space, no pre-session restore, no
+    // `commitBarQuery`. Clearing the pending flag keeps a mid-session mode switch
+    // from arming a stale finalize for a later local session.
+    if (modelVoice) {
+      finalizePendingRef.current = false;
+      return;
+    }
     if (!finalizePendingRef.current) return;
     if (voice.origin !== 'launcher' || voice.listening) return;
     if (cancelledRef.current) {
@@ -1282,6 +1304,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     voiceAutosend,
     commitBarQuery,
     handleQueryChange,
+    modelVoice,
   ]);
 
   const handleKeyDown = useCallback(
@@ -1850,7 +1873,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // the release). A failure that arrives with no hold start in flight —
             // the app-global `stt:state` channel — still surfaces the curated copy.
             voiceErrorMessage={holdFailureMuted ? null : voiceStartErrorCopy(voice.errorCode)}
-            finalTranscript={finalTranscript}
+            // Spec #2897 ST-4 (REQ-3) — model-audio mode renders the model indicator
+            // (via `deriveModelAudioPhase`) and NEVER feeds the transcript announcer
+            // a segment: `''` is passed explicitly (the source effect is also gated),
+            // so `voice-transcript-announcer` stays mounted but empty.
+            voiceMode={voiceHandling}
+            modelAudioPhase={voice.modelAudioPhase}
+            finalTranscript={modelVoice ? '' : finalTranscript}
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"
