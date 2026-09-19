@@ -52,6 +52,31 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+
+### G-204: decomposition_omits_the_integration_line
+- **activation_date:** 2026-09-19
+- **observed:** #2897 — the plan split the delivery requirement across three capsules (the clip command, the transport, the listening indicator) and no capsule owned the wiring that turns a finished capture into a dispatched turn. The gap surfaced mid-implementation when a developer reported that nothing wired stop to take-clip to dispatch; the SI had to fold the integration work into an already-scoped capsule, with no owning checklist line and no QA row for it.
+- **target_failure:** a requirement whose observable is an end-to-end flow is decomposed into its per-layer components only, so the wiring between them is owned by nobody and the gap is discovered during implementation or testing instead of at convergence.
+- **guardrail:** At convergence, for every EARS clause whose observable is a flow, confirm that an owning checklist line covers the WIRING between the components — not merely their existence. A requirement split across capsules must name the integration point and the capsule that owns it.
+- **home:** playbooks/software-architect.md (decomposition) + playbooks/self-improver.md (plan review) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-205: live_probe_subtask_assigned_to_a_role_without_the_live_tooling
+- **activation_date:** 2026-09-19
+- **observed:** #2897 — the plan made the empirical audio-feasibility probe a developer capsule whose decision output required a running managed model server, but the developer sandbox has no dev-environment launcher and no webview tools. The developer could only author the probe artifact and reported the missing tool; the live receipt was obtainable solely by the tester, so the gate landed a phase later than the plan intended and the SI had to reframe the capsule at dispatch.
+- **target_failure:** a sub-task whose decision output is a live observation is assigned to a role whose sandbox cannot drive the live lever, so the capsule cannot produce its verdict and the gating decision slips to a later phase or stalls as a named blocker.
+- **guardrail:** Plan review must apply G-179 to every empirical or gating sub-task: name the role that can actually execute the live probe (the tester harness) or route the live receipt to a tester row, and scope the implementation capsule to the artifact it CAN produce. A gate whose verdict needs a running app belongs in a phase where the live tooling exists.
+- **home:** playbooks/software-architect.md (sub-task authoring) + playbooks/self-improver.md (plan review) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-206: provider_concurrency_budget_exhausted_by_parallel_dispatches
+- **activation_date:** 2026-09-19
+- **observed:** #2897 — waves of three parallel subagent dispatches produced quota-gate failures at the shared model provider (both the planner wave and the developer wave); a single sequential retry of each failed dispatch succeeded with no other change. Roughly one of three parallel dispatches failed per wave.
+- **target_failure:** the orchestrator dispatches more concurrent subagents than the provider's real budget sustains, so some dispatches fail with a quota gate that is easy to misread as a role or model wedge and the whole wave has to be re-driven.
+- **guardrail:** Stage concurrent subagent dispatches to the provider's observed budget and retry a single-role quota failure sequentially before treating the role as unavailable. A quota or billing failure is a capacity limit, not a model-availability wedge, and sequential retry is the remedy.
+- **home:** playbooks/self-improver.md (dispatch waves) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-203: on_the_go_improvement
 - **activation_date:** 2026-09-19
 - **observed:** #2897 round 2
@@ -123,7 +148,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a state-machine side-effect that writes to `main` from the served working tree leaves that tree dirty, so a subsequent branch operation is blocked and an agent must repair repository state the machine created.
 - **guardrail:** A state-machine action that persists content to another branch must leave the source working tree clean (reset the touched paths, or write from a temporary index/worktree). Until the machine does, an agent that hits the block restores the affected paths from HEAD and reports it; the served checkout must be clean before any branch switch or tester handoff.
 - **home:** .opencode/scripts/pipeline-state.rs (tests-commit) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-19, #2897) — the block recurred after both tests-commit rounds; restoring the affected suite paths from HEAD before the branch switch cleared it exactly as the guardrail prescribes, so the remedy is sound (the underlying dirt remains a machine defect to fix at source).
 
 ### G-201: worktree_creation_not_idempotent_on_a_leftover_path
 - **activation_date:** 2026-09-19
@@ -179,7 +204,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** pipeline/tooling edits made by the Self-Improver during a run are uncommitted until the end-of-run doc-sync commit, so an intervening forced checkout (serving switch, spec sync) discards them with no signal and the validated fix never lands.
 - **guardrail:** Before any forced checkout that can discard the working tree, preserve pending in-domain edits outside git (copy them under the issue scratch) or commit them; re-apply and re-run the validation harness before the doc-sync commit. A validated-but-uncommitted pipeline change is not landed.
 - **home:** playbooks/self-improver.md (serving switch + doc-sync) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-19, #2897) — the SI staged its in-domain pipeline edits before the serving/branch switch and avoided a forced checkout while they were pending, so the validated changes survived and landed on main in the doc-sync push.
 
 ### G-182: served_webview_entry_missing_adapter_registration
 - **activation_date:** 2026-09-18
@@ -211,7 +236,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a plan's own sub-task names an out-of-repo file as an input (even "just for evidence"), or assigns a live-device verification leg to a developer sub-task, or declares a constant table with a duplicated literal — so the executing capsule hunts for an asset it cannot read or stalls on a lever it cannot drive, and the plan itself is the hazard rather than the dispatch brief.
 - **guardrail:** Plan review MUST scan every sub-task for (a) any named input path not in the repository, (b) any verification leg that needs a physical device, a model artifact, an environment variable, or a tool absent from the executing role's sandbox, and (c) declared constant tables whose literal count does not match their stated distinct count. An out-of-repo path is removed or re-sourced from the app's own channels; a device/lever-dependent leg moves to the role that owns that lever or is restated as the deterministic sample plus a named blocker. "Corroboration only" is not an exemption — the executing agent cannot tell the difference.
 - **home:** playbooks/software-architect.md (sub-task authoring) + playbooks/self-improver.md (plan review) + playbooks/developer.md (guardrails) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-19, #2897) — the hazard recurred in the live-probe/role dimension: a gating sub-task's decision output required a running managed server that the assigned role's sandbox cannot drive, caught at dispatch rather than at plan review; see G-205. The out-of-repo-path and constant-table dimensions stayed clean.
 
 ### G-178: doc_consistency_row_cites_unread_content
 - **activation_date:** 2026-09-18
@@ -273,6 +298,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/developer.md (guardrails) + playbooks/qa-expert.md (fixture recipes) + playbooks/self-improver.md (dispatch briefs) + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-17, #2887 round 1) — both re-dispatched capsules completed green on the first attempt under the sanctioned-lever brief (ST-9 shipped the feed seam + an in-repo generated fixture; ST-1/ST-2 shipped the resident engine), with zero out-of-repo probes reported.
 - **re-validated (plan-authoring gap exposed):** 2026-09-18, #2888 — every dispatch brief carried the prohibition and the sanctioned-lever list and no agent probed out of repo; but the Architect's OWN sub-task still named an out-of-repo model artifact as an evidence input, so the rule needed a plan-review gate, not only brief discipline. See G-179.
+- **re-validated:** 2026-09-19, #2897 — the planning cluster named the sanctioned in-repo deterministic capture-feed lever, every dispatch brief carried the prohibition, and the tester drove every audio leg (the committed 1.6 s fixture plus the deterministic over-limit variant) with zero out-of-repo probes. The lever itself needed a usability fix for the env-gated form; that is recorded separately as G-202.
 
 ### G-168: spec_branch_forked_before_unpushed_local_base_pipeline_config
 - **activation_date:** 2026-09-17
