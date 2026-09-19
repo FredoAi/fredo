@@ -1074,3 +1074,40 @@ L3 for local transcript content; managed `llama-server` up (pinned `unsloth/gemm
 - **F-109 PASS.** Console clean; `pnpm build` exit 0; `test:run` 102/1686; `fredo emit` queued; `telemetry_spans` **13,700** rows, `max(ingested_at)` `2026-09-19T11:26:31.278557800+00:00`; 8 captures uploaded.
 - **F-110 PASS — FEASIBLE.** `/props` 200, `/v1/models` 200 (`Gemma-4-E2B`, `completion,multimodal`), text control 200, `input_audio` POST `format:"wav"` **200** at 1.6 s / 31 s / 60 s / 120 s (SSE → `[DONE]`); `stt_audio_capability` `ready`. `MAX_AUDIO_CLIP_MS` NOT set from R4 (flagged).
 - **Captures (all uploaded):** f102 selector default; f102 model-selected ready; f103 local partials; f104 listening chip; f104 processing; f105 reply model turn; f106 limit notice; f107 server-unavailable alert.
+
+### #2897 run log — testing round 2 (`spec/2897 @ be4d3a73`, 2026-09-19, live)
+
+**Verdict PASS** — 9/9 functional rows (F-107 `unsupported` leg + F-108 leg 3 carry-forward named).
+Serving root `spec/2897 @ be4d3a73`; the round-2 fix `f3394e5` (R2-1 `deriveModelAudioPhase` `turnSettled`)
+is live. Host mic is virtual-only → L4 feed for audio; L3 for local transcript content.
+
+- **F-104 PASS — the round-1 FAIL is fixed (live, 2 sessions + cancel).** 100 ms DOM sampler + real
+  `stt:state`/`llm-token`/`llm-done` listeners: session 1 `capturing` (t=15313, chip `Fredo is listening…`,
+  dot+Stop) → `processing` (t=25109, chip `Fredo is processing…`, no Stop) → held while the reply streamed
+  (`Fredo is replying…`, t=25213) → `llm-done` t=27911 → **chip/indicator gone at t=28012, resting
+  placeholder, no next `stt_start`**; reply rendered (`Hello! I'm Fredo, … How can I help you today?`,
+  `inBody:true`); **`stt:transcript` = 0**; bar `value=""`. Session 2 (re-arm): new capture showed the
+  listening chip (not pre-settled), chip cleared on its `llm-done` at t=3606. Cancel: `phase:null`, chip
+  cleared, no dispatch. Failure-dispatch leg: the shield alert rendered and the processing overlay cleared.
+- **F-105 PASS (fed regression).** L4 `stt-feed`/16 kHz; clip `{durationMs:1600, base64Len:68328,
+  truncated:false}` == the 1.6 s fixture; reply streamed once + `inBody`; a post-turn manual
+  `stt_take_audio_clip` → `{clip:null}` (exactly-once destructive take). UNSET-env control = virtual mic
+  48 kHz with a reply.
+- **F-106 PASS (fed regression).** 31 s feed → auto-stop `{phase:"processing", limitReached:true,
+  limitMs:30000}` + visible `launcher-command-model-limit-status` (warning, not `role=alert`, still
+  visible after `llm-done`); clip `{durationMs:30000, atLimit:true, truncated:false, base64Len:1280060}`
+  = the ENTIRE bounded capture; reply rendered; 0 transcript.
+- **F-107 PASS (reactive).** `stop_llama_server` → capability `{state:"serverUnavailable",
+  code:"modelAudioUnavailable"}`; `stt_start` blocked `{started:false, code:"modelAudioUnavailable"}`;
+  `role="alert"` curated copy + `Use local transcription` → persisted `local`. `unsupported` UNVERIFIED
+  (model swap = manifest change) — unit-pinned.
+- **F-108 PASS legs 1+2.** Zero network/process symbols in `infrastructure/voice/**`; managed host
+  `127.0.0.1`, turn URL `http://127.0.0.1:8080/v1/chat/completions`, live probe target
+  `http://127.0.0.1:8080/props`. Leg 3 named blocker.
+- **F-109 PASS.** Console clean; UI build exit 0; `test:run` 102/1690; `telemetry_spans` 14,296 rows,
+  `max(ingested_at)` `2026-09-19T12:06:42.903606400+00:00`; 5 captures uploaded.
+- **F-110 PASS (carried).** Same pinned model, `stt_audio_capability → ready (Gemma-4-E2B)`; `MAX_AUDIO_CLIP_MS`
+  now the DECIDED 30,000 (R2-2).
+- **F-102/F-103 PASS (F-103 re-run; selector persistence re-checked in S-20).**
+- **Captures (round 2):** f104 listening; f104 processing+limit; f104 idle-after-reply; f105/f104 model
+  reply; f107 server-unavailable alert.
