@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use serde_json::Value as JsonValue;
 
 use crate::infrastructure::storage::feature_store::{ColumnType, FeatureStore, PhysicalColumn};
 
@@ -27,7 +28,7 @@ use super::declaration::{
     is_reserved_column, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration,
     FeatureDataTableDeclaration,
 };
-use super::store::{FeatureDataStore, TableMeta};
+use super::store::{FeatureDataStore, TableMeta, Tombstone};
 
 /// One materialized declared table (the `feature_data_declare` result element,
 /// contract (c)).
@@ -427,6 +428,15 @@ impl DeclarationRegistry {
             }
         }
 
+        // ST-6R: the declared `mission-monitor.sessions` table is (re)created from
+        // scratch by `Create`/`RebuildLegacy` (the only plans that set `created`),
+        // so migrate the legacy deletion tombstones now — before the one-time
+        // backfill re-projects the canonical sessions — so a session the user
+        // deleted through the old Mission Monitor affordance cannot reappear.
+        if created && feature_id == "mission-monitor" && table.name == "sessions" {
+            self.migrate_legacy_deletion_tombstones()?;
+        }
+
         Ok(MaterializedTable {
             feature_id: feature_id.to_string(),
             table: table.name.clone(),
@@ -578,6 +588,56 @@ impl DeclarationRegistry {
             }
             suffix += 1;
         }
+    }
+
+    /// ST-6R: the legacy Mission Monitor owned its explicit-deletion tombstones in
+    /// `feature_mission_monitor_deleted_sessions` (`session_id`, `deleted_at`).
+    /// When the declared `sessions` table is (re)created, migrate every legacy row
+    /// into the declared-layer tombstone store under the EXACT
+    /// `is_tombstoned`/`tombstone_key` wire format (`["<sessionId>"]` — the MM
+    /// `sessions` primary key is `sessionId`), so the one-time backfill cannot
+    /// resurrect a session the user deleted through the old affordance.
+    ///
+    /// Idempotent (the tombstone upsert keyed on `(feature, table, key_json)`),
+    /// and the legacy table is READ-ONLY here — never mutated, never dropped.
+    fn migrate_legacy_deletion_tombstones(&self) -> Result<()> {
+        let legacy_full = FeatureStore::validate_namespace("mission-monitor", "deleted_sessions")?;
+        if !self.store.table_exists(&legacy_full)? {
+            return Ok(());
+        }
+
+        let rows = self
+            .store
+            .query("mission-monitor", "deleted_sessions", None, None, None)?;
+        let mut migrated = 0usize;
+        for row in &rows {
+            // A row without a `session_id` cannot form a tombstone key.
+            let Some(session_id) = row.get("session_id").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            let key_json = serde_json::to_string(&vec![JsonValue::String(session_id.to_string())])?;
+            // `deleted_at` is NOT NULL in the tombstone store; the legacy column
+            // always carries it, but fall back to "now" if it is ever absent.
+            let deleted_at = row
+                .get("deleted_at")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            self.meta.put_tombstone(&Tombstone {
+                feature_id: "mission-monitor".to_string(),
+                table_name: "sessions".to_string(),
+                key_json,
+                deleted_at,
+            })?;
+            migrated += 1;
+        }
+
+        tracing::info!(
+            target: "fredo::feature_data",
+            migrated,
+            "legacy mission-monitor deletion tombstones migrated into the declared layer"
+        );
+        Ok(())
     }
 }
 
@@ -1251,5 +1311,149 @@ mod tests {
             errors[0].contains("cannot change its primary key"),
             "{errors:?}"
         );
+    }
+
+    // ── Round-2 ST-10b mirrors ───────────────────────────────────────────────
+
+    /// A declared-layer-shaped physical table with a declared column missing is
+    /// classified `AddColumns` (the additive drift defense) rather than rebuilt.
+    #[test]
+    fn declared_layer_with_a_missing_declared_column_classifies_as_add_columns() {
+        let h = setup();
+        let v1 = declaration("mm.sessions.v1", None);
+        h.registry.declare(&v1).unwrap();
+
+        let v2 = declaration(
+            "mm.sessions.v2",
+            Some(session_column(
+                "visibleTurnCount",
+                DeclaredColumnType::Integer,
+            )),
+        );
+        let full = full_name();
+        let physical = h.store.table_schema(&full).unwrap();
+        let meta = h
+            .registry
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap();
+        let plan = h
+            .registry
+            .compute_plan("mission-monitor", &v2.tables[0], Some(&meta), &physical)
+            .unwrap();
+        match plan {
+            MigrationPlan::AddColumns(additions) => {
+                assert_eq!(additions.len(), 1, "{additions:?}");
+                assert_eq!(additions[0].name, "visibleTurnCount");
+            }
+            other => panic!("expected AddColumns, got {other:?}"),
+        }
+    }
+
+    /// A foreign table carrying SEVERAL rows is moved aside verbatim; every row
+    /// survives (the row count is unchanged under the quarantine name).
+    #[test]
+    fn foreign_table_with_rows_is_moved_aside_and_every_row_survives() {
+        let h = setup();
+        let full = full_name();
+        h.store
+            .execute_batch(&format!(
+                "CREATE TABLE {full} (
+                     session_id TEXT PRIMARY KEY,
+                     label TEXT NOT NULL,
+                     start_time TEXT NOT NULL,
+                     end_time TEXT,
+                     delivery_count INTEGER NOT NULL
+                 );
+                 INSERT INTO {full} (session_id, label, start_time, delivery_count) VALUES
+                     ('legacy-1', 'One', '2026-01-01T00:00:00Z', 1),
+                     ('legacy-2', 'Two', '2026-01-02T00:00:00Z', 2),
+                     ('legacy-3', 'Three', '2026-01-03T00:00:00Z', 3);"
+            ))
+            .unwrap();
+
+        h.registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap();
+
+        let legacy = legacy_quarantine_name(&h);
+        let conn = rusqlite::Connection::open(h.dir.path().join("fredo.db")).unwrap();
+        let moved: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {legacy}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(moved, 3, "every foreign row survives the rebuild");
+        assert_eq!(legacy_quarantine_count(&h), 1, "exactly one quarantine");
+    }
+
+    /// ST-6R: the legacy `feature_mission_monitor_deleted_sessions` tombstones are
+    /// migrated into the declared layer under the exact wire format the projection
+    /// `is_tombstoned` guard reads, idempotently, and the legacy table survives.
+    #[test]
+    fn legacy_deletion_tombstones_are_migrated_when_the_sessions_table_is_rebuilt() {
+        let h = setup();
+        let full = full_name();
+        seed_legacy_collision(&h, &full);
+        h.store
+            .execute_batch(
+                "CREATE TABLE feature_mission_monitor_deleted_sessions (
+                     session_id TEXT,
+                     deleted_at TEXT
+                 );
+                 INSERT INTO feature_mission_monitor_deleted_sessions (session_id, deleted_at) VALUES
+                     ('ses_deleted_1', '2026-01-01T00:00:00Z'),
+                     ('ses_deleted_2', '2026-01-02T00:00:00Z');",
+            )
+            .unwrap();
+
+        h.registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap();
+
+        // The exact `tombstone_key`/`is_tombstoned` wire format: ["<sessionId>"].
+        assert!(h
+            .registry
+            .meta
+            .is_tombstoned("mission-monitor", "sessions", "[\"ses_deleted_1\"]")
+            .unwrap());
+        assert!(h
+            .registry
+            .meta
+            .is_tombstoned("mission-monitor", "sessions", "[\"ses_deleted_2\"]")
+            .unwrap());
+        assert!(!h
+            .registry
+            .meta
+            .is_tombstoned("mission-monitor", "sessions", "[\"ses_live\"]")
+            .unwrap());
+
+        let tombstones = h
+            .registry
+            .meta
+            .list_tombstones("mission-monitor", "sessions")
+            .unwrap();
+        assert_eq!(tombstones.len(), 2, "both legacy tombstones migrated");
+        assert_eq!(tombstones[0].deleted_at, "2026-01-01T00:00:00Z");
+
+        // Idempotent: a second declare neither duplicates nor errors.
+        h.registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap();
+        assert_eq!(
+            h.registry
+                .meta
+                .list_tombstones("mission-monitor", "sessions")
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // The legacy table is preserved read-only.
+        assert!(h
+            .store
+            .table_exists("feature_mission_monitor_deleted_sessions")
+            .unwrap());
     }
 }
