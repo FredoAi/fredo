@@ -184,3 +184,17 @@
 - **S-21 PASS** — model-audio listening quick path: `Fredo is listening` chip + `Fredo is listening…` placeholder for the capture, **no** dictated words anywhere, cleared on stop; the model-audio `processing` chip then did not clear after the reply (see F-104 FAIL).
 - **S-22 PASS** — 8 captures uploaded via `upload-evidence --issue 2897`; the report references `telemetry_spans` (13,700 rows, newest `ingested_at` 2026-09-19T11:26:31.278557800+00:00).
 - **S-23 PASS** — `generate-dictation-phrase.mjs --seconds 31` → `dictation-31s-16k-mono.wav`, 16 kHz mono 16-bit, 496,000 samples / 992,000 B, SHA-256 `06a192e6…`; no-arg path byte-identical to the developer receipt (`33c2f129…`).
+
+### #2897 testing round 2 — result (`spec/2897 @ be4d3a73`, 2026-09-19, live)
+
+- **S-20 PASS** — `companion-voice-handling-select` rendered `Local transcription` / `Model audio`
+  (default `local`); selecting `local` persisted SQLite `"local"`, then `model` persisted select
+  `"model"` + localStorage `"model"` + SQLite `"model"` and flipped the help copy.
+- **S-21 PASS** — model-audio listening quick path: `Fredo is listening` chip + `Fredo is listening…`
+  placeholder, no dictated words; the chip now also **clears on `llm-done`** (round-1 F-104 defect fixed).
+- **S-22 PASS** — 5 captures uploaded via `upload-evidence --issue 2897`; the report references
+  `telemetry_spans` (14,296 rows, newest `ingested_at` `2026-09-19T12:06:42.903606400+00:00`).
+- **S-23 PASS** — 31 s variant re-generated: 496,000 samples / 992,000 B, SHA-256 `06a192e6…`;
+  committed 1.6 s fixture SHA-256 `33c2f129…` unchanged.
+- **Env form:** `-EnvVars @{ … }` via `powershell -File` remains broken (hashtable→string); the feed ran
+  from the parent env of the allowlisted `bun` launcher (disclosed tooling gap).
