@@ -584,6 +584,10 @@ pub fn run() {
             // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
             // `/props` + `tools`/`response_format` probe; no window, no state write.
             features::llm_server::probe::probe_companion_skills,
+            // #2897 ST-6 — backend-owned model-audio capability for the Companion
+            // readiness row + the pre-start gate. Reads the managed loopback
+            // server and records the verdict on `VoiceState` (REQ-7).
+            features::llm_server::commands::stt_audio_capability,
             // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
             // registry, validates a selection, emits `llm-skill-call` then
             // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.

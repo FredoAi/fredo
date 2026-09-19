@@ -449,6 +449,14 @@ export interface LauncherCommandBarProps {
    * The raw backend detail is never the primary sentence.
    */
   voiceErrorMessage?: string | null;
+  /**
+   * Spec #2897 ST-6 (REQ-7) — the inline fallback action for a model-audio
+   * failure alert (the host supplies `Use local transcription` when the model
+   * can't interpret audio / the server is unavailable / delivery failed). One
+   * click flips the PERSISTED setting; that click is the user's explicit
+   * consent. Absent/null ⇒ the shipped text-only alert (inactive-bar invariance).
+   */
+  voiceErrorAction?: { label: string; onClick: () => void } | null;
   /** DR-10: the newest FINAL transcript segment (partials never set this). */
   finalTranscript?: string;
   /**
@@ -810,6 +818,7 @@ export function LauncherCommandBar({
   onCancelListening,
   onUserEdit,
   voiceErrorMessage,
+  voiceErrorAction,
   finalTranscript = '',
   voiceEnabled = false,
   cancelSignal = 0,
@@ -1614,7 +1623,41 @@ export function LauncherCommandBar({
           fontSize="12px"
           color={isAlert ? 'var(--status-error)' : 'var(--text-subtle)'}
         >
-          {statusMessage}
+          <Box as="span">{statusMessage}</Box>
+          {/* Spec #2897 ST-6 (REQ-7) — the inline `Use local transcription`
+              fallback. It is supplied ONLY for a model-audio failure alert, so
+              every other voice error keeps the shipped text-only alert. */}
+          {isAlert && voiceErrorAction && (
+            <Box
+              as="button"
+              data-testid="launcher-command-listening-status-action"
+              aria-label={voiceErrorAction.label}
+              onClick={voiceErrorAction.onClick}
+              onMouseDown={(e) => e.preventDefault()}
+              display="inline-flex"
+              alignItems="center"
+              mt="1"
+              ml="2"
+              px="8px"
+              height="22px"
+              borderRadius="4px"
+              border="1px solid"
+              borderColor="var(--status-error)"
+              bg="transparent"
+              color="var(--status-error)"
+              fontFamily="var(--font-primary)"
+              fontSize="12px"
+              cursor="pointer"
+              css={{
+                '&:focus-visible': {
+                  outline: '2px solid var(--accent-primary)',
+                  outlineOffset: '2px',
+                },
+              }}
+            >
+              {voiceErrorAction.label}
+            </Box>
+          )}
         </Box>
       )}
       {/* #2897 ST-5 (REQ-6) — the auto-stop LIMIT NOTICE, in the SAME status slot.

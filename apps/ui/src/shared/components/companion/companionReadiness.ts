@@ -202,7 +202,10 @@ export type SttErrorCode =
   | 'engineStartFailed'
   | 'alreadyListening'
   | 'disabled'
-  | 'internal';
+  | 'internal'
+  // #2897 ST-6 (REQ-7) — the model-audio degradation codes.
+  | 'modelAudioUnsupported'
+  | 'modelAudioUnavailable';
 
 /** One enumerated cpal input device (`stt_list_devices`). */
 export interface SttDeviceInfo {
@@ -292,6 +295,159 @@ export function deriveSttDeviceProbe(input: {
     return { state: 'vanished', devices, selectedId, code };
   }
   return { state: 'devices', devices, selectedId, code };
+}
+
+// ── Model-audio capability + fallback (#2897 ST-6 / REQ-7) ───────────────────
+//
+// `stt_audio_capability` is BACKEND-OWNED: the UI never infers capability from a
+// model name. The readiness row (C0r) and the reactive fallback alert both derive
+// their copy from THIS one module, so the two degradation moments can never
+// disagree.
+
+/** Rust `SttAudioCapabilityState` (camelCase wire). */
+export type SttAudioCapabilityState =
+  | 'checking'
+  | 'ready'
+  | 'unsupported'
+  | 'serverUnavailable'
+  | 'unknown';
+
+/** `stt_audio_capability` result (camelCase, IPC). */
+export interface SttAudioCapability {
+  state: SttAudioCapabilityState;
+  /** Model name reported by the managed server (`null` when unavailable). */
+  model: string | null;
+  /** ST-0's MEASURED per-input ceiling; `null` until F-110 records it. */
+  limitMs: number | null;
+  code: SttErrorCode | null;
+  detail: string | null;
+}
+
+/**
+ * The reactive fallback vocabulary. `modelAudioUnsupported` /
+ * `modelAudioUnavailable` are the shipped typed wire codes (ST-2);
+ * `modelAudioFailed` is the client-side generic failure (a null clip or a
+ * dispatch error — no distinct wire code is needed for it).
+ */
+export type ModelAudioFailureCode =
+  | 'modelAudioUnsupported'
+  | 'modelAudioUnavailable'
+  | 'modelAudioFailed';
+
+/**
+ * The curated fallback sentences (UI/UX §7). NEVER the raw IPC string; each names
+ * the cause and the next step, and every one offers the explicit local switch.
+ */
+export const MODEL_AUDIO_FAILURE_COPY: Record<ModelAudioFailureCode, string> = {
+  modelAudioUnsupported:
+    "The companion model can't interpret audio — your recording wasn't sent. Switch to Local transcription to dictate with words, or install a model with audio support.",
+  modelAudioUnavailable:
+    "The local model server isn't running, so Fredo couldn't interpret that. Start it, or switch to Local transcription.",
+  modelAudioFailed:
+    "Fredo couldn't interpret that recording. Try again, or switch to Local transcription.",
+};
+
+/** The distinct cause of the fallback's generic copy (a null clip / dispatch error). */
+export const MODEL_AUDIO_GENERIC_FAILURE: ModelAudioFailureCode = 'modelAudioFailed';
+
+/** Is this string one of the model-audio fallback causes? */
+export function isModelAudioFailureCode(
+  code: string | null | undefined,
+): code is ModelAudioFailureCode {
+  return (
+    code === 'modelAudioUnsupported' ||
+    code === 'modelAudioUnavailable' ||
+    code === 'modelAudioFailed'
+  );
+}
+
+/** Curated fallback copy for a model-audio failure cause, or null. */
+export function modelAudioFailureCopy(
+  code: ModelAudioFailureCode | null | undefined,
+): string | null {
+  return code ? MODEL_AUDIO_FAILURE_COPY[code] : null;
+}
+
+/** The readiness row's frozen `data-state` vocabulary (kebab for unavailable). */
+export type ModelAudioReadinessState =
+  | 'checking'
+  | 'ready'
+  | 'unsupported'
+  | 'server-unavailable'
+  | 'unknown';
+
+/** The derived C0r row: state + sentence + which actions it offers. */
+export interface ModelAudioReadinessRow {
+  state: ModelAudioReadinessState;
+  sentence: string;
+  /** Offer the explicit one-click switch to Local transcription. */
+  offerLocal: boolean;
+  /** Offer `Change model` (unsupported only — install an audio-capable model). */
+  offerChangeModel: boolean;
+  /** Offer `Try again` (re-probe). */
+  offerRetry: boolean;
+}
+
+/**
+ * Derive the C0r `Model audio status` row from the backend capability. Pure and
+ * fail-closed: a missing capability (no probe / rejected invoke) is `unknown`
+ * ("can't check"), never a fabricated `ready`. `checking` is the UI-side
+ * probe-in-flight value.
+ */
+export function deriveModelAudioReadinessRow(
+  capability: SttAudioCapability | null,
+  checking: boolean,
+): ModelAudioReadinessRow {
+  if (checking) {
+    return {
+      state: 'checking',
+      sentence: "Checking the companion model's audio support…",
+      offerLocal: false,
+      offerChangeModel: false,
+      offerRetry: false,
+    };
+  }
+  switch (capability?.state) {
+    case 'ready': {
+      const subject =
+        typeof capability.model === 'string' && capability.model.trim().length > 0
+          ? capability.model.trim()
+          : 'The installed companion model';
+      return {
+        state: 'ready',
+        sentence: `${subject} can interpret audio. Recordings stay on this machine.`,
+        offerLocal: false,
+        offerChangeModel: false,
+        offerRetry: false,
+      };
+    }
+    case 'unsupported':
+      return {
+        state: 'unsupported',
+        sentence:
+          "The installed companion model can't interpret audio. Recordings won't be sent.",
+        offerLocal: true,
+        offerChangeModel: true,
+        offerRetry: false,
+      };
+    case 'serverUnavailable':
+      return {
+        state: 'server-unavailable',
+        sentence:
+          "The local model server isn't running, so Fredo can't interpret audio.",
+        offerLocal: true,
+        offerChangeModel: false,
+        offerRetry: true,
+      };
+    default:
+      return {
+        state: 'unknown',
+        sentence: "Can't check audio support right now.",
+        offerLocal: false,
+        offerChangeModel: false,
+        offerRetry: true,
+      };
+  }
 }
 
 // ── Companion server launch (#2857) — wire + derived types ───────────────────

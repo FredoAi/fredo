@@ -140,6 +140,88 @@ pub struct SttAudioClipResult {
     pub detail: Option<String>,
 }
 
+/// #2897 ST-6 (REQ-7) — the backend-owned model-audio capability state. The UI
+/// NEVER infers capability from a model name; this closed vocabulary is the ONE
+/// readiness answer.
+///
+/// `checking` is a UI-side "probe in flight" value and is never returned by the
+/// backend — it lives on the wire enum so both sides share a single closed set.
+/// `serverUnavailable` is the truthful state when the managed loopback
+/// `llama-server` is not listening (never a crash, never a fabricated verdict).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum SttAudioCapabilityState {
+    Checking,
+    Ready,
+    Unsupported,
+    ServerUnavailable,
+    Unknown,
+}
+
+/// #2897 ST-6 (REQ-7) — the result of `stt_audio_capability`.
+///
+/// The readiness row (C0r) renders exactly this object; `model` names the model
+/// reported by the managed server (never parsed from a filename), and `detail`
+/// is a human-readable qualifier for the demoted technical line. `limit_ms` is
+/// ST-0's MEASURED per-input ceiling — `None` until F-110 records it, never
+/// fabricated.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SttAudioCapability {
+    pub state: SttAudioCapabilityState,
+    pub model: Option<String>,
+    pub limit_ms: Option<u64>,
+    pub code: Option<SttErrorCode>,
+    pub detail: Option<String>,
+}
+
+impl SttAudioCapability {
+    /// The model server is not reachable on the managed loopback endpoint.
+    pub fn server_unavailable(detail: impl Into<String>) -> Self {
+        Self {
+            state: SttAudioCapabilityState::ServerUnavailable,
+            model: None,
+            limit_ms: None,
+            code: Some(SttErrorCode::ModelAudioUnavailable),
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// The server is reachable and rejected the audio content part (4xx).
+    pub fn unsupported(model: Option<String>, detail: impl Into<String>) -> Self {
+        Self {
+            state: SttAudioCapabilityState::Unsupported,
+            model,
+            limit_ms: None,
+            code: Some(SttErrorCode::ModelAudioUnsupported),
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// The server accepted the audio probe (2xx) — audio input is usable.
+    pub fn ready(model: Option<String>) -> Self {
+        Self {
+            state: SttAudioCapabilityState::Ready,
+            model,
+            limit_ms: None,
+            code: None,
+            detail: None,
+        }
+    }
+
+    /// The probe could not determine capability (5xx / malformed / transport
+    /// error after the server was reachable). Never crashes, never guesses.
+    pub fn unknown(model: Option<String>, detail: impl Into<String>) -> Self {
+        Self {
+            state: SttAudioCapabilityState::Unknown,
+            model,
+            limit_ms: None,
+            code: None,
+            detail: Some(detail.into()),
+        }
+    }
+}
+
 /// Result of `stt_warm` (ST-1). `warmed:true` is reported ONLY once the engine
 /// is genuinely resident — never optimistically, and never while a load is in
 /// flight.
@@ -520,5 +602,53 @@ mod tests {
         assert_eq!(unsupported.code, SttErrorCode::ModelAudioUnsupported);
         let unavailable = VoiceError::model_audio_unavailable("the model server is not running");
         assert_eq!(unavailable.code, SttErrorCode::ModelAudioUnavailable);
+    }
+
+    /// #2897 ST-6 (REQ-7) — the capability wire vocabulary is the closed
+    /// camelCase set the readiness row consumes. `serverUnavailable` /
+    /// `unsupported` carry their typed code; `ready` / `unknown` do not.
+    #[test]
+    fn audio_capability_states_serialize_to_the_closed_camel_case_set() {
+        for (state, expected) in [
+            (SttAudioCapabilityState::Checking, "\"checking\""),
+            (SttAudioCapabilityState::Ready, "\"ready\""),
+            (SttAudioCapabilityState::Unsupported, "\"unsupported\""),
+            (
+                SttAudioCapabilityState::ServerUnavailable,
+                "\"serverUnavailable\"",
+            ),
+            (SttAudioCapabilityState::Unknown, "\"unknown\""),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&state).expect("serialize capability state"),
+                expected
+            );
+        }
+
+        let unavailable = SttAudioCapability::server_unavailable("the server is not listening");
+        let json = serde_json::to_value(&unavailable).expect("serialize capability");
+        assert_eq!(json["state"], "serverUnavailable");
+        assert_eq!(json["code"], "modelAudioUnavailable");
+        assert_eq!(json["detail"], "the server is not listening");
+        assert_eq!(json["model"], serde_json::Value::Null);
+        assert_eq!(json["limitMs"], serde_json::Value::Null);
+
+        let unsupported =
+            SttAudioCapability::unsupported(Some("Gemma-4-E2B".to_string()), "HTTP 400");
+        let json = serde_json::to_value(&unsupported).expect("serialize capability");
+        assert_eq!(json["state"], "unsupported");
+        assert_eq!(json["code"], "modelAudioUnsupported");
+        assert_eq!(json["model"], "Gemma-4-E2B");
+
+        let ready = SttAudioCapability::ready(Some("Gemma-4-E2B".to_string()));
+        let json = serde_json::to_value(&ready).expect("serialize capability");
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["code"], serde_json::Value::Null);
+        assert_eq!(json["detail"], serde_json::Value::Null);
+
+        let unknown = SttAudioCapability::unknown(None, "HTTP 500");
+        let json = serde_json::to_value(&unknown).expect("serialize capability");
+        assert_eq!(json["state"], "unknown");
+        assert_eq!(json["code"], serde_json::Value::Null);
     }
 }

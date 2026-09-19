@@ -27,10 +27,12 @@ use crate::infrastructure::companion::models::{
 };
 use crate::infrastructure::companion::resolve_llama_server;
 use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::voice::{SttAudioCapability, VoiceState};
 
 use super::chat::{self, LlmMessage};
 use super::config::LlamaServerConfig;
 use super::health::{self, HealthProbeSource, ReqwestHealthClient};
+use super::probe;
 use super::process;
 use super::state::{LlamaServerState, ManagedServer};
 use super::{
@@ -814,6 +816,27 @@ pub fn llm_chat_with_audio(
 ) -> Result<(), String> {
     chat::spawn_audio_chat(app, messages, audio_base64);
     Ok(())
+}
+
+/// Probe the managed model's audio-input capability (#2897 ST-6; REQ-7).
+///
+/// Backend-owned: the UI NEVER infers capability from a model name. The probe
+/// reads the managed LOOPBACK server (read-only app state) and runs ONE
+/// `input_audio` acceptance request rendered by the ONE production renderer
+/// ([`probe::probe_model_audio_capability`]), so the readiness row and the
+/// pre-start gate share the SAME verdict. It never panics: an unreachable server
+/// reports `serverUnavailable`.
+///
+/// The verdict is stored on `VoiceState` so the pre-start gate in
+/// `infrastructure/voice/session.rs` can consult it WITHOUT any network symbol
+/// entering the voice module (REQ-8 / voice_invariants).
+#[tauri::command]
+pub async fn stt_audio_capability(app: AppHandle) -> SttAudioCapability {
+    let capability = probe::probe_model_audio_capability(&app).await;
+    if let Some(state) = app.try_state::<VoiceState>() {
+        state.set_audio_capability(capability.clone());
+    }
+    capability
 }
 
 /// App-exit hook: terminate the managed server tree (Spec #2857, ST-4 owns the

@@ -30,11 +30,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::voice::{SttAudioCapability, SttAudioCapabilityState};
 
 use super::chat::{self, LlmMessage};
 use super::process;
@@ -561,6 +563,208 @@ pub async fn probe_companion_skills(app: AppHandle) -> Result<CompanionSkillProb
         verdict,
         cleanup_catalogue: CLEANUP_CATALOGUE.to_string(),
     })
+}
+
+// ── ST-6 model-audio capability probe (Spec #2897; REQ-7) ─────────────────────
+//
+// ST-6 exposes the backend-owned `stt_audio_capability` command the Companion
+// readiness row (C0r) consumes. The UI NEVER infers capability from a model name:
+// this probe answers the question from the LIVE managed server, exactly as ST-0's
+// receipt does — reachability of the loopback endpoint, then an `input_audio`
+// acceptance POST rendered by the ONE production renderer (`chat::render_messages`
+// → `chat::audio_content_part`). It is read-only with respect to app state and
+// never panics: an unreachable server is the truthful `serverUnavailable`.
+
+/// Bounded lifetime for the capability probe. It is a settings-row probe, so it
+/// must answer promptly; a hung server degrades to `unknown`, never a hang.
+const CAPABILITY_PROBE_TIMEOUT_S: u64 = 8;
+
+/// TCP connect budget for the capability probe (a refused loopback connect is
+/// immediate; this bounds a wedged listener).
+const CAPABILITY_PROBE_CONNECT_TIMEOUT_S: u64 = 2;
+
+/// The synthetic probe clip: 0.1 s of silence at 16 kHz mono 16-bit PCM. The
+/// audio CONTENT is irrelevant to the capability question — only whether the
+/// managed server accepts the `input_audio` content part is. This is NOT the
+/// capture encoder (`infrastructure/voice/` encodes the real clip); it is a fixed
+/// synthetic payload for the probe.
+const CAPABILITY_PROBE_SAMPLES: usize = 1_600;
+
+/// The capability probe's system turn — minimal and neutral.
+const CAPABILITY_PROBE_SYSTEM_PROMPT: &str =
+    "You are Fredo, a desktop companion. Respond to the user's message.";
+
+/// `/v1/models` URL for a bound host/port (the resolved managed host, so the
+/// probe can only address the loopback server).
+pub fn models_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}/v1/models")
+}
+
+/// The synthetic probe conversation (system + ONE empty user turn whose content
+/// is replaced by the audio part).
+pub(crate) fn capability_probe_messages() -> Vec<LlmMessage> {
+    vec![
+        LlmMessage {
+            role: "system".to_string(),
+            content: CAPABILITY_PROBE_SYSTEM_PROMPT.to_string(),
+        },
+        LlmMessage {
+            role: "user".to_string(),
+            content: String::new(),
+        },
+    ]
+}
+
+/// Encode a fixed 16 kHz mono 16-bit PCM WAV of `samples` silent frames. Pure so
+/// the format contract is unit-pinned; the probe payload is tiny and constant.
+pub(crate) fn capability_probe_wav(samples: usize) -> Vec<u8> {
+    let sample_rate: u32 = 16_000;
+    let data_len = (samples * 2) as u32;
+    let mut bytes = Vec::with_capacity(44 + data_len as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVE");
+    bytes.extend_from_slice(b"fmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    bytes.resize(44 + data_len as usize, 0);
+    bytes
+}
+
+/// The capability probe body: the ONE renderer (`chat::render_messages`) with the
+/// audio part on the LAST user message and a single-token cap (the probe only
+/// needs the server's accept/reject verdict, not a completion).
+pub(crate) fn build_capability_probe_body(audio_base64: &str) -> serde_json::Value {
+    serde_json::json!({
+        "messages": chat::render_messages(&capability_probe_messages(), None, Some(audio_base64)),
+        "stream": true,
+        "max_tokens": 1,
+    })
+}
+
+/// Map the live POST's HTTP status onto the capability state. 2xx ⇒ the server
+/// accepted the `input_audio` part; 4xx ⇒ it rejected audio for this
+/// build/model; anything else is indeterminate. Pure + pinned, so the verdict can
+/// never drift from the ST-0 decision rule.
+pub(crate) fn capability_state_for_status(status: u16) -> SttAudioCapabilityState {
+    match status {
+        200..=299 => SttAudioCapabilityState::Ready,
+        400..=499 => SttAudioCapabilityState::Unsupported,
+        _ => SttAudioCapabilityState::Unknown,
+    }
+}
+
+/// The first model id of a `/v1/models` payload (OpenAI list shape) — the DISPLAY
+/// name only, never the capability verdict. Defensive: absent/malformed ⇒ None.
+pub(crate) fn first_model_id(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("data")
+        .and_then(|data| data.as_array())
+        .and_then(|entries| {
+            entries.iter().find_map(|entry| {
+                entry
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+            })
+        })
+}
+
+/// Best-effort model name from the managed server: `None` when the endpoint is
+/// unreachable/malformed — the capability answer never depends on it.
+async fn probe_model_name(client: &reqwest::Client, host: &str, port: u16) -> Option<String> {
+    let response = client.get(models_url(host, port)).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload = response.json::<serde_json::Value>().await.ok()?;
+    first_model_id(&payload)
+}
+
+/// **ST-6 (REQ-7)** — the read-only model-audio capability probe backing
+/// `stt_audio_capability`. Never panics and never transmits the user's captured
+/// audio: the only payload it sends is a tiny synthetic silent clip, and only to
+/// the managed loopback endpoint. Returns `serverUnavailable` when the server is
+/// not listening, `unsupported` when the server rejects the audio part, `ready`
+/// when it accepts it, and `unknown` when the answer is inconclusive.
+pub async fn probe_model_audio_capability(app: &AppHandle) -> SttAudioCapability {
+    let host = chat::resolve_host(store_string(app, LLAMA_SERVER_HOST_KEY).as_deref());
+    let port = resolve_probe_port(app);
+    let props_url = chat::props_url(&host, port);
+
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(CAPABILITY_PROBE_CONNECT_TIMEOUT_S))
+        .timeout(Duration::from_secs(CAPABILITY_PROBE_TIMEOUT_S))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return SttAudioCapability::unknown(
+                None,
+                format!("could not build the capability probe HTTP client: {error}"),
+            )
+        }
+    };
+
+    // (a) Reachability — the managed loopback server must be listening.
+    match client.get(&props_url).send().await {
+        Err(error) => {
+            return SttAudioCapability::server_unavailable(format!(
+                "the local model server is not reachable at {props_url}: {error}"
+            ))
+        }
+        Ok(response) if !response.status().is_success() => {
+            return SttAudioCapability::unknown(
+                None,
+                format!(
+                    "GET {props_url} returned HTTP {}",
+                    response.status().as_u16()
+                ),
+            )
+        }
+        Ok(_) => {}
+    }
+
+    // (b) Best-effort display name (never the capability verdict).
+    let model = probe_model_name(&client, &host, port).await;
+
+    // (c) The acceptance probe: one `input_audio` turn through the ONE renderer.
+    let wav = capability_probe_wav(CAPABILITY_PROBE_SAMPLES);
+    let audio_base64 = STANDARD.encode(&wav);
+    let body = build_capability_probe_body(&audio_base64);
+    let chat_url = chat::chat_completions_url(&host, port);
+    let response = match client.post(&chat_url).json(&body).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            // The server answered `/props` but not the chat POST — inconclusive,
+            // never a fabricated verdict.
+            return SttAudioCapability::unknown(
+                model,
+                format!("the audio capability request to {chat_url} failed: {error}"),
+            );
+        }
+    };
+
+    let status = response.status().as_u16();
+    match capability_state_for_status(status) {
+        SttAudioCapabilityState::Ready => SttAudioCapability::ready(model),
+        SttAudioCapabilityState::Unsupported => SttAudioCapability::unsupported(
+            model,
+            format!("the model server rejected the audio input (HTTP {status})"),
+        ),
+        _ => SttAudioCapability::unknown(
+            model,
+            format!("the model server returned HTTP {status} for the audio input probe"),
+        ),
+    }
 }
 
 // ── ST-0 audio-feasibility probe seam (Spec #2897) ────────────────────────────
@@ -1118,5 +1322,113 @@ mod tests {
     fn verdict_propagates_reasoning_detection() {
         let verdict = compute_verdict(Some(true), true, true, false, true);
         assert!(verdict.reasoning_detected);
+    }
+
+    // ── #2897 ST-6 — the capability probe's pure seam (REQ-7) ────────────────
+
+    /// The live POST status maps onto the closed capability vocabulary exactly
+    /// once: 2xx accepted, 4xx rejected, everything else indeterminate.
+    #[test]
+    fn capability_state_maps_the_live_status_onto_the_closed_vocabulary() {
+        assert_eq!(
+            capability_state_for_status(200),
+            SttAudioCapabilityState::Ready
+        );
+        assert_eq!(
+            capability_state_for_status(204),
+            SttAudioCapabilityState::Ready
+        );
+        assert_eq!(
+            capability_state_for_status(400),
+            SttAudioCapabilityState::Unsupported
+        );
+        assert_eq!(
+            capability_state_for_status(422),
+            SttAudioCapabilityState::Unsupported
+        );
+        assert_eq!(
+            capability_state_for_status(500),
+            SttAudioCapabilityState::Unknown
+        );
+        assert_eq!(
+            capability_state_for_status(0),
+            SttAudioCapabilityState::Unknown
+        );
+    }
+
+    /// The synthetic probe clip is a valid 16 kHz mono 16-bit PCM WAV of the
+    /// requested length and is byte-deterministic (no clock/randomness).
+    #[test]
+    fn capability_probe_wav_is_a_deterministic_16k_mono_pcm_wav() {
+        let wav = capability_probe_wav(CAPABILITY_PROBE_SAMPLES);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(u16::from_le_bytes([wav[20], wav[21]]), 1, "PCM");
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1, "mono");
+        assert_eq!(
+            u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]),
+            16_000,
+            "16 kHz"
+        );
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "16-bit");
+        assert_eq!(
+            u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize,
+            CAPABILITY_PROBE_SAMPLES * 2
+        );
+        assert_eq!(wav.len(), 44 + CAPABILITY_PROBE_SAMPLES * 2);
+        assert_eq!(wav, capability_probe_wav(CAPABILITY_PROBE_SAMPLES));
+    }
+
+    /// The capability body carries the audio part through the ONE renderer: a
+    /// single `input_audio` part on the last user message, no text part, and a
+    /// single-token cap.
+    #[test]
+    fn capability_probe_body_is_the_one_renderer_with_a_single_audio_part() {
+        let body = build_capability_probe_body("UklGRg==");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 1);
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        let parts = messages[1]["content"].as_array().expect("audio array");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "input_audio");
+        assert_eq!(parts[0]["input_audio"]["data"], "UklGRg==");
+        assert_eq!(parts[0]["input_audio"]["format"], "wav");
+        assert!(
+            !body.to_string().contains("\"type\":\"text\""),
+            "the capability probe must not carry a text part (REQ-3)"
+        );
+    }
+
+    /// The `/v1/models` reader takes the OpenAI list shape and never panics on a
+    /// malformed payload — the model name is a display detail, never the verdict.
+    #[test]
+    fn first_model_id_reads_the_openai_list_defensively() {
+        let payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "object": "model" },
+                { "id": "Gemma-4-E2B" },
+                { "id": "" },
+            ],
+        });
+        assert_eq!(first_model_id(&payload).as_deref(), Some("Gemma-4-E2B"));
+        assert_eq!(first_model_id(&serde_json::json!({})), None);
+        assert_eq!(first_model_id(&serde_json::json!({ "data": [] })), None);
+        assert_eq!(
+            first_model_id(&serde_json::json!({ "data": "nope" })),
+            None
+        );
+    }
+
+    /// The models URL templates the resolved (loopback-defaulting) host.
+    #[test]
+    fn models_url_templates_the_resolved_host() {
+        assert_eq!(
+            models_url("127.0.0.1", 8080),
+            "http://127.0.0.1:8080/v1/models"
+        );
     }
 }

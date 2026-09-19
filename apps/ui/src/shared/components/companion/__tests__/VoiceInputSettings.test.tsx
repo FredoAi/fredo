@@ -728,6 +728,161 @@ describe('VoiceInputSettings — C4 autosend (#2877 ST-4)', () => {
   });
 });
 
+// ── C0r — model audio status (#2897 ST-6 / REQ-7) ────────────────────────────
+
+describe('VoiceInputSettings — C0r model audio status (#2897 ST-6)', () => {
+  const setHandling = (value: 'local' | 'model') =>
+    localStorage.setItem(VOICE_HANDLING_SETTING_KEY, value);
+
+  const installCapability = (result: unknown) => {
+    adapterBridge.setInvoke((async (command: string) =>
+      command === 'stt_audio_capability' ? result : undefined) as never);
+  };
+
+  const capabilityRow = () => screen.getByTestId('companion-voice-model-audio-row');
+  const capabilityStatus = () => screen.getByTestId('companion-voice-model-audio-status');
+
+  it('is NOT rendered while the method is Local transcription', () => {
+    renderSettings();
+    expect(screen.queryByTestId('companion-voice-model-audio-row')).toBeNull();
+  });
+
+  it('checking: renders the in-flight sentence and no action', async () => {
+    setHandling('model');
+    // A capability probe that never settles keeps the UI-side `checking` state
+    // observable; every other command resolves so the persisted mode still loads.
+    adapterBridge.setInvoke((async (command: string) => {
+      if (command === 'stt_audio_capability') return new Promise(() => {});
+      return undefined;
+    }) as never);
+    renderSettings();
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId('companion-voice-handling-select') as HTMLSelectElement).value,
+      ).toBe('model'),
+    );
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'checking'));
+    expect(capabilityStatus()).toHaveTextContent(
+      "Checking the companion model's audio support…",
+    );
+    expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-audio-change-model')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-audio-retry')).toBeNull();
+  });
+
+  it('ready: names the reported model and offers no action', async () => {
+    setHandling('model');
+    installCapability({
+      state: 'ready',
+      model: 'Gemma-4-E2B',
+      limitMs: null,
+      code: null,
+      detail: null,
+    });
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'ready'));
+    expect(capabilityStatus()).toHaveTextContent(
+      'Gemma-4-E2B can interpret audio. Recordings stay on this machine.',
+    );
+    expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-audio-retry')).toBeNull();
+  });
+
+  it('unsupported: warns, offers local + change model, and one click flips the persisted setting', async () => {
+    setHandling('model');
+    installCapability({
+      state: 'unsupported',
+      model: 'Gemma-4-E2B',
+      limitMs: null,
+      code: 'modelAudioUnsupported',
+      detail: 'HTTP 400: unsupported content part',
+    });
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'unsupported'));
+    expect(capabilityStatus()).toHaveTextContent(
+      "The installed companion model can't interpret audio. Recordings won't be sent.",
+    );
+    // The raw backend detail is demoted, never the primary sentence.
+    expect(capabilityRow()).toHaveTextContent(/Technical details: HTTP 400/);
+    expect(screen.getByTestId('companion-voice-model-audio-change-model')).toHaveTextContent(
+      'Change model',
+    );
+
+    fireEvent.click(screen.getByTestId('companion-voice-model-audio-use-local'));
+
+    await waitFor(() => {
+      expect(localStorage.getItem(VOICE_HANDLING_SETTING_KEY)).toBe('local');
+    });
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toHaveTextContent(
+      'Speech handling set to Local transcription.',
+    );
+    // The mode flipped, so the model-audio row is gone.
+    expect(screen.queryByTestId('companion-voice-model-audio-row')).toBeNull();
+  });
+
+  it('server-unavailable: warns and Try again re-probes + announces', async () => {
+    setHandling('model');
+    const invoke = vi.fn(async (command: string) =>
+      command === 'stt_audio_capability'
+        ? {
+            state: 'serverUnavailable',
+            model: null,
+            limitMs: null,
+            code: 'modelAudioUnavailable',
+            detail: 'connection refused',
+          }
+        : undefined,
+    );
+    adapterBridge.setInvoke(invoke as never);
+    renderSettings();
+    await waitFor(() =>
+      expect(capabilityRow()).toHaveAttribute('data-state', 'server-unavailable'),
+    );
+    expect(capabilityStatus()).toHaveTextContent(
+      "The local model server isn't running, so Fredo can't interpret audio.",
+    );
+
+    const probes = () =>
+      invoke.mock.calls.filter((call) => call[0] === 'stt_audio_capability').length;
+    const before = probes();
+    fireEvent.click(screen.getByTestId('companion-voice-model-audio-retry'));
+    await waitFor(() => {
+      expect(probes()).toBeGreaterThan(before);
+    });
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toHaveTextContent(
+      "Checking the companion model's audio support again.",
+    );
+  });
+
+  it('unknown: fail-closed copy + Try again + the demoted detail', async () => {
+    setHandling('model');
+    installCapability({
+      state: 'unknown',
+      model: null,
+      limitMs: null,
+      code: null,
+      detail: 'HTTP 500',
+    });
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'unknown'));
+    expect(capabilityStatus()).toHaveTextContent("Can't check audio support right now.");
+    expect(capabilityRow()).toHaveTextContent(/Technical details: HTTP 500/);
+    expect(screen.getByTestId('companion-voice-model-audio-retry')).toBeInTheDocument();
+    // `unknown` never offers the mode switch — there is nothing proven to degrade.
+    expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
+  });
+
+  it('a rejected / malformed probe is `unknown`, never `ready`', async () => {
+    setHandling('model');
+    adapterBridge.setInvoke((async (command: string) => {
+      if (command === 'stt_audio_capability') throw new Error('command unavailable');
+      return undefined;
+    }) as never);
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'unknown'));
+  });
+});
+
 // ── DR-10 — settings live region ─────────────────────────────────────────────
 
 describe('VoiceInputSettings — DR-10 live region (#2877 ST-4)', () => {

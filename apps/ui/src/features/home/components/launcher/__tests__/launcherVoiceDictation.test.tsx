@@ -20,7 +20,7 @@
  *      FINAL segment only (partials never announce).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -69,6 +69,9 @@ const companionMock = vi.hoisted(() => ({
     // Spec #2897 ST-1/ST-4 — the persisted speech-handling mode (DEFAULT 'local');
     // ST-4 gates every transcript write + the bar cue on it.
     voiceHandling: 'local' as 'local' | 'model',
+    // Spec #2897 ST-6 — the persisted-setter the inline fallback uses (the
+    // context owns persistence; the shell only calls the setter).
+    setVoiceHandling: vi.fn(),
   },
 }));
 vi.mock('@/shared/contexts/CompanionContext', () => ({
@@ -85,6 +88,8 @@ const companionDispatchMock = vi.hoisted(() => ({
   // (`dispatched`/`queued`/`rejected`) or `null`; the default stub accepts with
   // `dispatched`, so the shipped clear-on-accept behaviour is preserved.
   askActiveCompanion: vi.fn((_text: string) => ({ outcome: 'dispatched' as const })),
+  // Spec #2897 ST-6 — the audio dispatch the delivery glue calls.
+  askActiveCompanionWithAudio: vi.fn((_clip: string) => ({ outcome: 'dispatched' as const })),
 }));
 const companionEntityMock = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
@@ -95,6 +100,7 @@ vi.mock('@/shared/components/companion', () => ({
     return null;
   },
   askActiveCompanion: companionDispatchMock.askActiveCompanion,
+  askActiveCompanionWithAudio: companionDispatchMock.askActiveCompanionWithAudio,
 }));
 
 type Handler = (payload: unknown) => void;
@@ -131,9 +137,14 @@ beforeEach(() => {
     replyInFlight: false,
     queuedSendCount: 0,
     voiceHandling: 'local',
+    setVoiceHandling: vi.fn(),
   };
   companionDispatchMock.askActiveCompanion.mockReset();
   companionDispatchMock.askActiveCompanion.mockReturnValue({ outcome: 'dispatched' });
+  companionDispatchMock.askActiveCompanionWithAudio.mockReset();
+  companionDispatchMock.askActiveCompanionWithAudio.mockReturnValue({
+    outcome: 'dispatched',
+  });
   companionEntityMock.props.length = 0;
   vi.stubGlobal(
     'matchMedia',
@@ -2713,5 +2724,183 @@ describe('LauncherShell — model-audio mode (#2897 ST-4)', () => {
     expect(input()).toHaveAttribute('placeholder', 'Listening…');
     expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
     expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+  });
+});
+
+// ── Spec #2897 ST-6 — the delivery glue + the reactive fallback (REQ-5/REQ-7) ──
+//
+// ST-2 shipped the clip command, ST-3 the transport, ST-4 the `processing` state;
+// this is the ONE seam that wires them: on the post-stop `processing` phase the
+// shell takes the clip and dispatches it EXACTLY ONCE per session, and on a null
+// clip / dispatch failure / typed wire error it surfaces the curated fallback copy
+// with the inline `Use local transcription` action. No transcript is ever written.
+describe('LauncherShell — model-audio delivery glue + fallback (#2897 ST-6)', () => {
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const emitState = (payload: Record<string, unknown>) =>
+    act(() => {
+      emit('stt:state', { code: null, detail: null, origin: 'launcher', ...payload });
+    });
+
+  const CLIP = {
+    base64: 'QUJD',
+    format: 'wav',
+    sampleRate: 16000,
+    durationMs: 100,
+    limitMs: 30000,
+    atLimit: false,
+    truncated: false,
+  };
+
+  const installInvoke = (clipResult: unknown) => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'stt_start') return okStart();
+      if (command === 'stt_take_audio_clip') return clipResult;
+      return undefined;
+    });
+    adapterBridge.setInvoke(invoke as never);
+    return invoke;
+  };
+
+  const renderShell = () =>
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+
+  beforeEach(() => {
+    companionMock.current.voiceHandling = 'model';
+  });
+
+  it('takes the clip and dispatches it EXACTLY ONCE per session, re-arming on the next capture', async () => {
+    const invoke = installInvoke({ clip: CLIP, code: null, detail: null });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+    expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledWith('QUJD');
+    // The clip is PULLED through the ST-2 command (never re-read locally).
+    expect(
+      invoke.mock.calls.filter((call) => call[0] === 'stt_take_audio_clip').length,
+    ).toBe(1);
+
+    // A repeated `processing` state must NOT re-dispatch (once per session).
+    emitState({ listening: false, phase: 'processing' });
+    await act(async () => {});
+    expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+
+    // A NEW capture re-arms the guard: the next stop dispatches again.
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('never writes the transcript into the bar through the glue path', async () => {
+    installInvoke({ clip: CLIP, code: null, detail: null });
+    renderShell();
+
+    act(() => {
+      fireEvent.change(input(), { target: { value: 'draft I typed' } });
+    });
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+    expect(input().value).toBe('draft I typed');
+    // The glue never dispatches a text turn either (G-149 — one route).
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('a NULL clip surfaces the generic fallback copy + the one-click local switch (never dispatches)', async () => {
+    installInvoke({ clip: null, code: null, detail: null });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('launcher-command-listening-status')).toHaveTextContent(
+        "Fredo couldn't interpret that recording. Try again, or switch to Local transcription.",
+      );
+    });
+    expect(companionDispatchMock.askActiveCompanionWithAudio).not.toHaveBeenCalled();
+    expect(screen.getByTestId('launcher-command-listening-status')).toHaveAttribute(
+      'role',
+      'alert',
+    );
+    const action = screen.getByTestId('launcher-command-listening-status-action');
+    expect(action).toHaveTextContent('Use local transcription');
+    fireEvent.click(action);
+    expect(companionMock.current.setVoiceHandling).toHaveBeenCalledWith('local');
+  });
+
+  it('a dispatch rejection surfaces the generic fallback copy', async () => {
+    installInvoke({ clip: CLIP, code: null, detail: null });
+    companionDispatchMock.askActiveCompanionWithAudio.mockReturnValue({
+      outcome: 'rejected',
+    });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('launcher-command-listening-status')).toHaveTextContent(
+        "Fredo couldn't interpret that recording.",
+      );
+    });
+  });
+
+  it('the typed `modelAudioUnsupported` wire code carries CURATED copy (never the raw IPC string) + the action', async () => {
+    renderShell();
+
+    emitState({
+      listening: false,
+      code: 'modelAudioUnsupported',
+      detail: 'the model server rejected the audio input (HTTP 400)',
+    });
+
+    const alert = screen.getByTestId('launcher-command-listening-status');
+    expect(alert).toHaveTextContent(
+      "The companion model can't interpret audio — your recording wasn't sent.",
+    );
+    expect(alert).toHaveTextContent('Switch to Local transcription');
+    expect(alert).not.toHaveTextContent('HTTP 400');
+    expect(screen.getByTestId('launcher-command-listening-status-action')).toBeInTheDocument();
+  });
+
+  it('the typed `modelAudioUnavailable` wire code carries the server-not-running copy', async () => {
+    renderShell();
+
+    emitState({
+      listening: false,
+      code: 'modelAudioUnavailable',
+      detail: 'connection refused',
+    });
+
+    const alert = screen.getByTestId('launcher-command-listening-status');
+    expect(alert).toHaveTextContent(
+      "The local model server isn't running, so Fredo couldn't interpret that.",
+    );
+    expect(alert).not.toHaveTextContent('connection refused');
+  });
+
+  it('LOCAL mode never surfaces a model-audio code (the fallback is model-mode only)', () => {
+    companionMock.current.voiceHandling = 'local';
+    renderShell();
+
+    emitState({
+      listening: false,
+      code: 'modelAudioUnsupported',
+      detail: 'raw ipc detail',
+    });
+
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-status-action')).toBeNull();
   });
 });

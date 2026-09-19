@@ -32,8 +32,8 @@ use crate::infrastructure::voice::engine::{self, Recognizer, ENGINE_SAMPLE_RATE}
 use crate::infrastructure::voice::manifest::resolve_stt_manifest;
 use crate::infrastructure::voice::resident::ResidentEngine;
 use crate::infrastructure::voice::state::{
-    SttAudioClip, SttAudioClipResult, SttErrorCode, SttPhaseWire, SttStartResult, SttStateEvent,
-    SttTranscriptEvent, VoiceError, MAX_AUDIO_CLIP_MS,
+    SttAudioCapability, SttAudioCapabilityState, SttAudioClip, SttAudioClipResult, SttErrorCode,
+    SttPhaseWire, SttStartResult, SttStateEvent, SttTranscriptEvent, VoiceError, MAX_AUDIO_CLIP_MS,
 };
 
 /// Persisted Companion preference (written by the ST-5 toggle, DEFAULT false).
@@ -136,6 +136,12 @@ pub struct VoiceState {
     /// still re-emits the same terminal `processing`/`limitReached` state. A new
     /// session start clears it.
     auto_stopped: AtomicBool,
+    /// #2897 ST-6 (REQ-7): the latest model-audio capability snapshot, written by
+    /// the sanctioned `stt_audio_capability` probe (which lives in
+    /// `features/llm_server`, the only network-capable module) and read by the
+    /// pre-start gate below. `infrastructure/voice/` never probes the network
+    /// itself — it only reads this value.
+    capability: Mutex<Option<SttAudioCapability>>,
 }
 
 impl VoiceState {
@@ -144,7 +150,29 @@ impl VoiceState {
             inner: Mutex::new(None),
             clip: Mutex::new(None),
             auto_stopped: AtomicBool::new(false),
+            capability: Mutex::new(None),
         }
+    }
+
+    /// #2897 ST-6 (REQ-7) — store the latest capability snapshot. Called by the
+    /// `stt_audio_capability` command after its read-only probe.
+    pub fn set_audio_capability(&self, capability: SttAudioCapability) {
+        let mut guard = lock_capability(self);
+        *guard = Some(capability);
+    }
+
+    /// #2897 ST-6 (REQ-7) — the latest capability snapshot, or `None` when no
+    /// probe has run yet. The pre-start gate treats `None` as "not determined"
+    /// (it never invents a verdict) and lets the reactive fallback handle a
+    /// later failure.
+    pub fn audio_capability(&self) -> Option<SttAudioCapability> {
+        lock_capability(self).clone()
+    }
+
+    /// #2897 ST-6 (REQ-7) — drop the snapshot (the mode changed / voice was
+    /// released). A cleared snapshot is "not determined", never a failure.
+    pub fn clear_audio_capability(&self) {
+        *lock_capability(self) = None;
     }
 }
 
@@ -167,6 +195,15 @@ fn lock_inner(state: &VoiceState) -> MutexGuard<'_, Option<ActiveSession>> {
 /// session slot (never a panic).
 fn lock_clip(state: &VoiceState) -> MutexGuard<'_, Option<SttAudioClip>> {
     match state.clip.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// #2897 ST-6 (REQ-7) — the capability snapshot slot, recovered from a poisoned
+/// lock exactly like the session slot (never a panic).
+fn lock_capability(state: &VoiceState) -> MutexGuard<'_, Option<SttAudioCapability>> {
+    match state.capability.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -352,6 +389,42 @@ fn limit_for_handling(mode: VoiceHandling) -> Option<u64> {
     match mode {
         VoiceHandling::Model => Some(MAX_AUDIO_CLIP_MS),
         VoiceHandling::Local => None,
+    }
+}
+
+/// #2897 ST-6 (REQ-7) — the PRE-START model-audio capability gate. When the
+/// speech-handling mode is `Model` and the last sanctioned probe said the audio
+/// capability FAILED, the session must not start: no capture is opened, so no
+/// audio is ever transmitted, and the typed code travels out through the
+/// existing `stt:state` error channel. `is_stop`/`is_cancel` never reach here.
+///
+/// `Ready` and `Unknown`/`None` proceed: an inconclusive probe is NOT a failure
+/// (the reactive fallback owns a later delivery failure), and a probe that has
+/// not run yet must not invent a verdict. `checking` is a UI-only value and is
+/// treated exactly like `None`.
+fn model_audio_start_gate(
+    handling: VoiceHandling,
+    capability: Option<&SttAudioCapability>,
+) -> Option<VoiceError> {
+    if handling != VoiceHandling::Model {
+        return None;
+    }
+    let capability = capability?;
+    match capability.state {
+        SttAudioCapabilityState::Unsupported => Some(VoiceError::model_audio_unsupported(
+            capability
+                .detail
+                .clone()
+                .unwrap_or_else(|| "The installed companion model can't interpret audio.".to_string()),
+        )),
+        SttAudioCapabilityState::ServerUnavailable => Some(VoiceError::model_audio_unavailable(
+            capability.detail.clone().unwrap_or_else(|| {
+                "The local model server isn't running.".to_string()
+            }),
+        )),
+        SttAudioCapabilityState::Checking
+        | SttAudioCapabilityState::Ready
+        | SttAudioCapabilityState::Unknown => None,
     }
 }
 
@@ -543,6 +616,21 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     if let Some(error) = model_gate {
         emit_state(app, &state_event_error(&error, Some(origin)));
         return error.into_start_result();
+    }
+
+    // 3b. Model-audio capability gate (#2897 ST-6 / REQ-7). The snapshot is
+    // written ONLY by the sanctioned `stt_audio_capability` probe (which lives in
+    // `features/llm_server`, the crate's network-capable module); this module
+    // merely reads it, so `infrastructure/voice/` stays free of network symbols
+    // (REQ-8 / voice_invariants). A failed capability check returns BEFORE any
+    // capture is opened, so no audio is transmitted, and the typed code goes out
+    // on the existing `stt:state` error channel. `local` is never gated.
+    {
+        let capability = app.state::<VoiceState>().audio_capability();
+        if let Some(error) = model_audio_start_gate(handling, capability.as_ref()) {
+            emit_state(app, &state_event_error(&error, Some(origin)));
+            return error.into_start_result();
+        }
     }
 
     // 4. Engine acquisition (ST-3/R-1, R-4) — TRANSCRIPTION ONLY (#2897 ST-2).
@@ -2451,5 +2539,82 @@ mod tests {
             "a local stop keeps the legacy shape"
         );
         assert_eq!(finish_phase(None, true, None), (None, None));
+    }
+
+    // ── #2897 ST-6 (REQ-7) — the pre-start capability gate ────────────────────
+
+    /// A failed capability check BLOCKS a model-audio start with the typed code
+    /// (the caller returns before any capture is opened, so no audio is
+    /// transmitted); a `ready` / undetermined snapshot never blocks, and the gate
+    /// is invisible to the shipped local transcription path.
+    #[test]
+    fn model_audio_start_gate_blocks_only_a_failed_capability_check() {
+        let unsupported = SttAudioCapability::unsupported(
+            Some("Gemma-4-E2B".to_string()),
+            "HTTP 400: unsupported content part",
+        );
+        let error = model_audio_start_gate(VoiceHandling::Model, Some(&unsupported))
+            .expect("an unsupported capability must block the start");
+        assert_eq!(error.code, SttErrorCode::ModelAudioUnsupported);
+        assert!(error.detail.contains("HTTP 400"));
+
+        let unavailable = SttAudioCapability::server_unavailable("connection refused");
+        let error = model_audio_start_gate(VoiceHandling::Model, Some(&unavailable))
+            .expect("an unreachable server must block the start");
+        assert_eq!(error.code, SttErrorCode::ModelAudioUnavailable);
+        assert!(error.detail.contains("connection refused"));
+
+        // Indeterminate / not-yet-probed is NOT a failure: the reactive fallback
+        // owns a later delivery failure, and a probe that never ran must not
+        // invent a verdict.
+        assert!(model_audio_start_gate(
+            VoiceHandling::Model,
+            Some(&SttAudioCapability::ready(None))
+        )
+        .is_none());
+        assert!(
+            model_audio_start_gate(VoiceHandling::Model, Some(&SttAudioCapability::unknown(
+                None,
+                "HTTP 500"
+            )))
+            .is_none()
+        );
+        assert!(model_audio_start_gate(VoiceHandling::Model, None).is_none());
+
+        // The local transcription path is never gated, whatever the snapshot.
+        assert!(model_audio_start_gate(VoiceHandling::Local, Some(&unsupported)).is_none());
+    }
+
+    /// The gate's emitted state event carries the typed code on the EXISTING
+    /// error channel and claims no capture phase/limit (no session ever started).
+    #[test]
+    fn gated_start_error_state_carries_the_typed_code_and_no_capture_phase() {
+        let error = VoiceError::model_audio_unsupported("the model rejected audio");
+        let event = state_event_error(&error, Some("launcher"));
+        assert!(!event.listening);
+        assert_eq!(event.code, Some(SttErrorCode::ModelAudioUnsupported));
+        assert_eq!(event.origin.as_deref(), Some("launcher"));
+        assert_eq!(event.phase, None);
+        assert_eq!(event.limit_reached, None);
+        assert_eq!(event.limit_ms, None);
+    }
+
+    /// The capability snapshot is written by the sanctioned probe and read back
+    /// by the gate; clearing it returns the "not determined" state.
+    #[test]
+    fn audio_capability_snapshot_round_trips_and_clears() {
+        let state = VoiceState::new();
+        assert!(state.audio_capability().is_none());
+
+        state.set_audio_capability(SttAudioCapability::ready(Some("model-x".to_string())));
+        let stored = state.audio_capability().expect("the probe stored a snapshot");
+        assert_eq!(stored.state, SttAudioCapabilityState::Ready);
+        assert_eq!(stored.model.as_deref(), Some("model-x"));
+
+        state.clear_audio_capability();
+        assert!(state.audio_capability().is_none());
+        // A cleared snapshot is "not determined", never a failure.
+        assert!(model_audio_start_gate(VoiceHandling::Model, state.audio_capability().as_ref())
+            .is_none());
     }
 }
