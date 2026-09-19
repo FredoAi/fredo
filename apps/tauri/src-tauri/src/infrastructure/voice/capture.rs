@@ -821,6 +821,43 @@ mod tests {
         assert!(peak > 0.3, "the fixture must carry real signal, peak {peak}");
     }
 
+    /// The over-limit leg's format contract (ST-9): the parameterised generator
+    /// (`.opencode/tests/voice-dictation/fixtures/generate-dictation-phrase.mjs
+    /// --seconds 31` → `dictation-31s-16k-mono.wav`) emits the SAME 16 kHz mono
+    /// 16-bit PCM container the feed accepts, and the decoder applies NO length
+    /// cap — a >30 s clip decodes in full, sample for sample. Kept pure over
+    /// bytes (no file, no environment) so it pins the format independently of
+    /// the on-demand variant.
+    #[test]
+    fn the_over_limit_feed_format_decodes_every_sample_with_no_length_cap() {
+        const OVER_LIMIT_SECONDS: usize = 31;
+        const OVER_LIMIT_SAMPLES: usize = OVER_LIMIT_SECONDS * 16_000;
+
+        // Non-zero at sample 0, so the decode assertion is not vacuous.
+        let mut data = vec![0u8; OVER_LIMIT_SAMPLES * 2];
+        data[0..2].copy_from_slice(&1000i16.to_le_bytes());
+        let bytes = wav_bytes(1, 1, 16_000, 16, &data);
+        assert_eq!(
+            u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize,
+            OVER_LIMIT_SAMPLES * 2,
+            "31 s of 16-bit mono samples"
+        );
+
+        let samples = decode_feed_wav(&bytes, Path::new("dictation-31s-16k-mono.wav"))
+            .expect("the over-limit fixture format must decode");
+        assert_eq!(
+            samples.len(),
+            OVER_LIMIT_SAMPLES,
+            "31 s at 16 kHz must decode in full, untruncated"
+        );
+        assert_ne!(samples[0], 0.0, "the opening sample must survive the decode");
+        assert_eq!(
+            samples.chunks(CAPTURE_CHUNK_SAMPLES).count(),
+            155,
+            "31 s = 155 whole 200 ms capture chunks"
+        );
+    }
+
     /// The feed pushes exactly the chunk shape the device callback pushes, on the
     /// same channel — and the first chunk carries sample 0 of the fixture.
     #[test]

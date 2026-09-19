@@ -1,7 +1,15 @@
-// Deterministic generator for the ST-9 capture-feed fixture (issue #2887).
+// Deterministic generator for the capture-feed fixtures (issue #2887; duration
+// variant issue #2897 ST-9).
 //
-// Produces `dictation-phrase-16k-mono.wav`: 16 kHz, mono, 16-bit PCM, exactly
-// 1.6 s = 25,600 samples = eight 3200-sample capture chunks.
+// Default output `dictation-phrase-16k-mono.wav`: 16 kHz, mono, 16-bit PCM,
+// exactly 1.6 s = 25,600 samples = eight 3200-sample capture chunks.
+//
+// Duration variant: `--seconds <N>` (positive whole number; also `--seconds=<N>`)
+// writes `dictation-<N>s-16k-mono.wav` in the same directory — the SAME
+// 16 kHz mono 16-bit PCM contract, e.g. `--seconds 31` → 496,000 samples (31 s),
+// the over-limit lever for the model-audio bound (REQ-6). The default output is
+// byte-identical to the committed fixture; the variant is generated on demand
+// and is NOT committed.
 //
 // HONESTY / PROVENANCE
 // --------------------
@@ -16,18 +24,60 @@
 //
 // Regenerate (deterministic: byte-identical output, no randomness, no clock):
 //   node .opencode/tests/voice-dictation/fixtures/generate-dictation-phrase.mjs
+//   node .opencode/tests/voice-dictation/fixtures/generate-dictation-phrase.mjs --seconds 31
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const SAMPLE_RATE = 16000;
-const TOTAL_SAMPLES = 25600; // 1.6 s
+const DEFAULT_SECONDS = 1.6;
+const DEFAULT_SAMPLES = 25600; // 1.6 s — pinned byte-for-byte
 const WORD_SLOT = 6400; // 0.4 s per word slot
 const WORD_BURST = 4800; // 0.3 s of signal, 0.1 s of silence
 
-const data = Buffer.alloc(TOTAL_SAMPLES * 2);
+function usage(message) {
+  console.error(`error: ${message}`);
+  console.error('usage: node generate-dictation-phrase.mjs [--seconds <N>]');
+  process.exit(1);
+}
+
+// Only a positive WHOLE number of seconds is accepted: a fractional value would
+// silently round and break the byte contract the tests assert.
+function parseArgs(argv) {
+  let seconds = DEFAULT_SECONDS;
+  let explicit = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    let value;
+    if (arg === '--seconds') {
+      value = argv[i + 1];
+      if (value === undefined) usage('--seconds needs a value');
+      i += 1;
+    } else if (arg.startsWith('--seconds=')) {
+      value = arg.slice('--seconds='.length);
+    } else {
+      usage(`unknown argument: ${arg}`);
+    }
+    if (!/^\d+$/.test(value) || Number(value) < 1) {
+      usage(`--seconds must be a positive whole number of seconds (got "${value}")`);
+    }
+    seconds = Number(value);
+    explicit = true;
+  }
+  return { seconds, explicit };
+}
+
+const { seconds, explicit } = parseArgs(process.argv.slice(2));
+// The default path takes the pinned sample count so the committed fixture's
+// bytes can never drift; an explicit duration is an exact integer product.
+const totalSamples = explicit ? seconds * SAMPLE_RATE : DEFAULT_SAMPLES;
+const name = explicit
+  ? `dictation-${seconds}s-16k-mono.wav`
+  : 'dictation-phrase-16k-mono.wav';
+
+const data = Buffer.alloc(totalSamples * 2);
 let peak = 0;
-for (let i = 0; i < TOTAL_SAMPLES; i += 1) {
+for (let i = 0; i < totalSamples; i += 1) {
   const slot = i % WORD_SLOT;
   let value = 0;
   if (slot < WORD_BURST) {
@@ -63,10 +113,10 @@ header.writeUInt16LE(16, 34); // bits per sample
 header.write('data', 36, 'ascii');
 header.writeUInt32LE(data.length, 40);
 
-const out = join(dirname(fileURLToPath(import.meta.url)), 'dictation-phrase-16k-mono.wav');
+const out = join(dirname(fileURLToPath(import.meta.url)), name);
 writeFileSync(out, Buffer.concat([header, data]));
 console.log(
-  `wrote ${out}: 16000 Hz mono 16-bit PCM, ${TOTAL_SAMPLES} samples ` +
-    `(${(TOTAL_SAMPLES / SAMPLE_RATE).toFixed(1)} s, ${TOTAL_SAMPLES / 3200} chunks), ` +
+  `wrote ${out}: 16000 Hz mono 16-bit PCM, ${totalSamples} samples ` +
+    `(${(totalSamples / SAMPLE_RATE).toFixed(1)} s, ${totalSamples / 3200} chunks), ` +
     `first=${data.readInt16LE(0)}, peak=${peak}`,
 );

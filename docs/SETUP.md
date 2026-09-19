@@ -85,6 +85,13 @@ Each prerequisite reports its own honest state (`checking` / `missing` / `instal
 
 A separate **Voice input model** step is **optional and non-gating** — it is rendered under an explicit *Optional / Not required for companion chat* group, excluded from the wizard's `installed/total` summary, and installing or removing it never changes Companion readiness. It downloads the four-file sherpa-onnx English model (`tokens.txt` / `encoder` / `decoder` / `joiner`, ~72.7 MB) through the same streamed download + per-file SHA-256 verification path as the GGUF set, into `<models_dir>/sherpa-onnx-streaming-zipformer-en-2023-06-26/`, where `<models_dir>` is the models directory the backend reports. Voice input is a **shipped, opt-in** feature (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the model setup/repair row (with a re-check action and the resolved model location), the input-device selection, and the autosend toggle. All transcription runs on-device — audio never leaves the machine.
 
+**Speech handling.** The same group holds a **Speech handling** selector (persisted per user as `Fredo_companion_voice_handling`) with two methods:
+
+- **Local transcription** (default) — today's behaviour: speech is transcribed on-device by the sherpa-onnx engine and the recognized words appear in the launcher bar as you speak.
+- **Model audio** — the captured utterance is handed to the locally-managed companion model as that turn's input, and **no transcript is shown**. The recording is bounded (about 30 s) with a visible auto-stop at the limit that keeps the whole clip, and it is delivered only to the loopback `llama-server` — nothing leaves the machine.
+
+Model audio is available only when the installed companion model supports audio; when it does not, or the local model server is not running, Fredo says so (nothing is sent) and offers a one-click switch back to **Local transcription**. The change applies to the next dictation without an app restart.
+
 ## OTLP Configuration
 
 Fredo includes local OTLP receivers for agent telemetry. Configure OpenCode to send OTLP data:

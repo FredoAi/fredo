@@ -58,6 +58,8 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 Voice input (Spec #2877) is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`) and speech-to-text runs in-process via a statically linked `sherpa-onnx` `OnlineRecognizer` reading a pinned local model directory. Audio and transcripts never traverse the network: the **only** network-capable component of the feature is model acquisition (`download_stt_model` → the shared download + SHA-256 verify engine).
 
+**Speech handling (Spec #2897).** The user may choose how an utterance is handled (persisted as `Fredo_companion_voice_handling`): **Local transcription** (default — today's on-device recognizer) or **Model audio**, which hands the captured clip to the locally-managed companion model as that turn's input and shows **no transcript**. Model audio is still local-only: the clip is delivered over **loopback only** to the managed `llama-server` (the same `127.0.0.1` process documented above), is never uploaded, and adds no outbound route. It is used only when the installed model reports audio support — capability is probed, never inferred from a model name — and when the model does not support audio (or the local server is unavailable) nothing is transmitted and Fredo offers a one-click fallback to Local transcription.
+
 **Protections:**
 - No audio or audio-derived payload is transmitted; the capture/decode path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
 - Voice is **opt-in** (`Fredo_companion_voice_enabled`, default `false`) — nothing is captured before the user enables it
@@ -65,6 +67,10 @@ Voice input (Spec #2877) is **local-only by hard requirement**. Microphone captu
 - Capture must be **visibly indicated for its whole duration** by the **launcher bar cue** (the `Listening` chip and placeholder, announced as text), and the cue appears only while capture is genuinely live, so audio is never captured without a visible active indicator; Spec #2882 retired the companion listening bubble, leaving the bar cue as the only capture indicator
 - **Residency is engine-only (Spec #2887):** the STT **engine** is loaded once at setup and may be warm/resident while Fredo is idle, but **no microphone stream exists and no audio is captured until the Space hold** — the resident engine opens no device. Voice stays opt-in (`Fredo_companion_voice_enabled`, default `false`), so with the feature disabled (or its model not installed) there is no resident engine and nothing to capture
 - The microphone is released the moment Space is released, the utterance is cancelled, the bar or window loses focus, or voice is disabled
+- **Model audio adds no new egress (Spec #2897):** a model-audio clip is carried by the existing loopback chat transport to the managed `llama-server`; the layer-confinement invariant over `infrastructure/voice/**` (no network/process symbols) is unchanged, and there is no cloud-fallback branch
+- **Model audio never displays a transcript:** while the method is `model`, the transcript write/announce paths are gated at their source, so no audio-derived word reaches any surface
+- **The clip is bounded and non-lossy:** capture auto-stops at the pinned limit (~30 s) with a visible notice, and the entire clip is kept and delivered — never a silent truncation or a dropped tail
+- **Both methods are visibly indicated for the whole capture** by the launcher bar cue (model audio adds its own listening indicator); there is no silent capture in either mode
 - The native WASAPI path needs no CSP widening and no new Tauri capability
 
 **Limitations:**
