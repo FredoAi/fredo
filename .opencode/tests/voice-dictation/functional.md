@@ -48,7 +48,10 @@
   - **Edge:** the control run must not be scored as a product FAIL when the host has no physical mic; it only proves the
     lever is not vacuous.
 
-### #2897 run log — testing round 1
+### #2897 run log — testing round 1 (`spec/2897 @ b2b2e4df`, 2026-09-19, live)
 
-- [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED with the generator invocation, hashes/byte counts,
-      the env-var form used, and the UNSET-env control outcome; do not pre-fill)_
+- **F-1 PASS** — committed `dictation-phrase-16k-mono.wav`: 51,244 B, SHA-256 `33c2f129d17a555b9faad66e21eab5c8069712c8836cc8d363e97c1555343428`, 16 kHz mono 16-bit, 44-byte header, 51,200 data bytes, **25,600 samples (1.6 s)**, first sample 15482. Regeneration via `bun generate-dictation-phrase.mjs` produced the byte-identical file (same hash as the developer's determinism receipt).
+- **F-2 PASS** — `--seconds 31` → `dictation-31s-16k-mono.wav`, 992,044 B, 496,000 samples, SHA-256 `06a192e647f4c2b1a273c0e4cbf6445e88a8865d021630d89c6006cf51f1cfa1` (matches the developer receipt); 60 s (960,000 samples) and 120 s (1,920,000 samples) variants also generated.
+- **F-3 PASS** — feed seam live via `stt_start` → `{started:true, deviceName:"stt-feed", sampleRate:16000}` (the virtual mic reports 48000 Hz → the feed branch is proven; no `cpal` device).
+- **F-4 PASS** — UNSET-env control: the pre-feed session used the virtual-mic path at 48000 Hz with a hold-length (non-1.6 s) clip → the fed observation is non-vacuous.
+- **Env form used (tooling gap):** the documented `powershell -File dev-env.ps1 -EnvVars @{ … }` form fails (`Cannot convert the "System.Collections.Hashtable" value of type "System.String"`); `FREDO_STT_FEED_WAV` was set in the parent environment of an allowlisted `bun` launcher invoking `dev-env.ps1 -Action Up`. No product change; recommend documenting a string form.

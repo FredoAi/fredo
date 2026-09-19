@@ -178,6 +178,9 @@
       **Edge:** a non-integer `--seconds` is rejected with a non-zero exit and writes nothing; the artifact is
       generated in-repo only (G-172 — never source a long WAV from outside).
 
-### #2897 testing round 1 — result
+### #2897 testing round 1 — result (`spec/2897 @ b2b2e4df`, 2026-09-19, live)
 
-- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
+- **S-20 PASS** — Settings → Companion `Speech handling` selector rendered `Local transcription` / `Model audio`, default `local`; selecting `Model audio` persisted `Fredo_companion_voice_handling="model"` and survived a full restart.
+- **S-21 PASS** — model-audio listening quick path: `Fredo is listening` chip + `Fredo is listening…` placeholder for the capture, **no** dictated words anywhere, cleared on stop; the model-audio `processing` chip then did not clear after the reply (see F-104 FAIL).
+- **S-22 PASS** — 8 captures uploaded via `upload-evidence --issue 2897`; the report references `telemetry_spans` (13,700 rows, newest `ingested_at` 2026-09-19T11:26:31.278557800+00:00).
+- **S-23 PASS** — `generate-dictation-phrase.mjs --seconds 31` → `dictation-31s-16k-mono.wav`, 16 kHz mono 16-bit, 496,000 samples / 992,000 B, SHA-256 `06a192e6…`; no-arg path byte-identical to the developer receipt (`33c2f129…`).
