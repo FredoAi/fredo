@@ -17,7 +17,19 @@ import { LauncherCommandBar } from './LauncherCommandBar';
 import type { HoldCue, LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
 import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
-import { CompanionEntity, askActiveCompanion } from '../../../../shared/components/companion';
+import {
+  CompanionEntity,
+  askActiveCompanion,
+  askActiveCompanionWithAudio,
+} from '../../../../shared/components/companion';
+import {
+  isModelAudioFailureCode,
+  modelAudioFailureCopy,
+  MODEL_AUDIO_FAILURE_COPY,
+  MODEL_AUDIO_GENERIC_FAILURE,
+} from '../../../../shared/components/companion/companionReadiness';
+import type { ModelAudioFailureCode } from '../../../../shared/components/companion/companionReadiness';
+import { adapterBridge } from '../../../../shared/utils/adapterBridge';
 // Spec #2883 ST-2/ST-3 — the reply band's contract type + margin come from the
 // pure reply-layout module (ONE source of truth for the launcher → entity →
 // bubble hand-off; the layout maths itself is ST-3/ST-4's).
@@ -275,10 +287,32 @@ export function deriveHoldCue(input: {
 }
 
 /**
+ * Spec #2897 ST-6 — the `stt_take_audio_clip` wire shape the delivery glue
+ * consumes (ST-2). `clip` is the WHOLE captured 16 kHz mono PCM WAV, base64;
+ * `code`/`detail` are the additive failure fields.
+ */
+export interface SttAudioClipResult {
+  clip: {
+    base64: string;
+    format: string;
+    sampleRate: number;
+    durationMs: number;
+    limitMs: number;
+    atLimit: boolean;
+    truncated: boolean;
+  } | null;
+  code: string | null;
+  detail: string | null;
+}
+
+/**
  * Spec #2877 ST-5 (DR-11) — curated, actionable copy for a failed `stt_start`.
  * The typed `SttErrorCode` is the only primary key; a raw IPC detail is never
  * the primary sentence. Non-blocking: the app stays fully usable, no session
  * starts, and the enablement preference is never silently flipped.
+ *
+ * Spec #2897 ST-6 (REQ-7) — the two model-audio codes carry the SAME curated
+ * degradation copy as the settings readiness row and the inline fallback action.
  */
 export function voiceStartErrorCopy(code: string | null): string | null {
   switch (code) {
@@ -295,6 +329,13 @@ export function voiceStartErrorCopy(code: string | null): string | null {
       return 'Voice input is off. Turn it on in Companion settings.';
     case 'alreadyListening':
       return 'Voice input is already listening.';
+    // Spec #2897 ST-6 (REQ-7) — the curated model-audio degradation copy. The
+    // raw IPC detail is NEVER the primary sentence; these are the SAME strings
+    // the settings row and the inline fallback action read.
+    case 'modelAudioUnsupported':
+      return MODEL_AUDIO_FAILURE_COPY.modelAudioUnsupported;
+    case 'modelAudioUnavailable':
+      return MODEL_AUDIO_FAILURE_COPY.modelAudioUnavailable;
     case 'internal':
       return 'Voice input hit an unexpected problem. Try again.';
     default:
@@ -317,8 +358,21 @@ const DESKTOP_TEXTURE_CSS = {
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
   const { isConnected } = useConnectionStatus();
-  const { state: companion, voiceEnabled, voiceAutosend, replyInFlight, queuedSendCount } =
-    useCompanion();
+  const {
+    state: companion,
+    voiceEnabled,
+    voiceAutosend,
+    replyInFlight,
+    queuedSendCount,
+    voiceHandling,
+    setVoiceHandling,
+  } = useCompanion();
+  // Spec #2897 ST-4 (REQ-3/REQ-4) — the persisted speech-handling mode. In
+  // `'model'` mode the backend hands the captured audio to the model as the
+  // turn's input: there is NO transcript, so this shell suppresses every
+  // transcript write at its SOURCE (the bar keeps the pre-session typed text)
+  // and renders the model-audio indicator instead of the transcription cue.
+  const modelVoice = voiceHandling === 'model';
 
   // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
   // band (the wrapper below owns the size + `mb="4"`), so the command bar's
@@ -1145,6 +1199,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // is the #2878 one (`committed` grew past the session baseline); a partial-only
   // session never flips provenance, and a LATER USER EDIT never clears it.
   useEffect(() => {
+    // Spec #2897 ST-4 (REQ-3) — model-audio mode has NO transcript: this effect is
+    // the transcript → bar write path, so it is short-circuited at the SOURCE
+    // (BEFORE the `voice.origin` check) and the bar keeps the pre-session typed
+    // text. A model-audio session emits no `stt:transcript` at all (ST-2 opens no
+    // recogniser); this guard is the belt-and-braces that no transcript-shaped
+    // event can ever reach the bar while the method is `'model'`.
+    if (modelVoice) return;
     if (voice.origin !== 'launcher') return;
     if (cancelledRef.current) return;
     const prevCommitted = prevCommittedRef.current;
@@ -1167,7 +1228,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         ? voice.committed.slice(base.length).trimStart()
         : voice.committed;
     handleQueryChange(joinBarText(scoped, voice.partial));
-  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange, setBarOrigin]);
+  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange, setBarOrigin, modelVoice]);
 
   // Spec #2877 ST-5 (DR-10) — the newest FINAL segment, derived from the hook's
   // append-only `committed` text (a final APPENDS its segment; a partial only ever
@@ -1199,6 +1260,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // exactly what separates Stop from Cancel at the source, so any DOM↔mirror
   // divergence can never become a phantom dispatch (the #2878 round-2 defect).
   useEffect(() => {
+    // Spec #2897 ST-4 (REQ-3/REQ-4) — model-audio mode owns delivery in the BACKEND
+    // (the clip is the turn's input). This finalize/restore/autosend effect must do
+    // NOTHING there: no `spaceWriteForVerdict` space, no pre-session restore, no
+    // `commitBarQuery`. Clearing the pending flag keeps a mid-session mode switch
+    // from arming a stale finalize for a later local session.
+    if (modelVoice) {
+      finalizePendingRef.current = false;
+      return;
+    }
     if (!finalizePendingRef.current) return;
     if (voice.origin !== 'launcher' || voice.listening) return;
     if (cancelledRef.current) {
@@ -1282,7 +1352,108 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     voiceAutosend,
     commitBarQuery,
     handleQueryChange,
+    modelVoice,
   ]);
+
+  // ── Spec #2897 ST-6 (REQ-5 end-to-end) — the model-audio delivery glue ──────
+  // Nothing wired ST-2's clip command, ST-3's transport and ST-4's `processing`
+  // state together; this is that ONE seam. When the backend commits a model-audio
+  // clip (`voice.modelAudioPhase === 'processing'`), the shell takes the clip and
+  // dispatches it as the turn's input — the model's reply then flows through the
+  // normal conversation (`llm-token`/`llm-done` → `CompanionEntity`).
+  //
+  // EXACTLY ONCE per session: the guard is a phase-derived ref. A `capturing`
+  // phase re-arms it for the NEXT session, and a `dispatched` marker makes a
+  // re-render (or any other effect re-run) a no-op — never a bare
+  // effect-on-every-render (AGENTS.md re-render-loop rules). No transcript is
+  // ever written here, and on a null clip / dispatch failure the typed fallback
+  // copy is surfaced through the shipped below-bar alert.
+  const [modelAudioFailure, setModelAudioFailure] = useState<ModelAudioFailureCode | null>(null);
+  const modelAudioDispatchRef = useRef<'idle' | 'dispatched'>('idle');
+
+  const dispatchModelAudioTurn = useCallback(async () => {
+    let taken: SttAudioClipResult | undefined;
+    try {
+      taken = await adapterBridge.invoke<SttAudioClipResult>('stt_take_audio_clip');
+    } catch {
+      setModelAudioFailure(MODEL_AUDIO_GENERIC_FAILURE);
+      return;
+    }
+    const clip = taken?.clip ?? null;
+    if (!clip || typeof clip.base64 !== 'string' || clip.base64.length === 0) {
+      // A null clip is a truthful "nothing to deliver" — never a fabricated turn.
+      setModelAudioFailure(MODEL_AUDIO_GENERIC_FAILURE);
+      return;
+    }
+    try {
+      const outcome = askActiveCompanionWithAudio(clip.base64);
+      if (!outcome || outcome.outcome === 'rejected') {
+        // No active companion can receive the turn / it was rejected (REQ-7).
+        setModelAudioFailure(MODEL_AUDIO_GENERIC_FAILURE);
+      }
+    } catch {
+      setModelAudioFailure(MODEL_AUDIO_GENERIC_FAILURE);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!modelVoice) {
+      modelAudioDispatchRef.current = 'idle';
+      setModelAudioFailure(null);
+      return;
+    }
+    if (voice.modelAudioPhase === 'capturing') {
+      // A NEW capture began: re-arm the once-per-session guard and clear the
+      // previous turn's failure.
+      modelAudioDispatchRef.current = 'idle';
+      setModelAudioFailure(null);
+      return;
+    }
+    if (voice.modelAudioPhase !== 'processing') return;
+    if (modelAudioDispatchRef.current === 'dispatched') return;
+    modelAudioDispatchRef.current = 'dispatched';
+    void dispatchModelAudioTurn();
+  }, [modelVoice, voice.modelAudioPhase, dispatchModelAudioTurn]);
+
+  // ── Spec #2897 round 2 (R2-1, F-104) — the model-audio TURN-COMPLETION overlay ─
+  // The STT plane is silent after the stop commits `processing` (`session.rs`
+  // `finish_phase` emits the terminal `phase:"processing"` and then the voice
+  // session is over), so `voice.modelAudioPhase` would stay `'processing'` until
+  // the NEXT session. The completion signal already exists in the shell:
+  // `replyInFlight` (the audio generation's start → `llm-done`, cleared by
+  // `CompanionEntity`). This derives `modelAudioTurnSettled` from it — latching on
+  // the rise and settling on the fall — so the DERIVED phase returns to `'idle'`
+  // (`stopped`) without mutating the raw backend-owned phase. That keeps the
+  // exactly-once dispatch guard + the ST-4 announcements keyed on the RAW phase
+  // intact. Primitive deps only, and state is written ONLY on a real transition
+  // (AGENTS.md #523 — no write per render, no object/array dep).
+  const [modelAudioTurnSettled, setModelAudioTurnSettled] = useState(false);
+  const modelAudioReplyStartedRef = useRef(false);
+  useEffect(() => {
+    if (!modelVoice || voice.modelAudioPhase !== 'processing') {
+      // A new `capturing` session, a cancel's `phase:null`, or mode-off re-arms:
+      // the next session is never pre-settled.
+      modelAudioReplyStartedRef.current = false;
+      setModelAudioTurnSettled(false);
+      return;
+    }
+    if (modelAudioFailure !== null) {
+      // A dispatch that never yielded an accepted generation (null clip /
+      // rejected / no companion) is surfaced by the ST-6 alert; settle so no
+      // `processing` overlay lingers beneath it.
+      setModelAudioTurnSettled(true);
+      return;
+    }
+    if (replyInFlight) {
+      // The dispatched audio generation is streaming — latch its rise.
+      modelAudioReplyStartedRef.current = true;
+      return;
+    }
+    if (modelAudioReplyStartedRef.current) {
+      // `llm-done` (or the `llm-error` / watchdog settle) — the turn completed.
+      setModelAudioTurnSettled(true);
+    }
+  }, [modelVoice, voice.modelAudioPhase, replyInFlight, modelAudioFailure]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1703,6 +1874,27 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     };
   }, []);
 
+  // ── Spec #2897 ST-6 (REQ-7) — the degradation surface ──────────────────────
+  // In model mode a failed start / failed delivery surfaces the curated
+  // model-audio copy. It is deliberately NOT muted by the hold-origin silence
+  // rule: there is no typed word to lose and REQ-7 requires the user be told.
+  // The inline `Use local transcription` action is offered ONLY for a
+  // model-audio failure, so every other voice error keeps the shipped text-only
+  // alert. Switching modes clears the client-side failure (the persisted setting
+  // flip is the user's explicit consent).
+  const isModelAudioWireCode = isModelAudioFailureCode(voice.errorCode);
+  const voiceErrorMessage = modelVoice
+    ? (modelAudioFailureCopy(modelAudioFailure) ?? voiceStartErrorCopy(voice.errorCode))
+    : holdFailureMuted || isModelAudioWireCode
+      ? null
+      : voiceStartErrorCopy(voice.errorCode);
+  const modelAudioAlert =
+    modelVoice && (modelAudioFailure !== null || isModelAudioWireCode);
+  const handleUseLocalTranscription = useCallback(() => {
+    setModelAudioFailure(null);
+    setVoiceHandling('local');
+  }, [setVoiceHandling]);
+
   return (
     <>
       {/* Chrome is always visible: FREDO notch trigger + online clock + the
@@ -1849,8 +2041,33 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // SILENT: no alert, no error text (exactly one ordinary space lands on
             // the release). A failure that arrives with no hold start in flight —
             // the app-global `stt:state` channel — still surfaces the curated copy.
-            voiceErrorMessage={holdFailureMuted ? null : voiceStartErrorCopy(voice.errorCode)}
-            finalTranscript={finalTranscript}
+            voiceErrorMessage={voiceErrorMessage}
+            // Spec #2897 ST-6 (REQ-7) — the inline one-click fallback to local
+            // transcription; supplied only for a model-audio failure alert.
+            voiceErrorAction={
+              modelAudioAlert
+                ? { label: 'Use local transcription', onClick: handleUseLocalTranscription }
+                : null
+            }
+            // Spec #2897 ST-4 (REQ-3) — model-audio mode renders the model indicator
+            // (via `deriveModelAudioPhase`) and NEVER feeds the transcript announcer
+            // a segment: `''` is passed explicitly (the source effect is also gated),
+            // so `voice-transcript-announcer` stays mounted but empty.
+            voiceMode={voiceHandling}
+            modelAudioPhase={voice.modelAudioPhase}
+            // Spec #2897 round 2 (R2-1, F-104) — the derived turn-completion
+            // overlay: once the dispatched audio turn's generation settles the
+            // `processing` chip/indicator is removed and the resting placeholder
+            // returns (`stopped` → `idle`). The RAW phase above stays
+            // backend-owned, so the dispatch guard + ST-4 announcements are
+            // untouched.
+            modelAudioTurnSettled={modelAudioTurnSettled}
+            // Spec #2897 ST-5 (REQ-6) — the pinned ceiling (from the backend
+            // `stt:state`) drives the last-N-seconds countdown and the limit
+            // notice; `limitReached` is the auto-stop's warning signal.
+            modelAudioLimitMs={voice.modelAudioLimitMs}
+            limitReached={voice.limitReached}
+            finalTranscript={modelVoice ? '' : finalTranscript}
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"

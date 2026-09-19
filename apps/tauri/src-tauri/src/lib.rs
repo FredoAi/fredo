@@ -542,6 +542,9 @@ pub fn run() {
             infrastructure::voice::commands::stt_status,
             infrastructure::voice::commands::stt_warm,
             infrastructure::voice::commands::stt_release,
+            // #2897 ST-2 — take (and clear) the bounded model-audio clip after a
+            // model-audio stop; the clip crosses IPC only.
+            infrastructure::voice::commands::stt_take_audio_clip,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
@@ -571,6 +574,9 @@ pub fn run() {
             // IPC names and argument shapes as the deleted in-process path.
             features::llm_server::commands::llm_chat,
             features::llm_server::commands::llm_chat_with_image,
+            // #2897 ST-3 — model-audio turn: the captured clip is attached to the
+            // last user message and delivered over the managed loopback server.
+            features::llm_server::commands::llm_chat_with_audio,
             features::llm_server::commands::generate_llama_server_config,
             features::llm_server::commands::launch_llama_server,
             features::llm_server::commands::stop_llama_server,
@@ -578,6 +584,10 @@ pub fn run() {
             // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
             // `/props` + `tools`/`response_format` probe; no window, no state write.
             features::llm_server::probe::probe_companion_skills,
+            // #2897 ST-6 — backend-owned model-audio capability for the Companion
+            // readiness row + the pre-start gate. Reads the managed loopback
+            // server and records the verdict on `VoiceState` (REQ-7).
+            features::llm_server::commands::stt_audio_capability,
             // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
             // registry, validates a selection, emits `llm-skill-call` then
             // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.

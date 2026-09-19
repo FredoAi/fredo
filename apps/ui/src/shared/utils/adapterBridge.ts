@@ -30,11 +30,21 @@ type LlmChatWithSkillsFn = (
   onSkillCall: (call: LlmSkillCall) => void,
   onError?: (message: string) => void,
 ) => Promise<void>;
+// #2897 ST-3 — the model-audio variant: the captured clip is attached to the last
+// user message by the backend renderer; token/done/error channels are unchanged.
+type LlmChatWithAudioFn = (
+  messages: LlmMessage[],
+  audioBase64: string,
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onError?: (message: string) => void,
+) => Promise<void>;
 
 let _invoke: InvokeFn | undefined;
 let _llmChat: LlmChatFn | undefined;
 let _llmChatWithImage: LlmChatWithImageFn | undefined;
 let _llmChatWithSkills: LlmChatWithSkillsFn | undefined;
+let _llmChatWithAudio: LlmChatWithAudioFn | undefined;
 
 type UnlistenFn = () => void;
 type ListenFn = <T>(event: string, handler: (payload: T) => void) => Promise<UnlistenFn>;
@@ -57,6 +67,11 @@ export const adapterBridge = {
   /** #2893 ST-7 — register the skill-aware streaming implementation. */
   setLlmChatWithSkills(fn: LlmChatWithSkillsFn | undefined): void {
     _llmChatWithSkills = fn;
+  },
+
+  /** #2897 ST-3 — register the model-audio streaming implementation. */
+  setLlmChatWithAudio(fn: LlmChatWithAudioFn | undefined): void {
+    _llmChatWithAudio = fn;
   },
 
   setListen(fn: ListenFn): void {
@@ -158,6 +173,29 @@ export const adapterBridge = {
       return;
     }
     return _llmChatWithImage(messages, imageBase64, onToken, onDone);
+  },
+
+  /**
+   * #2897 ST-3 (REQ-5) — the model-audio streaming path. Forwards the captured
+   * clip + the standard token/done channels; the optional error channel is passed
+   * only when supplied (same contract as `llmChat` / `llmChatWithSkills`). A
+   * missing implementation is a safe no-op that still completes (`onDone`) —
+   * never a hang.
+   */
+  async llmChatWithAudio(
+    messages: LlmMessage[],
+    audioBase64: string,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    if (!_llmChatWithAudio) {
+      console.warn('[adapterBridge] llmChatWithAudio called before adapter registered');
+      onDone();
+      return;
+    }
+    if (onError) return _llmChatWithAudio(messages, audioBase64, onToken, onDone, onError);
+    return _llmChatWithAudio(messages, audioBase64, onToken, onDone);
   },
 };
 

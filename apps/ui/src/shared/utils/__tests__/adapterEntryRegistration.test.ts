@@ -35,17 +35,19 @@ function readTauriEntry(): string {
 }
 
 describe('#2893 ST-7 rework — served Tauri entry register every adapter bridge fn', () => {
-  it('registers all four bridge setters in apps/tauri/src/main.tsx', () => {
+  it('registers all five bridge setters in apps/tauri/src/main.tsx', () => {
     const source = readTauriEntry();
 
     // The full set the served entry must wire. `setLlmChatWithSkills` is the one
-    // the round-1 defect missed; the other three are pinned so a future
-    // registration block cannot silently drop any of them.
+    // the round-1 defect missed; `setLlmChatWithAudio` is the #2897 ST-3 addition.
+    // The others are pinned so a future registration block cannot silently drop
+    // any of them.
     const requiredRegistrations = [
       'setInvoke(',
       'setLlmChat(',
       'setLlmChatWithImage(',
       'setLlmChatWithSkills(',
+      'setLlmChatWithAudio(',
     ];
 
     for (const registration of requiredRegistrations) {
@@ -59,5 +61,10 @@ describe('#2893 ST-7 rework — served Tauri entry register every adapter bridge
   it('binds the skill-aware registration to the concrete adapter (the TauriAdapter implements it)', () => {
     const source = readTauriEntry();
     expect(source).toMatch(/adapterBridge\.setLlmChatWithSkills\(\s*adapter\.llmChatWithSkills\.bind\(adapter\)/);
+  });
+
+  it('#2897 ST-3 — binds the model-audio registration to the concrete adapter', () => {
+    const source = readTauriEntry();
+    expect(source).toMatch(/adapterBridge\.setLlmChatWithAudio\(\s*adapter\.llmChatWithAudio\.bind\(adapter\)/);
   });
 });

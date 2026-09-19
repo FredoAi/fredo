@@ -20,7 +20,7 @@
  *      FINAL segment only (partials never announce).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -66,6 +66,12 @@ const companionMock = vi.hoisted(() => ({
     // queued-send count, both top-level on the context value.
     replyInFlight: false,
     queuedSendCount: 0,
+    // Spec #2897 ST-1/ST-4 — the persisted speech-handling mode (DEFAULT 'local');
+    // ST-4 gates every transcript write + the bar cue on it.
+    voiceHandling: 'local' as 'local' | 'model',
+    // Spec #2897 ST-6 — the persisted-setter the inline fallback uses (the
+    // context owns persistence; the shell only calls the setter).
+    setVoiceHandling: vi.fn(),
   },
 }));
 vi.mock('@/shared/contexts/CompanionContext', () => ({
@@ -82,6 +88,8 @@ const companionDispatchMock = vi.hoisted(() => ({
   // (`dispatched`/`queued`/`rejected`) or `null`; the default stub accepts with
   // `dispatched`, so the shipped clear-on-accept behaviour is preserved.
   askActiveCompanion: vi.fn((_text: string) => ({ outcome: 'dispatched' as const })),
+  // Spec #2897 ST-6 — the audio dispatch the delivery glue calls.
+  askActiveCompanionWithAudio: vi.fn((_clip: string) => ({ outcome: 'dispatched' as const })),
 }));
 const companionEntityMock = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
@@ -92,6 +100,7 @@ vi.mock('@/shared/components/companion', () => ({
     return null;
   },
   askActiveCompanion: companionDispatchMock.askActiveCompanion,
+  askActiveCompanionWithAudio: companionDispatchMock.askActiveCompanionWithAudio,
 }));
 
 type Handler = (payload: unknown) => void;
@@ -127,9 +136,15 @@ beforeEach(() => {
     voiceAutosend: false,
     replyInFlight: false,
     queuedSendCount: 0,
+    voiceHandling: 'local',
+    setVoiceHandling: vi.fn(),
   };
   companionDispatchMock.askActiveCompanion.mockReset();
   companionDispatchMock.askActiveCompanion.mockReturnValue({ outcome: 'dispatched' });
+  companionDispatchMock.askActiveCompanionWithAudio.mockReset();
+  companionDispatchMock.askActiveCompanionWithAudio.mockReturnValue({
+    outcome: 'dispatched',
+  });
   companionEntityMock.props.length = 0;
   vi.stubGlobal(
     'matchMedia',
@@ -2552,5 +2567,444 @@ describe('LauncherShell — #2888 ST-3: a dictated transcript reads as written t
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledTimes(1);
     expect(companionDispatchMock.askActiveCompanion).toHaveBeenCalledWith('Fredo');
     expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+});
+
+// ── Spec #2897 ST-4 — model-audio mode at the shell (REQ-3/REQ-4) ─────────────
+//
+// `voiceHandling === 'model'` means the captured audio IS the turn's input: the
+// shell must suppress every transcript write at its SOURCE (the live-text effect,
+// the finalize/restore/autosend effect, and the `finalTranscript` prop) so no
+// audio-derived word can reach the bar or any announcer, while the launcher shows
+// the model-audio indicator and keeps the shipped cancel/stop controls.
+describe('LauncherShell — model-audio mode (#2897 ST-4)', () => {
+  const SETTINGS = {
+    id: 'settings',
+    name: 'Settings',
+    icon: () => null,
+  } as unknown as FredoFeatureClass;
+
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const renderShell = () => {
+    const onOpenFeature = vi.fn();
+    renderWithChakra(<LauncherShell showableFeatures={[SETTINGS]} onOpenFeature={onOpenFeature} />);
+    return onOpenFeature;
+  };
+
+  const emitState = (payload: Record<string, unknown>) =>
+    act(() => {
+      emit('stt:state', { code: null, detail: null, origin: 'launcher', ...payload });
+    });
+
+  const emitTranscript = (text: string, isFinal: boolean, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal,
+        latencyMs: 1,
+      });
+    });
+
+  beforeEach(() => {
+    companionMock.current.voiceHandling = 'model';
+  });
+
+  it('renders the MODEL listening chip (never the shipped `Listening` chip) and the model placeholder', () => {
+    renderShell();
+    emitState({ listening: true, phase: 'capturing' });
+
+    const chip = screen.getByTestId('launcher-command-model-listening-chip');
+    expect(chip).toHaveTextContent('Fredo is listening');
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+    expect(input()).toHaveAttribute('placeholder', 'Fredo is listening…');
+    // The shipped transcription wording is NEVER rendered in model mode.
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByText('Listening')).toBeNull();
+    // The stop/cancel controls keep their mode-agnostic ids + semantics.
+    expect(screen.getByTestId('launcher-command-listening-stop')).toHaveAttribute(
+      'aria-label',
+      'Stop listening',
+    );
+    expect(screen.getByTestId('launcher-command-listening-cancel')).toHaveAttribute(
+      'aria-label',
+      'Cancel dictation',
+    );
+  });
+
+  it('renders the MODEL processing chip with NO stop/cancel once the stop delivered the clip', () => {
+    renderShell();
+    emitState({ listening: true, phase: 'capturing' });
+
+    // The backend answers the stop with `listening:false` + `phase:'processing'`.
+    emitState({ listening: false, phase: 'processing' });
+
+    const chip = screen.getByTestId('launcher-command-model-processing-chip');
+    expect(chip).toHaveTextContent('Fredo is processing your speech…');
+    expect(input()).toHaveAttribute('placeholder', 'Fredo is processing…');
+    // The accent dot persists through interpretation (continuous indicator).
+    expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
+    // Nothing is left to cancel while the clip is being interpreted.
+    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-cancel')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+  });
+
+  it('suppresses the transcript at the SOURCE: the bar keeps the typed draft and the announcer stays EMPTY', () => {
+    const onOpenFeature = renderShell();
+
+    act(() => {
+      fireEvent.change(input(), { target: { value: 'draft I typed' } });
+    });
+    emitState({ listening: true, phase: 'capturing' });
+
+    // Partial + final transcript events arrive on the control plane — but model
+    // mode never renders them.
+    emitTranscript('secret dictated words', false);
+    emitTranscript('secret dictated words', true, 2);
+
+    expect(input().value).toBe('draft I typed');
+    const transcriptAnnouncer = screen.getByTestId('voice-transcript-announcer');
+    // The announcer is MOUNTED (AT registration) but never fed a segment.
+    expect(transcriptAnnouncer).toBeInTheDocument();
+    expect(transcriptAnnouncer.textContent).toBe('');
+
+    // The finalize/restore effect is gated too: ending the session neither
+    // restores nor dispatches.
+    emitState({ listening: false, phase: 'processing' });
+    expect(input().value).toBe('draft I typed');
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(onOpenFeature).not.toHaveBeenCalled();
+  });
+
+  it('never autosends a transcript in model mode even with autosend ON (the backend owns delivery)', () => {
+    companionMock.current.voiceAutosend = true;
+    companionMock.current.state = {
+      isVisible: true,
+      isAway: false,
+      isAutoHidden: false,
+      isInUse: false,
+    };
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitTranscript('deliver me', true);
+    emitState({ listening: false, phase: 'processing' });
+
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('announces the model transitions ONCE each: `Fredo is listening`, then `Fredo is processing your speech`', () => {
+    renderShell();
+    const announcer = screen.getByTestId('voice-listening-announcer');
+    expect(announcer).toHaveTextContent('');
+
+    emitState({ listening: true, phase: 'capturing' });
+    expect(announcer).toHaveTextContent('Fredo is listening');
+
+    // A no-change phase tick must NOT re-announce.
+    emitState({ listening: true, phase: 'capturing' });
+    expect(announcer).toHaveTextContent('Fredo is listening');
+
+    emitState({ listening: false, phase: 'processing' });
+    expect(announcer).toHaveTextContent('Fredo is processing your speech');
+    // A stop hand-over never reads as the shipped transcription stop line.
+    expect(announcer).not.toHaveTextContent('Stopped listening');
+  });
+
+  it('LOCAL mode is unchanged: the shipped `Listening` chip + placeholder still render', () => {
+    companionMock.current.voiceHandling = 'local';
+    renderShell();
+    emitState({ listening: true });
+
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(input()).toHaveAttribute('placeholder', 'Listening…');
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+  });
+});
+
+// ── Spec #2897 ST-6 — the delivery glue + the reactive fallback (REQ-5/REQ-7) ──
+//
+// ST-2 shipped the clip command, ST-3 the transport, ST-4 the `processing` state;
+// this is the ONE seam that wires them: on the post-stop `processing` phase the
+// shell takes the clip and dispatches it EXACTLY ONCE per session, and on a null
+// clip / dispatch failure / typed wire error it surfaces the curated fallback copy
+// with the inline `Use local transcription` action. No transcript is ever written.
+describe('LauncherShell — model-audio delivery glue + fallback (#2897 ST-6)', () => {
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const emitState = (payload: Record<string, unknown>) =>
+    act(() => {
+      emit('stt:state', { code: null, detail: null, origin: 'launcher', ...payload });
+    });
+
+  const CLIP = {
+    base64: 'QUJD',
+    format: 'wav',
+    sampleRate: 16000,
+    durationMs: 100,
+    limitMs: 30000,
+    atLimit: false,
+    truncated: false,
+  };
+
+  const installInvoke = (clipResult: unknown) => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'stt_start') return okStart();
+      if (command === 'stt_take_audio_clip') return clipResult;
+      return undefined;
+    });
+    adapterBridge.setInvoke(invoke as never);
+    return invoke;
+  };
+
+  const renderShell = () =>
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+
+  beforeEach(() => {
+    companionMock.current.voiceHandling = 'model';
+  });
+
+  it('takes the clip and dispatches it EXACTLY ONCE per session, re-arming on the next capture', async () => {
+    const invoke = installInvoke({ clip: CLIP, code: null, detail: null });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+    expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledWith('QUJD');
+    // The clip is PULLED through the ST-2 command (never re-read locally).
+    expect(
+      invoke.mock.calls.filter((call) => call[0] === 'stt_take_audio_clip').length,
+    ).toBe(1);
+
+    // A repeated `processing` state must NOT re-dispatch (once per session).
+    emitState({ listening: false, phase: 'processing' });
+    await act(async () => {});
+    expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+
+    // A NEW capture re-arms the guard: the next stop dispatches again.
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // #2897 round 2 (R2-1, F-104) — the turn-completion overlay. After the stop the
+  // STT plane is silent, so the shell derives `modelAudioTurnSettled` from
+  // `replyInFlight`: the chip holds while the audio generation streams and clears
+  // on its `llm-done`; a NEW capture re-arms it (never pre-settled).
+  it('clears the processing chip once the audio turn settles, and re-arms on a new capture', async () => {
+    installInvoke({ clip: CLIP, code: null, detail: null });
+    const { rerender } = renderShell();
+    const shell = () => (
+      <LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />
+    );
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+
+    // The clip is in flight: the processing chip is shown (NOT settled).
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+
+    // The audio generation starts streaming (`replyInFlight` rises): still shown.
+    companionMock.current.replyInFlight = true;
+    act(() => {
+      rerender(shell());
+    });
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+
+    // `llm-done` (`replyInFlight` falls): the turn is settled → `stopped`/`idle`.
+    companionMock.current.replyInFlight = false;
+    act(() => {
+      rerender(shell());
+    });
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+    expect(input()).toHaveAttribute('placeholder', 'search or command');
+
+    // A NEW capture re-arms the overlay: the next stop shows `processing` again.
+    emitState({ listening: true, phase: 'capturing' });
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+    emitState({ listening: false, phase: 'processing' });
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+  });
+
+  it('never writes the transcript into the bar through the glue path', async () => {
+    installInvoke({ clip: CLIP, code: null, detail: null });
+    renderShell();
+
+    act(() => {
+      fireEvent.change(input(), { target: { value: 'draft I typed' } });
+    });
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+    expect(input().value).toBe('draft I typed');
+    // The glue never dispatches a text turn either (G-149 — one route).
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+  });
+
+  it('a NULL clip surfaces the generic fallback copy + the one-click local switch (never dispatches)', async () => {
+    installInvoke({ clip: null, code: null, detail: null });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('launcher-command-listening-status')).toHaveTextContent(
+        "Fredo couldn't interpret that recording. Try again, or switch to Local transcription.",
+      );
+    });
+    expect(companionDispatchMock.askActiveCompanionWithAudio).not.toHaveBeenCalled();
+    expect(screen.getByTestId('launcher-command-listening-status')).toHaveAttribute(
+      'role',
+      'alert',
+    );
+    const action = screen.getByTestId('launcher-command-listening-status-action');
+    expect(action).toHaveTextContent('Use local transcription');
+    fireEvent.click(action);
+    expect(companionMock.current.setVoiceHandling).toHaveBeenCalledWith('local');
+  });
+
+  it('a dispatch rejection surfaces the generic fallback copy', async () => {
+    installInvoke({ clip: CLIP, code: null, detail: null });
+    companionDispatchMock.askActiveCompanionWithAudio.mockReturnValue({
+      outcome: 'rejected',
+    });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('launcher-command-listening-status')).toHaveTextContent(
+        "Fredo couldn't interpret that recording.",
+      );
+    });
+  });
+
+  it('the typed `modelAudioUnsupported` wire code carries CURATED copy (never the raw IPC string) + the action', async () => {
+    renderShell();
+
+    emitState({
+      listening: false,
+      code: 'modelAudioUnsupported',
+      detail: 'the model server rejected the audio input (HTTP 400)',
+    });
+
+    const alert = screen.getByTestId('launcher-command-listening-status');
+    expect(alert).toHaveTextContent(
+      "The companion model can't interpret audio — your recording wasn't sent.",
+    );
+    expect(alert).toHaveTextContent('Switch to Local transcription');
+    expect(alert).not.toHaveTextContent('HTTP 400');
+    expect(screen.getByTestId('launcher-command-listening-status-action')).toBeInTheDocument();
+  });
+
+  it('the typed `modelAudioUnavailable` wire code carries the server-not-running copy', async () => {
+    renderShell();
+
+    emitState({
+      listening: false,
+      code: 'modelAudioUnavailable',
+      detail: 'connection refused',
+    });
+
+    const alert = screen.getByTestId('launcher-command-listening-status');
+    expect(alert).toHaveTextContent(
+      "The local model server isn't running, so Fredo couldn't interpret that.",
+    );
+    expect(alert).not.toHaveTextContent('connection refused');
+  });
+
+  it('LOCAL mode never surfaces a model-audio code (the fallback is model-mode only)', () => {
+    companionMock.current.voiceHandling = 'local';
+    renderShell();
+
+    emitState({
+      listening: false,
+      code: 'modelAudioUnsupported',
+      detail: 'raw ipc detail',
+    });
+
+    expect(screen.queryByTestId('launcher-command-listening-status')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-status-action')).toBeNull();
+  });
+});
+
+// ── Spec #2897 ST-7 — local-transcription regression protection (REQ-2) ───────
+//
+// In `'local'` mode (the default, and the healed value of an absent key on an
+// upgraded install) the model-audio additions are INERT: no clip is taken, no
+// audio turn is dispatched, no model-audio state/notice renders, and the shipped
+// transcript → bar path is the only writer. These pins ADD to the shipped suite.
+describe('LauncherShell — local transcription regression protection (#2897 ST-7)', () => {
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const emitState = (payload: Record<string, unknown>) =>
+    act(() => {
+      emit('stt:state', { code: null, detail: null, origin: 'launcher', ...payload });
+    });
+
+  const emitTranscript = (text: string, isFinal: boolean, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal,
+        latencyMs: 1,
+      });
+    });
+
+  const renderShell = () =>
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+
+  it('a local session takes no clip, dispatches no audio turn, and writes the transcript into the bar', async () => {
+    companionMock.current.voiceHandling = 'local';
+    const invoke = vi.fn(async (command: string) =>
+      command === 'stt_start' ? okStart() : undefined,
+    );
+    adapterBridge.setInvoke(invoke as never);
+    renderShell();
+
+    emitState({ listening: true });
+    emitTranscript('dictated locally', false);
+    emitTranscript('dictated locally', true, 2);
+
+    // The shipped transcript → bar write is intact.
+    expect(input().value).toBe('Dictated locally');
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+
+    emitState({ listening: false });
+
+    // The model-audio glue is inert in local mode: no clip take, no audio turn.
+    expect(
+      invoke.mock.calls.filter((call) => call[0] === 'stt_take_audio_clip').length,
+    ).toBe(0);
+    expect(companionDispatchMock.askActiveCompanionWithAudio).not.toHaveBeenCalled();
+    // No model-audio limit notice / fallback alert renders.
+    expect(screen.queryByTestId('launcher-command-model-limit-status')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-status-action')).toBeNull();
+    // The dictated final committed through the SHIPPED text dispatch (autosend OFF
+    // ⇒ the text is left in the bar, never submitted by the glue).
+    expect(input().value).toBe('Dictated locally');
   });
 });

@@ -28,6 +28,7 @@ describe('adapterBridge', () => {
     adapterBridge.setLlmChat(undefined as any);
     adapterBridge.setLlmChatWithImage(undefined as any);
     adapterBridge.setLlmChatWithSkills(undefined);
+    adapterBridge.setLlmChatWithAudio(undefined);
     vi.clearAllMocks();
   });
 
@@ -184,6 +185,74 @@ describe('adapterBridge', () => {
 
       expect(warnSpy).toHaveBeenCalledWith(
         '[adapterBridge] llmChatWithSkills called before adapter registered',
+      );
+      expect(onDone).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+  });
+
+  // #2897 ST-3 — the model-audio forwarding path.
+  describe('setLlmChatWithAudio', () => {
+    it('forwards messages + the clip + completes the caller', async () => {
+      const onToken = vi.fn();
+      const onDone = vi.fn();
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _audioBase64: string,
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+        ) => {
+          _onToken('audio-token');
+          _onDone();
+        },
+      );
+      adapterBridge.setLlmChatWithAudio(mockChat);
+
+      const messages = createMockMessages();
+      await adapterBridge.llmChatWithAudio(messages, 'UklGRg==', onToken, onDone);
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      expect(mockChat).toHaveBeenCalledWith(messages, 'UklGRg==', onToken, onDone);
+      expect(onToken).toHaveBeenCalledWith('audio-token');
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it('forwards the optional error channel only when supplied', async () => {
+      const onError = vi.fn();
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _audioBase64: string,
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+          _onError?: (message: string) => void,
+        ) => {
+          _onError?.('boom');
+        },
+      );
+      adapterBridge.setLlmChatWithAudio(mockChat);
+
+      await adapterBridge.llmChatWithAudio(createMockMessages(), 'QUJD', vi.fn(), vi.fn(), onError);
+
+      expect(mockChat).toHaveBeenCalledWith(
+        expect.anything(),
+        'QUJD',
+        expect.anything(),
+        expect.anything(),
+        onError,
+      );
+      expect(onError).toHaveBeenCalledWith('boom');
+    });
+
+    it('unregistered — warns and still completes (never hangs)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const onDone = vi.fn();
+
+      await adapterBridge.llmChatWithAudio(createMockMessages(), 'QUJD', vi.fn(), onDone);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[adapterBridge] llmChatWithAudio called before adapter registered',
       );
       expect(onDone).toHaveBeenCalledTimes(1);
       warnSpy.mockRestore();

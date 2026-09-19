@@ -2,6 +2,10 @@
  * VoiceInputSettings — #2877 ST-4 unit contract (DR-1/2/3/5/6/10/11/12).
  *
  * Proves the extracted settings group without a Tauri host:
+ *   • C0 — the speech-handling selector (#2897 ST-1 / REQ-1): the closed
+ *     `Local transcription` (DEFAULT) | `Model audio` set, persisted as
+ *     `Fredo_companion_voice_handling`, healing every non-`model` raw to
+ *     `'local'`, and announced through the settings live region;
  *   • C1 — the master enable switch (frozen `aria-label="Enable voice input"`,
  *     label `Hold Space to dictate` — re-pointed off the retired Ctrl+Space
  *     dictation promise by #2882 ST-7 / R-7, DEFAULT OFF) persists the choice
@@ -35,6 +39,8 @@ import {
   VOICE_ENABLED_SETTING_KEY,
   VOICE_AUTOSEND_SETTING_KEY,
   VOICE_DEVICE_ID_SETTING_KEY,
+  VOICE_HANDLING_SETTING_KEY,
+  DEFAULT_VOICE_HANDLING,
 } from '@/shared/contexts/CompanionContext';
 import {
   VoiceInputSettings,
@@ -293,6 +299,88 @@ describe('VoiceInputSettings — pure derivations (#2877 ST-4)', () => {
         deviceCount: 2,
       }).state,
     ).toBe('permission-denied');
+  });
+});
+
+// ── C0 — speech handling (#2897 ST-1 / REQ-1) ────────────────────────────────
+
+describe('VoiceInputSettings — C0 speech handling (#2897 ST-1)', () => {
+  it('defaults to Local transcription and renders the closed two-member option set', () => {
+    renderSettings();
+
+    const row = screen.getByTestId('companion-voice-handling-row');
+    expect(row).toBeInTheDocument();
+
+    const select = screen.getByTestId('companion-voice-handling-select') as HTMLSelectElement;
+    expect(select.tagName).toBe('SELECT');
+    expect(select.value).toBe(DEFAULT_VOICE_HANDLING);
+    expect(select.value).toBe('local');
+
+    const options = within(select).getAllByRole('option');
+    expect(options).toHaveLength(2);
+    expect(within(select).getByRole('option', { name: 'Local transcription' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Model audio' })).toBeInTheDocument();
+
+    // Accessibility: labelled combobox, help bound through `aria-describedby`.
+    expect(select).toHaveAccessibleName('Speech handling');
+    const help = screen.getByTestId('companion-voice-handling-help');
+    expect(help).toHaveAttribute('id', 'companion-voice-handling-help');
+    expect(select).toHaveAttribute('aria-describedby', 'companion-voice-handling-help');
+    // The default help describes the shipped local path and its transcript.
+    expect(help).toHaveTextContent(/Words appear in the launcher bar/);
+
+    // No key is written until the user changes the value.
+    expect(localStorage.getItem(VOICE_HANDLING_SETTING_KEY)).toBeNull();
+  });
+
+  it('selecting Model audio persists immediately, flips the help, and announces — with no transcript claim', async () => {
+    renderSettings();
+
+    const select = screen.getByTestId('companion-voice-handling-select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'model' } });
+
+    await waitFor(() => {
+      expect(localStorage.getItem(VOICE_HANDLING_SETTING_KEY)).toBe('model');
+    });
+    expect(select.value).toBe('model');
+
+    // The help MUST state that model audio shows no transcript.
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-voice-handling-help')).toHaveTextContent(
+        /no words are shown/,
+      );
+    });
+
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toHaveTextContent(
+      'Speech handling set to Model audio — no words will be shown.',
+    );
+  });
+
+  it('an unknown stored raw heals to Local transcription', async () => {
+    localStorage.setItem(VOICE_HANDLING_SETTING_KEY, 'telepathy');
+    renderSettings();
+
+    const select = (await screen.findByTestId(
+      'companion-voice-handling-select',
+    )) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(select.value).toBe('local');
+    });
+    expect(screen.getByTestId('companion-voice-handling-help')).toHaveTextContent(
+      /Words appear in the launcher bar/,
+    );
+  });
+
+  it('a persisted Model audio value loads as-is across a remount', async () => {
+    localStorage.setItem(VOICE_HANDLING_SETTING_KEY, 'model');
+    renderSettings();
+
+    const select = (await screen.findByTestId(
+      'companion-voice-handling-select',
+    )) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(select.value).toBe('model');
+    });
   });
 });
 
@@ -637,6 +725,161 @@ describe('VoiceInputSettings — C4 autosend (#2877 ST-4)', () => {
     await waitFor(() => {
       expect(localStorage.getItem(VOICE_AUTOSEND_SETTING_KEY)).toBe('true');
     });
+  });
+});
+
+// ── C0r — model audio status (#2897 ST-6 / REQ-7) ────────────────────────────
+
+describe('VoiceInputSettings — C0r model audio status (#2897 ST-6)', () => {
+  const setHandling = (value: 'local' | 'model') =>
+    localStorage.setItem(VOICE_HANDLING_SETTING_KEY, value);
+
+  const installCapability = (result: unknown) => {
+    adapterBridge.setInvoke((async (command: string) =>
+      command === 'stt_audio_capability' ? result : undefined) as never);
+  };
+
+  const capabilityRow = () => screen.getByTestId('companion-voice-model-audio-row');
+  const capabilityStatus = () => screen.getByTestId('companion-voice-model-audio-status');
+
+  it('is NOT rendered while the method is Local transcription', () => {
+    renderSettings();
+    expect(screen.queryByTestId('companion-voice-model-audio-row')).toBeNull();
+  });
+
+  it('checking: renders the in-flight sentence and no action', async () => {
+    setHandling('model');
+    // A capability probe that never settles keeps the UI-side `checking` state
+    // observable; every other command resolves so the persisted mode still loads.
+    adapterBridge.setInvoke((async (command: string) => {
+      if (command === 'stt_audio_capability') return new Promise(() => {});
+      return undefined;
+    }) as never);
+    renderSettings();
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId('companion-voice-handling-select') as HTMLSelectElement).value,
+      ).toBe('model'),
+    );
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'checking'));
+    expect(capabilityStatus()).toHaveTextContent(
+      "Checking the companion model's audio support…",
+    );
+    expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-audio-change-model')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-audio-retry')).toBeNull();
+  });
+
+  it('ready: names the reported model and offers no action', async () => {
+    setHandling('model');
+    installCapability({
+      state: 'ready',
+      model: 'Gemma-4-E2B',
+      limitMs: null,
+      code: null,
+      detail: null,
+    });
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'ready'));
+    expect(capabilityStatus()).toHaveTextContent(
+      'Gemma-4-E2B can interpret audio. Recordings stay on this machine.',
+    );
+    expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-audio-retry')).toBeNull();
+  });
+
+  it('unsupported: warns, offers local + change model, and one click flips the persisted setting', async () => {
+    setHandling('model');
+    installCapability({
+      state: 'unsupported',
+      model: 'Gemma-4-E2B',
+      limitMs: null,
+      code: 'modelAudioUnsupported',
+      detail: 'HTTP 400: unsupported content part',
+    });
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'unsupported'));
+    expect(capabilityStatus()).toHaveTextContent(
+      "The installed companion model can't interpret audio. Recordings won't be sent.",
+    );
+    // The raw backend detail is demoted, never the primary sentence.
+    expect(capabilityRow()).toHaveTextContent(/Technical details: HTTP 400/);
+    expect(screen.getByTestId('companion-voice-model-audio-change-model')).toHaveTextContent(
+      'Change model',
+    );
+
+    fireEvent.click(screen.getByTestId('companion-voice-model-audio-use-local'));
+
+    await waitFor(() => {
+      expect(localStorage.getItem(VOICE_HANDLING_SETTING_KEY)).toBe('local');
+    });
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toHaveTextContent(
+      'Speech handling set to Local transcription.',
+    );
+    // The mode flipped, so the model-audio row is gone.
+    expect(screen.queryByTestId('companion-voice-model-audio-row')).toBeNull();
+  });
+
+  it('server-unavailable: warns and Try again re-probes + announces', async () => {
+    setHandling('model');
+    const invoke = vi.fn(async (command: string) =>
+      command === 'stt_audio_capability'
+        ? {
+            state: 'serverUnavailable',
+            model: null,
+            limitMs: null,
+            code: 'modelAudioUnavailable',
+            detail: 'connection refused',
+          }
+        : undefined,
+    );
+    adapterBridge.setInvoke(invoke as never);
+    renderSettings();
+    await waitFor(() =>
+      expect(capabilityRow()).toHaveAttribute('data-state', 'server-unavailable'),
+    );
+    expect(capabilityStatus()).toHaveTextContent(
+      "The local model server isn't running, so Fredo can't interpret audio.",
+    );
+
+    const probes = () =>
+      invoke.mock.calls.filter((call) => call[0] === 'stt_audio_capability').length;
+    const before = probes();
+    fireEvent.click(screen.getByTestId('companion-voice-model-audio-retry'));
+    await waitFor(() => {
+      expect(probes()).toBeGreaterThan(before);
+    });
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toHaveTextContent(
+      "Checking the companion model's audio support again.",
+    );
+  });
+
+  it('unknown: fail-closed copy + Try again + the demoted detail', async () => {
+    setHandling('model');
+    installCapability({
+      state: 'unknown',
+      model: null,
+      limitMs: null,
+      code: null,
+      detail: 'HTTP 500',
+    });
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'unknown'));
+    expect(capabilityStatus()).toHaveTextContent("Can't check audio support right now.");
+    expect(capabilityRow()).toHaveTextContent(/Technical details: HTTP 500/);
+    expect(screen.getByTestId('companion-voice-model-audio-retry')).toBeInTheDocument();
+    // `unknown` never offers the mode switch — there is nothing proven to degrade.
+    expect(screen.queryByTestId('companion-voice-model-audio-use-local')).toBeNull();
+  });
+
+  it('a rejected / malformed probe is `unknown`, never `ready`', async () => {
+    setHandling('model');
+    adapterBridge.setInvoke((async (command: string) => {
+      if (command === 'stt_audio_capability') throw new Error('command unavailable');
+      return undefined;
+    }) as never);
+    renderSettings();
+    await waitFor(() => expect(capabilityRow()).toHaveAttribute('data-state', 'unknown'));
   });
 });
 
