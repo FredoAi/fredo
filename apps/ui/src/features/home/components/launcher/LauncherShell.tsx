@@ -8,7 +8,10 @@ import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
-import { tint } from '../../../../shared/utils/colorTint';
+
+// Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
+// shipped grid texture (ONE definition, shared with the launcher surface).
+import { NONE_BACKGROUND } from '../background/backgroundRegistry';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
@@ -343,17 +346,10 @@ export function voiceStartErrorCopy(code: string | null): string | null {
   }
 }
 
-/** Subtle dot/tick grid texture (Asset 1.7) — faint border-color color-mix
- *  lines, token-native, behind every window (the overlay is z-gated below the
- *  window stack when covered). */
-const DESKTOP_TEXTURE_CSS = {
-  backgroundColor: 'var(--card-bg)',
-  backgroundImage: [
-    `linear-gradient(to right, ${tint('var(--border-color)', 12)} 1px, transparent 1px)`,
-    `linear-gradient(to bottom, ${tint('var(--border-color)', 12)} 1px, transparent 1px)`,
-  ].join(', '),
-  backgroundSize: '28px 28px',
-};
+/** Subtle dot/tick grid texture (Asset 1.7) — moved VERBATIM to the background
+ *  registry as `NONE_BACKGROUND.css` (Spec #2899 ST-1) so the shipped `none`
+ *  look has ONE definition. The overlay is z-gated below the window stack when
+ *  covered. */
 
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
@@ -1929,7 +1925,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         zIndex={surfaceZ}
         onKeyDown={handleKeyDown}
         onBlur={handleSurfaceBlur}
-        css={DESKTOP_TEXTURE_CSS}
+        css={NONE_BACKGROUND.css}
       >
         <Box
           ref={columnRef}
