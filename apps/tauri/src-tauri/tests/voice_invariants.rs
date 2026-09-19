@@ -22,6 +22,14 @@
 //!   `expect(` / `panic!` / `unreachable!`.
 //! - **G-128 MANIFEST PINS** — `STT_TOTAL_BYTES` and the four pinned STT files
 //!   (ids, paths, sizes, SHA-256) are the verified #2876 values.
+//! - **REQ-8 MODEL-AUDIO LOOPBACK-ONLY** (Spec #2897 ST-8) — a `WHILE`
+//!   invariant: the captured clip crosses the IPC boundary only (captured and
+//!   taken inside `infrastructure/voice/`; the model transport names never appear
+//!   there), and the managed delivery target is the loopback host
+//!   (`DEFAULT_LLAMA_SERVER_HOST` = `127.0.0.1`, the launch-config default, and
+//!   the ONE chat URL shell that templates the resolved host). ST-2/ST-3 add the
+//!   names this pins; until they land those legs are trivially green and become
+//!   real coverage the moment the surfaces appear — the pin is never weakened.
 //!
 //! These are STATIC/STRUCTURAL pins only. The measured idle-CPU / no-egress
 //! live observations belong to the tester (QA REQ-NF1 / REQ-3.2); when a live
@@ -454,5 +462,176 @@ fn stt_manifest_pins_are_unchanged() {
         "d944208d660d67c8d72cd2acaeac971fa5ceb8c80e76c1968148846fedd6e297",
     ] {
         assert!(production.contains(sha), "manifest SHA-256 pin drifted: {sha}");
+    }
+}
+
+// ── REQ-8 — continuous model-audio loopback confinement (Spec #2897, ST-8) ────
+//
+// REQ-8 is a `WHILE` (continuous) clause, so a discrete transition test cannot
+// cover it (G-123). These pins are the STATIC/CI leg of QA F-108; the live legs
+// (a loopback assertion on the running server and a process-scoped outbound block
+// proven by a failing control fetch) stay with the Tester and are never
+// substituted by these pins (G-148).
+
+/// The raw source text of one crate-relative file (`src/<relative>`), comments
+/// included. Exact literal pins — a `format!("http://…")` URL shell or a
+/// `pub const … = "127.0.0.1";` — live in strings that [`mask`] blanks, so they
+/// are asserted over the raw text; the pinned strings are production code, so a
+/// stray comment could not satisfy them.
+fn source_text(relative: &str) -> String {
+    read_source(&crate_root().join("src").join(relative))
+}
+
+/// The shipped (non-test) region of one crate-relative file, raw. Used where the
+/// pinned literal precedes the file's first `#[cfg(test)]`.
+fn production_text(relative: &str) -> String {
+    let source = source_text(relative);
+    production_region(&source).to_string()
+}
+
+/// The masked shipped region of one crate-relative file: identifiers survive,
+/// comments and string literals are blanked ([`mask`]).
+fn production_code(relative: &str) -> String {
+    mask(&production_text(relative))
+}
+
+/// The masked FULL source of one crate-relative file (byte offsets preserved).
+/// Used where a `#[cfg(test)]` helper precedes a shipped item the pin must span —
+/// `chat.rs` defines its test helpers before `server_host`/`run_stream`, so the
+/// first-test-attribute slice would hide them.
+fn source_code(relative: &str) -> String {
+    mask(&source_text(relative))
+}
+
+/// REQ-8 (F-108 leg 2) — the model-audio delivery target is the managed
+/// `llama-server` on the loopback host. The managed-host default, the launch
+/// configuration default (`config.rs:108` in the plan) and the ONE chat URL shell
+/// all resolve to `127.0.0.1`, and every chat request resolves its host through
+/// that shell — never a hardcoded remote endpoint.
+#[test]
+fn model_audio_delivery_target_is_the_managed_loopback_host() {
+    // The managed host default `resolve_host` falls back to.
+    let module = source_text("features/llm_server/mod.rs");
+    assert!(
+        module.contains("pub const DEFAULT_LLAMA_SERVER_HOST: &str = \"127.0.0.1\";"),
+        "the managed-server default host must stay loopback (REQ-8)"
+    );
+
+    // The launch configuration default (the `--host` the managed server binds).
+    let config = production_text("features/llm_server/config.rs");
+    assert!(
+        config.contains("host: \"127.0.0.1\".to_string(),"),
+        "the `llama-server` launch config must default to the loopback host (REQ-8)"
+    );
+
+    // The ONE chat-completions / properties URL shell: the resolved host is
+    // templated, so the audio delivery ST-3 adds can only address the managed
+    // server. `format!` strings are blanked by `mask()`, hence the raw text.
+    let chat = production_text("features/llm_server/chat.rs");
+    assert!(
+        chat.contains("format!(\"http://{host}:{port}{CHAT_COMPLETIONS_PATH}\")"),
+        "the chat-completions URL must template the resolved host (REQ-8)"
+    );
+    assert!(
+        chat.contains("format!(\"http://{host}:{port}{PROPS_PATH}\")"),
+        "the /props URL must template the resolved host (REQ-8)"
+    );
+
+    // The turn target reads the persisted host and resolves it through the
+    // loopback-defaulting helper — the request cannot bypass the managed host.
+    // `chat.rs` carries a `#[cfg(test)]` helper before those items, so span them
+    // over the WHOLE masked file (offsets preserved) rather than the early slice.
+    let code = source_code("features/llm_server/chat.rs");
+    let resolve = item_span(&code, "fn resolve_host(");
+    assert!(
+        resolve.contains("DEFAULT_LLAMA_SERVER_HOST"),
+        "resolve_host must fall back to the managed loopback default (REQ-8): {resolve}"
+    );
+    let server_host = item_span(&code, "fn server_host(");
+    assert!(
+        server_host.contains("resolve_host(") && server_host.contains("LLAMA_SERVER_HOST_KEY"),
+        "the turn target must resolve the persisted host via resolve_host (REQ-8): {server_host}"
+    );
+
+    // The shared HTTP/SSE shell every chat request flows through resolves the
+    // host through `server_host`; ST-3's audio delivery reuses this ONE shell.
+    let run_stream = item_span(&code, "pub async fn run_stream(");
+    assert!(
+        run_stream.contains("server_host(app)"),
+        "run_stream must resolve the managed host via server_host (REQ-8): {run_stream}"
+    );
+
+    // The health probe shares the same loopback-templated host.
+    let health = production_text("features/llm_server/health.rs");
+    assert!(
+        health.contains("format!(\"http://{host}:{port}{HEALTH_PATH}\")"),
+        "the health URL must template the resolved host (REQ-8)"
+    );
+
+    // Conditional (ST-3): once the audio delivery command lands, it must route
+    // through the managed chat module — never its own transport/URL. The names
+    // are absent today, so this leg strengthens automatically when ST-3 ships.
+    let commands = production_code("features/llm_server/commands.rs");
+    if commands.contains("fn llm_chat_with_audio(") {
+        let audio_command = item_span(&commands, "fn llm_chat_with_audio(");
+        assert!(
+            audio_command.contains("chat::")
+                || audio_command.contains("run_stream")
+                || audio_command.contains("server_host"),
+            "llm_chat_with_audio must deliver through the managed chat module (REQ-8): {audio_command}"
+        );
+    }
+}
+
+/// REQ-8 (F-108 leg 1) — the captured clip crosses the IPC boundary only. The
+/// voice module (capture + `stt_take_audio_clip`) never references the model
+/// transport names, while the delivery surface (`llm_chat_with_audio`, the
+/// `input_audio` content part) lives only in `features/llm_server/`, which owns
+/// the managed loopback client. ST-2/ST-3 introduce those names; the scan is
+/// positive-controlled on the SHIPPED `llm_chat_with_image` surface, so an
+/// audio-only green is provably not a scanner that matches nothing.
+#[test]
+fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
+    let mut delivery_files = Vec::new();
+    let mut clip_files = Vec::new();
+    let mut audio_part_files = Vec::new();
+
+    for (file, production) in crate_production_sources() {
+        let code = mask(&production);
+        if code.contains("llm_chat_with_image") || code.contains("llm_chat_with_audio") {
+            delivery_files.push(file.clone());
+        }
+        if code.contains("stt_take_audio_clip") {
+            clip_files.push(file.clone());
+        }
+        if code.contains("input_audio") {
+            audio_part_files.push(file.clone());
+        }
+    }
+
+    // Positive control: the already-shipped multimodal delivery command proves the
+    // scan sees the surface (its name is an identifier, not a blanked literal).
+    assert!(
+        delivery_files.contains(&"features/llm_server/commands.rs".to_string()),
+        "the delivery-surface scan must see the shipped llm_chat_with_image: {delivery_files:?}"
+    );
+
+    for file in &delivery_files {
+        assert!(
+            file.starts_with("features/llm_server/") || file == "lib.rs",
+            "{file} must not carry the audio/multimodal delivery surface outside features/llm_server (REQ-8)"
+        );
+    }
+    for file in &clip_files {
+        assert!(
+            file.starts_with("infrastructure/voice/") || file == "lib.rs",
+            "{file} must not pull the captured audio clip outside the voice module (REQ-8)"
+        );
+    }
+    for file in &audio_part_files {
+        assert!(
+            file.starts_with("features/llm_server/"),
+            "{file} must not render the model-audio content part outside features/llm_server (REQ-8)"
+        );
     }
 }
