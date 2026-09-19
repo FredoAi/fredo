@@ -95,3 +95,24 @@
 ### #2868 testing round 1 (spec/2868 @ 90da8de) — result
 
 - **R-17 PASS (live).** Appearance reached via the Settings window (launcher tile → Appearance). Dark classic → Light Default re-tints the window chrome (header `rgb(42,42,42)`→`rgb(238,238,238)`; active-nav text `rgb(204,204,204)`→`rgb(12,17,23)`; `--hover-bg` `color-mix(#cccccc 6%)`→`color-mix(#0c1117 6%)`). Pale accent `#7dd3fc` override re-tints the active-nav bg to `color(srgb 0.49 0.827 0.988 / 0.12)` via `tint()` + derived `--accent-strong`; active-nav label vs header contrast **16.33:1**. No `var(--x)NN` alpha-append; the deleted gear left no orphan theming consumer. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2899 extension — the background layer must not regress the desktop or the theme engine
+
+> Issue #2899 adds a procedural background layer behind the desktop shell (**None** default). These
+> invariants MUST hold; run alongside R-1..R-17 and the desktop-shell / desktop-chrome suites.
+> **Verification policy: live.**
+
+- [ ] **R-18 (theming engine unchanged):** preset selection, per-token overrides, "Reset to theme
+      defaults", the readout, and the `overrides ?? preset ?? base` layering behave exactly as before;
+      adding the background must not shift any existing theming computed color (compare before/after
+      on a sample: Settings chrome, launcher, mission-monitor node chrome). Reference F-1..F-19.
+- [ ] **R-19 (today's desktop unchanged with None):** with **None** (the default) the desktop shell,
+      window chrome, layout, z-order, and input behavior are unchanged — feature windows still open,
+      move, resize, focus, minimize, and close; no contrast or geometry regression; the background
+      layer is fully absent/inert. Reference F-20/F-24.
+- [ ] **R-20 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter
+      @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (refreshed assertions
+      owned per G-125); zero hardcoded literals / `var(--x)NN` in the slice; no raster asset added.
+      Reference F-25/F-27.
