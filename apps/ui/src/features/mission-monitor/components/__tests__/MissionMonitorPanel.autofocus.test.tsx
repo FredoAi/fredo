@@ -13,7 +13,6 @@ import { act, screen, fireEvent, cleanup } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { Node } from 'reactflow';
 import type { MonitorNodeData } from '../../types';
-import { loadPersistedSessions } from '../../lib/persistence';
 // AC-13 round-6 — the chain geometry constants prove the minZoom floor is low
 // enough to frame the 66-node restored chain (the round-6 root cause: the old
 // minZoom={0.3} clamped every fit to scale(0.3), leaving ~6/66 nodes visible).
@@ -105,73 +104,47 @@ vi.mock('../../hooks/useMissionMonitor', () => ({
   }),
 }));
 
-// Mock persistence — one persisted session so the canvas renders with a
-// selected session.
-vi.mock('../../lib/persistence', () => ({
-  initMmTables: vi.fn(),
-  persistDelivery: vi.fn(),
-  loadPersistedSessions: vi.fn().mockResolvedValue([
-    { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
-  ]),
-  deleteSessionFromStore: vi.fn(),
-  loadPersistedDeliveries: vi.fn().mockResolvedValue([]),
-  loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
-  markSessionDeleted: vi.fn(),
-  isSessionDeleted: vi.fn(() => false),
-  // Spec #2788 P4.3: tombstone seeding — awaited inside useDeliverySessions' mount load
-  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
-  // ST11: real implementations — pure watermark helpers used by the panel.
-  createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
-  nextUnseenDeliveries: (deliveries, state) => {
-    if (deliveries.length < state.cursor) state.cursor = 0;
-    if (deliveries.length <= state.cursor) return [];
-    const slice = deliveries.slice(state.cursor);
-    state.cursor = deliveries.length;
-    const unseen = slice.filter((d) => !state.seenIds.has(d.id));
-    for (const d of unseen) state.seenIds.add(d.id);
-    return unseen;
-  },
-}));
-
 // Mock StreamContext — no live deliveries (the graph is driven via the mocked hook).
 
-// P4.2: the panel subscribes typed rows via useEventRows. Spec #2795 (AC2): a
-// session is LISTED only if it renders ≥1 node, so every fixture session gets a
-// real, non-transitional Chat row (completed + non-empty agentReply) — otherwise
-// it is a ghost and never listed/auto-selected, and the canvas never mounts.
-// `userMessage` stays null so the drawer shows the persisted `label` (the
-// session-switch test clicks rows by their label text). `mockAutofocusChatRows`
-// is module-mutable so per-test override can add a second renderable session.
-const makeAutofocusChatRow = (sessionId: string, correlationId: string, startedAtMs: number) => ({
-  sessionId,
-  correlationId,
-  seq: 1,
-  startedAtNs: startedAtMs * 1e6,
-  endedAtNs: (startedAtMs + 1000) * 1e6,
-  updatedAt: new Date(startedAtMs + 1000).toISOString(),
-  state: 'Response',
-  userMessage: null,
-  agentReply: 'world',
-  promptTokens: null,
-  completionTokens: null,
-  cacheReadTokens: null,
-  costUsd: null,
-  model: null,
-  parentSessionId: null,
-  compositedChildSessionId: null,
-  rawJson: '{}',
-});
+// Spec #2896 ST-6: the panel's session list comes from the declared `sessions`
+// table. Each fixture session is a qualifying rollup row (visibleTurnCount ≥ 1);
+// `mockDeclaredSessions` is module-mutable so a per-test override can add a
+// second session (the session-switch test).
+let mockDeclaredSessions: Array<{ sessionId: string; startTime: number; latestAt: string }> = [];
 
-let mockAutofocusChatRows: Array<ReturnType<typeof makeAutofocusChatRow>> = [];
+function declaredRows(): Map<string, unknown> {
+  return new Map(
+    mockDeclaredSessions.map((s) => [
+      JSON.stringify([s.sessionId]),
+      {
+        _rowVersion: 1,
+        sessionId: s.sessionId,
+        startedAtNs: s.startTime * 1e6,
+        latestAt: s.latestAt,
+        chatRowCount: 0,
+        nonSubagentChatRowCount: 1,
+        visibleTurnCount: 1,
+        userDispatchCount: 0,
+        derivedName: null,
+        agentName: null,
+        customName: null,
+      },
+    ]),
+  );
+}
 
-vi.mock('@/shared/hooks/useEventRows', () => ({
-  useEventRows: (eventType: 'Chat' | 'ToolUse') => ({
-    rows: eventType === 'Chat'
-      ? new Map(mockAutofocusChatRows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const))
-      : new Map(),
-    epoch: 1,
+vi.mock('@/shared/hooks/useFeatureData', () => ({
+  useFeatureRead: () => ({ rows: declaredRows(), version: 1, error: null, loading: false }),
+  useFeatureWatch: () => ({ rows: declaredRows(), epoch: 1, error: null, ready: true }),
+}));
+
+// The canvas's activity source (ST-9) — empty; the graph itself is mocked below.
+vi.mock('../../hooks/useSessionActivityWatch', () => ({
+  useSessionActivityWatch: () => ({
+    chatRows: new Map(),
+    toolUseRows: new Map(),
+    epoch: 0,
     error: null,
-    // P4.3: the replay snapshot phase is settled — the loaded gate opens
     ready: true,
   }),
 }));
@@ -238,17 +211,11 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     mockNodes = [];
-    // Deterministic single-session default: one renderable Chat row for 's1'
-    // (Spec #2795 AC2 — a session is listed only if it renders ≥1 node).
-    mockAutofocusChatRows = [
-      makeAutofocusChatRow('s1', 'autofocus-1', Date.parse('2026-01-01T00:00:00.000Z')),
+    // Deterministic single-session default — the declared `sessions` table
+    // (Spec #2896 ST-6) carries one qualifying row for 's1'.
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
     ];
-    // Deterministic single-session default (clearAllMocks keeps the factory's
-    // mockResolvedValue implementation — reset it here so per-test overrides
-    // never leak across tests).
-    vi.mocked(loadPersistedSessions).mockResolvedValue([
-      { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
-    ]);
   });
 
   afterEach(() => {
@@ -503,16 +470,12 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
   });
 
   it('fits the view exactly once per explicit session switch (AC-13)', async () => {
-    // Two persisted sessions: s1 is newer (auto-selected), s2 is older. BOTH
-    // must be listed (Spec #2795 AC2 — renderable via a chat row), so the store
-    // serves a renderable row for each; s1's row is newer so it auto-selects.
-    vi.mocked(loadPersistedSessions).mockResolvedValue([
-      { sessionId: 's1', label: 'Session 1', startTime: 2, latestTimestamp: '2026-01-02T00:00:00.000Z', deliveryCount: 0 },
-      { sessionId: 's2', label: 'Session 2', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
-    ]);
-    mockAutofocusChatRows = [
-      makeAutofocusChatRow('s1', 'autofocus-1', Date.parse('2026-01-02T00:00:00.000Z')),
-      makeAutofocusChatRow('s2', 'autofocus-2', Date.parse('2026-01-01T00:00:00.000Z')),
+    // Two declared sessions: s1 has the newer start time (auto-selected), s2 is
+    // older. BOTH rows qualify (visibleTurnCount ≥ 1). The list sorts by
+    // latestAt DESC → s1 first, s2 second.
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 2, latestAt: '2026-01-02T00:00:00.000Z' },
+      { sessionId: 's2', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
     ];
     mockNodes = [makeAgentNode('agent-1', 0, { width: 480, height: 240 })];
 
@@ -523,25 +486,23 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
     expect(mockFitView).toHaveBeenCalledTimes(1);
 
     // Click a drawer session row (the delete button's parent row carries the
-    // onSelect handler). Scoped via the row's label text so the panel header's
-    // active-session label (same text) can never collide.
-    const clickSessionRow = (label: string) => {
-      const deleteBtn = screen
-        .getAllByTitle('Delete session')
-        .find((b) => b.parentElement?.textContent?.includes(label));
+    // onSelect handler). Rows render in list order (latestAt DESC): index 0 is
+    // s1, index 1 is s2.
+    const clickSessionRow = (index: number) => {
+      const deleteBtn = screen.getAllByTitle('Delete session')[index];
       expect(deleteBtn?.parentElement).toBeTruthy();
       fireEvent.click(deleteBtn!.parentElement!);
     };
 
     // Explicit switch to s2 — exactly one more fit.
-    await act(async () => { clickSessionRow('Session 2'); });
+    await act(async () => { clickSessionRow(1); });
     rerender(<MissionMonitorPanel />);
 
     await flushFit();
     expect(mockFitView).toHaveBeenCalledTimes(2);
 
     // Switch back to s1 — another activation, another single fit.
-    await act(async () => { clickSessionRow('Session 1'); });
+    await act(async () => { clickSessionRow(0); });
     rerender(<MissionMonitorPanel />);
 
     await flushFit();
@@ -635,7 +596,7 @@ describe('MissionMonitorPanel auto-center (#2688 ST5 / #2700 ST2)', () => {
   });
 
   it('does not fit and does not crash when no session is selected (AC-13 edge)', async () => {
-    vi.mocked(loadPersistedSessions).mockResolvedValue([]);
+    mockDeclaredSessions = [];
 
     renderWithChakra(<MissionMonitorPanel />);
     await act(async () => { await Promise.resolve(); });

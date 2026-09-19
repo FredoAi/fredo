@@ -279,3 +279,85 @@ export function isRowDelivery(msg: unknown): msg is RowDelivery {
 export function rowKeyString(key: RowKey): string {
   return `${key.sessionId}\u0000${key.correlationId}`;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FEATURE-DATA NOTIFICATION TYPES — Spec #2896 (ST-5)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Declared/canonical-table watches deliver on the EXISTING "fredo-stream-event"
+// channel as a `{"featureBatch": [...]}` envelope (backend:
+// `infrastructure/feature_data/envelope.rs` + `EventBus::emit_feature_delivery_batch`).
+// The `featureBatch` field discriminates it from the RTDB `{"rowBatch": ...}`
+// envelope; AppProvider checks it BEFORE the RTDB validators so a malformed RTDB
+// shape can never shadow a feature delivery.
+
+/** What happened to a watched record — lowercase serde wire. */
+export type FeatureChangeKind = 'insert' | 'update' | 'remove';
+
+/**
+ * One notification for one watched record (contract (c)).
+ *
+ * - `featureId` is `null` for canonical-table watches.
+ * - `key` is the declared primary-key values in declaration order; canonical
+ *   watches use `[correlationId, sessionId]`.
+ * - `changedFields` names the fields that changed; `values` carries the FULL
+ *   current record (never a delta) and is `null` on a `remove` (R-3.4).
+ * - `version` is the scope version at which the change was applied (declared
+ *   table `last_version`; canonical row durable `seq`).
+ */
+export interface FeatureRowNotification {
+  watchId: string;
+  featureId: string | null;
+  table: string;
+  kind: FeatureChangeKind;
+  key: unknown[];
+  changedFields: string[];
+  values: Record<string, unknown> | null;
+  version: number;
+  timestamp: string;
+}
+
+/** The batched `{"featureBatch": [...]}` envelope on "fredo-stream-event". */
+export interface FeatureDeliveryBatch {
+  featureBatch: FeatureRowNotification[];
+}
+
+const FEATURE_CHANGE_KINDS: readonly string[] = ['insert', 'update', 'remove'];
+
+/**
+ * Discriminate one incoming "fredo-stream-event" element as a feature-data
+ * notification. Single extraction path — no heuristic fallbacks: the envelope
+ * MUST carry the full pinned field set, and a `remove` MUST carry `values: null`
+ * while an insert/update MUST carry current values (R-3.4).
+ */
+export function isFeatureRowNotification(msg: unknown): msg is FeatureRowNotification {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
+  const m = msg as Record<string, unknown>;
+  if (typeof m.watchId !== 'string' || m.watchId.length === 0) return false;
+  if (m.featureId !== null && typeof m.featureId !== 'string') return false;
+  if (typeof m.table !== 'string' || m.table.length === 0) return false;
+  if (typeof m.kind !== 'string' || !FEATURE_CHANGE_KINDS.includes(m.kind)) return false;
+  if (!Array.isArray(m.key)) return false;
+  if (!Array.isArray(m.changedFields) || !m.changedFields.every((f) => typeof f === 'string')) {
+    return false;
+  }
+  if (m.values !== null && (typeof m.values !== 'object' || Array.isArray(m.values))) return false;
+  if (typeof m.version !== 'number' || !Number.isFinite(m.version)) return false;
+  if (typeof m.timestamp !== 'string') return false;
+  if (m.kind === 'remove') return m.values === null;
+  return m.values !== null;
+}
+
+/**
+ * Discriminate an incoming "fredo-stream-event" payload as a feature-delivery
+ * batch. Checked BEFORE `isRowDeliveryBatch` in AppProvider — the envelopes are
+ * disjoint (`featureBatch` vs `rowBatch`), but the feature discriminator runs
+ * first so feature deliveries are never mis-routed into the RTDB store. A batch
+ * with any malformed element is rejected whole (never partially applied).
+ */
+export function isFeatureDeliveryBatch(msg: unknown): msg is FeatureDeliveryBatch {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
+  const m = msg as Record<string, unknown>;
+  if (!Array.isArray(m.featureBatch)) return false;
+  return m.featureBatch.every((element) => isFeatureRowNotification(element));
+}

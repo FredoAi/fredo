@@ -21,6 +21,14 @@ import {
   useConnectionStatus,
   type RowMutation,
 } from '../../../shared/contexts/StreamContext';
+import {
+  subscribeToFeatureNotificationLog,
+  getFeatureNotificationLogVersion,
+  getFeatureNotifications,
+  clearFeatureNotifications,
+  getKnownFeatureWatches,
+  type FeatureNotificationLogEntry,
+} from '../../../shared/feature-data/store';
 
 export type DevModeEventState = 'Init' | 'Update' | 'Response' | 'Error' | 'Timeout';
 
@@ -137,4 +145,92 @@ export function useDevModeStream(): DevModeStreamState {
   }, []);
 
   return { events: accumulated, eventTypes, isConnected, clearEvents };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FEATURE-DATA PROBE FEED — Spec #2896 ST-5 (A-12)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Reads the module-scoped capped feature-data notification log from
+// `shared/feature-data/store.ts`. Every delivered `featureBatch` element is
+// recorded with `applied` (false = stale-dropped / no-op), so the Dev Mode →
+// Feature Data surface makes per-watch deliveries AND non-deliveries (e.g. a
+// sibling-field watch that never fired) screenshot-visible.
+
+/** Per-watch delivery summary — a known watch with 0 deliveries stays visible. */
+export interface DevModeFeatureWatchSummary {
+  watchId: string;
+  featureId: string | null;
+  table: string;
+  /** Human-readable scope from a hook-registered watch (`null` for IPC-only). */
+  scope: string | null;
+  fields: string[] | null;
+  /** Notifications received for this watch (all of them). */
+  delivered: number;
+  /** Notifications this store actually applied. */
+  applied: number;
+}
+
+export interface DevModeFeatureDataState {
+  notifications: FeatureNotificationLogEntry[];
+  watches: DevModeFeatureWatchSummary[];
+  isConnected: boolean;
+  clear: () => void;
+}
+
+export function useDevModeFeatureData(): DevModeFeatureDataState {
+  const { isConnected } = useConnectionStatus();
+
+  // The log's monotonic version is the recompute driver (the log array is
+  // mutated in place — depending on it would freeze the viewer).
+  const version = useSyncExternalStore(
+    subscribeToFeatureNotificationLog,
+    getFeatureNotificationLogVersion,
+  );
+
+  // Newest-first snapshot; the version dep re-materializes it on every record.
+  const notifications = useMemo(
+    () => [...getFeatureNotifications()].reverse(),
+    [version],
+  );
+
+  const watches = useMemo(() => {
+    const byId = new Map<string, DevModeFeatureWatchSummary>();
+    // Hook-registered watches first, so a 0-delivery watch is still visible.
+    for (const known of getKnownFeatureWatches()) {
+      byId.set(known.watchId, {
+        watchId: known.watchId,
+        featureId: known.featureId,
+        table: known.table,
+        scope: known.scope,
+        fields: known.fields,
+        delivered: 0,
+        applied: 0,
+      });
+    }
+    for (const notification of notifications) {
+      let entry = byId.get(notification.watchId);
+      if (!entry) {
+        entry = {
+          watchId: notification.watchId,
+          featureId: notification.featureId,
+          table: notification.table,
+          scope: null,
+          fields: null,
+          delivered: 0,
+          applied: 0,
+        };
+        byId.set(notification.watchId, entry);
+      }
+      entry.delivered += 1;
+      if (notification.applied) entry.applied += 1;
+    }
+    return [...byId.values()];
+  }, [notifications]);
+
+  const clear = useCallback(() => {
+    clearFeatureNotifications();
+  }, []);
+
+  return { notifications, watches, isConnected, clear };
 }

@@ -11,15 +11,16 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
-import { useEventRows } from '../../../shared/hooks/useEventRows';
 import type { ChatRow, ToolUseRow } from '../../../shared/classes/EventSubscription';
+import { useStream } from '../../../shared/contexts/StreamContext';
 import { tint } from '../../../shared/utils/colorTint';
 import { useDeliveryGraph, type RowGraphSources } from '../hooks/useMissionMonitor';
 import { useDeliverySessions } from '../hooks/useSessionHistory';
+// Spec #2896 ST-9: the per-session canonical activity watch (query scope
+// `sessionId = selected`). ST-6 imports + wires it — it is ST-9's file.
+import { useSessionActivityWatch } from '../hooks/useSessionActivityWatch';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
-import { deriveRowGraphState, deriveRenderableSessions } from '../lib/rowDerivation';
-import type { GraphBuilderState } from '../lib/rowDerivation';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
@@ -29,18 +30,6 @@ import { SubagentNode }      from './nodes/SubagentNode';
 import type { MonitorNodeData } from '../types';
 import { EMPTY_STATE_JOKES } from '../lib/graph';
 import type { DetailOpenTarget } from '../lib/graph';
-import { initMmTables } from '../lib/persistence';
-// #2835 round-2 (ST-4-R2a + ST-8a): the replay recency window (a WINDOW WIDTH,
-// not a compare value — see lib/replayWindow.ts for the magnitude rule) and the
-// feature-local warm-reopen `updatedAt` watermark. The panel computes a
-// MOUNT-STABLE absolute cutoff and mounts the watermark-carrying replay args —
-// `useEventRows` resubscribes when `stableArgsKey(args)` changes, so the args
-// must be render-stable (never an inline `Date.now()` in the render body).
-import {
-  advanceReplayWatermark,
-  buildReplayArgs,
-  MM_REPLAY_WINDOW_NS,
-} from '../lib/replayWindow';
 
 // Referentially stable — all node types
 const NODE_TYPES: NodeTypes = {
@@ -171,17 +160,75 @@ const NoSessionSelected: React.FC = () => (
   </div>
 );
 
+// ── Inline watch-status surface (Spec #2896 ST-6 — UI/UX S6 / QA-3.5) ────────
+//
+// A non-blocking inline status for a failed read/watch or a disconnected
+// stream. Fail-open: previously stored sessions stay visible (the status strip
+// is a flex-shrink sibling above the body — it never replaces the list/canvas).
+// Colour is never the only channel (an icon + text accompany it); all values
+// resolve through theme tokens, and the translucent fills use the shared
+// `tint()` helper (`color-mix`) — NEVER alpha-appended onto a `var()`.
+const WatchStatusBanner: React.FC<{ error: string | null; disconnected: boolean }> = ({
+  error,
+  disconnected,
+}) => {
+  if (error !== null) {
+    return (
+      <div
+        role="alert"
+        data-testid="mm-watch-error"
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '5px 10px',
+          fontSize: 10,
+          lineHeight: 1.4,
+          color: 'var(--text-primary)',
+          background: tint('var(--status-error)', 12),
+          borderBottom: '1px solid var(--status-error)',
+        }}
+      >
+        <span aria-hidden style={{ color: 'var(--status-error)', fontWeight: 700 }}>⚠</span>
+        <span>{`Live session data unavailable — ${error}`}</span>
+      </div>
+    );
+  }
+  if (disconnected) {
+    return (
+      <div
+        role="status"
+        data-testid="mm-watch-disconnected"
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '5px 10px',
+          fontSize: 10,
+          lineHeight: 1.4,
+          color: 'var(--text-primary)',
+          background: tint('var(--status-warning)', 12),
+          borderBottom: '1px solid var(--status-warning)',
+        }}
+      >
+        <span aria-hidden style={{ color: 'var(--status-warning)', fontWeight: 700 }}>●</span>
+        <span>Live updates disconnected — showing stored sessions.</span>
+      </div>
+    );
+  }
+  return null;
+};
+
 // ── Inner canvas ──────────────────────────────────────────────────────────────
 
 interface CanvasProps {
   sessionId: string;
-  /** #2788 P4.2: the typed-row source (subscribed once at the panel level). */
+  /** Spec #2896 ST-6: the SELECTED SESSION's canonical activity rows (the
+   *  `useSessionActivityWatch` view). The graph derives from these only — no
+   *  full-history replay. */
   rows: RowGraphSources;
-  /** #2835 sub-task 1 (R-2.c): the panel's epoch-derived GLOBAL builder state
-   *  (the same `deriveRowGraphState` the graph hook consumes — the session
-   *  list qualification needs it globally). Threading it into the hook
-   *  eliminates the graph hook's duplicate full-store derive per epoch. */
-  builderState: GraphBuilderState;
   onFocusTarget: (target: DetailOpenTarget | null) => void;
   /** #2762 ST-3 (D-6): lifted orphan count — the builder is the authority on
    *  which child-session calls never resolved a parent SubagentNode; the panel
@@ -190,17 +237,16 @@ interface CanvasProps {
 }
 
 const MissionMonitorCanvas: React.FC<CanvasProps> = ({
-  sessionId, rows, builderState, onFocusTarget, onUnattributedCount,
+  sessionId, rows, onFocusTarget, onUnattributedCount,
 }) => {
-  // #2788 P4.2: the graph's data source — typed RTDB rows with replay (the
-  // persisted snapshot restores as full-row inserts; replay replaces the v1
-  // hydration path for the graph). Shared module-scoped row store.
+  // Spec #2896 ST-6: the graph's data source — the selected session's
+  // session-scoped canonical chat/toolUse rows (ST-9's watch). The hook derives
+  // `deriveRowGraphState` internally from these rows.
   const {
     nodes, edges, onNodesChange, onEdgesChange, unattributedCount,
   } = useDeliveryGraph({
     sessionId,
     rows,
-    builderState,
   });
 
   // #2762 ST-3 (D-6): push the builder's orphan count up when it CHANGES
@@ -672,101 +718,46 @@ const MissionMonitorCanvas: React.FC<CanvasProps> = ({
 // ── Outer panel ───────────────────────────────────────────────────────────────
 
 export const MissionMonitorPanel: React.FC = () => {
-  // ── #2788 P4.3: the typed-row source for EVERYTHING in the panel ──────────
-  // Graph + session metrics + session list all read the shared module-scoped
-  // row store via `useEventRows(..., { replay: true })` — the persisted
-  // snapshot restores as full-row inserts and live patches continue on the
-  // same path (one rendering path for restored + live, UI/UX parity
-  // constraint 3). `useDeliverySessions` consumes THIS Chat subscription
-  // (passed as `chatRows`) instead of opening a second full-table replay leg
-  // (#2835 sub-task 2 dedupe — removes ≈14,011 duplicate insert deliveries
-  // on first open).
-  //
-  // #2835 round-2 (ST-4-R2a / ST-8a): the replay snapshot is bounded by a
-  // MOUNT-STABLE real recency cutoff (ST-4-R2a — round 1's defect was a 7-day
-  // WINDOW WIDTH passed as the absolute lower bound; every real row ≈1.7–1.8e18
-  // ns passed it, so the snapshot never narrowed) and, on a WARM reopen, by the
-  // feature-local `updatedAt > watermark` delta bound (ST-8a — the row store is
-  // module-scoped and survives mount/unmount, so only rows the store does NOT
-  // yet hold need to re-drain). The args are captured ONCE per mount in a
-  // `useMemo` — `useEventRows` resubscribes when `stableArgsKey(args)` changes,
-  // so an inline `Date.now()` in the render body would resubscribe + re-replay
-  // on every render. The `replayCompleteQueryId` settle contract + `ready` still
-  // resolve on the terminal marker of the retained single subscription.
-  //
-  // NULL `startedAtNs` policy (ST-4-R2c): rows with no span start are the
-  // mock/edge-only class (real rows always carry `telemetry_spans.start_time_ns`
-  // via the classifier). A time-bounded read has no place for timeless rows —
-  // the `>=` bound excludes them (SQL NULL semantics + the registry's
-  // null-never-matches rule), which is the intended behavior; the drawer's
-  // start-time fallback for a NULL-start row already exists (useSessionHistory
-  // falls back to `updatedAt`).
-  const replayCutoffNs = useMemo(
-    // Magnitude rule: real row `startedAtNs` ≈ Date.now() ms × 1e6 (absolute
-    // epoch ns, 1.7–1.8e18) — the cutoff is now minus the 7-day window width.
-    () => Date.now() * 1e6 - MM_REPLAY_WINDOW_NS,
-    [],
-  );
-  const replayArgs = useMemo(
-    () => ({
-      chat: buildReplayArgs('Chat', replayCutoffNs),
-      toolUse: buildReplayArgs('ToolUse', replayCutoffNs),
-    }),
-    [replayCutoffNs],
-  );
-  const chatRows = useEventRows('Chat', replayArgs.chat, { replay: true });
-  const toolUseRows = useEventRows('ToolUse', replayArgs.toolUse, { replay: true });
-
-  // ── #2835 round-2 (ST-8a): advance the module-scoped last-seen watermark ──
-  // Scans for the max `updatedAt` over the shared row store ONLY when the
-  // store's epoch advances (a real mutation). No setState — module Map only —
-  // so this can never re-render (the #523 no-loop rule). The watermark survives
-  // feature mount/unmount and resets on app restart (module reload): a cold
-  // boot still performs the full windowed replay; a warm reopen drains only the
-  // delta since the store's last-seen row.
-  useEffect(() => {
-    advanceReplayWatermark('Chat', chatRows.rows);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatRows.epoch]);
-  useEffect(() => {
-    advanceReplayWatermark('ToolUse', toolUseRows.rows);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolUseRows.epoch]);
-
-  // ── Spec #2795: the ONE shared renderability rule (AC2/AC3/AC4) ───────────
-  // Derive the graph-builder state from BOTH row sources ONCE here (the same
-  // `deriveRowGraphState` the graph hook consumes), then derive the set of
-  // sessionIds the graph renders ≥1 node for. This single set drives BOTH the
-  // sidebar list inclusion (passed to `useDeliverySessions`) and (structurally,
-  // via the same helpers) the graph node emission — so the list and the canvas
-  // can never disagree. `builderState` is epoch-memoized over the live row
-  // store, so `renderableSessions` recomputes on every real row-store mutation —
-  // a just-started session appears the moment its first renderable row lands
-  // (AC4), never on a mount-time snapshot.
-  const builderState = useMemo(
-    () => deriveRowGraphState(
-      [...chatRows.rows.values()] as ChatRow[],
-      [...toolUseRows.rows.values()] as ToolUseRow[],
-    ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatRows.epoch, toolUseRows.epoch],
-  );
-  const renderableSessions = useMemo(
-    () => deriveRenderableSessions(builderState),
-    [builderState],
-  );
+  // ── Spec #2896 ST-6: the declared-table session list (S0/S1/S5/S6) ────────
+  // The list reads the backend-owned declared `sessions` rollup table — an
+  // initial `feature_data_read` (first round-trip, bounded) plus a table-level
+  // `feature_data_watch` (live). No Chat replay drain, no replay watermark, no
+  // global `deriveRowGraphState` for list qualification: the qualification
+  // predicate runs over the rollup facts (Architect A-11).
   const {
     sessions,
     filteredSessions,
     selectedSessionId,
     selectSession,
-    followSession,
     deleteSession,
     renameSession,
     searchFilter,
     setSearchFilter,
-    userPickedRef,
-  } = useDeliverySessions({ renderableSessions, chatRows });
+    settled: listSettled,
+    error: sessionsError,
+  } = useDeliverySessions();
+
+  // ── Spec #2896 ST-6/ST-9: the SELECTED SESSION's canonical activity ───────
+  // The per-session watch (`sessionId = S` query scope, `initial: true`) is the
+  // canvas + session-metrics source. `sessionId === null` opens no per-session
+  // watch at all (R-5.1); a switch closes A before opening B (R-5.2); only rows
+  // keyed to S are exposed (R-5.3). Work is O(rows of S) — never O(history).
+  const activity = useSessionActivityWatch(selectedSessionId);
+
+  // The graph source + session metrics read the session-scoped activity rows.
+  const rowSources = useMemo<RowGraphSources>(
+    () => ({
+      chat: {
+        rows: activity.chatRows as unknown as Map<string, ChatRow>,
+        epoch: activity.epoch,
+      },
+      toolUse: {
+        rows: activity.toolUseRows as unknown as Map<string, ToolUseRow>,
+        epoch: activity.epoch,
+      },
+    }),
+    [activity.chatRows, activity.toolUseRows, activity.epoch],
+  );
 
   // ── #2748 FIX-3 (round-2 AC4 / R-4.1): the window/dialog identity remnant ──
   // ST-6 removed the in-panel `Mission Monitor · <date> · <sessionId>` header
@@ -796,74 +787,18 @@ export const MissionMonitorPanel: React.FC = () => {
   const [unattributedCount, setUnattributedCount] = useState(0);
   const handleUnattributedCount = useCallback((count: number) => setUnattributedCount(count), []);
 
-  // Initialize SQLite tables on mount
-  useEffect(() => {
-    initMmTables();
-  }, []);
-
-  // ── Auto-follow new sessions (#2758 round-22 C1) ──────────────────────────
-  // Belt-and-suspenders layer over the hook's authoritative follow effect.
-  // A NEWLY SEEN sessionId in the Chat row store is FOLLOWED even when another
-  // session is already auto-selected — but NEVER over an explicit user pick
-  // (row click flips userPickedRef). First pass seeds the known set:
-  // everything observable at mount predates this panel instance and must not
-  // steal focus. Uses followSession (NOT selectSession) so userPickedRef stays
-  // false; membership of the target in `sessions` excludes deleted sessions
-  // (REQ-3). Keyed on the row-store EPOCH — never on map identity/size (the
-  // #523-cycle-1 no-loop rule).
-  const knownSessionIdsRef = useRef<Set<string> | null>(null);
-  useEffect(() => {
-    if (knownSessionIdsRef.current === null) {
-      const seed = new Set<string>();
-      for (const row of chatRows.rows.values()) {
-        const sid = row.sessionId;
-        if (sid) seed.add(sid);
-      }
-      knownSessionIdsRef.current = seed;
-      return;
-    }
-
-    const known = knownSessionIdsRef.current;
-    let newestNewSid: string | null = null;
-    // Map iteration order is row-key insertion order = arrival order — the
-    // LAST newly seen sessionId wins when several appear in one batch.
-    for (const row of chatRows.rows.values()) {
-      const sid = row.sessionId;
-      if (sid && !known.has(sid)) {
-        newestNewSid = sid;
-      }
-    }
-
-    if (newestNewSid === null) return;
-
-    if (userPickedRef.current) {
-      // Explicit pick active — burn the pending sessionId so it cannot steal
-      // focus after a later deselect/reset (same policy as the hook).
-      known.add(newestNewSid);
-      return;
-    }
-
-    if (sessions.some((s) => s.sessionId === newestNewSid)) {
-      known.add(newestNewSid);
-      followSession(newestNewSid);
-    }
-    // Deliberately NOT adding non-followed new sids to the known set: until the
-    // derived list catches up they retry on the next epoch bump —
-    // mirrors the hook's self-healing policy.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatRows.epoch, sessions, followSession, userPickedRef]);
-
   // ── Session metrics (Spec #2717 R-1, #2723 R-1, #2743 ST-3 / AC-12) ───────
-  // Top-strip figures derived from the same TYPED ROWS the graph builder
-  // consumes (P4.2), with the row store's one-row-per-key semantics replacing
-  // the v1 last-wins-per-composite-key dedupe (R-3.2), so Σ per-node ==
-  // session figure by construction. `computeSessionMetrics` extends the token
-  // totals with the session's ESTIMATED COST (Σ per-row costUsd) and TOTAL
-  // MESSAGES (distinct chat keys) under the identical
+  // Top-strip figures derived from the SELECTED SESSION's typed rows (ST-9's
+  // session-scoped activity view), with the row store's one-row-per-key
+  // semantics replacing the v1 last-wins-per-composite-key dedupe (R-3.2), so
+  // Σ per-node == session figure by construction. `computeSessionMetrics`
+  // extends the token totals with the session's ESTIMATED COST (Σ per-row
+  // costUsd) and TOTAL MESSAGES (distinct chat keys) under the identical
   // composited-child-exclusion rule (the `compositedChildSessionId` column).
-  // Memoized on the monotonic row-store epochs — never on map identity/size
-  // (the #523-cycle-1 no-loop rule). Empty sessionId (no selection) yields
-  // all-zero totals; the bar is hidden separately when no session is selected.
+  // Memoized on the activity epoch + the row-source maps — never on map
+  // size/identity (the #523-cycle-1 no-loop rule). Empty sessionId (no
+  // selection) yields all-zero totals; the bar is hidden separately when no
+  // session is selected.
   // #2748 ST-6 (AC3 / R-3.1 compute): the SUBAGENTS figure is computed HERE —
   // `computeSubagentTokenTotals` (over the session's own `task` rows,
   // build/plan excluded) — and passed to the bar as `subagentTokens`;
@@ -876,14 +811,6 @@ export const MissionMonitorPanel: React.FC = () => {
   // combined `estimatedCost` figure (UI/UX: ONE figure, `$X.XXXX`; the
   // parenthetical in its title/aria-label documents the inclusion).
   // No-subagent sessions sum `+ 0` and render byte-unchanged (AC1-2).
-  // #2788 P4.3: the row sources were subscribed at the top of the component —
-  // `useEventRows('Chat' | 'ToolUse', { replay: true })` over the shared
-  // module-scoped row store. The memo re-derives on the monotonic epochs.
-  const rowSources = useMemo(
-    () => ({ chat: chatRows, toolUse: toolUseRows }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatRows.epoch, toolUseRows.epoch, chatRows.error, toolUseRows.error],
-  );
   const sessionMetrics = useMemo(
     () => {
       const chatRowList = [...rowSources.chat.rows.values()];
@@ -919,7 +846,17 @@ export const MissionMonitorPanel: React.FC = () => {
     setFocusTarget(target);
   }, []);
 
-  const isEmpty = sessions.length === 0;
+  // S6: a failed read/watch surfacing the verbatim backend error wins over the
+  // plain disconnect hint; both are non-blocking (fail-open).
+  const watchError = sessionsError ?? activity.error;
+  const { isConnected } = useStream();
+
+  // Spec #2896 ST-6 (S5): the inline spinner EmptyState renders ONLY once the
+  // durable declared-table read has settled empty AND no failure is surfaced.
+  // While the read is in flight (and no warm rows are resident) the canvas area
+  // stays blank — never the spinner, never a transient `0 sessions`. On a
+  // failure the S6 status strip is the surface (never an empty state).
+  const isEmpty = listSettled && watchError === null && sessions.length === 0;
 
   return (
     <div style={{
@@ -933,6 +870,10 @@ export const MissionMonitorPanel: React.FC = () => {
           drawer's "Sessions" header remains the only self-identification.
           The removed header also carried the "No session" placeholder text —
           gone with the strip. */}
+
+      {/* Spec #2896 ST-6 (S6): the non-blocking read/watch/disconnect status —
+          fail-open, so stored sessions stay visible below it. */}
+      <WatchStatusBanner error={watchError} disconnected={!isConnected} />
 
       {/* Body */}
       <div style={{
@@ -952,10 +893,14 @@ export const MissionMonitorPanel: React.FC = () => {
           onToggle={() => setDrawerOpen((v) => !v)}
           searchFilter={searchFilter}
           onSearchChange={setSearchFilter}
+          settled={listSettled}
         />
 
-        {/* Canvas or state */}
-        {isEmpty ? (
+        {/* Canvas or state — pre-read (settled false, no stored rows) renders a
+            blank canvas area, never the spinner / `0 sessions` copy. */}
+        {!listSettled && sessions.length === 0 ? (
+          <div style={{ flex: 1, background: 'var(--body-bg)' }} />
+        ) : isEmpty ? (
           <EmptyState />
         ) : !selectedSessionId ? (
           <NoSessionSelected />
@@ -1000,7 +945,6 @@ export const MissionMonitorPanel: React.FC = () => {
               <MissionMonitorCanvas
                 sessionId={selectedSessionId}
                 rows={rowSources}
-                builderState={builderState}
                 onFocusTarget={handleFocusTarget}
                 onUnattributedCount={handleUnattributedCount}
               />
