@@ -12,6 +12,12 @@ import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureC
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
 // shipped grid texture (ONE definition, shared with the launcher surface).
 import { NONE_BACKGROUND } from '../background/backgroundRegistry';
+// Spec #2899 ST-3 — the selected background id. While a non-`none` background is
+// active the surface drops the shipped grid texture (the pattern lives ONLY in
+// the z=0 `DesktopBackdrop` layer, so it can never lift above a window at
+// SURFACE_Z_OPENED) and keeps a token-derived scrim for launcher legibility.
+import { useBackgroundId } from '../background/backgroundStore';
+import { tint } from '../../../../shared/utils/colorTint';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
@@ -353,6 +359,10 @@ export function voiceStartErrorCopy(code: string | null): string | null {
 
 export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, onOpenFeature }) => {
   const currentWindows = useWindows();
+  // #2899 ST-3 — the desktop surface's fill is conditional on the selection
+  // (see `surfaceCss` below): `none` keeps today's exact texture, any procedural
+  // background yields a token-derived scrim over the z=0 backdrop.
+  const backgroundId = useBackgroundId();
   const { isConnected } = useConnectionStatus();
   const {
     state: companion,
@@ -797,6 +807,17 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // regardless of `coveredByWindow`. The CLOSED state preserves the #2821 z-sink
   // below a maximized window.
   const surfaceZ = open ? SURFACE_Z_OPENED : coveredByWindow ? SURFACE_Z_COVERED : SURFACE_Z_VISIBLE;
+
+  // #2899 ST-3 (Architect API Contracts §4) — the surface keeps the shipped
+  // texture byte-identically for `none` (R-1.3) and switches to a theme-derived
+  // translucent scrim otherwise. The procedural pattern itself lives ONLY in the
+  // z=0 `DesktopBackdrop`; the resting surface at SURFACE_Z_VISIBLE (1100) would
+  // otherwise occlude it, and at SURFACE_Z_OPENED (1300) the pattern would paint
+  // above a window (R-4.1) — so the surface never carries the pattern.
+  const surfaceCss =
+    backgroundId === 'none'
+      ? NONE_BACKGROUND.css
+      : { backgroundColor: tint('var(--body-bg)', 72) };
 
   // Command-bar query filters the grid by tile name (type-ahead highlight).
   const filteredEntries = useMemo(() => {
@@ -1925,7 +1946,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         zIndex={surfaceZ}
         onKeyDown={handleKeyDown}
         onBlur={handleSurfaceBlur}
-        css={NONE_BACKGROUND.css}
+        css={surfaceCss}
       >
         <Box
           ref={columnRef}

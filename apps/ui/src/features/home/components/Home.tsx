@@ -5,6 +5,7 @@ import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
 import { AppDock } from './dock/AppDock';
+import { DesktopBackdrop } from './background/DesktopBackdrop';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
@@ -201,6 +202,10 @@ export const Home: React.FC = () => {
           <WindowSystemProvider>
             <Box display="flex" flexDirection="column" height="100%">
               <Box flex="1" position="relative" overflow="hidden">
+                {/* #2899 ST-3 — the desktop background layer. FIRST child at
+                    zIndex 0, strictly below WindowManager's z=1 container, so it
+                    never paints above a window. Renders null for `none`. */}
+                <DesktopBackdrop />
                 <WindowManager />
                 <HomeDesktop registerOpenFeature={registerOpenFeature} />
                 <AppDock />
