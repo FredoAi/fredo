@@ -132,7 +132,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a plan declares a state contract whose states have no path in the shipped product, so the tester cannot produce evidence, rows stay unverified, and the shortfall is discovered at audit instead of during convergence.
 - **guardrail:** At convergence, every declared UI state must name the user-reachable path that produces it; a state reachable only through a test seam or not at all must be labeled PO-gated / environment-limited in the plan BEFORE implementation, so the tester's rows are scoped honestly and no round is spent chasing it.
 - **home:** playbooks/ui-ux-expert.md (state contracts) + playbooks/self-improver.md (plan review) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-19, #2897) — the class recurred at the plan's declared readiness row: a capability row was unreachable behind the pre-existing settings gate while the server was down, and the model-unsupported variant needed a model swap the product does not offer (single pinned model, no picker). The tester named both as PO-visible limitations rather than convergence scoping them away; no round was burned, but the plan review did not label them up front.
 
 ### G-199: ci_test_target_warnings_pass_local_clippy
 - **activation_date:** 2026-09-19
@@ -732,6 +732,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 - **re-validated:** 2026-09-15, #2877 — the plan's continuous `WHILE` clauses (the visible active-capture indicator held for the whole session; no idle engine/microphone while not listening; opt-in default) each owned explicit checklist lines (ST-5/ST-6/ST-9). The plan-level mapping held — the round-1 F-38 defect was a fix break in the owned line (a duplicate start cleared the indicator), not an unowned continuous requirement, and the rework restored the invariant live. No continuous-requirement gap surfaced.
 - **re-validated:** 2026-09-17, #2882 — the continuous "WHILE Space is held, listening continues and the indicator shows for the whole capture" requirement owned its own checklist line (ST-5, explicitly marked G-123), separated from the discrete keydown/keyup call-sites; the tester's real held-key legs (30,226 ms / 9,610 ms / 8,967 ms holds, 0 ms tap) confirmed the state held for the whole gesture and released cleanly. No continuous-requirement gap surfaced.
+- **re-validated:** 2026-09-19, #2897 — the plan's two continuous `WHILE` clauses (the distinct listening/processing/stopped/error states across a model-audio session; loopback-only delivery with no egress) each owned an explicit checklist line (ST-4 and ST-8, both marked G-123), separate from the discrete start/stop call-sites. The single round-1 FAIL was a break INSIDE an owned line (the `stopped` state had no turn-completion writer), not an unowned continuous requirement, and the rework restored it live in one round. No continuous-requirement gap surfaced.
 
 ### G-124: per_webview_transient_state_ownership_unstated
 - **activation_date:** 2026-09-10
