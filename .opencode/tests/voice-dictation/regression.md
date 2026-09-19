@@ -29,7 +29,8 @@
   **Expected:** ZERO out-of-repo audio references; the only audio source named is the committed fixture + its in-repo
       generator (ST-9's variant); the lever is reproducible on a clean checkout (G-172/G-009).
 
-### #2897 run log — testing round 1
+### #2897 run log — testing round 1 (`spec/2897 @ b2b2e4df`, 2026-09-19, live)
 
-- [ ] _(pending — the Tester appends the fixture hash, the format-pin result, the unset-env behavior, and the grep
-      result; do not pre-fill)_
+- **R-1 PASS** — committed fixture SHA-256 `33c2f129d17a555b9faad66e21eab5c8069712c8836cc8d363e97c1555343428`, 16 kHz mono 16-bit PCM, 25,600 samples / 1.6 s; regeneration byte-identical; the `#2887` format pin still accepts it.
+- **R-2 PASS** — with `FREDO_STT_FEED_WAV` unset (the pre-feed session) the shipped `cpal` path was used (48000 Hz virtual mic), start/stop/cue/mic-release unchanged, console clean.
+- **R-3 PASS** — no out-of-repo audio reference: every audio source named is the in-repo fixture / its deterministic generator; the plan + suites contain no `~`, `%USERPROFILE%`, `node_modules`, `~\.cargo`, or `C:\Windows\Media` asset. **Tooling gap:** the documented `-EnvVars @{ … }` form via `powershell -File` is broken; the feed was driven from the parent env of an allowlisted `bun` launcher.
