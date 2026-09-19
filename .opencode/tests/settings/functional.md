@@ -621,3 +621,24 @@
 - **QA-33 cold-restart leg PASS (live).** Set non-defaults (`interrupt`, grace `10`); ran `dev-env.ps1 -Action Restart -Spec 2892` (full cold app restart); re-opened Settings → Companion: select reads `Interrupt and send now`, grace reads `10`; `localStorage` `interrupt`/`10000` and Tauri `get_setting` `interrupt`/`10000` all survived. Screenshot `r2-qa33-after-restart.png`.
 - **F-47 PASS (live).** `telemetry_spans` = 11336, `max(ingested_at)=2026-09-18T20:59:30.4Z`; markers classified 1/1.
 - **Console:** clean after every interaction (only the pre-existing `motion() is deprecated` WARN).
+
+---
+
+## #2899 extension — the procedural background chooser lives in Settings → Appearance (G-136)
+
+> Issue #2899 surfaces the background chooser in the Appearance section of the Settings feature
+> window (the durable host re-established by #2868). Row maps to the QA Plan `REQ-1` in
+> `.opencode/tmp/2899/triage.md`. This row owns the HOST integration; the background behavior itself
+> lives in `.opencode/tests/theming/` F-20..F-27. **Verification policy: live.**
+
+- [ ] **F-48 (REQ-1 / AC1 host):** Open the Settings window → Appearance; DOM-snapshot + screenshot
+      the section. Confirm the **"Desktop Background"** selector renders alongside the existing
+      theming controls (preset selector, base theme, per-token colors, readout) without displacing or
+      breaking them; select a background, switch to another section and back, then reload.
+  **Expected:** the Desktop Background selector is present with **None + ≥5 procedural options**,
+      **None** the fresh-profile default; the existing Appearance/theming controls are unchanged
+      (theming F-1..F-19 hold); switching sections and back preserves the selection; the value is
+      persisted under the pinned key `Fredo_desktop_background` (`localStorage` + AppStore
+      `get_setting`); no console `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge:** reopen the Settings window; reload the webview; change theme while the selector is
+    focused; a stale stored value heals to None.
