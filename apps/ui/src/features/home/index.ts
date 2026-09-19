@@ -4,4 +4,5 @@ export { ProfileSettingsComponent } from './components/ProfileSettingsComponent'
 // by the Settings shell (Spec #2868 ST-1).
 export { TelemetrySettings } from './components/settings/TelemetrySettings';
 export { DockPositionSettings } from './components/dock/DockPositionSettings';
+export { BackgroundSettings } from './components/background/BackgroundSettings';
 export { LauncherShell } from './components/launcher/LauncherShell';

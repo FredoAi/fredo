@@ -5,7 +5,7 @@ import { CompanionSettingsPanel } from '../../../shared/components/companion/Com
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
 import { SetupWizard } from '../../setup';
-import { TelemetrySettings, DockPositionSettings } from '../../home';
+import { TelemetrySettings, DockPositionSettings, BackgroundSettings } from '../../home';
 import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { tint } from '../../../shared/utils/colorTint';
 
@@ -199,6 +199,11 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === 'appearance' && (
               <Box p={0} minH="100%">
+                {/* Desktop background (Spec #2899 ST-4) — home-owned, rendered
+                    FIRST so the headline control is discoverable without
+                    scrolling; immediate write-through via the background store
+                    (no Save-footer gating). */}
+                <BackgroundSettings />
                 <ThemingSettings />
                 {/* Dock position (Spec #2848 ST-4) — home-owned, rendered
                     BENEATH ThemingSettings; immediate write-through via the
