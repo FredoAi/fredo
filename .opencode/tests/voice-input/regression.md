@@ -498,3 +498,21 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
       capture handle, no dishonesty window. A capture without a visible indicator FAILs (G-158).
   - **Edge:** mode switch mid-listen (defined behavior — must not leave a dishonest/orphan indicator);
       three switch→hold cycles; the resident engine preserved across the switch.
+
+### #2897 testing round 2 — result (`spec/2897 @ be4d3a73`, 2026-09-19, live; fix `f3394e5`)
+
+- **R-30 PASS (live re-run).** mode=`local`: `stt:state {listening:true, phase:null, limitMs:null,
+  engineResident:true}`, placeholder `Listening…`, local chip `Listening` (model chip absent), dot.
+  L3 on the real channel: 2 DISTINCT partials (`The quick brown` → `The quick brown fox jumps`), final
+  `The quick brown fox jumps over the lazy dog` committed + announced; `stt_cancel` → `phase:null`,
+  bar cleared, no model chip. No re-casing churn.
+- **R-31 PASS.** Only `Fredo_companion_voice_handling` changed (`local` ↔ `model`, SQLite + localStorage
+  agreeing); `enabled`/`device_id`/`autosend` byte-unchanged.
+- **R-32 PASS.** F-108 legs 1+2: zero network symbols in `infrastructure/voice/**`; managed host
+  `127.0.0.1`; turn URL loopback.
+- **R-33 PASS.** `pnpm --filter @fredo/ui build` exit 0; `test:run` 102 files / 1,690 tests / 0 failed
+  (round-1 baseline 1,686 → +4 R2-1 pins); grep of the two changed UI files for `rgba(` /
+  `var(--x)NN` alpha-append / true hex colour literals → zero hits. Rust gates via CI `rust-validate`.
+- **R-34 PASS.** Exactly one indicator per session in both modes; the model chip clears on `llm-done`
+  **without the next session** (the round-1 defect) and on cancel; `stt_status.listening=false` after
+  every stop. Caveat resolved.
