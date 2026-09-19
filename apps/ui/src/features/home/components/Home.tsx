@@ -10,6 +10,7 @@ import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
 import { setupFeature } from '../../setup';
 import '../../allFeatures';
+import { declareAllRegisteredFeatureData } from '../../../shared/feature-data/registry';
 import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
@@ -47,6 +48,11 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
         openFeatureWindowRef.current(feature.id, feature);
       });
     });
+    // Spec #2896 ST-5 — bootstrap: materialize EVERY registered feature-data
+    // declaration with ONE idempotent `feature_data_declare` (A-17). Runs at
+    // runtime (after feature modules registered their declarations and after
+    // main.tsx registered the adapter), never at module-evaluation time.
+    void declareAllRegisteredFeatureData();
   }, []);
 
   const handleKonamiCode = useCallback(() => {
