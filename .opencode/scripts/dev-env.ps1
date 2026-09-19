@@ -95,13 +95,21 @@ param(
   # Hygiene passthrough: forward -Kill as process-hygiene.ps1 -KillOrphans.
   [switch]$Kill,
 
-  # Extra environment variables for the LAUNCHED dev instance (Up only), e.g.
-  #   -EnvVars @{ FREDO_STT_FEED_WAV = "C:\repo\...\fixture.wav" }
+  # Extra environment variables for the LAUNCHED dev instance (Up only).
+  # PREFERRED form — repeatable `NAME=value` strings; this is the form that
+  # works under `powershell -File`:
+  #   -EnvVar "FREDO_STT_FEED_WAV=C:\repo\...\fixture.wav"
   # The launched app (and the opencode sessions it spawns) inherit them.
   # This exists because a tester/agent shell has no other way to set a process
   # env var for the app: every script invocation is a fresh shell and shell
   # chaining/metacharacters are sandbox-denied, so an env-gated app seam is
   # otherwise undrivable (see G-172 / the STT deterministic-feed seam).
+  [string[]]$EnvVar = @(),
+
+  # Hashtable form — for DOT-SOURCED callers only. `powershell -File x.ps1
+  # -EnvVars @{ K = "v" }` hands the outer shell a literal that reaches the
+  # script as a STRING, so it fails ("Cannot convert the ... Hashtable value").
+  # Under `powershell -File`, use -EnvVar instead.
   [hashtable]$EnvVars = @{}
 )
 
@@ -116,6 +124,22 @@ function Write-Log {
     "ERROR" { Write-Host "[$ts] $Message" -ForegroundColor Red }
     "WARN"  { Write-Host "[$ts] $Message" -ForegroundColor Yellow }
     default { Write-Host "[$ts] $Message" }
+  }
+}
+
+# Merge the repeatable `-EnvVar NAME=value` form into the hashtable so all
+# callers share one injection path. Fails closed on a malformed pair rather
+# than silently launching without the requested seam.
+if ($EnvVar -and $EnvVar.Count -gt 0) {
+  foreach ($pair in $EnvVar) {
+    $eq = if ($null -ne $pair) { $pair.IndexOf("=") } else { -1 }
+    if ($eq -lt 1) {
+      Write-Log "ERROR: -EnvVar must be NAME=value (got '$pair')" "ERROR"
+      exit 2
+    }
+    $name = $pair.Substring(0, $eq).Trim()
+    $value = $pair.Substring($eq + 1)
+    $EnvVars[$name] = $value
   }
 }
 
@@ -632,8 +656,8 @@ switch ($Action) {
 
     Start-Sleep -Seconds 2
 
-    # Re-invoke Up (forwarding -EnvVars so injected seams survive a Restart)
-    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs -EnvVars $EnvVars
+    # Re-invoke Up (forwarding the env forms so injected seams survive a Restart)
+    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs -EnvVar $EnvVar -EnvVars $EnvVars
     exit $LASTEXITCODE
   }
 

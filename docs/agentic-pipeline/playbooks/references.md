@@ -52,6 +52,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-202: on_the_go_improvement
+- **activation_date:** 2026-09-19
+- **observed:** #2897 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Env-gated seam lever was unusable: the documented dev-env.ps1 hashtable -EnvVars form fails under a powershell -File invocation (the outer shell hands the literal to the script as a string, so it errors 'Cannot convert the System.Collections.Hashtable value'), and the #2897 tester had to invent an ad-hoc bun-launcher workaround to drive FREDO_STT_FEED_WAV. Added a repeatable -EnvVar NAME=value form to dev-env.ps1 (merged into the one injection path, forwarded across Restart, fail-closed on a malformed pair), kept -EnvVars for dot-sourced callers only, and updated the dev-environment skill to document the working form. Validated with test-scripts.ps1 (110/110).
+- **home:** references.md (G-202)
+- **effectiveness:** Pending
+
 
 ### G-194: recompute_cost_invisible_to_output_assertions
 - **activation_date:** 2026-09-19
