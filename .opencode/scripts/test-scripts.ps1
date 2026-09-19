@@ -2146,9 +2146,11 @@ Low
       "|-----|-----------|----------|------------|",
       "| REQ-1 | widget renders | visible | none |",
       "",
-      # #2877 regression: the QA Expert may write the declaration inside a
-      # blockquote — the parser must strip lead markers, not silently drop it.
-      "> **Feature tests:** $feat",
+      # #2877/#2897 regression: the QA Expert may write the declaration inside a
+      # blockquote and/or appended after other prose on the same line — the
+      # parser must find the marker wherever it appears, not silently drop the
+      # suites (a line-leading-only match skipped every suite on #2897).
+      "The following suites were seeded from the QA plan. **Feature tests:** $feat",
       "",
       "## Summary",
       "goal + acceptance criteria",

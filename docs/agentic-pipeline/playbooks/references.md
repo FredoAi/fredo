@@ -52,6 +52,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-203: on_the_go_improvement
+- **activation_date:** 2026-09-19
+- **observed:** #2897 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** The tests-commit auto-persist parser required the Feature tests marker to LEAD the line. The QA Expert appended the declaration to the end of a paragraph on #2897, so the planning-to-implementation transition silently persisted NO suites and the SI had to run tests-commit manually for voice-input and voice-dictation. Hardened parse_feature_names to locate the marker anywhere on the line (line-leading and blockquote forms remain covered), and changed the #2877 regression test to the mid-line prose form so the path cannot regress. Validated with test-scripts.ps1 (110/110).
+- **home:** references.md (G-203)
+- **effectiveness:** Pending
+
 ### G-202: on_the_go_improvement
 - **activation_date:** 2026-09-19
 - **observed:** #2897 round 2
