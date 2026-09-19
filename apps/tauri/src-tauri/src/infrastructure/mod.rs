@@ -2,6 +2,7 @@ pub mod app_open;
 pub mod cli;
 pub mod comm;
 pub mod companion;
+pub mod feature_data;
 pub mod ipc;
 pub mod otlp;
 pub mod rtdb;
