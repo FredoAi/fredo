@@ -96,6 +96,22 @@ pub struct DeclaredRowChange {
     pub version: i64,
 }
 
+/// The outcome of projecting one canonical upsert into ONE declared table.
+///
+/// [`ProjectionEngine::project_reporting`] returns one outcome per affected
+/// declaration, so a single broken declared table (e.g. a physical table whose
+/// schema lacks a declared column) can never abort or suppress the healthy
+/// siblings (ST-4R isolation fix).
+#[derive(Debug)]
+pub struct DeclTableOutcome {
+    /// The declaring feature (`feature_<sanitized id>_<table>` namespace).
+    pub feature_id: String,
+    /// The logical declared table name.
+    pub table: String,
+    /// The projection result for this declaration ALONE.
+    pub result: Result<()>,
+}
+
 /// The watch-registry seam — ST-4 implements this and plugs it in; ST-3 only
 /// emits changes.
 pub trait DeclaredRowObserver: Send + Sync {
@@ -202,13 +218,35 @@ impl ProjectionEngine {
         *guard = None;
     }
 
-    /// Project one canonical upsert. Public for tests; production flows through
-    /// [`RowUpsertObserver::on_row_upsert`].
-    pub fn project(&self, row: &IngestRow, _changed_fields: &[String]) -> Result<()> {
+    /// Project one canonical upsert into EVERY affected declared table, with
+    /// per-declaration isolation: one declaration's failure is returned as that
+    /// outcome's `Err` and never aborts the loop, so a healthy sibling is still
+    /// applied (ST-4R).
+    ///
+    /// Public for tests; production flows through
+    /// [`RowUpsertObserver::on_row_upsert`]. Use [`Self::project`] when a single
+    /// joined `Result` is wanted (existing callers/tests).
+    pub fn project_reporting(
+        &self,
+        row: &IngestRow,
+        _changed_fields: &[String],
+    ) -> Vec<DeclTableOutcome> {
         let _dispatch = self.lock_dispatch();
-        let declarations = self.persisted_declarations()?;
+        let declarations = match self.persisted_declarations() {
+            Ok(declarations) => declarations,
+            // No per-declaration attribution is possible when the declaration
+            // list itself is unreadable — surface it as one engine-level failure
+            // so `project` still returns `Err` (behavior preserved).
+            Err(e) => {
+                return vec![DeclTableOutcome {
+                    feature_id: String::new(),
+                    table: String::new(),
+                    result: Err(e),
+                }];
+            }
+        };
         if declarations.is_empty() {
-            return Ok(());
+            return Vec::new();
         }
 
         let source = source_of(row);
@@ -220,18 +258,47 @@ impl ProjectionEngine {
             self.observe(row);
         }
 
+        let mut outcomes = Vec::new();
         for decl in &declarations {
-            match &decl.declaration.source {
+            let result = match &decl.declaration.source {
                 Some(DataSource::Row(projection)) if projection.from == source => {
-                    self.apply_row_projection(decl, projection, row)?;
+                    self.apply_row_projection(decl, projection, row)
                 }
                 Some(DataSource::SessionRollup(config)) => {
-                    self.apply_session_rollup(decl, config, &session_id)?;
+                    self.apply_session_rollup(decl, config, &session_id)
                 }
-                _ => {}
-            }
+                _ => continue,
+            };
+            outcomes.push(DeclTableOutcome {
+                feature_id: decl.meta.feature_id.clone(),
+                table: decl.meta.table_name.clone(),
+                result,
+            });
         }
-        Ok(())
+        outcomes
+    }
+
+    /// Project one canonical upsert, joining every declaration failure into one
+    /// `Err`. Public for tests; production flows through
+    /// [`RowUpsertObserver::on_row_upsert`]. Delegates to
+    /// [`Self::project_reporting`] so both forms share one implementation.
+    pub fn project(&self, row: &IngestRow, changed_fields: &[String]) -> Result<()> {
+        let failures: Vec<String> = self
+            .project_reporting(row, changed_fields)
+            .into_iter()
+            .filter_map(|outcome| match outcome.result {
+                Ok(()) => None,
+                Err(e) => Some(format!(
+                    "feature '{}' table '{}': {:#}",
+                    outcome.feature_id, outcome.table, e
+                )),
+            })
+            .collect();
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(failures.join("; ")))
+        }
     }
 
     fn persisted_declarations(&self) -> Result<Vec<PersistedDecl>> {
@@ -545,12 +612,19 @@ impl ProjectionEngine {
 
 impl RowUpsertObserver for ProjectionEngine {
     fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
-        if let Err(e) = self.project(row, changed_fields) {
-            tracing::warn!(
-                target: "fredo::feature_data",
-                error = %e,
-                "declared-table projection failed; canonical ingest unaffected"
-            );
+        // Per-declaration isolation: one broken declared table must never stop a
+        // healthy sibling from being applied (ST-4R), so use the reporting form
+        // and log one scoped WARN per failed declaration.
+        for outcome in self.project_reporting(row, changed_fields) {
+            if let Err(e) = outcome.result {
+                tracing::warn!(
+                    target: "fredo::feature_data",
+                    feature_id = %outcome.feature_id,
+                    table = %outcome.table,
+                    error = %e,
+                    "declared-table projection failed; canonical ingest unaffected"
+                );
+            }
         }
     }
 }
@@ -942,6 +1016,59 @@ mod tests {
         }
     }
 
+    /// Two tables under one feature, both projecting the same canonical `chat`
+    /// query — mirrors the real collision shape where a broken declared table
+    /// used to suppress a healthy sibling.
+    fn two_table_declaration() -> FeatureDataDeclaration {
+        let table = |name: &str| FeatureDataTableDeclaration {
+            name: name.to_string(),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                column("id", DeclaredColumnType::Text, false, ColumnOwner::Backend),
+                column("reply", DeclaredColumnType::Text, true, ColumnOwner::Backend),
+            ],
+            source: Some(DataSource::Row(RowProjection {
+                kind: RowProjectionKind::Row,
+                from: ActivitySource::Chat,
+                r#where: None,
+                select: BTreeMap::from([
+                    (
+                        "id".to_string(),
+                        FieldMapping::Field {
+                            field: "correlationId".to_string(),
+                        },
+                    ),
+                    (
+                        "reply".to_string(),
+                        FieldMapping::Field {
+                            field: "agentReply".to_string(),
+                        },
+                    ),
+                ]),
+            })),
+            retention: None,
+        };
+        FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.two.v1".to_string(),
+            tables: vec![table("broken"), table("healthy")],
+        }
+    }
+
+    /// Damage a declared physical table so a projection against it fails:
+    /// recreate it WITHOUT the declared `reply` column (the ST-4R regression
+    /// shape — `no such column`). Done after the declaration so the harness
+    /// itself is unaffected.
+    fn break_physical_table(h: &Harness, table: &str) {
+        h.tables
+            .execute_batch(&format!(
+                "DROP TABLE feature_probe_{table}; \
+                 CREATE TABLE feature_probe_{table} \
+                 (id TEXT PRIMARY KEY, _row_version INTEGER, _updated_at TEXT);"
+            ))
+            .unwrap();
+    }
+
     #[derive(Default)]
     struct CollectingObserver {
         changes: Mutex<Vec<DeclaredRowChange>>,
@@ -1149,6 +1276,66 @@ mod tests {
         assert_eq!(
             changes.last().unwrap().changed_fields,
             vec!["reply".to_string()]
+        );
+    }
+
+    // ── per-declaration isolation (ST-4R) ───────────────────────────────────
+
+    #[test]
+    fn project_reporting_isolates_a_broken_table_from_a_healthy_sibling() {
+        let h = setup(&two_table_declaration());
+        break_physical_table(&h, "broken");
+
+        let row = chat_row(
+            "ses_1",
+            "ses_1_1",
+            RowState::Response,
+            Some("hello"),
+            None,
+            Some(1_000),
+            "2026-09-18T00:00:01+00:00",
+        );
+        let outcomes = h.engine.project_reporting(&IngestRow::Chat(row.clone()), &[]);
+        assert_eq!(outcomes.len(), 2, "one outcome per affected declaration");
+
+        let broken = outcomes
+            .iter()
+            .find(|outcome| outcome.table == "broken")
+            .expect("broken outcome");
+        let healthy = outcomes
+            .iter()
+            .find(|outcome| outcome.table == "healthy")
+            .expect("healthy outcome");
+        assert!(
+            broken.result.is_err(),
+            "the damaged table reports its own failure"
+        );
+        assert!(
+            healthy.result.is_ok(),
+            "the healthy sibling is still applied"
+        );
+
+        let healthy_rows = declared_rows(&h, "probe", "healthy");
+        assert_eq!(
+            healthy_rows.len(),
+            1,
+            "the healthy sibling projected despite the broken table"
+        );
+        assert_eq!(healthy_rows[0].get("reply"), Some(&json!("hello")));
+        assert!(
+            declared_rows(&h, "probe", "broken").is_empty(),
+            "the broken table projected nothing"
+        );
+
+        // The joined `project` form still surfaces the failure (delegation).
+        let err = h
+            .engine
+            .project(&IngestRow::Chat(row), &[])
+            .expect_err("the joined form reports the broken table");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("feature 'probe' table 'broken'"),
+            "the joined error names the failing table: {message}"
         );
     }
 

@@ -15,13 +15,17 @@
 //! and a `PRAGMA query_only=ON` connection for session-id enumeration); it
 //! never writes a canonical table. The declared-table writes and version bumps
 //! all go through the engine's existing path, so a backfilled row is
-//! byte-identical to a live-projected one and `backfill_done` is set once the
-//! pass completes.
+//! byte-identical to a live-projected one. `backfill_done` is set ONLY for a
+//! table whose projections recorded no failure (a `source: None` table or a
+//! source with zero canonical rows completes immediately); a table with a
+//! failed projection keeps its marker unset and retries on the next startup
+//! (ST-4R). Failures are attributed per `(feature_id, table)` so one broken
+//! declared table never suppresses a sibling.
 //!
 //! The runner is spawned, never awaited on the read path — a `feature_data_read`
 //! returns whatever is currently persisted and never blocks on the backfill.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -32,7 +36,7 @@ use rusqlite::Connection;
 use crate::infrastructure::feature_data::declaration::{
     ActivitySource, DataSource, FeatureDataTableDeclaration,
 };
-use crate::infrastructure::feature_data::projection::ProjectionEngine;
+use crate::infrastructure::feature_data::projection::{DeclTableOutcome, ProjectionEngine};
 use crate::infrastructure::feature_data::store::{FeatureDataStore, TableMeta};
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore, StoredRow};
@@ -76,20 +80,20 @@ pub fn backfill_pending(
     }
 
     let mut fed = 0usize;
+    // Success-blind markers are the defect this fixes: record every
+    // per-declaration failure so the owning pending table keeps
+    // `backfill_done = false` and retries on the next startup (ST-4R).
+    let mut failures: BTreeMap<(String, String), String> = BTreeMap::new();
 
     // Row projections: every canonical row of each needed source.
     for tag in &needed_sources {
         let kind = kind_of_tag(*tag);
         for row in rtdb_store.select_snapshot(kind, "1=1", Vec::new())? {
-            if let Err(e) = engine.project(&to_ingest_row(&row), &[]) {
-                tracing::warn!(
-                    target: "fredo::feature_data",
-                    error = %e,
-                    "declared-table backfill projection failed; continuing"
-                );
-            } else {
-                fed += 1;
-            }
+            fed += 1;
+            record_outcomes(
+                &engine.project_reporting(&to_ingest_row(&row), &[]),
+                &mut failures,
+            );
         }
     }
 
@@ -97,29 +101,66 @@ pub fn backfill_pending(
     if needs_rollup {
         for session_id in distinct_session_ids(data_dir)? {
             if let Some(row) = representative_row(rtdb_store, &session_id)? {
-                if let Err(e) = engine.project(&to_ingest_row(&row), &[]) {
-                    tracing::warn!(
-                        target: "fredo::feature_data",
-                        error = %e,
-                        "declared-table backfill rollup failed; continuing"
-                    );
-                } else {
-                    fed += 1;
-                }
+                fed += 1;
+                record_outcomes(
+                    &engine.project_reporting(&to_ingest_row(&row), &[]),
+                    &mut failures,
+                );
             }
         }
     }
 
+    // Set the marker ONLY for pending tables with no recorded failure. A table
+    // whose declaration has `source: None`, or whose source has zero canonical
+    // rows, records no failure and therefore completes successfully.
+    let mut completed = 0usize;
+    let mut failed_tables: Vec<(String, String, String)> = Vec::new();
     for table in &pending {
-        meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
+        match failures.get(&(table.feature_id.clone(), table.table_name.clone())) {
+            Some(error) => failed_tables.push((
+                table.feature_id.clone(),
+                table.table_name.clone(),
+                error.clone(),
+            )),
+            None => {
+                meta.set_backfill_done(&table.feature_id, &table.table_name, true)?;
+                completed += 1;
+            }
+        }
+    }
+
+    for (feature_id, table, error) in &failed_tables {
+        tracing::error!(
+            target: "fredo::feature_data",
+            feature_id = %feature_id,
+            table = %table,
+            error = %error,
+            "declared-table projection backfill failed; backfill_done left unset so the next startup retries"
+        );
     }
     tracing::info!(
         target: "fredo::feature_data",
         tables = pending.len(),
+        completed,
+        failed = failed_tables.len(),
         fed,
         "declared-table projection backfill complete"
     );
     Ok(fed)
+}
+
+/// Record the first failure for every `(feature_id, table)` an outcome reports.
+fn record_outcomes(
+    outcomes: &[DeclTableOutcome],
+    failures: &mut BTreeMap<(String, String), String>,
+) {
+    for outcome in outcomes {
+        if let Err(e) = &outcome.result {
+            failures
+                .entry((outcome.feature_id.clone(), outcome.table.clone()))
+                .or_insert_with(|| format!("{e:#}"));
+        }
+    }
 }
 
 /// Spawned startup/declare wrapper: logs and never propagates.
@@ -205,8 +246,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::infrastructure::feature_data::declaration::{
-        ColumnOwner, DeclaredColumn, DeclaredColumnType, FieldMapping, Retention, RowProjection,
-        RowProjectionKind, SessionRollupKind, SessionRollupProjection,
+        ColumnOwner, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration, FieldMapping,
+        Retention, RowProjection, RowProjectionKind, SessionRollupKind, SessionRollupProjection,
     };
     use crate::infrastructure::feature_data::registry::DeclarationRegistry;
     use crate::infrastructure::feature_data::store::FeatureDataStore;
@@ -283,7 +324,7 @@ mod tests {
         tables: Arc<FeatureStore>,
     }
 
-    fn setup(declaration: FeatureDataTableDeclaration) -> Harness {
+    fn setup_full(full: FeatureDataDeclaration) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
         rtdb_store.ensure_schema().unwrap();
@@ -291,11 +332,6 @@ mod tests {
         meta.ensure_schema().unwrap();
         let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
-        let full = crate::infrastructure::feature_data::declaration::FeatureDataDeclaration {
-            feature_id: "probe".to_string(),
-            declaration_revision: "probe.v1".to_string(),
-            tables: vec![declaration],
-        };
         registry.declare(&full).unwrap();
         let engine =
             Arc::new(ProjectionEngine::new(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap());
@@ -306,6 +342,46 @@ mod tests {
             engine,
             rtdb_store,
             tables,
+        }
+    }
+
+    fn setup(declaration: FeatureDataTableDeclaration) -> Harness {
+        setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.v1".to_string(),
+            tables: vec![declaration],
+        })
+    }
+
+    /// A `row`-sourced table projecting `correlationId`/`agentReply`.
+    fn row_table(name: &str, from: ActivitySource) -> FeatureDataTableDeclaration {
+        FeatureDataTableDeclaration {
+            name: name.to_string(),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                backend_column("id", DeclaredColumnType::Text, false),
+                backend_column("reply", DeclaredColumnType::Text, true),
+            ],
+            source: Some(DataSource::Row(RowProjection {
+                kind: RowProjectionKind::Row,
+                from,
+                r#where: None,
+                select: BTreeMap::from([
+                    (
+                        "id".to_string(),
+                        FieldMapping::Field {
+                            field: "correlationId".to_string(),
+                        },
+                    ),
+                    (
+                        "reply".to_string(),
+                        FieldMapping::Field {
+                            field: "agentReply".to_string(),
+                        },
+                    ),
+                ]),
+            })),
+            retention: None,
         }
     }
 
@@ -397,5 +473,94 @@ mod tests {
             .expect("session b");
         assert_eq!(first.get("chatRowCount"), Some(&serde_json::json!(1)));
         assert!(marker(&h, "sessions"));
+    }
+
+    #[test]
+    fn backfill_failed_projection_leaves_marker_unset_and_does_not_suppress_a_sibling() {
+        let h = setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.multi.v1".to_string(),
+            tables: vec![
+                row_table("broken", ActivitySource::Chat),
+                row_table("healthy", ActivitySource::Chat),
+            ],
+        });
+        h.rtdb_store
+            .upsert_chat_rows(&[
+                chat_row("ses_1", "ses_1_1", 1, "one"),
+                chat_row("ses_1", "ses_1_2", 2, "two"),
+            ])
+            .unwrap();
+        // Damage the `broken` physical table: recreate it without the declared
+        // `reply` column, so every projection against it fails independently.
+        h.tables
+            .execute_batch(
+                "DROP TABLE feature_probe_broken; \
+                 CREATE TABLE feature_probe_broken \
+                 (id TEXT PRIMARY KEY, _row_version INTEGER, _updated_at TEXT);",
+            )
+            .unwrap();
+
+        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(fed, 2, "both canonical chat rows are fed through the engine");
+
+        assert_eq!(
+            declared(&h, "healthy").len(),
+            2,
+            "the healthy sibling still projects every row"
+        );
+        assert!(marker(&h, "healthy"), "the healthy sibling completes");
+        assert!(
+            !marker(&h, "broken"),
+            "a table with a failed projection keeps backfill_done unset"
+        );
+
+        // A retry retries the still-pending broken table and does not duplicate
+        // the healthy sibling's rows.
+        let before = declared(&h, "healthy").len();
+        backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(
+            declared(&h, "healthy").len(),
+            before,
+            "no duplicate projection on retry"
+        );
+        assert!(!marker(&h, "broken"), "still unset until it can project");
+    }
+
+    #[test]
+    fn backfill_zero_row_source_completes_and_sets_the_marker() {
+        let h = setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.empty.v1".to_string(),
+            tables: vec![row_table("empty", ActivitySource::ToolUse)],
+        });
+        // No canonical tool rows exist.
+
+        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(fed, 0, "nothing to feed");
+        assert!(declared(&h, "empty").is_empty());
+        assert!(
+            marker(&h, "empty"),
+            "a source with zero canonical rows completes successfully"
+        );
+    }
+
+    #[test]
+    fn backfill_source_none_table_completes_and_sets_the_marker() {
+        let h = setup_full(FeatureDataDeclaration {
+            feature_id: "probe".to_string(),
+            declaration_revision: "probe.none.v1".to_string(),
+            tables: vec![FeatureDataTableDeclaration {
+                name: "manual".to_string(),
+                primary_key: vec!["id".to_string()],
+                columns: vec![backend_column("id", DeclaredColumnType::Text, false)],
+                source: None,
+                retention: None,
+            }],
+        });
+
+        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        assert_eq!(fed, 0);
+        assert!(marker(&h, "manual"), "a source:None table completes");
     }
 }
