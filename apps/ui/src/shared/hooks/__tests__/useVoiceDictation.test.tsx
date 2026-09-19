@@ -585,6 +585,70 @@ describe('useVoiceDictation — the model-audio phase + ceiling signal (#2897 ST
   });
 });
 
+// ── 3d. REQ-2 — local transcription regression protection (#2897 ST-7) ───────
+//
+// The model-audio additions are ADDITIVE: in `'local'` mode (the default, and
+// the healed value of an absent key on an upgraded install) the shipped
+// transcript merge, lifecycle and idle contract are unchanged, and the
+// model-audio signals stay at their legacy values. These pins ADD to the
+// shipped suite — no existing assertion is weakened.
+
+describe('useVoiceDictation — local transcription regression protection (#2897 ST-7)', () => {
+  it('a full local session keeps the shipped merge + lifecycle and never reports model-audio state', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    // The default/idle contract is the legacy one — every model-audio signal is
+    // at its shipped value with NO `phase`/`limitReached`/`limitMs` on the wire.
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
+    expect(result.current.listening).toBe(true);
+    expect(result.current.origin).toBe('launcher');
+    expect(result.current.modelAudioPhase).toBeNull();
+    expect(result.current.limitReached).toBe(false);
+    expect(result.current.modelAudioLimitMs).toBeNull();
+
+    // Partials/finals merge exactly as shipped (R-3.1).
+    emit('stt:transcript', transcript({ revision: 1, text: 'hello' }));
+    expect(result.current.partial).toBe('Hello');
+    emit('stt:transcript', transcript({ revision: 2, text: 'hello world' }));
+    expect(result.current.partial).toBe('Hello world');
+    emit('stt:transcript', transcript({ revision: 3, text: 'hello world', isFinal: true }));
+    expect(result.current.committed).toBe('Hello world');
+    expect(result.current.partial).toBe('');
+    expect(result.current.liveText).toBe('Hello world');
+
+    // A local stop keeps the legacy shape: no phase, no ceiling, no limit flag.
+    emit('stt:state', { listening: false, code: null, detail: null, origin: 'launcher' });
+    expect(result.current.listening).toBe(false);
+    expect(result.current.modelAudioPhase).toBeNull();
+    expect(result.current.limitReached).toBe(false);
+    expect(result.current.modelAudioLimitMs).toBeNull();
+    expect(result.current.committed).toBe('Hello world');
+  });
+
+  it('a model-audio error code never changes the local transcript path', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
+    emit('stt:transcript', transcript({ revision: 1, text: 'local words' }));
+    expect(result.current.partial).toBe('Local words');
+
+    // The typed model-audio codes are part of the closed vocabulary the local
+    // hook can carry, but they carry no phase/ceiling state.
+    emit('stt:state', {
+      listening: false,
+      code: 'modelAudioUnsupported',
+      detail: 'the model rejected audio',
+      origin: 'launcher',
+    });
+    expect(result.current.errorCode).toBe('modelAudioUnsupported');
+    expect(result.current.modelAudioPhase).toBeNull();
+    expect(result.current.limitReached).toBe(false);
+    expect(result.current.modelAudioLimitMs).toBeNull();
+    // The local transcript already committed is never rewritten by the error.
+    expect(result.current.partial).toBe('Local words');
+  });
+});
+
 // ── 4. start() ──────────────────────────────────────────────────────────────
 
 describe('useVoiceDictation — start()', () => {

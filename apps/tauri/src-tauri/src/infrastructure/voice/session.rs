@@ -2376,6 +2376,77 @@ mod tests {
         assert_eq!(limit_for_handling(VoiceHandling::Local), None);
     }
 
+    /// #2897 ST-7 (REQ-2) — regression protection: a LOCAL session keeps the
+    /// shipped phase-less / ceiling-less wire shape on EVERY read path — the
+    /// active-session accessors, the duplicate-start re-emit, the idle builder
+    /// and the typed error channel. Nothing the model-audio work added may leak
+    /// into the transcription contract.
+    #[test]
+    fn local_session_keeps_the_legacy_phase_less_shape_on_every_path() {
+        // The active-session accessors: Local ⇒ no phase, no ceiling.
+        let (control_tx, _control_rx) = mpsc::channel::<AudioMsg>();
+        let active = ActiveSession {
+            origin: "launcher".to_string(),
+            control_tx,
+            worker: std::thread::spawn(|| {}),
+            mode: VoiceHandling::Local,
+        };
+        assert_eq!(active.phase(), None, "local reports no model-audio phase");
+        assert_eq!(active.limit_ms(), None, "local advertises no pinned ceiling");
+
+        // The duplicate-start re-emit derives from the SAME accessors, so a
+        // duplicate local start stays the shipped shape too.
+        let (_result, event) = already_listening_outcome(Some(&active))
+            .expect("an installed session must yield the duplicate-start outcome");
+        assert!(event.listening);
+        assert_eq!(event.origin.as_deref(), Some("launcher"));
+        assert_eq!(event.phase, None);
+        assert_eq!(event.limit_reached, None);
+        assert_eq!(event.limit_ms, None);
+
+        // The idle builder (status / finish) is phase-less.
+        let idle = listening_state(None);
+        assert_eq!(idle.phase, None);
+        assert_eq!(idle.limit_reached, None);
+        assert_eq!(idle.limit_ms, None);
+
+        // Every typed failure on the local path (disabled / model missing /
+        // engine start) travels on the legacy error channel — no phase/ceiling.
+        for error in [
+            VoiceError::disabled(),
+            VoiceError::model_missing("tokens.txt is missing"),
+            VoiceError::engine_start_failed("OnlineRecognizer::create returned None"),
+        ] {
+            let state = state_event_error(&error, Some("launcher"));
+            assert_eq!(state.phase, None, "a local failure must not claim a phase");
+            assert_eq!(state.limit_reached, None);
+            assert_eq!(state.limit_ms, None);
+        }
+    }
+
+    /// #2897 ST-7 (REQ-2) — the healing reader is the regression guard for the
+    /// upgraded install: an absent key, a legacy/blank raw, and a malformed raw
+    /// all resolve `Local`; ONLY the exact `model` literal selects model audio.
+    /// (The shipped `parse_voice_handling_heals_everything_but_model_to_local`
+    /// pin is unchanged; this asserts the SAME rule at the `Option<&str>` shape
+    /// the AppStore lookup actually hands it — `None` included.)
+    #[test]
+    fn local_is_the_healing_default_for_the_absent_key_case() {
+        assert_eq!(
+            parse_voice_handling(None),
+            VoiceHandling::Local,
+            "an upgraded install with no key must keep local transcription"
+        );
+        for legacy in [Some(""), Some("  "), Some("telepathy"), Some("Model"), Some("MODEL")] {
+            assert_eq!(
+                parse_voice_handling(legacy),
+                VoiceHandling::Local,
+                "{legacy:?} must heal to local"
+            );
+        }
+        assert_eq!(parse_voice_handling(Some("model")), VoiceHandling::Model);
+    }
+
     /// #2897 ST-2 (REQ-6): exactly-at-the-ceiling is also `at_limit:true`, and
     /// the clip is the full ceiling — never a sample short.
     #[test]

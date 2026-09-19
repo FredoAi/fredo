@@ -2904,3 +2904,64 @@ describe('LauncherShell — model-audio delivery glue + fallback (#2897 ST-6)', 
     expect(screen.queryByTestId('launcher-command-listening-status-action')).toBeNull();
   });
 });
+
+// ── Spec #2897 ST-7 — local-transcription regression protection (REQ-2) ───────
+//
+// In `'local'` mode (the default, and the healed value of an absent key on an
+// upgraded install) the model-audio additions are INERT: no clip is taken, no
+// audio turn is dispatched, no model-audio state/notice renders, and the shipped
+// transcript → bar path is the only writer. These pins ADD to the shipped suite.
+describe('LauncherShell — local transcription regression protection (#2897 ST-7)', () => {
+  const input = () => screen.getByRole('searchbox') as BarField;
+
+  const emitState = (payload: Record<string, unknown>) =>
+    act(() => {
+      emit('stt:state', { code: null, detail: null, origin: 'launcher', ...payload });
+    });
+
+  const emitTranscript = (text: string, isFinal: boolean, revision = 1) =>
+    act(() => {
+      emit('stt:transcript', {
+        sessionId: 's',
+        revision,
+        segmentId: 0,
+        text,
+        isFinal,
+        latencyMs: 1,
+      });
+    });
+
+  const renderShell = () =>
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
+
+  it('a local session takes no clip, dispatches no audio turn, and writes the transcript into the bar', async () => {
+    companionMock.current.voiceHandling = 'local';
+    const invoke = vi.fn(async (command: string) =>
+      command === 'stt_start' ? okStart() : undefined,
+    );
+    adapterBridge.setInvoke(invoke as never);
+    renderShell();
+
+    emitState({ listening: true });
+    emitTranscript('dictated locally', false);
+    emitTranscript('dictated locally', true, 2);
+
+    // The shipped transcript → bar write is intact.
+    expect(input().value).toBe('Dictated locally');
+    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+
+    emitState({ listening: false });
+
+    // The model-audio glue is inert in local mode: no clip take, no audio turn.
+    expect(
+      invoke.mock.calls.filter((call) => call[0] === 'stt_take_audio_clip').length,
+    ).toBe(0);
+    expect(companionDispatchMock.askActiveCompanionWithAudio).not.toHaveBeenCalled();
+    // No model-audio limit notice / fallback alert renders.
+    expect(screen.queryByTestId('launcher-command-model-limit-status')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening-status-action')).toBeNull();
+    // The dictated final committed through the SHIPPED text dispatch (autosend OFF
+    // ⇒ the text is left in the bar, never submitted by the glue).
+    expect(input().value).toBe('Dictated locally');
+  });
+});
