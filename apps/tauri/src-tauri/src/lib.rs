@@ -542,6 +542,9 @@ pub fn run() {
             infrastructure::voice::commands::stt_status,
             infrastructure::voice::commands::stt_warm,
             infrastructure::voice::commands::stt_release,
+            // #2897 ST-2 — take (and clear) the bounded model-audio clip after a
+            // model-audio stop; the clip crosses IPC only.
+            infrastructure::voice::commands::stt_take_audio_clip,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,

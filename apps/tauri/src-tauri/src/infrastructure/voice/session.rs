@@ -19,6 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::companion::models::{
@@ -26,11 +27,12 @@ use crate::infrastructure::companion::models::{
 };
 use crate::infrastructure::storage::AppStore;
 use crate::infrastructure::voice::capture::{self, AudioMsg};
-use crate::infrastructure::voice::engine::{self, Recognizer};
+use crate::infrastructure::voice::engine::{self, Recognizer, ENGINE_SAMPLE_RATE};
 use crate::infrastructure::voice::manifest::resolve_stt_manifest;
 use crate::infrastructure::voice::resident::ResidentEngine;
 use crate::infrastructure::voice::state::{
-    SttErrorCode, SttStartResult, SttStateEvent, SttTranscriptEvent, VoiceError,
+    SttAudioClip, SttAudioClipResult, SttErrorCode, SttPhaseWire, SttStartResult, SttStateEvent,
+    SttTranscriptEvent, VoiceError, MAX_AUDIO_CLIP_MS,
 };
 
 /// Persisted Companion preference (written by the ST-5 toggle, DEFAULT false).
@@ -100,17 +102,33 @@ struct ActiveSession {
     origin: String,
     control_tx: Sender<AudioMsg>,
     worker: std::thread::JoinHandle<()>,
+    /// #2897 ST-2: the speech-handling mode this session runs. Stored so the
+    /// live/duplicate-start state can report the model-audio phase truthfully
+    /// (`capturing` for model audio, `None` for local transcription).
+    mode: VoiceHandling,
+}
+
+impl ActiveSession {
+    /// #2897 ST-2 — the phase of this live session (model audio ⇒ `capturing`).
+    fn phase(&self) -> Option<SttPhaseWire> {
+        phase_for_handling(self.mode)
+    }
 }
 
 /// Tauri-managed session state (Send + Sync: only Send fields inside a Mutex).
 pub struct VoiceState {
     inner: Mutex<Option<ActiveSession>>,
+    /// #2897 ST-2: the bounded clip a model-audio stop committed, awaiting
+    /// `stt_take_audio_clip` (which takes + clears it). `None` outside a
+    /// model-audio session; never holds a recognizer or a device.
+    clip: Mutex<Option<SttAudioClip>>,
 }
 
 impl VoiceState {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            clip: Mutex::new(None),
         }
     }
 }
@@ -126,6 +144,15 @@ fn lock_inner(state: &VoiceState) -> MutexGuard<'_, Option<ActiveSession>> {
         Ok(guard) => guard,
         // A poisoned lock still carries the session slot; recover instead of
         // panicking (R-5.6).
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// #2897 ST-2 — the clip slot, recovered from a poisoned lock exactly like the
+/// session slot (never a panic).
+fn lock_clip(state: &VoiceState) -> MutexGuard<'_, Option<SttAudioClip>> {
+    match state.clip.lock() {
+        Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
 }
@@ -250,9 +277,12 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
         code: Some(error.code),
         detail: Some(error.detail.clone()),
         origin: origin.map(|value| value.to_string()),
-        // An error path never captured and never consumed a resident engine.
+        // An error path never captured, never consumed a resident engine, and
+        // never reported a model-audio phase (#2897 ST-2).
         ready_ms: None,
         engine_resident: false,
+        phase: None,
+        limit_reached: None,
     }
 }
 
@@ -261,18 +291,20 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
 /// duplicate-start re-emit and the start success path all derive from this one
 /// function, so the read path and the emit path can never disagree (R-5.3/AC5).
 fn listening_state(origin: Option<String>) -> SttStateEvent {
-    listening_state_with(origin, None, false)
+    listening_state_with(origin, None, false, None)
 }
 
 /// The truthful `stt:state` builder WITH the timing observables (ST-1):
 /// `ready_ms` (start receipt → capture-live) and `engine_resident` (did the
 /// session start from the resident slot). ST-3 stamps these on the start-success
 /// path; every other path reports `None`/`false`, so residency is never
-/// optimistic.
+/// optimistic. #2897 ST-2 adds the model-audio `phase` (the limit flag is
+/// stop-only and is stamped by [`finish_phase`]).
 fn listening_state_with(
     origin: Option<String>,
     ready_ms: Option<u64>,
     engine_resident: bool,
+    phase: Option<SttPhaseWire>,
 ) -> SttStateEvent {
     SttStateEvent {
         listening: origin.is_some(),
@@ -281,7 +313,56 @@ fn listening_state_with(
         origin,
         ready_ms,
         engine_resident,
+        phase,
+        limit_reached: None,
     }
+}
+
+/// #2897 ST-2 — the model-audio phase of a live session: `Capturing` for a
+/// model-audio capture, `None` for the shipped local-transcription path.
+fn phase_for_handling(mode: VoiceHandling) -> Option<SttPhaseWire> {
+    match mode {
+        VoiceHandling::Model => Some(SttPhaseWire::Capturing),
+        VoiceHandling::Local => None,
+    }
+}
+
+/// #2897 ST-2 — the terminal (`listening:false`) phase/limit pair for a finished
+/// session. A model-audio STOP reports `processing` + the clip's at-ceiling flag
+/// (REQ-6); a cancel, a local session, or an absent session reports neither.
+fn finish_phase(
+    mode: Option<VoiceHandling>,
+    is_stop: bool,
+    clip_at_limit: Option<bool>,
+) -> (Option<SttPhaseWire>, Option<bool>) {
+    if mode == Some(VoiceHandling::Model) && is_stop {
+        (
+            Some(SttPhaseWire::Processing),
+            Some(clip_at_limit.unwrap_or(false)),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+/// #2897 ST-2 — take (and clear) the committed clip. Taking is destructive: a
+/// second call returns `clip: None`. The clip is the WHOLE captured audio —
+/// `truncated` is always false (REQ-6 non-lossy).
+fn take_clip(state: &VoiceState) -> SttAudioClipResult {
+    let mut guard = lock_clip(state);
+    SttAudioClipResult {
+        clip: guard.take(),
+        code: None,
+        detail: None,
+    }
+}
+
+/// `stt_take_audio_clip` — take (and clear) the clip a model-audio stop
+/// committed (#2897 ST-2). The clip leaves via IPC only — `voice/` never
+/// transmits it (REQ-8).
+pub(crate) fn take_audio_clip(app: &AppHandle) -> SttAudioClipResult {
+    let state = app.state::<VoiceState>();
+    take_clip(&state)
 }
 
 /// The already-listening gate: `None` when no session is installed (the caller
@@ -298,7 +379,12 @@ fn already_listening_outcome(
     let active = active?;
     Some((
         VoiceError::already_listening().into_start_result(),
-        listening_state(Some(active.origin.clone())),
+        listening_state_with(
+            Some(active.origin.clone()),
+            None,
+            false,
+            active.phase(),
+        ),
     ))
 }
 
@@ -405,27 +491,44 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
         }
     }
 
-    // 3. Model presence gate.
+    // 3. Speech-handling mode + model presence gate. The mode is resolved on
+    // EVERY start (#2897 ST-1/REQ-1) so a settings change applies to the NEXT
+    // listen with no restart. The pinned sherpa model is the ENGINE's gate: a
+    // model-audio session opens no recognizer, so it is neither gated by nor
+    // loads that model (#2897 ST-2).
+    let handling = persisted_voice_handling(app);
+    tracing::debug!("stt_start speech handling: {handling:?}");
     let manifest = resolve_stt_manifest();
     let models_dir = resolve_models_dir(app);
-    if let Some(error) = model_error(&models_dir, &manifest) {
+    let model_gate = if handling == VoiceHandling::Local {
+        model_error(&models_dir, &manifest)
+    } else {
+        None
+    };
+    if let Some(error) = model_gate {
         emit_state(app, &state_event_error(&error, Some(origin)));
         return error.into_start_result();
     }
 
-    // 4. Engine acquisition (ST-3/R-1, R-4): take the parked engine so the
-    // user-visible path only opens capture. When the slot is empty the acquire
-    // resolves through the backend's SINGLE-FLIGHT warm — it joins an in-flight
-    // load, or becomes it — so a concurrent `stt_warm` can only join too: never
-    // a second concurrent model load. `engine_resident` stays false on those
-    // paths, so residency on the wire is never optimistic.
+    // 4. Engine acquisition (ST-3/R-1, R-4) — TRANSCRIPTION ONLY (#2897 ST-2).
+    // Take the parked engine so the user-visible path only opens capture. When
+    // the slot is empty the acquire resolves through the backend's SINGLE-FLIGHT
+    // warm — it joins an in-flight load, or becomes it — so a concurrent
+    // `stt_warm` can only join too: never a second concurrent model load.
+    // `engine_resident` stays false on those paths, so residency on the wire is
+    // never optimistic.
+    //
+    // A model-audio session opens NO recognizer and never consults the warm: the
+    // resident slot is left exactly as it was.
     //
     // The slot generation is snapshotted HERE — before the engine is acquired and
     // before any wait — and every return path hands it back to `put_back`. A
     // `release()` (voice-disabled edge) landing at any point during this session's
     // life therefore invalidates the return, so the engine is dropped instead of
     // re-parked (R-6).
-    let (engine, engine_resident, slot_generation) = {
+    let (engine, engine_resident, slot_generation) = if handling == VoiceHandling::Model {
+        (None, false, 0)
+    } else {
         let resident = app.state::<ResidentEngine>();
         let generation = resident.generation();
         let (engine, engine_resident) = acquire_engine(app, &resident).await;
@@ -437,12 +540,12 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     // against the live device set inside `capture` on the worker — a vanished
     // device is the typed `NoDevice` naming it (AC4), never a silent fallback.
     let selected_device = persisted_device(app);
-    // #2897 ST-1 (REQ-1): resolve the persisted speech-handling mode on EVERY
-    // start so a settings change applies to the NEXT listen with no restart. ST-2
-    // owns the worker's model-audio branch that consumes this; ST-1 ships the
-    // per-start read + the healing parser.
-    let handling = persisted_voice_handling(app);
-    tracing::debug!("stt_start speech handling: {handling:?}");
+    // #2897 ST-2 (E-55): a new listen invalidates any clip a previous session left
+    // untaken, so a re-listen can never deliver stale audio.
+    {
+        let state = app.state::<VoiceState>();
+        *lock_clip(&state) = None;
+    }
     let (tx, rx) = mpsc::channel::<AudioMsg>();
     // The engine handoff channel: the engine is handed to the worker only AFTER
     // the thread is spawned, so a failed spawn can re-park it (below) instead of
@@ -467,6 +570,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
                 outcome_tx,
                 receipt,
                 slot_generation,
+                mode: handling,
             });
         }) {
         Ok(handle) => handle,
@@ -525,17 +629,21 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
                     origin: origin.to_string(),
                     control_tx: tx,
                     worker,
+                    mode: handling,
                 });
             }
             // The two honest observables: `ready_ms` is the true receipt →
             // capture-live elapsed time (a joined launch-window wait included),
             // and `engine_resident` is true only for a genuine slot take.
+            // #2897 ST-2: a model-audio session is `capturing`; a local session
+            // reports no phase (legacy shape).
             emit_state(
                 app,
                 &listening_state_with(
                     Some(origin.to_string()),
                     Some(info.ready_ms),
                     engine_resident,
+                    phase_for_handling(handling),
                 ),
             );
             SttStartResult {
@@ -567,12 +675,14 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
 
 /// `stt_stop` / `stt_cancel`: signal the worker, join it, and report idle.
 async fn finish(app: &AppHandle, message: AudioMsg) -> SttStateEvent {
+    let is_stop = matches!(message, AudioMsg::Stop);
     let session = {
         let state = app.state::<VoiceState>();
         let mut guard = lock_inner(&state);
         guard.take()
     };
     let origin = session.as_ref().map(|session| session.origin.clone());
+    let mode = session.as_ref().map(|session| session.mode);
 
     if let Some(session) = session {
         let ActiveSession {
@@ -581,12 +691,25 @@ async fn finish(app: &AppHandle, message: AudioMsg) -> SttStateEvent {
         let _ = control_tx.send(message);
         // Join off the async runtime thread: the worker flushes (stop) or
         // discards (cancel) before this resolves, so the final transcript is
-        // emitted BEFORE the `listening:false` state event.
+        // emitted BEFORE the `listening:false` state event. For model audio the
+        // worker has committed the clip by the time the join returns.
         let _ = tauri::async_runtime::spawn_blocking(move || {
             let _ = worker.join();
         })
         .await;
     }
+
+    // #2897 ST-2 — a model-audio STOP reports `processing` (the clip is
+    // committed, awaiting interpretation) with the clip's at-ceiling flag
+    // (REQ-6); a cancel, a local session, or an absent session reports neither.
+    let clip_at_limit = if mode == Some(VoiceHandling::Model) && is_stop {
+        let state = app.state::<VoiceState>();
+        let guard = lock_clip(&state);
+        guard.as_ref().map(|clip| clip.at_limit)
+    } else {
+        None
+    };
+    let (phase, limit_reached) = finish_phase(mode, is_stop, clip_at_limit);
 
     let event = SttStateEvent {
         listening: false,
@@ -596,6 +719,8 @@ async fn finish(app: &AppHandle, message: AudioMsg) -> SttStateEvent {
         // Idle: no start happened, so there is no readiness to report.
         ready_ms: None,
         engine_resident: false,
+        phase,
+        limit_reached,
     };
     emit_state(app, &event);
     event
@@ -613,12 +738,18 @@ pub async fn cancel(app: &AppHandle) -> SttStateEvent {
 
 /// `stt_status` — read the current listening state. Derived from the SAME
 /// builder the live `stt:state` emissions use, so the read path and the emit
-/// path cannot disagree (R-5.3).
+/// path cannot disagree (R-5.3). A live model-audio session reports `capturing`
+/// (#2897 ST-2).
 pub fn status(app: &AppHandle) -> SttStateEvent {
     let state = app.state::<VoiceState>();
     let guard = lock_inner(&state);
     match guard.as_ref() {
-        Some(session) => listening_state(Some(session.origin.clone())),
+        Some(session) => listening_state_with(
+            Some(session.origin.clone()),
+            None,
+            false,
+            session.phase(),
+        ),
         None => listening_state(None),
     }
 }
@@ -643,6 +774,9 @@ struct WorkerJob {
     /// path hands it back to `put_back`, so a `release()` landing while the
     /// session is live drops the engine instead of re-parking it (R-6).
     slot_generation: u64,
+    /// #2897 ST-2: the resolved speech-handling mode. `Model` opens no recognizer
+    /// and accumulates the clip; `Local` is the shipped recognition loop.
+    mode: VoiceHandling,
 }
 
 /// Worker thread body: take the engine handed over by `start` (the resident one,
@@ -650,6 +784,10 @@ struct WorkerJob {
 /// device, report readiness with the true `readyMs`, then drive the recognition
 /// loop until Stop/Cancel and return the engine to the resident slot. Owns the
 /// recognizer and the `cpal::Stream` for its whole lifetime.
+///
+/// #2897 ST-2: a model-audio session (`mode == Model`) takes NO engine and NEVER
+/// consults the warm — it opens the SAME capture, accumulates the chunks with no
+/// recognizer, and commits one bounded WAV clip on Stop.
 fn worker_main(job: WorkerJob) {
     let WorkerJob {
         app,
@@ -662,22 +800,31 @@ fn worker_main(job: WorkerJob) {
         outcome_tx,
         receipt,
         slot_generation,
+        mode,
     } = job;
 
     // The engine `start` acquired: the resident take, or the one the
     // single-flight warm (joined or self-started) parked. `None` ⇒ the warm
     // left the slot empty ⇒ the one-time cold load, with the identical typed
     // failures.
-    let resident_engine = engine_rx.recv().ok().flatten();
-    let mut recognizer = match resident_engine {
-        Some(recognizer) => recognizer,
-        None => match engine::load_recognizer(&models_dir) {
-            Ok(recognizer) => recognizer,
-            Err(error) => {
-                let _ = outcome_tx.send(Err(error));
-                return;
-            }
-        },
+    //
+    // #2897 ST-2 — TRANSCRIPTION ONLY: a model-audio session opens no recognizer
+    // and never touches the resident slot, so the engine handoff is skipped
+    // entirely.
+    let recognizer: Option<Box<dyn Recognizer>> = if mode == VoiceHandling::Model {
+        None
+    } else {
+        let resident_engine = engine_rx.recv().ok().flatten();
+        match resident_engine {
+            Some(recognizer) => Some(recognizer),
+            None => match engine::load_recognizer(&models_dir) {
+                Ok(recognizer) => Some(recognizer),
+                Err(error) => {
+                    let _ = outcome_tx.send(Err(error));
+                    return;
+                }
+            },
+        }
     };
 
     let capture = match capture::start_capture(tx, selected_device.as_deref()) {
@@ -685,7 +832,9 @@ fn worker_main(job: WorkerJob) {
         Err(error) => {
             // The engine is still good — park it before reporting the failure so
             // a failed device open never costs the residency (R-7).
-            park_engine(&app, recognizer, slot_generation);
+            if let Some(recognizer) = recognizer {
+                park_engine(&app, recognizer, slot_generation);
+            }
             let _ = outcome_tx.send(Err(error));
             return;
         }
@@ -702,14 +851,137 @@ fn worker_main(job: WorkerJob) {
     };
     if outcome_tx.send(Ok(info)).is_err() {
         // The caller gave up; park the engine, drop capture and exit.
-        park_engine(&app, recognizer, slot_generation);
+        if let Some(recognizer) = recognizer {
+            park_engine(&app, recognizer, slot_generation);
+        }
         return;
     }
 
-    let sink = AppHandleSink::new(app.clone());
-    run_recognition(&sink, &session_id, recognizer.as_mut(), &rx);
-    // `capture` (and its device stream) drops here at end of scope.
-    park_engine(&app, recognizer, slot_generation);
+    match mode {
+        VoiceHandling::Local => {
+            if let Some(mut recognizer) = recognizer {
+                let sink = AppHandleSink::new(app.clone());
+                run_recognition(&sink, &session_id, recognizer.as_mut(), &rx);
+                park_engine(&app, recognizer, slot_generation);
+            }
+        }
+        // #2897 ST-2: no recognizer, no engine — accumulate the bounded clip and
+        // commit it on Stop. `capture` (and its stream/feed) drops at scope end.
+        VoiceHandling::Model => run_model_audio_session(&app, &rx),
+    }
+}
+
+/// #2897 ST-2 — the outcome of a model-audio capture session.
+enum ModelAudioCaptureOutcome {
+    /// Stop committed the clip: the accumulated samples + whether the pinned
+    /// ceiling auto-stopped capture. `truncated` is always false (non-lossy).
+    Clip { samples: Vec<f32>, at_limit: bool },
+    /// Cancel discarded everything — no clip is produced.
+    Discarded,
+}
+
+/// #2897 ST-2 — the model-audio loop: accumulate `AudioMsg::Samples` with NO
+/// recognizer, bound the buffer at [`MAX_AUDIO_CLIP_MS`] (REQ-6), commit on Stop
+/// / discard on Cancel. Once the ceiling is reached, nothing further is
+/// accumulated (bounded memory) — the session stays live until the user ends the
+/// gesture, so no stale-session race is introduced.
+fn run_model_audio_capture(rx: &Receiver<AudioMsg>) -> ModelAudioCaptureOutcome {
+    let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
+    let mut samples: Vec<f32> = Vec::new();
+    let mut at_limit = false;
+
+    while let Ok(message) = rx.recv() {
+        match message {
+            AudioMsg::Samples(chunk) => {
+                if at_limit {
+                    // The pinned ceiling was reached: keep the session alive for
+                    // the user's gesture but accumulate nothing further.
+                    continue;
+                }
+                let remaining = cap - samples.len();
+                if chunk.len() >= remaining {
+                    samples.extend_from_slice(&chunk[..remaining]);
+                    at_limit = true;
+                } else {
+                    samples.extend_from_slice(&chunk);
+                }
+            }
+            AudioMsg::Stop => {
+                return ModelAudioCaptureOutcome::Clip { samples, at_limit };
+            }
+            AudioMsg::Cancel => return ModelAudioCaptureOutcome::Discarded,
+        }
+    }
+
+    // The sender dropped without Stop/Cancel (session teardown): commit what was
+    // captured, honestly reporting whether the ceiling had been reached.
+    ModelAudioCaptureOutcome::Clip { samples, at_limit }
+}
+
+/// #2897 ST-2 — run a model-audio worker session to completion: accumulate, then
+/// encode + stash the clip on Stop. The clip leaves via IPC
+/// (`stt_take_audio_clip`) only — `voice/` never transmits it (REQ-8).
+fn run_model_audio_session(app: &AppHandle, rx: &Receiver<AudioMsg>) {
+    let ModelAudioCaptureOutcome::Clip { samples, at_limit } = run_model_audio_capture(rx) else {
+        // Cancel: no clip, nothing stashed (the clip was cleared at start).
+        return;
+    };
+    let clip = encode_clip(&samples, at_limit);
+    let state = app.state::<VoiceState>();
+    let mut guard = lock_clip(&state);
+    *guard = Some(clip);
+}
+
+/// #2897 ST-2 — samples for a millisecond duration at the 16 kHz engine rate.
+fn ms_to_samples(ms: u64) -> usize {
+    (ms * ENGINE_SAMPLE_RATE as u64 / 1_000) as usize
+}
+
+/// #2897 ST-2 — the duration of a sample run at the 16 kHz engine rate.
+fn samples_to_ms(samples: usize) -> u64 {
+    samples as u64 * 1_000 / ENGINE_SAMPLE_RATE as u64
+}
+
+/// #2897 ST-2 — encode one bounded capture as the clip wire type. `truncated` is
+/// ALWAYS false: the clip is the WHOLE captured audio (REQ-6 non-lossy).
+fn encode_clip(samples: &[f32], at_limit: bool) -> SttAudioClip {
+    let wav = encode_wav_16k_mono(samples);
+    SttAudioClip {
+        base64: STANDARD.encode(&wav),
+        format: "wav".to_string(),
+        sample_rate: ENGINE_SAMPLE_RATE as u32,
+        duration_ms: samples_to_ms(samples.len()),
+        limit_ms: MAX_AUDIO_CLIP_MS,
+        at_limit,
+        truncated: false,
+    }
+}
+
+/// #2897 ST-2 — encode 16 kHz mono f32 samples as a 16-bit PCM RIFF/WAVE. Pure
+/// over the samples (no audio device, no file): the bytes are the clip handed
+/// over IPC. Samples are clamped to [-1, 1] before the 16-bit conversion.
+fn encode_wav_16k_mono(samples: &[f32]) -> Vec<u8> {
+    let sample_rate = ENGINE_SAMPLE_RATE as u32;
+    let data_len = (samples.len() * 2) as u32;
+    let mut bytes = Vec::with_capacity(44 + data_len as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVE");
+    bytes.extend_from_slice(b"fmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    bytes.extend_from_slice(&2u16.to_le_bytes()); // block align
+    bytes.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for &sample in samples {
+        let pcm = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+        bytes.extend_from_slice(&pcm.to_le_bytes());
+    }
+    bytes
 }
 
 fn elapsed_ms(since: Instant) -> u64 {
@@ -1263,16 +1535,19 @@ mod tests {
     /// is visible on the wire, never masked.
     #[test]
     fn start_success_state_carries_the_receipt_based_ready_ms_and_residency() {
-        let resident = listening_state_with(Some("launcher".to_string()), Some(137), true);
+        let resident = listening_state_with(Some("launcher".to_string()), Some(137), true, None);
         assert!(resident.listening);
         assert_eq!(resident.origin.as_deref(), Some("launcher"));
         assert_eq!(resident.ready_ms, Some(137));
         assert!(resident.engine_resident);
         assert!(resident.code.is_none());
         assert!(resident.detail.is_none());
+        // #2897 ST-2 — a local (no-phase) start reports no model-audio phase.
+        assert!(resident.phase.is_none());
+        assert!(resident.limit_reached.is_none());
 
         // The join shape: a large, honest wait that includes the joined warm.
-        let joined = listening_state_with(Some("launcher".to_string()), Some(2_940), false);
+        let joined = listening_state_with(Some("launcher".to_string()), Some(2_940), false, None);
         assert!(joined.listening);
         assert_eq!(
             joined.ready_ms,
@@ -1283,6 +1558,16 @@ mod tests {
             !joined.engine_resident,
             "a joined warm is NOT a resident start (never an optimistic stamp)"
         );
+
+        // #2897 ST-2 — a model-audio start reports `capturing`.
+        let model = listening_state_with(
+            Some("launcher".to_string()),
+            Some(80),
+            false,
+            Some(SttPhaseWire::Capturing),
+        );
+        assert_eq!(model.phase, Some(SttPhaseWire::Capturing));
+        assert!(model.limit_reached.is_none());
     }
 
     /// ST-3/R-1: no error path may claim readiness or residency — the two
@@ -1479,8 +1764,12 @@ mod tests {
             ready_ms >= 5,
             "readyMs measures the joined wait; got {ready_ms} ms"
         );
-        let state =
-            listening_state_with(Some("launcher".to_string()), Some(ready_ms), engine_resident);
+        let state = listening_state_with(
+            Some("launcher".to_string()),
+            Some(ready_ms),
+            engine_resident,
+            None,
+        );
         assert_eq!(state.ready_ms, Some(ready_ms));
         assert!(
             !state.engine_resident,
@@ -1557,6 +1846,7 @@ mod tests {
             origin: "launcher".to_string(),
             control_tx,
             worker: std::thread::spawn(|| {}),
+            mode: VoiceHandling::Local,
         };
 
         // The gate yields on an installed session: the caller returns before the
@@ -1745,5 +2035,249 @@ mod tests {
         let error = model_error(dir.path(), &manifest).expect("truncated encoder must error");
         assert_eq!(error.code, SttErrorCode::ModelCorrupt);
         assert!(error.detail.contains(encoder.filename()));
+    }
+
+    // -----------------------------------------------------------------------
+    // #2897 ST-2 — the model-audio capture session
+    // -----------------------------------------------------------------------
+
+    /// Drive the model-audio accumulator with the pre-filled channel dropped
+    /// before the call, so `recv()` ends deterministically.
+    fn drive_model_audio(messages: Vec<AudioMsg>) -> ModelAudioCaptureOutcome {
+        let (tx, rx) = mpsc::channel::<AudioMsg>();
+        for message in messages {
+            tx.send(message).expect("channel send");
+        }
+        drop(tx);
+        run_model_audio_capture(&rx)
+    }
+
+    /// #2897 ST-2: chunks accumulate with NO recognizer and a manual Stop commits
+    /// the whole capture with `at_limit:false`.
+    #[test]
+    fn model_audio_accumulates_every_chunk_and_commits_on_stop() {
+        let outcome = drive_model_audio(vec![
+            AudioMsg::Samples(vec![0.25_f32; 4]),
+            AudioMsg::Samples(vec![0.5_f32; 4]),
+            AudioMsg::Stop,
+        ]);
+        match outcome {
+            ModelAudioCaptureOutcome::Clip { samples, at_limit } => {
+                assert_eq!(samples.len(), 8, "both chunks accumulate");
+                assert_eq!(samples[0], 0.25);
+                assert_eq!(samples[7], 0.5);
+                assert!(!at_limit, "a manual stop under the ceiling is not at-limit");
+            }
+            ModelAudioCaptureOutcome::Discarded => panic!("stop must commit the clip"),
+        }
+    }
+
+    /// #2897 ST-2 (REQ-4): cancel discards everything — no clip is produced.
+    #[test]
+    fn model_audio_cancel_discards_with_no_clip() {
+        let outcome = drive_model_audio(vec![
+            AudioMsg::Samples(vec![0.0_f32; 4]),
+            AudioMsg::Cancel,
+        ]);
+        assert!(
+            matches!(outcome, ModelAudioCaptureOutcome::Discarded),
+            "cancel must discard the capture"
+        );
+    }
+
+    /// #2897 ST-2 (REQ-6): the accumulation is bounded by the SINGLE pinned
+    /// `MAX_AUDIO_CLIP_MS`, everything past the ceiling is dropped, and the
+    /// captured prefix is kept sample-for-sample (the whole capture, no truncation
+    /// of what was captured).
+    #[test]
+    fn model_audio_bounds_accumulation_at_the_pinned_ceiling() {
+        let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
+        assert_eq!(MAX_AUDIO_CLIP_MS, 30_000, "the provisional pinned ceiling");
+        assert_eq!(cap, 480_000, "30 s at 16 kHz");
+        assert_eq!(cap % 3200, 0, "the ceiling lands on a whole capture chunk");
+
+        // 2× the ceiling: the tail past the cap is dropped, the prefix survives.
+        let mut messages = Vec::new();
+        for _ in 0..(cap / 3200 * 2) {
+            messages.push(AudioMsg::Samples(vec![0.5_f32; 3200]));
+        }
+        messages.push(AudioMsg::Stop);
+
+        match drive_model_audio(messages) {
+            ModelAudioCaptureOutcome::Clip { samples, at_limit } => {
+                assert_eq!(samples.len(), cap, "bounded at the pinned ceiling");
+                assert!(at_limit, "reaching the ceiling IS the at-limit flag");
+                assert!(
+                    samples.iter().all(|&sample| sample == 0.5),
+                    "no captured prefix sample may be dropped"
+                );
+            }
+            ModelAudioCaptureOutcome::Discarded => panic!("stop must commit the clip"),
+        }
+    }
+
+    /// #2897 ST-2 (REQ-6): exactly-at-the-ceiling is also `at_limit:true`, and
+    /// the clip is the full ceiling — never a sample short.
+    #[test]
+    fn model_audio_marks_the_exact_ceiling_at_limit_with_the_full_clip() {
+        let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
+        let mut messages = Vec::new();
+        for _ in 0..(cap / 3200) {
+            messages.push(AudioMsg::Samples(vec![0.1_f32; 3200]));
+        }
+        messages.push(AudioMsg::Stop);
+
+        match drive_model_audio(messages) {
+            ModelAudioCaptureOutcome::Clip { samples, at_limit } => {
+                assert_eq!(samples.len(), cap);
+                assert!(at_limit);
+            }
+            ModelAudioCaptureOutcome::Discarded => panic!("stop must commit the clip"),
+        }
+    }
+
+    /// #2897 ST-2: the duration helpers are the ONE sample↔ms rule, derived from
+    /// the 16 kHz engine rate.
+    #[test]
+    fn clip_duration_helpers_round_trip_at_16khz() {
+        assert_eq!(ms_to_samples(30_000), 480_000);
+        assert_eq!(samples_to_ms(480_000), 30_000);
+        assert_eq!(ms_to_samples(1_600), 25_600);
+        assert_eq!(samples_to_ms(25_600), 1_600);
+    }
+
+    /// #2897 ST-2: the clip is a 16 kHz mono 16-bit PCM RIFF/WAVE, sample-for-
+    /// sample, with clamping at the extremes.
+    #[test]
+    fn model_audio_clip_encodes_a_16k_mono_16bit_wav() {
+        let samples = vec![0.0_f32, 0.5, -0.5, 1.0];
+        let wav = encode_wav_16k_mono(&samples);
+
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes([wav[4], wav[5], wav[6], wav[7]]), 36 + 8);
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[12..16], b"fmt ");
+        assert_eq!(u32::from_le_bytes([wav[16], wav[17], wav[18], wav[19]]), 16);
+        assert_eq!(u16::from_le_bytes([wav[20], wav[21]]), 1, "PCM");
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1, "mono");
+        assert_eq!(
+            u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]),
+            16_000,
+            "16 kHz"
+        );
+        assert_eq!(
+            u32::from_le_bytes([wav[28], wav[29], wav[30], wav[31]]),
+            32_000,
+            "byte rate = 16 kHz × 2 bytes"
+        );
+        assert_eq!(u16::from_le_bytes([wav[32], wav[33]]), 2, "block align");
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "16-bit");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(
+            u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]),
+            8,
+            "4 samples × 2 bytes"
+        );
+        assert_eq!(wav.len(), 44 + 8);
+
+        assert_eq!(i16::from_le_bytes([wav[44], wav[45]]), 0);
+        assert_eq!(
+            i16::from_le_bytes([wav[46], wav[47]]),
+            (0.5_f32 * i16::MAX as f32).round() as i16
+        );
+        assert_eq!(
+            i16::from_le_bytes([wav[48], wav[49]]),
+            (-0.5_f32 * i16::MAX as f32).round() as i16
+        );
+        assert_eq!(i16::from_le_bytes([wav[50], wav[51]]), i16::MAX);
+
+        // Out-of-range input clamps instead of wrapping.
+        let clamped = encode_wav_16k_mono(&[2.0, -2.0]);
+        assert_eq!(i16::from_le_bytes([clamped[44], clamped[45]]), i16::MAX);
+        assert_eq!(i16::from_le_bytes([clamped[46], clamped[47]]), -i16::MAX);
+    }
+
+    /// #2897 ST-2 (REQ-6): the clip always reports the pinned limit, the real
+    /// duration, and `truncated:false` — even at the ceiling (non-lossy).
+    #[test]
+    fn model_audio_clip_reports_the_pinned_limit_and_never_truncates() {
+        let samples = vec![0.0_f32; ms_to_samples(1_600)];
+        let clip = encode_clip(&samples, false);
+        assert_eq!(clip.format, "wav");
+        assert_eq!(clip.sample_rate, ENGINE_SAMPLE_RATE as u32);
+        assert_eq!(clip.duration_ms, 1_600);
+        assert_eq!(clip.limit_ms, MAX_AUDIO_CLIP_MS);
+        assert!(!clip.at_limit);
+        assert!(!clip.truncated, "truncated is ALWAYS false (REQ-6 non-lossy)");
+        assert!(!clip.base64.is_empty());
+
+        let at_limit = encode_clip(&vec![0.0_f32; ms_to_samples(MAX_AUDIO_CLIP_MS)], true);
+        assert_eq!(at_limit.duration_ms, MAX_AUDIO_CLIP_MS);
+        assert!(at_limit.at_limit);
+        assert!(
+            !at_limit.truncated,
+            "even an at-ceiling clip is the WHOLE capture — never truncated"
+        );
+    }
+
+    /// #2897 ST-2: taking the clip is destructive and clears the slot, so a
+    /// second take (or a take with nothing committed) yields `clip: None`.
+    #[test]
+    fn take_audio_clip_is_destructive_and_clears_the_slot() {
+        let state = VoiceState::new();
+        let clip = encode_clip(&[0.0_f32; 16], false);
+
+        assert!(
+            take_clip(&state).clip.is_none(),
+            "an empty slot yields no clip"
+        );
+
+        *lock_clip(&state) = Some(clip.clone());
+        let taken = take_clip(&state);
+        let taken_clip = taken.clip.expect("the committed clip is taken");
+        assert_eq!(taken_clip.base64, clip.base64);
+        assert_eq!(taken_clip.limit_ms, MAX_AUDIO_CLIP_MS);
+        assert!(!taken_clip.truncated);
+
+        assert!(
+            take_clip(&state).clip.is_none(),
+            "taking is destructive: a second call has nothing"
+        );
+    }
+
+    /// #2897 ST-2: only a model-audio session reports `capturing`; the local
+    /// transcription path keeps the legacy (no-phase) shape.
+    #[test]
+    fn phase_for_handling_marks_only_model_audio_capturing() {
+        assert_eq!(
+            phase_for_handling(VoiceHandling::Model),
+            Some(SttPhaseWire::Capturing)
+        );
+        assert_eq!(phase_for_handling(VoiceHandling::Local), None);
+    }
+
+    /// #2897 ST-2 (REQ-4/REQ-6): the terminal event reports `processing` + the
+    /// at-ceiling flag ONLY for a model-audio STOP; cancel/local stay phase-less.
+    #[test]
+    fn finish_phase_reports_processing_only_for_a_model_audio_stop() {
+        assert_eq!(
+            finish_phase(Some(VoiceHandling::Model), true, Some(true)),
+            (Some(SttPhaseWire::Processing), Some(true))
+        );
+        assert_eq!(
+            finish_phase(Some(VoiceHandling::Model), true, Some(false)),
+            (Some(SttPhaseWire::Processing), Some(false))
+        );
+        assert_eq!(
+            finish_phase(Some(VoiceHandling::Model), false, None),
+            (None, None),
+            "a cancel never reports processing"
+        );
+        assert_eq!(
+            finish_phase(Some(VoiceHandling::Local), true, None),
+            (None, None),
+            "a local stop keeps the legacy shape"
+        );
+        assert_eq!(finish_phase(None, true, None), (None, None));
     }
 }

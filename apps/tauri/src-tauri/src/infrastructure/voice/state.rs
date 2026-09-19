@@ -9,7 +9,7 @@ use serde::Serialize;
 
 /// Typed STT failure vocabulary. Serialized as `noDevice`, `permissionDenied`,
 /// `modelMissing`, `modelCorrupt`, `engineStartFailed`, `alreadyListening`,
-/// `disabled`, `internal`.
+/// `disabled`, `internal`, `modelAudioUnsupported`, `modelAudioUnavailable`.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum SttErrorCode {
@@ -21,6 +21,29 @@ pub enum SttErrorCode {
     AlreadyListening,
     Disabled,
     Internal,
+    /// #2897 ST-6 (REQ-7): the managed model cannot accept audio input.
+    ModelAudioUnsupported,
+    /// #2897 ST-6 (REQ-7): the managed model server is not installed/running.
+    ModelAudioUnavailable,
+}
+
+/// #2897 ST-2 (REQ-6) — the pinned per-input ceiling, in milliseconds, that the
+/// captured model-audio clip is bounded by. SINGLE SOURCE: the session derives
+/// its sample cap from this and reports it back on every clip as `limitMs`; the
+/// UI never hardcodes a duration. The value is PROVISIONAL (30 s) — ST-5
+/// finalizes it from the Tester's F-110 measured ceiling (ST-0's live receipt).
+pub const MAX_AUDIO_CLIP_MS: u64 = 30_000;
+
+/// #2897 ST-2 — the model-audio session phase on the wire. `None` on every
+/// legacy / `'local'` path. `stopped` / `error` are deliberately NOT wire
+/// values: the UI derives them from `listening:false` + `code`.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum SttPhaseWire {
+    /// Capture is live; the clip is accumulating (REQ-3).
+    Capturing,
+    /// A stop committed the clip; the turn is awaiting interpretation (REQ-4).
+    Processing,
 }
 
 /// Result of `stt_start`. `started:false` always carries a typed `code` and a
@@ -67,6 +90,45 @@ pub struct SttStateEvent {
     /// True iff the engine was RESIDENT (warm) when this session started.
     /// Never optimistic: `false` until the engine genuinely sits in the slot.
     pub engine_resident: bool,
+    /// #2897 ST-2 — the model-audio phase (`capturing` / `processing`), or `None`
+    /// on every legacy / `'local'` path. ADDITIVE.
+    pub phase: Option<SttPhaseWire>,
+    /// #2897 ST-2 (REQ-6) — `Some(true)` iff the stop auto-stopped at
+    /// [`MAX_AUDIO_CLIP_MS`], `Some(false)` on a manual model-audio stop, `None`
+    /// on every other path. ADDITIVE.
+    pub limit_reached: Option<bool>,
+}
+
+/// #2897 ST-2 — the bounded model-audio clip handed back by
+/// `stt_take_audio_clip`. It crosses IPC only; `infrastructure/voice/` never
+/// transmits it (REQ-8).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SttAudioClip {
+    /// 16 kHz mono 16-bit PCM WAV, base64-encoded — the WHOLE captured clip.
+    pub base64: String,
+    /// Always `"wav"`.
+    pub format: String,
+    /// Always [`super::engine::ENGINE_SAMPLE_RATE`] (16 000).
+    pub sample_rate: u32,
+    /// Captured audio duration, derived from the sample count.
+    pub duration_ms: u64,
+    /// The pinned per-input ceiling the clip was bounded by ([`MAX_AUDIO_CLIP_MS`]).
+    pub limit_ms: u64,
+    /// True iff capture auto-stopped at the ceiling (REQ-6).
+    pub at_limit: bool,
+    /// ALWAYS false — the non-lossy invariant, pinned by test (REQ-6).
+    pub truncated: bool,
+}
+
+/// Result of `stt_take_audio_clip`: the taken clip, or `clip: None` when no
+/// model-audio session has committed one (never taken / cancel / already taken).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SttAudioClipResult {
+    pub clip: Option<SttAudioClip>,
+    pub code: Option<SttErrorCode>,
+    pub detail: Option<String>,
 }
 
 /// Result of `stt_warm` (ST-1). `warmed:true` is reported ONLY once the engine
@@ -206,6 +268,16 @@ impl VoiceError {
         )
     }
 
+    /// #2897 ST-6 (REQ-7): the installed companion model cannot interpret audio.
+    pub fn model_audio_unsupported(detail: impl Into<String>) -> Self {
+        Self::new(SttErrorCode::ModelAudioUnsupported, detail)
+    }
+
+    /// #2897 ST-6 (REQ-7): the managed model server is not installed/running.
+    pub fn model_audio_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(SttErrorCode::ModelAudioUnavailable, detail)
+    }
+
     pub fn internal(detail: impl Into<String>) -> Self {
         Self::new(SttErrorCode::Internal, detail)
     }
@@ -300,6 +372,7 @@ mod tests {
 
     /// ST-1: the two new `stt:state` observables are ADDITIVE — the shipped
     /// field names are unchanged and the timing fields serialize as camelCase.
+    /// #2897 ST-2 adds `phase` / `limitReached` additively to the same payload.
     #[test]
     fn state_event_carries_the_additive_timing_observables() {
         let event = SttStateEvent {
@@ -309,6 +382,8 @@ mod tests {
             origin: Some("launcher".to_string()),
             ready_ms: Some(42),
             engine_resident: true,
+            phase: None,
+            limit_reached: None,
         };
         let json = serde_json::to_value(&event).expect("serialize state event");
         assert_eq!(json["listening"], true);
@@ -318,5 +393,114 @@ mod tests {
         assert_eq!(json["engineResident"], true);
         assert!(json.get("ready_ms").is_none());
         assert!(json.get("engine_resident").is_none());
+        // #2897 ST-2 — the additive pair is present and null on a local session.
+        assert_eq!(json["phase"], serde_json::Value::Null);
+        assert_eq!(json["limitReached"], serde_json::Value::Null);
+    }
+
+    /// #2897 ST-2 (REQ-3/REQ-4/REQ-6): the model-audio phase and the
+    /// at-ceiling flag serialize as the camelCase wire the launcher indicator
+    /// derives from.
+    #[test]
+    fn state_event_carries_the_model_audio_phase_and_limit() {
+        let capturing = SttStateEvent {
+            listening: true,
+            code: None,
+            detail: None,
+            origin: Some("launcher".to_string()),
+            ready_ms: Some(9),
+            engine_resident: false,
+            phase: Some(SttPhaseWire::Capturing),
+            limit_reached: None,
+        };
+        let json = serde_json::to_value(&capturing).expect("serialize capturing state");
+        assert_eq!(json["phase"], "capturing");
+        assert_eq!(json["limitReached"], serde_json::Value::Null);
+
+        let stopped = SttStateEvent {
+            listening: false,
+            code: None,
+            detail: None,
+            origin: Some("launcher".to_string()),
+            ready_ms: None,
+            engine_resident: false,
+            phase: Some(SttPhaseWire::Processing),
+            limit_reached: Some(true),
+        };
+        let json = serde_json::to_value(&stopped).expect("serialize processing state");
+        assert_eq!(json["listening"], false);
+        assert_eq!(json["phase"], "processing");
+        assert_eq!(json["limitReached"], true);
+
+        // A manual model-audio stop reports an explicit (not null) false.
+        assert_eq!(
+            serde_json::to_value(SttPhaseWire::Processing).expect("serialize phase"),
+            "processing"
+        );
+        assert_eq!(
+            serde_json::to_value(SttPhaseWire::Capturing).expect("serialize phase"),
+            "capturing"
+        );
+    }
+
+    /// #2897 ST-2 — the clip wire shape the delivery path consumes: base64 + the
+    /// pinned format/sample-rate/limit, with `truncated` ALWAYS false (REQ-6
+    /// non-lossy invariant).
+    #[test]
+    fn audio_clip_and_result_serialize_as_camel_case() {
+        let clip = SttAudioClip {
+            base64: "UklGRg==".to_string(),
+            format: "wav".to_string(),
+            sample_rate: super::super::engine::ENGINE_SAMPLE_RATE as u32,
+            duration_ms: 1_600,
+            limit_ms: MAX_AUDIO_CLIP_MS,
+            at_limit: false,
+            truncated: false,
+        };
+        let result = SttAudioClipResult {
+            clip: Some(clip),
+            code: None,
+            detail: None,
+        };
+        let json = serde_json::to_value(&result).expect("serialize clip result");
+        assert_eq!(json["clip"]["base64"], "UklGRg==");
+        assert_eq!(json["clip"]["format"], "wav");
+        assert_eq!(json["clip"]["sampleRate"], 16_000);
+        assert_eq!(json["clip"]["durationMs"], 1_600);
+        assert_eq!(json["clip"]["limitMs"], MAX_AUDIO_CLIP_MS);
+        assert_eq!(json["clip"]["atLimit"], false);
+        assert_eq!(json["clip"]["truncated"], false);
+        assert_eq!(json["code"], serde_json::Value::Null);
+        assert_eq!(json["detail"], serde_json::Value::Null);
+        assert!(json["clip"].get("sample_rate").is_none());
+        assert!(json["clip"].get("limit_ms").is_none());
+
+        // The empty slot is a truthful `clip: None`, not an error.
+        let empty = SttAudioClipResult {
+            clip: None,
+            code: None,
+            detail: None,
+        };
+        let json = serde_json::to_value(&empty).expect("serialize empty result");
+        assert_eq!(json["clip"], serde_json::Value::Null);
+    }
+
+    /// #2897 ST-2/ST-6 — the two new failure variants keep their exact camelCase
+    /// wire names.
+    #[test]
+    fn model_audio_error_codes_are_pinned_to_their_wire_names() {
+        assert_eq!(
+            serde_json::to_string(&SttErrorCode::ModelAudioUnsupported).expect("serialize"),
+            "\"modelAudioUnsupported\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SttErrorCode::ModelAudioUnavailable).expect("serialize"),
+            "\"modelAudioUnavailable\""
+        );
+
+        let unsupported = VoiceError::model_audio_unsupported("the model has no audio encoder");
+        assert_eq!(unsupported.code, SttErrorCode::ModelAudioUnsupported);
+        let unavailable = VoiceError::model_audio_unavailable("the model server is not running");
+        assert_eq!(unavailable.code, SttErrorCode::ModelAudioUnavailable);
     }
 }

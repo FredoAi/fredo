@@ -117,6 +117,9 @@ describe('useVoiceDictation — control-plane subscription', () => {
     expect(result.current.origin).toBeNull();
     // #2887 ST-7 — fail-closed: unknown residency is NOT resident.
     expect(result.current.engineResident).toBe(false);
+    // #2897 ST-2 — no model-audio phase and no ceiling signal while idle.
+    expect(result.current.modelAudioPhase).toBeNull();
+    expect(result.current.limitReached).toBe(false);
   });
 
   it('never statically imports @tauri-apps/api, never uses useEventRows, no auto-submit, no POC residue', () => {
@@ -415,6 +418,138 @@ describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', ()
     });
     expect(result.current.errorCode).toBe('disabled');
     expect(result.current.engineResident).toBe(false);
+  });
+});
+
+// ── 3c. The model-audio phase + ceiling signal (#2897 ST-2) ─────────────────
+//
+// The backend stamps `phase` on `stt:state` (`capturing` on the start,
+// `processing` on a model-audio stop) and `limitReached` on the at-ceiling stop.
+// The launcher's model-audio indicator derives its `processing` state from
+// `modelAudioPhase` even though `listening` is already false; `stopped`/`error`
+// remain client-derived from `listening` + `code`.
+
+describe('useVoiceDictation — the model-audio phase + ceiling signal (#2897 ST-2)', () => {
+  it('mirrors capturing → processing across a model-audio session', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'capturing',
+    });
+    expect(result.current.modelAudioPhase).toBe('capturing');
+    expect(result.current.listening).toBe(true);
+
+    // The stop committed the clip: `listening` is false but the turn is still
+    // being processed — the phase (not `listening`) carries the indicator.
+    emit('stt:state', {
+      listening: false,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'processing',
+    });
+    expect(result.current.listening).toBe(false);
+    expect(result.current.modelAudioPhase).toBe('processing');
+  });
+
+  it('leaves the phase null on a legacy / local-transcription state', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
+    expect(result.current.modelAudioPhase).toBeNull();
+
+    emit('stt:state', {
+      listening: false,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: null,
+      limitReached: null,
+    });
+    expect(result.current.modelAudioPhase).toBeNull();
+  });
+
+  it('surfaces limitReached only on the at-ceiling stop, and resets on the next listen', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'capturing',
+      limitReached: null,
+    });
+    expect(result.current.limitReached).toBe(false);
+
+    // The bound auto-stopped capture: a warning treatment, never an error.
+    emit('stt:state', {
+      listening: false,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'processing',
+      limitReached: true,
+    });
+    expect(result.current.limitReached).toBe(true);
+    expect(result.current.errorCode).toBeNull();
+
+    // The next session starts from a clean slate.
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'capturing',
+      limitReached: null,
+    });
+    expect(result.current.limitReached).toBe(false);
+  });
+
+  it('clears the phase when a typed error ends the session', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'capturing',
+    });
+    expect(result.current.modelAudioPhase).toBe('capturing');
+
+    emit('stt:state', {
+      listening: false,
+      code: 'modelAudioUnavailable',
+      detail: 'the model server is not running',
+      origin: 'launcher',
+    });
+    expect(result.current.modelAudioPhase).toBeNull();
+    expect(result.current.errorCode).toBe('modelAudioUnavailable');
+  });
+
+  it('resets the ceiling signal optimistically on a new start()', async () => {
+    invokeMock.mockResolvedValue(okStart());
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: false,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'processing',
+      limitReached: true,
+    });
+    expect(result.current.limitReached).toBe(true);
+
+    await act(async () => {
+      await result.current.start('launcher');
+    });
+    expect(result.current.limitReached).toBe(false);
   });
 });
 

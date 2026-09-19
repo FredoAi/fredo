@@ -29,6 +29,7 @@ pub use session::{
     VOICE_HANDLING_KEY,
 };
 pub use state::{
-    SttDeviceInfo, SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent,
-    SttTranscriptEvent, SttWarmResult, VoiceError,
+    SttAudioClip, SttAudioClipResult, SttDeviceInfo, SttDevicesResult, SttErrorCode, SttPhaseWire,
+    SttStartResult, SttStateEvent, SttTranscriptEvent, SttWarmResult, VoiceError,
+    MAX_AUDIO_CLIP_MS,
 };

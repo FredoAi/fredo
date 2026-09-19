@@ -55,7 +55,16 @@ export type VoiceErrorCode =
   | 'engineStartFailed'
   | 'alreadyListening'
   | 'disabled'
-  | 'internal';
+  | 'internal'
+  | 'modelAudioUnsupported'
+  | 'modelAudioUnavailable';
+
+/**
+ * Spec #2897 ST-2 — Rust `SttPhaseWire` (camelCase wire): the model-audio
+ * capture phase. `stopped` / `error` are deliberately NOT wire values — the
+ * indicator derives them from `listening:false` + `code`.
+ */
+export type VoiceModelAudioPhase = 'capturing' | 'processing';
 
 /** Rust `SttTranscriptEvent` (camelCase wire). */
 export interface SttTranscriptEvent {
@@ -86,6 +95,18 @@ export interface SttStateEvent {
    * JOINED the in-flight warm reports `false`, as does every idle/error event.
    */
   engineResident?: boolean;
+  /**
+   * Spec #2897 ST-2 — the model-audio phase (`capturing` while accumulating,
+   * `processing` once a stop committed the clip). `null` on every legacy /
+   * `'local'` path.
+   */
+  phase?: VoiceModelAudioPhase | null;
+  /**
+   * Spec #2897 ST-2 (REQ-6) — `true` iff the stop auto-stopped at the pinned
+   * clip ceiling; `false` on a manual model-audio stop; `null` on every other
+   * path. Not an error state.
+   */
+  limitReached?: boolean | null;
 }
 
 /** Rust `SttStartResult` (camelCase wire). */
@@ -124,6 +145,17 @@ export interface VoiceDictation {
    * session has started — the launch window, when the engine is not resident yet.
    */
   engineResident: boolean;
+  /**
+   * Spec #2897 ST-2 — the model-audio phase the launcher indicator derives from:
+   * `'capturing'` while the clip accumulates, `'processing'` once a stop
+   * committed it, `null` on every legacy / local-transcription path.
+   */
+  modelAudioPhase: VoiceModelAudioPhase | null;
+  /**
+   * Spec #2897 ST-2 (REQ-6) — the most recent stop auto-stopped at the pinned
+   * clip ceiling. A warning treatment, never an error.
+   */
+  limitReached: boolean;
   start(origin: VoiceOrigin): Promise<void>;
   /** Commit the final partial (the backend emits the final first). */
   stop(): Promise<void>;
@@ -152,6 +184,10 @@ export function useVoiceDictation(): VoiceDictation {
   // Spec #2887 ST-7 — fail-closed: unknown residency is NOT resident (the cue
   // therefore says `warming` rather than claiming a warm engine it cannot see).
   const [engineResident, setEngineResident] = useState(false);
+  // Spec #2897 ST-2 — the model-audio phase + the at-ceiling signal the
+  // launcher's model-audio indicator derives from. Both are `stt:state`-driven.
+  const [modelAudioPhase, setModelAudioPhase] = useState<VoiceModelAudioPhase | null>(null);
+  const [limitReached, setLimitReached] = useState(false);
 
   // Cleared on unmount; every async continuation checks it before touching
   // state so a late `stt_start`/`stop`/`cancel` resolution is a no-op.
@@ -222,6 +258,12 @@ export function useVoiceDictation(): VoiceDictation {
       } else if (event.code === 'disabled') {
         setEngineResident(false);
       }
+      // Spec #2897 ST-2 — the model-audio phase travels on the event itself:
+      // `capturing` on the start stamp, `processing` on a model-audio stop, and
+      // `null` (cleared) on every legacy / local / error path. `limitReached`
+      // is a one-shot signal — `true` only on the at-ceiling stop event.
+      setModelAudioPhase(event.phase ?? null);
+      setLimitReached(event.limitReached === true);
     });
 
     return () => {
@@ -236,6 +278,9 @@ export function useVoiceDictation(): VoiceDictation {
     // Optimistically clear the previous failure; the result re-sets it.
     setErrorCode(null);
     setDetail(null);
+    // Spec #2897 ST-2 — a new listen invalidates the previous stop's ceiling
+    // signal; the phase is re-stamped by the backend's `stt:state`.
+    setLimitReached(false);
     try {
       const result = await adapterBridge.invoke<SttStartResult>('stt_start', {
         origin: nextOrigin,
@@ -302,6 +347,8 @@ export function useVoiceDictation(): VoiceDictation {
       deviceName,
       origin,
       engineResident,
+      modelAudioPhase,
+      limitReached,
       start,
       stop,
       cancel,
@@ -315,6 +362,8 @@ export function useVoiceDictation(): VoiceDictation {
       deviceName,
       origin,
       engineResident,
+      modelAudioPhase,
+      limitReached,
       start,
       stop,
       cancel,

@@ -19,7 +19,8 @@ use super::manifest::resolve_stt_manifest;
 use super::resident::ResidentEngine;
 use super::session;
 use super::state::{
-    SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent, SttWarmResult,
+    SttAudioClipResult, SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent,
+    SttWarmResult,
 };
 
 /// Per-file STT model probe result returned by [`stt_check_model`].
@@ -93,6 +94,16 @@ pub async fn stt_cancel(app: AppHandle) -> SttStateEvent {
 #[tauri::command]
 pub fn stt_status(app: AppHandle) -> SttStateEvent {
     session::status(&app)
+}
+
+/// #2897 ST-2 — take (and clear) the bounded model-audio clip a stop committed.
+/// Taking is destructive: a second call returns `clip: None`. The clip is the
+/// ENTIRE captured audio as a 16 kHz mono 16-bit PCM WAV (`truncated` always
+/// false), and it leaves via this IPC command only — `infrastructure/voice/`
+/// never transmits it (REQ-8).
+#[tauri::command]
+pub fn stt_take_audio_clip(app: AppHandle) -> SttAudioClipResult {
+    session::take_audio_clip(&app)
 }
 
 /// Warm the process-resident STT engine (ST-1). Idempotent and engine-only:
