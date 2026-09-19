@@ -1,6 +1,8 @@
 # Realtime Data Layer — Exploratory Probes (Spec #2896)
 
 > Unscripted edge/failure probes for the read/watch layer. A CONFIRMED finding promotes to `functional.md` as a new `F-` case (keep the origin note). Real-path classes (G-088/G-130): multi-hop compositing, contested ownership, mid-switch timing, continuous-stream completeness — fixture-only evidence is invalid.
+>
+> **Round 1 (2026-09-19, `spec/2896 @ c23087fd`):** the upgrade-path probe CONFIRMED a defect and promoted to `functional.md` **F-19** (declared `feature_mission_monitor_sessions` collides with the legacy table ⇒ declared data never materializes). E-1..E-10 (except E-11/E-34) are BLOCKED — no declared-row mutation is possible, so register-vs-mutate races, post-stop deliveries, scope leaks, and delete-while-mutating cannot be observed. E-11/E-34 (console check): PASS — `tauri_read_logs(source="console")` clean after every interaction.
 
 ## Probes to run beyond the script
 
