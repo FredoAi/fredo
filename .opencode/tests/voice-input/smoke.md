@@ -142,3 +142,33 @@
 ### #2888 testing round 1 — result
 
 - [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
+
+---
+
+## #2897 extension — speech-handling mode quick paths
+
+> Issue #2897 adds the **local transcription vs model audio** choice. Quick paths only — the full matrix
+> lives in `functional.md` F-102..F-110 / `regression.md` R-30..R-34 / `exploratory.md` E-52..E-58, and the
+> lever in `.opencode/tests/voice-dictation/`. **Verification policy: live.**
+>
+> **The host has no physical mic** — the audio lever is `FREDO_STT_FEED_WAV` (the in-repo fixture, always
+> paired with an UNSET-env control); the audible-content leg is a named blocker, never a PASS.
+
+- [ ] S-20: **Selector reachable + persists.** Settings app window → Companion → voice group; the
+      `companion-voice-handling-select` renders with `Local transcription` / `Model audio`; select
+      `Model audio`; read `Fredo_companion_voice_handling`; restart the app and re-read.
+      **Expected:** default `'local'`; the change persists byte-exactly and the selector reflects it; screenshot
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-21: **Model-audio listening quick path (no transcript).** With `model` selected and the managed server
+      running, hold Space (L1); sample the bar; release/stop.
+      **Expected:** a `Fredo is listening` indicator (chip/placeholder) is present for the capture with NO
+      dictated words anywhere (see `functional.md` F-104), then the state clears; the transcript announcer stays
+      empty; screenshot succeeds; console clean. **If the pinned model cannot take audio (ST-0 negative) → this
+      quick path asserts the F-107 fallback surface instead — never a fabricated delivery.**
+- [ ] S-22: **Evidence + telemetry receipt.** A capture from S-20/S-21 is uploaded via
+      `upload-evidence --issue 2897`, the raw URL resolves, and it is embedded in `## Tests Runs` with a textual
+      description; the body also references `telemetry_spans` (non-zero, recent `max(ingested_at)`).
+
+### #2897 testing round 1 — result
+
+- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
