@@ -26,7 +26,7 @@
 
 ## Mission Monitor realtime-data quick path (Spec #2896)
 
-- [ ] S-13: Open Mission Monitor with stored history — the session list renders persisted sessions immediately; no visible "0 sessions"/blank phase (`tauri_webview_wait_for` on the first session row succeeds before any blank state is observable); screenshot captured.
-- [ ] S-14: With no session selected, the session list is live — emit an `agent_session`/`chat` event via `fredo emit` with a unique `e2e-<guid8>` session id; the new session appears in the list without reopening, and no per-session detail is delivered as if selected (REQ-5).
-- [ ] S-15: Select a session, switch to a second live session — the first session's activity stops updating and the second's stays live; console clean (`tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`).
-- [ ] S-16: Fully restart the app and reopen Mission Monitor — stored sessions are present on open with no missing/duplicate entries; a previously deleted session stays absent.
+- [ ] S-13 (FAIL 2026-09-19 #2896): Open Mission Monitor with stored history — the list shows `No sessions yet` + spinner `Waiting for agent activity…` despite 29,503 canonical chat rows / 176 sessions. No persisted session renders.
+- [ ] S-14 (FAIL 2026-09-19 #2896): With no session selected, `fredo emit` a `chat` event (`e2e-2896p0a1`) — the new session does NOT appear in the list; the declared table watch shows `0 delivered`; the projection failed (`no such column: sessionId`).
+- [ ] S-15 (UNVERIFIED 2026-09-19 #2896 — named blocker: 0 sessions ⇒ nothing to select or switch): Select a session, switch to a second live session — no sessions exist to drive.
+- [ ] S-16 (FAIL 2026-09-19 #2896): Fully restart the app and reopen Mission Monitor — `No sessions yet` again; the declared store is still 0 rows (`last_version=0`).
