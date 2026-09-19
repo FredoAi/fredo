@@ -37,3 +37,16 @@
 - [ ] S-11: Visual artifacts + gates — `.opencode/tmp/2865/visual-eval-before.md` +
       `before-after-verdict.md` exist; BEFORE/AFTER frames use DISTINCT `before-*`/`after-*` names;
       `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` green.
+
+## #2899 extension — procedural desktop background smoke
+
+> Issue #2899 adds a theme-colored procedural background chooser to Settings → Appearance
+> (**None** default). Live policy — the receipt is a rendered-webview read (`tauri_webview_*`) +
+> screenshot; F-26 in `functional.md` carries the `telemetry_spans` leg.
+
+- [ ] **S-12:** Background selector reachable — Settings → Appearance → Background renders a selector
+      with **None + ≥5 procedural options**; a fresh profile shows **None** selected;
+      `tauri_read_logs(source="console", lines=50)` clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] **S-13:** Quick switch — select a non-None background, confirm the desktop repaints and a feature
+      window still opens/renders above it, screenshot succeeds, console clean; reselect **None** and
+      confirm today's desktop returns.
