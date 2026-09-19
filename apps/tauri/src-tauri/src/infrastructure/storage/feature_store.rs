@@ -19,7 +19,7 @@ pub struct ColumnDef {
     pub primary_key: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
     TEXT,
     INTEGER,
@@ -96,6 +96,24 @@ pub struct FeatureStore {
     conn: Mutex<Connection>,
 }
 
+/// One physical column of a feature-namespaced table, as reported by
+/// `pragma_table_info`.
+///
+/// `sql_type` is the raw declared SQLite type (used in diagnostics); `col_type`
+/// is the normalized affinity produced by the single
+/// [`FeatureStore::normalize_column_type`] rule that [`FeatureStore::column_types`]
+/// also uses. `not_null` / `primary_key` expose the DDL constraints so the
+/// declared-table layer can tell its own tables apart from a foreign/legacy table
+/// that happens to share the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PhysicalColumn {
+    pub name: String,
+    pub sql_type: String,
+    pub col_type: ColumnType,
+    pub not_null: bool,
+    pub primary_key: bool,
+}
+
 impl FeatureStore {
     /// Open (or create) fredo.db with WAL journal mode.
     pub fn open(data_dir: PathBuf) -> Result<Self> {
@@ -135,6 +153,21 @@ impl FeatureStore {
         Ok(full)
     }
 
+    /// Normalize a raw `pragma_table_info.type` string to a [`ColumnType`].
+    ///
+    /// The ONE shared normalization rule — [`Self::column_types`] and
+    /// [`Self::table_schema`] both use it, so the physical/declared type
+    /// comparison in the feature-data registry cannot drift from the physical
+    /// type mapping used by insert/upsert.
+    fn normalize_column_type(type_str: &str) -> ColumnType {
+        match type_str.to_uppercase().as_str() {
+            "INTEGER" => ColumnType::INTEGER,
+            "REAL" => ColumnType::REAL,
+            "BLOB" => ColumnType::BLOB,
+            _ => ColumnType::TEXT,
+        }
+    }
+
     /// Look up the column-name â†’ ColumnType mapping for a feature-namespaced table.
     fn column_types(
         conn: &Connection,
@@ -148,13 +181,7 @@ impl FeatureStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut map = HashMap::new();
         for (name, type_str) in rows {
-            let col_type = match type_str.to_uppercase().as_str() {
-                "INTEGER" => ColumnType::INTEGER,
-                "REAL" => ColumnType::REAL,
-                "BLOB" => ColumnType::BLOB,
-                _ => ColumnType::TEXT,
-            };
-            map.insert(name, col_type);
+            map.insert(name, Self::normalize_column_type(&type_str));
         }
         Ok(map)
     }
@@ -397,14 +424,46 @@ impl FeatureStore {
         Ok(found.is_some())
     }
 
+    /// Physical schema of the given (fully-qualified) table: one entry per column
+    /// in `pragma_table_info` order. An absent table yields an empty `Vec`, which
+    /// callers treat as "table absent".
+    pub(crate) fn table_schema(&self, full_table: &str) -> Result<Vec<PhysicalColumn>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare("SELECT name, type, `notnull`, pk FROM pragma_table_info(?1)")?;
+        let columns = stmt
+            .query_map(params![full_table], |row| {
+                let name: String = row.get(0)?;
+                let sql_type: String = row.get(1)?;
+                Ok(PhysicalColumn {
+                    name,
+                    col_type: Self::normalize_column_type(&sql_type),
+                    sql_type,
+                    not_null: row.get::<_, i64>(2)? != 0,
+                    primary_key: row.get::<_, i64>(3)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(columns)
+    }
+
+    /// Row count of the given (fully-qualified) table.
+    pub(crate) fn row_count(&self, full_table: &str) -> Result<i64> {
+        let conn = self.lock_conn();
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {}", full_table),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     /// Physical column names of the given (fully-qualified) table.
     pub(crate) fn table_column_names(&self, full_table: &str) -> Result<Vec<String>> {
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
-        let names = stmt
-            .query_map(params![full_table], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(names)
+        Ok(self
+            .table_schema(full_table)?
+            .into_iter()
+            .map(|column| column.name)
+            .collect())
     }
 
     /// Lock helper with poison recovery (no `unwrap`).
@@ -1351,5 +1410,67 @@ mod tests {
             .query("idempotent", "multi", None, None, None)
             .unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_table_schema_reports_type_nullability_and_primary_key() {
+        let store = make_store();
+        let columns = vec![
+            ColumnDef {
+                name: "id".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "count".to_string(),
+                col_type: ColumnType::INTEGER,
+                nullable: true,
+                primary_key: false,
+            },
+            ColumnDef {
+                name: "label".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: false,
+            },
+        ];
+        store
+            .ensure_table("myfeature", "mytable", &columns)
+            .unwrap();
+
+        let schema = store.table_schema("feature_myfeature_mytable").unwrap();
+        assert_eq!(schema.len(), 3);
+        assert_eq!(schema[0].name, "id");
+        assert_eq!(schema[0].sql_type, "TEXT");
+        assert_eq!(schema[0].col_type, ColumnType::TEXT);
+        assert!(!schema[0].not_null); // PK, declared without NOT NULL here
+        assert!(schema[0].primary_key);
+        assert_eq!(schema[1].name, "count");
+        assert_eq!(schema[1].col_type, ColumnType::INTEGER);
+        assert_eq!(schema[2].name, "label");
+        assert!(schema[2].not_null, "declared non-nullable");
+        assert!(!schema[2].primary_key);
+
+        // `table_column_names` delegates to the same physical inspection.
+        assert_eq!(
+            store.table_column_names("feature_myfeature_mytable").unwrap(),
+            vec!["id", "count", "label"]
+        );
+
+        // An absent table yields an empty physical schema.
+        assert!(store
+            .table_schema("feature_myfeature_missing")
+            .unwrap()
+            .is_empty());
+
+        let row = serde_json::json!({"id": "a", "count": 1, "label": "x"})
+            .as_object()
+            .unwrap()
+            .clone();
+        store
+            .insert("myfeature", "mytable", &[row])
+            .unwrap();
+        assert_eq!(store.row_count("feature_myfeature_mytable").unwrap(), 1);
     }
 }

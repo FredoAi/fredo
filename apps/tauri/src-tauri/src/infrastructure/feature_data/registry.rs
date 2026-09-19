@@ -21,9 +21,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::infrastructure::storage::feature_store::FeatureStore;
+use crate::infrastructure::storage::feature_store::{ColumnType, FeatureStore, PhysicalColumn};
 
-use super::declaration::{DeclaredColumn, FeatureDataDeclaration, FeatureDataTableDeclaration};
+use super::declaration::{
+    is_reserved_column, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration,
+    FeatureDataTableDeclaration,
+};
 use super::store::{FeatureDataStore, TableMeta};
 
 /// One materialized declared table (the `feature_data_declare` result element,
@@ -49,13 +52,28 @@ pub struct PersistedTable {
 /// The migration decision for one declared table.
 #[derive(Clone, Debug, PartialEq)]
 enum MigrationPlan {
-    /// No metadata row — create the physical table + metadata.
+    /// No declared-layer table — create the physical table + metadata.
     Create,
     /// Declaration content is unchanged — ensure the table exists, touch nothing.
     EnsureOnly,
     /// Additive column additions (possibly empty when only `source`/`retention`
     /// changed) — `ALTER TABLE ADD COLUMN` each, then update the metadata.
     AddColumns(Vec<DeclaredColumn>),
+    /// The physical table that owns the declared name is NOT the declared layer
+    /// (a foreign/legacy table: it lacks the reserved columns and/or carries
+    /// undeclared columns). The declared layer is rebuilt WITHOUT dropping
+    /// anything: the foreign table is renamed to `quarantine`, the declared
+    /// schema is created, and the one-time backfill is re-armed.
+    RebuildLegacy { quarantine: String },
+}
+
+/// One planned table migration — the feature id + revision are carried alongside
+/// the table declaration so `apply_plan` can materialize without re-deriving them.
+struct PlannedTable<'a> {
+    feature_id: &'a str,
+    revision: &'a str,
+    table: &'a FeatureDataTableDeclaration,
+    plan: MigrationPlan,
 }
 
 /// Declaration registry — persisted declarations + idempotent materialization.
@@ -97,22 +115,33 @@ impl DeclarationRegistry {
             return Err(errors);
         }
 
-        let mut planned: Vec<(
-            &FeatureDataDeclaration,
-            &FeatureDataTableDeclaration,
-            MigrationPlan,
-        )> = Vec::new();
+        let mut planned: Vec<PlannedTable<'_>> = Vec::new();
         for declaration in declarations {
             for table in &declaration.tables {
-                if let Err(e) =
-                    FeatureStore::validate_namespace(&declaration.feature_id, &table.name)
+                let full = match FeatureStore::validate_namespace(&declaration.feature_id, &table.name)
                 {
-                    errors.push(format!(
-                        "feature '{}' table '{}' is not a valid feature namespace: {e}",
-                        declaration.feature_id, table.name
-                    ));
-                    continue;
-                }
+                    Ok(full) => full,
+                    Err(e) => {
+                        errors.push(format!(
+                            "feature '{}' table '{}' is not a valid feature namespace: {e}",
+                            declaration.feature_id, table.name
+                        ));
+                        continue;
+                    }
+                };
+                // Physical schema is read regardless of metadata, so a same-named
+                // foreign/legacy table is detected even when the declaration
+                // metadata says the table is already materialized.
+                let physical = match self.store.table_schema(&full) {
+                    Ok(physical) => physical,
+                    Err(e) => {
+                        errors.push(format!(
+                            "feature '{}' table '{}' physical schema read failed: {e}",
+                            declaration.feature_id, table.name
+                        ));
+                        continue;
+                    }
+                };
                 let existing = match self.meta.get_table(&declaration.feature_id, &table.name) {
                     Ok(existing) => existing,
                     Err(e) => {
@@ -123,8 +152,18 @@ impl DeclarationRegistry {
                         continue;
                     }
                 };
-                match compute_plan(&declaration.feature_id, table, existing.as_ref()) {
-                    Ok(plan) => planned.push((declaration, table, plan)),
+                match self.compute_plan(
+                    &declaration.feature_id,
+                    table,
+                    existing.as_ref(),
+                    &physical,
+                ) {
+                    Ok(plan) => planned.push(PlannedTable {
+                        feature_id: &declaration.feature_id,
+                        revision: &declaration.declaration_revision,
+                        table,
+                        plan,
+                    }),
                     Err(mut plan_errors) => errors.append(&mut plan_errors),
                 }
             }
@@ -134,12 +173,17 @@ impl DeclarationRegistry {
         }
 
         let mut materialized = Vec::new();
-        for (declaration, table, plan) in planned {
-            match self.apply_plan(declaration, table, plan) {
+        for planned_table in planned {
+            match self.apply_plan(
+                planned_table.feature_id,
+                planned_table.revision,
+                planned_table.table,
+                planned_table.plan,
+            ) {
                 Ok(m) => materialized.push(m),
                 Err(e) => errors.push(format!(
                     "feature '{}' table '{}' materialization failed: {e}",
-                    declaration.feature_id, table.name
+                    planned_table.feature_id, planned_table.table.name
                 )),
             }
         }
@@ -151,9 +195,12 @@ impl DeclarationRegistry {
         }
     }
 
-    /// Startup path: load every persisted declaration and re-materialize its
-    /// physical table idempotently (`CREATE TABLE IF NOT EXISTS` — existing rows
-    /// are preserved). Never drops or alters anything destructively.
+    /// Startup path: load every persisted declaration and re-materialize it
+    /// through the SAME [`Self::compute_plan`] + [`Self::apply_plan`] path as a
+    /// live declare, so a restart repairs a same-named foreign/legacy physical
+    /// table (rebuild, never drop) instead of silently re-accepting it. Existing
+    /// declared rows are preserved; a `RebuildLegacy` move keeps the foreign table
+    /// and its rows verbatim under the quarantine name.
     pub fn materialize_persisted(&self) -> Result<Vec<MaterializedTable>, Vec<String>> {
         let metas = self.meta.list_tables().map_err(|e| {
             vec![format!(
@@ -176,25 +223,43 @@ impl DeclarationRegistry {
                     }
                 };
 
-            let outcome = (|| -> Result<bool> {
-                let full = FeatureStore::validate_namespace(&meta.feature_id, &meta.table_name)?;
-                let existed = self.store.table_exists(&full)?;
-                self.store
-                    .execute_batch(&create_table_sql(&full, &declaration))?;
-                Ok(existed)
-            })();
+            let full = match FeatureStore::validate_namespace(&meta.feature_id, &meta.table_name) {
+                Ok(full) => full,
+                Err(e) => {
+                    errors.push(format!(
+                        "failed to re-materialize feature '{}' table '{}': {e}",
+                        meta.feature_id, meta.table_name
+                    ));
+                    continue;
+                }
+            };
+            let physical = match self.store.table_schema(&full) {
+                Ok(physical) => physical,
+                Err(e) => {
+                    errors.push(format!(
+                        "failed to read the physical schema for feature '{}' table '{}': {e}",
+                        meta.feature_id, meta.table_name
+                    ));
+                    continue;
+                }
+            };
 
-            match outcome {
-                Ok(existed) => materialized.push(MaterializedTable {
-                    feature_id: meta.feature_id,
-                    table: meta.table_name,
-                    revision: meta.declaration_revision,
-                    created: !existed,
-                }),
-                Err(e) => errors.push(format!(
-                    "failed to re-materialize feature '{}' table '{}': {e}",
-                    meta.feature_id, meta.table_name
-                )),
+            match self.compute_plan(&meta.feature_id, &declaration, Some(&meta), &physical) {
+                Ok(plan) => {
+                    match self.apply_plan(
+                        &meta.feature_id,
+                        &meta.declaration_revision,
+                        &declaration,
+                        plan,
+                    ) {
+                        Ok(m) => materialized.push(m),
+                        Err(e) => errors.push(format!(
+                            "failed to re-materialize feature '{}' table '{}': {e}",
+                            meta.feature_id, meta.table_name
+                        )),
+                    }
+                }
+                Err(mut plan_errors) => errors.append(&mut plan_errors),
             }
         }
 
@@ -263,23 +328,26 @@ impl DeclarationRegistry {
 
     fn apply_plan(
         &self,
-        declaration: &FeatureDataDeclaration,
+        feature_id: &str,
+        declaration_revision: &str,
         table: &FeatureDataTableDeclaration,
         plan: MigrationPlan,
     ) -> Result<MaterializedTable> {
-        let feature_id = &declaration.feature_id;
         let full = FeatureStore::validate_namespace(feature_id, &table.name)?;
         let existed_before = self.store.table_exists(&full)?;
         let declaration_json = serde_json::to_string(table)?;
+        // A rebuild creates the declared schema anew (the name was occupied by a
+        // foreign/legacy table that is moved aside, not by the declared layer).
+        let created = matches!(plan, MigrationPlan::RebuildLegacy { .. }) || !existed_before;
 
         match plan {
             MigrationPlan::Create => {
                 self.store.execute_batch(&create_table_sql(&full, table))?;
                 self.meta.put_table(&TableMeta {
-                    feature_id: feature_id.clone(),
+                    feature_id: feature_id.to_string(),
                     table_name: table.name.clone(),
                     declaration_json,
-                    declaration_revision: declaration.declaration_revision.clone(),
+                    declaration_revision: declaration_revision.to_string(),
                     last_version: 0,
                     backfill_done: false,
                 })?;
@@ -318,10 +386,10 @@ impl DeclarationRegistry {
                         None => (0, false),
                     };
                 self.meta.put_table(&TableMeta {
-                    feature_id: feature_id.clone(),
+                    feature_id: feature_id.to_string(),
                     table_name: table.name.clone(),
                     declaration_json,
-                    declaration_revision: declaration.declaration_revision.clone(),
+                    declaration_revision: declaration_revision.to_string(),
                     last_version,
                     backfill_done: if additions.is_empty() {
                         backfill_done
@@ -330,89 +398,234 @@ impl DeclarationRegistry {
                     },
                 })?;
             }
+            MigrationPlan::RebuildLegacy { quarantine } => {
+                // Migrate, never drop: preserve the foreign/legacy table verbatim
+                // under the quarantine name, then create the declared schema and
+                // re-arm the one-time backfill.
+                let moved = self.store.row_count(&full)?;
+                self.store.execute_batch(&format!(
+                    "ALTER TABLE {} RENAME TO {};",
+                    full, quarantine
+                ))?;
+                self.store.execute_batch(&create_table_sql(&full, table))?;
+                self.meta.put_table(&TableMeta {
+                    feature_id: feature_id.to_string(),
+                    table_name: table.name.clone(),
+                    declaration_json,
+                    declaration_revision: declaration_revision.to_string(),
+                    last_version: 0,
+                    backfill_done: false,
+                })?;
+                tracing::warn!(
+                    target: "fredo::feature_data",
+                    feature_id = %feature_id,
+                    table = %table.name,
+                    quarantine = %quarantine,
+                    moved_rows = moved,
+                    "foreign/legacy physical table moved aside; declared schema created and backfill re-armed"
+                );
+            }
         }
 
         Ok(MaterializedTable {
-            feature_id: feature_id.clone(),
+            feature_id: feature_id.to_string(),
             table: table.name.clone(),
-            revision: declaration.declaration_revision.clone(),
-            created: !existed_before,
+            revision: declaration_revision.to_string(),
+            created,
         })
+    }
+
+    /// Decide how (or whether) to migrate one declared table from the ACTUAL
+    /// physical schema (not only the persisted metadata). `Err` carries the hard
+    /// named refusal messages for destruction-only changes.
+    fn compute_plan(
+        &self,
+        feature_id: &str,
+        table: &FeatureDataTableDeclaration,
+        existing: Option<&TableMeta>,
+        physical: &[PhysicalColumn],
+    ) -> Result<MigrationPlan, Vec<String>> {
+        let persisted: Option<FeatureDataTableDeclaration> = match existing {
+            Some(meta) => match serde_json::from_str(&meta.declaration_json) {
+                Ok(persisted) => Some(persisted),
+                Err(e) => {
+                    return Err(vec![format!(
+                        "persisted declaration for feature '{feature_id}' table '{}' is unreadable: {e}",
+                        table.name
+                    )])
+                }
+            },
+            None => None,
+        };
+
+        // R-4.3 refusal precedence: a declaration that removes/retypes/owner-changes
+        // a column or changes the primary key is refused BEFORE any physical
+        // classification or write, so no rebuild and no data deletion can happen.
+        if let Some(persisted) = &persisted {
+            let mut errors = Vec::new();
+            if persisted.primary_key != table.primary_key {
+                errors.push(format!(
+                    "feature '{feature_id}' table '{}' cannot change its primary key from [{}] to [{}] \
+                     (declared schema is additive-only; no data was deleted)",
+                    table.name,
+                    persisted.primary_key.join(", "),
+                    table.primary_key.join(", ")
+                ));
+            }
+
+            for old in &persisted.columns {
+                match table.column(&old.name) {
+                    None => errors.push(format!(
+                        "feature '{feature_id}' table '{}' cannot drop declared column '{}' \
+                         (declared schema is additive-only; no data was deleted)",
+                        table.name, old.name
+                    )),
+                    Some(new) if new.col_type != old.col_type => errors.push(format!(
+                        "feature '{feature_id}' table '{}' cannot retype column '{}' from {} to {} \
+                         (declared schema is additive-only; no data was deleted)",
+                        table.name,
+                        old.name,
+                        old.col_type.as_str(),
+                        new.col_type.as_str()
+                    )),
+                    Some(new) if new.owner != old.owner => errors.push(format!(
+                        "feature '{feature_id}' table '{}' cannot change the owner of column '{}' \
+                         (declared schema is additive-only; no data was deleted)",
+                        table.name, old.name
+                    )),
+                    Some(_) => {}
+                }
+            }
+
+            if !errors.is_empty() {
+                return Err(errors);
+            }
+        }
+
+        // Table absent from the physical layer (including stale metadata for a
+        // dropped table) → (re)create it.
+        if physical.is_empty() {
+            return Ok(MigrationPlan::Create);
+        }
+
+        // A physical table that is not the declared layer is foreign/legacy (the
+        // real-world legacy `feature_mission_monitor_sessions` has neither
+        // reserved column and undeclared columns), so the declared layer is
+        // rebuilt without dropping the foreign table.
+        if !declared_layer_shaped(table, persisted.as_ref(), physical) {
+            let full = FeatureStore::validate_namespace(feature_id, &table.name)
+                .map_err(|e| vec![format!("feature '{feature_id}' table '{}': {e}", table.name)])?;
+            let quarantine = self.quarantine_name(&full)?;
+            return Ok(MigrationPlan::RebuildLegacy { quarantine });
+        }
+
+        // Declared-layer-shaped but a declared column's physical type contradicts
+        // the declaration: there is no safe additive repair, so refuse with a hard
+        // NAMED error (never destructive).
+        let mut type_errors = Vec::new();
+        for column in &table.columns {
+            if let Some(physical_column) = physical.iter().find(|c| c.name == column.name) {
+                if physical_column.col_type != declared_affinity(column.col_type) {
+                    type_errors.push(format!(
+                        "feature '{feature_id}' table '{}' physical column '{}' is {} but the declaration says {} (no data was deleted)",
+                        table.name,
+                        column.name,
+                        physical_column.sql_type,
+                        column.col_type.as_str()
+                    ));
+                }
+            }
+        }
+        if !type_errors.is_empty() {
+            return Err(type_errors);
+        }
+
+        match persisted {
+            Some(persisted) if persisted == *table => Ok(MigrationPlan::EnsureOnly),
+            Some(persisted) => Ok(MigrationPlan::AddColumns(
+                table
+                    .columns
+                    .iter()
+                    .filter(|column| persisted.column(&column.name).is_none())
+                    .cloned()
+                    .collect(),
+            )),
+            None => Ok(MigrationPlan::Create),
+        }
+    }
+
+    /// A collision-free `<full>__legacy_<yyyymmddHHMMSS>` name (`_2`, `_3`, … on
+    /// collision). Only ever used to move a foreign table aside — never to drop it.
+    fn quarantine_name(&self, full: &str) -> Result<String, Vec<String>> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+        let base = format!("{full}__legacy_{stamp}");
+        if !self
+            .store
+            .table_exists(&base)
+            .map_err(|e| vec![format!("failed to probe quarantine name '{base}': {e}")])?
+        {
+            return Ok(base);
+        }
+        let mut suffix = 2u32;
+        loop {
+            let candidate = format!("{base}_{suffix}");
+            if !self
+                .store
+                .table_exists(&candidate)
+                .map_err(|e| vec![format!("failed to probe quarantine name '{candidate}': {e}")])?
+            {
+                return Ok(candidate);
+            }
+            suffix += 1;
+        }
     }
 }
 
-/// Decide how (or whether) to migrate one declared table. `Err` carries the hard
-/// named refusal messages for destruction-only changes.
-fn compute_plan(
-    feature_id: &str,
+/// `true` iff the physical table is the declared layer rather than a foreign /
+/// legacy table that merely shares the name.
+///
+/// It must carry BOTH reserved columns `_row_version` + `_updated_at` (NOT NULL,
+/// exactly as the declared DDL creates them), every physical column must be
+/// declared (in the new or the persisted declaration) or reserved, and it must
+/// physically key on the declared primary key. The real legacy MM table fails on
+/// every count (`session_id`/`label`/`start_time`/`delivery_count`, no reserved
+/// columns).
+fn declared_layer_shaped(
     table: &FeatureDataTableDeclaration,
-    existing: Option<&TableMeta>,
-) -> Result<MigrationPlan, Vec<String>> {
-    let Some(meta) = existing else {
-        return Ok(MigrationPlan::Create);
+    persisted: Option<&FeatureDataTableDeclaration>,
+    physical: &[PhysicalColumn],
+) -> bool {
+    let has_not_null_reserved =
+        |name: &str| physical.iter().any(|c| c.name == name && c.not_null);
+    if !has_not_null_reserved("_row_version") || !has_not_null_reserved("_updated_at") {
+        return false;
+    }
+
+    let is_known = |name: &str| {
+        is_reserved_column(name)
+            || table.column(name).is_some()
+            || persisted.is_some_and(|p| p.column(name).is_some())
     };
-
-    let persisted: FeatureDataTableDeclaration = match serde_json::from_str(&meta.declaration_json)
-    {
-        Ok(persisted) => persisted,
-        Err(e) => {
-            return Err(vec![format!(
-                "persisted declaration for feature '{feature_id}' table '{}' is unreadable: {e}",
-                table.name
-            )])
-        }
-    };
-
-    if persisted == *table {
-        return Ok(MigrationPlan::EnsureOnly);
+    if !physical.iter().all(|column| is_known(&column.name)) {
+        return false;
     }
 
-    let mut errors = Vec::new();
-    if persisted.primary_key != table.primary_key {
-        errors.push(format!(
-            "feature '{feature_id}' table '{}' cannot change its primary key from [{}] to [{}] \
-             (declared schema is additive-only; no data was deleted)",
-            table.name,
-            persisted.primary_key.join(", "),
-            table.primary_key.join(", ")
-        ));
-    }
-
-    for old in &persisted.columns {
-        match table.column(&old.name) {
-            None => errors.push(format!(
-                "feature '{feature_id}' table '{}' cannot drop declared column '{}' \
-                 (declared schema is additive-only; no data was deleted)",
-                table.name, old.name
-            )),
-            Some(new) if new.col_type != old.col_type => errors.push(format!(
-                "feature '{feature_id}' table '{}' cannot retype column '{}' from {} to {} \
-                 (declared schema is additive-only; no data was deleted)",
-                table.name,
-                old.name,
-                old.col_type.as_str(),
-                new.col_type.as_str()
-            )),
-            Some(new) if new.owner != old.owner => errors.push(format!(
-                "feature '{feature_id}' table '{}' cannot change the owner of column '{}' \
-                 (declared schema is additive-only; no data was deleted)",
-                table.name, old.name
-            )),
-            Some(_) => {}
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    let additions: Vec<DeclaredColumn> = table
-        .columns
+    table
+        .primary_key
         .iter()
-        .filter(|column| persisted.column(&column.name).is_none())
-        .cloned()
-        .collect();
-    Ok(MigrationPlan::AddColumns(additions))
+        .all(|pk| physical.iter().any(|column| &column.name == pk && column.primary_key))
+}
+
+/// The physical affinity a declared type must have. Mirrors
+/// [`DeclaredColumnType::as_sql_type`] (BOOLEAN → INTEGER, JSON → TEXT) — the
+/// physical side is the normalized [`ColumnType`] from the ONE pragma rule.
+fn declared_affinity(col_type: DeclaredColumnType) -> ColumnType {
+    match col_type.as_sql_type() {
+        "INTEGER" => ColumnType::INTEGER,
+        "REAL" => ColumnType::REAL,
+        "BLOB" => ColumnType::BLOB,
+        _ => ColumnType::TEXT,
+    }
 }
 
 /// The declared-table DDL: declared columns + the backend-managed reserved
@@ -498,7 +711,7 @@ mod tests {
     }
 
     struct Harness {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         registry: DeclarationRegistry,
         store: Arc<FeatureStore>,
     }
@@ -509,7 +722,7 @@ mod tests {
         meta.ensure_schema().unwrap();
         let store = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
         Harness {
-            _dir: dir,
+            dir,
             registry: DeclarationRegistry::new(meta, store.clone()),
             store,
         }
@@ -780,5 +993,263 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no such table"), "{err}");
+    }
+
+    // ── Physical-schema-aware materialization (round-2 fix) ──────────────────
+
+    /// The exact live legacy MM DDL (`persistence.ts`, since deleted) + a row.
+    fn seed_legacy_collision(h: &Harness, full: &str) {
+        h.store
+            .execute_batch(&format!(
+                "CREATE TABLE {full} (
+                     session_id TEXT PRIMARY KEY,
+                     label TEXT NOT NULL,
+                     start_time TEXT NOT NULL,
+                     end_time TEXT,
+                     delivery_count INTEGER NOT NULL
+                 );
+                 INSERT INTO {full} (session_id, label, start_time, delivery_count)
+                 VALUES ('legacy-1', 'Legacy One', '2026-01-01T00:00:00Z', 7);"
+            ))
+            .unwrap();
+    }
+
+    fn legacy_quarantine_name(h: &Harness) -> String {
+        let conn = rusqlite::Connection::open(h.dir.path().join("fredo.db")).unwrap();
+        conn.query_row(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name LIKE 'feature_mission_monitor_sessions__legacy_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn legacy_quarantine_count(h: &Harness) -> i64 {
+        let conn = rusqlite::Connection::open(h.dir.path().join("fredo.db")).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name LIKE 'feature_mission_monitor_sessions__legacy_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn legacy_physical_table_classifies_as_rebuild_legacy() {
+        let h = setup();
+        let full = full_name();
+        seed_legacy_collision(&h, &full);
+
+        let decl = declaration("mm.sessions.v1", None);
+        let physical = h.store.table_schema(&full).unwrap();
+        let plan = h
+            .registry
+            .compute_plan("mission-monitor", &decl.tables[0], None, &physical)
+            .unwrap();
+        match plan {
+            MigrationPlan::RebuildLegacy { quarantine } => {
+                assert!(
+                    quarantine.starts_with(&format!("{full}__legacy_")),
+                    "{quarantine}"
+                );
+            }
+            other => panic!("expected RebuildLegacy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declared_layer_physical_table_classifies_as_ensure_only() {
+        let h = setup();
+        let decl = declaration("mm.sessions.v1", None);
+        h.registry.declare(&decl).unwrap();
+
+        let full = full_name();
+        let physical = h.store.table_schema(&full).unwrap();
+        let meta = h
+            .registry
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap();
+        let plan = h
+            .registry
+            .compute_plan("mission-monitor", &decl.tables[0], Some(&meta), &physical)
+            .unwrap();
+        assert_eq!(plan, MigrationPlan::EnsureOnly);
+    }
+
+    #[test]
+    fn legacy_collision_is_rebuilt_and_the_legacy_table_is_preserved() {
+        let h = setup();
+        let full = full_name();
+        seed_legacy_collision(&h, &full);
+
+        let materialized = h
+            .registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap();
+        assert_eq!(materialized.len(), 1);
+        assert!(
+            materialized[0].created,
+            "a rebuild creates the declared schema"
+        );
+
+        // The declared schema is real now (the projection/queries can run).
+        let columns = h.store.table_column_names(&full).unwrap();
+        assert!(columns.contains(&"sessionId".to_string()), "{columns:?}");
+        assert!(columns.contains(&"chatRowCount".to_string()), "{columns:?}");
+        assert!(columns.contains(&"_row_version".to_string()), "{columns:?}");
+        assert!(columns.contains(&"_updated_at".to_string()), "{columns:?}");
+        assert!(!columns.contains(&"label".to_string()), "{columns:?}");
+        assert_eq!(legacy_quarantine_count(&h), 1, "exactly one quarantine");
+
+        // The legacy table and its rows are preserved verbatim under __legacy_*.
+        let legacy = legacy_quarantine_name(&h);
+        assert!(legacy.contains("__legacy_"), "{legacy}");
+        let conn = rusqlite::Connection::open(h.dir.path().join("fredo.db")).unwrap();
+        let (label, delivery_count): (String, i64) = conn
+            .query_row(
+                &format!(
+                    "SELECT label, delivery_count FROM {legacy} WHERE session_id = 'legacy-1'"
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label, "Legacy One");
+        assert_eq!(delivery_count, 7, "the moved rows are unchanged");
+
+        // The one-time backfill is re-armed so the declared data is repopulated.
+        let meta = h
+            .registry
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.last_version, 0);
+        assert!(!meta.backfill_done);
+    }
+
+    #[test]
+    fn rebuild_is_idempotent_on_the_next_declare() {
+        let h = setup();
+        let full = full_name();
+        seed_legacy_collision(&h, &full);
+
+        let decl = declaration("mm.sessions.v1", None);
+        h.registry.declare(&decl).unwrap();
+        let again = h.registry.declare(&decl).unwrap();
+        assert!(!again[0].created, "the repaired table is now a no-op");
+        assert_eq!(
+            legacy_quarantine_count(&h),
+            1,
+            "a second declare must not quarantine again"
+        );
+    }
+
+    #[test]
+    fn materialize_persisted_repairs_a_legacy_collision() {
+        let h = setup();
+        let full = full_name();
+        let decl = declaration("mm.sessions.v1", None);
+        seed_legacy_collision(&h, &full);
+        // The live DB's metadata: the collision was accepted once (backfill_done=1).
+        h.registry
+            .meta
+            .put_table(&TableMeta {
+                feature_id: "mission-monitor".to_string(),
+                table_name: "sessions".to_string(),
+                declaration_json: serde_json::to_string(&decl.tables[0]).unwrap(),
+                declaration_revision: "mm.sessions.v1".to_string(),
+                last_version: 0,
+                backfill_done: true,
+            })
+            .unwrap();
+
+        // Restart path (R-4.4): the same compute_plan/apply_plan path repairs it.
+        let materialized = h.registry.materialize_persisted().unwrap();
+        assert_eq!(materialized.len(), 1);
+        assert!(materialized[0].created);
+
+        let columns = h.store.table_column_names(&full).unwrap();
+        assert!(columns.contains(&"sessionId".to_string()), "{columns:?}");
+        assert!(!columns.contains(&"label".to_string()), "{columns:?}");
+        assert_eq!(legacy_quarantine_count(&h), 1);
+
+        let meta = h
+            .registry
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap();
+        assert!(
+            !meta.backfill_done,
+            "the restart must re-arm the one-time backfill"
+        );
+        assert_eq!(meta.last_version, 0);
+    }
+
+    #[test]
+    fn physical_type_mismatch_is_a_named_error_and_the_table_is_untouched() {
+        let h = setup();
+        let full = full_name();
+        // Declared-layer-shaped (reserved columns + all names known) but the
+        // declared `chatRowCount` is physically TEXT instead of INTEGER.
+        h.store
+            .execute_batch(&format!(
+                "CREATE TABLE {full} (
+                     sessionId TEXT NOT NULL,
+                     chatRowCount TEXT,
+                     _row_version INTEGER NOT NULL,
+                     _updated_at TEXT NOT NULL,
+                     PRIMARY KEY (sessionId)
+                 );"
+            ))
+            .unwrap();
+
+        let errors = h
+            .registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains(
+                "physical column 'chatRowCount' is TEXT but the declaration says INTEGER"
+            ),
+            "{errors:?}"
+        );
+
+        // No data/schema deletion, and no metadata was written.
+        let columns = h.store.table_column_names(&full).unwrap();
+        assert_eq!(
+            columns,
+            vec!["sessionId", "chatRowCount", "_row_version", "_updated_at"]
+        );
+        assert!(h
+            .registry
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn primary_key_change_is_refused_with_named_error() {
+        let h = setup();
+        h.registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap();
+
+        let mut changed = declaration("mm.sessions.v2", None);
+        changed.tables[0].primary_key = vec!["chatRowCount".to_string()];
+
+        let errors = h.registry.declare(&changed).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("cannot change its primary key"),
+            "{errors:?}"
+        );
     }
 }
