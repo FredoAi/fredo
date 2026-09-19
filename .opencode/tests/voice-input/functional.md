@@ -974,3 +974,91 @@ no physical mic: `stt:transcript` content came from the documented synthetic lev
 
 - [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED with raw numbers, the levers used,
       and every miss disclosed; do not pre-fill)_
+
+---
+
+## #2897 extension — speech-handling mode: local transcription vs model audio
+
+> Issue #2897 lets the user choose whether speech is transcribed locally (today's behavior — words
+> shown as produced) or handed to the local model as audio (no transcript shown; a "Fredo is
+> listening" state instead). Rows **F-102..F-110** map to the Software Architect's EARS set
+> (`REQ-1..REQ-8`; backlog AC1→REQ-1, AC2→REQ-2, AC3→REQ-3+REQ-4, AC4→REQ-5+REQ-6, AC5→REQ-7,
+> plus the continuous REQ-8) in `.opencode/tmp/2897/triage.md` `## QA Expert`: F-102 REQ-1,
+> F-103 REQ-2, F-104 REQ-3+REQ-4, F-105 REQ-5, F-106 REQ-6, F-107 REQ-7, F-108 REQ-8, F-109
+> NFR-3 + live receipts, F-110 the ST-0 receipt gate. **Verification policy: live.** Evidence: the
+> running bar (`value`), the real control plane, DOM snapshots/screenshots, `tauri_read_logs`,
+> `pnpm --filter @fredo/ui test:run`, the uploaded captures, and the mandatory `telemetry_spans`
+> receipt (F-109). A static-only PASS is a FALSE PASS. **F-105/F-106 are CONDITIONAL on ST-0**
+> (F-110): if the spike is negative they are BLOCKED — not FAIL, not PASS — the spec loops back to
+> Phase 2 / a PO amendment, and F-107 (the degradation path) is scored instead.
+>
+> **The sanctioned levers (there is no fifth):**
+> - **L1 REAL gesture:** `keyboard(action="down"/"up", key=" ")` on the focused EMPTY
+>   `textarea[data-testid="launcher-command-input"][role="searchbox"]`.
+> - **L2 REAL control plane:** `stt_start` / `stt_stop` / `stt_cancel` / `stt_status` /
+>   `stt_check_model` / `stt_list_devices` via `tauri_ipc_execute_command`, plus the #2897
+>   additive commands `stt_take_audio_clip` (pull the bounded clip) / `llm_chat_with_audio`
+>   (deliver) / `stt_audio_capability` (readiness).
+> - **L3 SYNTHETIC CONTENT (the REAL channel):** `tauri_ipc_emit_event(eventName="stt:transcript"|"stt:state", …)`
+>   — **content only, never audio-delivery/cue/mic-release evidence.**
+> - **L4 DETERMINISTIC CAPTURE FEED:** `FREDO_STT_FEED_WAV=<abs in-repo WAV>` set with
+>   `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2897 -EnvVars @{ FREDO_STT_FEED_WAV = "C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav" }`.
+>   Generator: `node .opencode/tests/voice-dictation/fixtures/generate-dictation-phrase.mjs`
+>   (deterministic 16 kHz mono PCM, 1.6 s, paced 1× real time, opens NO `cpal` device). The
+>   over-limit row needs the parameterised `>30 s` variant. **Always pair L4 with an UNSET-env
+>   control run.**
+>
+> **FORBIDDEN:** any recorded-speech WAV or out-of-repo asset. None exists under `C:\Code\fredo`;
+> hunting for one is a documented failure mode (G-172/G-009). The over-limit (`> 30 s`) clip is
+> ST-9's parameterised variant of the sanctioned generator; the **lever itself** is verified by
+> `.opencode/tests/voice-dictation/functional.md` F-1..F-4 — run that suite in the same round.
+
+- [ ] F-102 (REQ-1 / AC1): **Mode setting selects local vs model audio; persists; applies to the NEXT utterance (no restart).** Open the Settings app window → Companion → voice group; enumerate `companion-voice-handling-select`'s options; select `Model audio` (stored `'model'`); read `Fredo_companion_voice_handling`; then hold Space and record which mode the NEXT session runs; full restart (`dev-env Down` → `Up -Spec 2897`) and re-read.
+  **Expected:** exactly two modes render INSIDE the Companion voice group; the default is `local`; the chosen value persists byte-exactly across the restart; the next utterance (no app restart) runs the newly selected mode.
+  - **Edge:** malformed/legacy persisted value heals to `local` with no crash; toggle while idle then dictate; toggle while listening (defined, non-crashing); mode control present on the ready branch and additive on the not-ready gate.
+  - **Receipt:** control options + selected value, the persisted key/value before and after restart, and the mode observed on the next utterance.
+
+- [ ] F-103 (REQ-2 / AC2): **Local mode preserves today's dictation.** With mode=`local`, hold Space (L1) on the empty focused bar; sample ≥2 partials + the final; read `value`; release; then cancel via Escape and via `stt_cancel`.
+  **Expected:** ≥2 DISTINCT partials appear as produced and land in / feed the bar input; release finalizes; Escape and `stt_cancel` discard + clear; exactly ONE dispatch on Enter; provenance hint `↵ send transcript to Fredo`.
+  - **Edge:** sub-threshold tap lands one ordinary space; voice-off/model-absent still lands a space; cancel mid-utterance; re-hold after cancel; no partial/final re-casing churn (#2888 unchanged).
+  - **Receipt:** per-sample `value` + the `stt:transcript`/`stt:state` events + the dispatch count.
+
+- [ ] F-104 (REQ-3 + REQ-4 / AC3 — continuous-state test): **Model-audio listening states; transcript absent; cancel/stop.** With mode=`model audio`, hold Space; sample the UI + `stt:state` across `stopped → listening → processing → error`; DOM/`execute_js`-scan the bar, both announcers and the reply for ANY transcript text; then cancel/stop.
+  **Expected:** a clear "Fredo is listening" indicator with DISTINCT stopped / listening / processing / error states, each conveyed as text (never colour alone); **ZERO** dictated words/transcript anywhere; cancel/stop works and clears the indicator.
+  - **Edge:** server down mid-listen → error state; cancel during processing; rapid stop→start; the indicator held across the 30 s bound; a silent feed shows no words.
+  - **Receipt:** the state sequence + the text-scan result (0 transcript nodes) + the indicator geometry.
+
+- [ ] F-105 (REQ-5 / AC4) — **CONDITIONAL on ST-0 (F-110)**: **Captured audio is the turn's input; the model's reply appears.** Feed the deterministic WAV through the real capture path (L4); run one model-audio turn; call `stt_take_audio_clip` after stop and assert the clip was delivered via `llm_chat_with_audio` as the LAST user message's `input_audio` part (NO transcript text); assert the model's response streams through the normal conversation experience. Pair with an UNSET-env control.
+  **Expected:** the turn request carries the captured audio (CI/unit pin on the payload build — audio content part + the clip's sample count); the reply appears via the normal conversation path exactly once; the unset-env control produces no audio turn (non-vacuous).
+  - **Edge:** exactly at the bound; empty/silent feed; server unavailable at submit; a second turn in the same session.
+  - **Receipt:** the payload pin result + the reply marker + the control-run observation.
+
+- [ ] F-106 (REQ-6 / AC4) — **CONDITIONAL on ST-0 (F-110) + ST-9**: **Over-limit is surfaced AND non-lossy (auto-stop + FULL clip — deliberately NOT segmentation).** Feed the ST-9 `>30 s` WAV via L4; observe the auto-stop and the visible `launcher-command-model-limit-status` notice; compare the captured duration/sample count against the clip handed back by `stt_take_audio_clip` (`durationMs` / `base64` length).
+  **Expected:** capture AUTO-STOPS at the single pinned `MAX_AUDIO_CLIP_MS` (read from source — never hardcode 30 s), `stt:state.limitReached===true`, the visible limit notice is present, and the delivered clip is the ENTIRE capture (`at_limit:true`, `truncated:false`, `durationMs == captured duration`). The auto-stop is a normal terminal capture (warning treatment), NOT an error state. A silent 30 s truncation or a dropped tail is a **FAIL**.
+  - **Edge:** exactly-at-bound; 2× the bound; re-listen immediately after (E-55: no stale clip, buffer reset); cancel mid-`processing`; the constant read from source, not assumed. **If the parameterised long-WAV generator is not shipped → NAMED BLOCKER + the unit/CI non-lossy pin (`at_limit:true`, `truncated:false`, duration == captured duration) — never an out-of-repo WAV.**
+  - **Receipt:** the surfaced message + `limitReached` + the captured/delivered durations + the generator invocation.
+
+- [ ] F-107 (REQ-7 / AC5): **Unsupported / unavailable → clearly told + one-action fallback; never a transcript while mode=model.** Probe `stt_audio_capability`, then construct (a) `unsupported` (a model without audio support) and (b) `serverUnavailable` (the managed server stopped); select model audio; read the readiness row; attempt to listen/submit; read the user-facing message; take the offered fallback to local and confirm the switch persists.
+  **Expected:** the user is clearly told WHY (unsupported / server unavailable) with an actionable next step; a one-action fallback to local transcription is offered and works; in NEITHER mode does any audio or transcript leave the machine.
+  - **Edge:** server killed mid-listen; capability checked at selection vs at submit; fallback mid-turn; model swapped between selection and use.
+  - **Receipt:** the exact message, the fallback action's effect, and the loopback/static local-only evidence.
+
+- [ ] F-108 (REQ-8 / NFR-1 — continuous-state test): **All-local hard requirement (3 legs).** (1) static/CI: scan the audio→text→model path for remote clients and cloud-fallback branches; (2) loopback: read the managed `llama-server` bind and the turn request URL; (3) live: process-scoped outbound block proven by a FAILING control fetch, then a full model-audio turn.
+  **Expected:** zero remote clients on the path; the server listens on `127.0.0.1` only and the turn targets loopback; with the block proven the turn still completes. The CI pin runs in `rust-validate` (the tester shell has no `cargo`).
+  - **Edge:** block mid-session; loopback assertion for BOTH modes; the ONLY network use is setup-gated model acquisition. If the live block is undrivable → NAMED BLOCKER alongside legs (1)+(2), never a substitute.
+  - **Receipt:** the static scan result, the bind/URL, and the block + control-fetch outcome.
+
+- [ ] F-109 (NFR-3 + LIVE): **No regression + mandatory live receipts.** Re-run the `#2882`/`#2887`/`#2888` hold/release/indicator/latency rows; read the console across every leg; run `pnpm --filter @fredo/ui build` + `test:run`; `fredo emit` marker rows + `telemetry_spans` query via the telemetry-query skill; upload every capture with `upload-evidence --issue 2897`.
+  **Expected:** responsiveness, indicator honesty, mic release, routing and the latency budgets unchanged; console clean; UI build + suite green; `telemetry_spans` NON-ZERO with a recent `max(ingested_at)` and the literal token in Evidence; every capture uploaded with a raw URL + description. **A static-only PASS is a FALSE PASS.**
+  - **Edge:** mode switch between utterances; resident engine across a mode switch; no leaked key, no effect loop (AGENTS.md #523); a stale round's receipt does not clear the round-aware guard.
+  - **Receipt:** the regression rows' outcomes + the `telemetry_spans` count/timestamp + the uploaded URLs.
+
+- [ ] F-110 (ST-0 gate — enabling, not a product AC): **Feasibility receipts on the PINNED `-qat-` revision.** Capture the ST-0 receipts against `unsloth/gemma-4-E2B-it-qat-GGUF` @ `66a399f6…`: the managed server's `/props` + `/v1/models` output, a **live `input_audio` request receipt**, the **measured per-input ceiling**, and the observed model behaviour (answers directly vs. transcribes internally); read `stt_audio_capability`.
+  **Expected:** the receipts exist, name the measured ceiling (which then sets `MAX_AUDIO_CLIP_MS`), and are recorded in-repo; `stt_audio_capability` returns `ready` / `unsupported` / `serverUnavailable` consistently with them and never infers capability from a model name. **A NEGATIVE result ⇒ F-105/F-106 are BLOCKED (not FAIL, not PASS), the spec loops back to Phase 2 / a PO amendment, and F-107 (the degradation path) is scored instead — never a fabricated delivery PASS.**
+  - **Edge:** the server is unreachable → `serverUnavailable` (not a crash); the capability probe must not open the microphone and must not touch `infrastructure/voice/` (egress confinement); a model swapped after the probe; the pinned revision differs from the backlog's cited repo (a manifest change would need a PO amendment, not a silent substitution).
+  - **Receipt:** the raw `/props` + `/v1/models` output, the `input_audio` request/response receipt, the measured ceiling, and the observed behaviour.
+
+### #2897 run log — testing round 1
+
+- [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED with raw numbers, the levers used,
+      the observed mode/state sequences, and every capture URL; do not pre-fill)_
