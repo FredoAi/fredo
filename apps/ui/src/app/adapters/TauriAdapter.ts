@@ -231,4 +231,64 @@ export class TauriAdapter implements HostAdapter {
       finish();
     }
   }
+
+  /**
+   * #2897 ST-3 (REQ-5) — the model-audio streaming path. Same listener lifecycle
+   * and single `finish()` guard as `llmChatWithImage`; the clip is attached to the
+   * last user message by the backend renderer (no transcript text is sent). The
+   * additive `llm-error` channel is routed to `onError` when the caller supplies
+   * it, else the readable line arrives via `onToken` (the #2871 contract).
+   */
+  async llmChatWithAudio(
+    messages: LlmMessage[],
+    audioBase64: string,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    const { listen } = await import('@tauri-apps/api/event');
+    const { invoke } = await import('@tauri-apps/api/core');
+
+    let unlistenToken: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    let settled = false;
+
+    // Complete exactly once (see llmChat): a server failure emits `llm-error`
+    // followed by `llm-done`, so a double `onDone` is impossible.
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      unlistenToken?.();
+      unlistenDone?.();
+      unlistenError?.();
+      onDone();
+    };
+
+    unlistenToken = await listen<string>('llm-token', (event) => {
+      onToken(event.payload);
+    });
+
+    // Additive server-error channel: route ONE raw failure line through the typed
+    // `onError` channel when the caller provides it, then complete — never hang.
+    // Callers without `onError` keep the legacy behavior (the line arrives via
+    // `onToken`).
+    unlistenError = await listen<string>('llm-error', (event) => {
+      if (onError) onError(event.payload);
+      else onToken(event.payload);
+      finish();
+    });
+
+    unlistenDone = await listen<void>('llm-done', () => {
+      finish();
+    });
+
+    try {
+      await invoke('llm_chat_with_audio', { messages, audioBase64 });
+    } catch (err) {
+      console.error('[TauriAdapter] llm_chat_with_audio error:', err);
+      onError?.(String(err));
+      finish();
+    }
+  }
 }

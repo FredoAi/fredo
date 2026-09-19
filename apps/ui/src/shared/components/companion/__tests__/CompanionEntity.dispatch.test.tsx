@@ -34,12 +34,16 @@ import {
   COMPANION_SEND_DURING_REPLY_KEY,
   useCompanion,
 } from '@/shared/contexts/CompanionContext';
-import { askActiveCompanion, CompanionEntity } from '@/shared/components/companion/CompanionEntity';
+import {
+  askActiveCompanion,
+  askActiveCompanionWithAudio,
+  CompanionEntity,
+} from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionSendResult } from '@/shared/components/companion/companionDispatch';
 import { pushAppOpenReply } from '@/shared/components/companion/skillBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
-import type { LlmSkillCall } from '@/app/adapters/HostAdapter';
+import type { LlmMessage, LlmSkillCall } from '@/app/adapters/HostAdapter';
 
 // ── Module mocks (same shape as skillSettle.test.tsx) ─────────────────────────
 const motionMock = vi.hoisted(() => {
@@ -99,6 +103,18 @@ type LlmDriver = {
 type Generation = { text: string; driver: LlmDriver };
 let generations: Generation[] = [];
 
+// #2897 ST-3 — the model-audio dispatch captures: the clip + the messages the
+// entity handed to the audio transport (empty-content user turn = no transcript).
+type AudioDriver = {
+  onToken: (token: string) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+};
+type AudioGeneration = { audioBase64: string; messages: LlmMessage[]; driver: AudioDriver };
+let audioGenerations: AudioGeneration[] = [];
+
+const lastAudioGen = (): AudioGeneration => audioGenerations[audioGenerations.length - 1];
+
 const lastGen = (): Generation => generations[generations.length - 1];
 
 const surfaceEl = (): HTMLElement => screen.getByTestId('fredo-companion-surface');
@@ -142,6 +158,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   generations = [];
+  audioGenerations = [];
   consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -159,6 +176,13 @@ beforeEach(() => {
     generations.push({
       text: last.content,
       driver: { onToken, onDone, onSkillCall, onError: (m: string) => onError?.(m) },
+    });
+  });
+  adapterBridge.setLlmChatWithAudio(async (messages, audioBase64, onToken, onDone, onError) => {
+    audioGenerations.push({
+      audioBase64,
+      messages,
+      driver: { onToken, onDone, onError: (m: string) => onError?.(m) },
     });
   });
 });
@@ -434,5 +458,82 @@ describe('#2892 ST-4 — result shape, no-entity, unmount drop', () => {
     expect(api.queuedSendCount).toBe(0);
     expect(api.replyInFlight).toBe(false);
     expect(askActiveCompanion('later')).toBeNull();
+  });
+});
+
+// ── #2897 ST-3 — model-audio dispatch (REQ-5) ─────────────────────────────────
+
+describe('#2897 ST-3 — model-audio dispatch (REQ-5)', () => {
+  it('dispatches ONE audio generation (no transcript text) and streams the reply', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    let result: CompanionSendResult | undefined;
+    act(() => { result = ref.current?.askWithAudio('UklGRg=='); });
+    expect(result).toEqual({ outcome: 'dispatched' });
+    expect(audioGenerations).toHaveLength(1);
+    expect(audioGenerations[0].audioBase64).toBe('UklGRg==');
+
+    // The clip IS the turn's input: the last user turn carries NO transcript text,
+    // and the text channel is never used for an audio turn.
+    const messages = audioGenerations[0].messages;
+    const last = messages[messages.length - 1];
+    expect(last.role).toBe('user');
+    expect(last.content).toBe('');
+    expect(generations).toHaveLength(0);
+    expect(api.replyInFlight).toBe(true);
+
+    act(() => { lastAudioGen().driver.onToken('Hi there!'); });
+    act(() => { lastAudioGen().driver.onDone(); });
+    expect(surfaceText()).toContain('Hi there!');
+    expect(api.replyInFlight).toBe(false);
+  });
+
+  it('askActiveCompanionWithAudio returns null with no entity and dispatches with one', async () => {
+    expect(askActiveCompanionWithAudio('QUJD')).toBeNull();
+
+    await mountEntity();
+    vi.useFakeTimers();
+
+    let result: CompanionSendResult | null = null;
+    act(() => { result = askActiveCompanionWithAudio('QUJD'); });
+    expect(result).toEqual({ outcome: 'dispatched' });
+    expect(audioGenerations).toHaveLength(1);
+    expect(audioGenerations[0].audioBase64).toBe('QUJD');
+  });
+
+  it('supersedes an in-flight generation via the same interrupt path (never drops the clip)', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    askNow(ref, 'first');
+    expect(generations).toHaveLength(1);
+    const firstDriver = lastGen().driver;
+    act(() => { firstDriver.onToken('partial first'); });
+
+    let result: CompanionSendResult | undefined;
+    act(() => { result = ref.current?.askWithAudio('QUJD'); });
+    expect(result).toEqual({ outcome: 'dispatched' });
+    expect(audioGenerations).toHaveLength(1);
+    // The superseded text generation's late callbacks are invalidated.
+    act(() => { firstDriver.onToken(' stale'); });
+    expect(surfaceText()).not.toContain('stale');
+    expect(api.replyInFlight).toBe(true);
+
+    act(() => { lastAudioGen().driver.onToken('audio reply'); });
+    act(() => { lastAudioGen().driver.onDone(); });
+    expect(surfaceText()).toContain('audio reply');
+    expect(api.replyInFlight).toBe(false);
+  });
+
+  it('returns rejected while a teleport owns the entity (never a silent drop)', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { ref.current?.teleportTo({ x: 10, y: 10 }); });
+    let result: CompanionSendResult | undefined;
+    act(() => { result = ref.current?.askWithAudio('QUJD'); });
+    expect(result).toEqual({ outcome: 'rejected' });
+    expect(audioGenerations).toHaveLength(0);
   });
 });

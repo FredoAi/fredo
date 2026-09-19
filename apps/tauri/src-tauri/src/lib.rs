@@ -574,6 +574,9 @@ pub fn run() {
             // IPC names and argument shapes as the deleted in-process path.
             features::llm_server::commands::llm_chat,
             features::llm_server::commands::llm_chat_with_image,
+            // #2897 ST-3 — model-audio turn: the captured clip is attached to the
+            // last user message and delivered over the managed loopback server.
+            features::llm_server::commands::llm_chat_with_audio,
             features::llm_server::commands::generate_llama_server_config,
             features::llm_server::commands::launch_llama_server,
             features::llm_server::commands::stop_llama_server,

@@ -143,6 +143,24 @@ export function askActiveCompanion(text: string): CompanionSendResult | null {
 }
 
 /**
+ * #2897 ST-3 (REQ-5) — dispatch a captured model-audio clip to THIS window's
+ * active companion entity through the SAME registry as {@link askActiveCompanion}
+ * (never a second conversation route — G-149). The entity attaches the clip to a
+ * fresh turn and streams the reply into its own SpeechBubble. No transcript text
+ * is fabricated for the turn; the clip IS the turn's input.
+ *
+ * Returns the typed acceptance result, mirroring `askActiveCompanion`:
+ *   `null`                       → no entity mounted in this window
+ *   `{ outcome: 'dispatched' }`  → accepted, audio generation started
+ *   `{ outcome: 'rejected' }`    → not accepted (a teleport owns the entity)
+ */
+export function askActiveCompanionWithAudio(clipBase64: string): CompanionSendResult | null {
+  const entity = activeCompanionEntity;
+  if (!entity) return null;
+  return entity.askWithAudio(clipBase64);
+}
+
+/**
  * Clamp a Ctrl+right-click point so the FULL avatar box stays on-screen. Shared
  * by the entity (its measured rendered box) and the host's no-entity fallback
  * (the exact declared `AVATAR_SM` box) so the clamp math has ONE source.
@@ -235,6 +253,15 @@ export interface CompanionEntityHandle {
    * queueing (FIFO, auto-drained on settle) and a logical interrupt. Never void.
    */
   ask: (text: string) => CompanionSendResult;
+  /**
+   * #2897 ST-3 (REQ-5) — model-audio turn: `clipBase64` is the captured 16 kHz
+   * mono WAV from `stt_take_audio_clip`. Streams the reply on the SAME channels
+   * `ask` uses; NO transcript text is sent (the clip IS the turn's input). Because
+   * the audio turn cannot join the TEXT FIFO, an in-flight generation is
+   * superseded via the same logical-interrupt path (the clip is never dropped).
+   * `rejected` only when a teleport owns the entity.
+   */
+  askWithAudio: (clipBase64: string) => CompanionSendResult;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
@@ -668,8 +695,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // single-in-flight guard, the stale-token counter, the thinking→joking
     // expression flow, the 15 s watchdog, and the happy-hold settle. Extracted
     // from the former `askForJoke` so the joke path is behavior-identical.
-    const runGeneration = useCallback((messages: LlmMessage[], withSkills = false) => {
-      console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current, 'withSkills:', withSkills);
+    const runGeneration = useCallback((messages: LlmMessage[], withSkills = false, audioBase64?: string) => {
+      console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current, 'withSkills:', withSkills, 'withAudio:', audioBase64 !== undefined);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
       // #2892 ST-4 — a NEW generation owns the bubble: release any pending hold
       // timer (happy/error) left by the previous generation so a stale 5 s clear
@@ -853,7 +880,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           if (watchdogRef.current === null) startWatchdog();
       };
 
-      if (withSkills) {
+      if (audioBase64 !== undefined) {
+        // #2897 ST-3 (REQ-5) — the clip IS the turn's input: the last user
+        // message's content is replaced by the backend renderer with the single
+        // `input_audio` part. No transcript text is sent for this turn.
+        console.log('[companion] calling adapterBridge.llmChatWithAudio');
+        adapterBridge.llmChatWithAudio(messages, audioBase64, onToken, onDone, onError);
+      } else if (withSkills) {
         console.log('[companion] calling adapterBridge.llmChatWithSkills');
         adapterBridge.llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
       } else {
@@ -991,6 +1024,31 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       return { outcome: 'dispatched' };
     }, [runGeneration, sendDuringReply, clearTimer, setQueuedSendCount]);
 
+    // #2897 ST-3 (REQ-5) — the model-audio dispatch entry. Runs ONE fresh turn
+    // whose last user message carries the captured clip (the backend renderer
+    // attaches the single `input_audio` part — NO transcript text is fabricated);
+    // the reply streams on the same channels as `ask`. The audio turn cannot join
+    // the TEXT FIFO, so an in-flight generation is superseded through the SAME
+    // logical-interrupt path `ask` uses (never dropped, never a second route).
+    const askWithAudio = useCallback((clipBase64: string): CompanionSendResult => {
+      announceGenerationRef.current = true;
+      // A teleport owns the entity: there is no generation to stream into, so the
+      // clip is not accepted (the caller keeps the clip rather than losing it).
+      if (isTeleportingRef.current) return { outcome: 'rejected' };
+
+      if (isGeneratingRef.current) {
+        clearTimer();
+        generationRef.current += 1;
+        isGeneratingRef.current = false;
+      }
+
+      runGeneration([
+        { role: 'system', content: FREDO_CHAT_PERSONA },
+        { role: 'user', content: '' },
+      ], false, clipBase64);
+      return { outcome: 'dispatched' };
+    }, [runGeneration, clearTimer]);
+
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
     // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the
     // reply protects it independently of the pointer (and vice-versa). They are
@@ -1009,7 +1067,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       leaveWindow,
       playLeave,
       ask,
-    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave, ask]);
+      askWithAudio,
+    }), [surface, requestTeleport, startTeleportOut, arrive, leaveWindow, playLeave, ask, askWithAudio]);
 
     useImperativeHandle(ref, () => handle, [handle]);
 

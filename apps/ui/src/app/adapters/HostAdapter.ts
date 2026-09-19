@@ -63,6 +63,24 @@ export interface HostAdapter {
     onSkillCall: (call: LlmSkillCall) => void,
     onError?: (message: string) => void,
   ): Promise<void>;
+
+  /**
+   * #2897 ST-3 (REQ-5) — the model-audio streaming variant. Like `llmChatWithImage`
+   * but attaches the captured audio clip (base64 16 kHz mono WAV) to the LAST user
+   * message as the SINGLE `input_audio` part; no transcript text is ever sent.
+   * Token/done semantics are identical to `llmChat`, with the same additive
+   * `onError` channel (#2871).
+   *
+   * Optional so existing `HostAdapter` implementations and test doubles stay valid;
+   * in-repo adapters (`TauriAdapter`, `DevAdapter`) implement it.
+   */
+  llmChatWithAudio?(
+    messages: LlmMessage[],
+    audioBase64: string,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onError?: (message: string) => void,
+  ): Promise<void>;
 }
 
 /** A single turn in an LLM conversation. */

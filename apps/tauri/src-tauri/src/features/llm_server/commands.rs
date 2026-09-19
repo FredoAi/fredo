@@ -800,6 +800,22 @@ pub fn llm_chat_with_image(
     Ok(())
 }
 
+/// Stream a companion model-audio chat (#2897 ST-3; REQ-5): the captured clip
+/// (`stt_take_audio_clip`, base64 16 kHz mono 16-bit PCM WAV) is attached to the
+/// LAST user message as the SINGLE `input_audio` part — no transcript text is
+/// fabricated for the turn (REQ-3). Delivery routes through the managed
+/// `chat::` module, so it resolves the same loopback host and streams the same
+/// shipped channels (`llm-token` / `llm-done` / additive `llm-error`).
+#[tauri::command]
+pub fn llm_chat_with_audio(
+    messages: Vec<LlmMessage>,
+    audio_base64: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    chat::spawn_audio_chat(app, messages, audio_base64);
+    Ok(())
+}
+
 /// App-exit hook: terminate the managed server tree (Spec #2857, ST-4 owns the
 /// hook mechanism here; ST-7 owns the PID sweep + the kill-on-exit test).
 pub fn stop_llama_server_on_exit(app: &AppHandle) {
