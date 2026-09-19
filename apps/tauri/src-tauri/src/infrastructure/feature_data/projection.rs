@@ -726,7 +726,13 @@ fn non_reserved_names(row: &Map<String, JsonValue>) -> Vec<String> {
     names
 }
 
-fn diff_fields(old: &Map<String, JsonValue>, new: &Map<String, JsonValue>) -> Vec<String> {
+/// The ONE value-diff rule, shared by the projection path
+/// ([`upsert_declared_row`]) and the `feature_data_write` path so an unchanged
+/// value is never reported as a change in either.
+pub(crate) fn diff_fields(
+    old: &Map<String, JsonValue>,
+    new: &Map<String, JsonValue>,
+) -> Vec<String> {
     let mut changed: Vec<String> = new
         .iter()
         .filter(|(key, value)| old.get(*key) != Some(*value))

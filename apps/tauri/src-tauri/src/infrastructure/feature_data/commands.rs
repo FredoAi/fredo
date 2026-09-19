@@ -27,7 +27,7 @@ use crate::infrastructure::feature_data::declaration::{
 };
 use crate::infrastructure::feature_data::lifecycle::{resolve_retention, tombstone_key};
 use crate::infrastructure::feature_data::projection::{
-    DeclaredChangeKind, DeclaredRowChange, ProjectionEngine,
+    diff_fields, DeclaredChangeKind, DeclaredRowChange, ProjectionEngine,
 };
 use crate::infrastructure::feature_data::registry::DeclarationRegistry;
 use crate::infrastructure::feature_data::store::{guard_feature_write, FeatureDataStore, Tombstone};
@@ -180,6 +180,11 @@ pub struct FeatureDataWriteArgs {
 }
 
 /// `feature_data_write` result.
+///
+/// `updated` is the number of rows whose values actually changed: `1` for a
+/// real value delta, `0` when the record existed but every set value already
+/// equalled the stored value (an identical write is a silent no-op — no
+/// UPDATE, no version bump, no notification).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureDataWriteResult {
@@ -688,26 +693,61 @@ pub fn write(
         )));
     }
     let where_cols = key_map(&declaration, &args.key)?;
+    // Read BEFORE the UPDATE (as `delete()` does): existence and the value
+    // delta are both decided against the stored row, not against SQLite's
+    // matched-row count (an identical UPDATE still matches a row).
+    let existing = state
+        .tables
+        .query(
+            &args.r#ref.feature_id,
+            &args.r#ref.table,
+            Some(&where_cols),
+            None,
+            Some(1),
+        )
+        .map_err(to_errors)?
+        .into_iter()
+        .next();
+    let Some(existing) = existing else {
+        return Err(record_missing_error(&args));
+    };
+
+    // The ONE diff rule, shared with the projection path — a set key whose
+    // value equals the stored value is not a change.
+    let changed = diff_fields(&existing, &args.set);
+    if changed.is_empty() {
+        // No value delta: no UPDATE, no `set_last_version`, no notification.
+        return Ok(FeatureDataWriteResult { updated: 0 });
+    }
+
+    // Maintain the backend-managed per-row bookkeeping exactly as the
+    // projection path does (`upsert_declared_row`): a real change advances the
+    // row version and stamps `_updated_at`.
+    let next_row_version = existing
+        .get("_row_version")
+        .and_then(JsonValue::as_i64)
+        .unwrap_or(0)
+        + 1;
+    let mut write_set = args.set.clone();
+    write_set.insert("_row_version".to_string(), json!(next_row_version));
+    write_set.insert(
+        "_updated_at".to_string(),
+        json!(crate::infrastructure::rtdb::project::rfc3339_now()),
+    );
+
     let updated = state
         .tables
         .update(
             &args.r#ref.feature_id,
             &args.r#ref.table,
-            &args.set,
+            &write_set,
             &where_cols,
         )
         .map_err(to_errors)?;
     if updated == 0 {
-        return Err(one_error(format!(
-            "record {} does not exist in feature '{}' table '{}'",
-            serde_json::to_string(&args.key).unwrap_or_default(),
-            args.r#ref.feature_id,
-            args.r#ref.table
-        )));
+        return Err(record_missing_error(&args));
     }
 
-    let mut changed: Vec<String> = args.set.keys().cloned().collect();
-    changed.sort();
     let values = state
         .tables
         .query(
@@ -730,6 +770,16 @@ pub fn write(
         values,
     )?;
     Ok(FeatureDataWriteResult { updated })
+}
+
+/// The hard named error for a `feature_data_write` whose record is absent.
+fn record_missing_error(args: &FeatureDataWriteArgs) -> Vec<String> {
+    one_error(format!(
+        "record {} does not exist in feature '{}' table '{}'",
+        serde_json::to_string(&args.key).unwrap_or_default(),
+        args.r#ref.feature_id,
+        args.r#ref.table
+    ))
 }
 
 /// `feature_data_delete` — tombstone + `remove` notification.
@@ -1349,6 +1399,183 @@ pub(crate) mod tests {
         let notification = &h.collector.notifications()[0];
         assert_eq!(notification.kind, FeatureChangeKind::Update);
         assert_eq!(notification.changed_fields, vec!["customName"]);
+    }
+
+    #[test]
+    fn write_with_an_unchanged_value_is_a_noop_and_does_not_notify() {
+        let h = harness();
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+        // A real change first (absent → "x") so the second write is a true no-op.
+        let first = write(
+            &h.state,
+            FeatureDataWriteArgs {
+                r#ref: FeatureTableRef {
+                    feature_id: "mission-monitor".to_string(),
+                    table: "sessions".to_string(),
+                },
+                key: vec![json!("ses_1")],
+                set: serde_json::json!({ "customName": "x" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(first.updated, 1);
+
+        let before_version = h
+            .state
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap()
+            .last_version;
+        let before_row = declared_rows(&h.state)[0].clone();
+        let before_notifications = h.collector.notifications().len();
+
+        watch(
+            &h.state,
+            FeatureDataWatchArgs {
+                r#ref: declared_ref(),
+                scope: WatchScopeArg::Table,
+                fields: None,
+                initial: false,
+                flush_ms: Some(0),
+            },
+        )
+        .unwrap();
+
+        let second = write(
+            &h.state,
+            FeatureDataWriteArgs {
+                r#ref: FeatureTableRef {
+                    feature_id: "mission-monitor".to_string(),
+                    table: "sessions".to_string(),
+                },
+                key: vec![json!("ses_1")],
+                set: serde_json::json!({ "customName": "x" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(second.updated, 0, "an unchanged write reports no value delta");
+        assert_eq!(h.state.watches.flush_due(), 0, "no notification is queued");
+        assert_eq!(
+            h.collector.notifications().len(),
+            before_notifications,
+            "no notification is delivered"
+        );
+        assert_eq!(
+            h.state
+                .meta
+                .get_table("mission-monitor", "sessions")
+                .unwrap()
+                .unwrap()
+                .last_version,
+            before_version,
+            "the scope version does not bump"
+        );
+        let after_row = declared_rows(&h.state)[0].clone();
+        assert_eq!(after_row.get("customName"), Some(&json!("x")));
+        assert_eq!(
+            after_row.get("_row_version"),
+            before_row.get("_row_version"),
+            "the row version does not bump"
+        );
+        assert_eq!(
+            after_row.get("_updated_at"),
+            before_row.get("_updated_at"),
+            "the updated-at stamp is untouched"
+        );
+    }
+
+    #[test]
+    fn write_with_a_real_change_still_notifies_and_bumps() {
+        let h = harness();
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+        // Seed absent → "x" before the watch so only the x → y change is observed.
+        write(
+            &h.state,
+            FeatureDataWriteArgs {
+                r#ref: FeatureTableRef {
+                    feature_id: "mission-monitor".to_string(),
+                    table: "sessions".to_string(),
+                },
+                key: vec![json!("ses_1")],
+                set: serde_json::json!({ "customName": "x" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        )
+        .unwrap();
+
+        let before_version = h
+            .state
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap()
+            .last_version;
+        let before_row_version = declared_rows(&h.state)[0]
+            .get("_row_version")
+            .and_then(JsonValue::as_i64)
+            .expect("projected row carries _row_version");
+
+        watch(
+            &h.state,
+            FeatureDataWatchArgs {
+                r#ref: declared_ref(),
+                scope: WatchScopeArg::Table,
+                fields: None,
+                initial: false,
+                flush_ms: Some(0),
+            },
+        )
+        .unwrap();
+
+        let result = write(
+            &h.state,
+            FeatureDataWriteArgs {
+                r#ref: FeatureTableRef {
+                    feature_id: "mission-monitor".to_string(),
+                    table: "sessions".to_string(),
+                },
+                key: vec![json!("ses_1")],
+                set: serde_json::json!({ "customName": "y" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.updated, 1, "a real change reports the updated row");
+        assert_eq!(h.state.watches.flush_due(), 1, "exactly one change flushes");
+        let notifications = h.collector.notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].kind, FeatureChangeKind::Update);
+        assert_eq!(notifications[0].changed_fields, vec!["customName"]);
+        assert!(
+            h.state
+                .meta
+                .get_table("mission-monitor", "sessions")
+                .unwrap()
+                .unwrap()
+                .last_version
+                > before_version,
+            "the scope version bumps"
+        );
+        let after_row = declared_rows(&h.state)[0].clone();
+        assert_eq!(after_row.get("customName"), Some(&json!("y")));
+        assert_eq!(
+            after_row.get("_row_version"),
+            Some(&json!(before_row_version + 1)),
+            "the row version bumps"
+        );
     }
 
     #[test]
