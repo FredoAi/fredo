@@ -275,3 +275,23 @@
 - [ ] N-20 (NFR-5, interaction budgets, **UNVERIFIED 2026-09-19 #2896** — named blocker: no rows to interact with; budgets unmeasurable): raw-ms budget table for F-44 — a "feels instant" with no numbers = FAIL.
 - [ ] N-21 (NFR-5, reduced motion, **UNVERIFIED 2026-09-19 #2896** — named blocker: no new-row animation/skeleton can be produced with 0 sessions): with `prefers-reduced-motion` on, the new-row animation and any skeleton shimmer are disabled/reduced — no layout break.
 - [ ] N-22 (NFR-6, S6 contrast/theme, **UNVERIFIED 2026-09-19 #2896** — named blocker: the S6 error/disconnect state was never rendered, so its contrast could not be checked): the inline error/disconnect status renders legibly in light + dark with a non-default accent using theme tokens (no hardcoded hex).
+
+## Round-2 re-test results (#2896, 2026-09-19, served `spec/2896 @ 8b9c8f3a`)
+
+> Full evidence: the #2896 `## Tests Runs` (round 2, Verdict FAIL). The round-1 blocking defect (legacy physical-table collision) is FIXED and verified live; the remaining FAIL is the incomplete one-time backfill (see F-38/N-16).
+
+- [x] F-25 (QA-1.1, PASS 2026-09-19 #2896 round 2): declared schema real; `feature_data_read` returns projected rows with `version>0` (1 row, `version:1` → later `version:3/15`). Evidence: `## Tests Runs (round 2)` leg 2a.
+- [x] F-36 (QA-4.1, PASS 2026-09-19 #2896 round 2): legacy table quarantined (never dropped) as `feature_mission_monitor_sessions__legacy_20260919071609`; declared schema created; re-declare/restart is a no-op (exactly 1 `__legacy_*` after a second cold start).
+- [x] F-37 (QA-4.2, PASS 2026-09-19 #2896 round 2): declared rows + feature-owned `customName` persist across a full stop/start (6→6 rows; `noop-test` survived). See the round-2 tests-runs screenshot.
+- [ ] F-38 (QA-4.3, **FAIL 2026-09-19 #2896 round 2**): the declared store does not reproduce the stored history. After >12 min the one-time backfill is still draining (`backfill_done=0`, no completion log) and MM shows 7 of ~34 qualifying sessions of 168 canonical. NFR-1 unmeasurable.
+- [ ] F-41 (S4, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): MM auto-selects a stored session on open and no deselect affordance was reachable; `NoSessionSelected` not renderable.
+- [x] F-42 (S0/S5, PASS-literal 2026-09-19 #2896 round 2): first painted frame with stored rows contains them; no `No sessions yet` / inline spinner / blank canvas while stored sessions exist. Intent PARTIAL: only 7 of ~34 stored sessions present.
+- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): no in-app lever forces a live watch/read failure or stream disconnect; `mm-watch-error`/`mm-watch-disconnected` never rendered. Cross-namespace read DOES reject with the verbatim hard error.
+- [x] F-44 (S2/S3 + S1 budgets, PASS 2026-09-19 #2896 round 2): selection/render work with a non-empty list; declared-table `update` notifications re-fit the canvas (`auto-fit … epoch N` console lines); no round-trip on selection observed. Raw ms budget table not separately sampled (time-boxed).
+- [x] F-45 (drawer chrome, PASS-observed 2026-09-19 #2896 round 2): drawer/rename/search/token-bar/DetailPanel chrome unchanged; rename persisted across restart; theme vars only.
+- [ ] N-16 (NFR-1, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): declared store < 30 sessions (backfill incomplete) and no small-corpus DB was available; no valid large/small Δ pair could be produced.
+- [x] N-17 (NFR-2, PASS 2026-09-19 #2896 round 2, mechanism-level): a canonical emit projects into the declared table with no read/watch gating (observer installed unconditionally, `lib.rs:395-398`); `feature_data_while_closed.rs` covers the closed-state negative.
+- [x] N-18 (NFR-3, PASS 2026-09-19 #2896 round 2): console clean after open/watch/mutate/delete — only the pre-existing `motion() is deprecated` WARN.
+- [x] N-19 (NFR-4, PASS-observed 2026-09-19 #2896 round 2): MM list/canvas visually unchanged; theme tokens only (single theme observed).
+- [x] N-20/N-21 (NFR-5, PASS-literal 2026-09-19 #2896 round 2): no new-row animation/skeleton regression observed; `auto-fit` epochs behave. Reduced-motion not separately driven.
+- [ ] N-22 (NFR-6 S6 contrast, **UNVERIFIED 2026-09-19 #2896 round 2**): S6 state never rendered (same blocker as F-43).
