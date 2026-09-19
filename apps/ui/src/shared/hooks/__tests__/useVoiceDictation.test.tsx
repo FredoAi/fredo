@@ -120,6 +120,8 @@ describe('useVoiceDictation — control-plane subscription', () => {
     // #2897 ST-2 — no model-audio phase and no ceiling signal while idle.
     expect(result.current.modelAudioPhase).toBeNull();
     expect(result.current.limitReached).toBe(false);
+    // #2897 ST-5 — no bound is advertised outside a model-audio session.
+    expect(result.current.modelAudioLimitMs).toBeNull();
   });
 
   it('never statically imports @tauri-apps/api, never uses useEventRows, no auto-submit, no POC residue', () => {
@@ -550,6 +552,36 @@ describe('useVoiceDictation — the model-audio phase + ceiling signal (#2897 ST
       await result.current.start('launcher');
     });
     expect(result.current.limitReached).toBe(false);
+  });
+
+  it('surfaces the backend ceiling from `stt:state.limitMs` and clears it on a local state (#2897 ST-5)', () => {
+    const { result } = renderHook(() => useVoiceDictation());
+
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'capturing',
+      limitMs: 30_000,
+    });
+    expect(result.current.modelAudioLimitMs).toBe(30_000);
+
+    // The at-ceiling auto-stop keeps advertising the same pinned bound.
+    emit('stt:state', {
+      listening: false,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'processing',
+      limitReached: true,
+      limitMs: 30_000,
+    });
+    expect(result.current.modelAudioLimitMs).toBe(30_000);
+
+    // A legacy / local event carries no bound and clears the display value.
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
+    expect(result.current.modelAudioLimitMs).toBeNull();
   });
 });
 

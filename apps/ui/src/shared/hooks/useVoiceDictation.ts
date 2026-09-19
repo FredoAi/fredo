@@ -107,6 +107,13 @@ export interface SttStateEvent {
    * path. Not an error state.
    */
   limitReached?: boolean | null;
+  /**
+   * Spec #2897 ST-5 (REQ-6) — the pinned per-input ceiling, in milliseconds, the
+   * model-audio capture is bounded by. `null` on every legacy / `'local'` path.
+   * The launcher's "last N seconds" countdown and its limit notice derive from
+   * THIS value, so the backend constant and the UI copy can never disagree.
+   */
+  limitMs?: number | null;
 }
 
 /** Rust `SttStartResult` (camelCase wire). */
@@ -156,6 +163,12 @@ export interface VoiceDictation {
    * clip ceiling. A warning treatment, never an error.
    */
   limitReached: boolean;
+  /**
+   * Spec #2897 ST-5 (REQ-6) — the pinned per-input ceiling in ms, or `null`
+   * outside a model-audio session. The launcher derives its countdown and its
+   * limit notice from this ONE value (never a hardcoded duration).
+   */
+  modelAudioLimitMs: number | null;
   start(origin: VoiceOrigin): Promise<void>;
   /** Commit the final partial (the backend emits the final first). */
   stop(): Promise<void>;
@@ -188,6 +201,9 @@ export function useVoiceDictation(): VoiceDictation {
   // launcher's model-audio indicator derives from. Both are `stt:state`-driven.
   const [modelAudioPhase, setModelAudioPhase] = useState<VoiceModelAudioPhase | null>(null);
   const [limitReached, setLimitReached] = useState(false);
+  // Spec #2897 ST-5 — the pinned ceiling the model-audio capture is bounded by
+  // (from `stt:state.limitMs`), surfaced so the launcher never hardcodes it.
+  const [modelAudioLimitMs, setModelAudioLimitMs] = useState<number | null>(null);
 
   // Cleared on unmount; every async continuation checks it before touching
   // state so a late `stt_start`/`stop`/`cancel` resolution is a no-op.
@@ -264,6 +280,9 @@ export function useVoiceDictation(): VoiceDictation {
       // is a one-shot signal — `true` only on the at-ceiling stop event.
       setModelAudioPhase(event.phase ?? null);
       setLimitReached(event.limitReached === true);
+      // Spec #2897 ST-5 (REQ-6) — the pinned ceiling travels on every
+      // model-audio state; a legacy/local event carries `null` and clears it.
+      setModelAudioLimitMs(typeof event.limitMs === 'number' ? event.limitMs : null);
     });
 
     return () => {
@@ -349,6 +368,7 @@ export function useVoiceDictation(): VoiceDictation {
       engineResident,
       modelAudioPhase,
       limitReached,
+      modelAudioLimitMs,
       start,
       stop,
       cancel,
@@ -364,6 +384,7 @@ export function useVoiceDictation(): VoiceDictation {
       engineResident,
       modelAudioPhase,
       limitReached,
+      modelAudioLimitMs,
       start,
       stop,
       cancel,

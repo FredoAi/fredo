@@ -15,6 +15,7 @@
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -113,6 +114,12 @@ impl ActiveSession {
     fn phase(&self) -> Option<SttPhaseWire> {
         phase_for_handling(self.mode)
     }
+
+    /// #2897 ST-5 (REQ-6) — the pinned ceiling this session is bounded by
+    /// (`None` for the shipped local-transcription path).
+    fn limit_ms(&self) -> Option<u64> {
+        limit_for_handling(self.mode)
+    }
 }
 
 /// Tauri-managed session state (Send + Sync: only Send fields inside a Mutex).
@@ -122,6 +129,13 @@ pub struct VoiceState {
     /// `stt_take_audio_clip` (which takes + clears it). `None` outside a
     /// model-audio session; never holds a recognizer or a device.
     clip: Mutex<Option<SttAudioClip>>,
+    /// #2897 ST-5 (REQ-6): set by the model-audio worker the instant capture
+    /// AUTO-STOPPED at [`MAX_AUDIO_CLIP_MS`]. An auto-stopped session is OVER —
+    /// `stt_status` reports idle and the already-listening gate lets the next
+    /// listen proceed (the stale entry is dropped), while a later `stt_stop`
+    /// still re-emits the same terminal `processing`/`limitReached` state. A new
+    /// session start clears it.
+    auto_stopped: AtomicBool,
 }
 
 impl VoiceState {
@@ -129,6 +143,7 @@ impl VoiceState {
         Self {
             inner: Mutex::new(None),
             clip: Mutex::new(None),
+            auto_stopped: AtomicBool::new(false),
         }
     }
 }
@@ -278,11 +293,12 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
         detail: Some(error.detail.clone()),
         origin: origin.map(|value| value.to_string()),
         // An error path never captured, never consumed a resident engine, and
-        // never reported a model-audio phase (#2897 ST-2).
+        // never reported a model-audio phase (#2897 ST-2/ST-5).
         ready_ms: None,
         engine_resident: false,
         phase: None,
         limit_reached: None,
+        limit_ms: None,
     }
 }
 
@@ -291,7 +307,7 @@ fn state_event_error(error: &VoiceError, origin: Option<&str>) -> SttStateEvent 
 /// duplicate-start re-emit and the start success path all derive from this one
 /// function, so the read path and the emit path can never disagree (R-5.3/AC5).
 fn listening_state(origin: Option<String>) -> SttStateEvent {
-    listening_state_with(origin, None, false, None)
+    listening_state_with(origin, None, false, None, None)
 }
 
 /// The truthful `stt:state` builder WITH the timing observables (ST-1):
@@ -299,12 +315,14 @@ fn listening_state(origin: Option<String>) -> SttStateEvent {
 /// session start from the resident slot). ST-3 stamps these on the start-success
 /// path; every other path reports `None`/`false`, so residency is never
 /// optimistic. #2897 ST-2 adds the model-audio `phase` (the limit flag is
-/// stop-only and is stamped by [`finish_phase`]).
+/// stop-only and is stamped by [`finish_phase`]); #2897 ST-5 adds `limit_ms` —
+/// the ONE pinned ceiling every model-audio `stt:state` carries (REQ-6).
 fn listening_state_with(
     origin: Option<String>,
     ready_ms: Option<u64>,
     engine_resident: bool,
     phase: Option<SttPhaseWire>,
+    limit_ms: Option<u64>,
 ) -> SttStateEvent {
     SttStateEvent {
         listening: origin.is_some(),
@@ -315,6 +333,7 @@ fn listening_state_with(
         engine_resident,
         phase,
         limit_reached: None,
+        limit_ms,
     }
 }
 
@@ -323,6 +342,15 @@ fn listening_state_with(
 fn phase_for_handling(mode: VoiceHandling) -> Option<SttPhaseWire> {
     match mode {
         VoiceHandling::Model => Some(SttPhaseWire::Capturing),
+        VoiceHandling::Local => None,
+    }
+}
+
+/// #2897 ST-5 (REQ-6) — the pinned ceiling a session of this mode is bounded by.
+/// `None` for the shipped local-transcription path (no clip, no bound).
+fn limit_for_handling(mode: VoiceHandling) -> Option<u64> {
+    match mode {
+        VoiceHandling::Model => Some(MAX_AUDIO_CLIP_MS),
         VoiceHandling::Local => None,
     }
 }
@@ -384,6 +412,7 @@ fn already_listening_outcome(
             None,
             false,
             active.phase(),
+            active.limit_ms(),
         ),
     ))
 }
@@ -484,7 +513,13 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     // carries the ACTIVE session's origin, never the newly requested one.
     {
         let state = app.state::<VoiceState>();
-        let guard = lock_inner(&state);
+        let mut guard = lock_inner(&state);
+        // #2897 ST-5 (REQ-6 / E-55) — an AUTO-STOPPED session is over: its worker
+        // ended at the pinned ceiling. Drop the stale entry so the next listen is
+        // never refused as `alreadyListening` (and the clip is cleared below).
+        if state.auto_stopped.load(Ordering::SeqCst) && guard.is_some() {
+            *guard = None;
+        }
         if let Some((result, event)) = already_listening_outcome(guard.as_ref()) {
             emit_state(app, &event);
             return result;
@@ -541,10 +576,12 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     // device is the typed `NoDevice` naming it (AC4), never a silent fallback.
     let selected_device = persisted_device(app);
     // #2897 ST-2 (E-55): a new listen invalidates any clip a previous session left
-    // untaken, so a re-listen can never deliver stale audio.
+    // untaken, so a re-listen can never deliver stale audio. #2897 ST-5: the
+    // auto-stop flag is reset with it — this session is live until it ends.
     {
         let state = app.state::<VoiceState>();
         *lock_clip(&state) = None;
+        state.auto_stopped.store(false, Ordering::SeqCst);
     }
     let (tx, rx) = mpsc::channel::<AudioMsg>();
     // The engine handoff channel: the engine is handed to the worker only AFTER
@@ -556,12 +593,16 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     let session_id = uuid::Uuid::new_v4().to_string();
     let worker_app = app.clone();
     let worker_tx = tx.clone();
+    // #2897 ST-5 — the auto-stop `stt:state` is emitted by the worker itself, so
+    // it needs the session origin (owned: the worker is `'static`).
+    let worker_origin = origin.to_string();
     let worker = match std::thread::Builder::new()
         .name("fredo-stt".to_string())
         .spawn(move || {
             worker_main(WorkerJob {
                 app: worker_app,
                 session_id,
+                origin: worker_origin,
                 models_dir,
                 selected_device,
                 rx,
@@ -644,6 +685,7 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
                     Some(info.ready_ms),
                     engine_resident,
                     phase_for_handling(handling),
+                    limit_for_handling(handling),
                 ),
             );
             SttStartResult {
@@ -709,6 +751,14 @@ async fn finish(app: &AppHandle, message: AudioMsg) -> SttStateEvent {
     } else {
         None
     };
+    // #2897 ST-5 (REQ-6) — a cancel DISCARDS the clip: after an auto-stop the clip
+    // is already committed, so a later cancel must reclaim it, exactly as a
+    // cancel inside the capture loop discards the in-flight accumulation.
+    if mode == Some(VoiceHandling::Model) && !is_stop {
+        let state = app.state::<VoiceState>();
+        *lock_clip(&state) = None;
+        state.auto_stopped.store(false, Ordering::SeqCst);
+    }
     let (phase, limit_reached) = finish_phase(mode, is_stop, clip_at_limit);
 
     let event = SttStateEvent {
@@ -721,6 +771,9 @@ async fn finish(app: &AppHandle, message: AudioMsg) -> SttStateEvent {
         engine_resident: false,
         phase,
         limit_reached,
+        // #2897 ST-5 — a model-audio stop carries the pinned ceiling the clip was
+        // bounded by, so the limit copy always reads the real bound.
+        limit_ms: mode.and_then(limit_for_handling),
     };
     emit_state(app, &event);
     event
@@ -743,12 +796,19 @@ pub async fn cancel(app: &AppHandle) -> SttStateEvent {
 pub fn status(app: &AppHandle) -> SttStateEvent {
     let state = app.state::<VoiceState>();
     let guard = lock_inner(&state);
+    // #2897 ST-5 (REQ-6) — an auto-stopped capture is OVER: the worker ended at
+    // the pinned ceiling and the wire already reported `processing`. The read
+    // path must agree with it, never claim a live capture that no longer exists.
+    if state.auto_stopped.load(Ordering::SeqCst) {
+        return listening_state(None);
+    }
     match guard.as_ref() {
         Some(session) => listening_state_with(
             Some(session.origin.clone()),
             None,
             false,
             session.phase(),
+            session.limit_ms(),
         ),
         None => listening_state(None),
     }
@@ -760,6 +820,9 @@ struct WorkerJob {
     /// Owns the engine and the `cpal::Stream` for the session's whole lifetime.
     app: AppHandle,
     session_id: String,
+    /// #2897 ST-5 — the session origin, echoed on the worker-emitted auto-stop
+    /// `stt:state` (the reachability bound of the actual auto-stop event).
+    origin: String,
     models_dir: PathBuf,
     selected_device: Option<String>,
     rx: Receiver<AudioMsg>,
@@ -792,6 +855,7 @@ fn worker_main(job: WorkerJob) {
     let WorkerJob {
         app,
         session_id,
+        origin,
         models_dir,
         selected_device,
         rx,
@@ -867,7 +931,11 @@ fn worker_main(job: WorkerJob) {
         }
         // #2897 ST-2: no recognizer, no engine — accumulate the bounded clip and
         // commit it on Stop. `capture` (and its stream/feed) drops at scope end.
-        VoiceHandling::Model => run_model_audio_session(&app, &rx),
+        // #2897 ST-5: reaching the pinned ceiling AUTO-STOPS the capture (the
+        // worker returns, so the microphone is released at the bound) and emits
+        // the terminal warning state itself — the user keeps holding, the clip is
+        // kept whole and delivered.
+        VoiceHandling::Model => run_model_audio_session(&app, &rx, &origin),
     }
 }
 
@@ -882,32 +950,40 @@ enum ModelAudioCaptureOutcome {
 
 /// #2897 ST-2 — the model-audio loop: accumulate `AudioMsg::Samples` with NO
 /// recognizer, bound the buffer at [`MAX_AUDIO_CLIP_MS`] (REQ-6), commit on Stop
-/// / discard on Cancel. Once the ceiling is reached, nothing further is
-/// accumulated (bounded memory) — the session stays live until the user ends the
-/// gesture, so no stale-session race is introduced.
+/// / discard on Cancel.
+///
+/// #2897 ST-5 (REQ-6) — the bound is an AUTO-STOP, not a lossy cut: the moment
+/// the pinned ceiling is reached the loop RETURNS the whole accumulation
+/// (`at_limit:true`) instead of waiting for the user's gesture. Capture then
+/// stops (the worker returns and drops the stream), so no captured audio is ever
+/// discarded — the clip IS the entire capture.
 fn run_model_audio_capture(rx: &Receiver<AudioMsg>) -> ModelAudioCaptureOutcome {
     let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
     let mut samples: Vec<f32> = Vec::new();
-    let mut at_limit = false;
 
     while let Ok(message) = rx.recv() {
         match message {
             AudioMsg::Samples(chunk) => {
-                if at_limit {
-                    // The pinned ceiling was reached: keep the session alive for
-                    // the user's gesture but accumulate nothing further.
-                    continue;
-                }
-                let remaining = cap - samples.len();
+                // The remaining headroom at the pinned ceiling. `saturating_sub`
+                // covers a chunk arriving after an exact fill (headroom 0): the
+                // capture is already at the bound and auto-stops here.
+                let remaining = cap.saturating_sub(samples.len());
                 if chunk.len() >= remaining {
                     samples.extend_from_slice(&chunk[..remaining]);
-                    at_limit = true;
-                } else {
-                    samples.extend_from_slice(&chunk);
+                    // AUTO-STOP: the whole capture (exactly the bound) is kept and
+                    // the loop ends — nothing past the bound was ever captured.
+                    return ModelAudioCaptureOutcome::Clip {
+                        samples,
+                        at_limit: true,
+                    };
                 }
+                samples.extend_from_slice(&chunk);
             }
             AudioMsg::Stop => {
-                return ModelAudioCaptureOutcome::Clip { samples, at_limit };
+                return ModelAudioCaptureOutcome::Clip {
+                    samples,
+                    at_limit: false,
+                };
             }
             AudioMsg::Cancel => return ModelAudioCaptureOutcome::Discarded,
         }
@@ -915,21 +991,56 @@ fn run_model_audio_capture(rx: &Receiver<AudioMsg>) -> ModelAudioCaptureOutcome 
 
     // The sender dropped without Stop/Cancel (session teardown): commit what was
     // captured, honestly reporting whether the ceiling had been reached.
+    let at_limit = samples.len() >= cap;
     ModelAudioCaptureOutcome::Clip { samples, at_limit }
 }
 
 /// #2897 ST-2 — run a model-audio worker session to completion: accumulate, then
 /// encode + stash the clip on Stop. The clip leaves via IPC
 /// (`stt_take_audio_clip`) only — `voice/` never transmits it (REQ-8).
-fn run_model_audio_session(app: &AppHandle, rx: &Receiver<AudioMsg>) {
+///
+/// #2897 ST-5 (REQ-6) — an at-ceiling auto-stop additionally marks the session
+/// ended (`auto_stopped`) and emits the terminal `processing`/`limitReached:true`
+/// state itself, so the bound is surfaced without waiting for the user's release.
+/// The clip is committed FIRST, so the state is never visible before the audio
+/// it describes is takeable (non-lossy).
+fn run_model_audio_session(app: &AppHandle, rx: &Receiver<AudioMsg>, origin: &str) {
     let ModelAudioCaptureOutcome::Clip { samples, at_limit } = run_model_audio_capture(rx) else {
         // Cancel: no clip, nothing stashed (the clip was cleared at start).
         return;
     };
     let clip = encode_clip(&samples, at_limit);
     let state = app.state::<VoiceState>();
-    let mut guard = lock_clip(&state);
-    *guard = Some(clip);
+    {
+        let mut guard = lock_clip(&state);
+        *guard = Some(clip);
+    }
+    if at_limit {
+        // Surface the auto-stop immediately (the user may still be holding). The
+        // flag is stored AFTER the emit so a start cannot be admitted — and clear
+        // the stale entry — before the terminal state has been published.
+        emit_state(app, &auto_stop_state(origin));
+        state.auto_stopped.store(true, Ordering::SeqCst);
+    }
+}
+
+/// #2897 ST-5 (REQ-6) — the terminal `stt:state` an at-ceiling auto-stop emits:
+/// the capture ended normally (`listening:false`), the whole clip is committed
+/// for interpretation (`processing`), the bound was reached (`limitReached`), and
+/// the pinned ceiling travels with it so the UI copy reads the real bound. This
+/// is a NORMAL terminal capture state — never an error.
+fn auto_stop_state(origin: &str) -> SttStateEvent {
+    SttStateEvent {
+        listening: false,
+        code: None,
+        detail: None,
+        origin: Some(origin.to_string()),
+        ready_ms: None,
+        engine_resident: false,
+        phase: Some(SttPhaseWire::Processing),
+        limit_reached: Some(true),
+        limit_ms: Some(MAX_AUDIO_CLIP_MS),
+    }
 }
 
 /// #2897 ST-2 — samples for a millisecond duration at the 16 kHz engine rate.
@@ -1535,19 +1646,22 @@ mod tests {
     /// is visible on the wire, never masked.
     #[test]
     fn start_success_state_carries_the_receipt_based_ready_ms_and_residency() {
-        let resident = listening_state_with(Some("launcher".to_string()), Some(137), true, None);
+        let resident = listening_state_with(Some("launcher".to_string()), Some(137), true, None, None);
         assert!(resident.listening);
         assert_eq!(resident.origin.as_deref(), Some("launcher"));
         assert_eq!(resident.ready_ms, Some(137));
         assert!(resident.engine_resident);
         assert!(resident.code.is_none());
         assert!(resident.detail.is_none());
-        // #2897 ST-2 — a local (no-phase) start reports no model-audio phase.
+        // #2897 ST-2/#2897 ST-5 — a local (no-phase) start reports neither a
+        // model-audio phase nor a pinned ceiling.
         assert!(resident.phase.is_none());
         assert!(resident.limit_reached.is_none());
+        assert!(resident.limit_ms.is_none());
 
         // The join shape: a large, honest wait that includes the joined warm.
-        let joined = listening_state_with(Some("launcher".to_string()), Some(2_940), false, None);
+        let joined =
+            listening_state_with(Some("launcher".to_string()), Some(2_940), false, None, None);
         assert!(joined.listening);
         assert_eq!(
             joined.ready_ms,
@@ -1565,9 +1679,13 @@ mod tests {
             Some(80),
             false,
             Some(SttPhaseWire::Capturing),
+            Some(MAX_AUDIO_CLIP_MS),
         );
         assert_eq!(model.phase, Some(SttPhaseWire::Capturing));
         assert!(model.limit_reached.is_none());
+        // #2897 ST-5 (REQ-6) — the capture advertises the ONE pinned ceiling, so
+        // the UI's countdown derives the real bound from the backend constant.
+        assert_eq!(model.limit_ms, Some(MAX_AUDIO_CLIP_MS));
     }
 
     /// ST-3/R-1: no error path may claim readiness or residency — the two
@@ -1768,6 +1886,7 @@ mod tests {
             Some("launcher".to_string()),
             Some(ready_ms),
             engine_resident,
+            None,
             None,
         );
         assert_eq!(state.ready_ms, Some(ready_ms));
@@ -2085,10 +2204,10 @@ mod tests {
         );
     }
 
-    /// #2897 ST-2 (REQ-6): the accumulation is bounded by the SINGLE pinned
-    /// `MAX_AUDIO_CLIP_MS`, everything past the ceiling is dropped, and the
-    /// captured prefix is kept sample-for-sample (the whole capture, no truncation
-    /// of what was captured).
+    /// #2897 ST-2/#2897 ST-5 (REQ-6): the accumulation is bounded by the SINGLE
+    /// pinned `MAX_AUDIO_CLIP_MS`, the captured prefix is kept sample-for-sample,
+    /// and reaching the ceiling IS the auto-stop (`at_limit:true`) — the whole
+    /// capture, no truncation of what was captured.
     #[test]
     fn model_audio_bounds_accumulation_at_the_pinned_ceiling() {
         let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
@@ -2096,7 +2215,7 @@ mod tests {
         assert_eq!(cap, 480_000, "30 s at 16 kHz");
         assert_eq!(cap % 3200, 0, "the ceiling lands on a whole capture chunk");
 
-        // 2× the ceiling: the tail past the cap is dropped, the prefix survives.
+        // 2× the ceiling: capture auto-stops AT the cap; the prefix survives.
         let mut messages = Vec::new();
         for _ in 0..(cap / 3200 * 2) {
             messages.push(AudioMsg::Samples(vec![0.5_f32; 3200]));
@@ -2114,6 +2233,59 @@ mod tests {
             }
             ModelAudioCaptureOutcome::Discarded => panic!("stop must commit the clip"),
         }
+    }
+
+    /// #2897 ST-5 (REQ-6): the bound is an AUTO-STOP, not a lossy cut — the loop
+    /// RETURNS the instant the ceiling is reached, so a chunk that would exceed it
+    /// is never consumed and the clip is exactly the whole capture (no dropped
+    /// tail, no partial chunk).
+    #[test]
+    fn model_audio_auto_stops_at_the_ceiling_without_consuming_the_tail() {
+        let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
+        let mut messages = Vec::new();
+        for _ in 0..(cap / 3200) {
+            messages.push(AudioMsg::Samples(vec![0.5_f32; 3200]));
+        }
+        // The tail has a distinct value: if it were consumed the clip would differ.
+        messages.push(AudioMsg::Samples(vec![0.9_f32; 3200]));
+        messages.push(AudioMsg::Stop);
+
+        match drive_model_audio(messages) {
+            ModelAudioCaptureOutcome::Clip { samples, at_limit } => {
+                assert_eq!(samples.len(), cap, "the whole capture, exactly the bound");
+                assert!(at_limit, "the ceiling auto-stops the capture");
+                assert!(
+                    samples.iter().all(|&sample| sample == 0.5),
+                    "the tail past the bound is never consumed"
+                );
+            }
+            ModelAudioCaptureOutcome::Discarded => panic!("auto-stop must commit the clip"),
+        }
+    }
+
+    /// #2897 ST-5 (REQ-6): the auto-stop terminal state is a NORMAL warning — the
+    /// capture ended (`listening:false`), the whole clip is processing, the bound
+    /// is flagged, and the pinned ceiling travels with it. Never an error.
+    #[test]
+    fn auto_stop_state_is_a_normal_terminal_warning() {
+        let state = auto_stop_state("launcher");
+        assert!(!state.listening, "the capture is over");
+        assert!(state.code.is_none(), "reaching the bound is NEVER an error");
+        assert!(state.detail.is_none());
+        assert_eq!(state.origin.as_deref(), Some("launcher"));
+        assert_eq!(state.phase, Some(SttPhaseWire::Processing));
+        assert_eq!(state.limit_reached, Some(true));
+        assert_eq!(state.limit_ms, Some(MAX_AUDIO_CLIP_MS));
+        assert!(state.ready_ms.is_none());
+        assert!(!state.engine_resident);
+    }
+
+    /// #2897 ST-5 (REQ-6): only a model-audio session is bounded by the pinned
+    /// ceiling; the shipped local-transcription path advertises none.
+    #[test]
+    fn limit_for_handling_bounds_only_model_audio() {
+        assert_eq!(limit_for_handling(VoiceHandling::Model), Some(MAX_AUDIO_CLIP_MS));
+        assert_eq!(limit_for_handling(VoiceHandling::Local), None);
     }
 
     /// #2897 ST-2 (REQ-6): exactly-at-the-ceiling is also `at_limit:true`, and

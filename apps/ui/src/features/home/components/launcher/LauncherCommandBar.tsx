@@ -151,6 +151,21 @@
  *   ZERO transcript text: `finalTranscript` is host-suppressed in model mode, and
  *   the transcript announcer stays mounted-but-empty.
  *
+ * Spec #2897 ST-5 (REQ-6) — the over-limit, NON-LOSSY bound:
+ *   • the pinned ceiling reaches the bar as a NUMBER (`modelAudioLimitMs`, from
+ *     the backend's `stt:state.limitMs`) — the UI never hardcodes a duration, so
+ *     the copy and the backend constant cannot disagree;
+ *   • during the LAST `MODEL_AUDIO_WARN_S` seconds the listening chip appends a
+ *     countdown (`Fredo is listening · 10s left`) — the bound is never a surprise;
+ *   • when the capture auto-stops at the bound (`limitReached`), the chip hands
+ *     over to `processing` and a polite BELOW-BAR line
+ *     (`launcher-command-model-limit-status`, `var(--status-warning)`) states the
+ *     real bound: `That's the 30-second limit — Fredo has your recording and is
+ *     responding.` It is a NORMAL terminal capture state — never `role="alert"` —
+ *     and the clip is kept whole and delivered (`truncated:false` upstream).
+ *   • the below-bar slot precedence becomes: alert (voice error) > model-audio
+ *     limit > hearing-nothing > queued > newline caption.
+ *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
  * today's rendering (`voiceMode='local'` / `enterMode='launch'` / no `hintLabel` /
  * `busy=false` / `listening=false` / no stop or cancel handler / no error / no
@@ -210,6 +225,57 @@ export const MODEL_AUDIO_PROCESSING_PLACEHOLDER = 'Fredo is processing…';
 /** Live-region lines (transitions only, exactly once each). */
 export const MODEL_AUDIO_LISTENING_ANNOUNCEMENT = 'Fredo is listening';
 export const MODEL_AUDIO_PROCESSING_ANNOUNCEMENT = 'Fredo is processing your speech';
+
+/**
+ * Spec #2897 ST-5 (REQ-6) — how long before the pinned bound the listening chip
+ * starts counting down. A pure UI lead time (recognition over recall); it is NOT
+ * the bound itself, which always comes from the backend constant.
+ */
+export const MODEL_AUDIO_WARN_S = 10;
+
+/**
+ * Spec #2897 ST-5 (REQ-6) — the below-bar limit notice's live-region line,
+ * announced ONCE on the auto-stop transition. The visible notice carries the real
+ * bound; this sentence is the AT channel.
+ */
+export const MODEL_AUDIO_LIMIT_ANNOUNCEMENT =
+  'Recording limit reached. Fredo has your recording.';
+
+/**
+ * Spec #2897 ST-5 (REQ-6) — the pinned bound in whole seconds, derived from the
+ * backend's `stt:state.limitMs`. `null` when the wire carries no bound (every
+ * legacy / `'local'` path), so the caller can omit the number rather than invent
+ * one.
+ */
+export function modelAudioLimitSeconds(limitMs: number | null | undefined): number | null {
+  if (typeof limitMs !== 'number' || !Number.isFinite(limitMs) || limitMs <= 0) return null;
+  return Math.round(limitMs / 1000);
+}
+
+/**
+ * Spec #2897 ST-5 (REQ-6) — whole seconds left at the bound, never negative.
+ * Pure, so the countdown arithmetic is unit-pinned without a clock.
+ */
+export function modelAudioSecondsLeft(elapsedMs: number, limitMs: number): number {
+  return Math.max(0, Math.ceil((limitMs - elapsedMs) / 1000));
+}
+
+/** Spec #2897 ST-5 — the listening chip, with the countdown appended in the warning window. */
+export function modelAudioListeningChipCopy(secondsLeft: number | null): string {
+  return secondsLeft === null
+    ? MODEL_AUDIO_LISTENING_CHIP_COPY
+    : `${MODEL_AUDIO_LISTENING_CHIP_COPY} · ${secondsLeft}s left`;
+}
+
+/**
+ * Spec #2897 ST-5 (REQ-6) — the polite below-bar limit notice, in the REAL bound
+ * (derived from the backend constant). With no bound on the wire the sentence
+ * still reads truthfully, without a fabricated number.
+ */
+export function modelAudioLimitNoticeCopy(limitSeconds: number | null): string {
+  const bound = limitSeconds === null ? '' : ` ${limitSeconds}-second`;
+  return `That's the${bound} limit — Fredo has your recording and is responding.`;
+}
 
 /**
  * Spec #2897 ST-4 — the PURE `ModelAudioPhase` derivation (UI/UX §4). It is the
@@ -440,6 +506,21 @@ export interface LauncherCommandBarProps {
    * by `deriveModelAudioPhase`; the bar never re-derives it from scratch.
    */
   modelAudioPhase?: VoiceModelAudioPhase | null;
+  /**
+   * Spec #2897 ST-5 (REQ-6) — ST-2's `voice.limitReached`: the capture
+   * auto-stopped at the pinned ceiling and the whole clip is being interpreted.
+   * A NORMAL terminal capture state rendered as a `var(--status-warning)` notice
+   * in the below-bar slot (never `role="alert"`). Defaults to `false`, so the
+   * inactive/quiet bar is byte-identical (AC4).
+   */
+  limitReached?: boolean;
+  /**
+   * Spec #2897 ST-5 (REQ-6) — the pinned per-input ceiling in ms (the backend
+   * `stt:state.limitMs`). The last-N-seconds countdown and the limit notice copy
+   * derive from THIS value, so backend and UI copy can never disagree; `null`
+   * (default) renders neither.
+   */
+  modelAudioLimitMs?: number | null;
 }
 
 /**
@@ -457,13 +538,15 @@ const HINT_CHIP_MAX_WIDTH_PX = 220;
  *  CSS unit strings only (G-146 → exact pixels). */
 const LISTENING_CHIP_WIDTH_PX = 72;
 /**
- * Spec #2897 ST-4 — the model-audio chip reservations. The listening chip
- * (`Fredo is listening`) and the processing chip
- * (`Fredo is processing your speech…`, plus its decorative `Spinner`) are wider
- * than the shipped 72px `Listening` chip, so the end-slot gutter is sized to
- * whichever one renders — the typed text can never run under the indicator.
+ * Spec #2897 ST-4/ST-5 — the model-audio chip reservations. The listening chip
+ * (`Fredo is listening`, and `Fredo is listening · 10s left` in the countdown
+ * window) and the processing chip (`Fredo is processing your speech…`, plus its
+ * decorative `Spinner`) are wider than the shipped 72px `Listening` chip, so the
+ * end-slot gutter is sized to whichever one renders — the typed text can never
+ * run under the indicator, and the countdown is never ellipsized away (a bound
+ * the user cannot read is not a disclosed bound).
  */
-const MODEL_AUDIO_LISTENING_CHIP_WIDTH_PX = 136;
+const MODEL_AUDIO_LISTENING_CHIP_WIDTH_PX = 208;
 const MODEL_AUDIO_PROCESSING_CHIP_WIDTH_PX = 248;
 /** #2878 ST-2 — the cancel/discard control's gutter (24px + `ml="6px"`). */
 const CANCEL_GUTTER_PX = 30;
@@ -736,6 +819,8 @@ export function LauncherCommandBar({
   containerRef,
   voiceMode = 'local',
   modelAudioPhase = null,
+  limitReached = false,
+  modelAudioLimitMs = null,
 }: LauncherCommandBarProps) {
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     // #2878 ST-2 (UX-2) — a user keystroke during a live segment makes the edit
@@ -852,6 +937,34 @@ export function LauncherCommandBar({
   });
   const modelListening = modelPhase === 'listening';
   const modelProcessing = modelPhase === 'processing';
+
+  // Spec #2897 ST-5 (REQ-6) — the last-`MODEL_AUDIO_WARN_S`-seconds countdown on
+  // the listening chip. The ticker starts only INSIDE the warning window (bounded
+  // state writes: 4/s for ≤ 10 s, never for the whole capture) and derives the
+  // remaining time from the ONE backend bound (`stt:state.limitMs`) — no
+  // hardcoded duration. A session transition (auto-stop → `processing`) clears it,
+  // so no timer outlives the capture. Primitive deps only (AGENTS.md #523).
+  const limitSeconds = modelAudioLimitSeconds(modelAudioLimitMs);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  useEffect(() => {
+    if (!modelListening || modelAudioLimitMs === null) {
+      setSecondsLeft(null);
+      return;
+    }
+    const startedAt = Date.now();
+    const warnAtMs = Math.max(0, modelAudioLimitMs - MODEL_AUDIO_WARN_S * 1000);
+    let interval: number | null = null;
+    const tick = () =>
+      setSecondsLeft(modelAudioSecondsLeft(Date.now() - startedAt, modelAudioLimitMs));
+    const first = window.setTimeout(() => {
+      tick();
+      interval = window.setInterval(tick, 250);
+    }, warnAtMs);
+    return () => {
+      window.clearTimeout(first);
+      if (interval !== null) window.clearInterval(interval);
+    };
+  }, [modelListening, modelAudioLimitMs]);
 
   // S1 vs S0 (UI/UX §1): the promise placeholder is offered only while the search
   // input actually holds focus, is empty, and holding Space would dictate.
@@ -1011,6 +1124,20 @@ export function LauncherCommandBar({
     }
   }, [modelAudioPhase, isModelVoice]);
 
+  // Spec #2897 ST-5 (REQ-6) — the auto-stop bound, announced ONCE on the
+  // `limitReached` rise. Declared AFTER the processing effect so that on the
+  // auto-stop commit (capture ends + `processing` + `limitReached` in ONE state
+  // event) this is the line the region reads — the bound is the news, not the
+  // hand-over. It never re-announces on a later re-render or the user's release.
+  const prevLimitReachedRef = useRef(limitReached);
+  useEffect(() => {
+    const was = prevLimitReachedRef.current;
+    prevLimitReachedRef.current = limitReached;
+    if (isModelVoice && limitReached && !was) {
+      setListenAnnouncement(MODEL_AUDIO_LIMIT_ANNOUNCEMENT);
+    }
+  }, [limitReached, isModelVoice]);
+
   useEffect(() => {
     const was = prevVoiceEnabledRef.current;
     prevVoiceEnabledRef.current = voiceEnabled;
@@ -1021,28 +1148,41 @@ export function LauncherCommandBar({
   }, [voiceEnabled]);
 
   const isAlert = Boolean(voiceErrorMessage);
-  // The error takes precedence over the hearing-nothing hint (a failed start is
-  // never `listening`, so they cannot normally coexist).
+  // Spec #2897 ST-5 (REQ-6) — the auto-stop's polite below-bar notice. It is a
+  // WARNING (never `role="alert"`) and carries the REAL bound from the backend
+  // constant. The below-bar slot precedence becomes: alert (voice error) >
+  // model-audio limit > hearing-nothing > queued > newline caption.
+  const modelLimitMessage =
+    isModelVoice && limitReached ? modelAudioLimitNoticeCopy(limitSeconds) : null;
+  // The error takes precedence over every other line; the limit notice in turn
+  // outranks the hearing-nothing hint (an auto-stopped capture is not "silent").
   const statusMessage =
-    voiceErrorMessage ?? (listening && hearingNothing ? HEARING_NOTHING_COPY : null);
+    voiceErrorMessage ??
+    (modelLimitMessage === null && listening && hearingNothing ? HEARING_NOTHING_COPY : null);
+  const showModelLimit = modelLimitMessage !== null && statusMessage === null;
 
   // #2892 ST-5 (AC5) — the queued waiting indicator. The below-bar slot shows at
-  // most ONE message; the precedence is alert (voice error) > hearing-nothing >
-  // queued > newline caption. The indicator is therefore suppressed whenever
-  // `statusMessage` is present, and it in turn suppresses the `Shift+Enter`
-  // caption (`showNewlineCaption` requires `queuedCount === 0`). It outranks the
-  // key-hint caption because a pending send matters more than a keyboard hint.
-  const showQueued = queuedCount >= 1 && !statusMessage;
+  // most ONE message; the precedence is alert (voice error) > model-audio limit >
+  // hearing-nothing > queued > newline caption. The indicator is therefore
+  // suppressed whenever `statusMessage` (or the limit notice) is present, and it
+  // in turn suppresses the `Shift+Enter` caption (`showNewlineCaption` requires
+  // `queuedCount === 0`). It outranks the key-hint caption because a pending send
+  // matters more than a keyboard hint.
+  const showQueued = queuedCount >= 1 && !statusMessage && !showModelLimit;
 
   // #2883 ST-1 (UI/UX §1 / R-1.4) — the CONTEXTUAL `Shift+Enter` caption. It is
   // rendered ONLY when the host reports the companion active AND the field is
   // actually wrapped (≥2 visual lines): short or empty content never grows a
   // status row (restraint NFR, AC5's second half). Precedence in the status slot:
-  // alert (voice error) > hearing-nothing > queued > newline caption — so the
-  // caption never displaces a live message, and Enter's own wording (#2882) is
-  // untouched.
+  // alert (voice error) > model-audio limit > hearing-nothing > queued > newline
+  // caption — so the caption never displaces a live message, and Enter's own
+  // wording (#2882) is untouched.
   const showNewlineCaption =
-    newlineHint && visualLines >= 2 && !statusMessage && queuedCount === 0;
+    newlineHint &&
+    visualLines >= 2 &&
+    !statusMessage &&
+    !showModelLimit &&
+    queuedCount === 0;
 
   // #2892 ST-5 (a11y) — compose the searchbox `aria-describedby` from the targets
   // ACTUALLY rendered: the hint mirror (only while the chip shows AND the host
@@ -1198,7 +1338,7 @@ export function LauncherCommandBar({
                 textOverflow="ellipsis"
                 flexShrink={0}
               >
-                {MODEL_AUDIO_LISTENING_CHIP_COPY}
+                {modelAudioListeningChipCopy(secondsLeft)}
               </Box>
             )}
             {/* Spec #2897 ST-4 (UI/UX §4, REQ-4) — the interpreting window: the
@@ -1475,6 +1615,26 @@ export function LauncherCommandBar({
           color={isAlert ? 'var(--status-error)' : 'var(--text-subtle)'}
         >
           {statusMessage}
+        </Box>
+      )}
+      {/* #2897 ST-5 (REQ-6) — the auto-stop LIMIT NOTICE, in the SAME status slot.
+          Warning treatment (`var(--status-warning)`), deliberately NOT a live
+          region and NOT `role="alert"`: reaching the bound is a normal terminal
+          capture state, and the hidden `voice-listening-announcer` is the ONE AT
+          channel (`Recording limit reached. Fredo has your recording.`), so AT is
+          never told twice. Suppressed by a voice error (alert wins) and suppresses
+          the hearing-nothing/queued/newline lines below. */}
+      {showModelLimit && (
+        <Box
+          data-testid="launcher-command-model-limit-status"
+          mt="2"
+          maxWidth="560px"
+          textAlign="center"
+          fontFamily="var(--font-primary)"
+          fontSize="12px"
+          color="var(--status-warning)"
+        >
+          {modelLimitMessage}
         </Box>
       )}
       {/* #2892 ST-5 (AC5) — the queued waiting indicator: the SAME box metrics as

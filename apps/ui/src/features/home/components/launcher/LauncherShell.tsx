@@ -1879,6 +1879,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // so `voice-transcript-announcer` stays mounted but empty.
             voiceMode={voiceHandling}
             modelAudioPhase={voice.modelAudioPhase}
+            // Spec #2897 ST-5 (REQ-6) — the pinned ceiling (from the backend
+            // `stt:state`) drives the last-N-seconds countdown and the limit
+            // notice; `limitReached` is the auto-stop's warning signal.
+            modelAudioLimitMs={voice.modelAudioLimitMs}
+            limitReached={voice.limitReached}
             finalTranscript={modelVoice ? '' : finalTranscript}
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}

@@ -29,9 +29,11 @@ pub enum SttErrorCode {
 
 /// #2897 ST-2 (REQ-6) — the pinned per-input ceiling, in milliseconds, that the
 /// captured model-audio clip is bounded by. SINGLE SOURCE: the session derives
-/// its sample cap from this and reports it back on every clip as `limitMs`; the
-/// UI never hardcodes a duration. The value is PROVISIONAL (30 s) — ST-5
-/// finalizes it from the Tester's F-110 measured ceiling (ST-0's live receipt).
+/// its sample cap from this, AUTO-STOPS capture when the ceiling is reached
+/// (ST-5), and reports it back on every model-audio `stt:state` (`limitMs`) and
+/// on every clip (`limitMs`) — the UI never hardcodes a duration. The value is
+/// PROVISIONAL (30 s) — ST-5 finalizes it from the Tester's F-110 measured
+/// ceiling (ST-0's live receipt).
 pub const MAX_AUDIO_CLIP_MS: u64 = 30_000;
 
 /// #2897 ST-2 — the model-audio session phase on the wire. `None` on every
@@ -93,10 +95,17 @@ pub struct SttStateEvent {
     /// #2897 ST-2 — the model-audio phase (`capturing` / `processing`), or `None`
     /// on every legacy / `'local'` path. ADDITIVE.
     pub phase: Option<SttPhaseWire>,
-    /// #2897 ST-2 (REQ-6) — `Some(true)` iff the stop auto-stopped at
+    /// #2897 ST-2 (REQ-6) — `Some(true)` iff the capture auto-stopped at
     /// [`MAX_AUDIO_CLIP_MS`], `Some(false)` on a manual model-audio stop, `None`
     /// on every other path. ADDITIVE.
     pub limit_reached: Option<bool>,
+    /// #2897 ST-5 (REQ-6) — the pinned per-input ceiling ([`MAX_AUDIO_CLIP_MS`])
+    /// this model-audio session is bounded by, in milliseconds. `Some` on every
+    /// model-audio path (`capturing`, `processing`, the at-ceiling auto-stop) so
+    /// the launcher's countdown and limit copy read the ONE backend constant
+    /// instead of hardcoding a duration; `None` on every legacy / `'local'`
+    /// path. ADDITIVE.
+    pub limit_ms: Option<u64>,
 }
 
 /// #2897 ST-2 — the bounded model-audio clip handed back by
@@ -384,6 +393,7 @@ mod tests {
             engine_resident: true,
             phase: None,
             limit_reached: None,
+            limit_ms: None,
         };
         let json = serde_json::to_value(&event).expect("serialize state event");
         assert_eq!(json["listening"], true);
@@ -393,9 +403,11 @@ mod tests {
         assert_eq!(json["engineResident"], true);
         assert!(json.get("ready_ms").is_none());
         assert!(json.get("engine_resident").is_none());
-        // #2897 ST-2 — the additive pair is present and null on a local session.
+        // #2897 ST-2/#2897 ST-5 — the additive trio is present and null on a
+        // local session.
         assert_eq!(json["phase"], serde_json::Value::Null);
         assert_eq!(json["limitReached"], serde_json::Value::Null);
+        assert_eq!(json["limitMs"], serde_json::Value::Null);
     }
 
     /// #2897 ST-2 (REQ-3/REQ-4/REQ-6): the model-audio phase and the
@@ -412,10 +424,14 @@ mod tests {
             engine_resident: false,
             phase: Some(SttPhaseWire::Capturing),
             limit_reached: None,
+            limit_ms: Some(MAX_AUDIO_CLIP_MS),
         };
         let json = serde_json::to_value(&capturing).expect("serialize capturing state");
         assert_eq!(json["phase"], "capturing");
         assert_eq!(json["limitReached"], serde_json::Value::Null);
+        // #2897 ST-5 (REQ-6) — the capture advertises the ONE bounded ceiling so
+        // the UI's countdown and limit copy carry the real bound.
+        assert_eq!(json["limitMs"], MAX_AUDIO_CLIP_MS);
 
         let stopped = SttStateEvent {
             listening: false,
@@ -426,11 +442,13 @@ mod tests {
             engine_resident: false,
             phase: Some(SttPhaseWire::Processing),
             limit_reached: Some(true),
+            limit_ms: Some(MAX_AUDIO_CLIP_MS),
         };
         let json = serde_json::to_value(&stopped).expect("serialize processing state");
         assert_eq!(json["listening"], false);
         assert_eq!(json["phase"], "processing");
         assert_eq!(json["limitReached"], true);
+        assert_eq!(json["limitMs"], MAX_AUDIO_CLIP_MS);
 
         // A manual model-audio stop reports an explicit (not null) false.
         assert_eq!(
