@@ -723,7 +723,7 @@ mod tests {
 
     #[test]
     fn query_scope_filters_on_current_values() {
-        let (collector, registry) = collector_registry();
+        let (_, registry) = collector_registry();
         registry.register(
             declared_target(),
             WatchScope::Query(vec![EqFilter {
@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn canonical_query_scope_filters_by_session() {
-        let (collector, registry) = collector_registry();
+        let (_, registry) = collector_registry();
         registry.register(
             WatchTarget::Canonical {
                 table: "chat".to_string(),
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn canonical_other_kinds_do_not_fire_a_chat_watch() {
-        let (collector, registry) = collector_registry();
+        let (_, registry) = collector_registry();
         registry.register(
             WatchTarget::Canonical {
                 table: "chat".to_string(),
