@@ -2087,7 +2087,53 @@ fn persist_tests(feature: &str) -> anyhow::Result<usize> {
         upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, name))?;
     }
     println!("TESTS COMMITTED: feature '{}' ({} file(s)) to main", feature, files.len());
+    // G-200: the Contents-API write advances `origin/main` while the ROOT
+    // checkout keeps the seeded suite files dirty and its local `main` ref
+    // lagging. A later branch switch then aborts with "Your local changes would
+    // be overwritten" even when the content is byte-identical upstream.
+    // Best-effort safe sync (root `main` only, fast-forward only, working tree
+    // preserved). Never fatal — the upstream suite is already persisted.
+    if let Err(e) = sync_root_main_after_tests_commit() {
+        println!("NOTE: local `main` sync skipped: {}", e);
+    }
     Ok(files.len())
+}
+
+/// G-200: bring the ROOT `main` checkout in sync after a `tests-commit` write to
+/// `origin/main` (the Contents API), so a subsequent branch switch does not abort
+/// on dirty seeded suite files.
+///
+/// SAFETY (deliberately narrow):
+/// - no-op in mock mode (the harness must never mutate the real repo);
+/// - no-op in a linked worktree (the sync is a root-checkout concern);
+/// - no-op unless the current branch is exactly `main`;
+/// - no-op unless local `main` is fast-forwardable to `origin/main` (no local-only
+///   commits — never discards work);
+/// - a `--mixed` reset moves HEAD + index only, PRESERVING the working tree, so
+///   unrelated uncommitted changes survive and the just-committed suite files
+///   (whose content now matches `origin/main`) become clean.
+fn sync_root_main_after_tests_commit() -> anyhow::Result<()> {
+    if mock_mode() {
+        return Ok(());
+    }
+    let root = project_root()?;
+    // Linked worktrees carry a `.git` FILE; only the root checkout has a `.git`
+    // dir. Never touch a worktree's refs from here.
+    if root.join(".git").is_file() {
+        return Ok(());
+    }
+    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    if branch.trim() != "main" {
+        return Ok(());
+    }
+    let _ = run_cmd("git", &["fetch", "origin", "main"]);
+    if run_cmd("git", &["merge-base", "--is-ancestor", "main", "origin/main"]).is_err() {
+        println!("NOTE: local `main` has commits not on origin/main — leaving the ref untouched");
+        return Ok(());
+    }
+    run_cmd("git", &["reset", "--mixed", "origin/main"])?;
+    println!("SYNCED: local `main` fast-forwarded to origin/main (working tree preserved)");
+    Ok(())
 }
 
 /// Seed the Implementation Plan issue body from the triage-plan template when the
@@ -2420,7 +2466,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
     match phase {
         Phase::Backlog => match issue_data {
             // Real gate: the backlog must carry the required intake sections
-            // (reuses the same validation `create-issue` applies to backlog/bug
+            // (reuses the same validation `create-issue` applies to backlog
             // bodies), not merely a non-empty body.
             Some(i) => {
                 let missing = intake_missing_sections(&i.body);
@@ -2928,8 +2974,8 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     None => anyhow::bail!("create-issue requires --body-file (impl-plan accepts the machine-seeded triage template)"),
                 },
             };
-            // Fold-in of po-intake: for backlog/bug intakes, validate required sections.
-            if issue_type == "backlog" || issue_type == "bug" {
+            // Fold-in of po-intake: for backlog intakes, validate required sections.
+            if issue_type == "backlog" {
                 let body = std::fs::read_to_string(&body_path)
                     .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_path, e))?;
                 let missing = intake_missing_sections(&body);
@@ -3542,9 +3588,43 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            run_cmd("git", &["worktree", "add", "--detach", &path, &base])?;
-            println!("WORKTREE CREATED (detached at {}): {}", base, path);
-            append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+            // G-201: idempotent on an existing path. `git worktree prune` clears
+            // stale registrations (a prior run removed the dir without
+            // deregistering, or deregistered without reaping the dir). Then:
+            //  - an existing REAL worktree (a `.git` marker inside) is REUSED so
+            //    a re-run is a no-op instead of failing "path already exists";
+            //  - an existing non-worktree leftover dir (a crashed run) is swept —
+            //    it is gitignored scratch, and any tracked work would already be
+            //    committed + pushed.
+            let _ = run_cmd("git", &["worktree", "prune"]);
+            let wt = std::path::Path::new(&path);
+            if wt.join(".git").exists() {
+                println!("WORKTREE EXISTS (reused): {}", path);
+                append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("reused existing worktree {}", path))?;
+            } else {
+                if wt.exists() {
+                    std::fs::remove_dir_all(wt)?;
+                }
+                match run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
+                    Ok(_) => {
+                        println!("WORKTREE CREATED (detached at {}): {}", base, path);
+                        append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+                    }
+                    Err(e) => {
+                        // A stubborn leftover (pnpm junction remnants, a race) —
+                        // sweep with the robust remover and retry ONCE.
+                        let _ = remove_worktree_robust(&path);
+                        if let Err(retry_err) = run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
+                            anyhow::bail!(
+                                "worktree add failed at {}: {} (after sweep retry: {})",
+                                path, e, retry_err
+                            );
+                        }
+                        println!("WORKTREE CREATED (detached at {}): {}", base, path);
+                        append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+                    }
+                }
+            }
         }
         "remove-worktree" => {
             // Removes a worktree after the developer has pushed. Plain removal

@@ -497,6 +497,60 @@ Test-Script "Create-worktree defaults path (guard still blocks)" {
   return "default path accepted, guard blocked"
 }
 
+# G-201: create-worktree is idempotent on a leftover/unregistered path (a crashed
+# run leaves a scratch dir) AND on an already-created worktree (`.git` marker).
+Test-Script "Create-worktree sweeps leftover dir then is idempotent (G-201)" {
+  $url = Mock-IssueCreate "temp: wt idempotent" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $wt = Join-Path $env:TEMP "fredo-wt-g201-$n"
+  New-Item -ItemType Directory -Path $wt -Force | Out-Null
+  Set-Content -Path (Join-Path $wt "leftover.txt") -Value "junk" -Encoding UTF8
+  try {
+    $out1 = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s1 = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($LASTEXITCODE -ne 0) { throw "create-worktree failed on a leftover dir: $s1" }
+    if ($s1 -notmatch "WORKTREE CREATED") { throw "Expected WORKTREE CREATED, got: $s1" }
+    if (Test-Path (Join-Path $wt "leftover.txt")) { throw "leftover scratch file should have been swept" }
+    $out2 = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s2 = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -ne 0) { throw "re-run create-worktree failed (not idempotent): $s2" }
+    if ($s2 -match "already exists") { throw "re-run must not fail path-exists: $s2" }
+    return "leftover swept + re-run idempotent"
+  } finally {
+    Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "Create-worktree reuses an existing worktree (.git marker) (G-201)" {
+  $url = Mock-IssueCreate "temp: wt reuse" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $wt = Join-Path $env:TEMP "fredo-wt-g201-reuse-$n"
+  New-Item -ItemType Directory -Path $wt -Force | Out-Null
+  Set-Content -Path (Join-Path $wt ".git") -Value "gitdir: elsewhere" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "create-worktree failed: $s" }
+    if ($s -notmatch "WORKTREE EXISTS \(reused\)") { throw "Expected reuse of an existing worktree, got: $s" }
+    if (-not (Test-Path (Join-Path $wt ".git"))) { throw "reused worktree marker must be preserved" }
+    return "existing worktree reused"
+  } finally {
+    Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "upload-evidence role-gates + validates" {
   # non-tester/SM actor blocked
   $role = & rust-script $ps --issue $TestIssue --agent developer --action upload-evidence --body-file x --image y 2>&1
@@ -1619,6 +1673,9 @@ Test-Script "tests-commit commits a feature suite to main" {
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "TESTS COMMITTED:") { throw "Expected TESTS COMMITTED:, got: $outStr" }
+    # G-200 safety: the local-`main` sync added after the upstream write must be a
+    # strict no-op under mock mode — the harness must never mutate the real repo.
+    if ($outStr -match "SYNCED:") { throw "tests-commit must not sync local main in mock mode: $outStr" }
     # Verify via the mock store's contents tree (the Contents API wrote them to
     # `contents/main/.opencode/tests/<feat>/`), not a real git/gh read.
     $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"

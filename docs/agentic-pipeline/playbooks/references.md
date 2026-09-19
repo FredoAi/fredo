@@ -159,6 +159,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** .opencode/scripts/pipeline-state.rs (tests-commit) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
 - **re-validated:** 2026-09-19, #2899 — the dirt recurred on BOTH tests-commit rounds (the planning→implementation side-effect and the tester's suite persist): the root `main` checkout kept the persisted suite files as unstaged modifications and the local `main` ref lagged `origin/main` by the API-written commits. Both round-1 developers independently flagged the dirty tree. The prescribed remedy was applied twice — reconcile the local ref to the API-written origin tip (fast-forward form; the local ref was an ancestor) and reset the touched suite paths — after which every branch switch and handoff proceeded cleanly. Third recurrence on record (#2896, #2897, #2899); the source fix (clean the source tree and advance the local ref inside the action) remains the durable hardening.
 - **effectiveness:** Confirmed (2026-09-19, #2897) — the block recurred after both tests-commit rounds; restoring the affected suite paths from HEAD before the branch switch cleared it exactly as the guardrail prescribes, so the remedy is sound (the underlying dirt remains a machine defect to fix at source).
+- **source fix:** 2026-09-19 — `tests-commit` now best-effort fast-forwards the local root `main` to `origin/main` after the Contents-API write (root checkout only — skips linked worktrees and non-`main` branches; only when local `main` is fast-forwardable, so no local commits are ever discarded; a `--mixed` reset preserves the working tree, so the persisted suite files become clean while unrelated uncommitted work survives). Strictly no-op in mock mode; pinned by the harness assertion that `tests-commit` never emits `SYNCED:` offline (`test-scripts.ps1`, 112/112).
 
 ### G-201: worktree_creation_not_idempotent_on_a_leftover_path
 - **activation_date:** 2026-09-19
@@ -166,7 +167,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a resumable pipeline run hits a leftover worktree path and the developer dispatch fails on an opaque git error instead of proceeding, costing a step on every wave until the stale path is cleared by hand.
 - **guardrail:** Worktree creation must be idempotent for an already-registered worktree at the requested path when it is clean and at the expected commit (reuse it), or fail with a named, actionable message. An orchestrator resuming after an interruption sweeps registered worktrees before dispatching a wave.
 - **home:** .opencode/scripts/pipeline-state.rs (create-worktree) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-19) — source fix applied: `create-worktree` now runs `git worktree prune`, REUSES an existing real worktree (a `.git` marker inside), sweeps an unregistered leftover dir, and retries once with the robust remover on a stubborn leftover. Pinned by two harness tests (`test-scripts.ps1`, 112/112): "sweeps leftover dir then is idempotent" and "reuses an existing worktree (.git marker)".
 
 ### G-188: ui_state_window_shorter_than_driver_cadence
 - **activation_date:** 2026-09-18
