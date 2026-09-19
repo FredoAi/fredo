@@ -1,6 +1,8 @@
 # Realtime Data Layer — Regression Baseline (Spec #2896)
 
 > The "must not change" baseline for the feature-owned read/watch layer. Run on every testing phase that touches the layer or its first consumer (Mission Monitor).
+>
+> **Round 1 (2026-09-19, `spec/2896 @ c23087fd`):** R-1 (canonical row pipeline unchanged) PASS — canonical ingest still lands rows (`chat_rows` `e2e-2896p0a1`). R-2 (row-store merge semantics) not exercised against a live graph (0 sessions). R-5 (no cross-feature imports) / R-8 (FeatureStore namespacing) PASS — cross-namespace read refused with a named error. R-7 (no re-render loop) PASS — console clean. R-4/R-9 blocked (no declared-row mutation observable).
 
 ## Must NOT change (regression invariants)
 
