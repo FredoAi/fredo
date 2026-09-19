@@ -107,3 +107,28 @@
 - [ ] N-7 (NFR-5, interaction budgets): selection feedback <100 ms (no round-trip); scope switch clear ≤100 ms with no stale previous-scope flash beyond one frame; no main-thread sync work >50 ms. Raw ms recorded.
   - Edge: rapid switching; large corpus.
 - [ ] N-8 (NFR-5, reduced motion): any new-entry animation/skeleton shimmer is disabled/reduced under `prefers-reduced-motion`.
+
+## Round-2 re-test results (#2896, 2026-09-19, served `spec/2896 @ 8b9c8f3a`)
+
+> Full evidence: the #2896 `## Tests Runs` (round 2, Verdict FAIL). The declared-schema collision that round 1 proved is FIXED; the FAIL is the incomplete one-time backfill + a phantom no-op write.
+
+- [x] F-1 (REQ-1, PASS 2026-09-19 #2896 round 2): cold declared read returns projected rows + `version>0` (`{"retention":{"maxRows":500,"ttlDays":null},"rows":[…1 row…],"version":1}`; later `version:3`).
+- [x] F-2 (REQ-1, PASS 2026-09-19 #2896 round 2): a canonical `fredo emit` is reflected — declared read shows the new session (`canonical=1 / declared=1`, version advanced).
+- [x] F-3 (REQ-1, PASS 2026-09-19 #2896 round 2): rows + feature-owned `customName` persist across a full stop/start (6→6 rows).
+- [x] F-4/F-5 (REQ-2, PASS 2026-09-19 #2896 round 2): table watch fires for a record mutation; record watch fires with correct `changedFields`/`values`.
+- [x] F-6 (REQ-2, PASS 2026-09-19 #2896 round 2): sibling-field isolation verified BOTH directions — `fields:['customName']` vs `fields:['latestAt']`; each stayed silent for the other's change.
+- [x] F-7 (REQ-2, PASS 2026-09-19 #2896 round 2): after `feature_data_unwatch` of one watch, the stopped watch is silent while the table/other watches keep delivering.
+- [x] F-8 (REQ-3, PASS 2026-09-19 #2896 round 2): notification shape verified — `kind`, `key`, `changedFields`, current `values`, `version`, `timestamp`; `remove` = `values:null` with the record's known fields.
+- [ ] F-10 (REQ-3, **FAIL 2026-09-19 #2896 round 2**): an identical-value `feature_data_write` emitted a phantom `update` (`changedFields:["customName"]`, version 10→11) — the no-op edge is not honored.
+- [x] F-11 (REQ-3 Scenario A, PARTIAL 2026-09-19 #2896 round 2): declared insert/update/remove flows verified live; the live continuous-stream + switch + restart leg was not re-driven (time-box).
+- [x] F-12 (REQ-4, PASS 2026-09-19 #2896 round 2): the declared physical table now has the DECLARED schema; the legacy same-named table is preserved under `__legacy_*` (never dropped).
+- [x] F-13 (REQ-4, PASS 2026-09-19 #2896 round 2): projection + `feature_data_write` + `feature_data_delete` (tombstone) work; the delete survives restart (13 tombstones persisted).
+- [ ] F-14 (REQ-4 Scenario B, **FAIL 2026-09-19 #2896 round 2**): the one-time backfill does not complete on the real corpus (`backfill_done=0` after >12 min; 7 of ~34 qualifying sessions; no completion log) — the stored history is not served on open; NFR-1 unmeasurable.
+- [x] F-15 (REQ-4, PASS 2026-09-19 #2896 round 2): cross-namespace read refused with `feature 'qa2896probe' has not declared table 'sessions' (call feature_data_declare first)`.
+- [x] F-16 (REQ-5 negative, PASS round-1 retained): no per-session watch with nothing selected.
+- [ ] F-17 (REQ-3/S6, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): no in-app lever forces a live watch/read failure/disconnect; `mm-watch-error`/`mm-watch-disconnected` not rendered. The hook-level hard rejection IS verbatim.
+- [ ] F-18 (NFR-1 first meaningful paint, PARTIAL 2026-09-19 #2896 round 2): with stored rows the first painted frame contains them (no empty state) — but only 7 of ~34 stored sessions exist; the A-14 Δ pair is unmeasurable.
+- [x] N-3 (NFR-3, PASS 2026-09-19 #2896 round 2): projection runs unconditionally while no read/watch is open (observer installed at `lib.rs:395-398`; b02 projected).
+- [x] N-4 (NFR-4, PASS 2026-09-19 #2896 round 2): isolation + idempotent create across restart.
+- [x] N-5 (NFR-5, PASS 2026-09-19 #2896 round 2): console clean.
+- [ ] N-1 (NFR-1, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): declared store does not reach the ≥30-session large corpus; no small-corpus DB available.
