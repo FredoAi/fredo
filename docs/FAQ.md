@@ -154,10 +154,10 @@ In **sentence case** — the way a person writes — with the capitals you actua
 The `comm` module (`infrastructure/comm/`) holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small:
 
 - **`FredoEvent`** — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
-- **`EventBus`** — emits RTDB `RowDeliveryBatch` envelopes on the `"fredo-stream-event"` Tauri IPC channel via `emit_row_delivery_batch`.
+- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` and feature-data `FeatureDeliveryBatch` envelopes (`{"featureBatch": …}`) via `emit_feature_delivery_batch`.
 - **`CommAdapter`** trait — implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
-Only `RowDelivery`/`RowDeliveryBatch` envelopes cross IPC; raw `FredoEvent` never does.
+Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope families (`RowDelivery`/`RowDeliveryBatch`, `FeatureDeliveryBatch`).
 
 ### What is the RTDB row pipeline?
 
@@ -168,6 +168,12 @@ The production event pipeline (`infrastructure/rtdb/`):
 - **`store.rs` / `cache.rs`** — SQLite-authoritative rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) behind an LRU cache + write-behind queue.
 - **`flush.rs`** — coalescing windows, batch chunking, and per-query replay-complete settle markers.
 - **`query/`** — the GraphQL-inspired typed query language, e.g. `chat(sessionId = "s1") { userMessage }`.
+
+### What is the feature-owned data layer?
+
+A feature-owned, durable data layer ON TOP of the canonical rows (`infrastructure/feature_data/`). A feature declares the structure it owns plus a source mapping (a field projection over a canonical table, or a closed `sessionRollup` aggregate); the backend materializes the declared tables idempotently on every launch and owns their writes, so the data is correct while the feature's UI is closed. Declared tables live in the same `fredo.db` as `feature_<sanitized featureId>_<table>`, isolated per `featureId`, and survive restarts.
+
+Features then **read on demand** (`feature_data_read` — rows plus the scope version and the resolved retention bound) and **watch at table / record / field granularity** (`feature_data_watch` with optional field narrowing and an optional atomic initial snapshot; `feature_data_unwatch` per watch). Notifications ride the `"fredo-stream-event"` channel as `FeatureDeliveryBatch` (`{"featureBatch": …}`) carrying the changed fields and their CURRENT values at a version; a removal is a distinct `remove` with no value. Writes go through `feature_data_write` (feature-owned columns only; an unchanged value is a silent no-op) and deletions through `feature_data_delete` (tombstoned — never resurrected). Retention is declared per table and evicts oldest-first with a removal per evicted row. Materialization is schema-aware: a foreign same-named table is quarantined, never dropped, and a column removal/retype is refused with a hard named error.
 
 ### What is the Event Flow?
 

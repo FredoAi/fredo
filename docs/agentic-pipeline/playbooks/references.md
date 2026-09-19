@@ -53,6 +53,70 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-194: recompute_cost_invisible_to_output_assertions
+- **activation_date:** 2026-09-19
+- **observed:** #2896 round 2 — a one-time projection backfill recomputed every aggregate group once per input row (quadratic in the corpus), so a ~30k-row real corpus never converged and the completion marker was never set, forcing a full re-drain on every restart. Every output-based test was green because recomputing unchanged data is a silent no-op that emits no notification; only a live run against the real corpus exposed it. The fix's regression test had to assert a monotonic RECOMPUTE COUNTER equal to the distinct-group count.
+- **target_failure:** a processing-cost defect (an aggregate recomputed per input row) is invisible to output/notification assertions, so the suite is green while the real corpus never converges and the failure is misread as environment slowness.
+- **guardrail:** When an engine fans input rows into aggregates, pin the WORK, not only the output: expose a monotonic recompute counter and assert it equals the distinct-group count, and assert a row-sourced path does not trigger aggregate recomputation. Separate per-row and per-group legs explicitly, and set per-leg completion markers so a completed table is never re-drained.
+- **home:** playbooks/software-architect.md (fix-plan root cause) + playbooks/developer.md (verification) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-19, #2896 round 3) — the counter test fails on the pre-fix code and passes post-fix; the live backfill then completed at the correct distinct-group count with no restart re-drain.
+
+### G-195: materialization_trusts_presence_over_the_actual_schema
+- **activation_date:** 2026-09-19
+- **observed:** #2896 round 1 — the feature-data layer materialized a declared table with an idempotent create and validated the declaration only against its own persisted metadata. A legacy table with the SAME physical name (left by a since-deleted code path) was therefore accepted as satisfying the declaration, so the declared columns never existed and every projection/backfill/prune failed; the declared read returned zero rows and the consumer rendered its empty state while the canonical store held tens of thousands of rows.
+- **target_failure:** a feature-owned storage layer creates tables idempotently and treats presence as satisfaction, so a same-named table created by an earlier or sibling code path silently wins, the declared schema never materializes, and the failure surfaces far from its cause (every later query fails).
+- **guardrail:** Materialization must compare the ACTUAL physical schema against the declaration, never persisted metadata alone. When a same-named table exists that is not declaration-shaped, quarantine it under a suffixed name (never drop it, never silently accept it), create the declared schema, and re-arm any one-time backfill marker. A restart/re-materialize path must run the SAME schema check so it repairs rather than re-accepts.
+- **home:** playbooks/software-architect.md (contract) + playbooks/developer.md (verification) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-19, #2896 rounds 2–3) — the schema-aware repair plus quarantine made the declared schema real and preserved the legacy table under its quarantined name across restarts.
+
+### G-196: upgrade_path_untested_over_a_pre_existing_database
+- **activation_date:** 2026-09-19
+- **observed:** #2896 rounds 1–2 — every unit test built a fresh temp database, so the create always succeeded and a schema mismatch was not representable; a contract that explicitly required re-materializing over an EXISTING database had no test for it. The defect was found live, and a test seeded with the previous schema (captured verbatim) plus a row-bearing foreign table was needed to make the fix durable.
+- **target_failure:** a spec whose contract includes persisting/re-materializing over an existing database ships with tests that only exercise a fresh database, so the upgrade path is unverified and fails on its first real contact.
+- **guardrail:** When a contract includes "materialize/persist over an existing database", the plan must include an upgrade-path test seeded with the PREVIOUS schema (captured verbatim from the real store) plus a pre-existing row-bearing table, asserting the declared schema materializes, the pre-existing data survives untouched, and a restart is a no-op.
+- **home:** playbooks/software-architect.md (plan decomposition) + playbooks/developer.md (verification) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-19, #2896 round 3) — the legacy-seeded upgrade test passes against the fixed code (and would fail pre-fix); it is the durable guard for the materialization class.
+
+### G-197: live_database_diagnostic_skips_name_and_schema_collisions
+- **activation_date:** 2026-09-19
+- **observed:** #2896 ST-1 — the mandatory Phase-0 live diagnostic enumerated the existing legacy tables and confirmed they were EMPTY, but never checked whether any existing physical table name collided with a planned declared name or whether its schema matched. The diagnostic returned CLEAR, and a materialization defect (G-195) shipped into the tester round.
+- **target_failure:** a live-database diagnostic confirms data facts (row counts, value distributions, null coverage) but omits the storage-shape facts, so a same-named/foreign-table materialization hazard passes the Phase-0 gate that exists to catch it.
+- **guardrail:** A Phase-0 live diagnostic for any spec that creates or migrates storage must include, for every planned physical name, whether a same-named table already exists AND whether its actual schema matches the plan. Presence or emptiness is not compatibility; an existing-but-empty table is still a hazard.
+- **home:** playbooks/software-architect.md (research phase) + playbooks/developer.md (diagnostic capsules) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-198: declared_ui_state_with_no_user_reachable_path
+- **activation_date:** 2026-09-19
+- **observed:** #2896 rounds 1–3 — a UI/UX state contract declared states the product cannot reach: a "disconnected stream" banner while the connection flag is a mount-lifetime constant and adapter failures are swallowed, and a "no session selected" panel state while the session list auto-selects on open and no deselect affordance exists. Each cost tester legs and remained UNVERIFIED-with-named-blocker; the gap surfaced only at audit as a scope question for the human.
+- **target_failure:** a plan declares a state contract whose states have no path in the shipped product, so the tester cannot produce evidence, rows stay unverified, and the shortfall is discovered at audit instead of during convergence.
+- **guardrail:** At convergence, every declared UI state must name the user-reachable path that produces it; a state reachable only through a test seam or not at all must be labeled PO-gated / environment-limited in the plan BEFORE implementation, so the tester's rows are scoped honestly and no round is spent chasing it.
+- **home:** playbooks/ui-ux-expert.md (state contracts) + playbooks/self-improver.md (plan review) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-199: ci_test_target_warnings_pass_local_clippy
+- **activation_date:** 2026-09-19
+- **observed:** #2896 — the local CI-parity set (check, test, clippy with warnings denied) was green on every developer receipt, yet the PR's Rust check was red: the workflow runs the test suite through a runner that compiles EVERY test target, while the clippy step lints only DEFAULT targets. Unused-variable warnings in test modules are therefore invisible locally. The documented CI-parity set in CONTRIBUTING.md also named the suite runner differently from the workflow file.
+- **target_failure:** lint-only warnings in test-only code pass every local gate (clippy lints default targets) but fail CI's test-target build, so a spec reaches the merge gate red and burns an extra fix cycle at the end of the run.
+- **guardrail:** The local CI-parity set must include a test-target compile check (an all-targets check is sufficient and cheap) and the docs must name the EXACT runner the workflow uses; a clean default-target clippy run is never proof that the test build is warning-free. Diagnose CI red from the public Actions job page's Annotations block and fix at source (test-only), never weaken the gate.
+- **home:** CONTRIBUTING.md (CI-parity set) + playbooks/developer.md (verification) + references.md (this record)
+- **effectiveness:** Confirmed (2026-09-19, #2896) — the added all-targets check reproduced the exact CI diagnostics and cleared them; the fix landed scoped and test-only.
+
+### G-200: tests_commit_leaves_the_root_working_tree_dirty
+- **activation_date:** 2026-09-19
+- **observed:** #2896 — after each test-suite persistence to `main`, the ROOT checkout kept the persisted suite files as unstaged working-tree modifications (the tests-commit write does not reset the working tree/index it reads from). A later branch switch was refused with "local changes would be overwritten", requiring a manual checkout of those paths before the handoff could proceed — twice in one run.
+- **target_failure:** a state-machine side-effect that writes to `main` from the served working tree leaves that tree dirty, so a subsequent branch operation is blocked and an agent must repair repository state the machine created.
+- **guardrail:** A state-machine action that persists content to another branch must leave the source working tree clean (reset the touched paths, or write from a temporary index/worktree). Until the machine does, an agent that hits the block restores the affected paths from HEAD and reports it; the served checkout must be clean before any branch switch or tester handoff.
+- **home:** .opencode/scripts/pipeline-state.rs (tests-commit) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-201: worktree_creation_not_idempotent_on_a_leftover_path
+- **activation_date:** 2026-09-19
+- **observed:** #2896 — after an interrupted run, a clean worktree for the issue still existed at the requested path; the developer's worktree-creation action failed with a raw git "already exists" error, and the developer had to verify the leftover's cleanliness and commit, then reuse it. The orchestrator had not swept leftovers before dispatching.
+- **target_failure:** a resumable pipeline run hits a leftover worktree path and the developer dispatch fails on an opaque git error instead of proceeding, costing a step on every wave until the stale path is cleared by hand.
+- **guardrail:** Worktree creation must be idempotent for an already-registered worktree at the requested path when it is clean and at the expected commit (reuse it), or fail with a named, actionable message. An orchestrator resuming after an interruption sweeps registered worktrees before dispatching a wave.
+- **home:** .opencode/scripts/pipeline-state.rs (create-worktree) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-188: ui_state_window_shorter_than_driver_cadence
 - **activation_date:** 2026-09-18
 - **observed:** #2892 round 1 — the tester could not capture the queued-waiting indicator's exact on-screen literal or the interrupt supersession live: the MCP driver's minimum send round-trip (~6 s per keyboard/interact call) exceeds the local companion generation window (~1–3 s), so every attempted send during a reply landed after `llm-done` and the queue window was sub-second. Round 2 closed both by driving the second send inside a SINGLE in-page async `execute_js` script (or a real-keyboard send against a deliberately long first generation), capturing the literal and the supersession within one window.
@@ -232,7 +296,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** the pipeline's own remedy for a CI flake (a test-only fix on the open spec branch during `testing`) has no sanctioned worktree entry, so the fix is either not attempted (the issue blocks) or lands through an unreported ad-hoc worktree.
 - **guardrail:** When the G-156 test-only fix path is used, `create-worktree` MUST accept the `testing` phase (label `testing`) for the issue — the fix changes no product code, so the phase's evidence guard is unaffected. Until the guard is extended, a developer landing such a fix reports the exact denial and the workaround used, and the SI records it. (Script change owned by the SI: accept `testing` in the worktree guard, documented in the `pipeline-state` skill + `state-machine.md`, validated by `test-scripts.ps1`.)
 - **home:** .opencode/scripts/pipeline-state.rs (worktree guard) + .opencode/skills/pipeline-state/SKILL.md + docs/agentic-pipeline/state-machine.md + references.md (this record)
-- **effectiveness:** Confirmed (2026-09-17, #2887) — the guard now accepts a `testing`-labeled feature; the round-2 CI fix was landed through a sanctioned worktree on the open spec branch instead of an ad-hoc `git worktree add`. Script change documented in the pipeline-state skill, state-machine.md and github.md and validated by the harness (104/104).
+- **effectiveness:** Confirmed (2026-09-17, #2887) — the guard now accepts a `testing`-labeled feature; the round-2 CI fix was landed through a sanctioned worktree on the open spec branch instead of an ad-hoc `git worktree add`. Script change documented in the pipeline-state skill, state-machine.md and github.md and validated by the harness (104/104). Re-validated (2026-09-19, #2896) — a red Rust check on the open spec PR was fixed by a scoped test-only commit landed through a sanctioned worktree while the feature sat on `testing`; no round bump and no ad-hoc worktree.
 
 ### G-165: ci_flake_family_functional_tauri_internals_stub
 - **activation_date:** 2026-09-17

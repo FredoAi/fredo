@@ -43,7 +43,7 @@ The `comm` module holds the canonical wire types and the single IPC emitter. Sin
 ### Core Types
 
 - **`FredoEvent`** — the `fredo emit` CLI wire format and classifier input: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. **Demoted, not deleted**: FredoEvent no longer crosses IPC to the webview.
-- **`EventBus`** — emits RTDB `RowDeliveryBatch` envelopes on the `"fredo-stream-event"` Tauri IPC channel via `emit_row_delivery_batch` (the ONLY sanctioned RTDB emission path). Registered as Tauri state in `lib.rs`.
+- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel. It carries TWO envelope families: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` (the ONLY sanctioned RTDB emission path) and feature-data `FeatureDeliveryBatch` envelopes (`{"featureBatch": …}`) via `emit_feature_delivery_batch`. Registered as Tauri state in `lib.rs`.
 - **`CommAdapter`** trait — retained and implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
 ### Adapters
@@ -103,11 +103,20 @@ The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registr
 
 When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler; the resulting rows flow back through the same subscription path.
 
-Only `RowDelivery`/`RowDeliveryBatch` envelopes cross IPC — raw `FredoEvent` never does (it is the CLI wire format only). The **ingest classifier** (`rtdb/ingest.rs`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `rtdb/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
+No raw `FredoEvent` crosses IPC (it is the CLI wire format only); the `"fredo-stream-event"` channel carries only projected envelope families — RTDB `RowDelivery`/`RowDeliveryBatch` and feature-data `FeatureDeliveryBatch`. The **ingest classifier** (`rtdb/ingest.rs`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `rtdb/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
 
 ### Replay + Live Boundary (P2.3, F-33 fix)
 
 `subscribe_events` is an async command: it registers the live subscriptions FIRST, returns immediately, and hands the snapshot SELECT to `tauri::async_runtime::spawn_blocking` — the replay leg is a background drain (NFR-1). The drain's final ≤512-row chunk of each query carries the per-query `replayCompleteQueryId` settle marker (an empty terminal envelope when nothing remained pending); `useEventRows.ready` resolves on the marker, never on subscribe resolution alone. Batches are chunked at `RTDB_MAX_EMISSION_BATCH = 512` rows per IPC envelope. `flushMs: 0` bypasses coalescing and emits one envelope per patch (AC1-c timing).
+
+### Feature-Owned Data Layer (`infrastructure/feature_data/`)
+
+A feature declares, on the frontend, the data structure it owns plus the source mapping onto already-captured canonical activity (or a closed `sessionRollup` aggregate over it). The backend materializes the declared tables idempotently on every launch, owns the writes, and persists them in the SAME `fredo.db` as `feature_<sanitized featureId>_<table>` (declaration metadata in `feature_data_tables`, deletion tombstones in `feature_data_tombstones`).
+
+- **Materialization is schema-aware.** A same-named table that is not declaration-shaped is quarantined under a `__legacy_<timestamp>` name (never dropped) and the declared schema is created; additive column changes are applied in place, and a column removal/retype is refused with a hard named error. Declarations and their rows survive restarts; a one-time read-only projection backfill seeds a new declared table from canonical history (marker-gated, per-table, set only on success).
+- **Projection is unconditional.** A canonical row upsert updates the declared rows whether or not a feature UI, read, or watch is open (`R-4.2`). A row-sourced projection costs O(rows of its source); an aggregate recomputes once per distinct group, not once per input row.
+- **Read/watch/write surface.** `feature_data_declare` (idempotent), `feature_data_read` (rows + the scope `version` + the resolved retention bound), `feature_data_watch` (table / record / query scope, optional field narrowing, optional atomic initial snapshot), `feature_data_unwatch` (per watch), `feature_data_write` (feature-owned columns only; an unchanged value is a silent no-op), `feature_data_delete` (tombstoned, never resurrected). Failures reject with hard named errors that the consumer hooks surface verbatim.
+- **Notifications** ride the existing `"fredo-stream-event"` channel as `FeatureDeliveryBatch` (`{"featureBatch": …}`) and are discriminated in `AppProvider` BEFORE the RTDB validators. A notification carries the table, the record key, the change kind (`insert`/`update`/`remove`), the changed field names, their current values, and the version at which the change was applied; a removal carries no value. Declared-table retention evicts oldest-first and emits a removal per evicted row. Every read/watch/write is validated against the requesting `featureId` — one feature never observes another's data.
 
 ### Known limitation
 
@@ -219,6 +228,17 @@ src-tauri/src/
     |   +-- commands.rs         — Rtdb orchestrator + subscribe_events/unsubscribe_events
     |   +-- ingest.rs           — IngestClassifier (spans/events → row upserts; relationship registry)
     |   +-- backfill.rs         — canonical backfill from telemetry_spans (read-only)
+    +-- feature_data/           — feature-owned declared tables (declaration → projection → read/watch)
+    |   +-- declaration.rs      — declaration model + hard named validation
+    |   +-- registry.rs         — persistence, schema-aware materialization, additive migration
+    |   +-- store.rs            — FeatureDataStore (metadata + tombstones; own SQLite connection)
+    |   +-- projection.rs       — projection engine (row-source + rollup entry points)
+    |   +-- session_rollup.rs   — the closed sessionRollup aggregate
+    |   +-- watch.rs            — global watch registry (table/record/query + field narrowing)
+    |   +-- envelope.rs         — FeatureRowNotification / FeatureDeliveryBatch wire types
+    |   +-- backfill.rs         — one-time projection backfill (read-only)
+    |   +-- lifecycle.rs        — declared-table retention + tombstone guard
+    |   +-- commands.rs         — feature_data_declare/read/watch/unwatch/write/delete
     +-- storage/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
     |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
@@ -781,6 +801,12 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 |---------|---------|-------------|
 | `subscribe_events` | rtdb | Register RTDB row queries (async; registers live subs, returns queryIds, drains the snapshot in the background — F-33) |
 | `unsubscribe_events` | rtdb | Unregister queries; discards pending deliveries (no post-unsubscribe emission) |
+| `feature_data_declare` | feature_data | Idempotent declare + schema-aware materialization of feature-owned tables (returns per-table revision/created) |
+| `feature_data_read` | feature_data | Read current rows for a scope with the scope `version` and the resolved retention bound (rows + version are taken atomically) |
+| `feature_data_watch` | feature_data | Register a table/record/query watch with optional field narrowing and an optional atomic initial snapshot; returns the watchId |
+| `feature_data_unwatch` | feature_data | Stop the named watches only; every other watch keeps delivering |
+| `feature_data_write` | feature_data | Write feature-owned columns on a declared row (an unchanged value is a silent no-op — no version bump, no notification) |
+| `feature_data_delete` | feature_data | Delete a declared row and tombstone it (emits a removal; the projection never re-creates it) |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
 | `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
