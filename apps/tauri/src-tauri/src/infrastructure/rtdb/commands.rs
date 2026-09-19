@@ -302,6 +302,11 @@ impl Rtdb {
             .store()
             .next_seq(kind, &key.session_id, &key.correlation_id)?;
         let row = row.with_seq(seq);
+        // Feature-data projection seam (Spec #2896 ST-3): every canonical upsert
+        // is offered to the installed observer, unconditionally — never gated by
+        // subscriptions or an open feature UI (R-4.2). A no-op when the
+        // feature-data layer is not composed (existing RTDB tests, CLI mode).
+        crate::infrastructure::feature_data::projection::dispatch_row_upsert(&row, changed_fields);
         match &row {
             IngestRow::Chat(chat) => self.cache.upsert_chat(chat.clone()),
             IngestRow::ToolUse(tool) => self.cache.upsert_tool_use(tool.clone()),
