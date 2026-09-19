@@ -151,3 +151,103 @@
   **Expected:** per-theme resolution (a single derived `color-mix`, not two literal values); existing
       consumers unchanged; build exit 0; suite green. Reference R-11..R-13.
   - **Edge:** clear the accent override → revert; `var(--x)NN` still absent.
+
+---
+
+## #2899 extension — theme-colored procedural desktop backgrounds (Appearance)
+
+> Issue #2899 adds a background chooser to Settings → Appearance: **None** (default = today's
+> desktop) plus ≥5 procedural backgrounds driven by the active theme. Rows map to the QA Plan
+> `REQ-1..REQ-6`, `F-20..F-27` in `.opencode/tmp/2899/triage.md`.
+> **Verification policy: live** — DOM/computed-style/`elementFromPoint`/screenshot reads on the
+> running app; the mandatory live receipt is F-26 (`telemetry_spans` + raw screenshot URLs).
+> **G-136 (host note):** the Appearance host is the Settings feature window
+> (`apps/ui/src/features/settings-app/...` → the Appearance section), not the retired modal.
+> **G-170:** the "never covers/intercepts" rows assert a present, measured element at its resting
+> rect. **Animation is out of scope** (no animated descriptor ships), so no non-identity-transform
+> frame leg applies; assert instead that the slice introduces no `@keyframes`/continuous animation.
+
+- [ ] **F-20 (REQ-1 / AC1):** Open Settings → Appearance → Background. DOM-snapshot + screenshot the
+      selector; on a fresh profile read the default; select each option then **None**; compare the
+      None desktop against a BEFORE capture of the pre-slice tip.
+  **Expected:** selector offers **None + ≥5 named procedural backgrounds, pairwise visibly distinct**
+      (no duplicate/missing). Fresh profile selects **None**. With **None** active the desktop is
+      **visually identical to today** (BEFORE/AFTER pixel-comparable; no added background-node paint,
+      `elementFromPoint` over the desktop returns the shell, not a background element). Each non-None
+      option renders a distinct paint signature.
+  - **Edge:** re-select the active option (idempotent); rapid A→B→C cycling with console clean;
+    upgraded profile vs fresh; None after a non-None (full revert).
+
+- [ ] **F-21 (REQ-2 / AC2):** With a background active, switch preset (one **light-based** e.g. Light
+      Default, one **dark-based** e.g. Dark/classic), change the accent, and edit a per-token color;
+      read the background element's computed paint + sampled colors before/after each change.
+  **Expected:** every background **recolors live with no restart** and derives its paint from the
+      **active theme tokens** (computed paint differs when the theme changes; no hardcoded color
+      survives a switch). Renders correctly for a light-based **and** a dark-based preset — visible,
+      non-clashing, foreground legible.
+  - **Edge:** theme switch with the selector open; accent override set then cleared; override of a
+    token the background does not use (must not shift); rapid churn; console clean of
+    `Maximum update depth exceeded`.
+
+- [ ] **F-22 (REQ-6 / complex Gherkin):** Given a non-None background selected, **when** switching to
+      a different preset **including a light-based preset**, **then** the rendered background recolors
+      to the new theme's colors without a restart, **and** shell chrome + window content on top remain
+      legible — screenshot + computed paint before/after, legibility measured on the post-switch frame.
+  **Expected:** the full Given/When/Then holds end-to-end (same live mechanism as F-21, asserted as
+      one scenario): recolor is live (no reload/restart), and the post-switch frame keeps chrome +
+      content legible. Animation is **out of scope** (all six descriptors ship static) — assert no
+      `@keyframes`/continuous animation is introduced, so chrome/window separation holds on the
+      post-switch frame.
+  - **Edge:** dark→light and light→dark; light preset captured on the post-switch frame; switch with
+    a window maximized (chrome + content both in frame).
+
+- [ ] **F-23 (REQ-3 / AC3):** Select a non-None background; read the persisted value (`localStorage` +
+      AppStore `get_setting`); **cold-restart** the app; re-open Appearance and screenshot the desktop.
+      Repeat for **None**, then inject a stale/unknown stored value and restart.
+  **Expected:** selection persists across a **full app restart** and restores **exactly** (same option
+      active, same rendered paint). **None persists and restores as None** (today's desktop). A
+      stale/unknown value (`'__nope__'`, `''`, `null`, a removed id) falls back **safely to None** — no
+      crash, no blank/broken background, no console error.
+  - **Edge:** restart right after a selection change; value seeded before first boot; absent key vs
+    present-but-empty; value written by an older build.
+
+- [ ] **F-24 (REQ-4 / AC4):** With each background active (all six ship **static** — animation is out
+      of scope), measure contrast of shell chrome text (command bar, side ticks, clock, tiles) and
+      window content vs their surfaces; `elementFromPoint` at points inside a maximized and a floating
+      window; read stacking/z-order; click + type into a window while the background is active.
+  **Expected:** shell chrome and window content stay **legible** (body text ≥4.5:1, large/bold ≥3:1,
+      non-text UI ≥3:1) on both light- and dark-based presets. **No background renders above a
+      window** — `elementFromPoint` inside the window resting rect returns window/desktop-shell
+      content, never a background node. The background **intercepts no pointer/keyboard input**
+      (clicks land, typed text reaches the focused field).
+  - **Edge:** maximized / floating / minimized windows; window dragged over the background; light
+    preset + pale accent worst case; window open/closed across a selection change; two windows.
+
+- [ ] **F-25 (REQ-5 / AC5):** (static) grep the slice for raster background art and color literals;
+      (live) inspect the background DOM (procedural node/CSS/canvas — no `<img>`/raster `url(...)`),
+      sample frame timing + process CPU idle and during interaction, and toggle
+      **`prefers-reduced-motion: reduce`**.
+  **Expected:** backgrounds are **procedural only** — zero uploaded/bundled raster, **zero hardcoded
+      colors** (all paint from theme values; comment issue-refs exempt). **No animated descriptor
+      ships** (static-only scope): no `@keyframes`/continuous animation/rAF/interval in the slice; the
+      only motion is the selection crossfade, which snaps to **0 ms** under
+      `prefers-reduced-motion: reduce` and never flashes/strobes. App stays responsive: no perceptible
+      launch/interaction degradation, CPU/GPU bounded and non-growing over a sustained idle window.
+  - **Edge:** reduced-motion toggled live (crossfade → 0 ms); sustained idle soak (no growth);
+    build + suite gates; `var(--x)NN` absent; no `@keyframes` present.
+
+- [ ] **F-26 (REQ-LIVE / NF):** During the F-20..F-25 run: `fredo emit --event-type chat
+      --session-id e2e-2899-chat` + `--event-type tool_use --session-id e2e-2899-tool --tool-name
+      read_file`; query `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill);
+      retain screenshot raw URLs + live `tauri_webview_*` receipts.
+  **Expected:** `telemetry_spans` **NON-ZERO** with a recent `max(ingested_at)`; both markers
+      classify; each live row carries rendered-webview receipts. **A static-only PASS is a FALSE
+      PASS.**
+  - **Edge:** re-run on the tested tip; keep emit + query output verbatim in `## Tests Runs`; do not
+    fabricate a span query.
+
+- [ ] **F-27 (REQ-NF):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; run the
+      theming + settings + desktop-shell regression suites.
+  **Expected:** build exit 0, zero TS errors/warnings; suites green; existing assertions **not
+      weakened/disabled/deleted** (refreshed assertions owned per G-125).
+  - **Edge:** no dangling import; no stale literal test; overlap suites green.
