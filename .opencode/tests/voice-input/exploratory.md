@@ -324,8 +324,15 @@
       CURATED copy (never the raw IPC string), is the fallback offered inline and functional, and does NO
       transcript text appear while the mode is still `model`? A raw error dump, a vanished toast, a stuck
       `processing` state, or a transcript leak is a finding (promotes to F-107/F-109).
-  - Prompt: read the `role="alert"` node's exact text; click `Use local transcription`; re-read the persisted key.
+  -      Prompt: read the `role="alert"` node's exact text; click `Use local transcription`; re-read the persisted key.
 
-### #2897 testing round 1 — result
+### #2897 testing round 1 — result (`spec/2897 @ b2b2e4df`, 2026-09-19, live)
 
-- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+- **E-52 UNVERIFIED (named blocker).** When the managed server is down the Settings Companion section renders the **wizard**, so `companion-voice-handling-select` is unmounted and a mid-listen mode switch cannot be driven via UI; the per-`stt_start` reader contract is pinned by ST-7 CI.
+- **E-53 Observed.** Server down at submit → typed `modelAudioFailed`/`modelAudioUnavailable` `role="alert"`, no hang/crash; a true mid-`processing` kill was not isolated from the app's managed-server auto-relaunch.
+- **E-54 Not driven (named).** `processing` renders no Stop/Cancel by design (clip already delivered), so no user cancel exists in that state.
+- **E-55 Observed.** After the 30 s auto-stop a fresh `stt_start` opened cleanly (`phase:"capturing"`) with a reset buffer; no stale clip attached.
+- **E-56 UNVERIFIED (named).** Same wizard/unmounted-selector blocker as E-52; the persisted value stayed coherent across reads.
+- **E-57 PASS.** `ready` when the server is up, `serverUnavailable` when down, never inferred from the model name; consistent with the ST-0 receipts.
+- **E-58 PASS.** Curated `role="alert"` copy + a working inline `Use local transcription`; no transcript while mode=`model`.
+- **Promoted finding → `functional.md` F-104 (FAIL):** the model-audio `processing` indicator never clears after the turn completes (no turn-completion signal; `stopped` unreachable).
