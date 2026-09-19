@@ -2,6 +2,10 @@
  * VoiceInputSettings — #2877 ST-4 unit contract (DR-1/2/3/5/6/10/11/12).
  *
  * Proves the extracted settings group without a Tauri host:
+ *   • C0 — the speech-handling selector (#2897 ST-1 / REQ-1): the closed
+ *     `Local transcription` (DEFAULT) | `Model audio` set, persisted as
+ *     `Fredo_companion_voice_handling`, healing every non-`model` raw to
+ *     `'local'`, and announced through the settings live region;
  *   • C1 — the master enable switch (frozen `aria-label="Enable voice input"`,
  *     label `Hold Space to dictate` — re-pointed off the retired Ctrl+Space
  *     dictation promise by #2882 ST-7 / R-7, DEFAULT OFF) persists the choice
@@ -35,6 +39,8 @@ import {
   VOICE_ENABLED_SETTING_KEY,
   VOICE_AUTOSEND_SETTING_KEY,
   VOICE_DEVICE_ID_SETTING_KEY,
+  VOICE_HANDLING_SETTING_KEY,
+  DEFAULT_VOICE_HANDLING,
 } from '@/shared/contexts/CompanionContext';
 import {
   VoiceInputSettings,
@@ -293,6 +299,88 @@ describe('VoiceInputSettings — pure derivations (#2877 ST-4)', () => {
         deviceCount: 2,
       }).state,
     ).toBe('permission-denied');
+  });
+});
+
+// ── C0 — speech handling (#2897 ST-1 / REQ-1) ────────────────────────────────
+
+describe('VoiceInputSettings — C0 speech handling (#2897 ST-1)', () => {
+  it('defaults to Local transcription and renders the closed two-member option set', () => {
+    renderSettings();
+
+    const row = screen.getByTestId('companion-voice-handling-row');
+    expect(row).toBeInTheDocument();
+
+    const select = screen.getByTestId('companion-voice-handling-select') as HTMLSelectElement;
+    expect(select.tagName).toBe('SELECT');
+    expect(select.value).toBe(DEFAULT_VOICE_HANDLING);
+    expect(select.value).toBe('local');
+
+    const options = within(select).getAllByRole('option');
+    expect(options).toHaveLength(2);
+    expect(within(select).getByRole('option', { name: 'Local transcription' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Model audio' })).toBeInTheDocument();
+
+    // Accessibility: labelled combobox, help bound through `aria-describedby`.
+    expect(select).toHaveAccessibleName('Speech handling');
+    const help = screen.getByTestId('companion-voice-handling-help');
+    expect(help).toHaveAttribute('id', 'companion-voice-handling-help');
+    expect(select).toHaveAttribute('aria-describedby', 'companion-voice-handling-help');
+    // The default help describes the shipped local path and its transcript.
+    expect(help).toHaveTextContent(/Words appear in the launcher bar/);
+
+    // No key is written until the user changes the value.
+    expect(localStorage.getItem(VOICE_HANDLING_SETTING_KEY)).toBeNull();
+  });
+
+  it('selecting Model audio persists immediately, flips the help, and announces — with no transcript claim', async () => {
+    renderSettings();
+
+    const select = screen.getByTestId('companion-voice-handling-select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'model' } });
+
+    await waitFor(() => {
+      expect(localStorage.getItem(VOICE_HANDLING_SETTING_KEY)).toBe('model');
+    });
+    expect(select.value).toBe('model');
+
+    // The help MUST state that model audio shows no transcript.
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-voice-handling-help')).toHaveTextContent(
+        /no words are shown/,
+      );
+    });
+
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toHaveTextContent(
+      'Speech handling set to Model audio — no words will be shown.',
+    );
+  });
+
+  it('an unknown stored raw heals to Local transcription', async () => {
+    localStorage.setItem(VOICE_HANDLING_SETTING_KEY, 'telepathy');
+    renderSettings();
+
+    const select = (await screen.findByTestId(
+      'companion-voice-handling-select',
+    )) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(select.value).toBe('local');
+    });
+    expect(screen.getByTestId('companion-voice-handling-help')).toHaveTextContent(
+      /Words appear in the launcher bar/,
+    );
+  });
+
+  it('a persisted Model audio value loads as-is across a remount', async () => {
+    localStorage.setItem(VOICE_HANDLING_SETTING_KEY, 'model');
+    renderSettings();
+
+    const select = (await screen.findByTestId(
+      'companion-voice-handling-select',
+    )) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(select.value).toBe('model');
+    });
   });
 });
 

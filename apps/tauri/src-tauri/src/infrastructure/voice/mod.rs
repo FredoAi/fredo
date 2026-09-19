@@ -24,7 +24,10 @@ pub use manifest::{
     STT_TOTAL_BYTES,
 };
 pub use resident::ResidentEngine;
-pub use session::{AppHandleSink, TranscriptSink, VoiceState, VOICE_DEVICE_KEY, VOICE_ENABLED_KEY};
+pub use session::{
+    AppHandleSink, TranscriptSink, VoiceState, VOICE_DEVICE_KEY, VOICE_ENABLED_KEY,
+    VOICE_HANDLING_KEY,
+};
 pub use state::{
     SttDeviceInfo, SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent,
     SttTranscriptEvent, SttWarmResult, VoiceError,

@@ -41,6 +41,12 @@ pub const VOICE_ENABLED_KEY: &str = "Fredo_companion_voice_enabled";
 /// default.
 pub const VOICE_DEVICE_KEY: &str = "Fredo_companion_voice_device_id";
 
+/// Persisted Companion preference: the speech-handling mode written by the
+/// Companion settings selector (#2897 ST-1). `"model"` hands the captured
+/// utterance to the locally-managed companion model; every other value (unset,
+/// stale, blank) heals to local transcription.
+pub const VOICE_HANDLING_KEY: &str = "Fredo_companion_voice_handling";
+
 /// Budget for engine load + capture open before `stt_start` gives up.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -141,6 +147,26 @@ pub(crate) fn parse_device_id(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The closed two-member speech-handling set (#2897 ST-1 / REQ-1). `Local` is
+/// the shipped on-device transcription AND the healing default; `Model` routes
+/// the captured utterance to the locally-managed multimodal model (ST-2 owns the
+/// capture-worker branch that consumes it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VoiceHandling {
+    Local,
+    Model,
+}
+
+/// Parse the persisted speech-handling mode. Anything that is not the exact
+/// `"model"` literal (unset/stale/blank) heals to `Local` — the setting can
+/// never leave the app without the shipped local engine.
+pub(crate) fn parse_voice_handling(value: Option<&str>) -> VoiceHandling {
+    match value.map(str::trim) {
+        Some("model") => VoiceHandling::Model,
+        _ => VoiceHandling::Local,
+    }
+}
+
 /// The persisted opt-in flag, shared with the resident warm (ST-1/ST-2) so the
 /// gate is ONE rule: `warm` and `stt_start` can never disagree about whether
 /// voice input is enabled.
@@ -165,6 +191,19 @@ pub(crate) fn persisted_device(app: &AppHandle) -> Option<String> {
         .ok()
         .flatten();
     parse_device_id(value.as_deref())
+}
+
+/// The persisted speech-handling mode (#2897 ST-1 / REQ-1), read on EVERY
+/// `stt_start` (mirroring the enable/device prefs above) so a settings change
+/// applies to the NEXT listen with no app restart. An in-flight session is never
+/// retro-switched — the mode is resolved once, here.
+pub(crate) fn persisted_voice_handling(app: &AppHandle) -> VoiceHandling {
+    let value = app
+        .state::<std::sync::Arc<AppStore>>()
+        .get(VOICE_HANDLING_KEY)
+        .ok()
+        .flatten();
+    parse_voice_handling(value.as_deref())
 }
 
 /// Typed model gate: absent ⇒ `ModelMissing`; partial/oversize ⇒ `ModelCorrupt`
@@ -398,6 +437,12 @@ pub async fn start(app: &AppHandle, origin: &str) -> SttStartResult {
     // against the live device set inside `capture` on the worker — a vanished
     // device is the typed `NoDevice` naming it (AC4), never a silent fallback.
     let selected_device = persisted_device(app);
+    // #2897 ST-1 (REQ-1): resolve the persisted speech-handling mode on EVERY
+    // start so a settings change applies to the NEXT listen with no restart. ST-2
+    // owns the worker's model-audio branch that consumes this; ST-1 ships the
+    // per-start read + the healing parser.
+    let handling = persisted_voice_handling(app);
+    tracing::debug!("stt_start speech handling: {handling:?}");
     let (tx, rx) = mpsc::channel::<AudioMsg>();
     // The engine handoff channel: the engine is handed to the worker only AFTER
     // the thread is spawned, so a failed spawn can re-park it (below) instead of
@@ -1588,6 +1633,39 @@ mod tests {
         assert_eq!(
             parse_device_id(Some("  Microphone (USB)  ")),
             Some("Microphone (USB)".to_string())
+        );
+    }
+
+    /// #2897 ST-1 (REQ-1): the speech-handling key is a closed two-member set —
+    /// only the exact `"model"` literal selects model audio; every other stored
+    /// value (unset/stale/blank) heals to local transcription, so an existing
+    /// install (no key) keeps the shipped behaviour.
+    #[test]
+    fn parse_voice_handling_heals_everything_but_model_to_local() {
+        for value in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("local"),
+            Some("Local"),
+            Some("bogus"),
+            Some("modell"),
+        ] {
+            assert_eq!(
+                parse_voice_handling(value),
+                VoiceHandling::Local,
+                "{value:?} must heal to local"
+            );
+        }
+        assert_eq!(
+            parse_voice_handling(Some("model")),
+            VoiceHandling::Model,
+            "the exact `model` literal must select model audio"
+        );
+        assert_eq!(
+            parse_voice_handling(Some("  model  ")),
+            VoiceHandling::Model,
+            "a trimmed `model` literal must select model audio"
         );
     }
 

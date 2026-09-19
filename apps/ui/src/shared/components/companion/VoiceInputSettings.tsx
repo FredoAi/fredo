@@ -5,6 +5,12 @@
  * This is a THIRD group inside the EXISTING Companion settings section
  * (`CompanionSettingsPanel` ready branch) — no new settings nav item and no
  * dedicated Voice section. It hosts, in order:
+ *   0. C0 — the speech-handling selector (#2897 ST-1 / REQ-1): a labelled
+ *      `chakra.select` over the closed `'local'` (Local transcription, DEFAULT)
+ *      | `'model'` (Model audio) set, persisted through `voiceHandling` on the
+ *      CompanionContext and read by the backend on every `stt_start` so a change
+ *      applies to the NEXT listen with no restart. The model help states the
+ *      no-transcript guarantee.
  *   1. C1 — the master opt-in enable switch (`Hold Space to dictate`,
  *      `aria-label="Enable voice input"`, DEFAULT OFF). Toggling OFF while a
  *      session is live stops it and releases the microphone (DR-2 / R-1.1).
@@ -58,6 +64,8 @@ import {
 } from 'react-icons/lu';
 
 import { useCompanion } from '../../contexts/CompanionContext';
+import type { VoiceHandling } from '../../contexts/CompanionContext';
+import { DEFAULT_VOICE_HANDLING } from '../../contexts/CompanionContext';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation';
 import type { VoiceErrorCode } from '../../hooks/useVoiceDictation';
 import { tint } from '../../utils/colorTint';
@@ -71,6 +79,7 @@ import type {
 // ── Frozen accessibility ids ─────────────────────────────────────────────────
 
 const VOICE_ENABLE_HELP_ID = 'companion-voice-enable-help';
+const VOICE_HANDLING_HELP_ID = 'companion-voice-handling-help';
 const VOICE_DEVICE_HELP_ID = 'companion-voice-device-help';
 const VOICE_AUTOSEND_HELP_ID = 'companion-voice-autosend-help';
 
@@ -347,6 +356,7 @@ export const VoiceInputSettings: React.FC<VoiceInputSettingsProps> = ({
     voiceEnabled, setVoiceEnabled,
     voiceAutosend, setVoiceAutosend,
     voiceDeviceId, setVoiceDeviceId,
+    voiceHandling, setVoiceHandling,
   } = useCompanion();
 
   // The app-global session state (R-1.3). Control-plane events only.
@@ -399,6 +409,24 @@ export const VoiceInputSettings: React.FC<VoiceInputSettingsProps> = ({
       if (!enabled && listening) void stop();
     },
     [setVoiceEnabled, listening, stop],
+  );
+
+  // ── C0 — speech handling (#2897 ST-1 / REQ-1) ──────────────────────────────
+  // The closed set is `'local' | 'model'`; anything else heals to the default
+  // (the same rule the context applies on load). Changing the value persists
+  // immediately and applies to the NEXT listen — never an in-flight session.
+  const handleHandlingChange = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>) => {
+      const next: VoiceHandling =
+        event.target.value === 'model' ? 'model' : DEFAULT_VOICE_HANDLING;
+      setVoiceHandling(next);
+      setAnnouncement(
+        next === 'model'
+          ? 'Speech handling set to Model audio — no words will be shown.'
+          : 'Speech handling set to Local transcription.',
+      );
+    },
+    [setVoiceHandling],
   );
 
   // ── C3 — the device selector ───────────────────────────────────────────────
@@ -591,6 +619,60 @@ export const VoiceInputSettings: React.FC<VoiceInputSettingsProps> = ({
     <Box>
       {sectionLabel('Voice input')}
       <VStack align="stretch" gap={2}>
+        {/* ── C0 — speech handling (#2897 ST-1 / REQ-1) ──────────────────── */}
+        <Box
+          data-testid="companion-voice-handling-row"
+          p={3}
+          borderRadius="md"
+          background="var(--hover-bg)"
+          border="1px solid var(--border-color)"
+        >
+          <VStack align="stretch" gap={2}>
+            <HStack justify="space-between" align="center" gap={2}>
+              <Text fontSize="sm" fontWeight="600" color="var(--text-primary)">
+                Speech handling
+              </Text>
+              <chakra.select
+                value={voiceHandling}
+                onChange={handleHandlingChange}
+                aria-label="Speech handling"
+                aria-describedby={VOICE_HANDLING_HELP_ID}
+                data-testid="companion-voice-handling-select"
+                maxWidth="260px"
+                height="32px"
+                border="1px solid"
+                borderRadius="md"
+                px={2}
+                fontSize="sm"
+                bg="var(--card-bg)"
+                borderColor="var(--border-color)"
+                color="var(--text-primary)"
+                cursor="pointer"
+                _hover={{ borderColor: 'var(--accent-primary)' }}
+                _focus={{
+                  outline: 'none',
+                  borderColor: 'var(--accent-primary)',
+                  boxShadow: '0 0 0 1px var(--accent-primary)',
+                }}
+              >
+                <option value="local">Local transcription</option>
+                <option value="model">Model audio</option>
+              </chakra.select>
+            </HStack>
+
+            <Text
+              id={VOICE_HANDLING_HELP_ID}
+              data-testid="companion-voice-handling-help"
+              fontSize="xs"
+              color="var(--text-subtle)"
+            >
+              {voiceHandling === 'model'
+                ? 'Fredo hands your recording to the locally-running companion model as your message — no words are shown. Nothing leaves this machine.'
+                : 'Words appear in the launcher bar as you speak, transcribed on this machine. Nothing leaves this machine.'}
+            </Text>
+          </VStack>
+        </Box>
+
         {/* ── C1 — master enable (DR-2) ───────────────────────────────────── */}
         <HStack
           justify="space-between"
