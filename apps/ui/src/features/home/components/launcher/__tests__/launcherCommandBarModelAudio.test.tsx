@@ -81,6 +81,38 @@ describe('deriveModelAudioPhase — the ONE model-audio state derivation (#2897 
     expect(deriveModelAudioPhase(input({ starting: true }))).toBe('starting');
     expect(deriveModelAudioPhase(input())).toBe('idle');
   });
+
+  // #2897 round 2 (R2-1, F-104) — the turn-completion overlay. The STT plane is
+  // silent after the stop, so the shell supplies `turnSettled` once the audio
+  // generation completes: `processing` holds until then, and only THEN does the
+  // derivation return to `idle` (the `stopped` resting render).
+  it('holds `processing` while the turn is in flight and returns to `idle` once it settles', () => {
+    expect(
+      deriveModelAudioPhase(input({ modelAudioPhase: 'processing', turnSettled: false })),
+    ).toBe('processing');
+    expect(
+      deriveModelAudioPhase(input({ modelAudioPhase: 'processing', turnSettled: true })),
+    ).toBe('idle');
+    // The overlay is inert for every non-processing phase (never settles a live
+    // capture or a bounded start).
+    expect(
+      deriveModelAudioPhase(input({ listening: true, modelAudioPhase: 'capturing', turnSettled: true })),
+    ).toBe('listening');
+    expect(deriveModelAudioPhase(input({ starting: true, turnSettled: true }))).toBe('starting');
+  });
+
+  it('local mode is `idle` for BOTH settled states — the overlay never fires off-model', () => {
+    expect(
+      deriveModelAudioPhase(
+        input({ voiceMode: 'local', modelAudioPhase: 'processing', turnSettled: false }),
+      ),
+    ).toBe('idle');
+    expect(
+      deriveModelAudioPhase(
+        input({ voiceMode: 'local', modelAudioPhase: 'processing', turnSettled: true }),
+      ),
+    ).toBe('idle');
+  });
 });
 
 // ── The rendered indicator ────────────────────────────────────────────────────
@@ -143,6 +175,34 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
     expect(screen.queryByTestId('launcher-command-listening-cancel')).toBeNull();
     // No transcript region is ever touched; it stays mounted.
     expect(container.querySelector('[data-testid="voice-transcript-announcer"]')).not.toBeNull();
+  });
+
+  // #2897 round 2 (R2-1, F-104) — the round's oracle at the bar level: a settled
+  // audio turn renders `stopped` (chip + indicator removed, resting placeholder).
+  it('settled turn: the processing chip is removed and the resting placeholder returns', () => {
+    const { rerender } = renderWithChakra(
+      <LauncherCommandBar
+        query=""
+        onQueryChange={vi.fn()}
+        voiceMode="model"
+        modelAudioPhase="processing"
+      />,
+    );
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+
+    rerender(
+      <LauncherCommandBar
+        query=""
+        onQueryChange={vi.fn()}
+        voiceMode="model"
+        modelAudioPhase="processing"
+        modelAudioTurnSettled
+      />,
+    );
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'search or command');
   });
 
   it('stopped/idle: the chip and indicator are removed and the resting placeholder returns', () => {

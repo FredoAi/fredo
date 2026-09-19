@@ -2798,6 +2798,49 @@ describe('LauncherShell — model-audio delivery glue + fallback (#2897 ST-6)', 
     });
   });
 
+  // #2897 round 2 (R2-1, F-104) — the turn-completion overlay. After the stop the
+  // STT plane is silent, so the shell derives `modelAudioTurnSettled` from
+  // `replyInFlight`: the chip holds while the audio generation streams and clears
+  // on its `llm-done`; a NEW capture re-arms it (never pre-settled).
+  it('clears the processing chip once the audio turn settles, and re-arms on a new capture', async () => {
+    installInvoke({ clip: CLIP, code: null, detail: null });
+    const { rerender } = renderShell();
+    const shell = () => (
+      <LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />
+    );
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+
+    // The clip is in flight: the processing chip is shown (NOT settled).
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+
+    // The audio generation starts streaming (`replyInFlight` rises): still shown.
+    companionMock.current.replyInFlight = true;
+    act(() => {
+      rerender(shell());
+    });
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+
+    // `llm-done` (`replyInFlight` falls): the turn is settled → `stopped`/`idle`.
+    companionMock.current.replyInFlight = false;
+    act(() => {
+      rerender(shell());
+    });
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+    expect(input()).toHaveAttribute('placeholder', 'search or command');
+
+    // A NEW capture re-arms the overlay: the next stop shows `processing` again.
+    emitState({ listening: true, phase: 'capturing' });
+    expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
+    emitState({ listening: false, phase: 'processing' });
+    expect(screen.getByTestId('launcher-command-model-processing-chip')).toBeInTheDocument();
+  });
+
   it('never writes the transcript into the bar through the glue path', async () => {
     installInvoke({ clip: CLIP, code: null, detail: null });
     renderShell();

@@ -2299,7 +2299,7 @@ mod tests {
     #[test]
     fn model_audio_bounds_accumulation_at_the_pinned_ceiling() {
         let cap = ms_to_samples(MAX_AUDIO_CLIP_MS);
-        assert_eq!(MAX_AUDIO_CLIP_MS, 30_000, "the provisional pinned ceiling");
+        assert_eq!(MAX_AUDIO_CLIP_MS, 30_000, "the decided pinned ceiling (R2-2: documented ~30 s per-input limit)");
         assert_eq!(cap, 480_000, "30 s at 16 kHz");
         assert_eq!(cap % 3200, 0, "the ceiling lands on a whole capture chunk");
 

@@ -27,13 +27,22 @@ pub enum SttErrorCode {
     ModelAudioUnavailable,
 }
 
-/// #2897 ST-2 (REQ-6) — the pinned per-input ceiling, in milliseconds, that the
+/// #2897 ST-2 (REQ-6) — the DECIDED per-input ceiling, in milliseconds, that the
 /// captured model-audio clip is bounded by. SINGLE SOURCE: the session derives
 /// its sample cap from this, AUTO-STOPS capture when the ceiling is reached
 /// (ST-5), and reports it back on every model-audio `stt:state` (`limitMs`) and
-/// on every clip (`limitMs`) — the UI never hardcodes a duration. The value is
-/// PROVISIONAL (30 s) — ST-5 finalizes it from the Tester's F-110 measured
-/// ceiling (ST-0's live receipt).
+/// on every clip (`limitMs`) — the UI never hardcodes a duration.
+///
+/// DECIDED at 30 s (#2897 round 2, R2-2): REQ-6 bounds the clip to the model's
+/// supported per-input length, and the cited source capability documents ~30 s
+/// per clip. The Tester's F-110 receipt (ST-0 R4) measured only the SERVER's
+/// ACCEPTANCE (`input_audio` POST 200 at 31 s / 60 s / 120 s, no 4xx up to
+/// 120 s) and explicitly could not score interpretation quality (the synthetic
+/// clip is not speech), so server acceptance is NOT evidence of the model's
+/// supported per-input length and does not license a larger bound. 30 s is the
+/// conservative documented-limit bound and lies safely inside the server's
+/// proven >=120 s acceptance envelope. Raising it is a product decision beyond
+/// AC4 (it would also require a new over-bound fixture + changed limit copy).
 pub const MAX_AUDIO_CLIP_MS: u64 = 30_000;
 
 /// #2897 ST-2 — the model-audio session phase on the wire. `None` on every

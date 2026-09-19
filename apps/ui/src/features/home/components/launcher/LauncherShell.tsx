@@ -1415,6 +1415,46 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     void dispatchModelAudioTurn();
   }, [modelVoice, voice.modelAudioPhase, dispatchModelAudioTurn]);
 
+  // ── Spec #2897 round 2 (R2-1, F-104) — the model-audio TURN-COMPLETION overlay ─
+  // The STT plane is silent after the stop commits `processing` (`session.rs`
+  // `finish_phase` emits the terminal `phase:"processing"` and then the voice
+  // session is over), so `voice.modelAudioPhase` would stay `'processing'` until
+  // the NEXT session. The completion signal already exists in the shell:
+  // `replyInFlight` (the audio generation's start → `llm-done`, cleared by
+  // `CompanionEntity`). This derives `modelAudioTurnSettled` from it — latching on
+  // the rise and settling on the fall — so the DERIVED phase returns to `'idle'`
+  // (`stopped`) without mutating the raw backend-owned phase. That keeps the
+  // exactly-once dispatch guard + the ST-4 announcements keyed on the RAW phase
+  // intact. Primitive deps only, and state is written ONLY on a real transition
+  // (AGENTS.md #523 — no write per render, no object/array dep).
+  const [modelAudioTurnSettled, setModelAudioTurnSettled] = useState(false);
+  const modelAudioReplyStartedRef = useRef(false);
+  useEffect(() => {
+    if (!modelVoice || voice.modelAudioPhase !== 'processing') {
+      // A new `capturing` session, a cancel's `phase:null`, or mode-off re-arms:
+      // the next session is never pre-settled.
+      modelAudioReplyStartedRef.current = false;
+      setModelAudioTurnSettled(false);
+      return;
+    }
+    if (modelAudioFailure !== null) {
+      // A dispatch that never yielded an accepted generation (null clip /
+      // rejected / no companion) is surfaced by the ST-6 alert; settle so no
+      // `processing` overlay lingers beneath it.
+      setModelAudioTurnSettled(true);
+      return;
+    }
+    if (replyInFlight) {
+      // The dispatched audio generation is streaming — latch its rise.
+      modelAudioReplyStartedRef.current = true;
+      return;
+    }
+    if (modelAudioReplyStartedRef.current) {
+      // `llm-done` (or the `llm-error` / watchdog settle) — the turn completed.
+      setModelAudioTurnSettled(true);
+    }
+  }, [modelVoice, voice.modelAudioPhase, replyInFlight, modelAudioFailure]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -2015,6 +2055,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // so `voice-transcript-announcer` stays mounted but empty.
             voiceMode={voiceHandling}
             modelAudioPhase={voice.modelAudioPhase}
+            // Spec #2897 round 2 (R2-1, F-104) — the derived turn-completion
+            // overlay: once the dispatched audio turn's generation settles the
+            // `processing` chip/indicator is removed and the resting placeholder
+            // returns (`stopped` → `idle`). The RAW phase above stays
+            // backend-owned, so the dispatch guard + ST-4 announcements are
+            // untouched.
+            modelAudioTurnSettled={modelAudioTurnSettled}
             // Spec #2897 ST-5 (REQ-6) — the pinned ceiling (from the backend
             // `stt:state`) drives the last-N-seconds countdown and the limit
             // notice; `limitReached` is the auto-stop's warning signal.

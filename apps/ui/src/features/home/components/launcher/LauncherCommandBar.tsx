@@ -285,10 +285,18 @@ export function modelAudioLimitNoticeCopy(limitSeconds: number | null): string {
  *   local mode          → `'idle'` (the shipped transcription cue is untouched —
  *                          this derivation never fires for `'local'`);
  *   typed error         → `'error'` (the below-bar `role="alert"`);
- *   `processing`        → the stop delivered the clip; the backend is interpreting;
+ *   `processing`        → the stop delivered the clip; the backend is interpreting
+ *                          (unless `turnSettled`, see `#2897 round 2` below);
  *   `listening`         → capture live (`listening && origin === 'launcher'`);
  *   `starting`          → the shipped bounded `starting voice input…` window;
  *   otherwise           → `'idle'` (includes `'stopped'`: indicator removed).
+ *
+ * #2897 round 2 (R2-1, F-104): the STT plane is SILENT after the stop commits
+ * `processing`, so the shell supplies `turnSettled` once the dispatched turn's
+ * generation completes (`llm-done`). A settled turn ends the `processing` window
+ * and the derivation falls through to `'idle'` — the `stopped` resting render
+ * (chip/spinner removed, resting placeholder back). The RAW phase stays
+ * backend-owned; only this DERIVED layer clears.
  */
 export function deriveModelAudioPhase(input: {
   voiceMode: 'local' | 'model';
@@ -300,10 +308,17 @@ export function deriveModelAudioPhase(input: {
   starting: boolean;
   /** A typed failure is being surfaced (`voiceErrorMessage !== null`). */
   error: boolean;
+  /**
+   * Spec #2897 round 2 (R2-1) — the shell's turn-completion overlay: the
+   * dispatched model-audio turn's generation has settled. `true` ends the
+   * `processing` window (`'stopped'` → `'idle'`). Defaults to `false`, so the
+   * raw phase holds until the turn actually completes (no pre-settling).
+   */
+  turnSettled?: boolean;
 }): ModelAudioPhase {
   if (input.voiceMode !== 'model') return 'idle';
   if (input.error) return 'error';
-  if (input.modelAudioPhase === 'processing') return 'processing';
+  if (input.modelAudioPhase === 'processing' && input.turnSettled !== true) return 'processing';
   if (input.listening) return 'listening';
   if (input.starting) return 'starting';
   return 'idle';
@@ -514,6 +529,15 @@ export interface LauncherCommandBarProps {
    * by `deriveModelAudioPhase`; the bar never re-derives it from scratch.
    */
   modelAudioPhase?: VoiceModelAudioPhase | null;
+  /**
+   * Spec #2897 round 2 (R2-1, F-104) — the shell's turn-completion overlay for
+   * the `processing` window: the dispatched audio turn's generation has settled
+   * (`replyInFlight` fell). It ends the `processing` render (chip/spinner removed,
+   * resting placeholder back) WITHOUT mutating the raw backend phase, so the
+   * exactly-once dispatch guard + the ST-4 announcements are untouched. Defaults
+   * to `false` — the raw phase then holds (no pre-settling).
+   */
+  modelAudioTurnSettled?: boolean;
   /**
    * Spec #2897 ST-5 (REQ-6) — ST-2's `voice.limitReached`: the capture
    * auto-stopped at the pinned ceiling and the whole clip is being interpreted.
@@ -828,6 +852,7 @@ export function LauncherCommandBar({
   containerRef,
   voiceMode = 'local',
   modelAudioPhase = null,
+  modelAudioTurnSettled = false,
   limitReached = false,
   modelAudioLimitMs = null,
 }: LauncherCommandBarProps) {
@@ -943,6 +968,7 @@ export function LauncherCommandBar({
     modelAudioPhase,
     starting: startingChip,
     error: Boolean(voiceErrorMessage),
+    turnSettled: modelAudioTurnSettled,
   });
   const modelListening = modelPhase === 'listening';
   const modelProcessing = modelPhase === 'processing';
