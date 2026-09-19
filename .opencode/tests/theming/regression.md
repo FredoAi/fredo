@@ -104,15 +104,21 @@
 > invariants MUST hold; run alongside R-1..R-17 and the desktop-shell / desktop-chrome suites.
 > **Verification policy: live.**
 
-- [ ] **R-18 (theming engine unchanged):** preset selection, per-token overrides, "Reset to theme
+- [x] **R-18 (theming engine unchanged):** preset selection, per-token overrides, "Reset to theme
       defaults", the readout, and the `overrides ?? preset ?? base` layering behave exactly as before;
       adding the background must not shift any existing theming computed color (compare before/after
       on a sample: Settings chrome, launcher, mission-monitor node chrome). Reference F-1..F-19.
-- [ ] **R-19 (today's desktop unchanged with None):** with **None** (the default) the desktop shell,
+- [x] **R-19 (today's desktop unchanged with None):** with **None** (the default) the desktop shell,
       window chrome, layout, z-order, and input behavior are unchanged — feature windows still open,
       move, resize, focus, minimize, and close; no contrast or geometry regression; the background
       layer is fully absent/inert. Reference F-20/F-24.
-- [ ] **R-20 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter
+- [x] **R-20 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter
       @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (refreshed assertions
       owned per G-125); zero hardcoded literals / `var(--x)NN` in the slice; no raster asset added.
       Reference F-25/F-27.
+
+### #2899 testing round 1 (spec/2899 @ c846e2e7) — results
+
+- **R-18 PASS (live).** Preset select (Deep Space → Light Default), per-token accent override (`#123456`), per-token `cardBg` override, and "Reset to theme defaults" all behaved as before (override cleared to `{}`, preset cleared to base); existing surfaces (Settings chrome, launcher, window title) unchanged. No `var(--x)NN` alpha-append in the slice.
+- **R-19 PASS (live).** With None: no `desktop-backdrop` DOM, launcher surface `rgb(45,45,45)` + 28px grid byte-identical to pre-slice; windows opened/minimized/maximized/restored, z-order and input unchanged.
+- **R-20 PASS (static+gates).** `pnpm --filter @fredo/ui build` exit 0 (`✓ 2576 modules`); `pnpm --filter @fredo/ui test:run` 107 files / 1732 tests passed, 0 failed; zero literals/`var(--x)NN`/raster in the slice; no existing assertion weakened.
