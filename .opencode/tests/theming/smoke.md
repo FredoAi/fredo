@@ -44,9 +44,14 @@
 > (**None** default). Live policy — the receipt is a rendered-webview read (`tauri_webview_*`) +
 > screenshot; F-26 in `functional.md` carries the `telemetry_spans` leg.
 
-- [ ] **S-12:** Background selector reachable — Settings → Appearance → Background renders a selector
+- [x] **S-12:** Background selector reachable — Settings → Appearance → Background renders a selector
       with **None + ≥5 procedural options**; a fresh profile shows **None** selected;
       `tauri_read_logs(source="console", lines=50)` clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
-- [ ] **S-13:** Quick switch — select a non-None background, confirm the desktop repaints and a feature
+- [x] **S-13:** Quick switch — select a non-None background, confirm the desktop repaints and a feature
       window still opens/renders above it, screenshot succeeds, console clean; reselect **None** and
       confirm today's desktop returns.
+
+### #2899 testing round 1 (spec/2899 @ c846e2e7) — results
+
+- **S-12 PASS (live).** `[data-testid=desktop-background-chooser]` renders None + 6 procedural tiles; fresh profile → None selected (`data-selected="true"`); console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-13 PASS (live).** Aurora selected → desktop repainted (backdrop present, scrim on the launcher surface); Settings + Mission Monitor windows rendered above it; None reselected → backdrop removed, `rgb(45,45,45)` + 28px grid returned.
