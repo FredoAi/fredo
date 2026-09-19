@@ -66,4 +66,27 @@
 
 - [ ] **E-19 — Accent override + wizard re-tint.** Set/clear an `accentPrimary` override with the
       wizard open (running + error states); does every accent-linked surface re-tint live with no
-      stale color and no console error? Any stale color is a finding (promotes to F-17/F-18).
+      stale color and no console error?       Any stale color is a finding (promotes to F-17/F-18).
+
+## #2899 extension — procedural desktop background probes
+
+> Unscripted probes for issue #2899. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note).
+
+- [ ] **E-20 — Rapid chooser churn.** Cycle None → each background → None repeatedly; watch for
+      re-render loops (`Maximum update depth exceeded`), stale paint, or lag (AGENTS.md #523).
+- [ ] **E-21 — Reduced-motion + strobe probe.** Toggle `prefers-reduced-motion: reduce` live; confirm
+      the selection crossfade snaps to 0 ms and no recipe introduces continuous animation/`@keyframes`
+      (all six ship static). Sample consecutive frames for high-frequency luminance inversion
+      (flash/strobe) — any finding promotes to F-25.
+- [ ] **E-22 — Stale/garbage persistence sweep.** Inject `''`, `null`, `undefined`, an object, and a
+      removed id into the background persistence key; restart each time. Confirm a safe None fallback
+      with no crash/blank desktop (promotes to F-23).
+- [ ] **E-23 — Input/z-order stress.** With a background active, drag/resize/minimize/restore
+      windows, open two windows, and click + type across them. Confirm no input interception and the
+      background never paints above content (promotes to F-24).
+- [ ] **E-24 — Worst-case contrast.** Light preset + pale accent + the brightest background; measure
+      shell chrome (ticks, clock, tiles) contrast; any pair below AA is a finding (promotes to F-24).
+- [ ] **E-25 — Sustained idle soak.** Leave the app idle with a background active for several
+      minutes; sample process CPU/GPU and memory growth. Any unbounded growth or sustained high usage
+      is a finding (promotes to F-25).
