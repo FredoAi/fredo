@@ -33,8 +33,11 @@ The tester **cannot** `Remove-Item` the live DB directly — the sandbox allowli
 |---------|-------------|
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1` | Stop dev instance (`dev-env.ps1 -Action Down`), delete `%APPDATA%\com.fredo.app\fredo.db` (+ `-wal`/`-shm`), verify deletion. |
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restart` | Clean, then restart the dev instance (`dev-env.ps1 -Action Up`). |
+| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup [-Name <n>]` | Stop the app and copy the live DB (+ `-wal`/`-shm`) into `.opencode/tmp/db-snapshots/<name>/` (default name = timestamp). Does NOT delete the live DB. Add `-Restart` to bring the app back up. |
+| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restore -Name <n> [-Restart]` | Stop the app, replace the live DB with the named snapshot, verify. Errors with the available snapshot names when `<n>` is missing. |
 
 Notes:
+- **Corpus-size comparison levers (`-Backup` / `-Restore`).** A check that compares behavior across corpus sizes (e.g. "open time does not grow with total stored history") needs BOTH a small corpus and the real corpus back. Sequence: measure on the real DB → `-Backup -Name big` → `-Restart` (fresh small DB; drive a few fixtures) → measure → `-Restore -Name big -Restart`. Snapshots are gitignored in-repo state under `.opencode/tmp/db-snapshots/`, so the real corpus is never lost. Never use `Remove-Item` on the live DB directly (G-009).
 - The app holds `fredo.db` open (WAL) while running, so it MUST be stopped first — the script does this. If you see "fredo.db still present", the app is still up.
 - The schema is recreated on next launch (`CREATE TABLE IF NOT EXISTS` / `ensure_schema`), so a deleted DB is a fully clean slate.
 - This wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e) or when the DB has bloated (a stray DB has grown to ~1.9 GB from accumulated telemetry).
