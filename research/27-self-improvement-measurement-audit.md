@@ -192,6 +192,51 @@ Per-spec `rework` in time order, with a **spec-only filter** (exclude orchestrat
 
 ---
 
+## Part 8 — Human in the Loop: the PO-Owned Revision Link
+
+The human's effort must stay at zero new steps. The design therefore never asks for a separate verdict — it records the **revealed** outcome the operator already produces.
+
+### The flow
+
+```
+you test #N after it is labeled done (issue stays OPEN)
+  - happy:    you say nothing (or close it)          -> #N counts as ACCEPTED (by absence)
+  - unhappy:  you tell the PO what is wrong           -> PO proposes / confirms the prior issue
+                                                          -> opens #M with "Revises #N"
+                                                          -> feature.revised{revises:#N} on #M
+                                                          -> #N counts as REVISED
+```
+
+- **Reject = a linked follow-up.** The complaint you already make is the signal; the only addition is the link.
+- **Accept = the absence of a linked follow-up** over a maturity window. You never have to report a pass.
+- **Old tickets never stay open for measurement.** The link is stored **forward** on the new issue; the revised issue can be closed immediately (the reopen leg is not needed for this path).
+
+### The one extra interaction (PO-proposed, human-confirmed)
+
+On every new task the PO **searches prior issues** (titles/bodies, preferring recently-closed in the same area), **proposes 1–3 candidates**, and asks: *"Does this revise one of these, or is it new?"* It **never infers silently** — a wrong link corrupts the metric, and a missed link hides a real rejection. The answer is recorded either way:
+- confirmed prior `#N` → `create-issue --revises N --intent fix|enhancement`
+- genuinely new → no `--revises`; the `create-issue` event records `revises: none`
+
+The explicit `none` is what makes **link coverage** measurable ("X% of specs recorded a linkage decision") — so a thin signal is visible rather than trusted.
+
+### Intent, kept minimal
+
+Two buckets only: **`fix`** ("the prior feature did not work" — the rejection signal) and **`enhancement`** ("it works, I want more" — healthy evolution). A third bucket adds ambiguity and a gaming surface; add one only if the data demands it.
+
+### What the human never does
+
+- Run a script or a `pipeline-state` action (the PO/SI records it).
+- Keep a ticket open, or re-open one for measurement.
+- Report a pass, or learn a new phase — `done` + human review already exists.
+
+### Honest limitations
+
+- **Self-reported link, subject to missingness.** If a follow-up is filed without naming the original (and the PO does not ask), the revision is invisible and falsely counts as accepted. Mitigations: the PO always asks; a periodic SI `link-revision` backfill audit; the link-coverage number.
+- **Accept-by-silence is an inference**, not ground truth — a feature that was never tested still counts as accepted. Mitigate with a maturity window and by reporting the count of un-reviewed features.
+- **Low base rate.** With revisions near zero (reopen fired once), the interval is wide and the trend is un-actionable until enough linked events accumulate. That is expected; report it, do not fabricate precision.
+
+---
+
 ## Source List
 
 **Pipeline / repo artifacts**

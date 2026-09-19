@@ -1116,6 +1116,105 @@ Test-Script "health report exposes first-pass rate and guard fires" {
   return "health report carries SI-decision metrics"
 }
 
+# Hygiene: headline quality numbers are filtered to REAL specs (issues the machine
+# created). Orchestrator/harness logs (#0, #633) polluted `blocked`/`failures`.
+# The split fields make the distinction auditable.
+Test-Script "health separates block actions from guard refusals (spec hygiene)" {
+  $out = & rust-script $ps --action health --json 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "health --json failed: $outStr" }
+  foreach ($f in @("spec_issues", "block_actions", "guard_refusals", "spec_rework_total")) {
+    if ($outStr -notmatch $f) { throw "health missing hygiene field: $f" }
+  }
+  return "health hygiene fields present"
+}
+
+# Revision linkage (self-improvement): create-issue --revises records BOTH the
+# create-issue attribute (coverage) and a forward `feature.revised` event on the
+# NEW issue — so "did this spec revise an earlier one?" is machine-readable, and
+# the earlier issue is never reopened.
+Test-Script "create-issue --revises records a forward revision link" {
+  $draft = Join-Path $env:TEMP "fredo-revises-draft.md"
+  $body = @"
+## Title
+temp: revise base
+## Problem / Why now
+scratch
+## Intended users
+n/a
+## Proposed behavior / Scope
+scratch
+## Success metrics
+n/a
+## Acceptance criteria
+- [ ] 1. works
+## Out of scope
+nothing
+## Priority
+P3
+"@
+  [System.IO.File]::WriteAllText($draft, $body, [System.Text.UTF8Encoding]::new($false))
+  $baseOut = & rust-script $ps --agent product-owner --action create-issue --title "temp: revise base" --body-file $draft --issue-type backlog 2>&1
+  $baseStr = if ($baseOut -is [array]) { $baseOut -join "`n" } else { "$baseOut" }
+  $mB = [regex]::Match($baseStr, "issues/(\d+)")
+  if (-not $mB.Success) { throw "could not parse base issue: $baseStr" }
+  $base = [int]$mB.Groups[1].Value
+  $followOut = & rust-script $ps --agent product-owner --action create-issue --title "temp: revise follow" --body-file $draft --issue-type backlog --revises $base --intent fix 2>&1
+  $followStr = if ($followOut -is [array]) { $followOut -join "`n" } else { "$followOut" }
+  $mF = [regex]::Match($followStr, "issues/(\d+)")
+  if (-not $mF.Success) { throw "could not parse follow issue: $followStr" }
+  $follow = [int]$mF.Groups[1].Value
+  try {
+    $log = ".opencode/state/issues/$follow.jsonl"
+    $content = Get-Content $log -Raw
+    if ($content -notmatch '"event_name":"feature\.revised"') { throw "missing feature.revised event: $content" }
+    if ($content -notmatch "`"revises`":`"$base`"") { throw "feature.revised missing revises=$base" }
+    if ($content -notmatch '"intent":"fix"') { throw "feature.revised missing intent" }
+    if ($content -notmatch "`"revises`":`"$base`"") { throw "create-issue attribute missing revises" }
+    return "revision link recorded on #$follow"
+  } finally {
+    Mock-Cleanup $base
+    Mock-Cleanup $follow
+    Remove-Item $draft -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "link-revision is self-improver/PO-gated and idempotent" {
+  $url = Mock-IssueCreate "temp: link rev" "scratch" ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "could not parse issue: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action link-revision --revises 1 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "BLOCKED: actor developer not allowed") { throw "expected role gate, got: $denyStr" }
+    $first = & rust-script $ps --issue $issueNum --agent self-improver --action link-revision --revises 1 2>&1
+    $firstStr = if ($first -is [array]) { $first -join "`n" } else { "$first" }
+    if ($firstStr -notmatch "LINKED:") { throw "expected LINKED, got: $firstStr" }
+    $second = & rust-script $ps --issue $issueNum --agent self-improver --action link-revision --revises 1 2>&1
+    $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
+    if ($secondStr -notmatch "ALREADY LINKED") { throw "expected idempotent ALREADY LINKED, got: $secondStr" }
+    return "link-revision role-gated + idempotent"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The honest self-improvement signal: acceptance rate (specs not later revised or
+# reopened) with an interval + a change test + link coverage + raw counts.
+Test-Script "improvement action reports acceptance with interval and raw counts" {
+  $out = & rust-script $ps --action improvement --json 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "improvement --json failed: $outStr" }
+  foreach ($f in @("acceptance", "posterior_mean", "ci95", "decision", "link_coverage", "specs_created", "integrity")) {
+    if ($outStr -notmatch $f) { throw "improvement json missing field: $f" }
+  }
+  return "improvement report shape OK"
+}
+
 # Spec-size attribution (audit follow-up): audit-record success parses
 # "Effort: N story points" from the posted Triage Plan and records it as an
 # audit.verdict attribute, so rework can be normalized by size in trends.

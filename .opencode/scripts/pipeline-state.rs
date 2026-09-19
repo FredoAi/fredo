@@ -2622,6 +2622,13 @@ fn append_event_attrs(
 
 // ── Actions (single writer to GitHub) ────────────────────────────────────────
 
+/// True when the issue is readable. Real `gh` exits non-zero for a missing issue;
+/// the offline mock always resolves an unknown number, so this is a best-effort
+/// guard (it still blocks a clearly invalid target like an unreadable reference).
+fn issue_exists(issue: u32) -> bool {
+    run_gh(&["issue", "view", &issue.to_string(), "--json", "number"]).is_ok()
+}
+
 struct ActionArgs {
     issue: Option<u32>,
     actor: String,
@@ -2666,6 +2673,17 @@ struct ActionArgs {
     /// for `testing -> implementation`, and ONLY with a non-empty `--reason` —
     /// bypasses that one exit guard and records a `human.authorization` event.
     human_authorized: bool,
+    /// `create-issue --revises <N>` / `link-revision --revises <N>`: the prior
+    /// feature this new issue revises. Recorded on the new issue's log as a
+    /// `feature.revised` event (attrs `revises`, `intent`) and as the `revises`
+    /// attribute of the `create-issue` event (`none` when absent) so linkage
+    /// coverage is measurable. The link is stored FORWARD — the revised issue is
+    /// never reopened or kept open.
+    revises: Option<u32>,
+    /// `create-issue --intent fix|enhancement`: why the revision exists
+    /// (a `fix` is a rejection of the prior feature; `enhancement` is healthy
+    /// evolution). Only meaningful together with `--revises`.
+    intent: Option<String>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -2832,7 +2850,7 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     if title == "Tests Runs" && has_verdict_line(body) {
         let (round, _) = retry_state(issue);
         if count_verdict_comments_in_round(issue, round) > 0 {
-            append_event(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round")?;
+            append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")])?;
             println!("WARNING: a verdict-carrying ## Tests Runs comment already exists for round {} — not posting (G-020). Reconcile into the existing verdict, then re-run.", round);
             return Ok(());
         }
@@ -2917,6 +2935,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     anyhow::bail!("INTAKE INVALID: missing section(s): {}", missing.join(", "));
                 }
             }
+            // Revision linkage: validate the target BEFORE creating so a bad link
+            // cannot mint a new issue. The link is stored FORWARD on the new issue;
+            // the revised issue is never reopened or kept open.
+            if let Some(rev) = a.revises {
+                if !issue_exists(rev) {
+                    anyhow::bail!("create-issue --revises {}: target issue does not exist or is unreadable", rev);
+                }
+            }
             let out = run_gh(&[
                 "issue", "create", "--title", title, "--body-file", &body_path, "--label", &label,
             ])?;
@@ -2952,8 +2978,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // sub-issues (implementation) and tester issues (testing) get
                     // correct phase anchors instead of a blanket "backlog".
                     let start_phase = load_config()?.label_to_phase.get(&label).cloned().unwrap_or_else(|| "backlog".into());
-                    append_event(n, "create-issue", &a.actor, &start_phase, "success", &format!("created {} {}", issue_type, out))?;
+                    // Coverage: EVERY create records the linkage decision (`--revises N`
+                    // or `none`), so "what share of specs declared a revision or new"
+                    // is measurable instead of silently missing.
+                    let revises_attr = a.revises.map(|r| r.to_string()).unwrap_or_else(|| "none".into());
+                    append_event_attrs(n, "create-issue", &a.actor, &start_phase, "success", &format!("created {} {}", issue_type, out), &[("revises", revises_attr.as_str())])?;
                     append_event(n, "phase.started", &a.actor, &start_phase, "success", &format!("started {}", start_phase))?;
+                    if let Some(rev) = a.revises {
+                        let intent = a.intent.as_deref().unwrap_or("unspecified");
+                        append_event_attrs(n, "feature.revised", &a.actor, &start_phase, "success", &format!("revises #{}", rev), &[("revises", &rev.to_string()), ("intent", intent)])?;
+                        println!("REVISES: #{} (intent {})", rev, intent);
+                    }
                     // Mirror the start phase onto the GitHub project Status field
                     // (best-effort; adds the issue to the project on first sync).
                     let _ = sync_project_status(n, &start_phase);
@@ -2988,6 +3023,34 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if seeded.is_some() {
                 let _ = std::fs::remove_file(&body_path);
             }
+        }
+        "link-revision" => {
+            // Backfill a revision link the PO missed at intake (`feature.revised`
+            // on the NEW issue). Idempotent; validates the target. The SI runs this
+            // when a follow-up was filed without the `--revises` link.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let rev = a.revises.ok_or_else(|| anyhow::anyhow!("link-revision requires --revises <N>"))?;
+            if !issue_exists(rev) {
+                anyhow::bail!("link-revision --revises {}: target issue does not exist or is unreadable", rev);
+            }
+            let rev_str = rev.to_string();
+            let already = read_issue_events(issue).iter().any(|e| {
+                e.event_name == "feature.revised"
+                    && e.attributes.get("revises").map(|v| v == &rev_str).unwrap_or(false)
+            });
+            if already {
+                println!("ALREADY LINKED: #{} already revises #{}", issue, rev);
+                return Ok(());
+            }
+            let phase = phase_of(a)?.as_str().to_string();
+            let intent = a.intent.as_deref().unwrap_or("unspecified");
+            append_event_attrs(issue, "feature.revised", &a.actor, &phase, "success", &format!("revises #{} (backfilled)", rev), &[("revises", rev_str.as_str()), ("intent", intent), ("backfilled", "true")])?;
+            println!("LINKED: #{} revises #{}", issue, rev);
         }
         "comment" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -3088,7 +3151,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if has_verdict_line(&body) {
                 let (round, _) = retry_state(issue);
                 if count_verdict_comments_in_round(issue, round) > 0 {
-                    let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round");
+                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")]);
                     anyhow::bail!(
                         "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
                         round
@@ -3147,13 +3210,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("IMPROVEMENT COMMENTED: round {} on #{}", round, issue);
-            // 2) Record the metric event so the improvement is tracked + auditable.
-            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &[("round", &round.to_string())])?;
-            // 3) Persist a guardrail record to references.md `Known Failure Modes`
-            //    (Recipe 6 — every audit persists, but an on-the-go improvement is
-            //    recorded immediately). Best-effort: a doc-write failure is logged,
-            //    not fatal — the comment + metric event are the durable record.
-            let _ = persist_improvement_guardrail(issue, reason, round);
+            // 2) Persist the guardrail FIRST so its allocated id can be stamped on
+            //    the metric event — making `pipeline.improvement` / `guard.fired` /
+            //    `### G-NNN` joinable (guardrail identity for effectiveness work).
+            let guard_id = persist_improvement_guardrail(issue, reason, round).ok().flatten();
+            // 3) Record the metric event (with guardrailId when a G-record landed).
+            let round_s = round.to_string();
+            let gid = guard_id.map(|g| format!("G-{:03}", g)).unwrap_or_default();
+            let mut attrs: Vec<(&str, &str)> = vec![("round", round_s.as_str())];
+            if !gid.is_empty() { attrs.push(("guardrailId", gid.as_str())); }
+            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &attrs)?;
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -3932,6 +3998,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // Fold-in of pipeline-health.rs
             health_report(a.json)?;
         }
+        "improvement" => {
+            // The honest self-improvement signal: acceptance rate (specs not later
+            // revised/reopened) with an interval + a half-vs-half change test.
+            improvement_report(a.json)?;
+        }
         "verify" => {
             // Anti-tamper gate: the record is append-only and must never be rewritten.
             verify_integrity(a.json)?;
@@ -4123,10 +4194,11 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
         "post-comments" => matches!(actor, "self-improver" | "tester"),
         "record-improvement" => actor == "self-improver",
+        "link-revision" => matches!(actor, "self-improver" | "product-owner"),
         "hardening-lock-open-issues" => actor == "self-improver",
         "interaction-limit" => actor == "self-improver",
         "close-dependabot-prs" => actor == "self-improver",
-        "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
+        "audit" | "prune" | "metrics" | "health" | "improvement" | "verify" | "context" => true,
         _ => true,
     }
 }
@@ -4850,11 +4922,11 @@ fn regex_lite_find(haystack: &str) -> Option<String> {
 /// fails (the GitHub comment + metric event remain the durable record). Guardrail id
 /// is the next free `### G-NNN`; records are prose-only and never touch `AGENTS.md`/
 /// `opencode.json` (human-owned).
-fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<()> {
+fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<Option<u32>> {
     let path = project_root()?.join("docs").join("agentic-pipeline").join("playbooks").join("references.md");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(()); }
+        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(None); }
     };
     // Find the next free G-NNN id (scan existing `### G-` headings).
     let next_id: u32 = content.lines()
@@ -4879,10 +4951,10 @@ fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow
     };
     if let Err(e) = std::fs::write(&path, updated) {
         println!("WARNING: could not write guardrail to references.md ({})", e);
-        return Ok(());
+        return Ok(None);
     }
     println!("GUARDRAIL PERSISTED: G-{:03} on #{}", next_id, issue);
-    Ok(())
+    Ok(Some(next_id))
 }
 
 /// A rework loop is a transition whose message indicates the source phase was
@@ -5173,6 +5245,17 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
     let issues: std::collections::BTreeSet<String> = all.iter()
         .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+    // Spec-only hygiene filter: a "spec" is an issue the machine created via
+    // `create-issue` (the productive work). Orchestrator/harness logs (#0, #633,
+    // temp fixtures) have no create-issue event and pollute every headline
+    // (a single such log was 80.8% of `blocked` and 68% of `failures`). Headline
+    // quality numbers are computed over specs only; the `issues` count keeps all.
+    let spec_issues: std::collections::BTreeSet<String> = all.iter()
+        .filter(|e| e.event_name == "create-issue")
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+    let spec_rework = all.iter().filter(|e| is_rework(e) && e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|id| spec_issues.contains(id)).unwrap_or(false)).count();
+    let block_actions = all.iter().filter(|e| e.event_name == "block").count();
+    let guard_refusals = all.iter().filter(|e| e.outcome == "blocked" && e.event_name != "block").count();
     let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
     let rework = all.iter().filter(|e| is_rework(e)).count();
     let audit_pass = all.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "passed").count();
@@ -5214,9 +5297,9 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     let first = all.iter().filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|t| t.timestamp())).min().unwrap_or(0);
     let last = all.iter().filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|t| t.timestamp())).max().unwrap_or(0);
     let span_hrs = ((last - first) as f64 / 3600.0).max(1.0);
-    let throughput = issues.len() as f64 / span_hrs;
+    let throughput = spec_issues.len() as f64 / span_hrs;
     let mut cycle_hrs: Vec<f64> = Vec::new();
-    for issue_id in &issues {
+    for issue_id in &spec_issues {
         let evs: Vec<&ReadEvent> = all.iter().filter(|e| {
             e.entity.as_ref().and_then(|ent| ent.issue_id.as_ref()).map(|id| id == issue_id).unwrap_or(false)
         }).collect();
@@ -5233,32 +5316,51 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         }
     }
     let avg_cycle_hrs = if cycle_hrs.is_empty() { None } else { Some(cycle_hrs.iter().sum::<f64>() / cycle_hrs.len() as f64) };
+    // Open WIP = specs that started implementation but have no terminal event
+    // (audit pass or close). Little's Law: WIP ≈ throughput × avg cycle. The old
+    // check compared against ALL issues and so could never fail (`w ≤ issues`).
+    let open_wip = spec_issues.iter().filter(|id| {
+        let starts = all.iter().any(|e| {
+            e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i.as_str() == id.as_str()).unwrap_or(false)
+                && e.event_name == "phase.started" && e.phase == "implementation"
+        });
+        let terminal = all.iter().any(|e| {
+            e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i.as_str() == id.as_str()).unwrap_or(false)
+                && ((e.event_name == "audit.verdict" && e.outcome == "passed") || e.event_name == "close-issue")
+        });
+        starts && !terminal
+    }).count();
     let (wip_from_law, little_ok, cycle_note) = match avg_cycle_hrs {
         Some(avg) => {
             let w = throughput * avg;
-            let ok = (w - issues.len() as f64).abs() / (issues.len().max(1) as f64) < 2.0;
-            (w, ok, format!("{:.1}h avg cycle ({} completed)", avg, cycle_hrs.len()))
+            let denom = open_wip.max(1) as f64;
+            let ok = (w - open_wip as f64).abs() / denom < 1.0;
+            (w, ok, format!("{:.1}h avg cycle ({} completed, open WIP {})", avg, cycle_hrs.len(), open_wip))
         }
         None => (0.0, true, "insufficient completed data — no false alarm".into()),
     };
-    // First-pass rate + root-cause mix + guard-fire counts (SI-decision data):
-    // first-pass = issues with a PASSING audit verdict and ZERO rework loops.
+    // First-pass rate + root-cause mix + guard-fire counts (SI-decision data).
+    // Intention-to-treat: the denominator is ALL created specs (not only passing
+    // ones), so abandoning a hard spec cannot flatter the rate. Guard-fire and
+    // root-cause counts now span every spec, not just passed ones.
     let mut passed_issues = 0usize;
+    let mut canceled_issues = 0usize;
     let mut first_pass_issues = 0usize;
     let mut guard_fired_total = 0usize;
     let mut root_causes: BTreeMap<String, usize> = BTreeMap::new();
     let mut rework_causes: BTreeMap<String, usize> = BTreeMap::new();
     let mut size_total_pts: u64 = 0;
     let mut sized_issues: Vec<(u64, u64)> = Vec::new(); // (reworks, points)
-    for issue_id in &issues {
+    for issue_id in &spec_issues {
         let evs: Vec<&ReadEvent> = all.iter().filter(|e| {
             e.entity.as_ref().and_then(|ent| ent.issue_id.as_ref()).map(|id| id == issue_id).unwrap_or(false)
         }).collect();
         let has_pass = evs.iter().any(|e| e.event_name == "audit.verdict" && e.outcome == "passed");
-        if !has_pass { continue; }
-        passed_issues += 1;
+        let canceled = evs.iter().any(|e| e.event_name == "close-issue" && e.attributes.get("closed_as").map(|v| v == "canceled").unwrap_or(false));
+        if canceled { canceled_issues += 1; }
+        if has_pass { passed_issues += 1; }
         let reworks = evs.iter().filter(|e| is_rework(e)).count();
-        if reworks == 0 { first_pass_issues += 1; }
+        if has_pass && reworks == 0 { first_pass_issues += 1; }
         let mut sp: Option<u64> = None;
         for e in &evs {
             if e.event_name == "guard.fired" { guard_fired_total += 1; }
@@ -5268,7 +5370,16 @@ fn health_report(json: bool) -> anyhow::Result<()> {
                 }
             }
             if e.event_name == "audit.verdict" && e.outcome == "passed" {
-                if let Some(v) = e.attributes.get("storyPoints") { sp = v.parse::<u64>().ok(); }
+                if let Some(v) = e.attributes.get("storyPoints") {
+                    // Guard against a corrupt size (e.g. #2842 recorded its own issue
+                    // number, 2842, which alone was 84% of all points and silently
+                    // destroyed rework_per_10_points). Accept a plausible size only.
+                    if let Ok(parsed) = v.parse::<u64>() {
+                        if parsed > 0 && parsed <= 100 && parsed.to_string() != *issue_id {
+                            sp = Some(parsed);
+                        }
+                    }
+                }
             }
             if e.event_name == "audit.verdict" && e.outcome == "failed" {
                 if let Some(rc) = e.attributes.get("rootCause") {
@@ -5281,7 +5392,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
             sized_issues.push((reworks as u64, pts));
         }
     }
-    let first_pass_rate = if passed_issues == 0 { None } else { Some(first_pass_issues as f64 / passed_issues as f64) };
+    let first_pass_rate = if spec_issues.is_empty() { None } else { Some(first_pass_issues as f64 / spec_issues.len() as f64) };
     // Size-normalized rework intensity: total rework loops per 10 story points over
     // sized issues — comparable across specs of different sizes (the #2756-audit
     // confounder fix).
@@ -5290,14 +5401,16 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     } else { None };
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "issues": issues.len(), "events": all.len(), "blocked": blocked,
-            "rework_total": rework, "audit_pass": audit_pass, "audit_fail": audit_fail,
+            "issues": issues.len(), "spec_issues": spec_issues.len(), "events": all.len(), "blocked": blocked,
+            "block_actions": block_actions, "guard_refusals": guard_refusals,
+            "rework_total": rework, "spec_rework_total": spec_rework, "spec_canceled": canceled_issues,
+            "audit_pass": audit_pass, "audit_fail": audit_fail,
             "first_pass_rate": first_pass_rate, "first_pass_of_passed": first_pass_issues, "passed_issues": passed_issues,
             "root_cause_mix_on_restarts": root_causes,
             "rework_cause_mix_on_rounds": rework_causes,
             "guard_fired_events": guard_fired_total,
             "story_points_total": size_total_pts, "sized_issues": sized_issues.len(), "rework_per_10_points": rework_per_10pts,
-            "throughput_per_hr": throughput, "little_law": { "wip": issues.len(), "computed_wip": wip_from_law, "consistent": little_ok, "avg_cycle_hrs": avg_cycle_hrs, "cycle_note": cycle_note },
+            "throughput_per_hr": throughput, "little_law": { "wip": open_wip, "computed_wip": wip_from_law, "consistent": little_ok, "avg_cycle_hrs": avg_cycle_hrs, "cycle_note": cycle_note },
             "by_agent": by_agent, "by_phase": by_phase,
             "overdue_blockers": overdue,
             "integrity": if integrity.is_empty() { "OK" } else { "TAMPER DETECTED" },
@@ -5344,6 +5457,186 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Self-improvement: "are we improving?" ────────────────────────────────────
+//
+// The primary honest signal: the share of shipped specs that were ACCEPTED —
+// i.e. NOT later revised by a linked follow-up (`feature.revised`) or reopened.
+// Acceptance is the complement of the operator's revealed rejection, so the
+// human reports only what went wrong; silence (no link) is acceptance-so-far.
+// Reported with a Wilson interval and half-vs-half change test; raw counts are
+// always emitted. Never use this as a target (Goodhart) — pair with throughput.
+
+/// Wilson score 95% interval for a binomial proportion (closed form; safe at
+/// small n where the Wald interval is unusable).
+fn wilson_ci(successes: usize, n: usize) -> (f64, f64) {
+    if n == 0 { return (0.0, 1.0); }
+    let n_f = n as f64;
+    let p = successes as f64 / n_f;
+    let z = 1.96_f64;
+    let denom = 1.0 + z * z / n_f;
+    let center = (p + z * z / (2.0 * n_f)) / denom;
+    let margin = z * ((p * (1.0 - p) / n_f) + (z * z / (4.0 * n_f * n_f))).sqrt() / denom;
+    ((center - margin).max(0.0), (center + margin).min(1.0))
+}
+
+fn improvement_report(json: bool) -> anyhow::Result<()> {
+    let root = project_root()?;
+    let dir = root.join(".opencode").join("state").join("issues");
+    if !dir.exists() { println!("No metrics recorded yet."); return Ok(()); }
+    let mut all: Vec<ReadEvent> = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            all.extend(parse_event_log(&content));
+        }
+    }
+    if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
+
+    // Spec set: issues the machine created (the productive work). Excludes the
+    // orchestrator/harness logs that pollute raw counts.
+    let spec_issues: std::collections::BTreeSet<String> = all.iter()
+        .filter(|e| e.event_name == "create-issue")
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+
+    // A spec is REVISED if any later spec declares `feature.revised{revises == id}`
+    // or the spec itself was reopened (`done -> planning`). This is the revealed
+    // rejection signal; the link lives forward on the follow-up.
+    let mut revised_targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in &all {
+        if e.event_name == "feature.revised" {
+            if let Some(rev) = e.attributes.get("revises") {
+                if spec_issues.contains(rev) { revised_targets.insert(rev.clone()); }
+            }
+        }
+        if e.event_name == "transition" && e.message.contains("done -> planning") {
+            if let Some(id) = e.entity.as_ref().and_then(|x| x.issue_id.clone()) {
+                if spec_issues.contains(&id) { revised_targets.insert(id); }
+            }
+        }
+    }
+
+    // Order specs by first event timestamp.
+    let mut ordered: Vec<(i64, String)> = spec_issues.iter().map(|id| {
+        let t = all.iter()
+            .filter(|e| e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i == id).unwrap_or(false))
+            .filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|d| d.timestamp()))
+            .min().unwrap_or(0);
+        (t, id.clone())
+    }).collect();
+    ordered.sort();
+
+    let mut created = 0usize;
+    let mut accepted = 0usize;
+    let mut revised = 0usize;
+    let mut canceled = 0usize;
+    let mut in_flight = 0usize;
+    let mut linked = 0usize;
+    let mut outcomes: Vec<bool> = Vec::new(); // true = accepted, false = revised
+    for (_t, id) in &ordered {
+        let evs: Vec<&ReadEvent> = all.iter()
+            .filter(|e| e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i == id).unwrap_or(false))
+            .collect();
+        created += 1;
+        if evs.iter().any(|e| e.event_name == "create-issue" && e.attributes.get("revises").map(|v| v != "none").unwrap_or(false)) {
+            linked += 1;
+        }
+        let is_canceled = evs.iter().any(|e| e.event_name == "close-issue" && e.attributes.get("closed_as").map(|v| v == "canceled").unwrap_or(false));
+        let done = evs.iter().any(|e| e.event_name == "close-issue" || (e.event_name == "phase.started" && e.phase == "done"))
+            || evs.iter().any(|e| e.event_name == "audit.verdict" && e.outcome == "passed");
+        if done {
+            if is_canceled || revised_targets.contains(id) {
+                if is_canceled { canceled += 1; } else { revised += 1; outcomes.push(false); }
+            } else {
+                accepted += 1; outcomes.push(true);
+            }
+        } else {
+            in_flight += 1;
+        }
+    }
+
+    // Acceptance rate over resolved (accepted + revised) specs: Beta(1,1) mean +
+    // Wilson 95% interval.
+    let resolved = accepted + revised;
+    let posterior_mean = (1.0 + accepted as f64) / (2.0 + resolved as f64);
+    let (ci_lo, ci_hi) = wilson_ci(accepted, resolved);
+
+    // Change test: split the resolved outcome sequence in half and compare rates.
+    let n = outcomes.len();
+    let (delta, z, decision) = if n >= 4 {
+        let half = n / 2;
+        let (a1, a2) = (outcomes[..half].iter().filter(|x| **x).count(), outcomes[half..].iter().filter(|x| **x).count());
+        let (n1, n2) = (half, n - half);
+        let (p1, p2) = (a1 as f64 / n1 as f64, a2 as f64 / n2 as f64);
+        let se = ((p1 * (1.0 - p1) / n1 as f64) + (p2 * (1.0 - p2) / n2 as f64)).sqrt();
+        let z = if se > 0.0 { (p2 - p1) / se } else { 0.0 };
+        let d = if z > 1.96 { "improving" } else if z < -1.96 { "regressing" } else { "no detectable change" };
+        (p2 - p1, z, d.to_string())
+    } else {
+        (0.0, 0.0, "insufficient data".to_string())
+    };
+
+    // Crow-AMSAA growth on the cumulative revised count vs spec index (λ t^β).
+    // β < 1 = failure intensity falling (improvement). Uses only indices where the
+    // cumulative count is > 0 (ln is undefined at 0).
+    let mut xs: Vec<f64> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    let mut cum = 0.0_f64;
+    for (idx, (_t, id)) in ordered.iter().enumerate() {
+        if revised_targets.contains(id) { cum += 1.0; }
+        if cum > 0.0 { xs.push(((idx + 1) as f64).ln()); ys.push(cum.ln()); }
+    }
+    let beta_amsaa: Option<f64> = if xs.len() >= 3 && revised_targets.len() >= 3 {
+        let mx = xs.iter().sum::<f64>() / xs.len() as f64;
+        let my = ys.iter().sum::<f64>() / ys.len() as f64;
+        let num: f64 = xs.iter().zip(&ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+        let den: f64 = xs.iter().map(|x| (x - mx) * (x - mx)).sum();
+        if den > 0.0 { Some(num / den) } else { None }
+    } else { None };
+
+    let spec_rework = all.iter().filter(|e| is_rework(e) && e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|id| spec_issues.contains(id)).unwrap_or(false)).count();
+    let throughput = if ordered.len() >= 2 {
+        let span_h = ((ordered.last().unwrap().0 - ordered[0].0) as f64 / 3600.0).max(1.0);
+        ordered.len() as f64 / span_h
+    } else { 0.0 };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "acceptance": {
+                "resolved": resolved, "accepted": accepted, "revised": revised,
+                "posterior_mean": posterior_mean, "ci95": [ci_lo, ci_hi],
+                "delta_half_to_half": delta, "z": z, "decision": decision,
+            },
+            "revise_growth_amsaa_beta": beta_amsaa,
+            "link_coverage": if created > 0 { Some(linked as f64 / created as f64) } else { None },
+            "raw": {
+                "specs_created": created, "accepted": accepted, "revised": revised,
+                "canceled": canceled, "in_flight": in_flight,
+                "spec_rework_total": spec_rework, "throughput_per_hr": throughput,
+            },
+            "integrity": if check_log_integrity()?.is_empty() { "OK" } else { "TAMPER DETECTED" },
+        }))?);
+        return Ok(());
+    }
+    println!("=== Self-Improvement (are we improving?) ===");
+    if resolved == 0 {
+        println!("Acceptance: no resolved specs yet ({} in flight, {} canceled)", in_flight, canceled);
+    } else {
+        println!("Acceptance: {:.0}% ({} accepted / {} resolved)  95% CI [{:.0}%, {:.0}%]",
+            posterior_mean * 100.0, accepted, resolved, ci_lo * 100.0, ci_hi * 100.0);
+    }
+    println!("Trend (half vs half): {} (delta {:+.0}pp, z {:.2})", decision, delta * 100.0, z);
+    match beta_amsaa {
+        Some(b) => println!("Reliability growth (Crow-AMSAA beta): {:.2} ({})", b, if b < 0.95 { "growing" } else if b > 1.05 { "degrading" } else { "stable" }),
+        None => println!("Reliability growth (Crow-AMSAA beta): insufficient revision events (need >= 3)"),
+    }
+    println!("Link coverage: {}/{} specs declared a revision (raw: {} revised, {} canceled, {} in flight, {} rework loops)",
+        linked, created, revised, canceled, in_flight, spec_rework);
+    println!("Raw: {} created, {} accepted, {} revised, {} canceled, {} in flight; throughput {:.3}/hr",
+        created, accepted, revised, canceled, in_flight, throughput);
+    Ok(())
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 fn parse_args() -> ActionArgs {
@@ -5383,6 +5676,8 @@ fn parse_args() -> ActionArgs {
         branch: val("--branch"),
         commits: val("--commits").and_then(|s| s.parse().ok()),
         human_authorized: args.iter().any(|a| a == "--human-authorized"),
+        revises: val("--revises").and_then(|s| s.parse().ok()),
+        intent: val("--intent"),
     }
 }
 

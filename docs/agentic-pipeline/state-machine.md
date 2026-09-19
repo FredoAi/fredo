@@ -100,6 +100,8 @@ pipeline-state.rs --action <action> --issue <N> [-Arguments...]
 | `audit-record` | Posts the Self-Improver's `Decision` comment (success or restart phase) AND drives the next phase automatically: `--verdict success` → `audit→done` + close as done + auto-post a final metrics summary; `--verdict restart --phase <p>` → `audit→<p>` | Self-improver only; `--verdict success\|restart`; restart phase must be a legal exit |
 | `health` | Prints the pipeline health report (event/error log scan, per-agent call counts, Little's Law consistency check, **SLA-overdue blockers** flagged past the default 4h). The Little's Law check derives the **average cycle time from the event log** (implementation start → done) and flags `CHECK REQUIRED` when WIP diverges from throughput × cycle; with no completed issues it reports CONSISTENT with an "insufficient completed data" note instead of a false alarm | Read-only |
 | `metrics` | Derives per-issue or aggregate pipeline metrics from the event log (`--all` for aggregate, `--json` for machine output) | Read-only |
+| `improvement` | Derives the self-improvement signal from the event log: the acceptance rate (specs not later revised by a linked follow-up or reopened) with a Wilson 95% interval, a half-vs-half change test, the Crow-AMSAA growth slope, link coverage, and raw counts. Filtered to real specs (issues created via `create-issue`). **Diagnostic only - never a target** (`--json` for machine output) | Read-only |
+| `link-revision` | Backfills a `feature.revised` link on an existing issue (`--issue <new> --revises <old> [--intent fix\|enhancement]`); idempotent; validates the target. Used when the PO missed the link at intake | Self-Improver or Product Owner |
 | `verify` | Anti-tamper integrity gate: scans the event/error logs for out-of-order timestamps, duplicate event IDs, or rewrites. **Torn appends are normalized, not flagged:** a physical line holding two complete JSON records (a writer race from the pre-atomic `writeln!` appenders — observed #2745) is split into its fragments at read time and validated fragment-by-fragment, so a benign torn append passes while genuine corruption (unparseable fragments, out-of-order ts, duplicate IDs) still exits 3. Appenders write the record + newline in a single `write_all` (atomic at the syscall level) | Read-only; exits 3 on tamper |
 | `hardening-lock-open-issues` | One-shot hardening pass (ST-1 / REQ-01, REQ-02): enumerates every currently-**OPEN** pipeline issue (one carrying a pipeline label: `backlog`/`planning`/`ready-for-dev`/`in-progress-dev`/`ready-for-test`/`testing`/`audit`/`cleanup`/`done`) and locks its conversation via `gh api -X PUT repos/<repo>/issues/<n>/lock -f lock_reason=off-topic` — the durable per-conversation comment restriction. This closes the public-launch vector on a PUBLIC repo so an untrusted external comment cannot land while per-issue mechanics are still being built. NON-GOALS: does NOT close/cancel/unlabel any issue; does NOT touch `temp:` harness issues (they need comment+close during a test run); does NOT disable GitHub Issues; does NOT redact/delete comment bodies. Best-effort on a per-issue failure (the run continues, a `guard.fired` note is recorded) | Self-Improver only |
 | `interaction-limit` | Repo interaction limit (ST-3 / REQ-02, REQ-04): `PUT repos/<repo>/interaction-limits` with `{ limit: "collaborators_only", expiry: "six_months" }` via `gh api` — a TEMPORAL belt-and-suspenders that makes even an unexpectedly-unlocked conversation reject external comments during the window. NON-GOALS: interaction limits are temporary by design — do NOT present as a permanent control; do NOT disable Issues; do NOT use `contributors_only`/`existing_users` (both admit non-collaborators). The durable guard is per-conversation lock-on-create | Self-Improver only |
@@ -226,7 +228,7 @@ The state machine is called by **every agent on every call** — and each call i
 |-------|------|----------|-------------|
 | `ts` | string RFC 3339 UTC | yes | time the event occurred |
 | `event_id` | string UUID | yes | unique event id |
-| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `triage-init`, `assemble-plan`, `tests-commit`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `set-permission`, `close-issue`, `upload-evidence`, `audit-record`, `audit.verdict`, `pipeline.improvement`, `guard.fired` |
+| `event_name` | string enum | yes | the action emitted: `state_machine.call`, `state_machine.failure`, `phase.started`, `phase.completed`, `create-issue`, `triage-init`, `assemble-plan`, `tests-commit`, `comment`, `transition`, `block`, `unblock`, `create-worktree`, `remove-worktree`, `generate-work`, `update-plan`, `set-permission`, `close-issue`, `upload-evidence`, `audit-record`, `audit.verdict`, `pipeline.improvement`, `feature.revised`, `guard.fired` |
 | `actor` | string | yes | agent name |
 | `entity` | object | yes | `{ issueId, repo? }` |
 | `phase` | string | yes | pipeline phase at call time |
@@ -236,7 +238,7 @@ The state machine is called by **every agent on every call** — and each call i
 | `durationMs` | integer | not yet emitted | **designed** endTs − startTs |
 | `correlation_id` | string | yes | trace id linking all events of one issue |
 | `sequence` | integer | not yet emitted | **designed** monotonic per-file counter |
-| `attributes` | object | no | typed key-values emitted today: `validation` (context call), `from`/`to` (transition), `phase`, `reason` (block), `verdict`, `rootCause` (`defect\|technique\|environment\|scope` — restart classification), `storyPoints` (spec size parsed from the plan's Effort line), `closed_as` (close-issue), `action` (failure) |
+| `attributes` | object | no | typed key-values emitted today: `validation` (context call), `from`/`to` (transition), `phase`, `reason` (block), `verdict`, `rootCause` (`defect\|technique\|environment\|scope` — restart classification), `storyPoints` (spec size parsed from the plan's Effort line), `closed_as` (close-issue), `action` (failure), `revises`/`intent` (create-issue: the prior feature this spec revises, or `none`; `fix`/`enhancement`), `guardId`/`guardKey`/`failureClass` (guard.fired identity), `guardrailId` (pipeline.improvement → the `### G-NNN` it created) |
 | `message` | string | no | human-readable summary |
 
 **Governance:** the state machine owns and emits the schema — identical field names/types from every emitter, add fields additively, never rewrite history. Every event carries `entity.issueId` + `correlation_id`.
@@ -266,16 +268,18 @@ All derived from the event log. Grouped by consumer.
 
 | Metric | Status | Definition |
 |--------|--------|------------|
-| `throughput` | ✅ implemented | distinct issues with recorded events ÷ the log's span (hours) — a rough activity rate, NOT a completed-per-period moving average |
+| `throughput` | ✅ implemented | spec issues ÷ the log's span (hours) — a rough activity rate, NOT a completed-per-period moving average |
 | `avgCycleTime` / `avgLeadTime` | ▫️ designed | rolling averages, **distributions + p85**, never mean alone |
 | `flowEfficiency` | ▫️ designed | active agent-work in working states ÷ total lead time (use for *trend*, not absolute target) |
 | `blockedRatio` | ▫️ designed | blocked issues / total |
 | `retryRate` | ▫️ designed | issues needing rework / total |
-| `firstPassRate` | ▫️ designed | first-pass issues / total |
+| `firstPassRate` | ✅ implemented | first-pass specs ÷ ALL created specs (intention-to-treat — abandoning a spec cannot raise the rate) |
+| `acceptanceRate` | ✅ implemented | specs not later revised (`feature.revised`) or reopened ÷ resolved specs, with a Wilson 95% interval — the primary self-improvement signal (`improvement` action) |
+| `linkCoverage` | ✅ implemented | share of specs whose `create-issue` recorded a linkage decision (`revises: #N` or `none`) — how complete the revision signal is |
 | `reopenRate` | ▫️ designed | reopened / completed |
 | `staleCount` | ▫️ designed | issues idle past the SLA in a phase |
 | `phaseBottlenecks` | ▫️ designed | longest avg duration phase |
-| `wipConsistency` | ✅ implemented | Little's Law check: WIP ≈ throughput × avg cycle time — flags broken telemetry |
+| `wipConsistency` | ✅ implemented | Little's Law check: WIP ≈ throughput × avg cycle time — flags broken telemetry (uses open-spec WIP, not all issues) |
 
 **C. Agent economics — cost/perf tuning (where agentic pipelines differ from human teams)**
 

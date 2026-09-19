@@ -49,11 +49,22 @@ For each Active guardrail with guardrail_id:
   4. Count matching failure events BEFORE and AFTER activation_date:
      - before_rate = count_before / issues_before
      - after_rate = count_after / issues_after
-  5. Classification:
-     - after_rate == 0 AND issues_after >= 2          → "Confirmed"
-     - after_rate == 0 AND issues_after < 2           → "Pending"
-     - after_rate > 0 AND after_rate < before_rate     → "Partial"
-     - after_rate >= before_rate                        → "Ineffective"
+  5. Classification (interval-aware — a raw threshold on a tiny sample is not evidence):
+      - Report the post-activation failure rate AS A 95% INTERVAL (Wilson, or a Beta(1,1)
+        posterior interval). `0/2` is [0, 0.84] — it does NOT mean "0".
+      - "Confirmed" ONLY when the post-activation interval's upper bound is below the
+        pre-activation rate AND there are enough events to be informative (>= 5 post-activation
+        events). Otherwise → "Pending".
+      - "Partial"  when the post interval overlaps the pre-rate but its mean is lower.
+      - "Ineffective" when the post interval lies at or above the pre-rate.
+      - Any guardrail whose target_failure is matched via `outcome=="blocked"` is measured
+        against GUARD REFUSALS, not stalls — exclude refusals (use `block` actions only), or
+        the guardrail can never look effective.
+  5b. Prefer the `improvement` action's acceptance signal for the pipeline-level trend:
+      `rust-script .opencode/scripts/pipeline-state.rs --action improvement --json`
+      (acceptance rate + interval + change test + link coverage). A guardrail is "working"
+      when the failure class it targets stops RECURRING against that signal, not merely when
+      a two-issue window looks clean.
   6. Write the effectiveness value back to the guardrail's record in the SI improvement ledger
 ```
 

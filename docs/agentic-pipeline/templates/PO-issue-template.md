@@ -122,6 +122,7 @@ Reference the shared **Definition of Done** (tested, reviewed, demo-able, no reg
 ## Links & evidence
 
 - Related issues, epic/initiative, story-map position, mockups, designs, competitive references.
+- **Revises:** #N (`fix` | `enhancement`) — or `none` for a genuinely new feature. Confirmed with the human at intake (never inferred); pass `--revises`/`--intent` to `create-issue`. The link is stored forward, so the revised issue is never reopened.
 - Put the *how* in the conversation, not the card — preserves negotiability.
 
 ---
