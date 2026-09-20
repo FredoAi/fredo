@@ -133,7 +133,7 @@
 > static-only scope is superseded — R-20's "no raster / no literals" intent stands, its (implicit)
 > no-animation intent does not. **Verification policy: live.**
 
-- [ ] **R-21 (today's desktop unchanged with None):** with **None** (the default) the desktop shell,
+- [x] **R-21 (today's desktop unchanged with None):** with **None** (the default) the desktop shell,
       window chrome, layout, z-order, and input behavior are unchanged — the desktop is
       **pixel-comparable** to a pre-#2905 BEFORE capture; feature windows still open, move, resize,
       focus, minimize, and close; the background layer is fully absent/inert (zero
@@ -141,14 +141,14 @@
   - **Edge:** None reselected after each procedural option; upgrade from an install that had a
     procedural option persisted.
 
-- [ ] **R-22 (theming engine unchanged):** preset selection, per-token overrides, "Reset to theme
+- [x] **R-22 (theming engine unchanged):** preset selection, per-token overrides, "Reset to theme
       defaults", the readout, and the `overrides ?? preset ?? base` layering behave exactly as
       before; the animated background must not shift any existing theming computed color (compare
       before/after on a sample: Settings chrome, launcher, mission-monitor node chrome). Reference
       F-1..F-19.
   - **Edge:** theme/accent switch while the animation runs; light + dark.
 
-- [ ] **R-23 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
+- [x] **R-23 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
       `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted —
       the `#2899` static-only animation assertions are the ONLY permitted supersession (marked
       `G-136 SUPERSEDED (#2905)`); zero hardcoded literals / `var(--x)NN` in the slice; no raster
@@ -156,10 +156,18 @@
   - **Edge:** the superseded `background.invariants.test.tsx` leg (d) must be **inverted** (assert
     animation present AND reduced-motion-gated), not deleted; `var(--x)NN` still absent.
 
-- [ ] **R-24 (shell/window styling + z-order + input unchanged — scope guard):** the animated
+- [x] **R-24 (shell/window styling + z-order + input unchanged — scope guard):** the animated
       background changes the **shell/desktop background only** — no window/card/surface styling
       changes; the backdrop stays strictly below `WindowManager` (z=0) and `pointer-events:none` +
       `aria-hidden` + non-focusable, so it intercepts no pointer/keyboard input and never paints
       above a window. Reference F-29 (occlusion) / legacy F-24.
   - **Edge:** maximized / floating / minimized windows; window dragged over the animated region;
     input typed into a focused field while the animation runs; two windows.
+
+
+### #2905 testing round 1 (spec/2905 @ d64ac959) — results
+
+- **R-21 PASS (live).** None → zero `[data-testid="desktop-backdrop"]` DOM; launcher surface `rgb(45,45,45)` + 28 px grid (= pre-#2905 shipped texture per #2899 F-20 / the byte-identity unit pin); windows open/minimize/restore; z-order + input unchanged.
+- **R-22 PASS (live).** preset select default→dark→coffee→light-default applied live; `accentPrimary` override wins, unused `cardBg` no-op, "Reset to theme defaults" cleared preset+overrides; theming suites green.
+- **R-23 PASS (gates).** build exit 0; 1779/1779 tests; zero literals/`var(--x)NN`/raster in the slice; the only inverted assertions are the explicit `G-136 SUPERSEDED (#2905)` static-only legs.
+- **R-24 PASS (live).** backdrop strictly z=0 below the z=1 WindowManager, `pointer-events:none` + `aria-hidden` + non-focusable + handler-free; `elementFromPoint` never returns the backdrop; clicks/typing into launcher and windows landed while a background was active; no window/card/surface styling change in the diff.
