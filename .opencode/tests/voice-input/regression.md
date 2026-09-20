@@ -636,3 +636,107 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
 ### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
 
 - **R-41 PASS (live).** Local: `stt_start` → placeholder `Listening…`, chip `Listening`, model chip ABSENT, announcer `Listening`; `stt_stop` → placeholder `search or command`, `listening:false`. Model: chip `Fredo is listening` + placeholder `release Space to finish` (hint chip suppressed — the intentional #2904 REQ-3 relocation); processing → `Fredo is processing your speech…` + busy placeholder; chip cleared on settle; exactly ONE indicator per mode; persisted `Fredo_companion_voice_handling` stable across the `local`↔`model` switches (`local` → `model`). No lost/converted Space observed. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2914 extension — the local-mode removal must not move the surfaces it rides on (G-136/G-183)
+
+> Issue #2914 deletes the on-device sherpa STT pipeline + the `local` speech-handling mode, leaving
+> ONE model-audio path. The surfaces the removed pipeline rode on — the launcher bar/typed input, the
+> Ctrl+Space chord, the companion overlay, the download engine/GGUF layout, the settings host and the
+> build gates — must be UNCHANGED. **G-136 SUPERSESSION (history preserved; never rewritten):**
+> - **R-30** (local-mode hold/tap/non-empty/voice-off dictation contract) — **RETIRED**: there is no
+>   local mode. The same hold/tap/non-empty contract MUST hold for the surviving model-audio mode; the
+>   R-30 PASS record stands as history and is NOT re-run.
+> - **R-31** (only `Fredo_companion_voice_handling` changes; `local`↔`model`) — **RETIRED**: the mode
+>   choice is gone. Superseded by R-43 (the persisted `local` value must RESOLVE to model-audio).
+> - **R-36** (local-mode dictation spot) — **RETIRED** (history preserved).
+> - **R-38** (model-audio state machine + limit notice unchanged) — **PRESERVED** (re-run as R-45's
+>   third clause / F-131/F-134).
+> - **R-41** (mode-specific indicator copy) — the `local` half is **RETIRED**; the **model** half is
+>   **PRESERVED** (F-136).
+> - **R-25/R-26/R-27/R-28/R-29** pinned the `stt:transcript` content/normalization + local routing —
+>   **RETIRED for the product** (no transcript is emitted in model-audio). Their non-transcript clauses
+>   (indicator honesty, mic release, exactly-once routing, no idle capture) remain in force.
+> No OTHER prior row is retired — R-1..R-24 (except the retired set above) and R-32..R-40 remain in
+> force. Run alongside R-42..R-47, `functional.md` F-128..F-142, and
+> `.opencode/tests/voice-dictation/` R-5/R-6. **Verification policy: live.**
+
+## R-42 — The launcher/typed/Ctrl+Space surfaces are UNCHANGED and nothing captures while disabled
+
+- [ ] R-42: Re-run R-10/R-18/R-19 on the #2914 tip: type into `input[role="searchbox"]` (including
+      spaces) with voice enabled and NOT listening; press Ctrl+Space from each context; with voice
+      DISABLED, hold Space on the EMPTY bar. Subscribe to `stt:state`/`stt:transcript`.
+  **Expected:** the bar is controlled normally (grid filters, clearing restores, ESC closes); Ctrl+Space
+      shows + focuses the bar and NEVER starts/stops listening in ANY context; ZERO `stt:transcript`
+      emissions anywhere; a voice-disabled hold lands exactly one ordinary space with ZERO capture and
+      no `role="alert"`; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge:** rapid Ctrl+Space churn; a hold right after an interrupted session; the not-ready gate.
+
+## R-43 — The upgrade path leaves a WORKING voice state (no dead/blocked voice)
+
+- [ ] R-43: Re-run R-16/R-17 across the upgrade: point the AppStore `models_dir` at an IN-REPO scratch dir
+      (never the default `{home}/fredo-models` — G-172), seed a profile with
+      `Fredo_companion_voice_handling='local'`, a downloaded sherpa STT dir under that scratch dir, and
+      the pre-#2914 persisted keys; restart; open Settings → Companion; read the voice group + the
+      persisted keys; hold Space.
+  **Expected:** the app boots to a WORKING model-audio voice state — the voice group renders without the
+      removed STT row, no "blocked/dead" banner, holding Space arms + captures; the pre-upgrade sherpa
+      model data is gone; the only persisted keys are the DECLARED voice preferences (no orphan key left
+      behind that breaks the reader); no existing companion key rewritten. This row REPLACES R-31's
+      `local`↔`model` toggle invariant (kept above as history).
+  - **Edge:** the handling key present with a legacy/malformed value; a half-downloaded STT dir; the app
+      killed mid-upgrade; localStorage vs SQLite disagreement.
+
+## R-44 — Companion readiness + chat are UNCHANGED (the STT model never gated them, and now is gone)
+
+- [ ] R-44: With no sherpa model present at all, open Settings → Companion and exercise companion chat;
+      read the completeness of the readiness/chat gates against their pre-spec definitions; compare
+      against `.opencode/tests/llama-setup/` R-30 and `.opencode/tests/companion/` R-31/R-32.
+  **Expected:** `useCompanionReadiness().ready` keeps exactly its pre-spec inputs; companion chat is
+      fully usable with no STT model; the wizard's gating `installed/total` summary is unchanged; NO
+      `sttModel` prerequisite (installed or missing) appears anywhere; the removal subtracts a row and
+      adds no new gate.
+  - **Edge:** a fresh profile; a profile where the STT step was the only "present" optional row; a
+      stale `sttModel` readiness caller must not throw or render a ghost row.
+
+## R-45 — The model-audio state machine + limit notice + responsiveness are UNCHANGED
+
+- [ ] R-45: Re-run R-38 + F-131/F-134/F-136 on the #2914 tip: the `capturing → processing → settled`
+      states, the bounded auto-stop + `launcher-command-model-limit-status` notice, and the chip's
+      clear-on-`llm-done`; measure a warm hold press→capture.
+  **Expected:** the chip states/copy and the limit notice are unchanged; the chip clears on `llm-done`
+      without a next session; the limit notice is a warning (not `role="alert"`); ZERO transcript text
+      while mode=model; `stt_status.listening === false` after every stop; the warm press→capture is
+      within the shipped #2887/#2903 envelope — the sherpa deletion perturbs NONE of it.
+  - **Edge:** a cancel mid-`processing`; a second turn in the same session; the resident state across
+      the deletion; a stale leftover sherpa state file.
+
+## R-46 — Download engine / companion GGUF / settings host + token/build gates UNCHANGED
+
+- [ ] R-46: Re-run R-12/R-14/R-20/R-33/R-39: the `download_missing_files` semantics (skip-present by
+      exact size, streamed SHA-256, Range resume), the companion GGUF manifest/`models_dir` layout, the
+      settings host with no orphan "Voice" nav item/section, the token contract + `pnpm --filter @fredo/ui build`
+      / `pnpm --filter @fredo/ui test:run` / `pnpm --filter @fredo/tauri build:webview`, and the Rust CI gates.
+  **Expected:** all unchanged; the removed `sttModel` step left the download engine and the GGUF layout
+      untouched; the changed files carry no true colour literals / no `var(--x)NN` alpha-append; NO
+      existing assertion weakened, disabled or deleted (G-125) — a superseded assertion is recorded with
+      its superseding row, never silently dropped; a moved/renamed frozen hook is refreshed in the same
+      scope and named (G-187).
+  - **Edge:** a companion GGUF download concurrent with a leftover STT-dir cleanup; `models_dir`
+      resolution order; the CI `rust-validate` result recorded (the tester shell has no `cargo`).
+
+## R-47 — No new remote surface at rest or in a turn
+
+- [ ] R-47: Re-run R-6/R-32/R-40: with the app idle (not listening) and again during a model-audio turn,
+      watch for outbound connections; read the managed `llama-server` bind/port and the turn URL.
+  **Expected:** local-only holds at rest and during a turn; the model server binds `127.0.0.1` and the
+      turn targets loopback; the chat transport is the existing managed path (no new remote client, no
+      hostname); any model acquisition remains setup-gated. The live outbound block is a NAMED BLOCKER
+      (no elevation lever) with the static pin alongside — never a substitute.
+  - **Edge:** the sherpa dependency's removal introduces no new network dependency; a stopped server
+      yields the typed `modelAudioUnavailable` state, not a remote retry.
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends the regression results; do not pre-fill)_
