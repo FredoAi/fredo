@@ -251,3 +251,7 @@
       chip suppressed — the #2904 AC2 relocation), with NO `verticalWrap`/`narrow` node and an
       empty `overlapField`; the mode persisted; screenshot succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
+
+- **S-28 PASS (live).** Local then model, via the shipped `companion-voice-handling-select` (mode persisted `model`): each mode's indicator rendered on ONE line (local `Listening` + `Listening…` + `release Space to finish` hint; model `Fredo is listening` + `release Space to finish` placeholder, hint suppressed); no `verticalWrap`/`narrow` node; content-box overlap 0; screenshots succeeded; console error-level empty. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
