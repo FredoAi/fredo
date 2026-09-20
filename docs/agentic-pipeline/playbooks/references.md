@@ -69,6 +69,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/self-improver.md (dispatch briefs) + references.md (this record)
 - **effectiveness:** Pending
 
+### G-215: si_direct_main_write_committed_before_integrating_origin
+- **activation_date:** 2026-09-20
+- **observed:** #2905 — the SI's guardrail-persistence commit was made on a local `main` that predated the spec PR's squash-merge. `git push origin main` was rejected (the remote had advanced to the merge commit `b216316`), so the SI integrated origin with `git merge <sha>` and pushed — and GitHub reported BYPASSED ruleset violations ("This branch must not contain merge commits", "Changes must be made through a pull request", "Required status check validate is expected"). The content landed correctly, but `main` now carries a merge commit on a squash-only trunk, and the branch rules were bypassed rather than satisfied.
+- **target_failure:** a direct SI write to `main` (doc-sync / guardrail persistence) is committed before the local ref integrates the origin tip, so the push is rejected and the SI forces a merge commit onto a no-merge-commit trunk, bypassing branch protection.
+- **guardrail:** Before any direct commit to `main`, `git fetch origin` and fast-forward the local `main` to `origin/main` FIRST, then commit on the reconciled tip so the push is a true fast-forward. `origin/main` advances concurrently (spec-PR squash merges, `tests-commit`), so never assume the local ref is current. If the origin tip moved after the commit was made, do not paper over it with a merge commit — reconcile the ref before re-committing, and surface any bypassed ruleset violation to the human.
+- **home:** playbooks/self-improver.md (audit doc-sync / guardrail persistence) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-213: sparse_point_pixel_sampling_aliases_on_periodic_patterns
 - **activation_date:** 2026-09-20
 - **observed:** #2905 — the QA row gated AC1 visibility on a fixed 5-point desktop pixel sampler. For the `topography` option the contour bands are 1 px wide on a 22–23 px repeating gradient, so all five canonical points landed in the gaps (0/5) while 4.6 % of desktop pixels differ from the None control by ≥8 and the rings are plainly visible in the screenshot. The tester disclosed the aliasing with raw numbers, added band-hit points (4/5) and a full-frame diff, and promoted exploratory E-33; no round was lost and the verdict was substantiated.
