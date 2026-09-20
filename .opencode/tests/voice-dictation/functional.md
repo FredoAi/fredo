@@ -101,6 +101,7 @@
   - **Edge:** a path containing spaces; `dev-env` refusing the env var → report as a tooling gap, not a
     product FAIL; a silent/empty WAV.
 
-### #2903 testing round 1 — result
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
-- [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED; do not pre-fill)_
+- **F-5 PASS.** `generate-dictation-phrase.mjs:14-23` read verbatim: "This is NOT recorded speech and is not intelligible. It is a deterministic synthetic waveform whose ONLY job is to be a valid 16 kHz mono 16-bit PCM WAV with non-zero signal at sample 0 … exercises the paced-feed / liveness path. The transcript-CONTENT claim is carried by the sanctioned synthetic `stt:transcript` lever … never by this file." No #2903 row scores an L4-fed turn as "opened an app" — the app-action lever is the in-repo synthetic `llm-skill-call` event.
+- **F-6 PASS (string env form).** `dev-env.ps1 -Action Down` then `-Action Up -Spec 2903 -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"` → "Injected env var FREDO_STT_FEED_WAV"; `stt_start` → `{started:true, deviceName:"stt-feed", sampleRate:16000}` (no `cpal` device); `stt_stop` → `phase:"processing"`; app responsive. UNSET control = the pre-restart legs on the virtual mic (`deviceName:"Micrófono (Iriun Webcam)"`, `sampleRate:48000`) ⇒ the fed observation is non-vacuous. The `-EnvVars @{…}` hashtable form remains broken (tooling gap).
