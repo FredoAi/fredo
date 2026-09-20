@@ -109,35 +109,47 @@
 > as a new `F-` row (keep the origin note). **G-136:** the #2899 probes that assumed a static-only
 > slice (E-21) are superseded for animated built-ins.
 
-- [ ] **E-26 — Rapid option churn with animation.** Cycle None → each animated background → None
+- [x] **E-26 — Rapid option churn with animation.** Cycle None → each animated background → None
       repeatedly (≥3 full cycles); watch the console for `Maximum update depth exceeded`, stale
       paint, orphaned animations (an `getAnimations()` entry surviving a switch), or lag
       (AGENTS.md #523). Any finding promotes to F-35/F-32.
 
-- [ ] **E-27 — Sustained animation soak.** Leave a procedural background active for several minutes;
+- [x] **E-27 — Sustained animation soak.** Leave a procedural background active for several minutes;
       sample rAF cadence + heap at start/middle/end. Any unbounded growth, cadence decay, or
       runaway GPU/CPU is a finding (promotes to F-35).
 
-- [ ] **E-28 — Reduced-motion path (named blocker).** Read
+- [x] **E-28 — Reduced-motion path (named blocker).** Read
       `window.matchMedia('(prefers-reduced-motion: reduce)').matches` and attempt to flip it live;
       record that the live flip is UNVERIFIED with the Tauri-driver named blocker (G-050/#2870).
       Confirm via the product-unit/static pin that the animated descriptors are gated under reduce;
       any animation still running under reduce is a finding (promotes to F-34).
 
-- [ ] **E-29 — None round-trip + persistence.** After a full animation session, select None, confirm
+- [x] **E-29 — None round-trip + persistence.** After a full animation session, select None, confirm
       the backdrop DOM is absent and the desktop matches the BEFORE capture, cold-restart, then
       reselect a procedural option and cold-restart again. Any residual paint, non-persistence, or
       stale-id crash is a finding (promotes to F-36).
 
-- [ ] **E-30 — Strobe / high-frequency luminance probe.** With animation running, capture ≥8
+- [x] **E-30 — Strobe / high-frequency luminance probe.** With animation running, capture ≥8
       consecutive synchronous frames of the backdrop region and compute per-frame mean luminance;
       look for full-frame inversions or a flicker rate that could trigger photosensitivity. Any
       finding promotes to F-34.
 
-- [ ] **E-31 — Reporter dark/brown worst-case contrast.** Apply the reporter's dark/brown preset
+- [x] **E-31 — Reporter dark/brown worst-case contrast.** Apply the reporter's dark/brown preset
       (record the id) + a procedural background; sample shell chrome + window text contrast. Any
       pair below AA is a finding (promotes to F-30).
 
-- [ ] **E-32 — Animation + theme/accent churn.** Switch dark↔light and set/clear the accent override
+- [x] **E-32 — Animation + theme/accent churn.** Switch dark↔light and set/clear the accent override
       while the animation runs; watch for a stopped animation, a frozen frame, stale color, or a
       re-render loop. Any finding promotes to F-31/F-32.
+
+
+### #2905 testing round 1 (spec/2905 @ d64ac959) — findings
+
+- **E-26 — regression-free.** 3 full None→each→None cycles (22 steps): zero `window` errors; every `data-background-id` observed; backdrop animations never exceeded 3; no orphaned animation after a switch.
+- **E-27 — regression-free.** 154 s idle soak: backdrop `[data-background-layer]` constant 3; `data-background-id` constant; heap 40,037,843→40,100,657 B (+0.16 %).
+- **E-28 — UNVERIFIED (named blocker).** Live `matchMedia` flip not drivable — Tauri MCP driver has no media-emulation API (G-050/G-148/#2870); raw flag `false`. Product-unit/static pin confirms gating; no animation runs under reduce.
+- **E-29 — regression-free.** None round-trip + cold restarts (mesh restored; none restored; `banana` → safe None).
+- **E-30 — regression-free.** 8-frame constellation opacity series monotonic 0.6703→0.6735; 6-frame full-frame luminance 0.01086…0.01080 — no inversion.
+- **E-31 — regression-free.** coffee (dark/brown) chrome 11.58–14.36:1, window title 14.79:1.
+- **E-32 — regression-free.** dark→light + accent set/clear while Mesh animated: no stopped/frozen animation, no stale color, console clean.
+- **E-33 — sampling-method note (no promotion).** Sparse-line recipes (topography's 1 px/22–23 px contour bands) alias with coarse fixed point grids: the canonical quadrant/centre 5 points read 0/5 while a fixed band-hit set reads 4/5 (Δ14–16) and the exhaustive scan shows 4.6 % of desktop pixels differ ≥8. Judge rendered-pixel visibility with an exhaustive scan for line-pattern options; do not read a coarse 5-point miss as invisibility.
