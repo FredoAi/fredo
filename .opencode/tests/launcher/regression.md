@@ -705,3 +705,8 @@
       (#523); command-bar `y` within ±1px across states and the seat wrapper 80×100 + 16px
       unchanged (#2870 R-35); no new scrollbar at the shipped minimum 900×600. Reference
       R-43/R-46/R-53/R-61.
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — results
+
+- **R-62 PASS (live).** Model: dot + `launcher-command-model-listening-chip`(`Fredo is listening`) + Stop(`Stop listening`) + Cancel(`Cancel dictation`) + `release Space to finish` placeholder, hint chip suppressed (the #2904 REQ-3 relocation). Local: same dot + `launcher-command-listening-chip`(`Listening`) + Stop + Cancel + `Listening…` placeholder + `release Space to finish` hint chip (UNCHANGED). Search interaction intact: `zz` filtered `#fredo-launcher-grid` to 0 tiles, hint read `↵ send to Fredo` (the #2882 whole-query rule), `Escape` hid the grid while the bar stayed mounted/focused; `stt_stop` (local) → placeholder `search or command`, `listening:false`.
+- **R-63 PASS (live).** Static greps 0 literals / 0 alpha-append; console error-level empty across every leg; command-bar `y` stable per state (the only shift is the pre-existing below-bar status row); seat wrapper `offsetWidth 80`/`offsetHeight 100`/`margin-bottom 16px`; field 48px; no scrollbar/h-scroll at 900×600. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
