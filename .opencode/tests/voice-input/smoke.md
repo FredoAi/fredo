@@ -235,3 +235,19 @@
 - **S-25 PASS.** `{open_app,{app:"Narnia"}}` and `{close_app,{app:"Narnia"}}` → ZERO windows (grid intact) + `I couldn't find "Narnia"`; typed `Narnia` via the L3 channel on both intents. Screenshot `f122-unknown-narnia.jpeg`.
 - **S-26 PASS.** Typed `open settings` + Enter → the real model selected `open_app` → the SAME Settings window + `Opening Settings`. Screenshot `f119-typed-open-settings.jpeg`.
 - **S-27 PASS.** 4 captures uploaded via `upload-evidence --issue 2903`; the report references `telemetry_spans` (16,401 rows, newest `2026-09-20T02:00:18.633Z`) + the `fredo emit` marker rows.
+
+## #2904 extension — mode-parity clean render quick path
+
+> Issue #2904 fixes a stray vertically-stacked `Fredo…` string in the launcher search bar while
+> dictating. Quick path only — the full matrix lives in `functional.md` F-127 / `regression.md`
+> R-41 and `launcher` F-101..F-107. **Verification policy: live.**
+
+- [ ] S-28: **Both modes dictate a clean one-line indicator.** Select `Local transcription`
+      (`companion-voice-handling-select`), drive a launcher-origin capture on the empty focused bar,
+      screenshot + run the `launcher` #2904 Shared probe; then select `Model audio` (applies to the
+      next session) and repeat.
+  **Expected:** in EACH mode the indicator is on ONE line (local `Listening`/`Listening…` + `release
+      Space to finish` hint; model `Fredo is listening` + `release Space to finish` placeholder, hint
+      chip suppressed — the #2904 AC2 relocation), with NO `verticalWrap`/`narrow` node and an
+      empty `overlapField`; the mode persisted; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
