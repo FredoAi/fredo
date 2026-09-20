@@ -466,3 +466,226 @@
 - **F-36 PASS (live).** None → zero backdrop DOM / zero motion style / `rgb(45,45,45)`+28 px grid (matches #2899 F-20 baseline); mesh and none round-trip cold restarts; AppStore `banana` → safe None fallback, no crash.
 - **F-37 PASS (live).** `telemetry_spans` 17597→17603, `max(ingested_at)` 2026-09-20T03:25:11.940Z; `chat_rows` e2e-2905-chat (state init) + `tool_use_rows` e2e-2905-tool (tool_name read_file).
 - **F-38 PASS.** `pnpm --filter @fredo/ui build` exit 0 (`✓ 2577 modules`); `test:run` 108 files / 1779 tests passed, 0 failed; only the explicit G-136 supersession inverted (not deleted).
+
+---
+
+## #2909 extension — genuinely perceptible procedural background motion (revises #2905)
+
+> Issue #2909 is a **bug + enhancement revising #2905**: the animated procedural background must be
+> **genuinely alive and clearly perceptible** (AC1), the six recipes must read as alive and stay
+> **distinguishable by watching** (AC2), reduced-motion must render static with **None byte-identical**
+> (AC3), motion must not strobe/jank and stays CPU/GPU-bounded (AC4), and motion must use theme
+> tokens with live recolor + legible chrome (AC5). Rows map to the Architect's EARS IDs
+> `R-1.1..R-5.2` + QA process rows `V-1..V-3` + the Architect's non-behavioral `NF-1..NF-2` in
+> `.opencode/tmp/2909/triage.md` (F-39..F-56).
+>
+> **THE DEFECT THIS CLOSES:** #2905's F-32/F-33/F-35 proved motion *existed* and stayed *bounded*
+> (keyframes present, amplitude bounded, `getAnimations()` signatures) but **never measured rendered
+> motion between two times**. A green suite shipped an imperceptible result. Therefore:
+> **a computed-style / `getAnimations()` / animation-name PASS is INSUFFICIENT for R-1.1** — the R-1.1
+> gate is a **dense/full-frame rendered-pixel diff between frames a defined interval apart**. F-39 is
+> the primary row; F-40 makes the signature-only pattern an explicit FAIL.
+>
+> **G-136 SUPERSESSION (mandatory):** the `#2899`/`#2905` rows that assert *animation presence* via
+> signatures are retained as **corroboration only** and must NOT be cited as R-1.1 evidence. The `#2899`
+> static-only assertions remain superseded; do NOT re-add them.
+>
+> **Verification policy: live.** F-53 carries the mandatory `telemetry_spans` receipt; F-54 the gates.
+>
+> **Constants (TEST-HARNESS constants — QA-owned, NOT product constants; the floors are a *floor*, the
+> human read is authoritative):**
+> `PERCEPT_INTERVAL_MS=3000` (R-1.1 "≥3 s apart"), `PERCEPT_WINDOW_MS=9000` (full-frame captures at
+> 0/3/6/9 s); `PIXEL_DELTA_MIN=8` (per-channel max |Δ|, 8-bit ≈ ΔE76 ≥ 3);
+> coverage = changed backdrop pixels / total backdrop pixels;
+> **global floor ≥2.0 % per 3.0 s** + **mean region delta ≥1.5/255**;
+> **per-recipe floors per 3 s:** aurora/nebula/mesh/halo ≥ **4.0 %**, constellation ≥ **3.0 %**,
+> topography (thin-line) ≥ **2.0 %**; **9 s union ≥10 %** (all recipes);
+> **phase-spread rule:** ≥2 of the 3 intervals must clear the per-recipe floor (ease-in-out endpoint
+> alias); p95 delta ≥8 is a diagnostic, not a gate; noise floor ≤ **0.2 %**;
+> #2905's ≈ ±3 %/100 s = **0.09 %/3 s** → rejected by **≥22×** by construction.
+> **G-213:** always pair a dense/full-frame diff with (never replace it by) any point sampler.
+> The Architect's `data-motion-kind` hook is read in F-43/NF-3.
+
+- [ ] **F-39 (R-1.1 — PRIMARY):** For each of the six recipes (`aurora`, `nebula`, `mesh`,
+      `topography`, `constellation`, `halo`) select it, confirm no feature window covers the desktop,
+      then capture **4 full-frame renders** of the backdrop region at animation times 0/3/6/9 s:
+      **deterministic seek leg** (`document.getAnimations()` → `pause()` → set `currentTime`
+      0/3000/6000/9000 → screenshot) **and free-running leg** (capture ≈3.0 s ± 0.3 s apart with the
+      animation running; record the ACTUAL Δ from timestamps). Diff every interval **densely — every
+      pixel of the backdrop rect, no grid subsampling** (G-213).
+  **Expected:** per-interval coverage (pixels with max per-channel |Δ| ≥ 8) clears the **global
+      2.0 %/3 s** floor **plus mean region delta ≥1.5/255**, and each recipe clears its **per-recipe
+      floor** (aurora/nebula/mesh/halo ≥ 4.0 %, constellation ≥ 3.0 %, topography ≥ 2.0 %) in **≥2 of
+      the 3 phase-spread intervals**; the 9 s union ≥ **10 %**. Report all 3 intervals per recipe for
+      BOTH legs (p95 as a diagnostic). **Both legs must clear** — the seek leg is the reproducible
+      judge, the free-running leg proves the animation advances in real time. A computed-style/
+      `getAnimations()` PASS, a single frame, a sparse grid, or a single endpoint pair is
+      **INSUFFICIENT** → FAIL for R-1.1. A running-but-imperceptible animation (< floor) = **FAIL (the
+      #2905 defect)** naming the measured coverage. The seek `pause()` is a MEASUREMENT freeze of the
+      live animation — NOT the R-3.1 static render (which removes motion, never pauses it).
+  - **Edge:** topography's 1 px/22–23 px contour bands alias a point grid — judge on the dense diff;
+    ease-in-out endpoint alias → best-of-2 rule; a window captured over the backdrop; dpr ≠ 1; capture
+    latency; a non-seekable animation (`steps()`/JS-driven) → the free-run leg governs and is recorded.
+
+- [ ] **F-40 (R-1.2): (a)** noise floor — repeat an **identical-animation-time** capture (Δt = 0) and
+      capture the **None** desktop free-run over the window; **(b)** static control — render the F-44
+      reduced-motion/static leg and run the same diff; **(c)** state the arithmetic baseline rejection.
+  **Expected:** (a) both controls ≤ **0.2 %** coverage (the metric does not invent motion from capture
+      noise or shell repaint); (b) a static render reads ≤ **0.2 %**; (c) the floors exceed the #2905
+      ≈ ±3 %/100 s (0.09 %/3 s) baseline by **≥22×** by construction. **Any R-1 row whose only
+      evidence is `animation-name` / a bounded keyframe / `getAnimations()` / `data-motion="animated"`
+      is a FAIL (R-1.2)** — record it as the rejected #2905 pattern.
+  - **Edge:** shell/clock repaint inside the sampled region (mask or isolate the backdrop rect); a
+    paused-but-seekable animation falsely passing → F-39's free-running leg catches it.
+
+- [ ] **F-41 (R-1.1 — human corroboration):** With recipe labels hidden, watch each recipe live for
+      ≥ 6 s and answer (a) visibly moving? (b) which recipe is it (motion identity)? (c) continuous,
+      not stepped?
+  **Expected:** all six: (a) yes, (b) correct identity **6/6**, (c) continuous. The metric is a
+      **proxy** — metric PASS + human/vision **no** = FAIL; human **yes** + metric FAIL = a
+      threshold/measurement defect that is **recorded and fixed**, never silently passed. Quote the
+      question set + answers verbatim.
+  - **Edge:** vision model vs human; labels hidden by the tester; shuffled recipe order.
+
+- [ ] **F-42 (R-1.3):** Apply F-39 to all six recipes and tabulate (never an aggregate-only read).
+  **Expected:** **6/6** recipes clear their per-recipe floor in both legs — no recipe ships a
+      sub-threshold (dead) animation. A recipe with a constantly-on `data-motion="animated"` but
+      < floor = FAIL naming it.
+  - **Edge:** re-select the active recipe (idempotent); each recipe on dark + light.
+
+- [ ] **F-43 (R-2): (a)** Read each animated layer's `data-motion-kind`; for each of the 15 recipe
+      pairs compare the two rendered frames (identity) **and** their per-pixel **delta maps** (motion
+      character); **(b)** blind-label watch — watch the six in shuffled order and name each.
+  **Expected:** (a) each recipe exhibits the Architect identity-table vocabulary (kind + cadence +
+      structure + amplitude); every pair differs by ≥ **3 %** of pixels (identity) **and** its delta
+      maps differ by ≥ **5 %** of pixels (motion character); **no two recipes share an identical motion
+      signature** (same kinds + durations + delays + amplitudes). (b) **6/6** correct identification.
+      A pair a watcher cannot distinguish = FAIL naming the pair. The #2905 F-33 signature table is
+      corroboration only.
+  - **Edge:** aurora↔halo (both radial glows); nebula↔constellation (both twinkle); topography (line)
+    ↔ mesh (flow); reduced-motion (all static) is not part of this row.
+
+- [ ] **F-44 (R-3.1):** Run the unit/static pin — `resolveBackgroundMotion({ systemReducedMotion:
+      true })` → `'static'`, `{ false }` → `'animated'`; render the static leg and assert
+      `data-motion="static"`, **NO** `[data-testid="desktop-backdrop-motion-styles"]` `<style>`,
+      **ZERO** computed `animation*` properties, caption `Motion: off (system reduced motion)`;
+      `isBoundedMotion` still rejects out-of-budget motion.
+  **Expected:** pin PASSES (from #2905: 5 files / ≥ 64 tests). The static render is the **same
+      composition with motion removed** — zero `animation*`, no motion `<style>`, never a paused
+      mid-frame animation.
+  - **Edge:** reduce ON × each recipe; reduced-motion + None; re-render after a theme switch stays static.
+
+- [ ] **F-45 (R-3.1 — NAMED BLOCKER):** Read raw
+      `matchMedia('(prefers-reduced-motion: reduce)').matches`; attempt the live flip.
+  **Expected:** live flip **UNVERIFIED — NAMED BLOCKER:** the Tauri MCP driver on this host exposes no
+      `prefers-reduced-motion` media-emulation API (documented #2905 F-34; G-050 / G-148 / #2870).
+      Record the raw flag value; the leg is closed by the F-44 product-unit pin, **never weakened**
+      into a property-only check. **Never a blockerless row.**
+  - **Edge:** if a CDP `Emulation.setEmulatedMedia` lever becomes reachable, drive it and lift the
+    blocker (record the lever).
+
+- [ ] **F-46 (R-3.2):** Select **None**; assert zero `[data-testid="desktop-backdrop"]` DOM + zero
+      motion `<style>`; compare `NONE_BACKGROUND.css` against the pre-#2909 baseline (hash / byte
+      compare + unit pin); pixel-compare a None desktop screenshot against a BEFORE capture from `main`.
+  **Expected:** zero backdrop DOM; zero motion `<style>`; launcher surface carries `NONE_BACKGROUND.css`
+      **byte-identical** (unit pin + hash compare); desktop **pixel-comparable** to BEFORE (identical
+      dimensions; per-pixel max channel |Δ| ≤ 2 outside the clock/status region — mask the clock). A
+      shifted grid/surface color = FAIL.
+  - **Edge:** None after each recipe; None after a reduced-motion render; upgrade from a persisted
+    recipe; stale/unknown → safe None.
+
+- [ ] **F-47 (R-4.1):** With a recipe running, capture ≥ 8 consecutive frames (seek at 0/50/100… ms
+      and/or free-run) and compute per-frame full-frame mean luminance; derive an implied flash rate.
+  **Expected:** no interval shows a full-frame mean-luminance inversion > **0.5 %** full scale; implied
+      flash rate **< 3 Hz** (WCAG 2.3.1); every cycle ≥ 8 s; `steps()` never used; quote the raw
+      luminance series per recipe. Any high-frequency inversion = FAIL.
+  - **Edge:** each recipe; twinkle recipes (constellation/nebula) are the strobe risk; seek across a
+    twinkle boundary.
+
+- [ ] **F-48 (R-4.2 + R-4.3):** Record rAF intervals ≥ 600 frames / ≥ 10 s; process CPU idle + during
+      interaction; JS heap start/mid/end over ≥ 60 s; `document.getAnimations().length` +
+      `[data-background-layer]` count across the soak.
+  **Expected:** p50 ≤ **16.7 ms**, p95 ≤ **17 ms**, max ≤ **50 ms**, no > 3 consecutive frames
+      > 33 ms; idle CPU ≤ **10 %** of one core, interacting ≤ **25 %**; heap growth ≤ **+2 %**
+      (monotonic climb = FAIL); animation + layer counts **constant** (no drift); every duration
+      ≥ `MOTION_DURATION_MIN_MS` = 8000; ≤ `MOTION_LAYERS_MAX` = 3 layers; **zero
+      `requestAnimationFrame`/`setInterval` in the motion module (R-4.3)**. GPU has no direct counter on
+      this host — pacing + CPU + heap are the bounded proxies (named limitation).
+  - **Edge:** 60 s idle soak; interaction during animation; two recipes in sequence; reduced-motion
+    static is cheaper.
+
+- [ ] **F-49 (R-4.2):** Cold-launch with a recipe persisted; measure launch → interactive and
+      interaction latency (window open/drag/close, chooser switch) vs the None baseline.
+  **Expected:** no perceptible degradation — launch/interaction deltas within noise of the None
+      baseline (quote the numbers); no frame-drop burst on launch; UI stays responsive while animating.
+  - **Edge:** cold launch with a recipe persisted; recipe switch while animating; window drag during
+    animation.
+
+- [ ] **F-50 (R-5.1 — static):** Grep the motion slice for hex/rgb/hsl literals, the invalid
+      `var(--x)NN` alpha-append, and raster `url()`/`data:`; assert every motion paint derives from
+      theme token vars (translucency via `tint()`; layer tint alpha ≤ 45 % over an opaque token ground).
+  **Expected:** zero raw color literals in the motion slice (comment issue-refs exempt); no `var(--x)NN`;
+      no raster; every paint from a token var. A raw hex in a keyframe = FAIL naming file:line.
+  - **Edge:** JS-concatenated 8-digit hex vs `var(--x)NN`; `transparent`/`currentColor` allowed;
+    canvas/raster fallback.
+
+- [ ] **F-51 (R-5.1):** With a recipe animating, switch dark→light, the reporter's dark/brown preset,
+      and set/clear an `accentPrimary` override; capture rendered frames before/after each change and
+      re-run the F-39 perceptibility read on the post-switch frames.
+  **Expected:** paint recolors live (no restart) from live tokens; the animation keeps running through
+      the switch (no frozen/stopped animation); **the perceptibility floor still clears on the
+      post-switch render** (a recolor that kills motion = FAIL); an unused-token override does not
+      shift the paint; no `Maximum update depth exceeded`.
+  - **Edge:** switch mid-animation; chooser open; override set then cleared; light + dark; unused token.
+
+- [ ] **F-52 (R-5.2):** On the reporter's dark/brown preset and a light preset, measure shell chrome
+      text + window content contrast vs their surfaces on the **worst-motion frame** (a bright moving
+      band under the chrome) + ≥ 1 further animated frame. Reference the `desktop-light` and
+      `desktop-light-dark-theme-compare` wireframes for the light/dark baseline.
+  **Expected:** body ≥ **4.5:1**, large/bold ≥ **3:1**, non-text UI (borders, tiles, ticks) ≥ **3:1**
+      on every combination; window content is background-invariant (opaque surface). Quote every
+      ratio; a pair below threshold = FAIL naming it.
+  - **Edge:** reporter's exact dark/brown preset (state the id — Coffee/Sunset); pale accent + light
+    worst case; window over the busiest animated region; worst-motion frame.
+
+- [ ] **F-53 (V-1 — live receipt):** During the run: `fredo emit --event-type chat --session-id e2e-2909-chat` +
+      `--event-type tool_use --session-id e2e-2909-tool --tool-name read_file`; query
+      `telemetry_spans` + `chat_rows`/`tool_use_rows`; retain screenshot URLs + live `tauri_webview_*`
+      receipts.
+  **Expected:** `telemetry_spans` NON-ZERO with a recent `max(ingested_at)`; both markers classify.
+      **A static-only PASS is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; verbatim output; no fabricated span query.
+
+- [ ] **F-54 (V-2 — gates):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; run the
+      theming + settings + desktop-shell regressions.
+  **Expected:** build exit 0 (zero TS errors/warnings); suites green; existing assertions NOT
+      weakened/disabled/deleted. The ONLY permitted supersession remains the explicit
+      `G-136 SUPERSEDED (#2905)` static-only legs; the #2905 signature-only rows (F-32/F-33/F-35) are
+      retained as **corroboration only** and must not be cited as R-1.1 evidence.
+  - **Edge:** no dangling import; overlap suites green; no stale literal test.
+
+- [ ] **F-55 (V-3 — procedural only):** Inspect the motion slice + DOM: no `<img>`/raster `url(...)`, no
+      bundled media; each animated `[data-background-layer]` carries `data-motion-kind`.
+  **Expected:** zero raster assets added; motion is CSS/compositor-driven; no uploaded/bundled image; a
+      raster fallback = FAIL.
+  - **Edge:** canvas vs CSS recipe; check the built bundle for new image assets.
+
+- [ ] **F-56 (Architect NF-1 + NF-2 / G-169 / SA-7):** Unit/static pins — every declared layer envelope
+      passes `isBoundedMotion` (translate ≤12 % of the layer box, scale in [0.85, 1.2], rotate ≤4°,
+      opacity within [0.35, 1] with swing ≤0.45, duration ≥8000, ≥1 non-zero amplitude envelope);
+      `overscanCovers` true for every declarer (worst ≈11.3 % ≤ `MOTION_LAYER_OVERSCAN_PCT` 30); every
+      recipe has ≥1 broad-edge PRIMARY moving layer (spatial transition ≤25 % of the box or a
+      repeating tile ≤40px). Live: sample the backdrop on a **non-identity transform matrix** frame with
+      a window near an edge and confirm **no edge/seam exposure** (an enlarged layer never reveals its
+      boundary).
+  **Expected:** pins PASS; a no-op motion (no non-zero amplitude) = FAIL; `requiredOverscanPct > 30` =
+      FAIL; a visible seam/edge on the moving layer = FAIL naming the layer.
+  - **Edge:** worst declared envelope (translate 7, scale 0.90, rotate 0°); a rotate layer's corners;
+    two windows near opposite edges; reduced-motion static (overscan still applies — geometry is not an
+    animation property).
+
+> **Evidence-renderability guard (G-104):** name evidence frames WITHOUT image extensions in prose;
+> `.png`/`.jpeg` tokens only on lines that also carry an `https://` URL; descriptive link labels.
+> `upload-evidence` uploads images and prints URLs for the single `## Tests Runs` comment.
+
+### #2909 testing round 1 — results (pending)
