@@ -2078,6 +2078,7 @@ fn persist_tests(feature: &str) -> anyhow::Result<usize> {
         return Ok(0);
     }
     let repo = gh_repo()?;
+    let mut persisted: Vec<std::path::PathBuf> = Vec::with_capacity(files.len());
     for entry in &files {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
@@ -2085,34 +2086,42 @@ fn persist_tests(feature: &str) -> anyhow::Result<usize> {
         let bytes = std::fs::read(&path)?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, name))?;
+        persisted.push(path);
     }
     println!("TESTS COMMITTED: feature '{}' ({} file(s)) to main", feature, files.len());
     // G-200: the Contents-API write advances `origin/main` while the ROOT
-    // checkout keeps the seeded suite files dirty and its local `main` ref
-    // lagging. A later branch switch then aborts with "Your local changes would
-    // be overwritten" even when the content is byte-identical upstream.
-    // Best-effort safe sync (root `main` only, fast-forward only, working tree
-    // preserved). Never fatal — the upstream suite is already persisted.
-    if let Err(e) = sync_root_main_after_tests_commit() {
-        println!("NOTE: local `main` sync skipped: {}", e);
+    // checkout keeps the seeded suite files dirty (and, on `main`, its local ref
+    // lagging). A later branch switch then aborts with "Your local changes /
+    // untracked working tree files would be overwritten" even when the content is
+    // byte-identical upstream. Best-effort safe reconcile. Never fatal — the
+    // upstream suite is already persisted.
+    if let Err(e) = sync_root_checkout_after_tests_commit(&persisted) {
+        println!("NOTE: local checkout sync skipped: {}", e);
     }
     Ok(files.len())
 }
 
-/// G-200: bring the ROOT `main` checkout in sync after a `tests-commit` write to
-/// `origin/main` (the Contents API), so a subsequent branch switch does not abort
-/// on dirty seeded suite files.
+/// G-200: reconcile the ROOT checkout after a `tests-commit` write to
+/// `origin/main` (Contents API) so a later branch switch does not abort on the
+/// now-persisted suite files. The served root is frequently on `spec/<N>` during
+/// testing (not `main`), so this is NOT limited to `main`.
 ///
-/// SAFETY (deliberately narrow):
-/// - no-op in mock mode (the harness must never mutate the real repo);
-/// - no-op in a linked worktree (the sync is a root-checkout concern);
-/// - no-op unless the current branch is exactly `main`;
-/// - no-op unless local `main` is fast-forwardable to `origin/main` (no local-only
-///   commits — never discards work);
-/// - a `--mixed` reset moves HEAD + index only, PRESERVING the working tree, so
-///   unrelated uncommitted changes survive and the just-committed suite files
-///   (whose content now matches `origin/main`) become clean.
-fn sync_root_main_after_tests_commit() -> anyhow::Result<()> {
+/// SAFETY (deliberately narrow; never discards work; no-op in mock mode so the
+/// harness never mutates the real repo; no-op in a linked worktree — this is a
+/// root-checkout concern only):
+///
+/// - **on `main`**: fetch, then `--mixed` reset onto `origin/main` — HEAD + index
+///   move, working tree preserved — but ONLY when local `main` is
+///   fast-forwardable to `origin/main`, so no local commits are ever discarded.
+///   The just-persisted suite files (content now equals `origin/main`) become
+///   clean and unrelated uncommitted work survives.
+/// - **on any other branch** (typically the served `spec/<N>`): STAGE the
+///   just-persisted paths (`git add`) so their content equals `origin/main`. HEAD
+///   is untouched, so serving-currency (`root HEAD == spec tip`,
+///   `serving_currency_ok`) is preserved; the staged entries clear on the next
+///   `git checkout`. This removes the "untracked/modified would be overwritten"
+///   block the final switch back to `main` hit.
+fn sync_root_checkout_after_tests_commit(paths: &[std::path::PathBuf]) -> anyhow::Result<()> {
     if mock_mode() {
         return Ok(());
     }
@@ -2122,17 +2131,39 @@ fn sync_root_main_after_tests_commit() -> anyhow::Result<()> {
     if root.join(".git").is_file() {
         return Ok(());
     }
-    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    if branch.trim() != "main" {
-        return Ok(());
-    }
     let _ = run_cmd("git", &["fetch", "origin", "main"]);
-    if run_cmd("git", &["merge-base", "--is-ancestor", "main", "origin/main"]).is_err() {
-        println!("NOTE: local `main` has commits not on origin/main — leaving the ref untouched");
+    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let branch = branch.trim().to_string();
+    if branch == "main" {
+        if run_cmd("git", &["merge-base", "--is-ancestor", "main", "origin/main"]).is_err() {
+            println!("NOTE: local `main` has commits not on origin/main — leaving the ref untouched");
+            return Ok(());
+        }
+        run_cmd("git", &["reset", "--mixed", "origin/main"])?;
+        println!("SYNCED: local `main` fast-forwarded to origin/main (working tree preserved)");
         return Ok(());
     }
-    run_cmd("git", &["reset", "--mixed", "origin/main"])?;
-    println!("SYNCED: local `main` fast-forwarded to origin/main (working tree preserved)");
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // Stage the persisted paths by ABSOLUTE path (CWD-independent). `--` guards
+    // against a path being read as an option.
+    let mut owned: Vec<String> = vec!["add".to_string(), "--".to_string()];
+    for path in paths {
+        if path.exists() {
+            owned.push(path.to_string_lossy().to_string());
+        }
+    }
+    if owned.len() <= 2 {
+        return Ok(());
+    }
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    run_cmd("git", &refs)?;
+    println!(
+        "STAGED: reconciled {} persisted suite path(s) on '{}' (HEAD untouched; clears on next checkout)",
+        refs.len() - 2,
+        branch
+    );
     Ok(())
 }
 
