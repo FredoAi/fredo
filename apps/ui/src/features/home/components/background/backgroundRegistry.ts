@@ -1,6 +1,7 @@
 /**
  * Background registry — the closed set of desktop-background descriptors
- * (Spec #2899 ST-1; reshaped to layered descriptors in Spec #2905 ST-2).
+ * (Spec #2899 ST-1; layered in Spec #2905 ST-2; identity + structured paint in
+ * Spec #2909 ST-2).
  *
  * Every descriptor carries:
  *   - `css` — the GROUND fill: an opaque, theme-derived surface (`var(--…)`);
@@ -12,10 +13,21 @@
  * Every colour is a PURE function of live theme CSS custom properties: no colour
  * literal, no raster asset, no `url()`/`data:` URI. Translucency is produced
  * exclusively through the shared `tint()` helper
- * (`color-mix(in srgb, var(--…) N%, transparent)`), which resolves at paint time
- * — so a theme/accent switch recolours every recipe with zero JS and no restart
- * (AC2). Motion metadata is declarative and bounded (see `backgroundMotion.ts`);
- * this module contains no CSS `@keyframes` and no animation shorthand.
+ * (`color-mix(in srgb, var(--…) N%, transparent)` — layer tint alpha ≤45% over
+ * an opaque token ground), which resolves at paint time — so a theme/accent
+ * switch recolours every recipe with zero JS and no restart (AC5). Motion
+ * metadata is declarative and bounded (see `backgroundMotion.ts`); this module
+ * contains no CSS `@keyframes` and no animation shorthand.
+ *
+ * Motion identity (#2909 — Architect-bound identity table): each recipe carries
+ * a structured, trackable paint (ribbon bands / banded cloud / dust / lattice
+ * node cores / crossing contour lines / star dots / halo bands) and
+ * incommensurate 9–40 s cycles so its motion reads as its own and can never
+ * resync. Every recipe has ≥1 broad-edge PRIMARY driver meeting NF-2; dot /
+ * texture layers are ancillary.
+ *
+ * The paint anchors are authored for the OVERSIZED layer box: a layer-percent
+ * `p` maps to viewport `-30 + 1.6p` (%), i.e. `p = (viewport + 30) / 1.6`.
  *
  * `none` reuses the shell's shipped desktop texture verbatim, moved here so the
  * grid has ONE definition shared by the launcher surface and the registry; its
@@ -44,7 +56,7 @@ export type BackgroundId =
 export interface BackgroundLayer {
   /** Drives `data-background-layer` — unique within a descriptor. */
   id: string;
-  /** Exactly ONE gradient/fill, token-only. */
+  /** One or more stacked token-only gradients/fills. */
   css: CSSProperties;
   /** Absent → a static layer (never animated). */
   motion?: BackgroundLayerMotion;
@@ -80,7 +92,11 @@ export const NONE_BACKGROUND: BackgroundDescriptor = {
   layers: [],
 };
 
-/** Two accent curtains that drift AGAINST each other (counter-drift). */
+/**
+ * Aurora — two wide diagonal ribbon curtains that sweep AGAINST each other
+ * (counter-drift). The primary driver is the west ribbon (broad repeating band
+ * edges + a soft radial wash), travelling ±7% of its box across a 26 s cycle.
+ */
 const AURORA_BACKGROUND: BackgroundDescriptor = {
   id: 'aurora',
   label: 'Aurora',
@@ -89,82 +105,106 @@ const AURORA_BACKGROUND: BackgroundDescriptor = {
     {
       id: 'aurora-curtain-west',
       css: {
-        backgroundImage: `radial-gradient(120% 90% at 15% 0%, ${tint('var(--accent-primary)', 26)}, transparent 60%)`,
+        backgroundImage: [
+          // Broad repeating ribbon bands with a wide soft edge (trackable).
+          `repeating-linear-gradient(115deg, ${tint('var(--accent-primary)', 40)} 0px, ${tint('var(--accent-primary)', 40)} 110px, transparent 260px)`,
+          // Soft radial anchor so the curtain reads as a veil, not a stripe.
+          `radial-gradient(90% 70% at 28% 19%, ${tint('var(--accent-primary)', 42)}, transparent 62%)`,
+        ].join(', '),
       },
       motion: {
-        kind: 'drift',
-        durationMs: 45000,
+        kind: 'sweep',
+        durationMs: 26000,
         delayMs: 0,
         easing: 'ease-in-out',
         direction: 'normal',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 1.5, to: -1.5 },
+        translateXPct: { from: -7, to: 7 },
+        translateYPct: { from: -4, to: 4 },
       },
     },
     {
       id: 'aurora-curtain-east',
       css: {
-        backgroundImage: `radial-gradient(120% 90% at 85% 20%, ${tint('var(--accent-secondary)', 22)}, transparent 60%)`,
+        backgroundImage: [
+          `repeating-linear-gradient(-65deg, ${tint('var(--accent-secondary)', 36)} 0px, ${tint('var(--accent-secondary)', 36)} 150px, transparent 320px)`,
+          `radial-gradient(95% 75% at 72% 31%, ${tint('var(--accent-secondary)', 40)}, transparent 64%)`,
+        ].join(', '),
       },
       motion: {
-        kind: 'drift',
-        durationMs: 68000,
-        delayMs: 6000,
+        kind: 'sweep',
+        durationMs: 34000,
+        delayMs: 7000,
         easing: 'ease-in-out',
-        direction: 'reverse',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 1.5, to: -1.5 },
+        direction: 'normal',
+        translateXPct: { from: 6, to: -6 },
+        translateYPct: { from: 4, to: -4 },
       },
     },
   ],
 };
 
-/** A diffuse breathing cloud + a counter-rotating bloom, anchored by static grain. */
+/**
+ * Nebula — an in-place banded cloud that swells (breathe) over a static texture
+ * anchor, with an ancillary dust twinkle. The primary driver is `nebula-cloud`
+ * (scale 0.90→1.15 + opacity 0.70→1.0 across 24 s) whose band edges travel a
+ * large fraction of the viewport in place.
+ */
 const NEBULA_BACKGROUND: BackgroundDescriptor = {
   id: 'nebula',
   label: 'Nebula',
   css: { backgroundColor: 'var(--card-bg)' },
   layers: [
     {
-      id: 'nebula-bloom',
+      id: 'nebula-cloud',
       css: {
-        backgroundImage: `radial-gradient(90% 70% at 70% 15%, ${tint('var(--accent-primary)', 20)}, transparent 65%)`,
+        backgroundImage: [
+          `radial-gradient(70% 55% at 62% 28%, ${tint('var(--accent-primary)', 42)}, transparent 58%)`,
+          `radial-gradient(58% 44% at 34% 40%, ${tint('var(--accent-secondary)', 36)}, transparent 60%)`,
+          `radial-gradient(82% 62% at 50% 56%, ${tint('var(--accent-primary)', 24)}, transparent 68%)`,
+        ].join(', '),
       },
       motion: {
         kind: 'breathe',
-        durationMs: 110000,
+        durationMs: 24000,
         delayMs: 0,
         easing: 'ease-in-out',
-        opacity: { from: 0.85, to: 0.95 },
-        scale: { from: 0.96, to: 1.06 },
+        direction: 'normal',
+        scale: { from: 0.9, to: 1.15 },
+        opacity: { from: 0.7, to: 1 },
       },
     },
     {
-      id: 'nebula-counter-bloom',
+      id: 'nebula-dust',
       css: {
-        backgroundImage: `radial-gradient(90% 70% at 20% 80%, ${tint('var(--accent-secondary)', 16)}, transparent 65%)`,
+        // Ancillary phase texture: a fine dot grid that shimmers.
+        backgroundImage: `radial-gradient(${tint('var(--accent-primary)', 42)} 1.6px, transparent 1.6px)`,
+        backgroundSize: '20px 20px',
       },
       motion: {
-        kind: 'rotate',
-        durationMs: 110000,
+        kind: 'twinkle',
+        durationMs: 11000,
         delayMs: 0,
-        easing: 'linear',
-        opacity: { from: 0.9, to: 0.95 },
-        rotateDeg: 1,
+        easing: 'ease-in-out',
+        direction: 'normal',
+        opacity: { from: 0.35, to: 0.8 },
       },
     },
     {
       // The non-moving texture anchor — NO motion on purpose.
       id: 'nebula-grain',
       css: {
-        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 8)} 1px, transparent 1px)`,
-        backgroundSize: '22px 22px',
+        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 10)} 1px, transparent 1px)`,
+        backgroundSize: '24px 24px',
       },
     },
   ],
 };
 
-/** Three tint nodes drifting on phase-staggered diagonal paths (parallax). */
+/**
+ * Mesh — three tinted node cores roaming on independent two-axis diagonals
+ * (staggered phases). The primary driver is `mesh-node-primary` (core + lattice
+ * lines) travelling ±6% on both axes across 21 s.
+ */
 const MESH_BACKGROUND: BackgroundDescriptor = {
   id: 'mesh',
   label: 'Mesh',
@@ -173,72 +213,104 @@ const MESH_BACKGROUND: BackgroundDescriptor = {
     {
       id: 'mesh-node-primary',
       css: {
-        backgroundImage: `radial-gradient(80% 80% at 15% 10%, ${tint('var(--accent-primary)', 18)}, transparent 60%)`,
+        backgroundImage: [
+          `radial-gradient(circle at 28% 25%, ${tint('var(--accent-primary)', 44)} 0 12%, transparent 24%)`,
+          `repeating-linear-gradient(45deg, ${tint('var(--accent-primary)', 16)} 0px, ${tint('var(--accent-primary)', 16)} 1px, transparent 1px, transparent 72px)`,
+          `repeating-linear-gradient(-45deg, ${tint('var(--accent-primary)', 16)} 0px, ${tint('var(--accent-primary)', 16)} 1px, transparent 1px, transparent 72px)`,
+        ].join(', '),
       },
       motion: {
         kind: 'drift',
-        durationMs: 48000,
+        durationMs: 21000,
         delayMs: 0,
         easing: 'ease-in-out',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 1.5, to: -1.5 },
+        direction: 'normal',
+        translateXPct: { from: -6, to: 6 },
+        translateYPct: { from: -6, to: 6 },
       },
     },
     {
       id: 'mesh-node-secondary',
       css: {
-        backgroundImage: `radial-gradient(80% 80% at 85% 15%, ${tint('var(--accent-secondary)', 16)}, transparent 60%)`,
+        backgroundImage: `radial-gradient(circle at 72% 28%, ${tint('var(--accent-secondary)', 42)} 0 11%, transparent 23%)`,
       },
       motion: {
         kind: 'drift',
-        durationMs: 61000,
-        delayMs: 12000,
+        durationMs: 29000,
+        delayMs: 5000,
         easing: 'ease-in-out',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 1.5, to: -1.5 },
+        direction: 'normal',
+        translateXPct: { from: 6, to: -6 },
+        translateYPct: { from: -5, to: 5 },
       },
     },
     {
       id: 'mesh-node-info',
       css: {
-        backgroundImage: `radial-gradient(80% 80% at 50% 100%, ${tint('var(--status-info)', 12)}, transparent 60%)`,
+        backgroundImage: `radial-gradient(circle at 50% 81%, ${tint('var(--status-info)', 38)} 0 10%, transparent 22%)`,
       },
       motion: {
         kind: 'drift',
-        durationMs: 74000,
-        delayMs: 24000,
+        durationMs: 37000,
+        delayMs: 11000,
         easing: 'ease-in-out',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 1.5, to: -1.5 },
+        direction: 'normal',
+        translateXPct: { from: -5, to: 5 },
+        translateYPct: { from: 5, to: -5 },
       },
     },
   ],
 };
 
-/** Concentric accent contour rings that sweep directionally (no opacity change). */
+/**
+ * Topography — two crossing contour line fields crawling in OPPOSITE directions
+ * at constant velocity, on non-harmonic 23 px / 37 px pitches so the moire never
+ * resyncs. Both layers are primary drivers (broad travelling line fields).
+ */
 const TOPOGRAPHY_BACKGROUND: BackgroundDescriptor = {
   id: 'topography',
   label: 'Topography',
   css: { backgroundColor: 'var(--card-bg)' },
   layers: [
     {
-      id: 'topography-contours',
+      id: 'topography-contours-a',
       css: {
-        backgroundImage: `repeating-radial-gradient(circle at 30% 40%, transparent 0 22px, ${tint('var(--accent-primary)', 10)} 22px 23px)`,
+        backgroundImage: `repeating-linear-gradient(55deg, transparent 0 22px, ${tint('var(--accent-primary)', 38)} 22px 23px)`,
       },
       motion: {
         kind: 'sweep',
-        durationMs: 100000,
+        durationMs: 22000,
         delayMs: 0,
         easing: 'linear',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 3, to: -3 },
+        direction: 'normal',
+        translateXPct: { from: -7, to: 7 },
+        translateYPct: { from: 0, to: 0 },
+      },
+    },
+    {
+      id: 'topography-contours-b',
+      css: {
+        // Non-harmonic pitch (23 px vs 37 px) and opposite direction.
+        backgroundImage: `repeating-linear-gradient(125deg, transparent 0 36px, ${tint('var(--accent-primary)', 30)} 36px 37px)`,
+      },
+      motion: {
+        kind: 'sweep',
+        durationMs: 31000,
+        delayMs: 4000,
+        easing: 'linear',
+        direction: 'normal',
+        translateXPct: { from: 7, to: -7 },
+        translateYPct: { from: 0, to: 0 },
       },
     },
   ],
 };
 
-/** A drifting star field with two out-of-phase twinkle layers over a soft bloom. */
+/**
+ * Constellation — a drifting banded glow over two asynchronous star twinkles.
+ * The primary driver is `constellation-bloom` (banded glow) drifting on both
+ * axes across 28 s; the dot fields sparkle out of phase.
+ */
 const CONSTELLATION_BACKGROUND: BackgroundDescriptor = {
   id: 'constellation',
   label: 'Constellation',
@@ -247,49 +319,60 @@ const CONSTELLATION_BACKGROUND: BackgroundDescriptor = {
     {
       id: 'constellation-bloom',
       css: {
-        backgroundImage: `radial-gradient(100% 80% at 50% 50%, ${tint('var(--accent-primary)', 10)}, transparent 60%)`,
+        backgroundImage: [
+          `radial-gradient(60% 50% at 50% 50%, ${tint('var(--accent-primary)', 38)}, transparent 30%)`,
+          `radial-gradient(76% 62% at 50% 50%, transparent 22%, ${tint('var(--accent-primary)', 28)} 30%, transparent 42%)`,
+          `radial-gradient(96% 80% at 50% 50%, transparent 34%, ${tint('var(--accent-primary)', 18)} 44%, transparent 60%)`,
+        ].join(', '),
       },
       motion: {
         kind: 'drift',
-        durationMs: 120000,
+        durationMs: 28000,
         delayMs: 0,
         easing: 'linear',
-        translateXPct: { from: -3, to: 3 },
-        translateYPct: { from: 1.5, to: -1.5 },
+        direction: 'normal',
+        translateXPct: { from: -5, to: 5 },
+        translateYPct: { from: 3, to: -3 },
       },
     },
     {
       id: 'constellation-stars-far',
       css: {
-        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 16)} 1.2px, transparent 1.2px)`,
+        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 40)} 1.4px, transparent 1.4px)`,
         backgroundSize: '26px 26px',
       },
       motion: {
         kind: 'twinkle',
-        durationMs: 11000,
+        durationMs: 9000,
         delayMs: 0,
         easing: 'ease-in-out',
-        opacity: { from: 0.4, to: 0.65 },
+        direction: 'normal',
+        opacity: { from: 0.35, to: 0.8 },
       },
     },
     {
       id: 'constellation-stars-near',
       css: {
-        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 20)} 1.6px, transparent 1.6px)`,
+        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 44)} 1.8px, transparent 1.8px)`,
         backgroundSize: '34px 34px',
       },
       motion: {
         kind: 'twinkle',
-        durationMs: 8000,
-        delayMs: 3500,
+        durationMs: 13000,
+        delayMs: 3000,
         easing: 'ease-in-out',
-        opacity: { from: 0.4, to: 0.65 },
+        direction: 'normal',
+        opacity: { from: 0.35, to: 0.8 },
       },
     },
   ],
 };
 
-/** One soft accent halo breathing gently near the top (smallest amplitude). */
+/**
+ * Halo — one large concentric-band glow that breathes in place around a bright
+ * core near the top (concentric halo bands + radial wash). The primary driver is
+ * the scale swell 0.92→1.15 + opacity 0.70→1.0 across a 16 s cycle.
+ */
 const HALO_BACKGROUND: BackgroundDescriptor = {
   id: 'halo',
   label: 'Halo',
@@ -298,15 +381,20 @@ const HALO_BACKGROUND: BackgroundDescriptor = {
     {
       id: 'halo-glow',
       css: {
-        backgroundImage: `radial-gradient(120% 100% at 50% 18%, ${tint('var(--accent-primary)', 16)}, transparent 62%)`,
+        backgroundImage: [
+          `radial-gradient(50% 42% at 50% 30%, ${tint('var(--accent-primary)', 42)}, transparent 26%)`,
+          `radial-gradient(66% 56% at 50% 30%, transparent 22%, ${tint('var(--accent-primary)', 30)} 30%, transparent 40%)`,
+          `radial-gradient(86% 72% at 50% 30%, transparent 38%, ${tint('var(--accent-primary)', 20)} 48%, transparent 62%)`,
+        ].join(', '),
       },
       motion: {
         kind: 'breathe',
-        durationMs: 18000,
+        durationMs: 16000,
         delayMs: 0,
         easing: 'ease-in-out',
-        opacity: { from: 0.85, to: 0.95 },
-        scale: { from: 0.96, to: 1.06 },
+        direction: 'normal',
+        scale: { from: 0.92, to: 1.15 },
+        opacity: { from: 0.7, to: 1 },
       },
     },
   ],
