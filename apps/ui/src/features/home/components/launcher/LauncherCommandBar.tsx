@@ -133,8 +133,10 @@
  * Spec #2897 ST-4 (REQ-3/REQ-4) — the MODEL-AUDIO indicator (`voiceMode='model'`),
  * gated by the ONE pure `deriveModelAudioPhase`:
  *   • `listening` → the accent dot (`launcher-command-listening`) + the
- *     `Fredo is listening` chip (`launcher-command-model-listening-chip`) + the
- *     `×` Cancel / `■` Stop controls + the `Fredo is listening…` placeholder;
+ *     `Fredo is listening` chip (`launcher-command-model-listening-chip`, the ONLY
+ *     listening claim — #2904 ST-2) + the `×` Cancel / `■` Stop controls + the
+ *     `release Space to finish` placeholder (the hint chip is suppressed so the
+ *     instruction relocates into the field);
  *   • `processing` (Stop delivered the clip; the backend is interpreting) → the
  *     accent dot + the `Fredo is processing your speech…` chip
  *     (`launcher-command-model-processing-chip`) with a decorative `Spinner`
@@ -219,7 +221,15 @@ export type ModelAudioPhase =
  * text (never colour/animation alone); the processing `Spinner` is decoration.
  */
 export const MODEL_AUDIO_LISTENING_CHIP_COPY = 'Fredo is listening';
-export const MODEL_AUDIO_LISTENING_PLACEHOLDER = 'Fredo is listening…';
+/**
+ * Spec #2904 ST-2 (REQ-3) — the model-audio listening field placeholder. While a
+ * model-audio chip renders it is the ONLY listening claim (AC2 resolution), so
+ * the field no longer restates `Fredo is listening…`: it carries the
+ * `release Space to finish` instruction relocated from the suppressed hint chip
+ * (#2882 QA-10). Model mode suppresses transcripts, so the field stays empty and
+ * this instruction stays visible for the whole capture.
+ */
+export const MODEL_AUDIO_LISTENING_PLACEHOLDER = 'release Space to finish';
 export const MODEL_AUDIO_PROCESSING_CHIP_COPY = 'Fredo is processing your speech…';
 export const MODEL_AUDIO_PROCESSING_PLACEHOLDER = 'Fredo is processing…';
 /** Live-region lines (transitions only, exactly once each). */
@@ -614,6 +624,32 @@ const BAR_FIELD_V_PADDING_PX = 14 - BAR_FIELD_BORDER_PX;
  */
 export const BAR_LEADING_GUTTER_PX = 40;
 /**
+ * Spec #2904 ST-1 (REQ-1/REQ-7) — the bar's designed max width. The InputGroup
+ * `maxWidth` reads THIS constant, so the rendered bar geometry and the end-slot
+ * reservation budget share one source of truth (never a second literal).
+ */
+export const BAR_MAX_WIDTH_PX = 560;
+/**
+ * Spec #2904 ST-1 (REQ-1) — the minimum inline content box the field must always
+ * retain while a model-audio chip renders. 144px comfortably fits one 14px line
+ * of the longest model placeholder (`Fredo is processing…` ≈ 137px), so no
+ * character can wrap onto its own line.
+ */
+export const BAR_FIELD_MIN_CONTENT_PX = 144;
+/**
+ * Spec #2904 ST-1 (REQ-1/REQ-7) — the most the end-slot overlay (indicator +
+ * ×/■ controls + minimize) may occupy before it would starve the field. The
+ * derivation is `BAR_MAX_WIDTH_PX − BAR_LEADING_GUTTER_PX − 2 (1px borders) −
+ * BAR_FIELD_MIN_CONTENT_PX` = 560 − 40 − 2 − 144 = **374**.
+ *
+ * Exported and `barMaxWidthPx`-injectable so the arithmetic is unit-pinned
+ * without a DOM; the shipped bar is a constant 560px across the supported window
+ * range (window minWidth 900 ⇒ the shell column ≥ 836px > 560).
+ */
+export function computeEndSlotBudgetPx(barMaxWidthPx: number = BAR_MAX_WIDTH_PX): number {
+  return barMaxWidthPx - BAR_LEADING_GUTTER_PX - 2 - BAR_FIELD_MIN_CONTENT_PX;
+}
+/**
  * #2883 ST-1 (a11y) — the STATIC hidden sentence appended inside the existing
  * `fredo-command-hint-sr` mirror, describing the multiline field to AT.
  */
@@ -683,6 +719,11 @@ export function computeEndPaddingPx(options: {
    * (nothing is left to cancel). Omitted/`'idle'` ⇒ the shipped arithmetic.
    */
   modelPhase?: ModelAudioPhase;
+  /**
+   * Spec #2904 ST-1 — the bar width the model budget derives from (default
+   * `BAR_MAX_WIDTH_PX`). Injectable so `computeEndSlotBudgetPx` is unit-pinned.
+   */
+  barMaxWidthPx?: number;
 }): number | undefined {
   const modelListening = options.modelPhase === 'listening';
   const modelProcessing = options.modelPhase === 'processing';
@@ -712,7 +753,22 @@ export function computeEndPaddingPx(options: {
     chipPx +
     controlPx +
     (reserveMinimize ? MINIMIZE_GUTTER_PX : 0);
-  return px > 0 ? px : undefined;
+  if (px <= 0) return undefined;
+  // Spec #2904 ST-1 (REQ-1/REQ-7) — the MODEL-AUDIO reservation is BUDGETED. The
+  // raw sum of independent maxima can exceed the bar (e.g. `220 hint + 208 chip +
+  // 60 controls + 44 minimize = 532` against the 560px bar, + 40 leading gutter +
+  // 2 borders), which starves the `<textarea>` to a 0-width content box; its
+  // `overflow-wrap:break-word` then stacks the placeholder one character per line.
+  // Clamp the model reservation to `computeEndSlotBudgetPx()` so the invariant
+  // `BAR_LEADING_GUTTER_PX + pe + 2 + BAR_FIELD_MIN_CONTENT_PX ≤ BAR_MAX_WIDTH_PX`
+  // holds. Local mode's shipped 396px reservation is preserved VERBATIM (REQ-5):
+  // its field has always kept a 122px content box on one line, and reducing it
+  // would regress the shipped transcription cue — the budget is a model-audio
+  // floor, not a global cap.
+  if (!modelListening && !modelProcessing) return px;
+  const budgetPx = computeEndSlotBudgetPx(options.barMaxWidthPx);
+  const budgeted = Math.min(px, budgetPx);
+  return budgeted > 0 ? budgeted : undefined;
 }
 
 /** DR-7 — the "we haven't heard anything yet" hint, after this silent stretch. */
@@ -921,14 +977,6 @@ export function LauncherCommandBar({
   const fieldAtCap = fieldHeightPx >= BAR_FIELD_MAX_H_PX;
   const visualLines = visualLinesForHeightPx(fieldHeightPx);
 
-  // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
-  // #2882 ST-4 (R-6.3 / UI/UX §3): chip visibility is LABEL-DRIVEN — the host
-  // derives the label from the SAME Enter verdict the handler consumes, so the
-  // chip can never promise a different action than Enter performs. The old
-  // `chatAvailable` term (which hid the truthful `↵ open <App>` / `no match`
-  // chips whenever no companion was present) is retired with its prop.
-  const showHint = useMemo(() => Boolean(hintLabel), [hintLabel]);
-
   // Spec #2887 ST-5 (R-3/AC3) — THE ONE CUE, and it may never lie.
   //
   // `holdCue` is the binding honesty contract. The armed window (`'acknowledge'`)
@@ -972,6 +1020,22 @@ export function LauncherCommandBar({
   });
   const modelListening = modelPhase === 'listening';
   const modelProcessing = modelPhase === 'processing';
+
+  // Primitive-keyed derivation (AGENTS.md #523) — never a fresh object/array dep.
+  // #2882 ST-4 (R-6.3 / UI/UX §3): chip visibility is LABEL-DRIVEN — the host
+  // derives the label from the SAME Enter verdict the handler consumes, so the
+  // chip can never promise a different action than Enter performs. The old
+  // `chatAvailable` term (which hid the truthful `↵ open <App>` / `no match`
+  // chips whenever no companion was present) is retired with its prop.
+  //
+  // Spec #2904 ST-2 (REQ-3, AC2 resolution) — while a model-audio chip renders
+  // (listening OR processing), that chip is the ONLY listening claim: the
+  // `release Space to finish` hint chip is suppressed and the instruction
+  // relocates into the field placeholder. Local mode is untouched
+  // (`modelChipUp` is false by construction, so the shipped chip/hint/placeholder
+  // composition is byte-identical — REQ-5).
+  const modelChipUp = modelListening || modelProcessing;
+  const showHint = useMemo(() => Boolean(hintLabel) && !modelChipUp, [hintLabel, modelChipUp]);
 
   // Spec #2897 ST-5 (REQ-6) — the last-`MODEL_AUDIO_WARN_S`-seconds countdown on
   // the listening chip. The ticker starts only INSIDE the warning window (bounded
@@ -1020,9 +1084,12 @@ export function LauncherCommandBar({
   // The placeholder (UI/UX §9): busy > the LIVE capture > the pre-capture
   // acknowledgement > the S1 promise > the legacy resting copy. Only `captureLive`
   // may produce `Listening…` (R-3); the armed/pending windows say `Hold to dictate…`.
-  // Spec #2897 ST-4: in model mode the capture placeholder is `Fredo is listening…`
-  // and the interpreting window is `Fredo is processing…` (never `Listening…` —
-  // model audio opens no recogniser, so a `Listening…` claim would imply words).
+  // Spec #2897 ST-4: in model mode the interpreting window is `Fredo is processing…`
+  // (never `Listening…` — model audio opens no recogniser, so a `Listening…` claim
+  // would imply words). Spec #2904 ST-2 (REQ-3): the capture placeholder is
+  // `release Space to finish` — while the model chip is up it is the ONLY listening
+  // claim, so the field carries the instruction (relocated from the suppressed hint
+  // chip) rather than restating `Fredo is listening…`.
   const placeholder = busy
     ? 'Fredo is replying…'
     : isModelVoice
@@ -1260,7 +1327,9 @@ export function LauncherCommandBar({
     >
       <InputGroup
         width="100%"
-        maxWidth="560px"
+        // Spec #2904 ST-1 — the bar width is the ONE constant the end-slot budget
+        // derives from (`computeEndSlotBudgetPx`), never a second literal.
+        maxWidth={`${BAR_MAX_WIDTH_PX}px`}
         // `aria-busy` is omitted (not `"false"`) when idle so the inactive bar
         // stays byte-identical to today (AC4).
         aria-busy={busy || undefined}
@@ -1303,7 +1372,17 @@ export function LauncherCommandBar({
           </Box>
         }
         endElement={
-          <Box display="flex" alignItems="center" height="100%">
+          // Spec #2904 ST-1 (REQ-7) — the rendered end slot is bounded to the SAME
+          // budget the field reserves, so a too-wide composition yields INSIDE the
+          // ellipsizable hint chip (flexShrink 1) instead of overlapping the field:
+          // the state chip, ×/■ controls and — minimize never shrink or truncate.
+          <Box
+            display="flex"
+            alignItems="center"
+            height="100%"
+            maxWidth={`${computeEndSlotBudgetPx()}px`}
+            minWidth={0}
+          >
             {/* Spec #2882 ST-5 (UI/UX §1 S2/§9) — the bounded pending chip: the
                 hold crossed the threshold but the engine is not live yet. It is a
                 clone of the Listening chip (same box, same slot) and the two are
@@ -1478,7 +1557,12 @@ export function LauncherCommandBar({
                 whiteSpace="nowrap"
                 overflow="hidden"
                 textOverflow="ellipsis"
-                flexShrink={0}
+                // Spec #2904 ST-1 (REQ-7) — the instruction chip is the ONE
+                // ellipsizable end-slot member: it yields (by ellipsis) when the
+                // end slot is squeezed to the budget, so the state chip and the
+                // controls never shrink.
+                flexShrink={1}
+                minWidth={0}
               >
                 {hintLabel}
               </Box>
@@ -1491,6 +1575,9 @@ export function LauncherCommandBar({
               display="flex"
               alignItems="center"
               height="100%"
+              // Spec #2904 ST-1 (REQ-2) — the always-present `—` MINIMIZE control
+              // never shrinks (the hint chip yields first, by ellipsis).
+              flexShrink={0}
               pl="10px"
               ml="10px"
               borderLeft="1px solid"

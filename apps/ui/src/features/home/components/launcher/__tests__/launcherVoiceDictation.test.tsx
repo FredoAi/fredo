@@ -2620,7 +2620,12 @@ describe('LauncherShell — model-audio mode (#2897 ST-4)', () => {
     const chip = screen.getByTestId('launcher-command-model-listening-chip');
     expect(chip).toHaveTextContent('Fredo is listening');
     expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
-    expect(input()).toHaveAttribute('placeholder', 'Fredo is listening…');
+    // Spec #2904 ST-2 (REQ-3) — while the model chip is up it is the ONLY listening
+    // claim: the field carries the relocated `release Space to finish` instruction
+    // (supersedes the #2897 ST-4 `Fredo is listening…` copy), and the hint chip is
+    // suppressed so the instruction is never stated twice.
+    expect(input()).toHaveAttribute('placeholder', 'release Space to finish');
+    expect(screen.queryByTestId('launcher-command-hint')).toBeNull();
     // The shipped transcription wording is NEVER rendered in model mode.
     expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
     expect(screen.queryByText('Listening')).toBeNull();
