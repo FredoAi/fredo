@@ -43,6 +43,7 @@
       with a typed/curated state, perform no action, and claim no success? A hang, a false success, or a
       capture left running is a finding (promotes to `voice-input` F-120).
 
-### #2903 testing round 1 — result
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
-- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+- **E-4 PASS.** With the L4 feed live, a model-audio turn + L3 `{open_app,{app:"Settings"}}` opened Settings exactly once (max Settings count 1 across 24 samples), the bar stayed `""` (no transcript leak), and the live region read `Opening Settings`.
+- **E-5 UNVERIFIED (named).** Not driven: requires a further dev-env restart pointing `FREDO_STT_FEED_WAV` at a byte-truncated/wrong-format copy. Malformed-capture handling is already CI-pinned by #2877 `F-29`/`F-15` (`modelCorrupt`/`noDevice` typed codes). No product failure claimed.
