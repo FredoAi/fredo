@@ -309,7 +309,8 @@
                     "* | *": "deny",
                     "git rm*": "allow",
                     "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
-                    "sqlite3 -readonly*": "allow"
+                    "sqlite3 -readonly*": "allow",
+                    "git checkout -- *": "allow"
                 }
             }
         },
@@ -399,7 +400,8 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Remove-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
-                    "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny"
+                    "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
+                    "git checkout -- *": "allow"
                 }
             }
         },
