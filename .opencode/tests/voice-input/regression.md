@@ -516,3 +516,82 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
 - **R-34 PASS.** Exactly one indicator per session in both modes; the model chip clears on `llm-done`
   **without the next session** (the round-1 defect) and on cancel; `stt_status.listening=false` after
   every stop. Caveat resolved.
+
+---
+
+## #2903 extension — the model-audio app-action fix must not move any surface it rides on (G-136)
+
+> Issue #2903 makes the model-audio path PERFORM app open/close requests like the typed/companion path.
+> It is **additive to the model-audio transport** and must not change the typed/companion path, the
+> local-mode dictation contract, the window kernel, or the model-audio state machine. **No prior row is
+> retired** — R-1..R-34 remain in force. Run alongside R-35..R-40, `functional.md` F-111..F-126,
+> `.opencode/tests/voice-dictation/` F-5/R-4 and `window-manager` R-1/R-7.
+> **Verification policy: live.**
+
+## R-35 — The typed/companion path's wiring + existing pins are UNCHANGED (AC3)
+
+- [ ] R-35: Re-run the typed/companion app-open path live (type `open settings` + Enter; and the
+      `llmChatWithSkills` → `llm-skill-call` route) and record the existing pin results
+      (`useAppOpenRequests.test`, `skillSettle`, `CompanionEntity.dispatch`, `appIdentity`).
+  **Expected:** the same window opens with the same deterministic reply as before #2903 (`Opening
+      Settings`); the existing pins stay green with NO assertion weakened, disabled or deleted (G-125);
+      the audio fix consumes the SAME registry/validator — a second `open_app` schema or a second
+      identity resolver is a FAIL. **If the PO approves the Architect's amendment, the typed path GAINS
+      the close intent through the SAME shared layer** (an expected shared-layer increment, not a
+      regression); the new `close_app` declaration must not alter the shipped `open_app` declaration.
+      Reference `functional.md` F-119.
+  - **Edge:** a shared-registry change that alters the skill path; `llm_chat`/vision gaining tools
+    without a declaration; a moved/renamed frozen hook refreshed in the same scope and named.
+
+## R-36 — The local-mode dictation contract is UNCHANGED
+
+- [ ] R-36: With mode=`local`, re-run `functional.md` F-103 (local partials land as produced; release
+      finalizes; Escape/`stt_cancel` discard; one dispatch) and the R-30 hold/tap/non-empty/voice-off
+      spot (`F-90`/`F-91`/`F-92`).
+  **Expected:** byte-for-byte the shipped #2882/#2887/#2888/#2897 outcomes — ZERO regressions; a
+      confirmed LOST or CONVERTED space FAILs the round (G-158); no ALL-CAPS visible during a capture.
+  - **Edge:** voice disabled mid-hold; a release at exactly the 200 ms threshold; a hold right after a
+    cancel; the mode selector still persisting `local`/`model`.
+
+## R-37 — The window kernel open/close/singleton lifecycle is UNCHANGED
+
+- [ ] R-37: Re-run `.opencode/tests/window-manager/` R-1/R-7: open a feature window from the launcher
+      grid, focus/z-order it, close it (idempotent), and re-open the same id.
+  **Expected:** one window per feature id (`settings` is a singleton, `isMultiWindow=false`); close
+      removes it from the work area + the open-window list; re-open is clean (no stale frame, no
+      duplicate); console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+  - **Edge:** a repeated `open_app` request for an already-open app raises the existing window (no
+    duplicate); closing while the companion is mid-reply.
+
+## R-38 — The model-audio state machine + limit notice are UNCHANGED
+
+- [ ] R-38: Re-run `functional.md` F-104 + F-106 (ST-0-dependent): the `capturing → processing →
+      settled` states, the 30 s bound auto-stop and the `launcher-command-model-limit-status` notice.
+  **Expected:** the chip states and copy are unchanged; the chip clears on `llm-done` without the next
+      session; the limit notice is a warning (not `role="alert"`); ZERO transcript text while
+      mode=`model`; `stt_status.listening === false` after every stop.
+  - **Edge:** a skill selection alongside a limit-reached turn; a cancel mid-`processing`; a second
+    turn in the same session.
+
+## R-39 — Token contract + build gates unchanged; no test weakening
+
+- [ ] R-39: Static-grep the changed files for true colour literals (`#hex`, `rgba(`, `rgb(`, `hsla(`)
+      and the invalid `var(--x)NN` alpha-append; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`; record the Rust CI result (`rust-validate`) because the tester
+      shell has no `cargo`.
+  **Expected:** ZERO true colour literals (comment issue-refs exempt); theme token → CSS var + `tint()`
+      only; build exit 0; suites green with the new #2903 pins present and NO existing assertion
+      weakened/disabled/deleted (G-125); Rust gates green in CI.
+  - **Edge:** a superseded assertion is recorded with its superseding row rather than silently dropped.
+
+## R-40 — All-local + the managed-server contract are UNCHANGED
+
+- [ ] R-40: Static-scan `infrastructure/voice/**` + `features/llm_server/**` for remote clients; read
+      the managed `llama-server` bind/port and the turn URL; watch for new outbound connections during
+      a model-audio turn with a skill selection.
+  **Expected:** zero remote clients on the path; the server binds `127.0.0.1` and the turn targets
+      loopback (`http://127.0.0.1:8080/v1/chat/completions`); the chat transport is the existing
+      managed path; any model download stays setup-gated. The live outbound block is a NAMED BLOCKER
+      with the static pin alongside — never a substitute.
+  - **Edge:** mode selected but never used adds no connection; a stopped server yields the AC5 message,
+    not a remote retry.
