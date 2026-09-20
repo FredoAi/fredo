@@ -55,3 +55,26 @@
 
 - **S-12 PASS (live).** `[data-testid=desktop-background-chooser]` renders None + 6 procedural tiles; fresh profile → None selected (`data-selected="true"`); console clean (only the pre-existing `motion() is deprecated` WARN).
 - **S-13 PASS (live).** Aurora selected → desktop repainted (backdrop present, scrim on the launcher surface); Settings + Mission Monitor windows rendered above it; None reselected → backdrop removed, `rgb(45,45,45)` + 28px grid returned.
+
+## #2905 extension — animated procedural background smoke
+
+> Issue #2905 revises #2899: the procedural background must be **visibly applied + animated**.
+> Live policy — a rendered-webview read (`tauri_webview_*`) + **rendered-pixel** screenshot; F-37 in
+> `functional.md` carries the `telemetry_spans` leg. **G-136:** #2899's static-only smoke intent is
+> superseded for animated built-ins.
+
+- [ ] **S-14:** Background selector reachable + motion state readable — Settings → Appearance →
+      Background renders **None + ≥5 procedural options**; a fresh profile shows **None**; select one
+      procedural option and read `window.matchMedia('(prefers-reduced-motion: reduce)').matches` +
+      `document.querySelector('[data-testid="desktop-backdrop"]')?.getAnimations()` + its
+      `data-motion` / `data-background-id` attributes + the motion caption
+      `[data-testid="desktop-background-motion-status"]` (record the raw flag; with reduce OFF expect
+      ≥1 running animation and `data-motion="animated"`); `tauri_read_logs(source="console", lines=50)`
+      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] **S-15:** Quick switch + visibility + repaint — select a procedural option, screenshot the
+      desktop and confirm the **rendered pixels differ from the None control** at ≥1 desktop point
+      (not merely a non-empty computed style); a feature window still opens/renders above it; reselect
+      **None** and confirm today's desktop returns (no `desktop-backdrop` DOM); screenshot succeeds;
+      console clean.
+- [ ] **S-16:** Reduced-motion + gates — the product-unit/static pin for reduced-motion gating exists
+      and passes; `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` green.
