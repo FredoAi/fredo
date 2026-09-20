@@ -595,3 +595,14 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
       with the static pin alongside — never a substitute.
   - **Edge:** mode selected but never used adds no connection; a stopped server yields the AC5 message,
     not a remote retry.
+
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
+
+**Verdict PASS** (see `## Tests Runs (round 1)` on #2903).
+
+- **R-35 PASS (live).** Typed `open settings`+Enter opened Settings with `Opening Settings` (the real model selected `open_app`); `close settings`+Enter → `Closing Settings`. `pnpm --filter @fredo/ui test:run` → 107 files / 1745 tests / 0 failed; `useAppOpenRequests`/`skillSettle`/`CompanionEntity.dispatch`/`windowStore`/`appIdentity` pins green; no assertion weakened/deleted. The audio fix consumes the SAME registry/validator/hook — no second schema/resolver.
+- **R-36 PASS (live spot).** mode=`local`: `stt_start` → placeholder `Listening…`, local chip `Listening`, model chip absent, announcer `Listening`; `stt_stop` → `search or command`, `listening:false`. No lost/converted space observed; mode key persists `local`↔`model`.
+- **R-37 PASS (live).** `run_open_app_cli settings` ×2 → exactly ONE Settings window (singleton raise, `isMultiWindow=false`); close → absent; re-open → clean, no stale frame/duplicate. Console clean.
+- **R-38 PASS (live).** `launcher-command-model-processing-chip` = `Fredo is processing your speech…` present during the turn; absent after `llm-done` (exactly one); `stt_status.listening=false` after every stop; zero transcript text in model mode.
+- **R-39 PASS.** `pnpm --filter @fredo/ui build` clean (tsc + vite, 2576 modules); `test:run` 1745/0; CI `rust-validate` PASS (16m52s) + `ui-validate` PASS; changed files carry no true colour literals / no `var(--x)NN` alpha-append.
+- **R-40 PASS (static) / live block BLOCKED.** `infrastructure/voice/**` zero `reqwest/ureq/hyper/TcpStream/UdpSocket/std::net/websocket`; managed server healthy on `127.0.0.1:8080`; turn URL `http://127.0.0.1:8080/v1/chat/completions`. Live process-scoped outbound block BLOCKED (no elevation lever) — static pin alongside, never a substitute.
