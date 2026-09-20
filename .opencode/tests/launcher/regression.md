@@ -666,3 +666,42 @@
 ### #2892 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2904 extension — listening-indicator + search-interaction invariants (G-136)
+
+> Issue #2904 removes a stray vertical-text glitch in/near the launcher search bar while dictating.
+> Nothing is redesigned and nothing is retired: the listening indicator, the mode copy, the search
+> interaction and the dictation flow MUST be unchanged. Run alongside R-1..R-61 and the
+> `voice-input` R-41 extension. **Verification policy: live.**
+
+## R-62 — The listening indicator + controls are unchanged in BOTH modes
+
+- [ ] R-62: During a launcher-origin dictation in mode=`model` AND mode=`local`, assert the
+      indicator set — model: the `launcher-command-listening` dot +
+      `launcher-command-model-listening-chip` (`Fredo is listening`) + `launcher-command-listening-stop`
+      (`aria-label="Stop listening"`) + `launcher-command-listening-cancel`
+      (`aria-label="Cancel dictation"`) + the `release Space to finish` placeholder (hint chip
+      suppressed — the #2904 AC2 relocation, intentional); local: the same dot
+      + `launcher-command-listening-chip` (`Listening`) + Stop + Cancel + the `Listening…`
+      placeholder + the `release Space to finish` hint chip (UNCHANGED). Then confirm the search interaction still works: typing filters the grid, Enter
+      follows the #2882 rule, Escape idles.
+  **Expected:** exactly ONE listening indicator per session in each mode (never two chips), all
+      controls present and operable; LOCAL copy char-for-char as shipped and MODEL copy as shipped
+      EXCEPT the #2904 REQ-3 placeholder relocation; NO change to the grid filter /
+      keyboard nav / Enter rule / Escape idle. Reference F-101..F-104 + R-7/R-37/R-40.
+  - **Edge:** a query present while dictating; the `processing` window (no Stop/Cancel, chip
+    `Fredo is processing your speech…`); in LOCAL mode a hint chip present simultaneously; in MODEL mode the hint chip is suppressed (REQ-3).
+
+## R-63 — Token-native / console clean / no re-render loop / no CLS
+
+- [ ] R-63: static-grep the changed launcher files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read `tauri_read_logs(source="console")` after every leg (dictation
+      start/stop, theme switch, resize churn); measure the command-bar `y` and the seat-slot
+      WRAPPER `offsetWidth`/`offsetHeight`/`margin-bottom`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); no `Error:`/`Uncaught`/
+      `Maximum update depth exceeded`; no effect/memo on an array `.length` or a fresh object
+      (#523); command-bar `y` within ±1px across states and the seat wrapper 80×100 + 16px
+      unchanged (#2870 R-35); no new scrollbar at the shipped minimum 900×600. Reference
+      R-43/R-46/R-53/R-61.
