@@ -256,3 +256,23 @@
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
 
+## #2904 extension — dictation clean-render quick path
+
+> Issue #2904 removes a stray vertically-stacked `Fredo…` string from the launcher search bar while
+> dictating. Quick path only — the full matrix lives in `functional.md` F-101..F-107 /
+> `regression.md` R-62..R-63. **Verification policy: live.**
+
+- [ ] S-31: **Dictate and read the bar cleanly.** Voice enabled; mode=`model` (or `local`);
+      focus the empty `[data-testid="launcher-command-input"]`; drive a live capture with the
+      `FREDO_STT_FEED_WAV` feed (`.opencode/tests/voice-dictation/fixtures/dictation-phrase-16k-mono.wav`)
+      or the synthetic `stt:state {listening:true, phase:"capturing", origin:"launcher"}` fallback;
+      while the indicator is visible run the `functional.md` **Shared probe** and
+      `tauri_webview_screenshot`.
+  **Expected:** the listening indicator (`launcher-command-model-listening-chip` = `Fredo is
+      listening`, or local `launcher-command-listening-chip` = `Listening`) renders on ONE line; the
+      probe reports NO `verticalWrap`/`narrow` node, an empty `overlapField`, and **`fieldContentW
+      ≥ 140`** (model mode — the placeholder-collapse signal, since the placeholder is not in
+      `textContent`); the field renders cleanly; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`. (The live `telemetry_spans` receipt is
+      F-107's job.)
+
