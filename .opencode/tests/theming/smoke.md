@@ -63,7 +63,7 @@
 > `functional.md` carries the `telemetry_spans` leg. **G-136:** #2899's static-only smoke intent is
 > superseded for animated built-ins.
 
-- [ ] **S-14:** Background selector reachable + motion state readable — Settings → Appearance →
+- [x] **S-14:** Background selector reachable + motion state readable — Settings → Appearance →
       Background renders **None + ≥5 procedural options**; a fresh profile shows **None**; select one
       procedural option and read `window.matchMedia('(prefers-reduced-motion: reduce)').matches` +
       `document.querySelector('[data-testid="desktop-backdrop"]')?.getAnimations()` + its
@@ -71,10 +71,17 @@
       `[data-testid="desktop-background-motion-status"]` (record the raw flag; with reduce OFF expect
       ≥1 running animation and `data-motion="animated"`); `tauri_read_logs(source="console", lines=50)`
       clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
-- [ ] **S-15:** Quick switch + visibility + repaint — select a procedural option, screenshot the
+- [x] **S-15:** Quick switch + visibility + repaint — select a procedural option, screenshot the
       desktop and confirm the **rendered pixels differ from the None control** at ≥1 desktop point
       (not merely a non-empty computed style); a feature window still opens/renders above it; reselect
       **None** and confirm today's desktop returns (no `desktop-backdrop` DOM); screenshot succeeds;
       console clean.
-- [ ] **S-16:** Reduced-motion + gates — the product-unit/static pin for reduced-motion gating exists
+- [x] **S-16:** Reduced-motion + gates — the product-unit/static pin for reduced-motion gating exists
       and passes; `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui test:run` green.
+
+
+### #2905 testing round 1 (spec/2905 @ d64ac959) — results
+
+- **S-14 PASS (live).** `desktop-background-chooser` renders None + 6 procedural options; select aurora → `data-motion="animated"`, `data-background-id="aurora"`, 2 running backdrop animations, caption `Motion: on`; console clean.
+- **S-15 PASS (live).** procedural → desktop repaint (pixels differ from None at 3–5/5 points); Settings window renders above; reselect None → backdrop DOM absent, `rgb(45,45,45)`+grid returns.
+- **S-16 PASS.** reduced-motion product-unit/static pin passes (5 files / 64 tests); build exit 0; `test:run` 108 files / 1779 tests passed.
