@@ -153,3 +153,47 @@
 - **E-31 — regression-free.** coffee (dark/brown) chrome 11.58–14.36:1, window title 14.79:1.
 - **E-32 — regression-free.** dark→light + accent set/clear while Mesh animated: no stopped/frozen animation, no stale color, console clean.
 - **E-33 — sampling-method note (no promotion).** Sparse-line recipes (topography's 1 px/22–23 px contour bands) alias with coarse fixed point grids: the canonical quadrant/centre 5 points read 0/5 while a fixed band-hit set reads 4/5 (Δ14–16) and the exhaustive scan shows 4.6 % of desktop pixels differ ≥8. Judge rendered-pixel visibility with an exhaustive scan for line-pattern options; do not read a coarse 5-point miss as invisibility.
+
+## #2909 extension — perceptibility measurement probes (revises #2905)
+
+> Unscripted probes for issue #2909 (a genuinely perceptible motion revision of #2905). A confirmed
+> finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). The perceptibility
+> metric itself is F-39; these probe the MEASUREMENT for aliasing, false positives/negatives, and
+> drift.
+
+- [ ] **E-34 — seek-vs-free-run divergence.** For each recipe, compare the deterministic seek leg's
+      per-interval coverage with the free-running leg's. A large divergence (seek ≫ free-run) suggests
+      the animation is not advancing in real time (paused/decoupled) or uses a non-seekable timing
+      function. Any recipe where the free-run leg reads < floor while the seek leg passes is a finding
+      (promotes to F-39).
+- [ ] **E-35 — capture-noise floor.** Repeat an identical-frame capture many times and diff; measure
+      residual coverage. If the residual exceeds 0.2 %, isolate the backdrop rect from the rest of the
+      desktop (clock/status/scrollbar) and re-measure. A metric that reads motion on a still frame is a
+      finding (promotes to F-40). State the sampling method used.
+- [ ] **E-36 — occlusion pollution.** With a feature window open over part of the backdrop, capture the
+      full desktop and diff; confirm the window's repaint does not inflate the backdrop coverage. If
+      the measured region cannot be isolated, close all windows for the measurement. Any pollution is a
+      finding (promotes to F-39).
+- [ ] **E-37 — theme-change spike.** Change theme/accent between the two captures (rather than over
+      animation time) and confirm the metric does not attribute the recolor to motion. A metric that
+      passes on a theme change alone is a finding (promotes to F-51).
+- [ ] **E-38 — reduced-motion emulation lever hunt.** Attempt to flip `prefers-reduced-motion` via a
+      reachable CDP `Emulation.setEmulatedMedia` port (or any other documented lever). If drivable,
+      record the lever and lift F-45's blocker; if not, reaffirm the named blocker (G-050/G-148/#2870)
+      and do not weaken the assertion.
+- [ ] **E-39 — sustained perceptibility drift.** Leave a recipe running for several minutes and
+      re-measure F-39 at the end; does coverage decay (an animation that fades/stops), and do the
+      animation/layer counts stay constant? Any decay below floor is a finding (promotes to F-48).
+- [ ] **E-40 — dpr / multi-monitor.** Run the metric at dpr 1 and a scaled dpr (e.g. 1.25/1.5) and
+      confirm the per-channel threshold + pixel alignment hold. Any threshold shift that changes the
+      verdict is a finding (promotes to F-39).
+- [ ] **E-41 — partially-occluded / small viewport.** Measure on a small or heavily-occluded desktop;
+      does the backdrop region still clear the floor? Any state where "alive" cannot be perceived is a
+      finding (promotes to F-39/F-42).
+- [ ] **E-42 — refresh-rate sensitivity.** Compare the free-run leg on a 60 Hz vs a high-refresh
+      display; confirm the 2 s delta is cadence-independent (the seek leg is the floor judge). Any
+      cadence-dependent verdict is a finding (promotes to F-39).
+- [ ] **E-43 — paused-but-declared-animated.** Force `animation-play-state: paused` (or
+      `document.getAnimations().forEach(a => a.pause())`) while leaving `data-motion="animated"`, and
+      run the metric. It must read < floor (a FAIL), proving the metric cannot be gamed by a
+      present-but-frozen animation (promotes to F-40).
