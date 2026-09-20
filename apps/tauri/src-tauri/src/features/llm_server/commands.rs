@@ -802,12 +802,14 @@ pub fn llm_chat_with_image(
     Ok(())
 }
 
-/// Stream a companion model-audio chat (#2897 ST-3; REQ-5): the captured clip
-/// (`stt_take_audio_clip`, base64 16 kHz mono 16-bit PCM WAV) is attached to the
-/// LAST user message as the SINGLE `input_audio` part — no transcript text is
-/// fabricated for the turn (REQ-3). Delivery routes through the managed
-/// `chat::` module, so it resolves the same loopback host and streams the same
-/// shipped channels (`llm-token` / `llm-done` / additive `llm-error`).
+/// Stream a companion model-audio chat (#2897 ST-3; skill-aware #2903): the
+/// captured clip (`stt_take_audio_clip`, base64 16 kHz mono 16-bit PCM WAV) is
+/// attached to the LAST user message as the SINGLE `input_audio` part — no
+/// transcript text is fabricated for the turn (REQ-3). Delivery routes through
+/// the managed `chat::` module, so it resolves the same loopback host and now
+/// offers the SHARED companion skill registry: a validated app open/close
+/// selection emits `llm-skill-call` and every path settles with one `llm-done`
+/// (additive `llm-error` before it on failure).
 #[tauri::command]
 pub fn llm_chat_with_audio(
     messages: Vec<LlmMessage>,

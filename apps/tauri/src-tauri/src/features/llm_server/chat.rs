@@ -27,6 +27,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::infrastructure::companion::skills::SkillRegistry;
 use crate::infrastructure::storage::AppStore;
 
 use super::commands::launch_llama_server;
@@ -399,46 +400,41 @@ async fn run_chat(
     stream_completion(app, &host, port, &messages, image_base64.as_deref()).await
 }
 
-/// Kick off a model-audio streaming turn (#2897 ST-3; REQ-5) and return immediately.
+/// Kick off a model-audio streaming turn (#2897 ST-3; skill-aware #2903) and
+/// return immediately.
 ///
 /// The captured clip ([`build_audio_request_body`]) is attached to the last user
-/// message and the reply streams on the SAME shipped channels the vision path
-/// uses: `llm-token` per delta, `llm-done` at the end, and the ADDITIVE readable
-/// `llm-error` line before `llm-done` on any failure (never hangs).
+/// message and the turn now OFFERS the shared companion skill registry — the
+/// SAME registry offer as the typed path — so a spoken app open/close request is
+/// buffered, validated once at the finish, and routed as `llm-skill-call`
+/// through the shared terminal plan. Ordinary replies stream on the SAME shipped
+/// channels the vision path uses: `llm-token` per delta, `llm-done` at the end,
+/// and the ADDITIVE readable `llm-error` line before `llm-done` on any failure
+/// (never hangs).
 pub fn spawn_audio_chat(app: AppHandle, messages: Vec<LlmMessage>, audio_base64: String) {
     tauri::async_runtime::spawn(async move {
-        if let Err(detail) = run_audio_chat(&app, &messages, &audio_base64).await {
-            emit_error_and_done(&app, &detail);
+        if let Err(detail) = run_audio_chat(&app, messages, audio_base64).await {
+            // The stream died before any accumulated call could be finalized —
+            // still settle on the SAME terminal vocabulary (`llm-error` then
+            // `llm-done`) so the frontend's `llm-done` handler always fires.
+            for event in super::skills::plan_stream_error_events(&detail) {
+                super::skills::emit_terminal_event(&app, event);
+            }
         }
     });
 }
 
-/// Deliver ONE model-audio turn through the shared [`run_stream`] shell, so it
-/// resolves the managed loopback host exactly like the vision/skill paths.
+/// Deliver ONE skill-aware model-audio turn through the shared [`run_stream`]
+/// shell, so it resolves the managed loopback host exactly like the vision/skill
+/// paths and accumulates/validates/emits through the ONE skill terminal plan.
 async fn run_audio_chat(
     app: &AppHandle,
-    messages: &[LlmMessage],
-    audio_base64: &str,
+    messages: Vec<LlmMessage>,
+    audio_base64: String,
 ) -> Result<(), String> {
-    let body = build_audio_request_body(messages, audio_base64);
-    let mut finished = false;
-    run_stream(app, &body, |frame| {
-        for event in frame.events {
-            if apply_event(app, event) {
-                finished = true;
-                return true;
-            }
-        }
-        false
-    })
-    .await?;
-
-    // A stream that closed early without `[DONE]` still signals completion so the
-    // UI can never hang (R-4.2).
-    if !finished {
-        let _ = app.emit("llm-done", ());
-    }
-    Ok(())
+    let registry = SkillRegistry::with_app_control();
+    let body = super::skills::build_audio_skill_request_body(&messages, &audio_base64, &registry);
+    super::skills::run_skill_stream(app, &registry, &body).await
 }
 
 /// Ensure a healthy managed server, launching one if needed.
