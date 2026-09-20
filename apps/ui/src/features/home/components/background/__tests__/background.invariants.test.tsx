@@ -1,26 +1,32 @@
 /**
- * #2899 ST-5 — cross-cutting invariant + continuous-state suite.
+ * #2899 ST-5 / #2905 ST-4 — cross-cutting invariant + continuous-state suite.
  *
  * The capstone `WHILE …` properties that must hold for EVERY background the
- * user can select (all six procedural recipes are static — animation is out of
- * scope). Each leg pins an invariant that is easy to break with a later edit:
+ * user can select. Each leg pins an invariant that is easy to break with a
+ * later edit:
  *
- *   (a) Non-interactivity (R-4.2): the desktop backdrop layer is
- *       `pointer-events: none`, `aria-hidden`, not focusable, and carries no
- *       handlers — it can never intercept pointer or keyboard input.
- *   (b) Z-order (R-4.1): the backdrop is the FIRST layer of the desktop stack
- *       at z-index 0, strictly below `WindowManager`'s z-index-1 container
- *       (`WindowManager.tsx:25`) — a window always paints above it.
- *   (c) Procedural-only / no hardcoded colors (R-5.1): the background module
- *       source and the emitted paint carry zero hex/rgb/hsl/rgba literals and
- *       zero `data:`/`url(` raster art.
- *   (d) No continuous animation (R-5.2 / R-5.3): zero `requestAnimationFrame`,
- *       `setInterval`, `@keyframes`, `animation:` and `background-attachment`;
- *       reduced-motion, if consulted at all, may only gate the crossfade.
- *   (e) Stale-id fallback (R-3.3): an unknown/removed id resolves to the
- *       shipped `NONE_BACKGROUND` css byte-for-byte and never throws.
- *
- * Plus the default path: `none` renders NO DOM (R-1.3).
+ *   (a) Non-interactivity: the desktop backdrop layer is `pointer-events: none`,
+ *       `aria-hidden`, not focusable, and carries no handlers — it can never
+ *       intercept pointer or keyboard input.
+ *   (b) Z-order: the backdrop is the FIRST layer of the desktop stack at z-index
+ *       0, strictly below `WindowManager`'s z-index-1 container — a window always
+ *       paints above it.
+ *   (c) Procedural-only / no hardcoded colors: the background module source and
+ *       the emitted paint (grounds + every layer) carry zero hex/rgb/hsl/rgba
+ *       literals and zero `data:`/`url(` raster art.
+ *   (d) Motion contract (#2905): motion is declarative CSS only — zero `rAF`,
+ *       zero `setInterval`, `@keyframes` confined to `backgroundMotion.ts`, and
+ *       only `transform`/`opacity` declarations. While animated the backdrop is
+ *       stamped `animated`, injects the ONE motion stylesheet, and every layer
+ *       motion passes `isBoundedMotion`; under reduced motion the SAME layered
+ *       paint renders with `data-motion="static"`, no stylesheet, and zero
+ *       animation properties (removed, never paused).
+ *   (e) Stale-id fallback: an unknown/removed id resolves to the shipped
+ *       `NONE_BACKGROUND` byte-for-byte and never throws.
+ *   (f) None byte-identical (#2905 ST-4): `none` renders zero backdrop DOM and
+ *       zero motion `<style>`, the launcher surface keeps `NONE_BACKGROUND.css`
+ *       byte-identically, and the registry ground deep-equals the shipped
+ *       literal.
  *
  * The store is driven for real (`resetBackgroundStoreForTests()` +
  * `selectBackground('aurora')`) with only `settingsService` mocked — the
@@ -45,6 +51,7 @@ import {
   NONE_BACKGROUND,
   getBackgroundDescriptor,
 } from '../backgroundRegistry';
+import { MOTION_LAYERS_MAX, isBoundedMotion } from '../backgroundMotion';
 import {
   getBackgroundId,
   resetBackgroundStoreForTests,
@@ -66,19 +73,21 @@ const setMock = settingsService.set as ReturnType<typeof vi.fn>;
 const BACKGROUND_DIR = 'src/features/home/components/background';
 const HOME_PATH = 'src/features/home/components/Home.tsx';
 const WINDOW_MANAGER_PATH = 'src/shared/window-system/WindowManager.tsx';
+const LAUNCHER_SHELL_PATH = 'src/features/home/components/launcher/LauncherShell.tsx';
 
-/** The three files that author/serialize background paint (R-5.1 scope). */
+/** The files that author/serialize background paint (R-5.1 scope). */
 const RENDER_PATHS = [
   `${BACKGROUND_DIR}/backgroundRegistry.ts`,
   `${BACKGROUND_DIR}/DesktopBackdrop.tsx`,
   `${BACKGROUND_DIR}/BackgroundSettings.tsx`,
+  `${BACKGROUND_DIR}/backgroundMotion.ts`,
 ] as const;
 
-/** The whole background module — the R-5.2/R-5.3 no-motion scope. */
-const MODULE_PATHS = [
-  ...RENDER_PATHS,
-  `${BACKGROUND_DIR}/backgroundStore.ts`,
-] as const;
+/** The whole background module — the no-JS-frame-loop scope. */
+const MODULE_PATHS = [...RENDER_PATHS, `${BACKGROUND_DIR}/backgroundStore.ts`] as const;
+
+/** The ONE module allowed to own `@keyframes` (#2905 ST-5 scope). */
+const MOTION_MODULE_PATH = `${BACKGROUND_DIR}/backgroundMotion.ts`;
 
 /** vitest runs with cwd = apps/ui (the package root). */
 function readSource(relativePath: string): string {
@@ -93,13 +102,35 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 }
 
+/** The serialized paint of a descriptor — ground + every layer. */
+function serializePaint(descriptor: (typeof BACKGROUND_DESCRIPTORS)[number]): string {
+  return JSON.stringify({ css: descriptor.css, layers: descriptor.layers.map((l) => l.css) });
+}
+
+/** Stub the OS reduced-motion media query before a render. */
+function stubReducedMotion(matches: boolean): void {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('prefers-reduced-motion') ? matches : false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 /** Drive the real store to a non-`none` selection with a deterministic host seam. */
 async function selectAurora(): Promise<void> {
   await selectBackground('aurora');
   expect(getBackgroundId()).toBe('aurora');
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -109,7 +140,7 @@ beforeEach(() => {
   setMock.mockResolvedValue(undefined);
 });
 
-describe('#2899 ST-5 (a) — backdrop non-interactivity (R-4.2)', () => {
+describe('#2899 ST-5 (a) — backdrop non-interactivity', () => {
   it('renders a pointer-transparent, AT-hidden, non-focusable, handler-free layer', async () => {
     await selectAurora();
 
@@ -129,12 +160,13 @@ describe('#2899 ST-5 (a) — backdrop non-interactivity (R-4.2)', () => {
     layer.focus();
     expect(document.activeElement).not.toBe(layer);
 
-    // No event-handler attributes at all.
+    // No event-handler attributes on the root (the injected <style> child does
+    // not add any either).
     expect(layer.outerHTML).not.toMatch(/\son[a-z]+\s*=/i);
   });
 });
 
-describe('#2899 ST-5 (b) — z-order contract (R-4.1)', () => {
+describe('#2899 ST-5 (b) — z-order contract', () => {
   it('renders the backdrop before the z=1 window stack (DOM order + declared z-index)', async () => {
     await selectAurora();
 
@@ -182,7 +214,7 @@ describe('#2899 ST-5 (b) — z-order contract (R-4.1)', () => {
   });
 });
 
-describe('#2899 ST-5 (c) — no hardcoded literals / no raster (R-5.1)', () => {
+describe('#2899 ST-5 (c) / #2905 ST-5 — no hardcoded literals / no raster', () => {
   it('the background module source carries zero color literals and zero data:/url( art', () => {
     for (const path of RENDER_PATHS) {
       const code = stripComments(readSource(path));
@@ -194,9 +226,12 @@ describe('#2899 ST-5 (c) — no hardcoded literals / no raster (R-5.1)', () => {
     }
   });
 
-  it('the emitted descriptor paint is theme-derived, never literal', () => {
+  it('the emitted descriptor paint — grounds AND every layer — is theme-derived, never literal', () => {
     const emitted = JSON.stringify(
-      [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS].map((descriptor) => descriptor.css),
+      [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS].map((descriptor) => ({
+        css: descriptor.css,
+        layers: descriptor.layers.map((layer) => layer.css),
+      })),
     );
 
     expect(emitted).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
@@ -209,36 +244,100 @@ describe('#2899 ST-5 (c) — no hardcoded literals / no raster (R-5.1)', () => {
     expect(emitted).toContain('var(--');
     expect(emitted).toContain('color-mix(in srgb, var(--');
   });
+
+  it('never alpha-appends digits onto a var() reference (the invalid var(--x)NN form)', () => {
+    for (const path of RENDER_PATHS) {
+      const code = stripComments(readSource(path));
+      expect(code, `${path}: var(--x)NN alpha-append`).not.toMatch(/var\(--[a-z0-9-]+\)\d/);
+    }
+    const emitted = JSON.stringify(
+      [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS].flatMap((descriptor) => [
+        descriptor.css,
+        ...descriptor.layers.map((layer) => layer.css),
+      ]),
+    );
+    expect(emitted).not.toMatch(/var\(--[a-z0-9-]+\)\d/);
+  });
 });
 
-describe('#2899 ST-5 (d) — no continuous animation (R-5.2 / R-5.3)', () => {
-  it('ships zero rAF / interval / @keyframes / animation: / background-attachment', () => {
+describe('#2905 ST-4 (d) — motion is declarative + bounded (animated), absent (static)', () => {
+  it('ships zero rAF / setInterval anywhere in the background module', () => {
     for (const path of MODULE_PATHS) {
       const code = stripComments(readSource(path));
       expect(code, `${path}: requestAnimationFrame`).not.toMatch(/requestAnimationFrame/);
       expect(code, `${path}: setInterval`).not.toMatch(/setInterval/);
-      expect(code, `${path}: @keyframes`).not.toMatch(/@keyframes/);
-      expect(code, `${path}: animation property`).not.toMatch(/animation\s*:/);
-      expect(code, `${path}: background-attachment`).not.toMatch(/background-attachment/);
     }
   });
 
-  it('reduced-motion, if consulted at all, only gates the selection crossfade (R-5.3)', () => {
-    // All six descriptors are static, so the ONLY sanctioned motion is the
-    // selection crossfade. A reduced-motion consultation anywhere else would
-    // hide an animation behind the media query — reject that.
-    for (const path of MODULE_PATHS) {
-      const code = stripComments(readSource(path)).toLowerCase();
-      if (/prefers-reduced-motion|usereducedmotion|prefersreducedmotion/.test(code)) {
-        expect(code, `${path}: reduced-motion may only gate the crossfade`).toMatch(
-          /crossfade|transition|opacity/,
-        );
-      }
+  it('confines @keyframes to backgroundMotion.ts and animates transform/opacity only', () => {
+    const keyframePaths = MODULE_PATHS.filter((path) =>
+      stripComments(readSource(path)).includes('@keyframes'),
+    );
+    expect(keyframePaths).toEqual([MOTION_MODULE_PATH]);
+
+    const motionCode = stripComments(readSource(MOTION_MODULE_PATH));
+    // No repaint-per-frame or color substrate, no stepped timing.
+    expect(motionCode).not.toMatch(/background-position/);
+    expect(motionCode).not.toMatch(/background-size\s*:/);
+    expect(motionCode).not.toMatch(/steps\(/);
+    expect(motionCode).not.toMatch(/background-attachment/);
+    // The emitted keyframe CSS never carries a color declaration.
+    const cssOnly = motionCode.slice(motionCode.indexOf('@keyframes'));
+    expect(cssOnly).not.toMatch(/\bcolor\s*:/);
+  });
+
+  it('animated leg: data-motion + the ONE motion stylesheet + bounded layer motion', async () => {
+    stubReducedMotion(false);
+    await selectAurora();
+
+    const { container } = renderWithChakra(<DesktopBackdrop />);
+    const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
+    expect(root.getAttribute('data-motion')).toBe('animated');
+    expect(root.getAttribute('data-background-id')).toBe('aurora');
+    expect(
+      container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
+    ).not.toBeNull();
+
+    const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
+    expect(layers.length).toBeGreaterThan(0);
+    expect(layers.length).toBeLessThanOrEqual(MOTION_LAYERS_MAX);
+
+    const descriptor = getBackgroundDescriptor('aurora');
+    let animatedLayers = 0;
+    for (const layer of layers) {
+      const id = layer.getAttribute('data-background-layer');
+      const motion = descriptor.layers.find((declared) => declared.id === id)?.motion;
+      if (!motion) continue;
+      expect(isBoundedMotion(motion), `${id}: bounded`).toBe(true);
+      animatedLayers += 1;
+      expect(layer.getAttribute('style') ?? '', `${id}: inline animation`).toMatch(
+        /animation-name\s*:/,
+      );
+    }
+    expect(animatedLayers).toBeGreaterThan(0);
+  });
+
+  it('static leg: same layered paint with ZERO animation properties and no stylesheet', async () => {
+    stubReducedMotion(true);
+    await selectAurora();
+
+    const { container } = renderWithChakra(<DesktopBackdrop />);
+    const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
+    expect(root.getAttribute('data-motion')).toBe('static');
+    expect(
+      container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
+    ).toBeNull();
+
+    const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
+    expect(layers.length).toBeGreaterThan(0);
+    for (const layer of layers) {
+      expect(layer.getAttribute('style') ?? '', 'no inline animation').not.toMatch(/animation/i);
+      expect(getComputedStyle(layer).animationName || 'none').toBe('none');
     }
   });
 });
 
-describe('#2899 ST-5 (e) — stale-id fallback (R-3.3)', () => {
+describe('#2899 ST-5 (e) — stale-id fallback', () => {
   it('resolves an unknown / removed / malformed id to the shipped NONE_BACKGROUND css byte-for-byte', () => {
     for (const stale of ['__nope__', 'removed-id', 'animated-waves', '', 'Aurora', 'none ']) {
       expect(() => getBackgroundDescriptor(stale)).not.toThrow();
@@ -250,15 +349,54 @@ describe('#2899 ST-5 (e) — stale-id fallback (R-3.3)', () => {
       expect(JSON.stringify(fallback.css), `${stale}: byte-identical css`).toBe(
         JSON.stringify(NONE_BACKGROUND.css),
       );
+      expect(fallback.layers, `${stale}: no motion layers`).toEqual([]);
     }
   });
 });
 
-describe('#2899 ST-5 — default path', () => {
-  it('renders NO DOM for the `none` default (R-1.3)', () => {
+describe('#2905 ST-4 (f) — None byte-identical invariant', () => {
+  it('renders zero backdrop DOM and zero injected motion stylesheet for `none`', () => {
     const { container } = renderWithChakra(<DesktopBackdrop />);
 
     expect(container.querySelector('[data-testid="desktop-backdrop"]')).toBeNull();
+    expect(container.querySelector('[data-testid="desktop-backdrop-motion-styles"]')).toBeNull();
     expect(container.firstChild).toBeNull();
+  });
+
+  it('NONE_BACKGROUND.css deep-equals the shipped pre-#2905 literal (byte-identical)', () => {
+    const shipped = {
+      backgroundColor: 'var(--card-bg)',
+      backgroundImage: [
+        'linear-gradient(to right, color-mix(in srgb, var(--border-color) 12%, transparent) 1px, transparent 1px)',
+        'linear-gradient(to bottom, color-mix(in srgb, var(--border-color) 12%, transparent) 1px, transparent 1px)',
+      ].join(', '),
+      backgroundSize: '28px 28px',
+    };
+    expect(JSON.stringify(NONE_BACKGROUND.css)).toBe(JSON.stringify(shipped));
+    expect(NONE_BACKGROUND.layers).toEqual([]);
+  });
+
+  it('the launcher surface keeps NONE_BACKGROUND.css for `none` and clears any veil otherwise', () => {
+    const launcher = stripComments(readSource(LAUNCHER_SHELL_PATH));
+    // The `none` leg is byte-identically the shipped registry ground…
+    expect(launcher).toMatch(/backgroundId === 'none'\s*\?\s*NONE_BACKGROUND\.css/);
+    // …and the procedural leg is FULLY transparent (the #2905 visibility fix).
+    expect(launcher).toMatch(/\{\s*backgroundColor:\s*'transparent'\s*\}/);
+    // The old 72%-opaque veil must never come back.
+    expect(launcher).not.toMatch(/tint\('var\(--body-bg\)',\s*72\)/);
+  });
+
+  it('every procedural option carries layers, and None carries none', () => {
+    expect(NONE_BACKGROUND.layers).toHaveLength(0);
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      expect(descriptor.layers.length, `${descriptor.id}: at least one layer`).toBeGreaterThan(0);
+      expect(descriptor.layers.length, `${descriptor.id}: <= 3 layers`).toBeLessThanOrEqual(
+        MOTION_LAYERS_MAX,
+      );
+      const layerIds = descriptor.layers.map((layer) => layer.id);
+      expect(new Set(layerIds).size, `${descriptor.id}: unique layer ids`).toBe(layerIds.length);
+      // Grounds + layers are all distinct per option (identity distinctness).
+      expect(serializePaint(descriptor)).toBeTruthy();
+    }
   });
 });
