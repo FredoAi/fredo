@@ -2,9 +2,11 @@
  * Spec #2893 ST-6 — THE ONE companion app-open reply-copy source (UI/UX §1).
  *
  * R-1..R-4 bind the user-visible reply to EXACT deterministic strings (never
- * freeform model prose): the tester asserts them char-for-char, so these four
- * formatters are the authoritative observables. The Rust backend SHALL NOT
- * author reply copy — every caller (the companion skill-call path and the CLI
+ * freeform model prose): the tester asserts them char-for-char, so these
+ * formatters are the authoritative observables. #2903 ST-3 adds the two close
+ * formatters (`Closing <name>` / `<name> isn't open`) to this SAME module — the
+ * ONE copy source, never a second. The Rust backend SHALL NOT author reply copy
+ * — every caller (the companion skill-call path and the CLI
  * `app-open-request` confirmation message) composes text through here.
  *
  * Copy rules (binding):
@@ -48,9 +50,35 @@ export function appOpenAmbiguousReply(
   return `I found more than one app matching "${spokenName}". Which one did you mean: ${joinCandidateNames(candidateNames)}?`;
 }
 
-/** S5 open failed — `I couldn't open Mission Monitor. Try again from the launcher grid.` */
+/**
+ * S5 open failed — `I couldn't open Mission Monitor. Try again from the launcher grid.`
+ */
 export function appOpenFailedReply(displayName: string): string {
   return `I couldn't open ${displayName}. Try again from the launcher grid.`;
+}
+
+/**
+ * #2903 ST-3 close success — `Closing Mission Monitor`. Mirrors
+ * `appOpenSuccessReply` exactly (same pattern/tone, ASCII, no trailing period);
+ * kind `success`, so the shipped happy beat applies.
+ */
+export function appCloseSuccessReply(displayName: string): string {
+  return `Closing ${displayName}`;
+}
+
+/**
+ * #2903 ST-3 close requested but the target window is NOT open — truthful
+ * no-action copy `Mission Monitor isn't open` (plain ASCII apostrophe U+0027,
+ * no trailing period); kind `failed`, so the shipped idle hold applies and the
+ * reply never claims a close that did not happen.
+ *
+ * There is deliberately NO `appCloseFailedReply`: `windowStore.closeWindow` is
+ * synchronous, idempotent and re-entrancy-guarded with no failure channel
+ * (`windowStore.ts:116-124`), so a user-reachable "close failed" state does not
+ * exist (G-198).
+ */
+export function appCloseNotOpenReply(displayName: string): string {
+  return `${displayName} isn't open`;
 }
 
 /**
