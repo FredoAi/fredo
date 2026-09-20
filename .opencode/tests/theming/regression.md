@@ -181,7 +181,7 @@
 > **Verification policy: live.** The perceptibility rows themselves are F-39..F-55 in
 > `functional.md`; the rows here are the "must NOT change" baseline.
 
-- [ ] **R-25 (theming engine + existing background behavior unchanged):** preset selection,
+- [x] **R-25 (theming engine + existing background behavior unchanged):** preset selection,
       per-token overrides, "Reset to theme defaults", the readout, and the `overrides ?? preset ??
       base` layering behave exactly as before; the chooser still offers None + the six recipes;
       selection still persists across a full restart; a stale/unknown stored value still falls back
@@ -189,23 +189,30 @@
       and intercepts no pointer/keyboard input. Reference F-1..F-19, R-21..R-24.
   - **Edge:** theme/accent switch while the animation runs; light + dark; window dragged over the
     animated region; upgrade from a persisted recipe.
-- [ ] **R-26 (motion bounds preserved):** the #2905 bounds still hold after any perceptibility
+- [x] **R-26 (motion bounds preserved):** the #2905 bounds still hold after any perceptibility
       change — `isBoundedMotion` rejects out-of-budget motion (no `steps()`, duration ≥
       `MOTION_DURATION_MIN_MS` = 8000, opacity ≥ `MOTION_OPACITY_MIN` = 0.35, scale/translate in
       range), layers ≤ `MOTION_LAYERS_MAX` = 3, and the motion module introduces **zero**
       `requestAnimationFrame`/`setInterval` loops.
   - **Edge:** the perceptibility floors and these bounds must be jointly satisfiable (see QA-5 in
     `.opencode/tmp/2909/triage.md`); a bound relaxed to meet the floor is recorded with rationale.
-- [ ] **R-27 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
+- [x] **R-27 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
       `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted. The
       `#2899` static-only animation assertions remain the ONLY permitted supersession (marked
       `G-136 SUPERSEDED (#2905)`); the #2905 signature-only rows (F-32/F-33/F-35) are retained as
       **corroboration only** and must not be cited as R-1.1 evidence. Reference F-54.
   - **Edge:** the superseded `background.invariants.test.tsx` leg stays inverted (animation present
     AND reduced-motion-gated), not deleted; `var(--x)NN` still absent; no raster asset added.
-- [ ] **R-28 (budget not regressed by faster/larger motion):** relative to the #2905 baseline, idle
+- [x] **R-28 (budget not regressed by faster/larger motion):** relative to the #2905 baseline, idle
       CPU and heap do not grow unbounded (heap ≤ +2 % over ≥ 60 s; animation + layer counts constant);
       frame pacing stays p95 ≤ 20 ms / max ≤ 50 ms with no > 3 consecutive frames > 33 ms; launch and
       interaction remain within noise of the None baseline. Reference F-48/F-49.
   - **Edge:** sustained idle soak (minutes); interaction during animation; reduced-motion static is
     cheaper; two windows.
+
+### #2909 testing round 1 (spec/2909 @ d2971844) — results
+
+- **R-25 PASS (live + diff).** Chooser still offers None + the six recipes; live recolor terminal-green→light-default→coffee→accent override re-tinted the backdrop with no restart and no `Maximum update depth exceeded`; None → backdrop DOM absent. `git diff main --stat` confines #2909 to `backgroundMotion.ts`, `backgroundRegistry.ts`, `DesktopBackdrop.tsx`, `BackgroundSettings.tsx` (+ tests) — `backgroundStore.ts`, `LauncherShell.tsx`, `SettingsSurface.tsx` are **untouched**, so selection persistence (the unchanged store path verified by #2905 F-36) and the #2905 veil fix are not at risk.
+- **R-26 PASS.** `vitest run background` → 6 files / 96 tests: `isBoundedMotion` bounds hold (no `steps()`, duration ≥ 8000, opacity ≥ 0.35 swing ≤ 0.45, scale ∈ [0.85,1.2], translate ≤ 12, ≤ 3 layers) and the motion module has zero `requestAnimationFrame`/`setInterval`. Live durations 16–37 s; ≤ 3 layers all six.
+- **R-27 PASS.** build exit 0 (2577 modules); `test:run` 108 files / 1805 tests passed; the #2899 static-only clauses stay `G-136 SUPERSEDED (#2905)` (inverted, not deleted); no `var(--x)NN`; no raster added.
+- **R-28 PASS.** Heap +0.69 % over 100.3 s with constant animation/layer counts (3/3); rAF p95 16.8 ms / max 16.8 ms, 0 frames > 33 ms; interaction within ~1 ms of the None baseline (16.6/15.8/16.8 ms).
