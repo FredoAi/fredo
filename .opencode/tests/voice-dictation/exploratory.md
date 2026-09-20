@@ -47,3 +47,26 @@
 
 - **E-4 PASS.** With the L4 feed live, a model-audio turn + L3 `{open_app,{app:"Settings"}}` opened Settings exactly once (max Settings count 1 across 24 samples), the bar stayed `""` (no transcript leak), and the live region read `Opening Settings`.
 - **E-5 UNVERIFIED (named).** Not driven: requires a further dev-env restart pointing `FREDO_STT_FEED_WAV` at a byte-truncated/wrong-format copy. Malformed-capture handling is already CI-pinned by #2877 `F-29`/`F-15` (`modelCorrupt`/`noDevice` typed codes). No product failure claimed.
+
+---
+
+## #2914 extension — feed-lever probes on the single-model-audio tip
+
+> Issue #2914 deletes the local STT engine/mode. A confirmed finding PROMOTES to `functional.md` as a
+> new `F-` row (keep the origin note). Live policy; an undrivable lever is a NAMED BLOCKER (G-053)
+> with a static/unit pin — never fabricated. **FORBIDDEN:** any recorded-speech WAV or out-of-repo
+> asset (G-172/G-009). **`stt:transcript` is RETIRED as a lever.**
+
+- [ ] E-6: **Feed + malformed input after the local reader is gone.** Point `FREDO_STT_FEED_WAV` at a
+      byte-truncated/wrong-format copy (generated in-repo) on the #2914 tip and start a model-audio
+      session. Does the capture degrade with a typed state (no local engine involved), perform no turn
+      with garbage, and release the mic? A silent hang, a crash, or a capture left running is a finding
+      (promotes to `voice-input` F-131). If the feed seam is gone, record the named blocker instead.
+- [ ] E-7: **Feed sample-0 liveness on the model-audio path.** Feed the committed 1.6 s fixture and
+      confirm the clip returned by `stt_take_audio_clip` carries the fixture's data from sample 0 (not a
+      hold-length virtual-mic clip). A non-1.6 s clip while the env is set is a finding (the lever is
+      vacuous or the seam is dead) — promotes to `voice-input` F-133.
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends probe findings; do not pre-fill)_
