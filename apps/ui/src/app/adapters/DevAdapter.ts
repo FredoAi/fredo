@@ -86,6 +86,10 @@ export class DevAdapter implements HostAdapter {
    * #2897 ST-3 (REQ-5) — model-audio parity for the dev mock. The dev server has
    * no managed model server, so it streams an ordinary mock reply through the
    * unchanged `llmChat` (the captured clip is never a dev-time asset).
+   *
+   * #2903 ST-2 — the additive trailing `onSkillCall` channel is accepted for
+   * interface parity; the dev mock has no backend tools path and so never selects
+   * a skill (mirrors `llmChatWithSkills`).
    */
   async llmChatWithAudio(
     messages: LlmMessage[],
@@ -93,6 +97,7 @@ export class DevAdapter implements HostAdapter {
     onToken: (token: string) => void,
     onDone: () => void,
     onError?: (message: string) => void,
+    _onSkillCall?: (call: LlmSkillCall) => void,
   ): Promise<void> {
     return this.llmChat(messages, onToken, onDone, onError);
   }

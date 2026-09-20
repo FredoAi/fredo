@@ -9,7 +9,10 @@
  *
  * Rule (frozen, contract §6 / R-2.7):
  *   1. `normalizeAppQuery` — trim, drop surrounding quotes, drop ONE leading
- *      command verb (`open`/`launch`/`show`/`start`).
+ *      command verb (`open`/`launch`/`show`/`start`/`close`). `close` was added
+ *      by #2903 ST-3 so a spoken close request (`close settings`) resolves to the
+ *      SAME identity the open branch resolves; the app name, not the verb, is
+ *      what the shared resolver consumes.
  *   2. normalized case-insensitive EXACT `id` match (stable kebab ids like
  *      `mission-monitor`) — these cannot be reached through the display-name
  *      matcher because the id is hyphenated while names are spaced.
@@ -40,9 +43,10 @@ export type AppIdentityResolution =
  * R-2.7 — one leading command verb, case-insensitive, requiring whitespace and
  * a non-empty remainder. `open` alone is NOT stripped (there is no name to
  * open), so it resolves as an ordinary unknown identity instead of an empty
- * string that could accidentally match something.
+ * string that could accidentally match something. #2903 ST-3 adds `close` to
+ * the SAME set (one shared verb rule — never a second resolver).
  */
-const LEADING_COMMAND_VERB = /^(?:open|launch|show|start)\s+(.+)$/i;
+const LEADING_COMMAND_VERB = /^(?:open|launch|show|start|close)\s+(.+)$/i;
 
 /** Drop ONE matching pair of surrounding quotes (`"` or `'`), then trim. */
 function stripSurroundingQuotes(value: string): string {
@@ -59,8 +63,8 @@ function stripSurroundingQuotes(value: string): string {
 
 /**
  * R-2.7 — normalize a user/CLI identity: `trim` -> strip surrounding quotes ->
- * strip ONE leading `open|launch|show|start` -> `trim`. Case is preserved (the
- * reply echoes the user's own words); matching lowercases separately.
+ * strip ONE leading `open|launch|show|start|close` -> `trim`. Case is preserved
+ * (the reply echoes the user's own words); matching lowercases separately.
  *
  * Quote stripping runs again after the verb so `open "Mission Monitor"` (verb
  * outside the quotes) normalizes too. Idempotent on already-normalized input.

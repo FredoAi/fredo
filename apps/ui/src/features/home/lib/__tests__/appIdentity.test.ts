@@ -48,6 +48,14 @@ describe('normalizeAppQuery — trim, strip quotes, strip ONE leading verb (R-2.
     expect(normalizeAppQuery('start Mission Monitor')).toBe('Mission Monitor');
   });
 
+  it('strips the `close` verb through the SAME single verb rule (#2903)', () => {
+    expect(normalizeAppQuery('close Mission Monitor')).toBe('Mission Monitor');
+    expect(normalizeAppQuery('CLOSE mission-monitor')).toBe('mission-monitor');
+    expect(normalizeAppQuery('close "Mission Monitor"')).toBe('Mission Monitor');
+    // A bare `close` has no name remainder — never stripped to the empty query.
+    expect(normalizeAppQuery('close')).toBe('close');
+  });
+
   it('strips only ONE verb', () => {
     expect(normalizeAppQuery('open open Mission Monitor')).toBe('open Mission Monitor');
   });
@@ -107,6 +115,19 @@ describe('resolveAppIdentity — display-name match via appNameMatches', () => {
     expect(resolveAppIdentity('monitor', features).kind).toBe('resolved');
     expect(resolveAppIdentity('open Mission Mon', features).kind).toBe('resolved');
     expect(resolveAppIdentity('Settings', features).kind).toBe('resolved');
+  });
+
+  it('resolves the SAME identity for an open and a close request (#2903 parity)', () => {
+    // AC3 parity: the intent (open/close) does not change the resolved app —
+    // `close Settings` and `open Settings` both resolve to the same feature.
+    expect(resolveAppIdentity('close Settings', features)).toEqual(
+      resolveAppIdentity('open Settings', features),
+    );
+    expect(resolveAppIdentity('close Settings', features)).toEqual({
+      kind: 'resolved',
+      feature: SETTINGS,
+      displayName: 'Settings',
+    });
   });
 
   it('never matches a fragment (`Missing all the time`) or an alias (`MM`)', () => {

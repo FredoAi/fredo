@@ -8,12 +8,19 @@
  * hook never reaches for a raw window opener.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createElement } from 'react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 
 import { adapterBridge } from '../../../../shared/utils/adapterBridge';
 import { registerAppOpenReplyPusher } from '../../../../shared/components/companion/skillBridge';
 import type { AppOpenReply } from '../../../../shared/components/companion/appOpenReply';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
+import {
+  getWindowSnapshot,
+  openWindow,
+  registerWindowCloseCallback,
+  resetWindowStoreForTests,
+} from '../../../../shared/window-system/windowStore';
 import { APP_OPEN_REPLY_BEAT_MS, useAppOpenRequests } from '../useAppOpenRequests';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -26,6 +33,14 @@ const MONITOR_TWO = entry('monitor-two', 'Monitor Two');
 const FEATURES: readonly FredoFeatureClass[] = [MISSION_MONITOR];
 const TWO_FEATURES: readonly FredoFeatureClass[] = [MISSION_MONITOR, MONITOR_TWO];
 
+/** A real window-store entry so `getWindowSnapshot()`/`closeWindow` are exercised. */
+const windowParams = (id: string, title: string) => ({
+  id,
+  title,
+  icon: createElement('svg'),
+  component: createElement('div'),
+});
+
 type Handler = (payload: any) => void;
 
 let handlers: Record<string, Handler>;
@@ -35,6 +50,7 @@ let unregisterPusher: (() => void) | null;
 let pushed: AppOpenReply[];
 
 beforeEach(() => {
+  resetWindowStoreForTests();
   handlers = {};
   unlistenSpy = vi.fn();
   invokeMock = vi.fn().mockResolvedValue({ exitCode: 0, outcome: 'opened', message: null });
@@ -231,6 +247,113 @@ describe('useAppOpenRequests — llm-skill-call (companion path)', () => {
 
     expect(pushed).toEqual([{ kind: 'unknown', text: 'I couldn\'t find ""' }]);
     expect(invokeMock).not.toHaveBeenCalledWith('run_open_app_cli', expect.anything());
+  });
+});
+
+// ── (c) llm-skill-call — the close_app intent (#2903 ST-3) ───────────────────
+
+describe('useAppOpenRequests — llm-skill-call (close_app path, #2903)', () => {
+  it('closes the resolved app window on close_app and pushes the deterministic close reply (#2903)', async () => {
+    await renderAppOpenHook();
+    openWindow(windowParams('mission-monitor', 'Mission Monitor'));
+    const closed = vi.fn();
+    registerWindowCloseCallback('mission-monitor', closed);
+
+    act(() => {
+      // `close` is stripped by the SAME normalizeAppQuery verb rule.
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'close Mission Monitor' } });
+    });
+
+    expect(pushed).toEqual([{ kind: 'success', text: 'Closing Mission Monitor' }]);
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(getWindowSnapshot().some((w) => w.id === 'mission-monitor')).toBe(false);
+    // Close NEVER round-trips the CLI, and NEVER opens a window.
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('performs zero actions and pushes the truthful not-open reply when close_app names a closed app (#2903)', async () => {
+    await renderAppOpenHook();
+    // A DIFFERENT app is open and must remain untouched (zero spurious closes).
+    openWindow(windowParams('other-app', 'Other App'));
+    const otherClosed = vi.fn();
+    registerWindowCloseCallback('other-app', otherClosed);
+
+    act(() => {
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
+    });
+
+    expect(pushed).toEqual([{ kind: 'failed', text: "Mission Monitor isn't open" }]);
+    expect(otherClosed).not.toHaveBeenCalled();
+    expect(getWindowSnapshot().map((w) => w.id)).toEqual(['other-app']);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('performs zero actions for an unsupported close_app name (#2903)', async () => {
+    await renderAppOpenHook();
+    openWindow(windowParams('mission-monitor', 'Mission Monitor'));
+
+    act(() => {
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Narnia' } });
+    });
+
+    // Reuses the shipped not-found copy — no second formatter, no action.
+    expect(pushed).toEqual([{ kind: 'unknown', text: 'I couldn\'t find "Narnia"' }]);
+    expect(getWindowSnapshot()).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('performs zero closes for a non-close skill even when the app window is open (#2903)', async () => {
+    await renderAppOpenHook();
+    openWindow(windowParams('mission-monitor', 'Mission Monitor'));
+
+    act(() => {
+      handlers['llm-skill-call']({
+        skill: 'tell_joke',
+        arguments: { app: 'Mission Monitor' },
+      });
+    });
+
+    expect(pushed).toEqual([]);
+    expect(getWindowSnapshot()).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('performs exactly one close for repeated close_app selections and never claims a second close (#2903)', async () => {
+    await renderAppOpenHook();
+    openWindow(windowParams('mission-monitor', 'Mission Monitor'));
+    const closed = vi.fn();
+    registerWindowCloseCallback('mission-monitor', closed);
+
+    act(() => {
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
+    });
+    act(() => {
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
+    });
+
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(pushed).toEqual([
+      { kind: 'success', text: 'Closing Mission Monitor' },
+      { kind: 'failed', text: "Mission Monitor isn't open" },
+    ]);
+  });
+
+  it('leaves the open_app path unchanged: close_app handling never invokes run_open_app_cli (#2903)', async () => {
+    const { openFeatureWindow } = await renderAppOpenHook();
+    vi.useFakeTimers();
+    openWindow(windowParams('mission-monitor', 'Mission Monitor'));
+
+    act(() => {
+      handlers['llm-skill-call']({ skill: 'close_app', arguments: { app: 'Mission Monitor' } });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(APP_OPEN_REPLY_BEAT_MS);
+    });
+
+    // The close branch is terminal — no CLI, no direct opener, one reply.
+    expect(openFeatureWindow).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(pushed).toHaveLength(1);
   });
 });
 

@@ -40,6 +40,29 @@ pub fn open_app_parameters() -> Value {
     })
 }
 
+/// The name of the second registered companion skill (Spec #2903): the close
+/// intent of the ONE app-control capability.
+pub const CLOSE_APP_SKILL: &str = "close_app";
+
+/// The `close_app` argument carrying the app identity the user named — the SAME
+/// single `app` argument `open_app` declares.
+pub const CLOSE_APP_ARGUMENT: &str = "app";
+
+/// The capability sentence offered for `close_app` (mechanism-neutral).
+pub const CLOSE_APP_DESCRIPTION: &str =
+    "Close an open Fredo desktop app/feature by the name the user said. Use ONLY for an explicit close request.";
+
+/// The declared input contract for `close_app`: exactly one required, non-empty
+/// string argument (`app`) — byte-for-byte the SAME shape as
+/// [`open_app_parameters`], so both intents validate through ONE rule.
+pub fn close_app_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "app": { "type": "string" } },
+        "required": ["app"]
+    })
+}
+
 /// A provider-agnostic declaration of one companion capability.
 ///
 /// `parameters` is a JSON Schema fragment declaring the capability's inputs.
@@ -99,6 +122,22 @@ impl SkillRegistry {
             OPEN_APP_SKILL,
             OPEN_APP_DESCRIPTION,
             open_app_parameters(),
+        ));
+        registry
+    }
+
+    /// The app-control registry: `open_app` registered FIRST, then `close_app`
+    /// (Spec #2903). Both declare the SAME single required `{ "app": string }`
+    /// contract, so one [`validate`] rule governs both intents.
+    ///
+    /// Additive: [`Self::with_open_app`] keeps its shipped single-skill
+    /// declaration for its pins.
+    pub fn with_app_control() -> Self {
+        let mut registry = Self::with_open_app();
+        registry.register(CompanionSkill::new(
+            CLOSE_APP_SKILL,
+            CLOSE_APP_DESCRIPTION,
+            close_app_parameters(),
         ));
         registry
     }
@@ -285,6 +324,69 @@ mod tests {
         assert_eq!(first.parameters["required"], json!(["app"]));
         assert_eq!(first.parameters["properties"]["app"]["type"], "string");
         assert_eq!(registry.list().count(), 1, "exactly one skill in this slice");
+    }
+
+    #[test]
+    fn with_app_control_registers_open_app_then_close_app_with_the_declared_app_argument() {
+        let registry = SkillRegistry::with_app_control();
+        assert_eq!(registry.len(), 2);
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![OPEN_APP_SKILL, CLOSE_APP_SKILL],
+            "open_app is offered FIRST, then close_app"
+        );
+
+        for (name, description) in [
+            (OPEN_APP_SKILL, OPEN_APP_DESCRIPTION),
+            (CLOSE_APP_SKILL, CLOSE_APP_DESCRIPTION),
+        ] {
+            let skill = registry.get(name).expect("registered under its name");
+            assert_eq!(skill.description, description);
+            assert_eq!(skill.parameters["type"], "object");
+            assert_eq!(skill.parameters["required"], json!(["app"]));
+            assert_eq!(skill.parameters["properties"]["app"]["type"], "string");
+        }
+
+        // The shipped single-skill constructor is untouched by the addition.
+        assert_eq!(SkillRegistry::with_open_app().len(), 1);
+    }
+
+    #[test]
+    fn close_app_declares_the_same_required_single_string_app_argument_as_open_app() {
+        assert_eq!(close_app_parameters(), open_app_parameters());
+        assert_eq!(CLOSE_APP_ARGUMENT, OPEN_APP_ARGUMENT);
+
+        // Both intents validate through the ONE `app` rule on the shared registry.
+        let registry = SkillRegistry::with_app_control();
+        let invocation = validate(&registry, CLOSE_APP_SKILL, &json!({ "app": "Settings" }))
+            .expect("a declared non-empty app is valid for close_app");
+        assert_eq!(invocation.skill, CLOSE_APP_SKILL);
+        assert_eq!(invocation.arguments, json!({ "app": "Settings" }));
+
+        // Fail-closed shapes match open_app exactly.
+        assert_eq!(
+            validate(&registry, CLOSE_APP_SKILL, &json!({})),
+            Err(SkillValidationError::MissingArgument("app".to_string()))
+        );
+        assert_eq!(
+            validate(&registry, CLOSE_APP_SKILL, &json!({ "app": "   " })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'app' must not be empty".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, CLOSE_APP_SKILL, &json!({ "app": 42 })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'app' must be a string".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, "open_the_pod_bay", &json!({ "app": "Settings" })),
+            Err(SkillValidationError::UnknownSkill(
+                "open_the_pod_bay".to_string()
+            ))
+        );
     }
 
     #[test]

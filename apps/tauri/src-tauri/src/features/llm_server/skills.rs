@@ -80,6 +80,28 @@ pub fn build_skill_request_body(messages: &[LlmMessage], registry: &SkillRegistr
     )
 }
 
+/// Build the skill-aware streaming request body for a model-audio turn
+/// (Spec #2903).
+///
+/// The captured clip is attached by the ONE audio renderer
+/// ([`chat::build_audio_request_body`]) — exactly ONE `input_audio` part on the
+/// LAST user message and never a `text` part (#2897 REQ-3) — and the SAME
+/// registry offer as the typed path ([`build_skill_request_body`]) is layered on
+/// top: `tools` from [`render_tools`], `tool_choice: "auto"` and
+/// `parallel_tool_calls: false`. The two bodies are therefore identical except
+/// the last user message's `content`, and there is no second copy of any schema.
+pub fn build_audio_skill_request_body(
+    messages: &[LlmMessage],
+    audio_base64: &str,
+    registry: &SkillRegistry,
+) -> Value {
+    let mut body = chat::build_audio_request_body(messages, audio_base64);
+    body["tools"] = render_tools(registry);
+    body["tool_choice"] = Value::String(TOOL_CHOICE_AUTO.to_string());
+    body["parallel_tool_calls"] = Value::Bool(PARALLEL_TOOL_CALLS);
+    body
+}
+
 /// The `llm-skill-call` payload: a VALIDATED selection, e.g.
 /// `{"skill":"open_app","arguments":{"app":"Mission Monitor"}}`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -319,8 +341,9 @@ pub fn spawn_chat_with_skills(app: AppHandle, messages: Vec<LlmMessage>) {
 /// `llm-done`).
 ///
 /// The ONE terminal-emit site, shared by the normal plan and the stream-failure
-/// path — so no backend branch can emit a `Done`-less terminal sequence.
-fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
+/// path — so no backend branch can emit a `Done`-less terminal sequence. Shared
+/// with the model-audio path (#2903) via `chat::run_audio_chat`.
+pub(crate) fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
     match event {
         TerminalEvent::SkillCall(call) => {
             let _ = app.emit("llm-skill-call", call);
@@ -334,14 +357,22 @@ fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
     }
 }
 
-/// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
-/// fragments buffered; at the finish the selection is validated and routed.
-async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {
-    let registry = SkillRegistry::with_open_app();
-    let body = build_skill_request_body(&messages, &registry);
-
+/// Drive ONE skill-aware generation body through the shared HTTP/SSE shell:
+/// content deltas → `llm-token`; tool-call fragments buffered VERBATIM; at the
+/// finish the selection is validated and routed through the terminal plan
+/// (`llm-skill-call` / readable `llm-error` / always a trailing `llm-done`).
+///
+/// The ONE accumulate/validate/emit loop, shared by the typed path
+/// ([`run_skill_chat`]) and the model-audio path (`chat::run_audio_chat`,
+/// #2903), so both routes settle on the SAME vocabulary and raw tool-call JSON
+/// is never forwarded as a token.
+pub(crate) async fn run_skill_stream(
+    app: &AppHandle,
+    registry: &SkillRegistry,
+    body: &Value,
+) -> Result<(), String> {
     let mut accumulator = ToolCallAccumulator::new();
-    chat::run_stream(app, &body, |frame: ChatSseFrame| {
+    chat::run_stream(app, body, |frame: ChatSseFrame| {
         for event in frame.events {
             if let Some(delta) = accumulator.push(event) {
                 let _ = app.emit("llm-token", delta);
@@ -355,10 +386,18 @@ async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<()
     })
     .await?;
 
-    for event in plan_terminal_events(&registry, &accumulator) {
+    for event in plan_terminal_events(registry, &accumulator) {
         emit_terminal_event(app, event);
     }
     Ok(())
+}
+
+/// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
+/// fragments buffered; at the finish the selection is validated and routed.
+async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {
+    let registry = SkillRegistry::with_app_control();
+    let body = build_skill_request_body(&messages, &registry);
+    run_skill_stream(app, &registry, &body).await
 }
 
 /// Stream a companion chat with the companion skill registry offered to the
@@ -374,7 +413,7 @@ pub fn llm_chat_with_skills(messages: Vec<LlmMessage>, app: AppHandle) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::companion::skills::OPEN_APP_ARGUMENT;
+    use crate::infrastructure::companion::skills::{CLOSE_APP_ARGUMENT, OPEN_APP_ARGUMENT};
     use serde_json::json;
 
     fn messages() -> Vec<LlmMessage> {
@@ -854,5 +893,313 @@ mod tests {
                 .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
             "a dead stream must not execute a skill: {events:?}"
         );
+    }
+
+    // ── #2903: the model-audio turn offers the SAME registry as the typed path ─
+
+    /// R-1.3(a) — the audio skill body offers the registry `tools` VERBATIM
+    /// (`render_tools`, no second schema copy) plus the shipped
+    /// `tool_choice: "auto"` / `parallel_tool_calls: false` / `stream: true`.
+    #[test]
+    fn build_audio_skill_request_body_offers_the_same_registry_tools_and_flags() {
+        let registry = SkillRegistry::with_app_control();
+        let body = build_audio_skill_request_body(&messages(), "UklGRg==", &registry);
+
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 1024);
+        assert_eq!(body["tools"], render_tools(&registry));
+        assert_eq!(body["tools"][0]["function"]["name"], "open_app");
+        assert_eq!(body["tools"][1]["function"]["name"], "close_app");
+        assert_eq!(
+            body["tools"][1]["function"]["parameters"],
+            registry.get("close_app").expect("registered").parameters,
+            "the close_app schema is the registry declaration, not a copy"
+        );
+        assert_eq!(body["tool_choice"], TOOL_CHOICE_AUTO);
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], PARALLEL_TOOL_CALLS);
+        assert_eq!(body["parallel_tool_calls"], false);
+    }
+
+    /// R-1.3(a) — the two request bodies are IDENTICAL modulo the last user
+    /// message's `content` (the ONE audio part). No second registry copy.
+    #[test]
+    fn the_audio_skill_body_equals_the_skill_body_plus_the_single_input_audio_part() {
+        let registry = SkillRegistry::with_app_control();
+        let skill_body = build_skill_request_body(&messages(), &registry);
+        let audio_body = build_audio_skill_request_body(&messages(), "UklGRg==", &registry);
+
+        let mut expected = skill_body.clone();
+        expected["messages"][1]["content"] =
+            serde_json::json!([chat::audio_content_part("UklGRg==")]);
+        assert_eq!(
+            audio_body, expected,
+            "the audio skill body differs from the typed body only in the last user content"
+        );
+
+        // The registry offer is shared verbatim — tools + flags cannot diverge.
+        assert_eq!(audio_body["tools"], skill_body["tools"]);
+        assert_eq!(audio_body["tool_choice"], skill_body["tool_choice"]);
+        assert_eq!(
+            audio_body["parallel_tool_calls"],
+            skill_body["parallel_tool_calls"]
+        );
+        assert_eq!(audio_body["messages"][0], skill_body["messages"][0]);
+    }
+
+    /// R-1.3(a) — the clip rides as exactly ONE `input_audio` part on the last
+    /// user message and NEVER as a `text` part (extends the shipped audio-body
+    /// pins to the skill-aware body the audio path actually sends).
+    #[test]
+    fn build_audio_skill_request_body_keeps_one_input_audio_part_and_no_text_part() {
+        let registry = SkillRegistry::with_app_control();
+        let body = build_audio_skill_request_body(&messages(), "UklGRg==", &registry);
+
+        let parts = body["messages"][1]["content"]
+            .as_array()
+            .expect("the last user content must be the audio array");
+        assert_eq!(parts.len(), 1, "exactly the ONE audio part: {parts:?}");
+        assert_eq!(parts[0]["type"], "input_audio");
+        assert_eq!(parts[0]["input_audio"]["data"], "UklGRg==");
+        assert_eq!(parts[0]["input_audio"]["format"], "wav");
+        assert_eq!(
+            parts[0].as_object().map(serde_json::Map::len),
+            Some(2),
+            "the part carries only type + input_audio"
+        );
+
+        let serialized = body.to_string();
+        assert!(
+            !serialized.contains("\"type\":\"text\""),
+            "the audio skill body must not carry a text part: {serialized}"
+        );
+        assert!(!serialized.contains("\"text\""), "no text key: {serialized}");
+    }
+
+    /// R-1.3(b) — a buffered `tool_calls` turn on the AUDIO path (split
+    /// fragments) routes through the SAME shipped `plan_terminal_events`:
+    /// `[SkillCall, Done]`, never a token for the raw tool-call JSON.
+    #[test]
+    fn audio_skill_stream_routes_a_tool_call_through_the_shared_terminal_plan() {
+        let registry = SkillRegistry::with_app_control();
+        let mut accumulator = ToolCallAccumulator::new();
+
+        // Fragment split mid-argument: never parsed per chunk.
+        assert_eq!(
+            accumulator.push(fragment(0, Some("open_app"), Some("{\"app\":\"Miss"))),
+            None
+        );
+        assert_eq!(
+            accumulator.push(fragment(0, None, Some("ion Monitor\"}"))),
+            None,
+            "raw tool-call fragments are never forwarded as tokens"
+        );
+        accumulator.set_finish_reason("tool_calls");
+
+        assert_eq!(
+            plan_terminal_events(&registry, &accumulator),
+            vec![
+                TerminalEvent::SkillCall(SkillCall {
+                    skill: "open_app".to_string(),
+                    arguments: json!({ "app": "Mission Monitor" }),
+                }),
+                TerminalEvent::Done,
+            ]
+        );
+    }
+
+    /// R-1.3(b) — `llm-done` is emitted exactly ONCE and LAST on the audio path:
+    /// a validated call, a rejected selection, an empty stream, and a transport
+    /// failure all settle exactly once.
+    #[test]
+    fn an_audio_skill_stream_settles_with_exactly_one_done() {
+        let registry = SkillRegistry::with_app_control();
+
+        let mut valid = ToolCallAccumulator::new();
+        valid.push(fragment(0, Some("close_app"), Some("{\"app\":\"Settings\"}")));
+        valid.set_finish_reason("tool_calls");
+
+        let mut rejected = ToolCallAccumulator::new();
+        rejected.push(fragment(0, Some("open_the_pod_bay"), Some("{\"app\":\"Settings\"}")));
+        rejected.set_finish_reason("tool_calls");
+
+        let empty = ToolCallAccumulator::new();
+
+        for (label, accumulator) in [
+            ("valid selection", valid),
+            ("rejected selection", rejected),
+            ("empty stream", empty),
+        ] {
+            let events = plan_terminal_events(&registry, &accumulator);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, TerminalEvent::Done))
+                    .count(),
+                1,
+                "{label}: exactly one llm-done: {events:?}"
+            );
+            assert_eq!(
+                events.last(),
+                Some(&TerminalEvent::Done),
+                "{label}: llm-done is always last: {events:?}"
+            );
+        }
+
+        // The transport-failure leg (`Err`) settles once, last.
+        let failure = plan_stream_error_events("the companion server stream failed");
+        assert_eq!(
+            failure
+                .iter()
+                .filter(|event| matches!(event, TerminalEvent::Done))
+                .count(),
+            1,
+            "a failed audio stream must not double-settle: {failure:?}"
+        );
+        assert_eq!(failure.last(), Some(&TerminalEvent::Done));
+    }
+
+    /// R-1.3(b)/R-5.2 — a malformed or rejected audio selection fails closed: a
+    /// readable `llm-error`, ZERO `llm-skill-call`, and `llm-done` last.
+    #[test]
+    fn a_rejected_audio_selection_emits_error_and_never_a_skill_call() {
+        let registry = SkillRegistry::with_app_control();
+        let cases: [(&str, Option<&str>, &str); 6] = [
+            (
+                "unknown skill name",
+                Some("open_the_pod_bay"),
+                "{\"app\":\"Settings\"}",
+            ),
+            ("close_app with no app", Some("close_app"), "{}"),
+            ("close_app blank app", Some("close_app"), "{\"app\":\"   \"}"),
+            ("close_app non-string app", Some("close_app"), "{\"app\":7}"),
+            ("malformed arguments", Some("close_app"), "{\"app\": "),
+            ("the call has no name", None, "{\"app\":\"Settings\"}"),
+        ];
+
+        for (label, name, raw) in cases {
+            let events = plan_for(&registry, name, raw);
+            assert!(
+                matches!(events.first(), Some(TerminalEvent::Error(_))),
+                "{label}: expected a fail-closed error, got {events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+                "{label}: nothing may be executed, got {events:?}"
+            );
+            assert_eq!(
+                events.last(),
+                Some(&TerminalEvent::Done),
+                "{label}: every path must settle with llm-done"
+            );
+        }
+    }
+
+    // ── #2903 (ST-3 dispatch contract): `close_app` on the ONE shared registry ─
+
+    /// R-2/R-3 — a valid `close_app` selection validates against the SAME `app`
+    /// contract and emits `[SkillCall{skill:"close_app"}, Done]`.
+    #[test]
+    fn a_valid_close_app_call_validates_and_emits_skill_call_then_done() {
+        let registry = SkillRegistry::with_app_control();
+        assert_eq!(CLOSE_APP_ARGUMENT, OPEN_APP_ARGUMENT);
+
+        let mut accumulator = ToolCallAccumulator::new();
+        accumulator.push(fragment(0, Some("close_app"), Some("{\"app\":")));
+        accumulator.push(fragment(0, None, Some("\"Settings\"}")));
+        accumulator.set_finish_reason("tool_calls");
+
+        assert_eq!(
+            plan_terminal_events(&registry, &accumulator),
+            vec![
+                TerminalEvent::SkillCall(SkillCall {
+                    skill: "close_app".to_string(),
+                    arguments: json!({ "app": "Settings" }),
+                }),
+                TerminalEvent::Done,
+            ]
+        );
+    }
+
+    /// R-5.2 — every spurious or malformed `close_app` selection is fail-closed:
+    /// no `SkillCall` (hence zero closes) and `Done` last, for EVERY argument
+    /// shape the declared contract forbids.
+    #[test]
+    fn every_spurious_close_app_selection_is_fail_closed_and_settles() {
+        let registry = SkillRegistry::with_app_control();
+
+        let cases: [(&str, Option<&str>, &str); 11] = [
+            (
+                "unknown skill name",
+                Some("open_the_pod_bay"),
+                "{\"app\":\"Settings\"}",
+            ),
+            ("app is a number", Some("close_app"), "{\"app\":123}"),
+            ("app is a boolean", Some("close_app"), "{\"app\":true}"),
+            ("app is an array", Some("close_app"), "{\"app\":[\"Settings\"]}"),
+            (
+                "app is an object",
+                Some("close_app"),
+                "{\"app\":{\"name\":\"Settings\"}}",
+            ),
+            ("app is null", Some("close_app"), "{\"app\":null}"),
+            ("app is missing", Some("close_app"), "{}"),
+            ("app is blank", Some("close_app"), "{\"app\":\"   \"}"),
+            ("arguments are not JSON", Some("close_app"), "not json"),
+            ("arguments are empty", Some("close_app"), ""),
+            (
+                "an undeclared extra argument",
+                Some("close_app"),
+                "{\"app\":\"Settings\",\"force\":true}",
+            ),
+        ];
+
+        for (label, name, raw) in cases {
+            let events = plan_for(&registry, name, raw);
+            assert!(
+                matches!(events.first(), Some(TerminalEvent::Error(_))),
+                "{label}: expected a fail-closed error, got {events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+                "{label}: nothing may be executed, got {events:?}"
+            );
+            assert_eq!(
+                events.last(),
+                Some(&TerminalEvent::Done),
+                "{label}: every path must settle with llm-done"
+            );
+        }
+    }
+
+    /// R-2.1 — a content-only close-sounding turn is exactly `Done`: zero
+    /// `llm-skill-call`s, so the hook never closes a window.
+    #[test]
+    fn a_close_sounding_message_streams_content_and_never_a_skill_call() {
+        let registry = SkillRegistry::with_app_control();
+        for message in [
+            "close the pod bay doors",
+            "closing time",
+            "please shut it down",
+            "what does close_app do?",
+        ] {
+            let mut accumulator = ToolCallAccumulator::new();
+            accumulator.push(ChatStreamEvent::Delta(format!("reply about {message}: ")));
+            accumulator.push(ChatStreamEvent::Delta("the normal chat reply".to_string()));
+            accumulator.set_finish_reason("stop");
+
+            let events = plan_terminal_events(&registry, &accumulator);
+            assert_eq!(events, vec![TerminalEvent::Done], "message {message:?}");
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, TerminalEvent::SkillCall(_))),
+                "message {message:?} must close zero windows"
+            );
+        }
     }
 }

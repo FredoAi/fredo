@@ -13,13 +13,19 @@
  *      ambiguous open ZERO windows (R-2.3/R-2.4).
  *
  *  (b) `llm-skill-call` — emitted by the skill-aware inference path (ST-5) when
- *      the model selects `open_app`. Resolve; push the deterministic reply to
- *      the active companion FIRST (UI/UX ordering contract, §7), then for a
- *      resolved identity defer the CLI open by `APP_OPEN_REPLY_BEAT_MS = 800`
- *      and invoke `run_open_app_cli` (whose `fredo open-app` child round-trips
- *      back through (a), so the opener is still exactly one). A non-zero /
- *      non-`opened` CLI result pushes the failed reply. Unknown / ambiguous
- *      NEVER invoke the CLI (R-4.1/R-4.2). Non-`open_app` skills are ignored.
+ *      the model selects `open_app` or `close_app`. Resolve; push the
+ *      deterministic reply to the active companion FIRST (UI/UX ordering
+ *      contract, §7), then for a resolved identity defer the CLI open by
+ *      `APP_OPEN_REPLY_BEAT_MS = 800` and invoke `run_open_app_cli` (whose
+ *      `fredo open-app` child round-trips back through (a), so the opener is
+ *      still exactly one). A non-zero / non-`opened` CLI result pushes the
+ *      failed reply. Unknown / ambiguous NEVER invoke the CLI (R-4.1/R-4.2).
+ *      #2903 ST-3 adds the `close_app` intent to this SAME hook: resolve through
+ *      the SAME `resolveAppIdentity`, then — only when the target window is
+ *      actually open (`getWindowSnapshot()`) — close it through the ONE shipped
+ *      mechanism `windowStore.closeWindow(id)` and push the deterministic close
+ *      reply. A not-open target performs ZERO close and says so truthfully. Any
+ *      other skill is ignored (no parallel dispatcher, no second resolver).
  *
  * Bounds are owned by the backend (ST-4): confirm wait <= 5 s, CLI child
  * <= 10 s. This hook never blocks or polls.
@@ -28,19 +34,24 @@ import { useCallback, useEffect, useRef } from 'react';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { pushAppOpenReply } from '../../../shared/components/companion/skillBridge';
 import {
+  appCloseNotOpenReply,
+  appCloseSuccessReply,
   appOpenAmbiguousReply,
   appOpenFailedReply,
   appOpenSuccessReply,
   appOpenUnknownReply,
 } from '../../../shared/components/companion/appOpenReply';
+import { closeWindow, getWindowSnapshot } from '../../../shared/window-system/windowStore';
 import { resolveAppIdentity } from '../lib/appIdentity';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
 /** UI/UX §7 binding — reply committed first, open dispatched after this beat. */
 export const APP_OPEN_REPLY_BEAT_MS = 800;
 
-/** The one registered companion skill this hook executes (ST-3/ST-5). */
+/** The shared app-control skills this ONE hook executes (ST-3/ST-5). */
 export const OPEN_APP_SKILL_NAME = 'open_app';
+/** #2903 ST-3 — the close intent, declared in the same registry (ST-1). */
+export const CLOSE_APP_SKILL_NAME = 'close_app';
 
 /** Wire contract §3 — backend -> `main` window on a CLI open request. */
 export interface AppOpenRequestPayload {
@@ -152,10 +163,14 @@ export function useAppOpenRequests({
     );
   }, []);
 
-  /** (b) skill selection — push the reply, then (resolved only) run the CLI. */
+  /** (b) skill selection — open/close a resolved identity, push the reply. */
   const handleSkillCall = useCallback(
     (payload: LlmSkillCallPayload) => {
-      if (!payload || payload.skill !== OPEN_APP_SKILL_NAME) return;
+      const isOpenSkill = !!payload && payload.skill === OPEN_APP_SKILL_NAME;
+      const isCloseSkill = !!payload && payload.skill === CLOSE_APP_SKILL_NAME;
+      // Anything that is neither intent is ignored here: zero spurious
+      // opens/closes for every other skill (single shared dispatcher).
+      if (!isOpenSkill && !isCloseSkill) return;
 
       const rawApp =
         payload.arguments && typeof payload.arguments === 'object'
@@ -180,9 +195,26 @@ export function useAppOpenRequests({
         return;
       }
 
-      // Resolved — commit the success reply BEFORE the open (UI/UX §7), then
-      // dispatch the CLI after the readable beat.
       const { feature, displayName } = resolution;
+
+      if (isCloseSkill) {
+        // Guarded close: the open-check comes from the kernel snapshot, so a
+        // not-open target performs ZERO close and is told the truth. The
+        // mechanism is the ONE shipped `windowStore.closeWindow` (idempotent +
+        // re-entrancy-guarded) — never a new window API. Then the reply states
+        // exactly what happened (never a close claim when nothing closed).
+        const targetIsOpen = getWindowSnapshot().some((entry) => entry.id === feature.id);
+        if (!targetIsOpen) {
+          pushAppOpenReply({ kind: 'failed', text: appCloseNotOpenReply(displayName) });
+          return;
+        }
+        closeWindow(feature.id);
+        pushAppOpenReply({ kind: 'success', text: appCloseSuccessReply(displayName) });
+        return;
+      }
+
+      // Resolved open — commit the success reply BEFORE the open (UI/UX §7),
+      // then dispatch the CLI after the readable beat.
       pushAppOpenReply({ kind: 'success', text: appOpenSuccessReply(displayName) });
       clearBeatTimer();
       beatTimerRef.current = setTimeout(() => {

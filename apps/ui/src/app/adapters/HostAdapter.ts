@@ -71,6 +71,14 @@ export interface HostAdapter {
    * Token/done semantics are identical to `llmChat`, with the same additive
    * `onError` channel (#2871).
    *
+   * #2903 ST-2 — the ADDITIVE trailing `onSkillCall` channel (AFTER `onError`)
+   * makes the audio transport skill-aware: it carries a VALIDATED
+   * `llm-skill-call` (`{ skill, arguments }`) exactly like `llmChatWithSkills`, so
+   * a spoken app-control selection reaches the SAME reply router the typed path
+   * uses. Raw tool-call JSON is NEVER streamed as a token. The parameter is
+   * optional and trailing, so a caller that omits it keeps the exact #2897
+   * 4-arg/5-arg call contract.
+   *
    * Optional so existing `HostAdapter` implementations and test doubles stay valid;
    * in-repo adapters (`TauriAdapter`, `DevAdapter`) implement it.
    */
@@ -80,6 +88,7 @@ export interface HostAdapter {
     onToken: (token: string) => void,
     onDone: () => void,
     onError?: (message: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
   ): Promise<void>;
 }
 

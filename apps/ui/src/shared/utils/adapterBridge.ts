@@ -32,12 +32,17 @@ type LlmChatWithSkillsFn = (
 ) => Promise<void>;
 // #2897 ST-3 — the model-audio variant: the captured clip is attached to the last
 // user message by the backend renderer; token/done/error channels are unchanged.
+// #2903 ST-2 — the ADDITIVE trailing `onSkillCall` channel (AFTER `onError`) makes
+// the audio transport skill-aware: a validated selection reaches the same reply
+// router the typed path uses. Optional and trailing, so the #2897 call contract is
+// preserved exactly when the caller omits it.
 type LlmChatWithAudioFn = (
   messages: LlmMessage[],
   audioBase64: string,
   onToken: (token: string) => void,
   onDone: () => void,
   onError?: (message: string) => void,
+  onSkillCall?: (call: LlmSkillCall) => void,
 ) => Promise<void>;
 
 let _invoke: InvokeFn | undefined;
@@ -181,6 +186,11 @@ export const adapterBridge = {
    * only when supplied (same contract as `llmChat` / `llmChatWithSkills`). A
    * missing implementation is a safe no-op that still completes (`onDone`) —
    * never a hang.
+   *
+   * #2903 ST-2 — the ADDITIVE trailing `onSkillCall` channel (AFTER `onError`)
+   * makes the audio path skill-aware. When the caller omits it, the EXACT shipped
+   * #2897 call shapes (4-arg, and 5-arg with only `onError`) are preserved
+   * byte-for-byte — the skill channel is passed only when it is actually supplied.
    */
   async llmChatWithAudio(
     messages: LlmMessage[],
@@ -188,11 +198,15 @@ export const adapterBridge = {
     onToken: (token: string) => void,
     onDone: () => void,
     onError?: (message: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
   ): Promise<void> {
     if (!_llmChatWithAudio) {
       console.warn('[adapterBridge] llmChatWithAudio called before adapter registered');
       onDone();
       return;
+    }
+    if (onSkillCall) {
+      return _llmChatWithAudio(messages, audioBase64, onToken, onDone, onError, onSkillCall);
     }
     if (onError) return _llmChatWithAudio(messages, audioBase64, onToken, onDone, onError);
     return _llmChatWithAudio(messages, audioBase64, onToken, onDone);
