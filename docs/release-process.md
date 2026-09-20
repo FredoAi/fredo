@@ -56,8 +56,10 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   needs write to create/publish the Release object and upload artifacts.
 - **Build matrix (Windows x64 only — single `windows-latest` leg):** `windows-latest` (x64), with no
   `--target` arg. `fail-fast: false`.
-- **Steps:** checkout → setup-node 20 with pnpm cache → pnpm/action-setup → dtolnay/rust-toolchain
-  stable → Swatinem/rust-cache (`workspaces: apps/tauri/src-tauri`) → `pnpm install --frozen-lockfile`
+- **Steps:** checkout → pnpm/action-setup → setup-node 20 with pnpm cache (the pnpm setup MUST
+  precede setup-node, which resolves the `pnpm` binary for its cache) → `oven-sh/setup-bun`
+  (builds the OpenCode plugin via `beforeBuildCommand`) → dtolnay/rust-toolchain stable →
+  Swatinem/rust-cache (`workspaces: apps/tauri/src-tauri`) → `pnpm install --frozen-lockfile`
   → `tauri-apps/tauri-action@v1`.
 - **`tauri-action` inputs:** `projectPath: apps/tauri/src-tauri` (the Tauri project is **not** at the
   repo root); `tagName: app-v__VERSION__` (`__VERSION__` is substituted from `tauri.conf.json`
