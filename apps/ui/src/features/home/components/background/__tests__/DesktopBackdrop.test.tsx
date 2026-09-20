@@ -1,5 +1,5 @@
 /**
- * #2899 ST-3 / #2905 ST-2/ST-3/ST-6 — DesktopBackdrop tests.
+ * #2899 ST-3 / #2905 ST-2/ST-3/ST-6 / #2909 ST-1 — DesktopBackdrop tests.
  *
  * Pins the shell layer:
  *   - `none` renders NO DOM at all (the default/no-opt-in path is unchanged) and
@@ -8,7 +8,11 @@
  *     `[data-background-layer]` child per layer (≤3) on a full-bleed, inert
  *     layer (`pointer-events: none`, `aria-hidden`, z=0, not focusable);
  *   - the animated leg stamps `data-motion="animated"` + injects the ONE motion
- *     stylesheet and per-layer inline animation;
+ *     stylesheet with one generated `@keyframes fredo-bg-<layerId>` per animated
+ *     layer, and each animated layer carries its bounded inline animation + the
+ *     `data-motion-kind` identity hook;
+ *   - animated layers are oversized by the shared `layerBoxStyle` geometry in
+ *     BOTH motion legs (G-169); static layers stay at `inset: 0`;
  *   - the static leg (OS reduced motion) renders the SAME layered paint with
  *     `data-motion="static"`, no stylesheet, and zero animation properties.
  *
@@ -22,7 +26,7 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 
 import { DesktopBackdrop } from '../DesktopBackdrop';
 import { getBackgroundDescriptor } from '../backgroundRegistry';
-import { MOTION_LAYERS_MAX } from '../backgroundMotion';
+import { MOTION_LAYERS_MAX, MOTION_LAYER_OVERSCAN_PCT } from '../backgroundMotion';
 
 vi.mock('../backgroundStore', () => ({
   useBackgroundId: vi.fn(),
@@ -48,7 +52,9 @@ function stubReducedMotion(matches: boolean): void {
   }));
 }
 
-describe('#2899 ST-3 / #2905 ST-6 — DesktopBackdrop', () => {
+const OVERSCAN_INSET = `-${MOTION_LAYER_OVERSCAN_PCT}%`;
+
+describe('#2899 ST-3 / #2909 ST-1 — DesktopBackdrop', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stubReducedMotion(false);
@@ -105,6 +111,10 @@ describe('#2899 ST-3 / #2905 ST-6 — DesktopBackdrop', () => {
         const expected = String(declared.css.backgroundImage).split(',')[0].trim();
         expect(getComputedStyle(painted).backgroundImage).toContain(expected);
       }
+      // Shared geometry: animated layers are overscanned, static layers are not.
+      expect(getComputedStyle(painted).inset, `${declared.id}: overscan`).toBe(
+        declared.motion ? OVERSCAN_INSET : '0',
+      );
     }
   });
 
@@ -115,29 +125,55 @@ describe('#2899 ST-3 / #2905 ST-6 — DesktopBackdrop', () => {
     expect(hydrateBackgroundMock).toHaveBeenCalledTimes(1);
   });
 
-  it('animated leg stamps data-motion + injects the ONE motion stylesheet with bounded inline animation', () => {
+  it('animated leg emits per-layer keyframes + inline animation + the identity hook', () => {
     stubReducedMotion(false);
-    useBackgroundIdMock.mockReturnValue('mesh');
+    useBackgroundIdMock.mockReturnValue('nebula');
     const { container } = renderWithChakra(<DesktopBackdrop />);
 
     const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
-    expect(root.getAttribute('data-background-id')).toBe('mesh');
+    expect(root.getAttribute('data-background-id')).toBe('nebula');
     expect(root.getAttribute('data-motion')).toBe('animated');
-    expect(
-      container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
-    ).not.toBeNull();
 
+    const stylesheet = container.querySelector('[data-testid="desktop-backdrop-motion-styles"]');
+    expect(stylesheet).not.toBeNull();
+    const css = stylesheet?.textContent ?? '';
+
+    const descriptor = getBackgroundDescriptor('nebula');
     const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
-    expect(layers.length).toBe(getBackgroundDescriptor('mesh').layers.length);
+    expect(layers.length).toBe(descriptor.layers.length);
     expect(layers.length).toBeLessThanOrEqual(MOTION_LAYERS_MAX);
+
+    let animatedLayers = 0;
     for (const layer of layers) {
-      expect(layer.getAttribute('style') ?? '').toMatch(/animation-name\s*:/);
+      const id = layer.getAttribute('data-background-layer') ?? '';
+      const declared = descriptor.layers.find((candidate) => candidate.id === id);
+      expect(declared, `${id}: declared`).toBeDefined();
+      if (!declared?.motion) {
+        // Static layer: no animation, no identity hook.
+        expect(layer.getAttribute('style') ?? '', `${id}: no inline animation`).not.toMatch(
+          /animation/i,
+        );
+        expect(layer.hasAttribute('data-motion-kind'), `${id}: no motion kind`).toBe(false);
+        continue;
+      }
+      animatedLayers += 1;
+      expect(layer.getAttribute('data-motion-kind'), `${id}: data-motion-kind`).toBe(
+        declared.motion.kind,
+      );
+      expect(layer.getAttribute('style') ?? '', `${id}: inline animation`).toMatch(
+        /animation-name\s*:/,
+      );
+      // One generated block per ANIMATED layer id — never a per-kind block.
+      expect(css, `${id}: generated keyframes`).toContain(`@keyframes fredo-bg-${id}`);
     }
+    expect(animatedLayers).toBeGreaterThan(0);
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(css).toContain('[data-motion="static"]');
   });
 
-  it('static leg keeps the layered paint but removes all animation + the stylesheet', () => {
+  it('static leg keeps the layered paint (with overscan) but removes all animation + the stylesheet', () => {
     stubReducedMotion(true);
-    useBackgroundIdMock.mockReturnValue('mesh');
+    useBackgroundIdMock.mockReturnValue('nebula');
     const { container } = renderWithChakra(<DesktopBackdrop />);
 
     const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
@@ -146,10 +182,18 @@ describe('#2899 ST-3 / #2905 ST-6 — DesktopBackdrop', () => {
       container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
     ).toBeNull();
 
+    const descriptor = getBackgroundDescriptor('nebula');
     const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
-    expect(layers.length).toBe(getBackgroundDescriptor('mesh').layers.length);
+    expect(layers.length).toBe(descriptor.layers.length);
     for (const layer of layers) {
-      expect(layer.getAttribute('style') ?? '').not.toMatch(/animation/i);
+      const id = layer.getAttribute('data-background-layer') ?? '';
+      expect(layer.getAttribute('style') ?? '', 'no inline animation').not.toMatch(/animation/i);
+      expect(getComputedStyle(layer).animationName || 'none').toBe('none');
+      // Geometry is not an animation property — overscan applies in both legs.
+      const declared = descriptor.layers.find((candidate) => candidate.id === id);
+      expect(getComputedStyle(layer).inset, `${id}: overscan`).toBe(
+        declared?.motion ? OVERSCAN_INSET : '0',
+      );
     }
   });
 });
