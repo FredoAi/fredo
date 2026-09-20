@@ -171,3 +171,41 @@
 - **R-22 PASS (live).** preset select default→dark→coffee→light-default applied live; `accentPrimary` override wins, unused `cardBg` no-op, "Reset to theme defaults" cleared preset+overrides; theming suites green.
 - **R-23 PASS (gates).** build exit 0; 1779/1779 tests; zero literals/`var(--x)NN`/raster in the slice; the only inverted assertions are the explicit `G-136 SUPERSEDED (#2905)` static-only legs.
 - **R-24 PASS (live).** backdrop strictly z=0 below the z=1 WindowManager, `pointer-events:none` + `aria-hidden` + non-focusable + handler-free; `elementFromPoint` never returns the backdrop; clicks/typing into launcher and windows landed while a background was active; no window/card/surface styling change in the diff.
+
+---
+
+## #2909 extension — the perceptibility fix must not regress the desktop or the theme engine
+
+> Issue #2909 revises #2905: the procedural background must be **genuinely perceptible**. These
+> invariants MUST hold; run alongside R-1..R-24 and the desktop-shell / settings suites.
+> **Verification policy: live.** The perceptibility rows themselves are F-39..F-55 in
+> `functional.md`; the rows here are the "must NOT change" baseline.
+
+- [ ] **R-25 (theming engine + existing background behavior unchanged):** preset selection,
+      per-token overrides, "Reset to theme defaults", the readout, and the `overrides ?? preset ??
+      base` layering behave exactly as before; the chooser still offers None + the six recipes;
+      selection still persists across a full restart; a stale/unknown stored value still falls back
+      safely to None; the backdrop stays z=0 / `pointer-events:none` / `aria-hidden` / non-focusable
+      and intercepts no pointer/keyboard input. Reference F-1..F-19, R-21..R-24.
+  - **Edge:** theme/accent switch while the animation runs; light + dark; window dragged over the
+    animated region; upgrade from a persisted recipe.
+- [ ] **R-26 (motion bounds preserved):** the #2905 bounds still hold after any perceptibility
+      change — `isBoundedMotion` rejects out-of-budget motion (no `steps()`, duration ≥
+      `MOTION_DURATION_MIN_MS` = 8000, opacity ≥ `MOTION_OPACITY_MIN` = 0.35, scale/translate in
+      range), layers ≤ `MOTION_LAYERS_MAX` = 3, and the motion module introduces **zero**
+      `requestAnimationFrame`/`setInterval` loops.
+  - **Edge:** the perceptibility floors and these bounds must be jointly satisfiable (see QA-5 in
+    `.opencode/tmp/2909/triage.md`); a bound relaxed to meet the floor is recorded with rationale.
+- [ ] **R-27 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
+      `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted. The
+      `#2899` static-only animation assertions remain the ONLY permitted supersession (marked
+      `G-136 SUPERSEDED (#2905)`); the #2905 signature-only rows (F-32/F-33/F-35) are retained as
+      **corroboration only** and must not be cited as R-1.1 evidence. Reference F-54.
+  - **Edge:** the superseded `background.invariants.test.tsx` leg stays inverted (animation present
+    AND reduced-motion-gated), not deleted; `var(--x)NN` still absent; no raster asset added.
+- [ ] **R-28 (budget not regressed by faster/larger motion):** relative to the #2905 baseline, idle
+      CPU and heap do not grow unbounded (heap ≤ +2 % over ≥ 60 s; animation + layer counts constant);
+      frame pacing stays p95 ≤ 20 ms / max ≤ 50 ms with no > 3 consecutive frames > 33 ms; launch and
+      interaction remain within noise of the None baseline. Reference F-48/F-49.
+  - **Edge:** sustained idle soak (minutes); interaction during animation; reduced-motion static is
+    cheaper; two windows.
