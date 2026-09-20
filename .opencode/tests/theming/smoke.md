@@ -93,7 +93,7 @@
 > `functional.md` carries the `telemetry_spans` leg. **A signature/`getAnimations()` read is NOT
 > evidence of perceptibility** (see F-40).
 
-- [ ] **S-17:** Background selector + motion state — Settings → Appearance → Background renders
+- [x] **S-17:** Background selector + motion state — Settings → Appearance → Background renders
       **None + ≥5 procedural options**; select a procedural option and read
       `window.matchMedia('(prefers-reduced-motion: reduce)').matches` +
       `document.querySelector('[data-testid="desktop-backdrop"]')?.getAnimations().length` + its
@@ -101,15 +101,21 @@
       `tauri_read_logs(source="console", lines=50)` clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
       **Expected:** six recipe options; with reduce OFF `data-motion="animated"` and ≥1 running animation;
       console clean.
-- [ ] **S-18:** Quick perceptibility sanity — select a procedural option (all windows closed), pause the
+- [x] **S-18:** Quick perceptibility sanity — select a procedural option (all windows closed), pause the
       backdrop animations and seek to 0 then 3000 ms, screenshot each; run a **dense full-frame diff** of
       the two frames.
       **Expected:** **≥ 2.0 %** of backdrop pixels change by ≥ 8 per channel within the 3 s seek
       (constellation ≥ 3.0 %, aurora/nebula/mesh/halo ≥ 4.0 %) — a non-empty `getAnimations()` with a
       sub-floor diff is a FAIL. Then reselect **None** and confirm the backdrop DOM is absent
       (`[data-testid="desktop-backdrop"]` null) and today's desktop returns; screenshot succeeds.
-- [ ] **S-19:** Reduced-motion + gates — the product-unit/static pin for reduced-motion gating exists
+- [x] **S-19:** Reduced-motion + gates — the product-unit/static pin for reduced-motion gating exists
       and passes (`resolveBackgroundMotion({ systemReducedMotion: true })` → `'static'`, zero
       `animation*` on the static render); `pnpm --filter @fredo/ui build` exit 0;
       `pnpm --filter @fredo/ui test:run` green; the live OS flip is recorded
       **UNVERIFIED-with-named-blocker** (Tauri MCP driver has no media-emulation API — G-050/G-148/#2870).
+
+### #2909 testing round 1 (spec/2909 @ d2971844) — results
+
+- **S-17 PASS (live).** Chooser renders None + the six recipes (`desktop-background-option-{none,aurora,nebula,mesh,topography,constellation,halo}`); raw `matchMedia('(prefers-reduced-motion: reduce)').matches` = **false**; with a recipe selected `data-motion="animated"`, `data-background-id` = the recipe, 2–3 running backdrop animations; caption `Motion: on`; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- **S-18 PASS (live).** Dense full-frame diff of paused seek 0 vs 3000 ms, all six recipes: aurora 64.7 %, nebula 2.93 %, mesh 18.3 %, topography 12.0 %, constellation 40.9 %, halo 13.0 % — every recipe additionally clears its floor on ≥ 2 of the 3 phase-spread intervals and the max pairwise interval (see F-39). Reselecting None → `desktop-backdrop` null; today's desktop returns; screenshot succeeds.
+- **S-19 PASS.** Reduced-motion pin passes (`resolveBackgroundMotion({true})` → `'static'`, static render zero `animation*`); build exit 0; `test:run` 108 files / 1805 tests; live OS flip recorded UNVERIFIED-with-named-blocker (no media-emulation API).
