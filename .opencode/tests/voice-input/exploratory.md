@@ -401,3 +401,21 @@
 - **E-62 OBSERVED (synthetic-lever artifact disclosed).** The deterministic reply replaces the streamed prose at settle (bubble sample 0 = pure deterministic string; live region retained it). Because the L3 injection does not terminate the backend generation, the model's later tokens are appended by `onToken` (no post-settle guard) — the bubble can end `Opening SettingsHello! …`. The REAL path emits `llm-skill-call` on `finish_reason:"tool_calls"` and stops (llm-done last), so this is not real-path-reachable. Recorded as a robustness observation, not promoted to a FAIL.
 - **E-63 PASS (observed).** 7-injection churn: close→closed, 2×open→singleton, `tell_joke`→zero actions, `open_app Narnia`→zero actions, close→closed. No reply storm, no duplicate window, no `Maximum update depth exceeded`.
 - **E-64 NOT DRIVEN (named).** Killing the managed server mid-turn needs in-round isolation from the managed-server auto-relaunch; #2897 E-53 already established the typed curated `modelAudioUnavailable` path. No failure claimed.
+
+---
+
+## #2904 extension — mode-parity render edge probes
+
+> Unscripted probes for issue #2904. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated.
+
+- [ ] E-65: **Mode copy at the narrowest indicator slot.** With the bar narrow and dictating in
+      mode=`model`, hold the countdown copy (`Fredo is listening · 10s left`) and the `processing`
+      copy (`Fredo is processing your speech…`) — the two widest reservations. Does each stay on ONE
+      line (ellipsis acceptable) or stack/push the field? Any letter-per-line string, hidden
+      countdown, or field displacement is a finding (promotes to F-127 / `launcher` F-101/F-105).
+- [ ] E-66: **Indicator vs a typed query during a model capture.** Type into the field while the
+      `Fredo is listening` chip is live (model mode). Does the typed text stay clear of the chip
+      (reserved 312px gutter) with no vertical relayout, and does the chip stay one line? Any
+      overlap, stacking, or console error is a finding (promotes to `launcher` F-103/F-106).
