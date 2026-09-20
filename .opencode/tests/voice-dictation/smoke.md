@@ -46,6 +46,6 @@
       `Error:`/`Uncaught`/`Maximum update depth exceeded`; screenshot succeeds. **The fixture carries no
       intelligible speech — the acoustic app-request leg stays a NAMED BLOCKER, not a PASS.**
 
-### #2903 testing round 1 — result
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
-- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
+- **S-4 PASS.** Cold `dev-env.ps1 -Action Up -Spec 2903 -EnvVar "FREDO_STT_FEED_WAV=…"` (serving `spec/2903 @ 813b0060`) → app booted and rendered; `stt_start` → `{deviceName:"stt-feed", sampleRate:16000}` (feed branch proven, no `cpal`); `stt_stop` → `phase:"processing"` and the app stayed responsive; no transcript appeared; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. The fixture carries no intelligible speech — the acoustic app-request leg stays a NAMED BLOCKER (see #2903 R-1.4).
