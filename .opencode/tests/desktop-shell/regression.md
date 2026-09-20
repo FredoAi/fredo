@@ -54,3 +54,68 @@
 ## R-10 — Overlapping launcher surface
 
 - [ ] R-10: The launcher command-bar/grid behavior (`#2808`) is unchanged WHERE the spec does not redesign it: query filter (`filteredEntries`), keyboard nav (↑↓/←→ clamp, no wrap), Enter/Space open, empty-grid no-op (`entryCount === 0`), notch `aria-expanded`, `useWindows()` collapse-on-open, and the #2808 window z-order fix (window above the desktop, below the HUD). **NOTE (redesigned by #2819, NOT an unchanged baseline):** ESC no longer closes the shell / restores focus to the notch (ST-7) — it returns to IDLE and focuses the command bar; the surface is no longer notch-gated (idle = `open=true, engaged=false`). Reference `.opencode/tests/launcher/regression.md` R-1..R-6 + the #2819 launcher extension.
+
+## #2850 extension — shared-avatar refactor: shell invariants (must-not-change)
+
+> Issue #2850 — the launcher avatar becomes a shared `FredoAvatar size="md"` wrapper; the
+> companion overlay switches from the raster sprite pipeline to the same shared vector avatar.
+> The shell surface is a NON-GOAL — these invariants MUST hold after the refactor. Run alongside
+> R-1..R-10 AND the companion-suite regression R-1..R-10.
+
+## R-11 — Shell chrome + launcher layout unchanged by the shared avatar move
+
+- [x] R-11: The FREDO notch, side-ticks, dot-grid, rounded frame, online clock/LED, command bar,
+      app grid, and keyboard hints are UNCHANGED by the avatar-source move (git diff scope: the
+      launcher change is the import/wrapper swap only). The shell idle/engaged lifecycle behaves as
+      before; the md avatar renders at 132 × 165 exactly as pre-refactor. Reference #2817 R-1 +
+      #2819 R-6/R-10 + launcher R-26.
+  - **PASS (live, spec/2850).** The launcher rendered its full chrome (FREDO notch, `>` command bar `input[role=searchbox]`, clock/LED cluster `data-testid=desktop-status-led`, dot-grid, frame) with the md avatar `offsetWidth`=132/`offsetHeight`=165, 58 rects, crispEdges, accent-token fill, `aria-hidden` — the shell idle surface is unchanged. `git diff --stat main spec/2850 -- launcher/` = only `LauncherShell.tsx +2/-2` + the geometry/PixelButler deletions (the move). The md avatar renders at 132×165 exactly as pre-refactor.
+
+## R-12 — Token contract + no re-render loop across the refactor
+
+- [x] R-12: The changed shell-adjacent files carry zero hardcoded hex/`rgba(`/`rgb(` / `var(--x)NN`
+      alpha-append; the shared avatar is accent-token driven (`var(--accent-primary)` +
+      `currentColor`) exactly as the launcher avatar was; no re-render loop / `Maximum update depth
+      exceeded` appears from the wrapper or the companion mount. Reference #2817 R-4 + launcher
+      R-28 + companion R-7/R-8.
+  - **PASS (static + live console).** Grep `shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(` → zero true literals (only comment issue-refs); the shared avatar is `color="var(--accent-primary)"` + `fill="currentColor"` exactly as the launcher avatar was. No `Maximum update depth exceeded`/`Uncaught`/`Error:` in the console across the whole run (companion mount + wrapper + teleport). Console clean of the three error signatures.
+
+---
+
+## #2870 extension — shell home-seat invariants (must-not-change)
+
+> Issue #2870 keeps the single Fredo at the shell's centre seat instead of relocating him to a corner when
+> the companion is enabled. Run alongside R-1..R-12. Live policy.
+
+## R-13 — Shell chrome + seat slot unchanged by the home-seat model
+
+- [ ] R-13: Boot the shell (companion OFF and ON) and inspect the FREDO notch, command bar, app grid, keyboard hints, clock/LED chrome, side ticks, dot-grid, rounded frame, and the centre seat slot. Then toggle the companion ON/OFF, teleport him away (Ctrl+right-click), and re-inspect.
+  **Expected:** the shell chrome is visually/behaviourally unchanged; the centre seat slot is present in ALL states (never unmounts) and the command-bar `y` is constant within ±1 px across OFF / ON-home / ON-away; no corner Fredo appears; when OFF the seat shows the decorative mascot (not an empty seat). The row-pipeline (R-3) and the token contract (R-8) still hold. Reference launcher R-35 + companion F-64/F-66.
+
+---
+
+## #2886 extension — shell + seat invariants must hold with a message displayed
+
+> Issue #2886 re-anchors the companion message surface so Fredo stays visible. The shell chrome and
+> the seat slot are NON-GOALS. Run alongside R-1..R-13. Live policy.
+
+## R-14 — Shell chrome + seat slot unchanged while a message is displayed
+
+- [ ] R-14: With a reply / welcome / joke displayed, re-inspect the FREDO notch, clock/LED, side
+      ticks, dot-grid, rounded frame, app grid, command bar and the centre seat slot; measure the
+      seat-slot WRAPPER (`offsetWidth`/`offsetHeight`/`margin-bottom`) and the command-bar
+      `getBoundingClientRect().y` with a message shown vs. cleared, at the default size AND 900×600.
+  **Expected:** the shell chrome is visually/behaviourally unchanged; the seat wrapper stays exactly
+      **80×100 + 16 px**; the command-bar `y` is within **±1 px**; no new scrollbar/overflow/clip; no
+      corner Fredo appears; the message never paints over the shell chrome it can reach. Reference
+      R-13 + #2870 R-35 + launcher R-48.
+
+## R-15 — Token contract + no re-render loop across the placement change
+
+- [ ] R-15: Static-grep the changed shell/placement files for hardcoded hex/`rgba(`/`rgb(`/`hsla(`
+      and `var(--x)NN`; read the console in every leg; inspect the placement code for effect/memo
+      deps on array `.length`/freshly-created objects; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (#523); build exit 0;
+      suite green with no weakened assertion (G-125). Reference R-12 + R-9.

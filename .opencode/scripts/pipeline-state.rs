@@ -403,6 +403,49 @@ fn mock_ref_delete(branch: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Local-branch refs (`refs/heads/*`) are stored separately from remote refs
+/// (`refs/*`) so the mock can represent a local branch whose upstream is GONE —
+/// the state `prune` must clean. `git branch`/`checkout -b` write here; `git push`
+/// writes the remote store; `git push origin --delete` removes the remote only.
+fn mock_local_ref_path(branch: &str) -> PathBuf {
+    mock_file(&["local-refs", branch])
+}
+
+fn mock_local_ref_exists(branch: &str) -> bool {
+    mock_local_ref_path(branch).exists()
+}
+
+fn mock_local_ref_write(branch: &str) -> anyhow::Result<()> {
+    mock_write(&mock_local_ref_path(branch), "")
+}
+
+fn mock_local_ref_delete(branch: &str) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(mock_local_ref_path(branch));
+    Ok(())
+}
+
+/// Recursively list ref files under a store dir, returning `a/b`-joined names
+/// (the store nests `spec/5` as `spec/5` on disk).
+fn mock_list_refs(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()).unwrap_or_default();
+            if name.is_empty() { continue; }
+            if p.is_dir() {
+                for sub in mock_list_refs(&p) {
+                    out.push(format!("{}/{}", name, sub));
+                }
+            } else {
+                out.push(name);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn mock_commits_ahead(branch: &str) -> u64 {
     mock_read(&mock_file(&["commits", branch]))
         .and_then(|c| c.trim().parse::<u64>().ok())
@@ -434,8 +477,21 @@ fn mock_gh(args: &[&str]) -> anyhow::Result<String> {
         "issue" => mock_gh_issue(args),
         "pr" => mock_gh_pr(args),
         "api" => mock_gh_api(args),
+        "image" => mock_gh_image(args),
         _ => anyhow::bail!("mock gh: unsupported subcommand `{}` ({})", sub, args.join(" ")),
     }
+}
+
+/// Emulate `gh image <file> [--repo owner/repo]` (the gh-image extension) — returns
+/// the same reference shape it prints for an image so `upload-evidence` can parse the
+/// `user-attachments` URL offline without touching the network.
+fn mock_gh_image(args: &[&str]) -> anyhow::Result<String> {
+    let file = args.get(1).copied().unwrap_or("image.png");
+    let name = std::path::Path::new(file).file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image.png".to_string());
+    let n = mock_next_counter("asset");
+    Ok(format!("![{}](https://github.com/user-attachments/assets/mock-{})", name, n))
 }
 
 fn mock_gh_issue(args: &[&str]) -> anyhow::Result<String> {
@@ -918,6 +974,15 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
                 }
                 anyhow::bail!("git ls-remote --exit-code: branch `{}` not found", branch);
             }
+            // git ls-remote --heads origin — every remote head, one line each:
+            // `<40-hex-sha>\trefs/heads/<branch>`.
+            if args.iter().any(|a| *a == "--heads") {
+                let mut out = String::new();
+                for name in mock_list_refs(&mock_file(&["refs"])) {
+                    out.push_str(&format!("{}\trefs/heads/{}\n", "0".repeat(40), name));
+                }
+                return Ok(out.trim_end().to_string());
+            }
             Ok(String::new())
         }
         "rev-parse" => {
@@ -925,7 +990,7 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             if args.iter().any(|a| *a == "--verify") {
                 let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
                 let branch = branch.strip_prefix("refs/heads/").map(|s| s.to_string()).unwrap_or(branch);
-                if mock_ref_exists(&branch) {
+                if mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
                     return Ok("mock-sha".into());
                 }
                 anyhow::bail!("git rev-parse --verify: branch `{}` not found", branch);
@@ -933,19 +998,27 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "checkout" => {
-            // git checkout -b spec/N main  (create ref) / git checkout main (no-op)
+            // git checkout -b spec/N main  (create a LOCAL ref) / git checkout main (no-op)
             if args.iter().any(|a| *a == "-b") {
                 let branch = args.get(2).copied().unwrap_or("");
-                mock_ref_write(branch)?;
+                mock_local_ref_write(branch)?;
             }
             Ok(String::new())
         }
         "push" => {
-            // git push -u origin spec/N — mark the branch ref (simulated push)
+            // git push -u origin spec/N            → write the REMOTE ref
+            // git push origin --delete spec/N      → remove the REMOTE ref (local stays,
+            //                                         i.e. a GONE upstream)
+            let deleting = args.iter().any(|a| *a == "--delete" || *a == "-d");
             if let Some(branch) = args.last() {
                 let branch = branch.strip_prefix("origin/").map(|s| s.to_string()).unwrap_or_else(|| branch.to_string());
-                if !branch.is_empty() && !branch.contains(':') {
-                    mock_ref_write(&branch)?;
+                if !branch.is_empty() && !branch.contains(':') && branch != "origin" {
+                    if deleting {
+                        mock_ref_delete(&branch)?;
+                    } else {
+                        mock_ref_write(&branch)?;
+                        let _ = mock_local_ref_write(&branch);
+                    }
                 }
             }
             Ok(String::new())
@@ -997,21 +1070,10 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "for-each-ref" => {
-            // git for-each-ref --format=%(refname:short) refs/heads
-            let mut out = String::new();
-            let dir = mock_file(&["refs"]);
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                let mut names: Vec<String> = entries.flatten()
-                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-                    .filter(|s| s.starts_with("spec/"))
-                    .collect();
-                names.sort();
-                for n in names {
-                    out.push_str(&n);
-                    out.push('\n');
-                }
-            }
-            Ok(out.trim_end().to_string())
+            // git for-each-ref --format=%(refname:short) refs/heads → LOCAL branches
+            let mut names = mock_list_refs(&mock_file(&["local-refs"]));
+            names.sort();
+            Ok(names.join("\n"))
         }
         "merge-base" => {
             // git merge-base --is-ancestor <name> main
@@ -1021,7 +1083,18 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "branch" => {
-            // git branch -D <name>
+            // git branch <name> <start> (create LOCAL ref) / git branch -D <name> (delete LOCAL)
+            if args.iter().any(|a| *a == "-D" || *a == "-d") {
+                if let Some(name) = args.get(2) {
+                    if !name.is_empty() && !name.starts_with('-') {
+                        mock_local_ref_delete(name)?;
+                    }
+                }
+            } else if let Some(name) = args.get(1) {
+                if !name.is_empty() && !name.starts_with('-') {
+                    mock_local_ref_write(name)?;
+                }
+            }
             Ok(String::new())
         }
         "ls-tree" => {
@@ -1424,8 +1497,14 @@ fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
     let labels: Vec<String> = issue_data.labels.iter().map(|l| l.name.clone()).collect();
     // The developer works directly on the FEATURE issue in the implementation
     // phase (sub-issues were removed) — its phase label is `ready-for-test`; the
-    // legacy dev labels remain accepted too.
-    let actionable = labels.iter().any(|l| l == "ready-for-dev" || l == "in-progress-dev" || l == "ready-for-test");
+    // legacy dev labels remain accepted too. `testing` is accepted for the
+    // CI-fix path (G-164): when a check goes red on the open spec PR the remedy
+    // is a scoped fix landed on the spec branch while the feature is in
+    // `testing`, so a developer MUST be able to obtain a worktree then — a
+    // blocked `create-worktree` previously forced an ad-hoc, unreported worktree.
+    let actionable = labels.iter().any(|l| {
+        l == "ready-for-dev" || l == "in-progress-dev" || l == "ready-for-test" || l == "testing"
+    });
     if !actionable {
         return Ok((false, format!("issue #{} is not actionable (labels: {})", issue, labels.join(", "))));
     }
@@ -1577,12 +1656,22 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
         // fork from local main would carry a STALE `.opencode/tests/**` (G-038)
         // and make the spec PR conflict at merge time. Fetch first so origin/main
         // is at the post-tests-commit tip, then branch from it (G-032 idiom).
+        //
+        // Create the ref WITHOUT checking it out. The planners seed the suite
+        // files into the main WORKING TREE, so after `persist_tests` pushes them to
+        // origin/main the worktree is still dirty with those now-persisted files
+        // while the local main ref lags. `git checkout -b` would abort with "local
+        // changes would be overwritten" and fail the whole transition (observed
+        // #2852). `git branch` touches no worktree, so the ref is created cleanly
+        // regardless of local dirt; the main worktree is deliberately never reset
+        // here (the machine must not discard uncommitted work).
         let _ = run_cmd("git", &["fetch", "origin", "main"]);
-        run_cmd("git", &["checkout", "-b", &branch, "origin/main"])?;
+        run_cmd("git", &["branch", &branch, "origin/main"])?;
     }
     run_cmd("git", &["push", "-u", "origin", &branch])?;
-    // Return the main worktree to `main` so the spec branch is free for a
-    // linked developer worktree (git allows one worktree per branch).
+    // The main worktree is already on `main` (the ref was created, never checked
+    // out), so the spec branch stays free for a linked developer worktree — git
+    // allows one worktree per branch.
     let _ = run_cmd("git", &["checkout", "main"]);
     println!("SPEC BRANCH CREATED: {}", branch);
     Ok(Some(format!("spec branch `{}` created", branch)))
@@ -1701,11 +1790,17 @@ const FEATURE_TESTS_PREFIX: &str = "**Feature tests:**";
 /// Parse feature-domain names from the QA Expert's A2A section so the
 /// `triage → implementation` transition can persist each suite automatically.
 fn parse_feature_names(a2a: &str) -> Vec<String> {
+    // Accept the declaration wherever it appears on a line — inside a
+    // blockquote (`> **Feature tests:** …`) AND appended after other prose on
+    // the same line. Requiring the marker to LEAD the line silently skipped
+    // EVERY suite in the planning -> implementation transition when the QA
+    // Expert appended the declaration to the end of a paragraph (observed
+    // #2877 for the blockquote case and #2897 for the mid-line case).
     section(a2a, "## QA Expert")
         .lines()
-        .map(|l| l.trim())
-        .filter(|l| l.starts_with(FEATURE_TESTS_PREFIX))
-        .flat_map(|l| l[FEATURE_TESTS_PREFIX.len()..].split(','))
+        .map(|l| l.trim().trim_start_matches(|c: char| c == '>' || c == ' ').trim())
+        .filter_map(|l| l.find(FEATURE_TESTS_PREFIX).map(|i| &l[i + FEATURE_TESTS_PREFIX.len()..]))
+        .flat_map(|rest| rest.split(','))
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
         .map(str::to_string)
@@ -1767,7 +1862,15 @@ const PLAN_KEYS: &[&str] = &["software-architect", "ui-ux", "qa", "summary", "st
 /// consecutive `state_machine.call` reads with no intervening state-machine
 /// activity means the agent is looping, not working. The `context` action refuses
 /// the read once the streak reaches the limit, with a directive to stop and act.
-const CONTEXT_READ_STREAK_LIMIT: usize = 3;
+///
+/// The limit MUST exceed the largest same-role PARALLEL dispatch wave: a wave of N
+/// agents of one role each begins with one context read, and no write event exists
+/// until the first of them acts — so N consecutive reads accumulate and a limit ≤ N
+/// falsely blocks the (N)th agent. Observed #2893 wave 1: the 4th concurrent
+/// developer was blocked at limit 3; staffing runs up to `ceil(points/5)` (=6)
+/// developers, so the limit is set above that ceiling. A genuine loop still trips
+/// the guard quickly (the refusal is recorded and resets the streak).
+const CONTEXT_READ_STREAK_LIMIT: usize = 8;
 
 /// Assemble the plan at the `triage → implementation` transition into the
 /// `## Triage Plan` timeline-comment draft (`.opencode/tmp/<issue>/triage-plan.md`),
@@ -1975,6 +2078,7 @@ fn persist_tests(feature: &str) -> anyhow::Result<usize> {
         return Ok(0);
     }
     let repo = gh_repo()?;
+    let mut persisted: Vec<std::path::PathBuf> = Vec::with_capacity(files.len());
     for entry in &files {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
@@ -1982,9 +2086,85 @@ fn persist_tests(feature: &str) -> anyhow::Result<usize> {
         let bytes = std::fs::read(&path)?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, name))?;
+        persisted.push(path);
     }
     println!("TESTS COMMITTED: feature '{}' ({} file(s)) to main", feature, files.len());
+    // G-200: the Contents-API write advances `origin/main` while the ROOT
+    // checkout keeps the seeded suite files dirty (and, on `main`, its local ref
+    // lagging). A later branch switch then aborts with "Your local changes /
+    // untracked working tree files would be overwritten" even when the content is
+    // byte-identical upstream. Best-effort safe reconcile. Never fatal — the
+    // upstream suite is already persisted.
+    if let Err(e) = sync_root_checkout_after_tests_commit(&persisted) {
+        println!("NOTE: local checkout sync skipped: {}", e);
+    }
     Ok(files.len())
+}
+
+/// G-200: reconcile the ROOT checkout after a `tests-commit` write to
+/// `origin/main` (Contents API) so a later branch switch does not abort on the
+/// now-persisted suite files. The served root is frequently on `spec/<N>` during
+/// testing (not `main`), so this is NOT limited to `main`.
+///
+/// SAFETY (deliberately narrow; never discards work; no-op in mock mode so the
+/// harness never mutates the real repo; no-op in a linked worktree — this is a
+/// root-checkout concern only):
+///
+/// - **on `main`**: fetch, then `--mixed` reset onto `origin/main` — HEAD + index
+///   move, working tree preserved — but ONLY when local `main` is
+///   fast-forwardable to `origin/main`, so no local commits are ever discarded.
+///   The just-persisted suite files (content now equals `origin/main`) become
+///   clean and unrelated uncommitted work survives.
+/// - **on any other branch** (typically the served `spec/<N>`): STAGE the
+///   just-persisted paths (`git add`) so their content equals `origin/main`. HEAD
+///   is untouched, so serving-currency (`root HEAD == spec tip`,
+///   `serving_currency_ok`) is preserved; the staged entries clear on the next
+///   `git checkout`. This removes the "untracked/modified would be overwritten"
+///   block the final switch back to `main` hit.
+fn sync_root_checkout_after_tests_commit(paths: &[std::path::PathBuf]) -> anyhow::Result<()> {
+    if mock_mode() {
+        return Ok(());
+    }
+    let root = project_root()?;
+    // Linked worktrees carry a `.git` FILE; only the root checkout has a `.git`
+    // dir. Never touch a worktree's refs from here.
+    if root.join(".git").is_file() {
+        return Ok(());
+    }
+    let _ = run_cmd("git", &["fetch", "origin", "main"]);
+    let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let branch = branch.trim().to_string();
+    if branch == "main" {
+        if run_cmd("git", &["merge-base", "--is-ancestor", "main", "origin/main"]).is_err() {
+            println!("NOTE: local `main` has commits not on origin/main — leaving the ref untouched");
+            return Ok(());
+        }
+        run_cmd("git", &["reset", "--mixed", "origin/main"])?;
+        println!("SYNCED: local `main` fast-forwarded to origin/main (working tree preserved)");
+        return Ok(());
+    }
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // Stage the persisted paths by ABSOLUTE path (CWD-independent). `--` guards
+    // against a path being read as an option.
+    let mut owned: Vec<String> = vec!["add".to_string(), "--".to_string()];
+    for path in paths {
+        if path.exists() {
+            owned.push(path.to_string_lossy().to_string());
+        }
+    }
+    if owned.len() <= 2 {
+        return Ok(());
+    }
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    run_cmd("git", &refs)?;
+    println!(
+        "STAGED: reconciled {} persisted suite path(s) on '{}' (HEAD untouched; clears on next checkout)",
+        refs.len() - 2,
+        branch
+    );
+    Ok(())
 }
 
 /// Seed the Implementation Plan issue body from the triage-plan template when the
@@ -2097,7 +2277,7 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         // required ahead > 0), the guard passes, mirroring a root checkout at
         // the spec tip.
         let branch = format!("spec/{}", issue);
-        if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) {
+        if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
             return Ok(());
         }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
@@ -2203,14 +2383,33 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     // Parse the explicit `Verdict:` line — a FAIL verdict that also contains the
     // substring "PASS" in its per-AC rows must NOT be read as PASS. Bold- and
     // blockquote-tolerant: `**Verdict: PASS**` / `> Verdict: **PASS**` count,
-    // matching the policy-line tolerance below (Spec #2680).
-    let verdict_line = latest.lines()
+    // matching the policy-line tolerance below (Spec #2680). The DECLARED value
+    // is the FIRST TOKEN after the colon — NOT a whole-line contains: a PASS
+    // verdict whose parenthetical explains a prior round's FAIL (e.g. `Verdict:
+    // PASS (6/6 ACs — the round-1 sole FAIL is cleared)`) must not be misread
+    // as FAIL by a whole-line `!contains("fail")` (#2850 round 2 — the guard
+    // misfired on exactly this pattern and blocked a genuine PASS).
+    let verdict_pass = latest.lines()
         .find(|l| line_has_verdict(l))
         .map(|l| {
-            l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*')
-                .trim().to_lowercase()
-        });
-    let verdict_pass = verdict_line.map(|v| v.contains("pass") && !v.contains("fail")).unwrap_or(false);
+            let t = l.trim().trim_start_matches('\u{feff}').trim().trim_start_matches('>').trim().trim_start_matches('*')
+                .trim().to_lowercase();
+            match t.strip_prefix("verdict:") {
+                Some(rest) => {
+                    // The DECLARED value is the first token after the colon
+                    // (mirrors the policy-line parser below): `Verdict: PASS (...)` →
+                    // token "pass"; `Verdict: **FAIL** (...)` → token "fail".
+                    let first = rest.trim().trim_matches('*').trim();
+                    let value = first.split(|c: char| c.is_whitespace() || c == '-' || c == '—' || c == '(')
+                        .next().unwrap_or("")
+                        .trim_matches(|c| c == '*' || c == '.' || c == ')' || c == ']')
+                        .trim();
+                    value.contains("pass") && !value.contains("fail")
+                }
+                None => false,
+            }
+        })
+        .unwrap_or(false);
     // The verification policy comes from the plan. Single-issue model: the plan is
     // the feature issue's `## Triage Plan` comment (or the A2A file's QA section
     // pre-posting); the legacy plan-issue body remains a fallback for old specs.
@@ -2267,13 +2466,14 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         // `telemetry_spans` query. The documented policy (tester playbook +
         // qa-expert playbook) accepts "telemetry_spans OR DOM/screenshot receipts"
         // for a live-verified UI feature. Recognize ONLY a receipt that a tester who
-        // actually drove the running webview can produce: an `upload-evidence` raw
-        // URL committed to `.opencode/evidence/<issue>/` on `spec/<N>`, a live
-        // `tauri_webview_*` tool receipt (DOM snapshot / screenshot), or a live
+        // actually drove the running webview can produce: a `user-attachments` URL
+        // (the `upload-evidence` output, plus legacy `.opencode/evidence/` raw URLs),
+        // a live `tauri_webview_*` tool receipt (DOM snapshot / screenshot), or a live
         // rendered-geometry measurement (`getBoundingClientRect`). Never a bare
         // screenshot filename or a local scratch path — those are unviewable dead
         // strings (refused earlier by the upload-evidence guard) and do NOT count.
-        t.contains(".opencode/evidence/")
+        t.contains("user-attachments")
+            || t.contains(".opencode/evidence/")
             || t.contains("tauri_webview_")
             || t.contains("getboundingclientrect")
     });
@@ -2297,7 +2497,7 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
     match phase {
         Phase::Backlog => match issue_data {
             // Real gate: the backlog must carry the required intake sections
-            // (reuses the same validation `create-issue` applies to backlog/bug
+            // (reuses the same validation `create-issue` applies to backlog
             // bodies), not merely a non-empty body.
             Some(i) => {
                 let missing = intake_missing_sections(&i.body);
@@ -2501,6 +2701,13 @@ fn append_event_attrs(
 
 // ── Actions (single writer to GitHub) ────────────────────────────────────────
 
+/// True when the issue is readable. Real `gh` exits non-zero for a missing issue;
+/// the offline mock always resolves an unknown number, so this is a best-effort
+/// guard (it still blocks a clearly invalid target like an unreadable reference).
+fn issue_exists(issue: u32) -> bool {
+    run_gh(&["issue", "view", &issue.to_string(), "--json", "number"]).is_ok()
+}
+
 struct ActionArgs {
     issue: Option<u32>,
     actor: String,
@@ -2513,17 +2720,49 @@ struct ActionArgs {
     reason: Option<String>,
     verdict: Option<String>,
     section: Option<String>,
-    base: Option<String>,
     worktree_path: Option<String>,
     image: Option<String>,
     feature: Option<String>,
+    /// `set-permission` target agent (the role whose sandbox is edited). Distinct
+    /// from `--agent` (the calling actor) — the SI edits another agent's rules.
+    role: Option<String>,
+    /// `set-permission` permission category (`bash`, `edit`, `skill`, ...).
+    tool: Option<String>,
+    /// `set-permission` rule pattern (the key inside a per-pattern category map).
+    pattern: Option<String>,
+    /// `set-permission` decision (`allow` | `ask` | `deny`).
+    decision: Option<String>,
+    /// `set-permission` override for the config path (tests/bootstrap target a
+    /// scratch copy); defaults to `<repo>/opencode.json`.
+    config_file: Option<String>,
     all: bool,
     json: bool,
+    /// `prune --remote`: also delete `origin/spec/<N>` branches for CLOSED specs.
+    remote: bool,
     ghargs: Option<String>,
     gitargs: Option<String>,
     branch: Option<String>,
     commits: Option<u64>,
     root_cause: Option<String>,
+    /// `transition --human-authorized` (SI hardening): a binding human directive
+    /// may add scope to a feature whose testing entry was aborted before any
+    /// tester verdict, requiring the dev work to precede testing. The normal
+    /// rework exit (a tester FAIL verdict) cannot exist yet, so the standard
+    /// `has_evidence` guard would strand the directive. This flag — valid ONLY
+    /// for `testing -> implementation`, and ONLY with a non-empty `--reason` —
+    /// bypasses that one exit guard and records a `human.authorization` event.
+    human_authorized: bool,
+    /// `create-issue --revises <N>` / `link-revision --revises <N>`: the prior
+    /// feature this new issue revises. Recorded on the new issue's log as a
+    /// `feature.revised` event (attrs `revises`, `intent`) and as the `revises`
+    /// attribute of the `create-issue` event (`none` when absent) so linkage
+    /// coverage is measurable. The link is stored FORWARD — the revised issue is
+    /// never reopened or kept open.
+    revises: Option<u32>,
+    /// `create-issue --intent fix|enhancement`: why the revision exists
+    /// (a `fix` is a rejection of the prior feature; `enhancement` is healthy
+    /// evolution). Only meaningful together with `--revises`.
+    intent: Option<String>,
 }
 
 /// Working-conventions header prepended to every triage A2A file. The triage
@@ -2589,10 +2828,9 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             // Evidence-renderability guard (#2756): a screenshot referenced by bare
             // filename or local scratch path can never render or even open as a link
             // on GitHub — repo members see only a dead string. Every image reference
-            // in a verdict MUST be an `https://` URL (the raw URL `upload-evidence`
-            // prints after committing the file to `.opencode/evidence/<issue>/` on
-            // `spec/<N>`). Refused (draft kept) so the timeline never carries
-            // unviewable evidence.
+            // in a verdict MUST be an `https://` URL (the `user-attachments` URL
+            // `upload-evidence` prints via `gh image`). Refused (draft kept) so the
+            // timeline never carries unviewable evidence.
             let has_dead_image_ref = body.lines().any(|l| {
                 let t = l.to_lowercase();
                 (t.contains(".jpeg") || t.contains(".jpg") || t.contains(".png") || t.contains(".webp") || t.contains(".gif"))
@@ -2600,7 +2838,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             });
             if has_dead_image_ref {
                 let _ = append_event(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)");
-                println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// raw URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
+                println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// user-attachment URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
                 continue;
             }
         }
@@ -2691,7 +2929,7 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     if title == "Tests Runs" && has_verdict_line(body) {
         let (round, _) = retry_state(issue);
         if count_verdict_comments_in_round(issue, round) > 0 {
-            append_event(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round")?;
+            append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")])?;
             println!("WARNING: a verdict-carrying ## Tests Runs comment already exists for round {} — not posting (G-020). Reconcile into the existing verdict, then re-run.", round);
             return Ok(());
         }
@@ -2767,13 +3005,21 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     None => anyhow::bail!("create-issue requires --body-file (impl-plan accepts the machine-seeded triage template)"),
                 },
             };
-            // Fold-in of po-intake: for backlog/bug intakes, validate required sections.
-            if issue_type == "backlog" || issue_type == "bug" {
+            // Fold-in of po-intake: for backlog intakes, validate required sections.
+            if issue_type == "backlog" {
                 let body = std::fs::read_to_string(&body_path)
                     .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_path, e))?;
                 let missing = intake_missing_sections(&body);
                 if !missing.is_empty() {
                     anyhow::bail!("INTAKE INVALID: missing section(s): {}", missing.join(", "));
+                }
+            }
+            // Revision linkage: validate the target BEFORE creating so a bad link
+            // cannot mint a new issue. The link is stored FORWARD on the new issue;
+            // the revised issue is never reopened or kept open.
+            if let Some(rev) = a.revises {
+                if !issue_exists(rev) {
+                    anyhow::bail!("create-issue --revises {}: target issue does not exist or is unreadable", rev);
                 }
             }
             let out = run_gh(&[
@@ -2811,8 +3057,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // sub-issues (implementation) and tester issues (testing) get
                     // correct phase anchors instead of a blanket "backlog".
                     let start_phase = load_config()?.label_to_phase.get(&label).cloned().unwrap_or_else(|| "backlog".into());
-                    append_event(n, "create-issue", &a.actor, &start_phase, "success", &format!("created {} {}", issue_type, out))?;
+                    // Coverage: EVERY create records the linkage decision (`--revises N`
+                    // or `none`), so "what share of specs declared a revision or new"
+                    // is measurable instead of silently missing.
+                    let revises_attr = a.revises.map(|r| r.to_string()).unwrap_or_else(|| "none".into());
+                    append_event_attrs(n, "create-issue", &a.actor, &start_phase, "success", &format!("created {} {}", issue_type, out), &[("revises", revises_attr.as_str())])?;
                     append_event(n, "phase.started", &a.actor, &start_phase, "success", &format!("started {}", start_phase))?;
+                    if let Some(rev) = a.revises {
+                        let intent = a.intent.as_deref().unwrap_or("unspecified");
+                        append_event_attrs(n, "feature.revised", &a.actor, &start_phase, "success", &format!("revises #{}", rev), &[("revises", &rev.to_string()), ("intent", intent)])?;
+                        println!("REVISES: #{} (intent {})", rev, intent);
+                    }
                     // Mirror the start phase onto the GitHub project Status field
                     // (best-effort; adds the issue to the project on first sync).
                     let _ = sync_project_status(n, &start_phase);
@@ -2847,6 +3102,34 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if seeded.is_some() {
                 let _ = std::fs::remove_file(&body_path);
             }
+        }
+        "link-revision" => {
+            // Backfill a revision link the PO missed at intake (`feature.revised`
+            // on the NEW issue). Idempotent; validates the target. The SI runs this
+            // when a follow-up was filed without the `--revises` link.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let rev = a.revises.ok_or_else(|| anyhow::anyhow!("link-revision requires --revises <N>"))?;
+            if !issue_exists(rev) {
+                anyhow::bail!("link-revision --revises {}: target issue does not exist or is unreadable", rev);
+            }
+            let rev_str = rev.to_string();
+            let already = read_issue_events(issue).iter().any(|e| {
+                e.event_name == "feature.revised"
+                    && e.attributes.get("revises").map(|v| v == &rev_str).unwrap_or(false)
+            });
+            if already {
+                println!("ALREADY LINKED: #{} already revises #{}", issue, rev);
+                return Ok(());
+            }
+            let phase = phase_of(a)?.as_str().to_string();
+            let intent = a.intent.as_deref().unwrap_or("unspecified");
+            append_event_attrs(issue, "feature.revised", &a.actor, &phase, "success", &format!("revises #{} (backfilled)", rev), &[("revises", rev_str.as_str()), ("intent", intent), ("backfilled", "true")])?;
+            println!("LINKED: #{} revises #{}", issue, rev);
         }
         "comment" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -2947,7 +3230,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if has_verdict_line(&body) {
                 let (round, _) = retry_state(issue);
                 if count_verdict_comments_in_round(issue, round) > 0 {
-                    let _ = append_event(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round");
+                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", "G-020: refusing a second verdict-carrying comment in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting")]);
                     anyhow::bail!(
                         "refusing a second verdict-carrying comment in round {} — one `## Tests Runs` verdict per round; fold ALL receipts into the single verdict comment (G-020)",
                         round
@@ -3006,13 +3289,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
             let _ = std::fs::remove_file(&tmp);
             println!("IMPROVEMENT COMMENTED: round {} on #{}", round, issue);
-            // 2) Record the metric event so the improvement is tracked + auditable.
-            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &[("round", &round.to_string())])?;
-            // 3) Persist a guardrail record to references.md `Known Failure Modes`
-            //    (Recipe 6 — every audit persists, but an on-the-go improvement is
-            //    recorded immediately). Best-effort: a doc-write failure is logged,
-            //    not fatal — the comment + metric event are the durable record.
-            let _ = persist_improvement_guardrail(issue, reason, round);
+            // 2) Persist the guardrail FIRST so its allocated id can be stamped on
+            //    the metric event — making `pipeline.improvement` / `guard.fired` /
+            //    `### G-NNN` joinable (guardrail identity for effectiveness work).
+            let guard_id = persist_improvement_guardrail(issue, reason, round).ok().flatten();
+            // 3) Record the metric event (with guardrailId when a G-record landed).
+            let round_s = round.to_string();
+            let gid = guard_id.map(|g| format!("G-{:03}", g)).unwrap_or_default();
+            let mut attrs: Vec<(&str, &str)> = vec![("round", round_s.as_str())];
+            if !gid.is_empty() { attrs.push(("guardrailId", gid.as_str())); }
+            append_event_attrs(issue, "pipeline.improvement", &a.actor, &phase, "success", reason, &attrs)?;
         }
         "transition" => {
             if !actor_allowed(a.action.as_str(), &a.actor) {
@@ -3069,7 +3355,23 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if to == Phase::Testing {
                 serving_currency_ok(issue)?;
             }
-            let (ok, reason) = if phase == Phase::Implementation && to == Phase::Planning {
+            // Human-authorized pre-verdict rework (SI hardening). A binding human
+            // directive may add scope to a feature whose testing entry was aborted
+            // before any tester verdict and require the dev work to precede
+            // testing. The rework leg's normal precondition is a tester FAIL
+            // verdict, which cannot exist yet, so the standard `has_evidence`
+            // guard would strand the directive. Allow ONLY `testing ->
+            // implementation`, ONLY when `--human-authorized` is passed together
+            // with a non-empty `--reason`; the authorization is recorded as an
+            // auditable `human.authorization` event. Every other leg keeps its
+            // normal exit guard.
+            let human_authorized_rework = phase == Phase::Testing
+                && to == Phase::Implementation
+                && a.human_authorized
+                && a.reason.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false);
+            let (ok, reason) = if (phase == Phase::Implementation && to == Phase::Planning)
+                || human_authorized_rework
+            {
                 (true, String::new())
             } else {
                 exit_guard_passes(phase, issue)
@@ -3078,6 +3380,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            if human_authorized_rework {
+                append_event(issue, "human.authorization", &a.actor, phase.as_str(), "success",
+                    &format!("human-authorized rework {} -> {}: {}", phase.as_str(), to.as_str(),
+                        a.reason.as_deref().unwrap_or("").trim()))?;
+                println!("HUMAN-AUTHORIZED REWORK: {} -> {} (bypasses the tester-evidence exit guard; reason recorded)",
+                    phase.as_str(), to.as_str());
             }
             // Testing → audit requires the FULL verification (verdict PASS + live
             // evidence per the plan's policy, fail-closed) — a FAIL verdict may
@@ -3122,15 +3431,29 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     // both before the label swap. No sub-issues are generated: all
                     // work is tracked directly on the plan issue + the spec branch.
                     if assemble_impl_plan(issue, &a.actor)?.is_some() {
-                        let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
-                        for feat in parse_feature_names(&a2a) {
-                            match persist_tests(&feat) {
-                                Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
-                                // A declared-but-unseeded suite must surface, not vanish:
-                                // the QA Expert seeds the files, and a silent skip here hides
-                                // a brief/QA gap until the tester finds it mid-round.
-                                Err(e) => { notes.push(format!("tests for '{}' NOT persisted: {}", feat, e)); }
+                        // Persist the QA-seeded suites to main ONLY on the FIRST entry
+                        // into implementation. On a rework (`testing → implementation`)
+                        // or rescope (`implementation → planning → implementation`)
+                        // re-entry the root checkout may still sit on a spec branch whose
+                        // `.opencode/tests/**` copies predate the tester's later suite
+                        // extensions; re-running `persist_tests` from that stale tree
+                        // REVERTS main's suite guidance (the G-038 hazard; observed on
+                        // #2878's round 1→2 re-entry, where it silently dropped 107 lines
+                        // of tester-extended rows). The tester owns suite persistence
+                        // during testing, so a re-entry has nothing new to add.
+                        if prior_phase_entries(issue, "implementation") == 0 {
+                            let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
+                            for feat in parse_feature_names(&a2a) {
+                                match persist_tests(&feat) {
+                                    Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
+                                    // A declared-but-unseeded suite must surface, not vanish:
+                                    // the QA Expert seeds the files, and a silent skip here hides
+                                    // a brief/QA gap until the tester finds it mid-round.
+                                    Err(e) => { notes.push(format!("tests for '{}' NOT persisted: {}", feat, e)); }
+                                }
                             }
+                        } else {
+                            notes.push("test-suite persistence skipped (rework re-entry — suites already on main)".to_string());
                         }
                     }
                     if let Some(n) = ensure_spec_branch(issue)? { notes.push(n); }
@@ -3296,9 +3619,43 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: {}", reason);
                 return Ok(());
             }
-            run_cmd("git", &["worktree", "add", "--detach", &path, &base])?;
-            println!("WORKTREE CREATED (detached at {}): {}", base, path);
-            append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+            // G-201: idempotent on an existing path. `git worktree prune` clears
+            // stale registrations (a prior run removed the dir without
+            // deregistering, or deregistered without reaping the dir). Then:
+            //  - an existing REAL worktree (a `.git` marker inside) is REUSED so
+            //    a re-run is a no-op instead of failing "path already exists";
+            //  - an existing non-worktree leftover dir (a crashed run) is swept —
+            //    it is gitignored scratch, and any tracked work would already be
+            //    committed + pushed.
+            let _ = run_cmd("git", &["worktree", "prune"]);
+            let wt = std::path::Path::new(&path);
+            if wt.join(".git").exists() {
+                println!("WORKTREE EXISTS (reused): {}", path);
+                append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("reused existing worktree {}", path))?;
+            } else {
+                if wt.exists() {
+                    std::fs::remove_dir_all(wt)?;
+                }
+                match run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
+                    Ok(_) => {
+                        println!("WORKTREE CREATED (detached at {}): {}", base, path);
+                        append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+                    }
+                    Err(e) => {
+                        // A stubborn leftover (pnpm junction remnants, a race) —
+                        // sweep with the robust remover and retry ONCE.
+                        let _ = remove_worktree_robust(&path);
+                        if let Err(retry_err) = run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
+                            anyhow::bail!(
+                                "worktree add failed at {}: {} (after sweep retry: {})",
+                                path, e, retry_err
+                            );
+                        }
+                        println!("WORKTREE CREATED (detached at {}): {}", base, path);
+                        append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+                    }
+                }
+            }
         }
         "remove-worktree" => {
             // Removes a worktree after the developer has pushed. Plain removal
@@ -3434,27 +3791,75 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(issue, "tests-commit", &a.actor, phase.as_str(), "success", &format!("feature '{}' ({} file(s)) -> main", feature, count))?;
         }
         "prune" => {
-            // Local hygiene after merges: remove stale feat/ branches and orphaned
-            // worktrees. Idempotent; skips `main`/`master` and any non-feat branch.
-            // spec/ integration branches are never pruned (they carry the evidence).
-            // Local-only (no GitHub/state writes); gated to the orchestrator.
+            // Branch + worktree hygiene after merges. Idempotent. Gated to the
+            // orchestrator. Local by default; `--remote` also deletes `origin/spec/<N>`
+            // for every CLOSED spec (merged PRs auto-delete via the repo setting;
+            // this sweep catches abandoned/cancelled specs and stragglers).
+            // Local deletes: any local `spec/*`/`feat/*` whose remote counterpart is
+            // gone (already deleted upstream), plus legacy merged `feat/*`.
             if a.actor != "self-improver" {
                 println!("BLOCKED: actor {} not allowed to prune", a.actor);
                 return Ok(());
             }
+            // Refresh remote-tracking so the remote head set is current.
+            let _ = run_cmd("git", &["fetch", "--prune", "origin"]);
+            // One network call: the current remote head set.
+            let remote_heads_raw = run_cmd("git", &["ls-remote", "--heads", "origin"]).unwrap_or_default();
+            let remote_set: std::collections::HashSet<String> = remote_heads_raw.lines()
+                .filter_map(|l| l.split_whitespace().nth(1))
+                .filter_map(|r| r.strip_prefix("refs/heads/"))
+                .map(|s| s.to_string())
+                .collect();
+            // Remote sweep (opt-in): delete origin/spec/<N> for every spec whose issue
+            // is NOT open. FAIL-SAFE: a failed OR unparseable open-issue read skips the
+            // sweep entirely (never delete blind).
+            let mut pruned_remote: Vec<String> = Vec::new();
+            if a.remote {
+                match run_gh(&["issue", "list", "--state", "open", "--limit", "500", "--json", "number"]) {
+                    Ok(out) => {
+                        let parsed = serde_json::from_str::<serde_json::Value>(&out).ok()
+                            .and_then(|v| v.as_array().cloned());
+                        match parsed {
+                            Some(arr) => {
+                                let open: std::collections::HashSet<u64> = arr.iter()
+                                    .filter_map(|i| i.get("number").and_then(|n| n.as_u64()))
+                                    .collect();
+                                let mut specs: Vec<String> = remote_set.iter()
+                                    .filter(|n| n.starts_with("spec/"))
+                                    .cloned()
+                                    .collect();
+                                specs.sort();
+                                for branch in specs {
+                                    let Ok(num) = branch.trim_start_matches("spec/").parse::<u64>() else { continue; };
+                                    if open.contains(&num) { continue; }
+                                    if run_cmd("git", &["push", "origin", "--delete", &branch]).is_ok() {
+                                        pruned_remote.push(branch);
+                                    }
+                                }
+                            }
+                            None => println!("WARNING: could not parse the open-issue list — skipping the remote sweep (never delete blind)"),
+                        }
+                    }
+                    Err(e) => println!("WARNING: could not read open issues ({}) — skipping the remote sweep (never delete blind)", e),
+                }
+            }
+            // Local sweep: delete local `spec/*`/`feat/*` whose upstream is gone (not
+            // in the remote set, or just deleted by the sweep above) — plus legacy
+            // `feat/*` merged into main or a spec branch. Never main/master/other.
             let branches = run_cmd("git", &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
-            let spec_branches: Vec<&str> = branches.lines().map(|l| l.trim()).filter(|n| n.starts_with("spec/")).collect();
-            let mut pruned: Vec<String> = Vec::new();
-            for line in branches.lines() {
-                let name = line.trim();
-                if name.is_empty() || name == "main" || name == "master" { continue; }
-                if !name.starts_with("feat/") { continue; }
-                let merged_into_main = run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok();
-                let merged_into_spec = spec_branches.iter().any(|sb|
-                    run_cmd("git", &["merge-base", "--is-ancestor", name, sb]).is_ok());
-                if merged_into_main || merged_into_spec {
-                    run_cmd("git", &["branch", "-D", name]).ok();
-                    pruned.push(name.to_string());
+            let local: Vec<String> = branches.lines().map(|l| l.trim().to_string()).filter(|n| !n.is_empty()).collect();
+            let spec_branches: Vec<String> = local.iter().filter(|n| n.starts_with("spec/")).cloned().collect();
+            let mut pruned_local: Vec<String> = Vec::new();
+            for name in &local {
+                if name == "main" || name == "master" { continue; }
+                if !(name.starts_with("spec/") || name.starts_with("feat/")) { continue; }
+                let gone = !remote_set.contains(name) || pruned_remote.iter().any(|b| b == name);
+                let merged_legacy = name.starts_with("feat/") && (
+                    run_cmd("git", &["merge-base", "--is-ancestor", name, "main"]).is_ok()
+                    || spec_branches.iter().any(|sb| run_cmd("git", &["merge-base", "--is-ancestor", name, sb]).is_ok())
+                );
+                if (gone || merged_legacy) && run_cmd("git", &["branch", "-D", name]).is_ok() {
+                    pruned_local.push(name.clone());
                 }
             }
             run_cmd("git", &["worktree", "prune"])?;
@@ -3493,7 +3898,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     println!("SWEPT: orphaned worktree dirs removed: {}", swept.join(", "));
                 }
             }
-            println!("PRUNED: {}", if pruned.is_empty() { "no stale feat/ branches".into() } else { pruned.join(", ") });
+            println!(
+                "PRUNED: local=[{}] remote=[{}]",
+                if pruned_local.is_empty() { "none".to_string() } else { pruned_local.join(", ") },
+                if pruned_remote.is_empty() { "none".to_string() } else { pruned_remote.join(", ") }
+            );
         }
         "metrics" => {
             // Fold-in of pipeline-metrics.rs
@@ -3656,60 +4065,56 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             post_pending_comments(issue, &a.actor, "audit", None)?;
         }
         "upload-evidence" => {
-            // Posts an Evidence comment for a test case, committing the screenshot
-            // to the spec's integration branch `spec/<parent>` (so the image renders
-            // inline for repo members even on a private repo) and embedding the raw
-            // URL. Gated to the tester (and self-improver).
+            // Uploads a screenshot to GitHub as a `user-attachments` asset via the
+            // `gh-image` extension and prints the resulting
+            // `https://github.com/user-attachments/...` URL for the tester to embed in
+            // the SINGLE `## Tests Runs` comment. Nothing is written to the repo, so
+            // evidence never bloats `main` or the spec branch. Upload-ONLY: no comment
+            // is posted per upload. Gated to the tester (and self-improver).
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
             let issue = req_issue(a)?;
-            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --body-file"))?;
             let image = a.image.as_deref().ok_or_else(|| anyhow::anyhow!("upload-evidence requires --image <path>"))?;
-            // The body-file is kept for backward-compat (validates the file exists);
-            // it is NOT posted anywhere — upload-evidence is upload-only.
-            let _body = std::fs::read_to_string(body_file)
-                .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
-            let bytes = std::fs::read(image)
-                .map_err(|e| anyhow::anyhow!("cannot read image {}: {}", image, e))?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let repo = gh_repo()?;
-            let branch = match a.base.as_deref() {
-                Some(b) => b.to_string(),
-                None => {
-                    let plan = parent_spec(issue).map_err(|_|
-                        anyhow::anyhow!("cannot resolve parent plan for #{}; pass --base <spec-branch>", issue))?;
-                    // The tester issue references the PLAN; the evidence lands on
-                    // `spec/<feature>` — map plan → feature.
-                    let feature = plan_feature(plan).unwrap_or(plan);
-                    format!("spec/{}", feature)
-                }
-            };
-            let ref_exists = gh_api_raw_opt(&[format!("repos/{}/git/ref/heads/{}", repo, branch)])?;
-            if ref_exists.is_none() {
-                anyhow::bail!("spec branch {} does not exist on origin — transition the spec to implementation to auto-create it", branch);
+            // `--body-file` is accepted for backward-compat (validated to exist) but
+            // is no longer required and is never posted.
+            if let Some(body_file) = a.body_file.as_deref() {
+                let _ = std::fs::read_to_string(body_file)
+                    .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
             }
-            let fname = std::path::Path::new(image).file_name()
-                .map(|s| s.to_string_lossy().replace([' ', '\\', '/', ':', '*', '?', '"', '<', '>', '|'], "-"))
-                .ok_or_else(|| anyhow::anyhow!("cannot derive a filename from {}", image))?;
-            let path = format!(".opencode/evidence/{}/{}", issue, fname);
-            upsert_file(&repo, &branch, &path, &encoded, &format!("evidence: {} for #{}", fname, issue))?;
-            let url = format!("https://github.com/{}/raw/{}/{}", repo, branch, path);
-            // Upload-ONLY: the raw URL is printed for the tester to embed in the
-            // SINGLE `## Tests Runs` comment. No per-upload `## Evidence` comment is
-            // posted — a separate screenshot comment per AC clutters the timeline;
-            // the one consolidated verdict comment per round carries all screenshots
-            // (user feedback on #2723). The `comment` action already refuses
-            // verdict-less `## Evidence` posts, so this was the only path producing
-            // screenshot-only comments.
+            if !std::path::Path::new(image).exists() {
+                anyhow::bail!("upload-evidence: screenshot not found: {}", image);
+            }
+            let repo = gh_repo()?;
+            // `gh image` (drogers0/gh-image) uploads with the gh token for a repo we
+            // can push to and prints `![name](https://github.com/user-attachments/...)`.
+            let out = run_gh(&["image", image, "--repo", &repo]).map_err(|e| anyhow::anyhow!(
+                "gh image failed ({}). The `gh-image` extension is required: `gh extension install drogers0/gh-image`, authenticated with push access to {}.",
+                e, repo
+            ))?;
+            let url = out
+                .split("](").nth(1)
+                .and_then(|s| s.split(')').next())
+                .filter(|u| u.starts_with("https://"))
+                .map(|u| u.to_string())
+                .or_else(|| out.split_whitespace().find(|t| t.starts_with("https://")).map(|t| t.to_string()))
+                .ok_or_else(|| anyhow::anyhow!("gh image produced no upload URL (output: {})", out))?;
+            // Upload-ONLY: the user-attachment URL is printed for the tester to embed
+            // in the SINGLE `## Tests Runs` comment (one consolidated verdict comment
+            // per round — never a per-screenshot comment).
             println!("EVIDENCE UPLOADED: #{} -> {} ({})", issue, url, image);
             append_event(issue, "upload-evidence", &a.actor, "testing", "success", &format!("uploaded evidence {} for {}", image, issue))?;
         }
         "health" => {
             // Fold-in of pipeline-health.rs
             health_report(a.json)?;
+        }
+        "improvement" => {
+            // The honest self-improvement signal: acceptance rate (specs not later
+            // revised/reopened) with an interval + a half-vs-half change test.
+            improvement_report(a.json)?;
         }
         "verify" => {
             // Anti-tamper gate: the record is append-only and must never be rewritten.
@@ -3841,6 +4246,29 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event(req_issue(a).unwrap_or(0), "close-dependabot-prs", &a.actor, "unknown", "success",
                 &format!("closed {}, skipped {}, failed {}", closed, skipped, failed))?;
         }
+        "set-permission" => {
+            // The SI-owned writer for `opencode.json` agent permission blocks
+            // (the rest of the config stays human-owned). Grants/revokes one
+            // rule for one role, text-surgically, order-preserving. No issue is
+            // required — a sandbox gap is pipeline infrastructure, not spec work.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let role = a.role.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --role <agent>"))?;
+            let tool = a.tool.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --tool <category>"))?;
+            let pattern = a.pattern.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --pattern <glob>"))?;
+            let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny"))?;
+            let path = match a.config_file.as_deref() {
+                Some(p) => PathBuf::from(p),
+                None => project_root()?.join("opencode.json"),
+            };
+            let summary = set_agent_permission(&path, role, tool, pattern, decision)?;
+            println!("{}", summary);
+            if let Some(issue) = a.issue {
+                append_event(issue, "set-permission", &a.actor, "unknown", "success", &summary)?;
+            }
+        }
         other => anyhow::bail!("unknown action: {}", other),
     }
     Ok(())
@@ -3869,17 +4297,305 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "remove-worktree" => actor == "developer",
         "update-plan" => actor == "self-improver",
         "triage-init" => actor == "self-improver",
+        // The ONLY sanctioned writer of `opencode.json` agent `permission` blocks:
+        // the SI grants a missing allowlist verb to a role instead of routing a
+        // sandbox change to the human (G-142). Scoped to permission blocks by
+        // construction — the editor refuses everything else.
+        "set-permission" => actor == "self-improver",
         "tests-commit" => matches!(actor, "tester" | "self-improver"),
         "audit-record" => actor == "self-improver",
         "upload-evidence" => matches!(actor, "tester" | "self-improver"),
         "post-comments" => matches!(actor, "self-improver" | "tester"),
         "record-improvement" => actor == "self-improver",
+        "link-revision" => matches!(actor, "self-improver" | "product-owner"),
         "hardening-lock-open-issues" => actor == "self-improver",
         "interaction-limit" => actor == "self-improver",
         "close-dependabot-prs" => actor == "self-improver",
-        "audit" | "prune" | "metrics" | "health" | "verify" | "context" => true,
+        "audit" | "prune" | "metrics" | "health" | "improvement" | "verify" | "context" => true,
         _ => true,
     }
+}
+
+// ── opencode.json agent-permission editor (`set-permission`) ─────────────────
+//
+// `opencode.json` is human-owned EXCEPT the per-agent `permission` blocks, which
+// the Self-Improver owns through this action: the sandbox is code, so an agent
+// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the SI
+// grant it instead of routing a config change to the human. The editor is
+// TEXT-SURGICAL and never re-serializes the document: opencode evaluates
+// permission rules LAST-match-wins, so member ORDER is semantics — a serde_json
+// round-trip (alphabetical maps) would silently reorder rules and invert a
+// sandbox. The edited document is re-parsed before it is written, so the config
+// can never be left invalid.
+
+fn json_skip_ws(t: &[u8], mut i: usize) -> usize {
+    while i < t.len() && matches!(t[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    i
+}
+
+/// Skip a JSON string whose opening quote sits at `start`; returns the index just
+/// past the closing quote.
+fn json_skip_string(t: &[u8], start: usize) -> anyhow::Result<usize> {
+    if t.get(start) != Some(&b'"') {
+        anyhow::bail!("expected a JSON string at byte {}", start);
+    }
+    let mut i = start + 1;
+    while i < t.len() {
+        match t[i] {
+            b'\\' => i += 2,
+            b'"' => return Ok(i + 1),
+            _ => i += 1,
+        }
+    }
+    anyhow::bail!("unterminated JSON string")
+}
+
+/// Skip a JSON value starting at `start`; returns the index just past it.
+fn json_skip_value(t: &[u8], start: usize) -> anyhow::Result<usize> {
+    let i = json_skip_ws(t, start);
+    match t.get(i) {
+        Some(b'"') => json_skip_string(t, i),
+        Some(b'{') | Some(b'[') => {
+            let (open, close) = if t[i] == b'{' { (b'{', b'}') } else { (b'[', b']') };
+            let mut depth = 0usize;
+            let mut j = i;
+            while j < t.len() {
+                if t[j] == b'"' {
+                    j = json_skip_string(t, j)?;
+                    continue;
+                }
+                if t[j] == open {
+                    depth += 1;
+                } else if t[j] == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(j + 1);
+                    }
+                }
+                j += 1;
+            }
+            anyhow::bail!("unterminated JSON container")
+        }
+        Some(_) => {
+            let mut j = i;
+            while j < t.len() && !matches!(t[j], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n') {
+                j += 1;
+            }
+            Ok(j)
+        }
+        None => anyhow::bail!("unexpected end of JSON"),
+    }
+}
+
+/// Find member `key` of the JSON object whose `{` sits at `obj_start`; returns the
+/// raw byte span of that member's value. `None` when the key is absent.
+fn json_find_member(t: &[u8], obj_start: usize, key: &str) -> anyhow::Result<Option<(usize, usize)>> {
+    let mut i = json_skip_ws(t, obj_start);
+    if t.get(i) != Some(&b'{') {
+        anyhow::bail!("expected '{{' at byte {}", i);
+    }
+    i += 1;
+    loop {
+        i = json_skip_ws(t, i);
+        match t.get(i) {
+            Some(b'}') | None => return Ok(None),
+            Some(b'"') => {
+                let ke = json_skip_string(t, i)?;
+                let found = std::str::from_utf8(&t[i + 1..ke - 1]).ok() == Some(key);
+                i = json_skip_ws(t, ke);
+                if t.get(i) != Some(&b':') {
+                    anyhow::bail!("expected ':' at byte {}", i);
+                }
+                i = json_skip_ws(t, i + 1);
+                let vs = i;
+                let ve = json_skip_value(t, vs)?;
+                if found {
+                    return Ok(Some((vs, ve)));
+                }
+                i = json_skip_ws(t, ve);
+                match t.get(i) {
+                    Some(b',') => i += 1,
+                    Some(b'}') | None => return Ok(None),
+                    _ => anyhow::bail!("expected ',' or '}}' at byte {}", i),
+                }
+            }
+            _ => anyhow::bail!("expected a member key at byte {}", i),
+        }
+    }
+}
+
+/// The one-level indentation unit of an object's members (derived from the first
+/// member's line minus the closing brace's line), falling back to 4 spaces.
+fn json_member_indent_unit(t: &[u8], obj_start: usize, obj_end: usize) -> String {
+    let close = obj_end.saturating_sub(1);
+    let close_line_start = t[..close].iter().rposition(|&c| c == b'\n').map(|p| p + 1).unwrap_or(0);
+    let close_indent = String::from_utf8_lossy(&t[close_line_start..close]).to_string();
+    let mut i = obj_start + 1;
+    while i < close && matches!(t[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    if i >= close {
+        return "    ".to_string();
+    }
+    let member_line_start = t[..i].iter().rposition(|&c| c == b'\n').map(|p| p + 1).unwrap_or(0);
+    let member_indent = String::from_utf8_lossy(&t[member_line_start..i]).to_string();
+    if member_indent.len() > close_indent.len() && member_indent.starts_with(&close_indent) {
+        member_indent[close_indent.len()..].to_string()
+    } else {
+        "    ".to_string()
+    }
+}
+
+/// Append `member` (a `"key": value` fragment) as the LAST member of the object
+/// spanning `t[obj_start..obj_end]`. Appending keeps opencode's last-match-wins
+/// precedence (a new allow beats the preceding catch-all deny) and preserves the
+/// document's existing indentation and line endings (`eol`) — mixing EOLs would
+/// make a one-rule edit show up as a whole-file rewrite.
+fn json_object_append_member(t: &str, obj_start: usize, obj_end: usize, member: &str, eol: &str) -> String {
+    let bytes = t.as_bytes();
+    let close = obj_end - 1;
+    let inner = &t[obj_start + 1..close];
+    let empty = inner.trim().is_empty();
+    if !inner.contains('\n') {
+        let sep = if empty { "" } else { ", " };
+        return format!("{}{}{}{}", &t[..close], sep, member, &t[close..]);
+    }
+    let unit = json_member_indent_unit(bytes, obj_start, obj_end);
+    let close_line_start = t[..close].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let close_indent = &t[close_line_start..close];
+    let elem_indent = format!("{}{}", close_indent, unit);
+    if empty {
+        format!("{}{}{}{}{}{}", &t[..obj_start + 1], eol, elem_indent, member, eol, close_indent)
+            + &t[close..]
+    } else {
+        let nl = t[..close].rfind('\n').unwrap();
+        // Insert before the EOL sequence that precedes the closing brace; the
+        // comma lands at the end of the previous member's line.
+        let eol_start = if nl > 0 && bytes[nl - 1] == b'\r' { nl - 1 } else { nl };
+        format!("{},{}{}{}{}", &t[..eol_start], eol, elem_indent, member, &t[eol_start..])
+    }
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A safe identifier for a role, permission category, or rule pattern: prevents
+/// JSON injection while permitting real glob patterns (`.opencode/tmp/**`,
+/// `git push origin HEAD:spec/* main*`).
+fn permission_token_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, ' ' | '_' | '-' | '*' | '?' | '.' | '/' | ':' | '+' | '=' | '@' | '[' | ']' | '(' | ')')
+        })
+}
+
+/// Rewrite one agent permission rule in `opencode.json` and return a summary of
+/// the change (or `NO-OP: ...` when the rule already holds the requested value).
+fn set_agent_permission(
+    path: &Path,
+    role: &str,
+    tool: &str,
+    pattern: &str,
+    decision: &str,
+) -> anyhow::Result<String> {
+    if !permission_token_ok(role) {
+        anyhow::bail!("set-permission: invalid --role '{}'", role);
+    }
+    if !permission_token_ok(tool) {
+        anyhow::bail!("set-permission: invalid --tool '{}'", tool);
+    }
+    if !permission_token_ok(pattern) {
+        anyhow::bail!("set-permission: invalid --pattern '{}'", pattern);
+    }
+    if !matches!(decision, "allow" | "ask" | "deny") {
+        anyhow::bail!("set-permission: --decision must be allow|ask|deny (got '{}')", decision);
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("set-permission: cannot read {}: {}", path.display(), e))?;
+    let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
+    // Validate BEFORE editing so a corrupt config is never compounded.
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("set-permission: {} is not valid JSON: {}", path.display(), e))?;
+    let agent_exists = parsed
+        .get("agent")
+        .and_then(|a| a.get(role))
+        .map(|_| ())
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}' in {}", role, path.display()))?;
+    let _ = agent_exists;
+    parsed
+        .get("agent")
+        .and_then(|a| a.get(role))
+        .and_then(|r| r.get("permission"))
+        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permission block", role))?;
+
+    let bytes = text.as_bytes();
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let (as_, _) = json_find_member(bytes, 0, "agent")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no 'agent' section"))?;
+    let (rs, _) = json_find_member(bytes, as_, role)?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}'", role))?;
+    let (ps, pe) = json_find_member(bytes, rs, "permission")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permission block", role))?;
+    if bytes[ps] != b'{' {
+        anyhow::bail!("set-permission: agent '{}' permission is not an object", role);
+    }
+
+    let label = format!("agent '{}'.{}['{}']", role, tool, pattern);
+    let new_text = match json_find_member(bytes, ps, tool)? {
+        Some((vs, ve)) if bytes[vs] == b'"' => {
+            let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
+            if current == decision {
+                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+            }
+            anyhow::bail!(
+                "set-permission: '{}.{}' is a flat action ('{}') — only per-pattern maps can be edited; \
+                 change the whole category by hand or via a new action",
+                role, tool, current
+            );
+        }
+        Some((vs, ve)) if bytes[vs] == b'{' => {
+            match json_find_member(bytes, vs, pattern)? {
+                Some((pvs, pve)) => {
+                    let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
+                    if current == decision {
+                        return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+                    }
+                    format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
+                }
+                None => {
+                    let member = format!("\"{}\": \"{}\"", json_escape(pattern), decision);
+                    json_object_append_member(&text, vs, ve, &member, eol)
+                }
+            }
+        }
+        Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
+        None => {
+            let unit = json_member_indent_unit(bytes, ps, pe);
+            let close_line_start = text[..pe - 1].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            let close_indent = &text[close_line_start..pe - 1];
+            let inner_indent = format!("{}{}", close_indent, unit);
+            let obj = if text[ps + 1..pe - 1].contains('\n') {
+                format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(pattern), decision, e0 = eol)
+            } else {
+                format!("{{ \"{}\": \"{}\" }}", json_escape(pattern), decision)
+            };
+            let member = format!("\"{}\": {}", json_escape(tool), obj);
+            json_object_append_member(&text, ps, pe, &member, eol)
+        }
+    };
+
+    // Re-parse the edited document before writing — a config that fails to load
+    // would break every agent's startup, so validity is a hard precondition.
+    serde_json::from_str::<serde_json::Value>(&new_text)
+        .map_err(|e| anyhow::anyhow!("set-permission: edit produced invalid JSON, NOT written: {}", e))?;
+    std::fs::write(path, new_text.as_bytes())
+        .map_err(|e| anyhow::anyhow!("set-permission: cannot write {}: {}", path.display(), e))?;
+    Ok(format!("PERMISSION SET: {} = '{}' in {}", label, decision, path.display()))
 }
 
 // ── Context block ────────────────────────────────────────────────────────────
@@ -4280,10 +4996,31 @@ fn parse_root_cause_class(body: &str) -> Option<&'static str> {
     None
 }
 
-/// Tiny first-match capture helper for the plan's Effort line (avoids pulling a
-/// regex crate dependency into rust-script for one call site): finds the literal
-/// `**Effort:**` marker, skips non-digits, captures the first digit run.
+/// Tiny capture helper for the plan's Effort line (avoids pulling a regex crate
+/// dependency into rust-script for one call site). Prefers the CANONICAL
+/// `- **Effort:** N story points` line (marker immediately followed by the digit
+/// run and then `story point(s)`), then falls back to the first `**Effort:**`
+/// digit run for backward compatibility. The canonical-first preference is
+/// load-bearing: the Architect's decomposition also writes
+/// `**Effort:** ST-1 3 + ST-2 5 + ST-3 3 = **11 story points**`, and the old
+/// first-marker behavior captured `1` from `ST-1` (observed #2870: an 11-point
+/// spec was recorded as 1, corrupting size normalization).
 fn regex_lite_find(haystack: &str) -> Option<String> {
+    const CANONICAL: &str = "**effort:**";
+    for line in haystack.lines() {
+        let lower = line.to_lowercase();
+        let pos = match lower.find(CANONICAL) {
+            Some(p) => p,
+            None => continue,
+        };
+        let rest = line[pos + CANONICAL.len()..].trim_start();
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let after = rest[digits.len()..].trim_start().to_lowercase();
+        if !digits.is_empty() && after.starts_with("story point") {
+            return Some(digits);
+        }
+    }
+    // Fallback: the original first-marker digit run.
     let marker = "**Effort:**";
     let idx = haystack.find(marker)?;
     let rest = &haystack[idx + marker.len()..];
@@ -4298,11 +5035,11 @@ fn regex_lite_find(haystack: &str) -> Option<String> {
 /// fails (the GitHub comment + metric event remain the durable record). Guardrail id
 /// is the next free `### G-NNN`; records are prose-only and never touch `AGENTS.md`/
 /// `opencode.json` (human-owned).
-fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<()> {
+fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow::Result<Option<u32>> {
     let path = project_root()?.join("docs").join("agentic-pipeline").join("playbooks").join("references.md");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(()); }
+        Err(e) => { println!("WARNING: could not read references.md for guardrail persist ({})", e); return Ok(None); }
     };
     // Find the next free G-NNN id (scan existing `### G-` headings).
     let next_id: u32 = content.lines()
@@ -4327,10 +5064,10 @@ fn persist_improvement_guardrail(issue: u32, reason: &str, round: u32) -> anyhow
     };
     if let Err(e) = std::fs::write(&path, updated) {
         println!("WARNING: could not write guardrail to references.md ({})", e);
-        return Ok(());
+        return Ok(None);
     }
     println!("GUARDRAIL PERSISTED: G-{:03} on #{}", next_id, issue);
-    Ok(())
+    Ok(Some(next_id))
 }
 
 /// A rework loop is a transition whose message indicates the source phase was
@@ -4621,6 +5358,17 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
     let issues: std::collections::BTreeSet<String> = all.iter()
         .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+    // Spec-only hygiene filter: a "spec" is an issue the machine created via
+    // `create-issue` (the productive work). Orchestrator/harness logs (#0, #633,
+    // temp fixtures) have no create-issue event and pollute every headline
+    // (a single such log was 80.8% of `blocked` and 68% of `failures`). Headline
+    // quality numbers are computed over specs only; the `issues` count keeps all.
+    let spec_issues: std::collections::BTreeSet<String> = all.iter()
+        .filter(|e| e.event_name == "create-issue")
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+    let spec_rework = all.iter().filter(|e| is_rework(e) && e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|id| spec_issues.contains(id)).unwrap_or(false)).count();
+    let block_actions = all.iter().filter(|e| e.event_name == "block").count();
+    let guard_refusals = all.iter().filter(|e| e.outcome == "blocked" && e.event_name != "block").count();
     let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
     let rework = all.iter().filter(|e| is_rework(e)).count();
     let audit_pass = all.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "passed").count();
@@ -4662,9 +5410,9 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     let first = all.iter().filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|t| t.timestamp())).min().unwrap_or(0);
     let last = all.iter().filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|t| t.timestamp())).max().unwrap_or(0);
     let span_hrs = ((last - first) as f64 / 3600.0).max(1.0);
-    let throughput = issues.len() as f64 / span_hrs;
+    let throughput = spec_issues.len() as f64 / span_hrs;
     let mut cycle_hrs: Vec<f64> = Vec::new();
-    for issue_id in &issues {
+    for issue_id in &spec_issues {
         let evs: Vec<&ReadEvent> = all.iter().filter(|e| {
             e.entity.as_ref().and_then(|ent| ent.issue_id.as_ref()).map(|id| id == issue_id).unwrap_or(false)
         }).collect();
@@ -4681,32 +5429,51 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         }
     }
     let avg_cycle_hrs = if cycle_hrs.is_empty() { None } else { Some(cycle_hrs.iter().sum::<f64>() / cycle_hrs.len() as f64) };
+    // Open WIP = specs that started implementation but have no terminal event
+    // (audit pass or close). Little's Law: WIP ≈ throughput × avg cycle. The old
+    // check compared against ALL issues and so could never fail (`w ≤ issues`).
+    let open_wip = spec_issues.iter().filter(|id| {
+        let starts = all.iter().any(|e| {
+            e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i.as_str() == id.as_str()).unwrap_or(false)
+                && e.event_name == "phase.started" && e.phase == "implementation"
+        });
+        let terminal = all.iter().any(|e| {
+            e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i.as_str() == id.as_str()).unwrap_or(false)
+                && ((e.event_name == "audit.verdict" && e.outcome == "passed") || e.event_name == "close-issue")
+        });
+        starts && !terminal
+    }).count();
     let (wip_from_law, little_ok, cycle_note) = match avg_cycle_hrs {
         Some(avg) => {
             let w = throughput * avg;
-            let ok = (w - issues.len() as f64).abs() / (issues.len().max(1) as f64) < 2.0;
-            (w, ok, format!("{:.1}h avg cycle ({} completed)", avg, cycle_hrs.len()))
+            let denom = open_wip.max(1) as f64;
+            let ok = (w - open_wip as f64).abs() / denom < 1.0;
+            (w, ok, format!("{:.1}h avg cycle ({} completed, open WIP {})", avg, cycle_hrs.len(), open_wip))
         }
         None => (0.0, true, "insufficient completed data — no false alarm".into()),
     };
-    // First-pass rate + root-cause mix + guard-fire counts (SI-decision data):
-    // first-pass = issues with a PASSING audit verdict and ZERO rework loops.
+    // First-pass rate + root-cause mix + guard-fire counts (SI-decision data).
+    // Intention-to-treat: the denominator is ALL created specs (not only passing
+    // ones), so abandoning a hard spec cannot flatter the rate. Guard-fire and
+    // root-cause counts now span every spec, not just passed ones.
     let mut passed_issues = 0usize;
+    let mut canceled_issues = 0usize;
     let mut first_pass_issues = 0usize;
     let mut guard_fired_total = 0usize;
     let mut root_causes: BTreeMap<String, usize> = BTreeMap::new();
     let mut rework_causes: BTreeMap<String, usize> = BTreeMap::new();
     let mut size_total_pts: u64 = 0;
     let mut sized_issues: Vec<(u64, u64)> = Vec::new(); // (reworks, points)
-    for issue_id in &issues {
+    for issue_id in &spec_issues {
         let evs: Vec<&ReadEvent> = all.iter().filter(|e| {
             e.entity.as_ref().and_then(|ent| ent.issue_id.as_ref()).map(|id| id == issue_id).unwrap_or(false)
         }).collect();
         let has_pass = evs.iter().any(|e| e.event_name == "audit.verdict" && e.outcome == "passed");
-        if !has_pass { continue; }
-        passed_issues += 1;
+        let canceled = evs.iter().any(|e| e.event_name == "close-issue" && e.attributes.get("closed_as").map(|v| v == "canceled").unwrap_or(false));
+        if canceled { canceled_issues += 1; }
+        if has_pass { passed_issues += 1; }
         let reworks = evs.iter().filter(|e| is_rework(e)).count();
-        if reworks == 0 { first_pass_issues += 1; }
+        if has_pass && reworks == 0 { first_pass_issues += 1; }
         let mut sp: Option<u64> = None;
         for e in &evs {
             if e.event_name == "guard.fired" { guard_fired_total += 1; }
@@ -4716,7 +5483,16 @@ fn health_report(json: bool) -> anyhow::Result<()> {
                 }
             }
             if e.event_name == "audit.verdict" && e.outcome == "passed" {
-                if let Some(v) = e.attributes.get("storyPoints") { sp = v.parse::<u64>().ok(); }
+                if let Some(v) = e.attributes.get("storyPoints") {
+                    // Guard against a corrupt size (e.g. #2842 recorded its own issue
+                    // number, 2842, which alone was 84% of all points and silently
+                    // destroyed rework_per_10_points). Accept a plausible size only.
+                    if let Ok(parsed) = v.parse::<u64>() {
+                        if parsed > 0 && parsed <= 100 && parsed.to_string() != *issue_id {
+                            sp = Some(parsed);
+                        }
+                    }
+                }
             }
             if e.event_name == "audit.verdict" && e.outcome == "failed" {
                 if let Some(rc) = e.attributes.get("rootCause") {
@@ -4729,7 +5505,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
             sized_issues.push((reworks as u64, pts));
         }
     }
-    let first_pass_rate = if passed_issues == 0 { None } else { Some(first_pass_issues as f64 / passed_issues as f64) };
+    let first_pass_rate = if spec_issues.is_empty() { None } else { Some(first_pass_issues as f64 / spec_issues.len() as f64) };
     // Size-normalized rework intensity: total rework loops per 10 story points over
     // sized issues — comparable across specs of different sizes (the #2756-audit
     // confounder fix).
@@ -4738,14 +5514,16 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     } else { None };
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "issues": issues.len(), "events": all.len(), "blocked": blocked,
-            "rework_total": rework, "audit_pass": audit_pass, "audit_fail": audit_fail,
+            "issues": issues.len(), "spec_issues": spec_issues.len(), "events": all.len(), "blocked": blocked,
+            "block_actions": block_actions, "guard_refusals": guard_refusals,
+            "rework_total": rework, "spec_rework_total": spec_rework, "spec_canceled": canceled_issues,
+            "audit_pass": audit_pass, "audit_fail": audit_fail,
             "first_pass_rate": first_pass_rate, "first_pass_of_passed": first_pass_issues, "passed_issues": passed_issues,
             "root_cause_mix_on_restarts": root_causes,
             "rework_cause_mix_on_rounds": rework_causes,
             "guard_fired_events": guard_fired_total,
             "story_points_total": size_total_pts, "sized_issues": sized_issues.len(), "rework_per_10_points": rework_per_10pts,
-            "throughput_per_hr": throughput, "little_law": { "wip": issues.len(), "computed_wip": wip_from_law, "consistent": little_ok, "avg_cycle_hrs": avg_cycle_hrs, "cycle_note": cycle_note },
+            "throughput_per_hr": throughput, "little_law": { "wip": open_wip, "computed_wip": wip_from_law, "consistent": little_ok, "avg_cycle_hrs": avg_cycle_hrs, "cycle_note": cycle_note },
             "by_agent": by_agent, "by_phase": by_phase,
             "overdue_blockers": overdue,
             "integrity": if integrity.is_empty() { "OK" } else { "TAMPER DETECTED" },
@@ -4792,6 +5570,186 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Self-improvement: "are we improving?" ────────────────────────────────────
+//
+// The primary honest signal: the share of shipped specs that were ACCEPTED —
+// i.e. NOT later revised by a linked follow-up (`feature.revised`) or reopened.
+// Acceptance is the complement of the operator's revealed rejection, so the
+// human reports only what went wrong; silence (no link) is acceptance-so-far.
+// Reported with a Wilson interval and half-vs-half change test; raw counts are
+// always emitted. Never use this as a target (Goodhart) — pair with throughput.
+
+/// Wilson score 95% interval for a binomial proportion (closed form; safe at
+/// small n where the Wald interval is unusable).
+fn wilson_ci(successes: usize, n: usize) -> (f64, f64) {
+    if n == 0 { return (0.0, 1.0); }
+    let n_f = n as f64;
+    let p = successes as f64 / n_f;
+    let z = 1.96_f64;
+    let denom = 1.0 + z * z / n_f;
+    let center = (p + z * z / (2.0 * n_f)) / denom;
+    let margin = z * ((p * (1.0 - p) / n_f) + (z * z / (4.0 * n_f * n_f))).sqrt() / denom;
+    ((center - margin).max(0.0), (center + margin).min(1.0))
+}
+
+fn improvement_report(json: bool) -> anyhow::Result<()> {
+    let root = project_root()?;
+    let dir = root.join(".opencode").join("state").join("issues");
+    if !dir.exists() { println!("No metrics recorded yet."); return Ok(()); }
+    let mut all: Vec<ReadEvent> = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            all.extend(parse_event_log(&content));
+        }
+    }
+    if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
+
+    // Spec set: issues the machine created (the productive work). Excludes the
+    // orchestrator/harness logs that pollute raw counts.
+    let spec_issues: std::collections::BTreeSet<String> = all.iter()
+        .filter(|e| e.event_name == "create-issue")
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+
+    // A spec is REVISED if any later spec declares `feature.revised{revises == id}`
+    // or the spec itself was reopened (`done -> planning`). This is the revealed
+    // rejection signal; the link lives forward on the follow-up.
+    let mut revised_targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in &all {
+        if e.event_name == "feature.revised" {
+            if let Some(rev) = e.attributes.get("revises") {
+                if spec_issues.contains(rev) { revised_targets.insert(rev.clone()); }
+            }
+        }
+        if e.event_name == "transition" && e.message.contains("done -> planning") {
+            if let Some(id) = e.entity.as_ref().and_then(|x| x.issue_id.clone()) {
+                if spec_issues.contains(&id) { revised_targets.insert(id); }
+            }
+        }
+    }
+
+    // Order specs by first event timestamp.
+    let mut ordered: Vec<(i64, String)> = spec_issues.iter().map(|id| {
+        let t = all.iter()
+            .filter(|e| e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i == id).unwrap_or(false))
+            .filter_map(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok().map(|d| d.timestamp()))
+            .min().unwrap_or(0);
+        (t, id.clone())
+    }).collect();
+    ordered.sort();
+
+    let mut created = 0usize;
+    let mut accepted = 0usize;
+    let mut revised = 0usize;
+    let mut canceled = 0usize;
+    let mut in_flight = 0usize;
+    let mut linked = 0usize;
+    let mut outcomes: Vec<bool> = Vec::new(); // true = accepted, false = revised
+    for (_t, id) in &ordered {
+        let evs: Vec<&ReadEvent> = all.iter()
+            .filter(|e| e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|i| i == id).unwrap_or(false))
+            .collect();
+        created += 1;
+        if evs.iter().any(|e| e.event_name == "create-issue" && e.attributes.get("revises").map(|v| v != "none").unwrap_or(false)) {
+            linked += 1;
+        }
+        let is_canceled = evs.iter().any(|e| e.event_name == "close-issue" && e.attributes.get("closed_as").map(|v| v == "canceled").unwrap_or(false));
+        let done = evs.iter().any(|e| e.event_name == "close-issue" || (e.event_name == "phase.started" && e.phase == "done"))
+            || evs.iter().any(|e| e.event_name == "audit.verdict" && e.outcome == "passed");
+        if done {
+            if is_canceled || revised_targets.contains(id) {
+                if is_canceled { canceled += 1; } else { revised += 1; outcomes.push(false); }
+            } else {
+                accepted += 1; outcomes.push(true);
+            }
+        } else {
+            in_flight += 1;
+        }
+    }
+
+    // Acceptance rate over resolved (accepted + revised) specs: Beta(1,1) mean +
+    // Wilson 95% interval.
+    let resolved = accepted + revised;
+    let posterior_mean = (1.0 + accepted as f64) / (2.0 + resolved as f64);
+    let (ci_lo, ci_hi) = wilson_ci(accepted, resolved);
+
+    // Change test: split the resolved outcome sequence in half and compare rates.
+    let n = outcomes.len();
+    let (delta, z, decision) = if n >= 4 {
+        let half = n / 2;
+        let (a1, a2) = (outcomes[..half].iter().filter(|x| **x).count(), outcomes[half..].iter().filter(|x| **x).count());
+        let (n1, n2) = (half, n - half);
+        let (p1, p2) = (a1 as f64 / n1 as f64, a2 as f64 / n2 as f64);
+        let se = ((p1 * (1.0 - p1) / n1 as f64) + (p2 * (1.0 - p2) / n2 as f64)).sqrt();
+        let z = if se > 0.0 { (p2 - p1) / se } else { 0.0 };
+        let d = if z > 1.96 { "improving" } else if z < -1.96 { "regressing" } else { "no detectable change" };
+        (p2 - p1, z, d.to_string())
+    } else {
+        (0.0, 0.0, "insufficient data".to_string())
+    };
+
+    // Crow-AMSAA growth on the cumulative revised count vs spec index (λ t^β).
+    // β < 1 = failure intensity falling (improvement). Uses only indices where the
+    // cumulative count is > 0 (ln is undefined at 0).
+    let mut xs: Vec<f64> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    let mut cum = 0.0_f64;
+    for (idx, (_t, id)) in ordered.iter().enumerate() {
+        if revised_targets.contains(id) { cum += 1.0; }
+        if cum > 0.0 { xs.push(((idx + 1) as f64).ln()); ys.push(cum.ln()); }
+    }
+    let beta_amsaa: Option<f64> = if xs.len() >= 3 && revised_targets.len() >= 3 {
+        let mx = xs.iter().sum::<f64>() / xs.len() as f64;
+        let my = ys.iter().sum::<f64>() / ys.len() as f64;
+        let num: f64 = xs.iter().zip(&ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+        let den: f64 = xs.iter().map(|x| (x - mx) * (x - mx)).sum();
+        if den > 0.0 { Some(num / den) } else { None }
+    } else { None };
+
+    let spec_rework = all.iter().filter(|e| is_rework(e) && e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|id| spec_issues.contains(id)).unwrap_or(false)).count();
+    let throughput = if ordered.len() >= 2 {
+        let span_h = ((ordered.last().unwrap().0 - ordered[0].0) as f64 / 3600.0).max(1.0);
+        ordered.len() as f64 / span_h
+    } else { 0.0 };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "acceptance": {
+                "resolved": resolved, "accepted": accepted, "revised": revised,
+                "posterior_mean": posterior_mean, "ci95": [ci_lo, ci_hi],
+                "delta_half_to_half": delta, "z": z, "decision": decision,
+            },
+            "revise_growth_amsaa_beta": beta_amsaa,
+            "link_coverage": if created > 0 { Some(linked as f64 / created as f64) } else { None },
+            "raw": {
+                "specs_created": created, "accepted": accepted, "revised": revised,
+                "canceled": canceled, "in_flight": in_flight,
+                "spec_rework_total": spec_rework, "throughput_per_hr": throughput,
+            },
+            "integrity": if check_log_integrity()?.is_empty() { "OK" } else { "TAMPER DETECTED" },
+        }))?);
+        return Ok(());
+    }
+    println!("=== Self-Improvement (are we improving?) ===");
+    if resolved == 0 {
+        println!("Acceptance: no resolved specs yet ({} in flight, {} canceled)", in_flight, canceled);
+    } else {
+        println!("Acceptance: {:.0}% ({} accepted / {} resolved)  95% CI [{:.0}%, {:.0}%]",
+            posterior_mean * 100.0, accepted, resolved, ci_lo * 100.0, ci_hi * 100.0);
+    }
+    println!("Trend (half vs half): {} (delta {:+.0}pp, z {:.2})", decision, delta * 100.0, z);
+    match beta_amsaa {
+        Some(b) => println!("Reliability growth (Crow-AMSAA beta): {:.2} ({})", b, if b < 0.95 { "growing" } else if b > 1.05 { "degrading" } else { "stable" }),
+        None => println!("Reliability growth (Crow-AMSAA beta): insufficient revision events (need >= 3)"),
+    }
+    println!("Link coverage: {}/{} specs declared a revision (raw: {} revised, {} canceled, {} in flight, {} rework loops)",
+        linked, created, revised, canceled, in_flight, spec_rework);
+    println!("Raw: {} created, {} accepted, {} revised, {} canceled, {} in flight; throughput {:.3}/hr",
+        created, accepted, revised, canceled, in_flight, throughput);
+    Ok(())
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 fn parse_args() -> ActionArgs {
@@ -4815,16 +5773,24 @@ fn parse_args() -> ActionArgs {
         verdict: val("--verdict"),
         root_cause: val("--root-cause"),
         section: val("--section"),
-        base: val("--base"),
         worktree_path: val("--worktree-path"),
         image: val("--image"),
         feature: val("--feature"),
+        role: val("--role"),
+        tool: val("--tool"),
+        pattern: val("--pattern"),
+        decision: val("--decision"),
+        config_file: val("--config-file"),
         all: args.iter().any(|a| a == "--all"),
         json: args.iter().any(|a| a == "--json"),
+        remote: args.iter().any(|a| a == "--remote"),
         ghargs: val("--ghargs"),
         gitargs: val("--gitargs"),
         branch: val("--branch"),
         commits: val("--commits").and_then(|s| s.parse().ok()),
+        human_authorized: args.iter().any(|a| a == "--human-authorized"),
+        revises: val("--revises").and_then(|s| s.parse().ok()),
+        intent: val("--intent"),
     }
 }
 

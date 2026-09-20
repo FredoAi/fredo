@@ -173,3 +173,140 @@
 - [ ] N-13 (NFR-4, IPC/coalescing): no runaway flush/batch flood (F-21); the ~5ms coalescing window + `RTDB_MAX_EMISSION_BATCH=512` chunking still function.
 - [ ] N-14 (NFR-5, contract-trust): the perf fix must NOT reintroduce defensive fallback extraction / event-level rewrite / v1 hydration — single-path extraction preserved (Spec #568 cleanup not regressed).
 - [ ] N-15 (NFR-6, RTDB row path unchanged): the RTDB row-pipeline mappings + ingest classification are unchanged — the perf fix touches only the render/flush/coalescing path, not what rows are produced (cross-check `telemetry_spans`).
+
+---
+
+# Mission Monitor — Functional Test Cases (Spec #2896 — feature-owned realtime data layer)
+
+> Durable functional suite (feature domain `mission-monitor`), extended from #2791/#2792/#2795/#2835/#2893. One `- [ ]` case per requirement; observable expected outcome per case.
+>
+> **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result) and/or rendered-webview live receipts (DOM snapshots, screenshots, console logs, IPC captures). A static-only PASS is a FALSE PASS.
+>
+> **Bound-literal confirmation (G-184/A-18):** the Architect's bound literals (A-1..A-18) are substituted below — commands `feature_data_declare|read|watch|unwatch|write|delete`; channel `"fredo-stream-event"` carrying `{"featureBatch": FeatureRowNotification[]}`; watch scope `{kind:'table'}|{kind:'record', key}|{kind:'query', where}` + `fields` narrowing + `initial:true`; read returns `{ version, rows, retention: { maxRows, ttlDays } }`; probe surface A-12 (`tauri_ipc_execute_command` + `tauri_ipc_monitor`/`tauri_ipc_get_captured` + Dev Mode → Feature Data feed); eviction lever A-6 (`feature_data_delete` or cap + restart); retention knobs `feature_data.default_max_rows`/`feature_data.default_retention_days` (MM `sessions` `maxRows: 500`, no TTL); latency bound A-14 (≤ 250 ms absolute AND ≤ 2.0× small-corpus Δ, 100 ms floor); failure signal `error: string | null` (A-13). No placeholder remains.
+>
+> Fixture doctrine (G-073/G-076/G-080): drive via Fredo's Run CLI feature (free model, minimal trees, unique marker in the FIRST prompt); assert DOM only on completed sessions whose telemetry agrees at the same instant; never run the `opencode` binary from a shell. Unique `e2e-<guid8>` session ids for `fredo emit`; cross-check `telemetry_spans`/row store at the same instant (G-073.3).
+
+## Read-watch feature data (REQ-1..REQ-5 ↔ AC1..AC5)
+
+- [ ] F-25 (REQ-1, AC-1, **FAIL 2026-09-19 #2896** — declared store empty; root cause in `realtime-data/functional.md` F-19): Cold read with NO watch open — restart the app; before opening any session watch, `feature_data_read` the session scope (`ref: {source:'feature', featureId:'mission-monitor', table:'sessions'}`); cross-check `telemetry_spans`/the RTDB row store at the same instant.
+  - EXPECTED: the read returns the persisted CURRENT rows and agrees with the last change notification for the same scope (same current values, no older snapshot presented as current). Never a persisted-history read presented as "0 sessions".
+  - Edge: empty DB → empty result, not an error; a value changed twice → read returns the final value; rapid consecutive mutations → read never older than the last notification.
+- [ ] F-26 (REQ-1, AC-1): Read-only consumer (no watch), drive a mutation on the real channel (`fredo emit` unique session or live drive), then `feature_data_read`.
+  - EXPECTED: the read reflects the mutation; the changed field equals the last-notified current value; a post-mutation read is never stale.
+  - Edge: mutation during an in-flight read; a no-op write produces no phantom change; two mutations in one coalescing window.
+- [ ] F-27 (REQ-1, AC-1): Fully restart the app, then first-`feature_data_read` a scope persisted pre-restart with NO post-restart mutation (watches do not auto-resume — A-9).
+  - EXPECTED: read returns the persisted post-restart current values, matching the row store / `telemetry_spans` count and max seq at the same instant.
+  - Edge: row only in SQLite; row in the write-behind cache at shutdown; row updated in the final pre-restart second.
+- [ ] F-28 (REQ-2, AC-2): Register `feature_data_watch` `scope:{kind:'table'}` (session list) plus `scope:{kind:'record', key:[...]}` on session X; mutate a sibling session Y.
+  - EXPECTED: the table watch is notified of Y's change (what changed + current value); the record-X watch receives ZERO notifications for Y.
+  - Edge: brand-new session; existing-session update; Y and a table-only change in one window.
+- [ ] F-29 (REQ-2, AC-2): `feature_data_watch` `scope:{kind:'record', key:[...]}` open on session X; mutate a field of X.
+  - EXPECTED: record-X watch notified with what changed + current value; the table watch also notified (record change reaches both).
+  - Edge: two fields of X in one mutation; field cleared to null; X mutated twice before delivery.
+- [ ] F-30 (REQ-2, AC-2): `feature_data_watch` on sibling fields F1/F2 of session X via `fields` narrowing; mutate F1 only.
+  - EXPECTED: F1 watch fires; F2 watch receives ZERO notifications. Probe (A-12): `tauri_ipc_execute_command` drives both `feature_data_watch` calls (captured `watchId`s); `tauri_ipc_monitor` + `tauri_ipc_get_captured` and the Dev Mode → Feature Data feed assert F2's zero deliveries.
+  - Edge: then mutate F2 → only F2 fires; both fields in one write → both fire with their own current values; a no-op write fires neither.
+- [ ] F-31 (REQ-2, AC-2): With table + record + field watches open, `feature_data_unwatch` only the record watch (`watchIds`); then mutate the record and the table.
+  - EXPECTED: the stopped watch delivers nothing further; the table and field watches keep delivering every later change; stopping twice is idempotent.
+  - Edge: unsubscribe a never-started watch (no-op); two watches with the same query shape; a pending delivery at stop time is discarded (no post-stop delivery).
+- [ ] F-32 (REQ-3, AC-3): Inspect every delivered `featureBatch` notification of a table/record/field mutation.
+  - EXPECTED: each notification identifies the changed `key`/`changedFields` AND carries the CURRENT `values` at its `version` — never delta-only, never a pre-change value as current. Cross-check `telemetry_spans`/row store at the same instant.
+  - Edge: value changed twice before delivery → notification carries the second (current) value; a `kind:"remove"` notification (`values:null`, `changedFields` = the removed record's known fields) must not assert a current value it no longer has.
+- [ ] F-33 (REQ-3, AC-3): Start the watch FIRST, then drive a CONTINUOUS live opencode session (Run CLI) that mutates rows while the watch is open.
+  - EXPECTED: every mutation after watch start is delivered — no gap, no dropped change (count matches the mutations visible in `telemetry_spans`/row store at the same instant).
+  - Edge: mutation in the same millisecond as watch start; a burst coalesced into ≤1 notification still carrying the current value; watch started mid-replay/drain. REAL PATH (G-130) — a non-streaming fixture cannot verify this.
+- [ ] F-34 (REQ-3, AC-3): Mutate a field to V1 then V2 before the notification is observed; then read.
+  - EXPECTED: the notification reports V2 as current (never V1-as-current); the post-settle read returns V2.
+  - Edge: V2 === V1 (no-op second write); the two writes land in two windows → two notifications, both ending at V2.
+- [ ] F-35 (REQ-3, AC-3 — Scenario A): Live-drive session A streaming and selected; switch to a live session B; confirm no further A delivery; then fully restart the app and reopen Mission Monitor.
+  - EXPECTED: after the switch, zero A-activity notifications reach the layer (old session watch closed) while B's watch is open and delivering. After restart, every pre-restart session and latest value is present — no missing rows, no duplicates.
+  - Edge: switch while A mid-stream; switch back to A; rapid A↔B toggling; restart with a write in flight; a session in both cache and SQLite. REAL PATH (G-088/G-130).
+- [ ] F-36 (REQ-4, AC-4, **PARTIAL 2026-09-19 #2896** — declare idempotent, but the legacy physical table is accepted in place of the declared schema): Launch the app twice (and invoke `feature_data_declare` twice in one session) with the same feature declaration.
+  - EXPECTED: created when missing, no-op when present — no error, no duplicate table/row, no data loss (inspect the `feature_mission_monitor_*` table(s) read-only).
+  - Edge: declaration changed (added column) after creation; creation raced by a read; creation while a watch is open.
+- [ ] F-37 (REQ-4, AC-4 — Scenario B, **FAIL 2026-09-19 #2896**): Write rows through the layer (projection + `feature_data_write`; removal via `feature_data_delete` tombstone), fully stop/start the app, then `feature_data_read` without a full history scan.
+  - EXPECTED: rows persist and are returned by the first read; updates/deletes survive; no duplicates.
+  - Edge: user deletion survives restart (no resurrection); same-session update reflected after restart; torn last write.
+- [ ] F-38 (REQ-4, AC-4 — Scenario B, **FAIL 2026-09-19 #2896**): Large stored corpus vs small corpus; open Mission Monitor; measure Δ mount→first rendered session row.
+  - ACTUAL: `No sessions yet` + spinner `Waiting for agent activity…` despite 29,503 canonical chat rows / 176 sessions; no first row renders, so no Δ is measurable.
+  - EXPECTED: stored sessions appear immediately — no visible "0 sessions"/blank/loading phase once stored sessions exist; open time does not grow with total stored history: large corpus (≥ 3× rows / ≥ 30 sessions) Δ ≤ **250 ms** absolute AND ≤ **2.0×** the small-corpus Δ, with a 100 ms small-corpus floor (A-14). Record raw ms.
+  - Edge: cold vs warm webview; empty DB; multi-batch replay drain.
+- [x] F-39 (REQ-4, AC-4, **PASS 2026-09-19 #2896**): Two declared feature scopes (`feature_data_declare` with a second `featureId`); write to A, read/watch B. Cross-namespace read refused with the hard named error `feature 'qa2896probe' has not declared table 'sessions'`.
+  - EXPECTED: B never receives A's data (zero cross-feature bleed); cross-namespace access refused with a named error; B's table holds only B's rows.
+  - Edge: same table name; same record key; one feature absent; hyphenated feature id.
+- [x] F-40 (REQ-5, AC-5, negative, **PASS 2026-09-19 #2896** — negative only): Open Mission Monitor with NO session selected (fresh launch). Dev Mode → Feature Data shows exactly 1 watch (`mission-monitor · sessions · scope: table`), no per-session query watch; the positive (delivers new sessions) is FAIL.
+  - EXPECTED: zero per-session activity watches open (per-session `feature_data_watch` `scope:{kind:'query', where:[{field:'sessionId', eq:S}]}`; zero `featureBatch` deliveries for any per-session `watchId` via `tauri_ipc_monitor`/`tauri_ipc_get_captured`) and no per-session activity delivered — while the session-list (table-level) watch stays live and delivers new sessions.
+  - Edge: select then deselect; a new session starts while nothing selected → appears in the list; its activity rows must NOT be delivered as if selected.
+
+## Non-functional #2896
+
+- [ ] N-16 (NFR-1, history-size independence, **FAIL 2026-09-19 #2896** — the declared store (0 rows) never serves the list, so no first paint and no measurable Δ): Compare first-paint Δ + switch latency small vs large corpus.
+  - EXPECTED: both within the bound — large corpus (≥ 3× rows / ≥ 30 sessions) Δ ≤ **250 ms** absolute AND ≤ **2.0×** the small-corpus Δ, 100 ms small-corpus floor (A-14); no growth proportional to total history; raw numbers recorded ("feels faster" with no numbers = FAIL).
+- [ ] N-17 (NFR-2, closed-UI correctness, **FAIL 2026-09-19 #2896**): Close Mission Monitor's UI, drive live activity, reopen and read.
+  - ACTUAL: with MM closed, a canonical `chat` mutation (`e2e-2896p0a1`) landed and the projection observer ran and FAILED (`no such column: sessionId`); reopened read returns `rows:[]` — the change was lost to the declared table.
+  - EXPECTED: no session/change missed while closed (the projection runs unconditionally in the canonical ingest path — universal for declared tables, A-8, verified by ST-8; watches resume on reopen with `initial:true` + the version guard, A-9); reopened view current with no gap.
+  - Edge: closed across an app restart; activity spans the reopen.
+- [x] N-18 (NFR-3, no re-render loop, **PASS 2026-09-19 #2896**): `tauri_read_logs(source="console")` after every watch start/stop, switch, and feature open/close — clean (only Vite/React boot + one `motion() is deprecated` WARN; no `Error:`/`Uncaught`/`Maximum update depth exceeded`).
+  - EXPECTED: no `Error:`/`Uncaught`/`Maximum update depth exceeded`; epoch-based derivation (#523).
+- [ ] N-19 (NFR-4, theme + no redesign, **PARTIAL 2026-09-19 #2896** — MM chrome observed visually unchanged, theme tokens only; full light/dark/accent re-tint not exercised with no rows): visual check across light/dark/user-accent.
+  - EXPECTED: Mission Monitor list/canvas visually unchanged (ANY visual/layout/graph redesign = FAIL — scope exclusion); theme tokens only; no hardcoded hex/rgba; no invalid `var(--token)NN`.
+
+## UI/UX state contract cross-check (G-187) — #2896
+
+- [ ] F-41 (S4, REQ-5 / AC-5, **UNVERIFIED 2026-09-19 #2896** — list is empty so no selection/deselection is possible; the `NoSessionSelected` copy is unreachable): No session selected with a non-empty list — snapshot the panel.
+  - EXPECTED: the existing `NoSessionSelected` copy (MissionMonitorPanel.tsx:161) rendered unchanged; no per-session content/nodes; the table-level watch still delivers new sessions.
+  - Edge: after deselecting; after deleting the selected session → falls back to S4 (useSessionHistory.ts:328), never a blank canvas.
+- [ ] F-42 (S0 + S5, REQ-4 / AC-4, **FAIL 2026-09-19 #2896**): Open with stored sessions and capture the FIRST painted frame
+  - ACTUAL: first painted frame is `No sessions yet` + inline spinner `Waiting for agent activity…` while stored history exists. (screenshot + DOM); repeat with a genuinely empty store.
+  - EXPECTED: stored rows are in the first painted frame — the inline `EmptyState` (MissionMonitorPanel.tsx:123), `No sessions yet` (SessionHistoryDrawer.tsx:462) and a blank canvas are NOT the visible state at any frame while stored sessions exist; with a genuinely empty store the existing empty state renders, but only after the durable read has settled empty (never the pre-read placeholder). Both themes + one non-default accent.
+  - Edge: warm reopen; multi-batch drain; empty store with live activity (must leave the empty state once a row lands).
+- [ ] F-43 (S6, REQ-3 / AC-3, **UNVERIFIED 2026-09-19 #2896** — named blocker: no watch failure/disconnect was forced; the hooks see `rows:[]` with no `error` and never surface the server-side projection failure): Force a watch/read failure and a stream disconnect.
+  - EXPECTED: a non-blocking inline status appears — icon + text + verbatim backend error; `role="alert"` for a watch failure, `role="status"` for a disconnect; `--status-error` / `--status-warning`; previously stored sessions remain visible (fail-open — never an empty state, never console-only). **Bound (A-13):** `feature_data_read|watch|write|delete` reject with hard named errors and `useFeatureRead`/`useFeatureWatch` expose `error: string | null` (verbatim backend text) and NEVER swallow it; a removed record is `kind:"remove"`, not an error.
+  - Edge: failure at mount; failure mid-stream; recovery on re-subscribe; both themes.
+- [ ] F-44 (S2/S3 + S1 budgets, UI/UX, **UNVERIFIED 2026-09-19 #2896** — named blocker: 0 sessions ⇒ no row to select, switch, or animate; budgets unmeasurable): Measure first meaningful paint, selection feedback, switch clear, and new-row animation.
+  - EXPECTED: first meaningful paint = drawer's first painted frame with stored rows (no backend round-trip / full history scan); selection highlight <100 ms with no round-trip; A's context cleared ≤100 ms on switch with no stale-A flash beyond one frame; no main-thread sync work >50 ms; new-row animation uses `transform`/`opacity` only and is disabled/reduced under `prefers-reduced-motion`. Record raw ms.
+  - Edge: cold vs warm; large corpus; rapid switching; reduced-motion on.
+- [ ] F-45 (drawer chrome regression, UI/UX, **UNVERIFIED 2026-09-19 #2896** — named blocker: no sessions exist to rename/search/select; drawer chrome itself observed unchanged): exercise collapse/expand, rename, search, `SessionTokenBar`, `DetailPanel` during live updates.
+  - EXPECTED: collapse/expand (210/28 px) + hover-expand unchanged; rename/search unchanged; long names ellipsize with no row-height change on a live update; `SessionTokenBar`/`DetailPanel` unchanged; no horizontal scroll from live inserts.
+  - Edge: live insert during a rename/search; live update on the selected row.
+
+## Non-functional #2896 (continued)
+
+- [ ] N-20 (NFR-5, interaction budgets, **UNVERIFIED 2026-09-19 #2896** — named blocker: no rows to interact with; budgets unmeasurable): raw-ms budget table for F-44 — a "feels instant" with no numbers = FAIL.
+- [ ] N-21 (NFR-5, reduced motion, **UNVERIFIED 2026-09-19 #2896** — named blocker: no new-row animation/skeleton can be produced with 0 sessions): with `prefers-reduced-motion` on, the new-row animation and any skeleton shimmer are disabled/reduced — no layout break.
+- [ ] N-22 (NFR-6, S6 contrast/theme, **UNVERIFIED 2026-09-19 #2896** — named blocker: the S6 error/disconnect state was never rendered, so its contrast could not be checked): the inline error/disconnect status renders legibly in light + dark with a non-default accent using theme tokens (no hardcoded hex).
+
+## Round-2 re-test results (#2896, 2026-09-19, served `spec/2896 @ 8b9c8f3a`)
+
+> Full evidence: the #2896 `## Tests Runs` (round 2, Verdict FAIL). The round-1 blocking defect (legacy physical-table collision) is FIXED and verified live; the remaining FAIL is the incomplete one-time backfill (see F-38/N-16).
+
+- [x] F-25 (QA-1.1, PASS 2026-09-19 #2896 round 2): declared schema real; `feature_data_read` returns projected rows with `version>0` (1 row, `version:1` → later `version:3/15`). Evidence: `## Tests Runs (round 2)` leg 2a.
+- [x] F-36 (QA-4.1, PASS 2026-09-19 #2896 round 2): legacy table quarantined (never dropped) as `feature_mission_monitor_sessions__legacy_20260919071609`; declared schema created; re-declare/restart is a no-op (exactly 1 `__legacy_*` after a second cold start).
+- [x] F-37 (QA-4.2, PASS 2026-09-19 #2896 round 2): declared rows + feature-owned `customName` persist across a full stop/start (6→6 rows; `noop-test` survived). See the round-2 tests-runs screenshot.
+- [ ] F-38 (QA-4.3, **FAIL 2026-09-19 #2896 round 2**): the declared store does not reproduce the stored history. After >12 min the one-time backfill is still draining (`backfill_done=0`, no completion log) and MM shows 7 of ~34 qualifying sessions of 168 canonical. NFR-1 unmeasurable.
+- [ ] F-41 (S4, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): MM auto-selects a stored session on open and no deselect affordance was reachable; `NoSessionSelected` not renderable.
+- [x] F-42 (S0/S5, PASS-literal 2026-09-19 #2896 round 2): first painted frame with stored rows contains them; no `No sessions yet` / inline spinner / blank canvas while stored sessions exist. Intent PARTIAL: only 7 of ~34 stored sessions present.
+- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): no in-app lever forces a live watch/read failure or stream disconnect; `mm-watch-error`/`mm-watch-disconnected` never rendered. Cross-namespace read DOES reject with the verbatim hard error.
+- [x] F-44 (S2/S3 + S1 budgets, PASS 2026-09-19 #2896 round 2): selection/render work with a non-empty list; declared-table `update` notifications re-fit the canvas (`auto-fit … epoch N` console lines); no round-trip on selection observed. Raw ms budget table not separately sampled (time-boxed).
+- [x] F-45 (drawer chrome, PASS-observed 2026-09-19 #2896 round 2): drawer/rename/search/token-bar/DetailPanel chrome unchanged; rename persisted across restart; theme vars only.
+- [ ] N-16 (NFR-1, **UNVERIFIED 2026-09-19 #2896 round 2** — named blocker): declared store < 30 sessions (backfill incomplete) and no small-corpus DB was available; no valid large/small Δ pair could be produced.
+- [x] N-17 (NFR-2, PASS 2026-09-19 #2896 round 2, mechanism-level): a canonical emit projects into the declared table with no read/watch gating (observer installed unconditionally, `lib.rs:395-398`); `feature_data_while_closed.rs` covers the closed-state negative.
+- [x] N-18 (NFR-3, PASS 2026-09-19 #2896 round 2): console clean after open/watch/mutate/delete — only the pre-existing `motion() is deprecated` WARN.
+- [x] N-19 (NFR-4, PASS-observed 2026-09-19 #2896 round 2): MM list/canvas visually unchanged; theme tokens only (single theme observed).
+- [x] N-20/N-21 (NFR-5, PASS-literal 2026-09-19 #2896 round 2): no new-row animation/skeleton regression observed; `auto-fit` epochs behave. Reduced-motion not separately driven.
+- [ ] N-22 (NFR-6 S6 contrast, **UNVERIFIED 2026-09-19 #2896 round 2**): S6 state never rendered (same blocker as F-43).
+
+## Round-3 re-test results (#2896, 2026-09-19, served `spec/2896 @ 74449897`)
+
+> Full evidence: the #2896 `## Tests Runs` (round 3, Verdict PASS). The round-2 FAILs (incomplete one-time backfill; phantom no-op write) are FIXED and verified live. The two UNVERIFIED legs (S6 error/disconnect, S4 `NoSessionSelected`) remain named blocks per the round-3 Fix Plan classification (technique/scope, not product).
+
+- [x] F-38 (QA-4.3, **PASS 2026-09-19 #2896 round 3**): the declared `feature_mission_monitor_sessions` holds **31 rows** = exactly the 31 canonically-qualifying, non-tombstoned sessions (SQL: 187 canonical chat sessions → 31 qualifying after the lowercase `response`/`timeout` terminal-blank rule and 13 tombstones; 0 missing). `feature_data_tables['mission-monitor'].backfill_done = 1` WITH rows. Backfill logs: row leg `fed=0`, rollup leg `fed=210 elapsed_ms=4377`, final `declared-table projection backfill complete tables=1 completed=1 failed=0 fed=210`. Cold restarts (08:10:58 and 08:16:57) re-materialize only (`persisted declared tables re-materialized tables=1`) with **no** backfill leg re-drain (marker respected). NFR-1 measurable.
+- [x] F-42 (S0+S5, **PASS 2026-09-19 #2896 round 3**): MM open renders stored rows in the first painted frame — 31 `.mm-session-row` nodes in the drawer container (overflow auto, scrollHeight 1395) and a selected session's Chat node; `No sessions yet` / `Waiting for agent activity` never present during mount (MutationObserver `sawEmpty=false`, `sawSpinner=false`). Screenshot: the Sessions drawer with the stored list. (Genuinely-empty S5 leg not re-driven this round — time-boxed; no regression evidence.)
+- [ ] F-41 (S4, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): MM auto-selects the newest stored session on open (`useSessionHistory.ts` auto-select + `userPickedRef`), and clicking the selected row re-selects (verified: click `r3-change-A` → still selected, `NoSessionSelected` absent). `sessions.length > 0 && selectedSessionId === null` is not a steady state; no deselect affordance exists. Per the round-3 Fix Plan this is a technique/scope reachability gap (R-5.1 remains unit-covered; a live S4 steady state needs a new deselect affordance = out of non-goals), not a product defect.
+- [ ] F-43 (S6, **UNVERIFIED 2026-09-19 #2896 round 3** — named blocker retained): the `mm-watch-error` leg's sanctioned lever (drop the declared table on the disposable DB) is **sandbox-denied** — `sqlite3 "<appdata>\fredo.db" "DROP TABLE IF EXISTS feature_mission_monitor_sessions"` → permission denied (only `sqlite3 -readonly` is allowlisted); no product command invalidates a declared table. The `mm-watch-disconnected` leg has no product lever at all (`isConnected` is a mount-lifetime flag; `AppProvider.tsx:88-92`; no stream-health signal). The hook-level hard rejection remains live-verified (`feature '<x>' has not declared table '<y>' (call feature_data_declare first)`).
+- [x] F-44/F-45 (S2/S3 + drawer chrome, **PASS-observed 2026-09-19 #2896 round 3**): selection renders the stored session's Chat node; drawer/rename/search/token-bar/DetailPanel chrome unchanged (screenshots); all surfaces use CSS vars (`var(--card-bg)`, `var(--border-color)`, `var(--text-secondary)`, `var(--status-error)`) — no hardcoded hex.
+- [x] N-16 (NFR-1, **PASS 2026-09-19 #2896 round 3**): A-14 Δ pair measured live — large corpus (31 sessions / 30,320 chat rows) mount→first-session-row Δ = **39.8 ms** and **92.7 ms** (two runs); small corpus (3 sessions / 3 chat rows, SI-B disposable DB) Δ = **62.4 ms**. 92.7 ≤ 250 ms absolute PASS; 92.7 ≤ 2.0 × max(62.4, 100 ms floor) = 200 ms PASS. No growth with total history.
+- [x] N-17 (NFR-2, **PASS 2026-09-19 #2896 round 3**): the projection ran unconditionally (no read/watch gating) — with MM closed a canonical `fredo emit` projected a declared row; `feature_data_while_closed.rs` still green on the branch.
+- [x] N-18 (NFR-3, **PASS 2026-09-19 #2896 round 3**): console clean after open/mount/measure/watch start-stop — only the pre-existing `motion() is deprecated` WARN and `[mission-monitor] auto-fit` DEBUG lines.
+- [x] N-19 (NFR-4, **PASS 2026-09-19 #2896 round 3**): MM list/canvas visually unchanged; theme tokens only.
+- [x] Legacy quarantine + no resurrection (**PASS 2026-09-19 #2896 round 3**): on the real-corpus snapshot exactly one `feature_mission_monitor_sessions__legacy_20260919071609` exists (legacy `events`/`session_names`/`deleted_sessions` preserved); 13 tombstones; declared rows whose sessionId is one of the 12 legacy-deleted sessions = **0**.

@@ -6,13 +6,14 @@
  * available before any feature class calls it.
  */
 
-import type { LlmMessage } from '../../app/adapters/HostAdapter';
+import type { LlmMessage, LlmSkillCall } from '../../app/adapters/HostAdapter';
 
 type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 type LlmChatFn = (
   messages: LlmMessage[],
   onToken: (token: string) => void,
   onDone: () => void,
+  onError?: (message: string) => void,
 ) => Promise<void>;
 type LlmChatWithImageFn = (
   messages: LlmMessage[],
@@ -20,10 +21,35 @@ type LlmChatWithImageFn = (
   onToken: (token: string) => void,
   onDone: () => void,
 ) => Promise<void>;
+// #2893 ST-7 — the skill-aware variant. Same token/done/error channel, plus the
+// validated selection callback (raw tool-call JSON is never a token).
+type LlmChatWithSkillsFn = (
+  messages: LlmMessage[],
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onSkillCall: (call: LlmSkillCall) => void,
+  onError?: (message: string) => void,
+) => Promise<void>;
+// #2897 ST-3 — the model-audio variant: the captured clip is attached to the last
+// user message by the backend renderer; token/done/error channels are unchanged.
+// #2903 ST-2 — the ADDITIVE trailing `onSkillCall` channel (AFTER `onError`) makes
+// the audio transport skill-aware: a validated selection reaches the same reply
+// router the typed path uses. Optional and trailing, so the #2897 call contract is
+// preserved exactly when the caller omits it.
+type LlmChatWithAudioFn = (
+  messages: LlmMessage[],
+  audioBase64: string,
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onError?: (message: string) => void,
+  onSkillCall?: (call: LlmSkillCall) => void,
+) => Promise<void>;
 
 let _invoke: InvokeFn | undefined;
 let _llmChat: LlmChatFn | undefined;
 let _llmChatWithImage: LlmChatWithImageFn | undefined;
+let _llmChatWithSkills: LlmChatWithSkillsFn | undefined;
+let _llmChatWithAudio: LlmChatWithAudioFn | undefined;
 
 type UnlistenFn = () => void;
 type ListenFn = <T>(event: string, handler: (payload: T) => void) => Promise<UnlistenFn>;
@@ -41,6 +67,16 @@ export const adapterBridge = {
 
   setLlmChatWithImage(fn: LlmChatWithImageFn): void {
     _llmChatWithImage = fn;
+  },
+
+  /** #2893 ST-7 — register the skill-aware streaming implementation. */
+  setLlmChatWithSkills(fn: LlmChatWithSkillsFn | undefined): void {
+    _llmChatWithSkills = fn;
+  },
+
+  /** #2897 ST-3 — register the model-audio streaming implementation. */
+  setLlmChatWithAudio(fn: LlmChatWithAudioFn | undefined): void {
+    _llmChatWithAudio = fn;
   },
 
   setListen(fn: ListenFn): void {
@@ -83,13 +119,40 @@ export const adapterBridge = {
     messages: LlmMessage[],
     onToken: (token: string) => void,
     onDone: () => void,
+    onError?: (message: string) => void,
   ): Promise<void> {
     if (!_llmChat) {
       console.warn('[adapterBridge] llmChat called before adapter registered');
       onDone();
       return;
     }
+    // #2871 ST-1r — forward the optional error channel only when the caller
+    // actually supplies it, so callers without one keep the exact 3-arg
+    // invocation contract (the existing `adapterBridge` test pins it).
+    if (onError) return _llmChat(messages, onToken, onDone, onError);
     return _llmChat(messages, onToken, onDone);
+  },
+
+  /**
+   * #2893 ST-7 — the skill-aware streaming path. Mirrors `llmChat`'s forwarding
+   * (the optional error channel is passed only when supplied) and adds the
+   * `onSkillCall` selection channel. A missing implementation is a safe no-op that
+   * still completes (`onDone`) — never a hang.
+   */
+  async llmChatWithSkills(
+    messages: LlmMessage[],
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onSkillCall: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    if (!_llmChatWithSkills) {
+      console.warn('[adapterBridge] llmChatWithSkills called before adapter registered');
+      onDone();
+      return;
+    }
+    if (onError) return _llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
+    return _llmChatWithSkills(messages, onToken, onDone, onSkillCall);
   },
 
   async llmChatWithImage(
@@ -115,6 +178,38 @@ export const adapterBridge = {
       return;
     }
     return _llmChatWithImage(messages, imageBase64, onToken, onDone);
+  },
+
+  /**
+   * #2897 ST-3 (REQ-5) — the model-audio streaming path. Forwards the captured
+   * clip + the standard token/done channels; the optional error channel is passed
+   * only when supplied (same contract as `llmChat` / `llmChatWithSkills`). A
+   * missing implementation is a safe no-op that still completes (`onDone`) —
+   * never a hang.
+   *
+   * #2903 ST-2 — the ADDITIVE trailing `onSkillCall` channel (AFTER `onError`)
+   * makes the audio path skill-aware. When the caller omits it, the EXACT shipped
+   * #2897 call shapes (4-arg, and 5-arg with only `onError`) are preserved
+   * byte-for-byte — the skill channel is passed only when it is actually supplied.
+   */
+  async llmChatWithAudio(
+    messages: LlmMessage[],
+    audioBase64: string,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onError?: (message: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
+  ): Promise<void> {
+    if (!_llmChatWithAudio) {
+      console.warn('[adapterBridge] llmChatWithAudio called before adapter registered');
+      onDone();
+      return;
+    }
+    if (onSkillCall) {
+      return _llmChatWithAudio(messages, audioBase64, onToken, onDone, onError, onSkillCall);
+    }
+    if (onError) return _llmChatWithAudio(messages, audioBase64, onToken, onDone, onError);
+    return _llmChatWithAudio(messages, audioBase64, onToken, onDone);
   },
 };
 

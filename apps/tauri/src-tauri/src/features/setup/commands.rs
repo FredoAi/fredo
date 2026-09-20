@@ -1,9 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::companion::models::{
+    models_subdir, resolve_manifest, resolve_models_dir,
+};
+use crate::infrastructure::companion::resolve_llama_server;
+use crate::infrastructure::voice::manifest::resolve_stt_manifest;
+#[cfg(test)]
+use crate::infrastructure::companion::models::default_manifest;
+#[cfg(test)]
+use crate::infrastructure::companion::resolve_llama_server_order;
+use super::model_download::{
+    download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
+    ReqwestTransport, SystemClock,
+};
+use super::model_download_state::{is_step_complete, probe_files, FileState, ModelFileStatus};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,12 +69,21 @@ pub struct CheckAllSetupResult {
     pub otel: StepStatus,
 }
 
+/// Extended `check_model_files` result. The legacy snake_case fields are
+/// preserved verbatim for `SetupWizard.tsx`; `complete` + `files` are the
+/// authoritative 3-file manifest status (#2856).
 #[derive(Serialize)]
 pub struct ModelFilesStatus {
+    /// true iff EVERY manifest file is present-and-complete.
+    pub complete: bool,
+    /// Per-file status, ordered `model` → `vision` → `mtp`.
+    pub files: Vec<ModelFileStatus>,
     pub gguf_exists: bool,
     pub mmproj_exists: bool,
+    pub mtp_exists: bool,
     pub gguf_path: Option<String>,
     pub mmproj_path: Option<String>,
+    pub mtp_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -72,18 +93,9 @@ pub struct SetupStepResult {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct DownloadProgress {
-    pub file: String,
-    pub total: u64,
-    pub downloaded: u64,
-    pub percent: f64,
-}
-
-/// Model constants for download and checking
-const MODEL_SUBDIR: &str = "gemma-e2b-it";
-const MODEL_GGUF: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
-const MODEL_MMPROJ: &str = "mmproj-F16.gguf";
+/// `download_model` wire result: the streamed engine outcome, named for the API
+/// contract the UI consumes (additive `files` over the legacy `SetupStepResult`).
+pub type ModelDownloadResult = ModelDownloadOutcome;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -834,28 +846,13 @@ pub fn configure_otel(app: AppHandle) -> InstallResult {
 
 // ── New Setup Commands ─────────────────────────────────────────────────────────
 
-/// Resolve the configured models_dir from AppStore, falling back to {home}/fredo-models.
-fn resolve_models_dir(app: &AppHandle) -> PathBuf {
-    let store_ref = app.state::<Arc<AppStore>>();
-    let configured = store_ref.get("models_dir").ok().flatten();
-    if let Some(val) = configured {
-        if !val.is_empty() {
-            return PathBuf::from(val);
-        }
-    }
-    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-    home.join("fredo-models")
-}
-
-/// Resolve a model file path relative to the configured models_dir.
-fn resolve_model_path(app: &AppHandle, subdir: &str, filename: &str) -> Option<PathBuf> {
-    let base = resolve_models_dir(app);
-    let path = base.join(subdir).join(filename);
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+/// The absolute path of the file with `id` when it exists on disk (legacy
+/// `gguf_path`/`mmproj_path`/`mtp_path` semantics — existence only).
+fn legacy_path(files: &[ModelFileStatus], id: &str) -> Option<String> {
+    files
+        .iter()
+        .find(|status| status.id == id)
+        .and_then(|status| status.path.clone())
 }
 
 /// Check all setup steps and return JSON status for each.
@@ -889,17 +886,33 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
         StepStatus { status: "missing".into(), detail: Some("Fredo plugin not installed.".into()) }
     };
 
-    // model
-    let gguf_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_GGUF);
-    let mmproj_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_MMPROJ);
-    let model = if gguf_path.is_some() && mmproj_path.is_some() {
-        StepStatus { status: "ok".into(), detail: Some("Both model files present.".into()) }
-    } else if gguf_path.is_some() {
-        StepStatus { status: "missing".into(), detail: Some("GGUF model found but mmproj missing.".into()) }
-    } else if mmproj_path.is_some() {
-        StepStatus { status: "missing".into(), detail: Some("mmproj found but GGUF model missing.".into()) }
+    // model — derived from the same 3-file manifest as the acquisition surfaces,
+    // so this step can never report ok on a partial/truncated set.
+    let manifest = resolve_manifest(&app);
+    let model_files = probe_files(&resolve_models_dir(&app), &manifest);
+    let total = model_files.len();
+    let present = model_files
+        .iter()
+        .filter(|status| status.state == FileState::Present)
+        .count();
+    let model = if total > 0 && present == total {
+        StepStatus {
+            status: "ok".into(),
+            detail: Some("All required model files present.".into()),
+        }
     } else {
-        StepStatus { status: "missing".into(), detail: Some("No model files found. Run download_model to fetch them.".into()) }
+        let missing: Vec<&str> = model_files
+            .iter()
+            .filter(|status| status.state != FileState::Present)
+            .map(|status| status.relative_path.as_str())
+            .collect();
+        StepStatus {
+            status: "missing".into(),
+            detail: Some(format!(
+                "{present} of {total} model files present — missing: {}",
+                missing.join(", ")
+            )),
+        }
     };
 
     // otel
@@ -964,113 +977,350 @@ pub async fn run_setup_step(app: AppHandle, step_id: String) -> SetupStepResult 
     }
 }
 
-/// Check whether GGUF and mmproj model files exist in the configured models directory.
+/// Probe the three required model files from the resolved manifest. The legacy
+/// snake_case fields remain (existence semantics for `SetupWizard.tsx`); the
+/// authoritative honesty gate is `complete` (`files` all present).
 #[tauri::command]
 pub fn check_model_files(app: AppHandle) -> ModelFilesStatus {
-    let gguf_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_GGUF);
-    let mmproj_path = resolve_model_path(&app, MODEL_SUBDIR, MODEL_MMPROJ);
+    let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
+    let files = probe_files(&models_dir, &manifest);
+    let complete = is_step_complete(&models_dir, &manifest);
+
+    let gguf_path = legacy_path(&files, "model");
+    let mmproj_path = legacy_path(&files, "vision");
+    let mtp_path = legacy_path(&files, "mtp");
 
     ModelFilesStatus {
+        complete,
         gguf_exists: gguf_path.is_some(),
         mmproj_exists: mmproj_path.is_some(),
-        gguf_path: gguf_path.map(|p| p.to_string_lossy().into_owned()),
-        mmproj_path: mmproj_path.map(|p| p.to_string_lossy().into_owned()),
+        mtp_exists: mtp_path.is_some(),
+        gguf_path,
+        mmproj_path,
+        mtp_path,
+        files,
     }
 }
 
-/// Download both model files from Hugging Face.
-/// Emits `setup:download-progress` events per file with progress info.
+/// Bridges the streamed engine's progress sink onto the existing
+/// `setup:download-progress` event (camelCase, additively richer payload).
+struct AppHandleProgressReporter {
+    app: AppHandle,
+}
+
+impl ProgressReporter for AppHandleProgressReporter {
+    fn report(&self, progress: DownloadProgress) {
+        if let Err(error) = self.app.emit("setup:download-progress", &progress) {
+            tracing::debug!("failed to emit setup:download-progress: {error}");
+        }
+    }
+}
+
+/// Acquire every required model file that is not present-and-complete. Delegates
+/// to the ST-2 streamed engine (skip-present / Range-resume / streaming SHA-256)
+/// and returns the final per-file status. Legacy `success`/`output`/`error` are
+/// retained; `files` is additive.
 #[tauri::command]
-pub async fn download_model(app: AppHandle) -> SetupStepResult {
-    let models_dir = resolve_models_dir(&app).join(MODEL_SUBDIR);
-    if let Err(e) = std::fs::create_dir_all(&models_dir) {
-        return SetupStepResult {
+pub async fn download_model(app: AppHandle) -> ModelDownloadResult {
+    let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
+
+    let transport = match ReqwestTransport::new() {
+        Ok(transport) => transport,
+        Err(error) => {
+            return ModelDownloadResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Failed to initialize the download client: {error}")),
+                files: Vec::new(),
+            };
+        }
+    };
+
+    let reporter = AppHandleProgressReporter { app: app.clone() };
+    download_missing_files(&transport, &manifest, &models_dir, &reporter, &SystemClock).await
+}
+
+/// Acquire the pinned STT model files (Spec #2876, ST-2). Delegates to the SAME
+/// streamed engine as `download_model` (skip-present / Range-resume / streaming
+/// SHA-256 verify) — no duplicate acquisition logic. Per-file progress lands on
+/// the existing `setup:download-progress` channel with `fileId` ∈
+/// {sttTokens, sttEncoder, sttDecoder, sttJoiner}.
+#[tauri::command]
+pub async fn download_stt_model(app: AppHandle) -> ModelDownloadResult {
+    let manifest = resolve_stt_manifest();
+    let models_dir = resolve_models_dir(&app);
+
+    let transport = match ReqwestTransport::new() {
+        Ok(transport) => transport,
+        Err(error) => {
+            return ModelDownloadResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Failed to initialize the download client: {error}")),
+                files: Vec::new(),
+            };
+        }
+    };
+
+    let reporter = AppHandleProgressReporter { app: app.clone() };
+    download_missing_files(&transport, &manifest, &models_dir, &reporter, &SystemClock).await
+}
+
+// ── Companion readiness + llama.cpp install (Spec #2855) ───────────────────────
+//
+// ONE canonical prerequisite set for the Companion setup wizard. The backend
+// owns the set; the frontend renders exactly what `check_companion_readiness`
+// returns through its ordered `COMPANION_SETUP_STEPS` registry. #2856 appends a
+// model-download action; #2857 appends a `serverLaunch` prerequisite.
+
+const WINGET_BIN: &str = "winget";
+#[cfg(target_os = "windows")]
+const WINGET_APP_ID: &str = "ggml.llamacpp";
+
+/// Per-prerequisite state. `Error` = could not determine; `Missing` = determined absent.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum PrerequisiteState {
+    Installed,
+    Missing,
+    Error,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PrerequisiteReport {
+    /// Stable id: "llamaServer" | "modelFiles" (#2857 adds "serverLaunch").
+    pub id: String,
+    pub state: PrerequisiteState,
+    pub detail: String,
+    pub resolved_path: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionReadiness {
+    /// true iff EVERY prerequisite is `Installed` (never for Missing/Error).
+    pub ready: bool,
+    pub prerequisites: Vec<PrerequisiteReport>,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum LlamaCppInstallCode {
+    WingetUnavailable,
+    InstallFailed,
+    SpawnFailed,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LlamaCppInstallResult {
+    pub success: bool,
+    pub output: String,
+    pub error: Option<String>,
+    pub code: Option<LlamaCppInstallCode>,
+}
+
+/// Aggregate the manifest probe into the `modelFiles` prerequisite. Pure — the
+/// resolved manifest is the single source of required files, so a partial set
+/// (or an empty manifest) can never read `Installed`.
+fn model_files_prerequisite(
+    files: &[ModelFileStatus],
+    resolved_path: String,
+) -> PrerequisiteReport {
+    let total = files.len();
+    let present = files
+        .iter()
+        .filter(|status| status.state == FileState::Present)
+        .count();
+    let complete = total > 0 && present == total;
+    let (state, detail) = if complete {
+        (
+            PrerequisiteState::Installed,
+            "All required model files present.".to_string(),
+        )
+    } else {
+        (
+            PrerequisiteState::Missing,
+            format!("{present} of {total} model files present."),
+        )
+    };
+    PrerequisiteReport {
+        id: "modelFiles".to_string(),
+        state,
+        detail,
+        resolved_path: if complete { Some(resolved_path) } else { None },
+    }
+}
+
+/// The two prerequisites the companion needs before it can run. Read-only.
+#[tauri::command]
+pub fn check_companion_readiness(app: AppHandle) -> CompanionReadiness {
+    let mut prerequisites = Vec::with_capacity(2);
+
+    // Prerequisite 1 — a usable llama-server executable.
+    let (llama_state, llama_detail, llama_path) = match resolve_llama_server(&app) {
+        Ok(Some(path)) => (
+            PrerequisiteState::Installed,
+            format!("llama-server found at {}", path.display()),
+            Some(path.to_string_lossy().into_owned()),
+        ),
+        Ok(None) => (
+            PrerequisiteState::Missing,
+            "llama-server not found. Install llama.cpp to continue.".to_string(),
+            None,
+        ),
+        Err(e) => (
+            PrerequisiteState::Error,
+            format!("Could not determine llama-server availability: {e}"),
+            None,
+        ),
+    };
+    prerequisites.push(PrerequisiteReport {
+        id: "llamaServer".to_string(),
+        state: llama_state,
+        detail: llama_detail,
+        resolved_path: llama_path,
+    });
+
+    // Prerequisite 2 — the required model files, derived from the manifest.
+    let manifest = resolve_manifest(&app);
+    let models_dir = resolve_models_dir(&app);
+    let model_files = probe_files(&models_dir, &manifest);
+    prerequisites.push(model_files_prerequisite(
+        &model_files,
+        models_subdir(&models_dir, &manifest)
+            .to_string_lossy()
+            .into_owned(),
+    ));
+
+    let ready = prerequisites
+        .iter()
+        .all(|p| p.state == PrerequisiteState::Installed);
+    CompanionReadiness { ready, prerequisites }
+}
+
+/// Tail of a (possibly long) install output for an actionable error.
+fn tail_of(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= max_chars {
+        return trimmed.to_string();
+    }
+    trimmed.chars().skip(count - max_chars).collect()
+}
+
+fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let out = String::from_utf8_lossy(stdout).trim().to_string();
+    let err = String::from_utf8_lossy(stderr).trim().to_string();
+    match (out.is_empty(), err.is_empty()) {
+        (false, false) => format!("{out}\n{err}"),
+        (false, true) => out,
+        (true, false) => err,
+        (true, true) => String::new(),
+    }
+}
+
+/// Shape a successful/failed exit into the structured wire result. Pure.
+fn classify_install_outcome(success: bool, combined_output: String) -> LlamaCppInstallResult {
+    if success {
+        LlamaCppInstallResult {
+            success: true,
+            output: combined_output,
+            error: None,
+            code: None,
+        }
+    } else {
+        LlamaCppInstallResult {
+            success: false,
+            error: Some(format!(
+                "Setup failed: {}. Choose Retry or Re-check.",
+                tail_of(&combined_output, 400)
+            )),
+            output: combined_output,
+            code: Some(LlamaCppInstallCode::InstallFailed),
+        }
+    }
+}
+
+/// Decide the install result from winget availability + the executed command.
+/// The `execute` closure is injected so the failure branches are unit-testable
+/// WITHOUT running a real `winget install`. Pure.
+fn run_install_with(
+    winget_available: bool,
+    execute: impl FnOnce() -> std::io::Result<(bool, String)>,
+) -> LlamaCppInstallResult {
+    if !winget_available {
+        return LlamaCppInstallResult {
             success: false,
             output: String::new(),
-            error: Some(format!("Failed to create models directory: {e}")),
+            error: Some(
+                "Couldn't install llama.cpp — winget isn't available on this machine. \
+                 Install llama.cpp manually, then choose Re-check."
+                    .to_string(),
+            ),
+            code: Some(LlamaCppInstallCode::WingetUnavailable),
         };
     }
+    match execute() {
+        Ok((success, combined)) => classify_install_outcome(success, combined),
+        Err(e) => LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!(
+                "Couldn't run winget: {e}. Install llama.cpp manually, then choose Re-check."
+            )),
+            code: Some(LlamaCppInstallCode::SpawnFailed),
+        },
+    }
+}
 
-    let base_url = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main";
-    let files = [MODEL_GGUF, MODEL_MMPROJ];
-
-    for filename in &files {
-        let url = format!("{base_url}/{filename}");
-        let dest = models_dir.join(filename);
-
-        // Skip if already exists
-        if dest.exists() {
-            let _ = app.emit("setup:download-progress", DownloadProgress {
-                file: filename.to_string(),
-                total: 0,
-                downloaded: 0,
-                percent: 100.0,
-            });
-            continue;
-        }
-
-        // Download with progress
-        let client = reqwest::Client::new();
-        let response = match client.get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => return SetupStepResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Failed to download {filename}: {e}")),
-            },
-        };
-
-        let total = response.content_length().unwrap_or(0);
-        let mut downloaded: u64 = 0;
-        let mut stream = response.bytes_stream();
-
-        use futures_util::StreamExt;
-        let mut file = match tokio::fs::File::create(&dest).await {
-            Ok(f) => f,
-            Err(e) => return SetupStepResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Failed to create file {filename}: {e}")),
-            },
-        };
-
-        use tokio::io::AsyncWriteExt;
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(chunk) => {
-                    downloaded += chunk.len() as u64;
-                    if let Err(e) = file.write_all(&chunk).await {
-                        return SetupStepResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Failed to write {filename}: {e}")),
-                        };
-                    }
-                    let percent = if total > 0 {
-                        (downloaded as f64 / total as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-                    let _ = app.emit("setup:download-progress", DownloadProgress {
-                        file: filename.to_string(),
-                        total,
-                        downloaded,
-                        percent,
-                    });
-                }
-                Err(e) => return SetupStepResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Download stream error for {filename}: {e}")),
-                },
+/// One-click `winget install --id ggml.llamacpp -e`. Runs OFF the UI thread; does
+/// NOT launch the server and does NOT re-check readiness — the frontend re-probes.
+#[tauri::command]
+pub async fn install_llama_cpp() -> LlamaCppInstallResult {
+    let winget_available = is_binary_available(WINGET_BIN);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        run_install_with(winget_available, || {
+            #[cfg(target_os = "windows")]
+            {
+                let output = std::process::Command::new(WINGET_BIN)
+                    .args([
+                        "install",
+                        "--id",
+                        WINGET_APP_ID,
+                        "-e",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                        "--disable-interactivity",
+                    ])
+                    .output()?;
+                Ok((
+                    output.status.success(),
+                    combine_output(&output.stdout, &output.stderr),
+                ))
             }
-        }
-    }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "llama.cpp install is Windows-only",
+                ))
+            }
+        })
+    })
+    .await;
 
-    SetupStepResult {
-        success: true,
-        output: format!("Downloaded model files to {}", models_dir.display()),
-        error: None,
+    match joined {
+        Ok(result) => result,
+        Err(e) => LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some(format!("Install task failed: {e}. Choose Retry.")),
+            code: Some(LlamaCppInstallCode::SpawnFailed),
+        },
     }
 }
 
@@ -1213,5 +1463,198 @@ mod tests {
         assert_eq!(deserialized.plugin.status, "missing");
         assert_eq!(deserialized.model.status, "missing");
         assert_eq!(deserialized.otel.status, "missing");
+    }
+
+    // ── Spec #2855: companion readiness + llama.cpp install ──────────────
+
+    #[test]
+    fn resolve_llama_server_prefers_configured_then_path_then_shim() {
+        let existing = std::env::current_exe().expect("current exe");
+        let existing_str = existing.to_string_lossy().into_owned();
+        let on_path = PathBuf::from(r"C:\fake\llama-server.exe");
+
+        // 1. A configured path that exists wins over PATH + shim.
+        assert_eq!(
+            resolve_llama_server_order(Some(&existing_str), Some(on_path.clone()), Some(existing.clone())),
+            Some(existing.clone())
+        );
+        // 2. A configured path that does not exist falls through to PATH.
+        assert_eq!(
+            resolve_llama_server_order(Some("Z:\\missing\\llama-server.exe"), Some(on_path.clone()), None),
+            Some(on_path.clone())
+        );
+        // 3. No configured path → PATH candidate.
+        assert_eq!(
+            resolve_llama_server_order(None, Some(on_path.clone()), None),
+            Some(on_path.clone())
+        );
+        // 4. No configured/PATH → winget shim (when it exists).
+        assert_eq!(
+            resolve_llama_server_order(None, None, Some(existing.clone())),
+            Some(existing)
+        );
+        // 5. A shim that does not exist is rejected; empty resolution → None.
+        assert_eq!(
+            resolve_llama_server_order(None, None, Some(PathBuf::from("Z:\\nope.exe"))),
+            None
+        );
+        assert_eq!(resolve_llama_server_order(None, None, None), None);
+    }
+
+    #[test]
+    fn install_llama_cpp_winget_unavailable_is_actionable_and_not_complete() {
+        let result = run_install_with(false, || {
+            panic!("must not execute when winget is unavailable")
+        });
+        assert!(!result.success);
+        assert_eq!(result.code, Some(LlamaCppInstallCode::WingetUnavailable));
+        let error = result.error.expect("actionable error");
+        assert!(error.contains("winget"));
+        assert!(error.contains("Re-check"));
+        assert!(!error.to_lowercase().contains("complete"));
+    }
+
+    #[test]
+    fn install_llama_cpp_nonzero_exit_reports_failure_with_tail() {
+        let result = run_install_with(true, || Ok((false, "0x8A150 something failed".to_string())));
+        assert!(!result.success);
+        assert_eq!(result.code, Some(LlamaCppInstallCode::InstallFailed));
+        assert!(result.error.expect("error").contains("something failed"));
+    }
+
+    #[test]
+    fn install_llama_cpp_success_reports_complete() {
+        let result = run_install_with(true, || Ok((true, "Successfully installed".to_string())));
+        assert!(result.success);
+        assert_eq!(result.code, None);
+        assert!(result.error.is_none());
+        assert!(result.output.contains("Successfully installed"));
+    }
+
+    #[test]
+    fn install_llama_cpp_spawn_error_is_structured() {
+        let result = run_install_with(true, || {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "winget missing"))
+        });
+        assert!(!result.success);
+        assert_eq!(result.code, Some(LlamaCppInstallCode::SpawnFailed));
+    }
+
+    /// Guard: `-e` forces an exact PackageIdentifier match, so a wrong id fails with
+    /// "No package found matching input criteria." and the one-click install can never
+    /// succeed. Canonical id per the microsoft/winget-pkgs manifest
+    /// `manifests/g/ggml/llamacpp/<version>/ggml.llamacpp.installer.yaml`
+    /// (`PackageIdentifier: ggml.llamacpp`). `WINGET_APP_ID` is Windows-only.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn winget_app_id_is_the_canonical_winget_package_identifier() {
+        assert_eq!(WINGET_APP_ID, "ggml.llamacpp");
+    }
+
+    #[test]
+    fn companion_readiness_serializes_camel_case() {
+        let readiness = CompanionReadiness {
+            ready: false,
+            prerequisites: vec![
+                PrerequisiteReport {
+                    id: "llamaServer".into(),
+                    state: PrerequisiteState::Missing,
+                    detail: "not found".into(),
+                    resolved_path: None,
+                },
+                PrerequisiteReport {
+                    id: "modelFiles".into(),
+                    state: PrerequisiteState::Installed,
+                    detail: "present".into(),
+                    resolved_path: Some(r"C:\models".into()),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&readiness).unwrap();
+        assert!(json.contains("\"resolvedPath\""));
+        assert!(json.contains("\"llamaServer\""));
+        assert!(json.contains("\"missing\""));
+        assert!(json.contains("\"installed\""));
+        assert!(json.contains("\"ready\":false"));
+
+        let install = LlamaCppInstallResult {
+            success: false,
+            output: String::new(),
+            error: Some("x".into()),
+            code: Some(LlamaCppInstallCode::WingetUnavailable),
+        };
+        let json = serde_json::to_string(&install).unwrap();
+        assert!(json.contains("\"wingetUnavailable\""));
+    }
+
+    #[test]
+    fn model_files_prerequisite_is_installed_only_when_every_manifest_file_is_present() {
+        let file = |id: &str, state: FileState| ModelFileStatus {
+            id: id.to_string(),
+            filename: format!("{id}.gguf"),
+            relative_path: format!("gemma-4-e2b-it-qat/{id}.gguf"),
+            state,
+            downloaded_bytes: 0,
+            expected_bytes: 10,
+            detail: None,
+            path: (state == FileState::Present).then(|| format!("/models/{id}.gguf")),
+        };
+
+        let all = vec![
+            file("model", FileState::Present),
+            file("vision", FileState::Present),
+            file("mtp", FileState::Present),
+        ];
+        let report = model_files_prerequisite(&all, "/models/gemma-4-e2b-it-qat".to_string());
+        assert_eq!(report.state, PrerequisiteState::Installed);
+        assert_eq!(
+            report.resolved_path.as_deref(),
+            Some("/models/gemma-4-e2b-it-qat")
+        );
+
+        // 2 of 3 — a truncated `mtp` classifies as Missing, so never Installed.
+        let partial = vec![
+            file("model", FileState::Present),
+            file("vision", FileState::Present),
+            file("mtp", FileState::Missing),
+        ];
+        let report = model_files_prerequisite(&partial, "/models/gemma-4-e2b-it-qat".to_string());
+        assert_eq!(report.state, PrerequisiteState::Missing);
+        assert_eq!(report.detail, "2 of 3 model files present.");
+        assert!(report.resolved_path.is_none());
+
+        // An errored file also blocks completion.
+        let errored = vec![
+            file("model", FileState::Present),
+            file("vision", FileState::Error),
+            file("mtp", FileState::Present),
+        ];
+        assert_eq!(
+            model_files_prerequisite(&errored, "/models".to_string()).state,
+            PrerequisiteState::Missing
+        );
+
+        // An empty/misconfigured manifest is never complete.
+        let empty: Vec<ModelFileStatus> = Vec::new();
+        assert_eq!(
+            model_files_prerequisite(&empty, "/models".to_string()).state,
+            PrerequisiteState::Missing
+        );
+    }
+
+    #[test]
+    fn default_manifest_is_the_three_engine_files_in_acquisition_order() {
+        let manifest = default_manifest();
+        let ids: Vec<&str> = manifest.files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["model", "vision", "mtp"]);
+        assert_eq!(manifest.subdir, "gemma-4-e2b-it-qat");
+        assert!(manifest.files[2].path.starts_with("MTP/"));
+    }
+
+    #[test]
+    fn tail_of_truncates_long_output() {
+        let long = "x".repeat(1000);
+        assert_eq!(tail_of(&long, 400).chars().count(), 400);
+        assert_eq!(tail_of("short", 400), "short");
     }
 }

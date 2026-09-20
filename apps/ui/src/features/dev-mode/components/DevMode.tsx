@@ -7,8 +7,9 @@ const MotionBox = chakra(motion.div as any) as any;
 import {
   LuWifi, LuWifiOff, LuTrash2, LuChevronDown, LuChevronRight, LuSearch, LuX,
 } from 'react-icons/lu';
-import { useDevModeStream } from '../hooks/useDevModeStream';
+import { useDevModeStream, useDevModeFeatureData } from '../hooks/useDevModeStream';
 import type { DevModeStreamEvent, DevModeEventState } from '../hooks/useDevModeStream';
+import type { FeatureNotificationLogEntry } from '../../../shared/feature-data/store';
 import { tint } from '../../../shared/utils/colorTint';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
 
@@ -216,13 +217,307 @@ const EventRow: React.FC<EventRowProps> = ({ event, index }) => {
   );
 };
 
+// ── Feature-data probe feed (Spec #2896 ST-5 / A-12) ─────────────────────────
+//
+// Screenshot-visible per-watch evidence: the watch table lists every known
+// (hook-registered) watch with its delivery count — a 0-delivery watch stays
+// visible (sibling-field isolation) — and the list shows every received
+// `featureBatch` notification with whether THIS webview's store applied it
+// (a stale version guard drop is visible as `dropped`).
+
+const FEATURE_KIND_COLORS: Record<string, string> = {
+  insert: 'var(--status-success)',
+  update: 'var(--status-info)',
+  remove: 'var(--status-error)',
+};
+
+const FeatureKindBadge: React.FC<{ kind: FeatureNotificationLogEntry['kind'] }> = ({ kind }) => {
+  const color = FEATURE_KIND_COLORS[kind] ?? 'var(--text-secondary)';
+  return (
+    <Badge
+      flexShrink={0}
+      fontSize="9px"
+      px={2}
+      py="1px"
+      borderRadius="full"
+      background={tint(color, 14)}
+      color={color}
+      border="1px solid"
+      borderColor={tint(color, 33)}
+      textTransform="uppercase"
+      letterSpacing="0.05em"
+    >
+      {kind}
+    </Badge>
+  );
+};
+
+const FeatureDataFeed: React.FC = () => {
+  const { notifications, watches, clear } = useDevModeFeatureData();
+  const appliedCount = notifications.filter((n) => n.applied).length;
+  const droppedCount = notifications.length - appliedCount;
+
+  return (
+    <Box flex="1" display="flex" flexDirection="column" overflow="hidden">
+      {/* Summary */}
+      <Box
+        px={3}
+        py={2}
+        borderBottom="1px solid"
+        borderColor="var(--border-color)"
+        background="var(--header-bg)"
+        flexShrink={0}
+      >
+        <HStack gap={3} flexWrap="wrap" align="center">
+          <Text fontSize="10px" color="var(--text-secondary)">
+            {notifications.length} notification{notifications.length === 1 ? '' : 's'}
+          </Text>
+          <Badge
+            fontSize="9px"
+            px={2}
+            py="1px"
+            borderRadius="full"
+            background={tint('var(--status-success)', 14)}
+            color="var(--status-success)"
+            border="1px solid"
+            borderColor={tint('var(--status-success)', 33)}
+          >
+            {appliedCount} applied
+          </Badge>
+          <Badge
+            fontSize="9px"
+            px={2}
+            py="1px"
+            borderRadius="full"
+            background={tint('var(--status-warning)', 14)}
+            color="var(--status-warning)"
+            border="1px solid"
+            borderColor={tint('var(--status-warning)', 33)}
+          >
+            {droppedCount} dropped
+          </Badge>
+          <Text fontSize="10px" color="var(--text-secondary)">
+            {watches.length} watch{watches.length === 1 ? '' : 'es'}
+          </Text>
+          {notifications.length > 0 && (
+            <Button
+              size="xs"
+              variant="ghost"
+              color="var(--text-secondary)"
+              _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 10) }}
+              onClick={clear}
+              aria-label="Clear feature-data notifications"
+              px={2}
+              height="22px"
+            >
+              <HStack gap={1}>
+                <LuTrash2 size={10} />
+                <Text fontSize="10px">Clear</Text>
+              </HStack>
+            </Button>
+          )}
+        </HStack>
+      </Box>
+
+      {/* Per-watch summary — a known watch with 0 deliveries stays visible */}
+      <Box
+        px={3}
+        py={2}
+        borderBottom="1px solid"
+        borderColor="var(--border-color)"
+        flexShrink={0}
+        maxHeight="170px"
+        overflowY="auto"
+      >
+        <Text
+          fontSize="9px"
+          color="var(--text-secondary)"
+          fontWeight="600"
+          letterSpacing="0.08em"
+          textTransform="uppercase"
+          mb="4px"
+        >
+          Watches
+        </Text>
+        {watches.length === 0 ? (
+          <Text fontSize="10px" color="var(--text-secondary)">
+            No watches observed yet.
+          </Text>
+        ) : (
+          watches.map((watch) => (
+            <HStack key={watch.watchId} gap={2} py="1px" flexWrap="nowrap" overflow="hidden">
+              <Text
+                fontSize="10px"
+                color="var(--text-primary)"
+                fontFamily="monospace"
+                flexShrink={0}
+                title={watch.watchId}
+              >
+                {watch.watchId.slice(0, 8)}
+              </Text>
+              <Text fontSize="10px" color="var(--text-secondary)" flexShrink={0}>
+                {watch.featureId ?? 'canonical'} · {watch.table}
+              </Text>
+              {watch.scope && (
+                <Text
+                  fontSize="9px"
+                  color="var(--text-secondary)"
+                  fontFamily="monospace"
+                  flex="1"
+                  overflow="hidden"
+                  textOverflow="ellipsis"
+                  whiteSpace="nowrap"
+                  title={watch.scope}
+                >
+                  {watch.scope}
+                </Text>
+              )}
+              <Badge
+                flexShrink={0}
+                fontSize="9px"
+                px={2}
+                py="1px"
+                borderRadius="full"
+                background={tint('var(--accent-primary)', 12)}
+                color="var(--accent-primary)"
+                border="1px solid"
+                borderColor={tint('var(--accent-primary)', 30)}
+              >
+                {watch.delivered} delivered
+              </Badge>
+              {watch.delivered === 0 && (
+                <Badge
+                  flexShrink={0}
+                  fontSize="9px"
+                  px={2}
+                  py="1px"
+                  borderRadius="full"
+                  background={tint('var(--status-warning)', 14)}
+                  color="var(--status-warning)"
+                  border="1px solid"
+                  borderColor={tint('var(--status-warning)', 33)}
+                >
+                  0 deliveries
+                </Badge>
+              )}
+            </HStack>
+          ))
+        )}
+      </Box>
+
+      {/* Notification list */}
+      <Box
+        flex="1"
+        overflowY="auto"
+        px={2}
+        py={2}
+        css={{
+          '&::-webkit-scrollbar': { width: '4px' },
+          '&::-webkit-scrollbar-track': { background: 'transparent' },
+          '&::-webkit-scrollbar-thumb': { background: 'var(--border-color)', borderRadius: '2px' },
+        }}
+      >
+        {notifications.length === 0 ? (
+          <VStack height="100%" align="center" justify="center" gap={2} color="var(--text-secondary)" pt={12}>
+            <Text fontSize="13px">No feature-data notifications yet</Text>
+            <Text fontSize="11px" textAlign="center" maxWidth="280px">
+              Register a watch with feature_data_watch — every featureBatch delivery (and every
+              version-guard drop) appears here.
+            </Text>
+          </VStack>
+        ) : (
+          notifications.map((notification) => {
+            const timeLabel = new Date(notification.timestamp).toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+            });
+            return (
+              <Box
+                key={notification.id}
+                background="var(--card-bg)"
+                border="1px solid"
+                borderColor="var(--border-color)"
+                borderRadius="md"
+                px={3}
+                py="5px"
+                mb="4px"
+              >
+                <HStack gap={2} flexWrap="nowrap" overflow="hidden">
+                  <Text fontSize="10px" color="var(--text-secondary)" fontFamily="monospace" flexShrink={0}>
+                    {timeLabel}
+                  </Text>
+                  <Text
+                    fontSize="10px"
+                    color="var(--text-primary)"
+                    fontFamily="monospace"
+                    flexShrink={0}
+                    title={notification.watchId}
+                  >
+                    {notification.watchId.slice(0, 8)}
+                  </Text>
+                  <Text fontSize="10px" color="var(--text-secondary)" flexShrink={0}>
+                    {notification.featureId ?? 'canonical'} · {notification.table}
+                  </Text>
+                  <FeatureKindBadge kind={notification.kind} />
+                  <Text
+                    fontSize="10px"
+                    color="var(--text-primary)"
+                    fontFamily="monospace"
+                    flex="1"
+                    overflow="hidden"
+                    textOverflow="ellipsis"
+                    whiteSpace="nowrap"
+                    title={JSON.stringify(notification.key)}
+                  >
+                    {JSON.stringify(notification.key)}
+                  </Text>
+                  <Badge
+                    flexShrink={0}
+                    fontSize="9px"
+                    px={2}
+                    py="1px"
+                    borderRadius="full"
+                    background={tint(notification.applied ? 'var(--status-success)' : 'var(--status-warning)', 14)}
+                    color={notification.applied ? 'var(--status-success)' : 'var(--status-warning)'}
+                    border="1px solid"
+                    borderColor={tint(notification.applied ? 'var(--status-success)' : 'var(--status-warning)', 33)}
+                  >
+                    {notification.applied ? 'applied' : 'dropped'}
+                  </Badge>
+                  <Text fontSize="9px" color="var(--text-secondary)" flexShrink={0} fontFamily="monospace">
+                    v{notification.version}
+                  </Text>
+                </HStack>
+                {notification.changedFields.length > 0 && (
+                  <Text fontSize="9px" color="var(--text-secondary)" fontFamily="monospace" mt="2px">
+                    changed: {notification.changedFields.join(', ')}
+                  </Text>
+                )}
+              </Box>
+            );
+          })
+        )}
+      </Box>
+    </Box>
+  );
+};
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 const ALL_STATES = ['Init', 'Update', 'Response', 'Error', 'Timeout'] as const;
 
+/** Top-level Dev Mode views — RTDB row stream vs the feature-data probe feed. */
+const VIEWS: Array<{ id: 'rows' | 'feature-data'; label: string }> = [
+  { id: 'rows', label: 'Rows' },
+  { id: 'feature-data', label: 'Feature Data' },
+];
+
 export const DevMode: React.FC = () => {
   const { events, eventTypes, isConnected, clearEvents } = useDevModeStream();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<'rows' | 'feature-data'>('rows');
 
   // ── Filter state ────────────────────────────────────────────────────────────
   const [query, setQuery] = useState('');
@@ -298,7 +593,41 @@ export const DevMode: React.FC = () => {
         </HStack>
       </Box>
 
-      {/* Filter bar */}
+      {/* View switch — RTDB row stream vs the feature-data probe feed (A-12) */}
+      <Box px={2} py="4px" borderBottom="1px solid" borderColor="var(--border-color)" background="var(--header-bg)" flexShrink={0}>
+        <HStack gap="4px">
+          {VIEWS.map((entry) => {
+            const active = view === entry.id;
+            return (
+              <Box
+                key={entry.id}
+                as="button"
+                onClick={() => setView(entry.id)}
+                px="7px"
+                py="2px"
+                borderRadius="full"
+                fontSize="9px"
+                fontWeight="600"
+                letterSpacing="0.05em"
+                cursor="pointer"
+                border="1px solid"
+                transition="all 0.15s"
+                background={active ? tint('var(--accent-primary)', 13) : 'transparent'}
+                color={active ? 'var(--accent-primary)' : 'var(--text-secondary)'}
+                borderColor={active ? tint('var(--accent-primary)', 33) : 'var(--border-color)'}
+                _hover={{ borderColor: tint('var(--accent-primary)', 53), color: 'var(--accent-primary)' }}
+                style={{ userSelect: 'none' }}
+              >
+                {entry.label}
+              </Box>
+            );
+          })}
+        </HStack>
+      </Box>
+
+      {view === 'rows' ? (
+        <>
+          {/* Filter bar */}
       <Box px={2} py="6px" borderBottom="1px solid" borderColor="var(--border-color)" background="var(--header-bg)" flexShrink={0}>
         {/* Search input */}
         <HStack gap={2} mb="6px">
@@ -502,6 +831,10 @@ export const DevMode: React.FC = () => {
           ))
         )}
       </Box>
+        </>
+      ) : (
+        <FeatureDataFeed />
+      )}
     </Box>
   );
 };

@@ -284,6 +284,12 @@ Test-Script "record-improvement posts comment + event + guardrail" {
   $log = ".opencode/state/issues/$issueNum.jsonl"
   $refs = "docs/agentic-pipeline/playbooks/references.md"
   $before = (Select-String -Path $refs -Pattern '^### G-' -ErrorAction SilentlyContinue | Measure-Object).Count
+  # record-improvement appends a guardrail to a TRACKED file. Snapshot it and
+  # restore byte-for-byte in finally: a selective regex-delete left the record's
+  # leading newline behind, so every harness run added a stray blank line
+  # (observed 3 runs -> 3 blank lines before the first guardrail).
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
   try {
     # role-gate: developer cannot record-improvement
     $dev = & rust-script $ps --issue $issueNum --agent developer --action record-improvement --reason "x" 2>&1
@@ -310,20 +316,13 @@ Test-Script "record-improvement posts comment + event + guardrail" {
     if ($after -le $before) { throw "guardrail not appended to references.md (before=$before after=$after)" }
     return "record-improvement: comment + event + guardrail verified"
   } finally {
-    # Remove ONLY the record this test appended (its guardrail line carries the
-    # unique "G-test:" marker). NEVER regex-delete every `on_the_go_improvement`
-    # record (that would wipe SI-recorded improvement guardrails), and NEVER use
-    # Get-Content -Raw (ANSI default in Windows PowerShell 5.1 double-encodes
-    # non-ASCII UTF-8 like em-dashes) — read/write UTF-8 explicitly so the file
-    # is byte-preserved (observed mojibake on #2700).
-    $refsText = [System.IO.File]::ReadAllText($refs)
-    $testRecordPattern = '(?ms)^### G-\d+: on_the_go_improvement\r?\n(?:- \*\*[^*]+\*\*[^\n]*\n)+'
-    foreach ($testMatch in [regex]::Matches($refsText, $testRecordPattern)) {
-      if ($testMatch.Value -match 'G-test:') {
-        $refsText = $refsText.Replace($testMatch.Value, '')
-      }
+    # Restore references.md byte-for-byte (the test's record-improvement appends a
+    # real guardrail record to this TRACKED file). A byte-exact restore keeps the
+    # working tree clean and can never disturb an SI-recorded guardrail.
+    if (Test-Path -LiteralPath $refsBackup) {
+      Copy-Item -LiteralPath $refsBackup -Destination $refs -Force
+      Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue
     }
-    [System.IO.File]::WriteAllText($refs, $refsText, [System.Text.UTF8Encoding]::new($false))
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -399,6 +398,60 @@ Test-Script "Prune stale branches (idempotent)" {
   return "PRUNED"
 }
 
+Test-Script "prune deletes local spec branches whose upstream is gone" {
+  $u1 = Mock-IssueCreate "temp: prune-gone" "prune scratch" ""
+  $n1 = [int]([regex]::Match(($u1 -join ''), "issues/(\d+)").Groups[1].Value)
+  $u2 = Mock-IssueCreate "temp: prune-keep" "prune scratch" ""
+  $n2 = [int]([regex]::Match(($u2 -join ''), "issues/(\d+)").Groups[1].Value)
+  try {
+    # Local-only branch (no remote) → gone upstream → prune must delete it.
+    & rust-script $ps --action mock-git --gitargs "branch spec/$n1 origin/main" 2>&1 | Out-Null
+    # Local branch WITH a live remote → must be kept.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n2" 2>&1 | Out-Null
+    $out = & rust-script $ps --action prune --agent self-improver 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "prune failed: $outStr" }
+    if ($outStr -notmatch "spec/$n1") { throw "gone-upstream branch spec/$n1 should be pruned, got: $outStr" }
+    if ($outStr -match "spec/$n2") { throw "branch spec/$n2 with a live remote must be kept, got: $outStr" }
+    return "gone-upstream local branch pruned; live remote kept"
+  } finally {
+    Remove-Item (Mock-StorePath "local-refs\spec\$n1") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$n2") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$n2") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n1
+    Mock-Cleanup $n2
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "prune --remote deletes closed-spec remote branches, keeps open" {
+  $uOpen = Mock-IssueCreate "temp: prune-open" "prune scratch" ""
+  $nOpen = [int]([regex]::Match(($uOpen -join ''), "issues/(\d+)").Groups[1].Value)
+  $uClosed = Mock-IssueCreate "temp: prune-closed" "prune scratch" ""
+  $nClosed = [int]([regex]::Match(($uClosed -join ''), "issues/(\d+)").Groups[1].Value)
+  try {
+    Mock-IssueClose $nClosed | Out-Null
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$nOpen" 2>&1 | Out-Null
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$nClosed" 2>&1 | Out-Null
+    $out = & rust-script $ps --action prune --agent self-improver --remote 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "prune --remote failed: $outStr" }
+    if ($outStr -notmatch "spec/$nClosed") { throw "closed-spec remote spec/$nClosed should be deleted, got: $outStr" }
+    if ($outStr -match "spec/$nOpen") { throw "open-spec remote spec/$nOpen must be kept, got: $outStr" }
+    if (Test-Path (Mock-StorePath "refs\spec\$nClosed")) { throw "remote ref spec/$nClosed should be gone" }
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$nOpen"))) { throw "remote ref spec/$nOpen should still exist" }
+    return "closed-spec remote deleted; open-spec remote kept"
+  } finally {
+    Remove-Item (Mock-StorePath "local-refs\spec\$nOpen") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$nClosed") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$nOpen") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$nClosed") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $nOpen
+    Mock-Cleanup $nClosed
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "Prune sweeps orphaned worktree dirs (no .git) but keeps git-marked dirs" {
   # Hardening (#2688): `git worktree prune` clears metadata but never the worktree
   # directory, so unregistered `.worktrees/*` dirs linger. prune must remove pure
@@ -444,6 +497,60 @@ Test-Script "Create-worktree defaults path (guard still blocks)" {
   return "default path accepted, guard blocked"
 }
 
+# G-201: create-worktree is idempotent on a leftover/unregistered path (a crashed
+# run leaves a scratch dir) AND on an already-created worktree (`.git` marker).
+Test-Script "Create-worktree sweeps leftover dir then is idempotent (G-201)" {
+  $url = Mock-IssueCreate "temp: wt idempotent" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $wt = Join-Path $env:TEMP "fredo-wt-g201-$n"
+  New-Item -ItemType Directory -Path $wt -Force | Out-Null
+  Set-Content -Path (Join-Path $wt "leftover.txt") -Value "junk" -Encoding UTF8
+  try {
+    $out1 = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s1 = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($LASTEXITCODE -ne 0) { throw "create-worktree failed on a leftover dir: $s1" }
+    if ($s1 -notmatch "WORKTREE CREATED") { throw "Expected WORKTREE CREATED, got: $s1" }
+    if (Test-Path (Join-Path $wt "leftover.txt")) { throw "leftover scratch file should have been swept" }
+    $out2 = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s2 = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -ne 0) { throw "re-run create-worktree failed (not idempotent): $s2" }
+    if ($s2 -match "already exists") { throw "re-run must not fail path-exists: $s2" }
+    return "leftover swept + re-run idempotent"
+  } finally {
+    Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "Create-worktree reuses an existing worktree (.git marker) (G-201)" {
+  $url = Mock-IssueCreate "temp: wt reuse" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $wt = Join-Path $env:TEMP "fredo-wt-g201-reuse-$n"
+  New-Item -ItemType Directory -Path $wt -Force | Out-Null
+  Set-Content -Path (Join-Path $wt ".git") -Value "gitdir: elsewhere" -Encoding UTF8
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "create-worktree failed: $s" }
+    if ($s -notmatch "WORKTREE EXISTS \(reused\)") { throw "Expected reuse of an existing worktree, got: $s" }
+    if (-not (Test-Path (Join-Path $wt ".git"))) { throw "reused worktree marker must be preserved" }
+    return "existing worktree reused"
+  } finally {
+    Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "upload-evidence role-gates + validates" {
   # non-tester/SM actor blocked
   $role = & rust-script $ps --issue $TestIssue --agent developer --action upload-evidence --body-file x --image y 2>&1
@@ -456,7 +563,7 @@ Test-Script "upload-evidence role-gates + validates" {
   return "upload-evidence validation verified"
 } -ExpectedExitCode 1
 
-Test-Script "upload-evidence requires a parent spec without --base" {
+Test-Script "upload-evidence uploads via gh image (user-attachments URL)" {
   $img = Join-Path $env:TEMP "fredo-ev-test.png"
   Add-Type -AssemblyName System.Drawing
   $bmp = New-Object System.Drawing.Bitmap(10, 10)
@@ -465,17 +572,23 @@ Test-Script "upload-evidence requires a parent spec without --base" {
   $bmp.Save($img, [System.Drawing.Imaging.ImageFormat]::Png)
   $g.Dispose()
   $bmp.Dispose()
-  $bodyFile = Join-Path $env:TEMP "fredo-ev-body.md"
-  Set-Content -Path $bodyFile -Value "AC-1: passes" -Encoding UTF8
-  # Issue $TestIssue has no 'Parent: Implementation Plan #N', so without --base the
-  # action must refuse to guess the spec branch rather than commit somewhere random.
-  $out = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --body-file $bodyFile --image $img 2>&1
+  # Evidence is uploaded as a GitHub user-attachment (no repo commit, no --base); the
+  # mock `gh image` returns the `![name](https://github.com/user-attachments/...)`
+  # reference the action parses and prints.
+  $out = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --image $img 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
-  if ($outStr -notmatch "cannot resolve parent plan") { throw "Expected parent-resolution failure, got: $outStr" }
-  Remove-Item $img, $bodyFile -ErrorAction SilentlyContinue
-  return "parent-resolution failure verified"
-} -ExpectedExitCode 1
+  if ($LASTEXITCODE -ne 0) { throw "upload-evidence failed: $outStr" }
+  if ($outStr -notmatch "EVIDENCE UPLOADED") { throw "Expected EVIDENCE UPLOADED, got: $outStr" }
+  if ($outStr -notmatch "github.com/user-attachments/assets/") { throw "Expected a user-attachments URL, got: $outStr" }
+  # A missing screenshot file is rejected before any upload.
+  $missing = & rust-script $ps --issue $TestIssue --agent tester --action upload-evidence --image "$env:TEMP\fredo-does-not-exist-xyz.png" 2>&1
+  $missingStr = if ($missing -is [array]) { $missing -join "`n" } else { "$missing" }
+  if ($LASTEXITCODE -eq 0) { throw "Expected failure for a missing screenshot, got exit 0" }
+  if ($missingStr -notmatch "screenshot not found") { throw "Expected 'screenshot not found', got: $missingStr" }
+  Remove-Item $img -ErrorAction SilentlyContinue
+  $global:LASTEXITCODE = 0
+  return "upload-evidence user-attachments upload verified"
+}
 
 Test-Script "set-label is removed (labels are state-machine side-effects)" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action set-label --label in-progress-dev 2>&1
@@ -674,19 +787,20 @@ Test-Script "Context read loop guard blocks runaway re-reads" {
   # reads with no intervening state-machine activity.
   $url = Mock-IssueCreate "temp: context loop guard" "context loop scratch" ""
   $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
-  # Three reads are allowed (streak limit is 3).
-  for ($i = 1; $i -le 3; $i++) {
+  # Eight reads are allowed (streak limit is 8 — above the largest same-role parallel
+  # dispatch wave; N concurrent same-role agents each open with one read before any acts).
+  for ($i = 1; $i -le 8; $i++) {
     $out = & rust-script $ps --issue $issueNum --agent software-architect --action context 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "context read #$i should pass, got: $outStr" }
     if ($outStr -notmatch "PIPELINE STATE") { throw "expected context block on read #$i, got: $outStr" }
   }
-  # The 4th consecutive read must be refused by the loop guard.
+  # The 9th consecutive read must be refused by the loop guard.
   $blocked = & rust-script $ps --issue $issueNum --agent software-architect --action context 2>&1
   $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
   if ($blockedStr -notmatch "STOP re-reading context") { throw "Expected loop-guard block, got: $blockedStr" }
   $global:LASTEXITCODE = 0
-  return "context loop guard refused the 4th consecutive read on #$issueNum"
+  return "context loop guard refused the 9th consecutive read on #$issueNum"
 }
 
 Test-Script "Transition positive path (intake -> triage, scratch issue)" {
@@ -1056,6 +1170,105 @@ Test-Script "health report exposes first-pass rate and guard fires" {
   return "health report carries SI-decision metrics"
 }
 
+# Hygiene: headline quality numbers are filtered to REAL specs (issues the machine
+# created). Orchestrator/harness logs (#0, #633) polluted `blocked`/`failures`.
+# The split fields make the distinction auditable.
+Test-Script "health separates block actions from guard refusals (spec hygiene)" {
+  $out = & rust-script $ps --action health --json 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "health --json failed: $outStr" }
+  foreach ($f in @("spec_issues", "block_actions", "guard_refusals", "spec_rework_total")) {
+    if ($outStr -notmatch $f) { throw "health missing hygiene field: $f" }
+  }
+  return "health hygiene fields present"
+}
+
+# Revision linkage (self-improvement): create-issue --revises records BOTH the
+# create-issue attribute (coverage) and a forward `feature.revised` event on the
+# NEW issue — so "did this spec revise an earlier one?" is machine-readable, and
+# the earlier issue is never reopened.
+Test-Script "create-issue --revises records a forward revision link" {
+  $draft = Join-Path $env:TEMP "fredo-revises-draft.md"
+  $body = @"
+## Title
+temp: revise base
+## Problem / Why now
+scratch
+## Intended users
+n/a
+## Proposed behavior / Scope
+scratch
+## Success metrics
+n/a
+## Acceptance criteria
+- [ ] 1. works
+## Out of scope
+nothing
+## Priority
+P3
+"@
+  [System.IO.File]::WriteAllText($draft, $body, [System.Text.UTF8Encoding]::new($false))
+  $baseOut = & rust-script $ps --agent product-owner --action create-issue --title "temp: revise base" --body-file $draft --issue-type backlog 2>&1
+  $baseStr = if ($baseOut -is [array]) { $baseOut -join "`n" } else { "$baseOut" }
+  $mB = [regex]::Match($baseStr, "issues/(\d+)")
+  if (-not $mB.Success) { throw "could not parse base issue: $baseStr" }
+  $base = [int]$mB.Groups[1].Value
+  $followOut = & rust-script $ps --agent product-owner --action create-issue --title "temp: revise follow" --body-file $draft --issue-type backlog --revises $base --intent fix 2>&1
+  $followStr = if ($followOut -is [array]) { $followOut -join "`n" } else { "$followOut" }
+  $mF = [regex]::Match($followStr, "issues/(\d+)")
+  if (-not $mF.Success) { throw "could not parse follow issue: $followStr" }
+  $follow = [int]$mF.Groups[1].Value
+  try {
+    $log = ".opencode/state/issues/$follow.jsonl"
+    $content = Get-Content $log -Raw
+    if ($content -notmatch '"event_name":"feature\.revised"') { throw "missing feature.revised event: $content" }
+    if ($content -notmatch "`"revises`":`"$base`"") { throw "feature.revised missing revises=$base" }
+    if ($content -notmatch '"intent":"fix"') { throw "feature.revised missing intent" }
+    if ($content -notmatch "`"revises`":`"$base`"") { throw "create-issue attribute missing revises" }
+    return "revision link recorded on #$follow"
+  } finally {
+    Mock-Cleanup $base
+    Mock-Cleanup $follow
+    Remove-Item $draft -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "link-revision is self-improver/PO-gated and idempotent" {
+  $url = Mock-IssueCreate "temp: link rev" "scratch" ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "could not parse issue: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action link-revision --revises 1 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "BLOCKED: actor developer not allowed") { throw "expected role gate, got: $denyStr" }
+    $first = & rust-script $ps --issue $issueNum --agent self-improver --action link-revision --revises 1 2>&1
+    $firstStr = if ($first -is [array]) { $first -join "`n" } else { "$first" }
+    if ($firstStr -notmatch "LINKED:") { throw "expected LINKED, got: $firstStr" }
+    $second = & rust-script $ps --issue $issueNum --agent self-improver --action link-revision --revises 1 2>&1
+    $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
+    if ($secondStr -notmatch "ALREADY LINKED") { throw "expected idempotent ALREADY LINKED, got: $secondStr" }
+    return "link-revision role-gated + idempotent"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The honest self-improvement signal: acceptance rate (specs not later revised or
+# reopened) with an interval + a change test + link coverage + raw counts.
+Test-Script "improvement action reports acceptance with interval and raw counts" {
+  $out = & rust-script $ps --action improvement --json 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "improvement --json failed: $outStr" }
+  foreach ($f in @("acceptance", "posterior_mean", "ci95", "decision", "link_coverage", "specs_created", "integrity")) {
+    if ($outStr -notmatch $f) { throw "improvement json missing field: $f" }
+  }
+  return "improvement report shape OK"
+}
+
 # Spec-size attribution (audit follow-up): audit-record success parses
 # "Effort: N story points" from the posted Triage Plan and records it as an
 # audit.verdict attribute, so rework can be normalized by size in trends.
@@ -1084,6 +1297,40 @@ Test-Script "audit-record success records spec size from the plan's Effort line"
     $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
     if ($ev.attributes.storyPoints -ne "8") { throw "expected storyPoints=8, got: $($ev.attributes.storyPoints)" }
     return "spec size (8 pts) recorded on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Regression (observed #2870): the Architect's decomposition line
+# `**Effort:** ST-1 3 + ... = **11 story points**` can appear BEFORE the canonical
+# Staffing Plan line; the parser must read the canonical `- **Effort:** N story
+# points` value, not the `1` in `ST-1`.
+Test-Script "audit-record spec size prefers the canonical Staffing Plan Effort line" {
+  $url = Mock-IssueCreate "temp: spec size canonical" "spec-size canonical scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $plan = Join-Path $env:TEMP "fredo-spec-size-canonical.md"
+    $planBody = "## Triage Plan`n`n## Software Architect`n`n### Sub-issue Decomposition + Effort Estimates`n`n- [ ] **ST-1** intent`n`n**Effort:** ST-1 3 + ST-2 5 + ST-3 3 = **11 story points**.`n`n## Staffing Plan`n`n- **Effort:** 11 story points (ST-1 3 + ST-2 5 + ST-3 3).`n"
+    [System.IO.File]::WriteAllText($plan, $planBody, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC SIZE RECORDED: 11 story points") { throw "Expected SPEC SIZE RECORDED: 11, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if ($ev.attributes.storyPoints -ne "11") { throw "expected storyPoints=11, got: $($ev.attributes.storyPoints)" }
+    return "canonical Effort line wins (11 pts) on #$issueNum"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
@@ -1263,6 +1510,67 @@ Test-Script "remove-worktree role-gates" {
   return "remove-worktree role-gate verified"
 }
 
+# --- set-permission (the SI's sanctioned writer for agent permission blocks) ---
+# Every edit targets a scratch copy of opencode.json so the real config is never
+# touched by the harness. Asserts: append-last (last-match-wins), rule order and
+# EOLs preserved, document still parses, real config byte-identical, idempotent.
+function New-PermScratch {
+  $p = Join-Path $env:TEMP ("oc-perm-" + [Guid]::NewGuid().ToString("N") + ".json")
+  [System.IO.File]::WriteAllText($p, (Get-Content "opencode.json" -Raw), [System.Text.UTF8Encoding]::new($false))
+  return $p
+}
+
+Test-Script "set-permission appends, preserves order/EOL, never touches the real config" {
+  $real = Get-Content "opencode.json" -Raw
+  $beforeCrlf = ([regex]::Matches($real, "`r`n")).Count
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent self-improver --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $outStr" }
+  if ((Get-Content "opencode.json" -Raw) -ne $real) { throw "real opencode.json was modified" }
+  $edited = Get-Content $scratch -Raw
+  $null = $edited | ConvertFrom-Json
+  $gi = $edited.IndexOf('"zz-perm-harness*"')
+  $last = $edited.IndexOf('"* | *"')
+  if ($gi -lt 0) { throw "rule not inserted" }
+  if ($gi -lt $last) { throw "rule not appended last (last-match-wins order broken)" }
+  $afterLf = ([regex]::Matches($edited, "(?<!`r)`n")).Count
+  if ($afterLf -ne 0) { throw "EOL mixed: $afterLf LF-only line(s) introduced" }
+  if (([regex]::Matches($edited, "`r`n")).Count -le $beforeCrlf) { throw "no line added" }
+  $out2 = & rust-script $ps --agent self-improver --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+  if ($out2Str -notmatch "NO-OP") { throw "expected NO-OP on re-run, got: $out2Str" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  return "append-last; order+EOL preserved; real config untouched; idempotent"
+}
+
+Test-Script "set-permission is self-improver only" {
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent developer --action set-permission --role developer --tool bash --pattern "git rm*" --decision allow --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  if ($outStr -notmatch "not allowed to set-permission") { throw "Expected role-gate block, got: $outStr" }
+  return "set-permission role-gate verified"
+}
+
+Test-Script "set-permission refuses an unknown agent" {
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent self-improver --action set-permission --role nobody --tool bash --pattern "x*" --decision allow --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  if ($outStr -notmatch "no agent 'nobody'") { throw "unknown role not refused, got: $outStr" }
+  return "unknown-agent refusal verified"
+} -ExpectedExitCode 1
+
+Test-Script "set-permission refuses a flat-action category" {
+  $scratch = New-PermScratch
+  $out = & rust-script $ps --agent self-improver --action set-permission --role developer --tool edit --pattern "x" --decision deny --config-file $scratch 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  if ($outStr -notmatch "flat action") { throw "flat action not refused, got: $outStr" }
+  return "flat-action refusal verified"
+} -ExpectedExitCode 1
+
 # remove-worktree pre-cleans gitignored build artifacts before removal — the
 # "Directory not empty" failure from #2688/#633/#2700 (node_modules/dist created
 # by pnpm install/build block plain `git worktree remove`).
@@ -1365,6 +1673,9 @@ Test-Script "tests-commit commits a feature suite to main" {
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "TESTS COMMITTED:") { throw "Expected TESTS COMMITTED:, got: $outStr" }
+    # G-200 safety: the local-`main` sync added after the upstream write must be a
+    # strict no-op under mock mode — the harness must never mutate the real repo.
+    if ($outStr -match "SYNCED:") { throw "tests-commit must not sync local main in mock mode: $outStr" }
     # Verify via the mock store's contents tree (the Contents API wrote them to
     # `contents/main/.opencode/tests/<feat>/`), not a real git/gh read.
     $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
@@ -1716,7 +2027,8 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
 
   # Evidence-renderability guard (#2756): a tests-runs.md draft that references
   # screenshots by bare filename or local scratch path is REFUSED (kept for the
-  # tester) — only https:// raw URLs (from upload-evidence) render or open on GitHub.
+  # tester) — only https:// URLs (the upload-evidence user-attachment URL) render
+  # or open on GitHub.
   Test-Script "Tests Runs draft with bare screenshot filenames is not posted" {
     $url = Mock-IssueCreate "temp: tests-runs evidence urls" "evidence scratch" ""
     if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -1737,8 +2049,8 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
       $cmts = Mock-IssueComments $issueNum
       $joined = $cmts -join "`n"
       if ($joined -match "Tests Runs") { throw "verdict with dead evidence refs must NOT be posted: $joined" }
-      # Fix: embed the upload-evidence raw URL — the draft now goes through.
-      [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/o/r/raw/spec/1/.opencode/evidence/1/ac1-force.jpeg) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+      # Fix: embed the upload-evidence user-attachment URL — the draft now goes through.
+      [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/user-attachments/assets/00000000-0000-0000-0000-000000000000) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
       $out2 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
       $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
       if ($out2Str -notmatch "COMMENTED: Tests Runs") { throw "draft with https evidence URLs should post, got: $out2Str" }
@@ -1891,7 +2203,11 @@ Low
       "|-----|-----------|----------|------------|",
       "| REQ-1 | widget renders | visible | none |",
       "",
-      "**Feature tests:** $feat",
+      # #2877/#2897 regression: the QA Expert may write the declaration inside a
+      # blockquote and/or appended after other prose on the same line — the
+      # parser must find the marker wherever it appears, not silently drop the
+      # suites (a line-leading-only match skipped every suite on #2897).
+      "The following suites were seeded from the QA plan. **Feature tests:** $feat",
       "",
       "## Summary",
       "goal + acceptance criteria",
@@ -2544,6 +2860,53 @@ Low
   }
 }
 
+# Human-authorized pre-verdict rework (SI hardening, #2857): a binding human
+# directive may add scope while a feature sits in `testing` with its round
+# aborted before any tester verdict. The normal `testing -> implementation`
+# exit guard requires tester evidence, which cannot exist yet, so
+# `--human-authorized` + a non-empty `--reason` bypasses ONLY that leg and
+# records a `human.authorization` event. Without the flag (or without a reason)
+# the guard still blocks; every other leg keeps its normal exit guard.
+Test-Script "testing->implementation human-authorized rework bypasses the evidence guard" {
+  $url = Mock-IssueCreate "temp: human-auth rework" "human-auth rework scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Baseline: no tester evidence -> the normal rework leg is blocked.
+    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation 2>&1
+    $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
+    if ($bStr -notmatch "no tester Evidence") { throw "Expected evidence block without the flag, got: $bStr" }
+    # The flag WITHOUT a reason must still block (the authorization is justified).
+    $nr = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation --human-authorized 2>&1
+    $nrStr = if ($nr -is [array]) { $nr -join "`n" } else { "$nr" }
+    if ($nrStr -notmatch "no tester Evidence") { throw "Expected evidence block without a reason, got: $nrStr" }
+    # Seed the A2A (the implementation-entry side-effect reads it).
+    $a2aDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    # Flag + reason -> allowed; records human.authorization; label implementation.
+    $ok = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation --human-authorized --reason "human-authorized scope addition" 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "human-authorized rework failed: $okStr" }
+    if ($okStr -notmatch "TRANSITIONED: testing -> implementation") { throw "Expected testing->implementation, got: $okStr" }
+    if ($okStr -notmatch "HUMAN-AUTHORIZED REWORK") { throw "Expected human-authorized marker, got: $okStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "ready-for-dev") { throw "expected ready-for-dev after rework, got: $($st.Labels)" }
+    $authEv = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.authorization" } | Select-Object -Last 1
+    if (-not $authEv) { throw "no human.authorization event recorded" }
+    return "human-authorized testing->implementation: blocked w/o flag/reason, allowed with both (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # A verdict-less `## Evidence` screenshot receipt (upload-evidence) posted after a
 # PASS verdict must NOT mask it — the verification guard reads the latest comment
 # that CARRIES a verdict (Spec #2680 masking vector).
@@ -2617,6 +2980,51 @@ Test-Script "Verdict line with a leading UTF-8 BOM still parses as PASS" {
     if (-not $json.verdict_is_pass) { throw "BOM-prefixed Verdict: PASS must parse as pass, got: $auditStr" }
     if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
     return "BOM-tolerated verdict: BOM-prefixed Verdict: PASS parses and clears the gate"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The verdict VALUE is the FIRST TOKEN after the `Verdict:` colon, not a
+# whole-line contains scan - a round-2 PASS verdict that explains the prior
+# round's FAIL in its parenthetical (e.g. "Verdict: PASS (6/6 ACs - the
+# round-1 sole FAIL is cleared)") legitimately contains the substring "fail"
+# and must NOT be misread as FAIL (observed on #2850 round 2, where the
+# whole-line `!contains("fail")` guard blocked a genuine PASS).
+Test-Script "PASS verdict mentioning a prior round's FAIL in the same line still parses as PASS" {
+  $url = Mock-IssueCreate "temp: verdict-pass-mentions-fail" "verdict-pass-fail scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # The #2850 round-2 shape: PASS verdict + parenthetical referencing the
+    # round-1 FAIL + a genuine live telemetry_spans receipt.
+    $evBody = Join-Path $env:TEMP "fredo-ev-pass-fail.md"
+    [System.IO.File]::WriteAllText($evBody, "## Tests Runs (round 2)`n`nVerdict: **PASS** (6/6 ACs - the round-1 sole FAIL, Q-18/M10 dev-mode, is cleared by the round-2 in-environment jsdom evidence)`nSELECT ... FROM telemetry_spans ... rows=1", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $evBody" 2>&1 | Out-Null
+    Remove-Item $evBody -Force -ErrorAction SilentlyContinue
+    $audit = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
+    $auditJson = $auditStr.Substring($auditStr.IndexOf("{"))
+    $json = $auditJson | ConvertFrom-Json
+    if (-not $json.verdict_is_pass) { throw "PASS verdict mentioning prior FAIL must parse as pass, got: $auditStr" }
+    if (-not $json.verification_ok) { throw "verification_ok should be true, got: $auditStr" }
+    # And the inverse guard still holds: a FAIL verdict mentioning PASS in its
+    # per-AC rows must NOT be read as PASS (#1499 semantic preserved).
+    $failBody = Join-Path $env:TEMP "fredo-ev-fail-pass.md"
+    [System.IO.File]::WriteAllText($failBody, "## Tests Runs (round 2)`n`nVerdict: **FAIL** (21/22 Q-rows PASS; 1 row UNVERIFIED)`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $failBody" 2>&1 | Out-Null
+    Remove-Item $failBody -Force -ErrorAction SilentlyContinue
+    $audit2 = & rust-script $ps --action audit --issue $issueNum --json 2>&1
+    $audit2Str = if ($audit2 -is [array]) { $audit2 -join "`n" } else { "$audit2" }
+    $audit2Json = $audit2Str.Substring($audit2Str.IndexOf("{"))
+    $json2 = $audit2Json | ConvertFrom-Json
+    if ($json2.verdict_is_pass) { throw "FAIL verdict mentioning PASS rows must parse as fail, got: $audit2Str" }
+    if ($json2.verification_ok) { throw "FAIL verdict must block verification_ok, got: $audit2Str" }
+    return "verdict first-token parse: PASS-with-FAIL-mention passes, FAIL-with-PASS-rows still blocks"
   } finally {
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0

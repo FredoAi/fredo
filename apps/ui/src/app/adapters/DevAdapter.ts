@@ -1,4 +1,4 @@
-import type { HostAdapter, LlmMessage } from './HostAdapter';
+import type { HostAdapter, LlmMessage, LlmSkillCall } from './HostAdapter';
 
 /**
  * DevAdapter — HostAdapter implementation for the standalone Vite dev server.
@@ -41,6 +41,9 @@ export class DevAdapter implements HostAdapter {
     messages: LlmMessage[],
     onToken: (token: string) => void,
     onDone: () => void,
+    // #2871 ST-1r — typed error channel. The dev mock never fails, so this is
+    // accepted for interface parity and intentionally ignored.
+    _onError?: (message: string) => void,
   ): Promise<void> {
     // Pick a mock response based on the last user message so dev mode shows variety
     const userMsg = [...messages].reverse().find((m: LlmMessage) => m.role === 'user')?.content ?? '';
@@ -77,5 +80,40 @@ export class DevAdapter implements HostAdapter {
     const mock = '4'; // dev: always pick center cell
     for (const ch of mock) onToken(ch);
     onDone();
+  }
+
+  /**
+   * #2897 ST-3 (REQ-5) — model-audio parity for the dev mock. The dev server has
+   * no managed model server, so it streams an ordinary mock reply through the
+   * unchanged `llmChat` (the captured clip is never a dev-time asset).
+   *
+   * #2903 ST-2 — the additive trailing `onSkillCall` channel is accepted for
+   * interface parity; the dev mock has no backend tools path and so never selects
+   * a skill (mirrors `llmChatWithSkills`).
+   */
+  async llmChatWithAudio(
+    messages: LlmMessage[],
+    _audioBase64: string,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onError?: (message: string) => void,
+    _onSkillCall?: (call: LlmSkillCall) => void,
+  ): Promise<void> {
+    return this.llmChat(messages, onToken, onDone, onError);
+  }
+
+  /**
+   * #2893 ST-7 — skill-aware parity for the dev mock. The dev server never
+   * performs a real selection (no backend tools path), so it streams an ordinary
+   * mock reply through the unchanged `llmChat` and never emits a skill call.
+   */
+  async llmChatWithSkills(
+    messages: LlmMessage[],
+    onToken: (token: string) => void,
+    onDone: () => void,
+    _onSkillCall: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    return this.llmChat(messages, onToken, onDone, onError);
   }
 }

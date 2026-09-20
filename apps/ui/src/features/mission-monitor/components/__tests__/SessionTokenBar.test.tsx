@@ -403,47 +403,56 @@ vi.mock('../../hooks/useMissionMonitor', () => ({
   }),
 }));
 
-vi.mock('../../lib/persistence', () => ({
-  initMmTables: vi.fn(),
-  persistDelivery: vi.fn(),
-  loadPersistedSessions: vi.fn().mockResolvedValue([
-    { sessionId: 's1', label: 'Session 1', startTime: 1, latestTimestamp: '2026-01-01T00:00:00.000Z', deliveryCount: 0 },
-  ]),
-  deleteSessionFromStore: vi.fn(),
-  loadPersistedDeliveries: vi.fn().mockResolvedValue([]),
-  loadPersistedChildDeliveries: vi.fn().mockResolvedValue([]),
-  markSessionDeleted: vi.fn(),
-  isSessionDeleted: vi.fn(() => false),
-  // Spec #2788 P4.3: tombstone seeding — awaited inside useDeliverySessions' mount load
-  seedDeletedSessionIdsIntoModule: vi.fn().mockResolvedValue(undefined),
-  createDeliveryWatermark: () => ({ cursor: 0, seenIds: new Set() }),
-  nextUnseenDeliveries: (deliveries, state) => {
-    if (deliveries.length < state.cursor) state.cursor = 0;
-    if (deliveries.length <= state.cursor) return [];
-    const slice = deliveries.slice(state.cursor);
-    state.cursor = deliveries.length;
-    const unseen = slice.filter((d) => !state.seenIds.has(d.id));
-    for (const d of unseen) state.seenIds.add(d.id);
-    return unseen;
-  },
+// Spec #2896 ST-6: the panel's session list comes from the declared `sessions`
+// table via `useFeatureRead` + `useFeatureWatch`.
+let mockDeclaredSessions: Array<{ sessionId: string; startTime: number; latestAt: string }> = [
+  { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+];
+
+function declaredRows(): Map<string, unknown> {
+  return new Map(
+    mockDeclaredSessions.map((s) => [
+      JSON.stringify([s.sessionId]),
+      {
+        _rowVersion: 1,
+        sessionId: s.sessionId,
+        startedAtNs: s.startTime * 1e6,
+        latestAt: s.latestAt,
+        chatRowCount: 0,
+        nonSubagentChatRowCount: 1,
+        visibleTurnCount: 1,
+        userDispatchCount: 0,
+        derivedName: null,
+        agentName: null,
+        customName: null,
+      },
+    ]),
+  );
+}
+
+vi.mock('@/shared/hooks/useFeatureData', () => ({
+  useFeatureRead: () => ({ rows: declaredRows(), version: 1, error: null, loading: false }),
+  useFeatureWatch: () => ({ rows: declaredRows(), epoch: 1, error: null, ready: true }),
 }));
 
-
-// P4.2: the panel derives its session metrics from typed rows via
-// useEventRows — mock it to project the SAME fixtures the StreamContext mock
-// serves (rowsFromDeliveries applies the classifier semantics; the epoch is
-// static because tests seed mockDeliveries before render).
-vi.mock('@/shared/hooks/useEventRows', async () => {
+// Spec #2896 ST-6: the panel's session metrics + canvas source is the selected
+// session's canonical activity watch (ST-9).
+vi.mock('../../hooks/useSessionActivityWatch', async () => {
   const { rowsFromDeliveries } = await import('../../hooks/__tests__/fixtures/rowsFromDeliveries');
   return {
-    useEventRows: (eventType: 'Chat' | 'ToolUse') => {
+    useSessionActivityWatch: (sessionId: string | null) => {
       const { chatRows, toolRows } = rowsFromDeliveries(mockDeliveries);
-      const rows = eventType === 'Chat' ? chatRows : toolRows;
+      const toMap = (rows: Array<{ sessionId: string; correlationId: string }>) =>
+        new Map(
+          (sessionId === null ? [] : rows.filter((r) => r.sessionId === sessionId)).map(
+            (r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const,
+          ),
+        );
       return {
-        rows: new Map(rows.map((r) => [`${r.sessionId}\u0000${r.correlationId}`, r] as const)),
+        chatRows: toMap(chatRows),
+        toolUseRows: toMap(toolRows),
         epoch: 1,
         error: null,
-        // P4.3: the replay snapshot phase is settled — the loaded gate opens
         ready: true,
       };
     },
@@ -459,7 +468,6 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 }));
 
 import { MissionMonitorPanel } from '../MissionMonitorPanel';
-import { loadPersistedSessions } from '../../lib/persistence';
 
 /** Chat-node delivery for the panel's selected session 's1'. */
 function makeChatDelivery(
@@ -511,6 +519,9 @@ describe('MissionMonitorPanel — session token top bar wiring (Spec #2723 R-1)'
   beforeEach(() => {
     vi.clearAllMocks();
     mockDeliveries = [];
+    mockDeclaredSessions = [
+      { sessionId: 's1', startTime: 1, latestAt: '2026-01-01T00:00:00.000Z' },
+    ];
   });
 
   /** Flushes the persisted-session load so the canvas + bar render. */
@@ -638,7 +649,7 @@ describe('MissionMonitorPanel — session token top bar wiring (Spec #2723 R-1)'
   it('hides the bar when no session is selected', async () => {
     // No persisted sessions and no live deliveries → the empty state renders;
     // the token bar must never appear (AC1 — hidden when NO session selected).
-    vi.mocked(loadPersistedSessions).mockResolvedValueOnce([]);
+    mockDeclaredSessions = [];
     mockDeliveries = [];
 
     const { rerender } = renderWithChakra(<MissionMonitorPanel />);

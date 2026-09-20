@@ -155,11 +155,16 @@ Thumbs.db
 *.bin
 apps/tauri/src-tauri/models/*.tar
 apps/tauri/src-tauri/models/*.zip
+# Root model store (Companion+STT downloads; large binaries, runtime-installed)
+/models/
 
 # Application specific
 uploads/
 temp/
 tmp/
+
+# Companion runtime artifacts (generated launch config + server log)
+.runtime/
 
 # Environment variables
 .env
@@ -178,6 +183,8 @@ apps/browser-extension-svelte
 # OpenCode agent runtime state
 .opencode/state/
 
-# Agentic-pipeline scratch + QA evidence (uploaded to GitHub issues via `gh api`; not committed)
+# Agentic-pipeline scratch (not committed). Test evidence is uploaded to GitHub as
+# user-attachments (`gh image`); the evidence ignore stays for legacy committed
+# evidence already on main / old spec branches.
 .opencode/tmp/
 .opencode/evidence/

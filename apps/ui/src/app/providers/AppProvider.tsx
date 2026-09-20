@@ -7,7 +7,9 @@ import React, {
   type ReactNode,
 } from 'react';
 import { useStream, applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shared/contexts/StreamContext';
-import { isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
+import { isFeatureDeliveryBatch, isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
+import { applyFeatureDeliveries } from '../../shared/feature-data/store';
+import { FeatureDataProvider } from '../../shared/contexts/FeatureDataContext';
 import { STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 
@@ -89,16 +91,26 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
     return () => setConnectionStatus(false);
   }, []);
 
-  // Forward messages from the host's "fredo-stream-event" IPC channel into
-  // the RTDB row pipeline (Spec #2788 — the ONLY delivery path since P5.1):
-  // BATCH envelopes ({"rowBatch": [...]}, F-33 fix W-1) are checked FIRST and
-  // applied via the bulk path (one epoch bump per touched partition; during a
-  // replay drain the bumps collapse to ONE settle at the replayCompleteQueryId
-  // marker — round-3 F-33 fix, applied BEFORE settling so the settle bump
-  // reflects final rows); single RowDelivery envelopes keep the per-delivery
-  // path. Anything else on the wire is not an RTDB envelope and is dropped.
+  // Forward messages from the host's "fredo-stream-event" IPC channel:
+  // FEATURE-DATA batches ({"featureBatch": [...]}, Spec #2896 ST-5) are checked
+  // FIRST and applied to the feature-data store; RTDB BATCH envelopes
+  // ({"rowBatch": [...]}, F-33 fix W-1) follow and are applied via the bulk
+  // path (one epoch bump per touched partition; during a replay drain the bumps
+  // collapse to ONE settle at the replayCompleteQueryId marker — applied BEFORE
+  // settling so the settle bump reflects final rows); single RowDelivery
+  // envelopes keep the per-delivery path. Anything else is dropped.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
+      // Spec #2896 ST-5 — FEATURE-DATA BATCH envelope. Rides the SAME
+      // "fredo-stream-event" channel as a `{"featureBatch": [...]}` payload and
+      // is checked BEFORE the RTDB validators (the envelopes are disjoint, but
+      // the feature discriminator runs first so a feature delivery is never
+      // mis-routed into the RTDB row store).
+      if (isFeatureDeliveryBatch(msg)) {
+        applyFeatureDeliveries(msg.featureBatch);
+        return;
+      }
+
       // RTDB BATCH envelope — discriminate by the `rowBatch` field BEFORE the
       // single-delivery path (backward compatible: singles still work).
       if (isRowDeliveryBatch(msg)) {
@@ -138,7 +150,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
         setViewingLiveDiagram, setIsLoadingDiagram, setDiagramError, setParseError,
       }}
     >
-      {children}
+      <FeatureDataProvider>{children}</FeatureDataProvider>
     </AppContext.Provider>
   );
 };

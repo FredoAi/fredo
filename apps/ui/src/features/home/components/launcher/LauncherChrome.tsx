@@ -61,11 +61,13 @@ export interface LauncherChromeProps {
 
 const pad2 = (n: number): string => n.toString().padStart(2, '0');
 
-/** Symmetric corner inset (AC3 / R-3): the clock+LED cluster is centered within
- *  a corner box inset EQUALLY from both the top and right edges, so neither the
- *  HH:MM text nor the LED hugs the top/right edge. Equal top==right is what
- *  makes "visually centered in the corner" deterministic. */
-const CLOCK_CORNER_INSET_PX = 16;
+/** Asymmetric corner inset (AC3 / R-3): the clock+LED cluster is centered within
+ *  a corner box inset separately from the top and right edges, so neither the
+ *  HH:MM text nor the LED hugs the top/right edge. The right inset is 4px larger
+ *  than the top (20 vs 24) to deliberately favour the right edge — the design
+ *  intent (#2841) is an asymmetric 4px favour to the right, NOT an equal inset. */
+const CLOCK_CORNER_INSET_TOP_PX = 20;
+const CLOCK_CORNER_INSET_RIGHT_PX = 24;
 
 const formatTime = (date: Date): string => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 
@@ -362,16 +364,17 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
           tooltip on hover/focus. The cluster wrapper + chrome root stay
           pointer-events:none (the #2825 covered-by-window z-sink still applies).
           Token-native: accent/status-error + tint() halo, never var(--x)NN.
-          Centering (AC3 / R-3): the cluster box uses a SYMMETRIC inset
-          (`CLOCK_CORNER_INSET_PX` from both top AND right) and centers the group
-          (`align-items:center`, `text-align:center`), so neither the HH:MM text
-          nor the LED hugs the top/right edge. The #2825 covered-clearance is a
-          z-sink concern (the whole band sinks to z=0), NOT a geometry one —
+          Centering (AC3 / R-3): the cluster box uses an ASYMMETRIC inset
+          (`CLOCK_CORNER_INSET_TOP_PX` from the top, `CLOCK_CORNER_INSET_RIGHT_PX`
+          from the right — 20px / 24px, a 4px favour to the right) and centers the
+          group (`align-items:center`, `text-align:center`), so neither the HH:MM
+          text nor the LED hugs the top/right edge. The #2825 covered-clearance is
+          a z-sink concern (the whole band sinks to z=0), NOT a geometry one —
           centering is purely clean-desktop geometry and is decoupled from it. */}
       <Box
         position="absolute"
-        top={`${CLOCK_CORNER_INSET_PX}px`}
-        right={`${CLOCK_CORNER_INSET_PX}px`}
+        top={`${CLOCK_CORNER_INSET_TOP_PX}px`}
+        right={`${CLOCK_CORNER_INSET_RIGHT_PX}px`}
         textAlign="center"
         pointerEvents="none"
       >

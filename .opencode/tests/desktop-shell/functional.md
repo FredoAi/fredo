@@ -133,3 +133,100 @@
 - [ ] F-16: The idle command bar shows the wireframe's `—` MINIMIZE control at its right edge (a vertical divider `var(--border-color)` + a `—` dash `var(--text-secondary)`/`fg.muted`, token-native `currentColor`, hover → `accent.default`). Clicking `—` collapses the launcher surface to BARE CHROME (`open=false`: avatar + bar + grid hidden; notch + clock + frame + ticks + dot-grid remain).
   - **Edge (PO decision, triage Discussion QA-7 / UI/UX-1):** the `—` behavior is (a) collapse-to-bare-chrome (Architect binding), (b) ESC-alias → idle, or (c) decorative/no-op-safe. If the PO decides a behavior diverging from the binding, record it and adjust the assertion. No console error; no stuck state; focus lands on the notch after minimize.
   - **Edge (token):** the `—` control's divider + dash use token vars / `currentColor` only — NO hardcoded hex (F-13c grep gate includes the command bar).
+
+## #2850 extension — shared-avatar refactor: shell-surface no-regression
+
+> Issue #2850 — the desktop shell's launcher avatar becomes a shared-`FredoAvatar size="md"`
+> wrapper (`shared/components/fredo-avatar/`), the geometry module/test move with it, and the
+> companion overlay switches from the raster sprite pipeline to the same shared vector avatar.
+> The shell surface itself is a NON-GOAL. **Verification policy: live** (the AC-1 geometry-suite
+> row is static/unit and runs in `test:run` regardless). Map 1:1 to `.opencode/tmp/2850/triage.md`
+> `## QA Expert` (Q-2/Q-3/Q-21 + companion-suite F-2 cross-surface consistency).
+
+## F-17 (Q-21/M1 + companion-suite F-2) — Shell md avatar unchanged + neutral pixel-consistency with the companion sm avatar
+
+- [ ] F-17: On the running `spec/2850` build, render the launcher md avatar AND the companion sm
+      avatar in the SAME theme; DOM-probe both SVG rect sets; screenshot the shell. **Expected:**
+      the launcher md avatar renders at 132 × 165 (aspect 1014:1264, crispEdges, accent fill,
+      `aria-hidden`) — visually unchanged from the pre-refactor render; the companion sm render is
+      a faithful proportional downscale of the same 58-rect set (the two SVG coordinate sets are
+      IDENTICAL, only the element scale differs); the desktop idle/engaged surfaces and their
+      lifecycle are unchanged (no layout shift from the avatar-source move).
+  - **Edge:** verify the cross-surface rect-set equality in light AND dark; the neutral frame is
+    the transform:0/paused frame; the shell chrome (notch, ticks, dot-grid, clock, frame) is
+    unmodified by the shared move.
+
+## F-18 (Q-22 / NF) — Console hygiene across the shell + companion surfaces
+
+- [ ] F-18: After rendering the shell + companion and driving the F-17 legs, read the webview
+      console. **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` — the shared
+      avatar move introduced no re-render loop or mount error on either surface (the pre-existing
+      `motion() is deprecated` WARN is exempt).
+  - **Edge:** read the console after the FIRST shell render AND after the companion interaction
+    legs (a mount-order race between the launcher wrapper and the companion mount only appears
+    post-render).
+
+---
+
+## #2886 extension — the shell chrome + seat are never covered by a companion message
+
+> Issue #2886 keeps Fredo fully visible while he speaks. This file owns the SHELL-SURFACE legs: the
+> shell's own chrome (notch, clock/LED, side ticks, dot-grid, rounded frame) and the centre seat
+> slot must be untouched by the reply's placement, and the seat's geometry must not move. Map 1:1 to
+> `.opencode/tmp/2886/triage.md` `## QA Expert` E4/E7. **Verification policy: live** — DOM geometry
+> (both rects in the SAME `execute_js` task) + retained frames + console + the mandatory
+> `telemetry_spans` receipt (F-20). A static-only PASS is a FALSE PASS.
+
+## F-19 (E4/E7 / shell leg) — a displayed reply does not cover or move the shell chrome / seat
+
+- [ ] F-19: Companion ON at the home seat; send a long reply; probe the shell chrome + seat in the
+      SAME task: the notch (`[role="button"][aria-label="Fredo launcher"]`), the clock/LED cluster
+      (`<time>` + the LED trigger), the seat-slot WRAPPER (`offsetWidth`/`offsetHeight` +
+      `margin-bottom`), the command bar `getBoundingClientRect().y`, and the reply
+      (`[data-testid="fredo-reply-surface"]`) + avatar (`.fredo-companion-avatar`) rects.
+  **Expected:** the reply has ZERO intersection with the shell chrome it can reach (notch / clock /
+      rounded frame), `intersectionArea(avatar, surface) === 0`, the seat wrapper stays exactly
+      **80×100 + 16 px**, and the command-bar `y` is within **±1 px** of the no-reply baseline — a
+      displayed message never displaces or covers the shell. `scrollHeight == clientHeight` (no new
+      scrollbar). Reference #2870 R-35 + launcher R-45 / R-48.
+  - **Edge:** at the shipped minimum 900×600; companion teleported near the shell frame; a theme
+    switch mid-reply; the game card open (208×268 unchanged).
+
+## F-20 (E7/E8 / shell leg) — console hygiene + live receipt with a reply displayed
+
+- [ ] F-20: With a reply displayed, read `tauri_read_logs(source="console")` in every open window;
+      inspect the placement code for effect/memo deps; run `fredo emit --event-type chat
+      --session-id e2e-2886-chat` + `--event-type tool_use --session-id e2e-2886-tool`; query
+      `telemetry_spans` (telemetry-query skill); capture a shell screenshot with the reply shown.
+  **Expected:** no `Error:`/`Uncaught`/`Maximum update depth exceeded` (the pre-existing
+      `motion() is deprecated` WARN exempt); no effect/memo on array `.length`/fresh objects (#523);
+      `telemetry_spans` NON-ZERO with a recent `max(ingested_at)` and the injected rows classified —
+      the mandatory live receipt. A static-only PASS is a **FALSE PASS**.
+  - **Edge:** read the console after the placement leg, not only at boot; both windows if the
+    terminal is open; re-run the receipt on the tested tip; keep the query output verbatim.
+
+### #2886 testing round 1 — result
+
+> Served checkout: repo root `spec/2886 @ 0ac6b38a` (G-052).
+
+- [x] **F-19 (E4/E7) — PASS.** With a reply displayed at 1400×900: seat-slot wrapper exactly
+      **80×100 + 16 px `margin-bottom`**, command-bar `y = 446` both with and without the reply
+      (Δ = 0 ≤ 1 px), `intersectionArea(avatar, surface) === 0`, no new page scrollbar. A displayed
+      message never displaces or covers the shell chrome.
+- [x] **F-20 (E7/E8) — PASS.** `tauri_read_logs(source="console")` clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded` after every leg (only the pre-existing
+      `motion() is deprecated` WARN). `fredo emit` chat + tool_use ran; `telemetry_spans` returned
+      **3142** rows, `max(ingested_at) = 2026-09-17T19:32:54.683501+00:00`; `chat_rows` and
+      `tool_use_rows` each classified 1 row of the injected sessions.
+
+### #2886 testing round 2 — result (re-verified, PASS)
+
+> Served checkout: repo root `spec/2886 @ 9fb2d3a8` (G-052).
+
+- [x] **F-19 (E4/E7) — PASS.** 301-sample NFR recorder at 1400×900: bar `y = 446` in both states
+      (121 samples with a reply shown, 180 without → **Δ = 0**); seat-slot wrapper 80×100 +
+      `margin-bottom: 16px` in both states; no page scrollbar in any sample.
+- [x] **F-20 (E7/E8) — PASS.** `tauri_read_logs(source="console")` `level=error` returned 0 entries and a
+      `Maximum update depth|Uncaught|Error:|Warning:` sweep returned 0 matches. `telemetry_spans`
+      = **3888** rows, newest `2026-09-17T20:13:50Z`; `chat_rows` (session `e2e-2886-chat-r2`) and
+      `tool_use_rows` (session `e2e-2886-tool-r2`) each classified 1 row.

@@ -77,7 +77,15 @@ export interface Theme {
     nodeBg: string;
     nodeBoxShadow: string;
     edgeGradient: string;
-    
+
+    // #2864 ST-1 — presentation-only base-record tokens (T7/T8). Deliberately NOT
+    // part of ThemeOverrides: the #2842 12+3 override/readout contract must not
+    // expand. `overlayBg` is the dialog scrim; `shadowDialog` the dialog elevation
+    // shadow. Required on every base record so the theming editor's
+    // `keyof Theme['colors']` index never widens to `string | undefined`.
+    overlayBg: string;
+    shadowDialog: string;
+
     // Fonts
     fontFamily: string;
     fontPrimary: string;  // For h1, main headings
@@ -85,6 +93,14 @@ export interface Theme {
     fontBase: string;      // For body text, paragraphs
   };
 }
+
+/**
+ * #2864 ST-1 (T7/T8) — theme-agnostic base-record values for the dialog scrim and
+ * its elevation shadow. Shared because every base record carries the same value and
+ * ThemeProvider falls back to them when an (optional) record field is omitted.
+ */
+export const BASE_OVERLAY_BG = 'rgba(0, 0, 0, 0.6)';
+export const BASE_SHADOW_DIALOG = '0 24px 80px rgba(0, 0, 0, 0.4)';
 
 export const themes: Record<ThemeMode, Theme> = {
   'turbo': {
@@ -119,6 +135,8 @@ export const themes: Record<ThemeMode, Theme> = {
       nodeBg: 'rgb(17, 17, 17)',
       nodeBoxShadow: '10px 0 15px rgba(42, 138, 246, 0.3), -10px 0 15px rgba(233, 42, 103, 0.3)',
       edgeGradient: 'url(#edge-gradient)',
+      overlayBg: BASE_OVERLAY_BG,
+      shadowDialog: BASE_SHADOW_DIALOG,
       
       fontFamily: "'Fira Mono', 'Courier New', monospace",
       fontPrimary: "'Fira Mono', 'Courier New', monospace",
@@ -158,6 +176,8 @@ export const themes: Record<ThemeMode, Theme> = {
       nodeBg: '#2d2d2d',
       nodeBoxShadow: '0 1px 4px rgba(0, 0, 0, 0.3)',
       edgeGradient: 'rgb(147, 51, 234)',
+      overlayBg: BASE_OVERLAY_BG,
+      shadowDialog: BASE_SHADOW_DIALOG,
       
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       fontPrimary: "'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",

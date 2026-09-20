@@ -4,7 +4,7 @@
 
 ### What is Fredo?
 
-Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical SQLite rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and an in-process LLM companion.
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical SQLite rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and a companion backed by a managed out-of-process `llama-server`.
 
 ### Is this a commercial product?
 
@@ -125,18 +125,29 @@ Fredo also collects its own internal metrics and structured logs from the Rust b
 
 ### How do I switch models?
 
-Open Settings in the UI → Model Selector → choose a model. The change takes effect on next app launch.
+The companion runs the model set configured in the Companion setup (`<models_dir>/gemma-4-e2b-it-qat/`); there is no separate in-app model selector.
 
 ### Where do I put model files?
 
-Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`. For example:
-```
-apps/tauri/src-tauri/models/gemma-e2b-it/gemma-e2b-it-q4_k_m.gguf
-```
+For the **Companion**, you usually don't place them manually: the setup wizard's **Model files** step downloads the three required files (model + vision projector + MTP speculative draft) in-app with per-file progress, skip-present, and SHA-256 verification, landing them under `<models_dir>/gemma-4-e2b-it-qat/` (the models directory is configurable via the `models_dir` setting; default `~/fredo-models`). Correctly-sized files dropped there manually are detected by **Re-check**.
+
+To place files manually, drop the correctly-sized GGUFs under `<models_dir>/gemma-4-e2b-it-qat/` — e.g. `~/fredo-models/gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`.
 
 ### Does Fredo run llama.cpp as a subprocess?
 
-No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings. No child processes, no HTTP/SSE round-trips.
+Yes. Companion inference is served by a managed **`llama-server`** child process, launched from a generated launch config once setup is complete. Fredo health-checks the server before chatting, streams tokens over the server's HTTP API, and stops the process on exit so no orphan survives. The legacy in-process engine — and its `llama-cpp-2` dependency — is retired.
+
+### Does Fredo support voice input?
+
+Yes — an **opt-in, on-device** voice-input feature (**Settings → Companion → Voice input**; default off). Speech is transcribed locally by a bundled `sherpa-onnx` streaming engine and **no audio or transcript ever leaves your machine** — the only network use is the one-time model download (four files, ~72.7 MB) through the same download + SHA-256 verify path as the companion models. The **Voice input model** step lives in the Companion setup wizard and is **optional and non-gating**: installing or removing it never blocks companion chat. To dictate, focus the launcher's search bar while it is **empty** and **hold Space** (#2882) — the recognizer stays ready, so capture starts without a perceptible wait once the hold threshold is crossed; listening continues only while Space is held, and releasing finishes the utterance and releases the microphone, finalizing the recognized words into the bar as ordinary editable text. A quick tap of Space is an ordinary space character, and so is any Space typed into a bar that already contains text; with voice input disabled or its model not installed, holding Space captures nothing, surfaces no error, and an ordinary space lands. While listening, live partials render into the launcher command bar and stay editable, and the bar's cue (the `Listening` chip and placeholder, announced as text) appears only when capture is live and indicates the capture for its whole duration. On release the transcript waits in the bar as editable text, and **Enter sends a dictated transcript to Fredo** — never to an app, even after you edit it so that it spells an app name. The optional **Send voice transcripts automatically** toggle (Settings → Companion → Voice input, default off) submits on release instead of waiting for Enter. Cancel (Escape or the bar's cancel control) discards the utterance and never sends or launches, and a dictated turn is sent exactly once. Separately, **Ctrl+Space** brings the launcher command bar to the front and focuses its search field — nothing else: it never starts or stops listening, and it never closes the bar.
+
+### Can I choose how my speech is handled?
+
+Yes. **Settings → Companion → Voice input → Speech handling** offers two methods. **Local transcription** (default) is the behaviour described above: the on-device recognizer writes the recognized words into the launcher bar as you speak. **Model audio** records the utterance and hands the clip to the locally-managed companion model as that turn's input — **no transcript is shown**; Fredo answers the audio itself and the reply appears in the normal conversation surface. Both methods are local-only: audio is captured only while you hold Space, the microphone is released on release, and a model-audio clip goes only to the loopback `llama-server` on your machine — never over the network. Model audio needs a model that can interpret audio: if the installed model does not support it, or the local model server is not running, Fredo tells you instead of sending anything and offers a one-click switch back to **Local transcription**. A model-audio recording is capped at about 30 seconds, with a visible stop at the limit that keeps the entire recording. Model audio can also **control apps** by voice (since #2903): say "open settings" and the Settings window opens, say "close settings" and it closes — the same apps and the same behaviour as typing the request. Fredo's reply always reflects what really happened: if the app cannot be found, nothing opens or closes and Fredo tells you so instead of claiming success.
+
+### How does dictated text appear in the bar?
+
+In **sentence case** — the way a person writes — with the capitals you actually mean kept. The opening of the utterance is capitalised and the rest is lower-cased, except a small product-owned vocabulary of intentionally capitalised terms (for example `API` and `SQL`, and the name "Fredo"), which keep their capitals. Only the letter case changes: the same words arrive in the same order, nothing is reworded, added, dropped, reordered or summarised, and anything you edit yourself is left exactly as you typed it. Saying "Fredo" while dictating produces `Fredo` spelled and cased correctly, wherever it appears in the utterance. The shipped recogniser is **English-only**, and this is transcription only — there is no wake word, no always-on listening and no voice commands, and nothing listens while you are not dictating. Because the on-device engine produces a capitals-free hypothesis, the capitalisation above comes from a fixed in-app vocabulary, so an acronym or name outside it is lower-cased.
 
 ---
 
@@ -147,10 +158,10 @@ No. The LLM engine runs **in-process** via vendored `llama-cpp-2` Rust bindings.
 The `comm` module (`infrastructure/comm/`) holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small:
 
 - **`FredoEvent`** — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
-- **`EventBus`** — emits RTDB `RowDeliveryBatch` envelopes on the `"fredo-stream-event"` Tauri IPC channel via `emit_row_delivery_batch`.
+- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` and feature-data `FeatureDeliveryBatch` envelopes (`{"featureBatch": …}`) via `emit_feature_delivery_batch`.
 - **`CommAdapter`** trait — implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
-Only `RowDelivery`/`RowDeliveryBatch` envelopes cross IPC; raw `FredoEvent` never does.
+Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope families (`RowDelivery`/`RowDeliveryBatch`, `FeatureDeliveryBatch`).
 
 ### What is the RTDB row pipeline?
 
@@ -161,6 +172,12 @@ The production event pipeline (`infrastructure/rtdb/`):
 - **`store.rs` / `cache.rs`** — SQLite-authoritative rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) behind an LRU cache + write-behind queue.
 - **`flush.rs`** — coalescing windows, batch chunking, and per-query replay-complete settle markers.
 - **`query/`** — the GraphQL-inspired typed query language, e.g. `chat(sessionId = "s1") { userMessage }`.
+
+### What is the feature-owned data layer?
+
+A feature-owned, durable data layer ON TOP of the canonical rows (`infrastructure/feature_data/`). A feature declares the structure it owns plus a source mapping (a field projection over a canonical table, or a closed `sessionRollup` aggregate); the backend materializes the declared tables idempotently on every launch and owns their writes, so the data is correct while the feature's UI is closed. Declared tables live in the same `fredo.db` as `feature_<sanitized featureId>_<table>`, isolated per `featureId`, and survive restarts.
+
+Features then **read on demand** (`feature_data_read` — rows plus the scope version and the resolved retention bound) and **watch at table / record / field granularity** (`feature_data_watch` with optional field narrowing and an optional atomic initial snapshot; `feature_data_unwatch` per watch). Notifications ride the `"fredo-stream-event"` channel as `FeatureDeliveryBatch` (`{"featureBatch": …}`) carrying the changed fields and their CURRENT values at a version; a removal is a distinct `remove` with no value. Writes go through `feature_data_write` (feature-owned columns only; an unchanged value is a silent no-op) and deletions through `feature_data_delete` (tombstoned — never resurrected). Retention is declared per table and evicts oldest-first with a removal per evicted row. Materialization is schema-aware: a foreign same-named table is quarantined, never dropped, and a column removal/retype is refused with a hard named error.
 
 ### What is the Event Flow?
 
@@ -212,7 +229,23 @@ It ties related rows together within a session (e.g. an `Init` event that starte
 
 ### What is the FredoCompanion?
 
-An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the in-process LLM engine for all interactions.
+An animated sprite on the Home panel with an LLM-powered personality. Single-click for a joke, double-click to play Tic-Tac-Toe, Ctrl+right-click to teleport to another window. Uses the managed out-of-process `llama-server` for all interactions. Fredo expresses distinct moods on both the companion and the launcher mascot: `thinking` while an LLM response is pending, `joking` while a joke streams, `happy` after a joke or a Tic-Tac-Toe outcome, and `playful` at rest (a bounded beat that always returns to idle; reduced motion is respected).
+
+The launcher's desktop mascot and the companion are **the same Fredo**, with one home: the **desktop centre seat**. Turning the companion ON does not move him — it activates his AI/companion role **in place** on the centre slot, and turning it off returns that same seat to the decorative mascot. **Ctrl+right-click teleport is the only relocation mechanism**; while Fredo is away (teleported within the window, or hosted in the terminal window) the centre seat shows an **empty-seat placeholder of the same 80×100 size**, so the launcher and command bar never shift. After an idle period with no interaction (default 60 s, configurable in **Settings → Companion**) Fredo auto-returns to the seat. Any interaction resets the timer, and an open Tic-Tac-Toe, an active joke stream, or a reply you are reading (the pointer over it or keyboard focus inside it, #2883) keeps him out while in use; auto-return never turns off your "Show Fredo Companion" preference. Each turn-on also shows a short welcome bubble (~4 s, `At your service. How can I help?`) above the seat. Whatever he is saying — the welcome, a joke, or a reply — the message surface **never covers Fredo**: it is placed **above him or beside him** (never over him) with a fixed **14 px** gap from his 80×100 footprint, and that gap holds as the message grows, for every message kind.
+
+### How do I talk to Fredo from the launcher?
+
+Turn the companion ON, then type in the launcher command bar. The bar is **multiline** (#2883): a long query wraps onto more lines instead of running out of sight — it grows to five lines, then scrolls internally — and the Enter hint and the collapse control always stay clear of your text. **Shift+Enter** starts a new line while `Enter` keeps the action the hint names. The hint in the bar always states which of its two actions Enter will take. If the query names an app — case-insensitively, either as a prefix of that app's displayed name (`set` → **Settings**, `Mission Mon` → **Mission Monitor**) or as a whole word inside it (`Miss`, `monitor` → **Mission Monitor**) — Enter opens that app, whatever the companion is doing (present, away, off, or replying); when several apps match, the top-ranked result opens. Any other query is sent to Fredo and the reply streams into the surface near his seat (above it by default, beside it when the window is short). That surface **grows with the answer** — up to the width of the bar and the room available in the window, never covering the command bar — and **scrolls** when the answer is longer than that, so every part of it can be read. It also **never covers Fredo himself** (#2886): the card is anchored to his measured avatar footprint with a fixed **14 px** gap on the side facing him, so the gap stays the same from a one-line answer to a full scrolling reply; it is placed above him or to one of his sides (never over him), it never covers the app tiles — which stay visible and clickable while you read — and when the window is genuinely too small to fit both a usable card and that gap it **shrinks and scrolls** rather than growing over him. Enter never matches a fragment of a sentence: `Missing all the time` is sent to Fredo although it contains `Miss`. A **dictated** transcript is always Fredo's — Enter sends it to Fredo even after you edit it, and it never opens an app. Each message is independent — there is no chat history. A reply stays while you are reading it: it does not disappear while the pointer is over it or keyboard focus is inside it — even if its dismiss countdown had already started — and it closes only after you leave it (a short two-second grace). If you scroll back into a reply that is still arriving, your place stays put; a **Newest** control appears to jump back to the latest text. While Fredo is replying, the bar shows `Fredo is replying…` and its input is read-only until the reply finishes. If the model isn't ready or errors, you get a short readable message instead of a raw error. When the companion is off (or away), the bar is the app filter/launcher it always was, and Enter still opens the app a typed query names; text that names no app has nowhere to go and stays in the bar.
+
+**Composing while Fredo is replying (#2892).** The bar never locks while a reply is on screen: you can click in, place the caret, and type even while Fredo is still generating, and the `Fredo is replying…` status is truthful — it clears the moment the reply finishes, even if you are keeping its bubble open with the pointer. Hovering the bubble changes only how long it stays open. If you hit Enter while Fredo is still replying, your message is never silently lost: by default it is **queued** — shown as `Queued — waiting for Fredo…` — and Fredo answers it automatically (in order, exactly once) as soon as the current reply finishes; switch **Settings → Companion → Sending while Fredo is replying** to `Interrupt and send now` to supersede the in-flight reply instead. **Settings → Companion** also exposes how long a finished reply stays on screen after your pointer leaves it (default 2 s).
+
+### Can I ask Fredo to open an app for me?
+
+Yes. Type or dictate a request that names a Fredo app — for example `open Mission Monitor` — and send it to Fredo: he recognises it as an app-open request, opens that app's window for you, and replies that he did (e.g. `Opening Mission Monitor`). If he can't find the app he says so (`I couldn't find "Narnia"`) and opens nothing; if the name is ambiguous he asks which one you meant, again opening nothing. Only a recognised app-open request acts — every other message is normal chat, so a joke or a question never opens anything. There is no confirmation prompt for opening a single Fredo app. The same capability is available from a terminal as `fredo open-app <identity>` (see the [CLI Guide](CLI_GUIDE.md#fredo-open-app)).
+
+### How do I get the companion ready to use?
+
+Open **Settings → Companion**. If the runtime is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls) that checks its prerequisites independently: the **llama.cpp runtime** (`llama-server` availability) and the required **model files**. The llama.cpp step offers a one-click `winget install llama.cpp` and re-checks readiness automatically — no app restart — and shows an actionable message if `winget` is unavailable or the install fails. The **Model files** step lists the three required files individually, downloads them in-app with per-file progress (skipping files already present), resumes an interrupted transfer, and names exactly which file(s) are missing. Once all prerequisites read as satisfied, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
 
 ### How does the Tic-Tac-Toe AI work?
 

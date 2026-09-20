@@ -21,6 +21,7 @@ import { LuAppWindow } from 'react-icons/lu';
 import type { ReactElement } from 'react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { dedupeByFeatureId } from '../featureRegistry';
 import { FredoFeatureClass } from '@/shared/classes/FredoFeatureClass';
 import { LauncherAppGrid } from '../home/components/launcher/LauncherAppGrid';
@@ -31,6 +32,25 @@ import { LauncherShell } from '../home/components/launcher/LauncherShell';
 // Mock the (only) StreamContext consumer it uses so the shell renders standalone.
 vi.mock('@/shared/contexts/StreamContext', () => ({
   useConnectionStatus: () => ({ isConnected: true }),
+}));
+
+// #2853 ST-4: LauncherShell also consumes useCompanion to gate the desktop
+// mascot on designated presence; CompanionProvider is not present in this
+// isolated harness either. Stub the hook (same idiom as the StreamContext mock
+// above) so the shell renders standalone — the presence gate itself is covered
+// by the companion suite. No assertion in this file is changed or weakened.
+// #2871 ST-2 (G-125): the in-slice state must carry the new reads LauncherShell
+// derives — `isInUse` (the command-bar busy primitive) alongside the presence
+// flags. The companion is inactive here, so the smart-Enter chat path stays off
+// and this file's dedupe/nav assertions are unaffected.
+// #2882 ST-4: the shell also reads `voiceEnabled` (it mounts the ST-3
+// `useSttModelReady` probe) — supplied here so the harness state is complete.
+vi.mock('@/shared/contexts/CompanionContext', () => ({
+  useCompanion: () => ({
+    state: { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
+    voiceEnabled: true,
+    voiceAutosend: false,
+  }),
 }));
 
 // ── Fixture feature ──────────────────────────────────────────────────────────
@@ -222,6 +242,12 @@ describe('LauncherShell — entryCount/safeSelectedIndex/activeTileId collapse i
     // LauncherShell scrolls the selected gridcell into view inside a passive
     // effect (LauncherShell.tsx:246). jsdom does not implement Element#scrollIntoView.
     Element.prototype.scrollIntoView = vi.fn();
+    // #2882 ST-4 — the shell mounts the ST-3 model-readiness probe
+    // (`stt_check_model`) and the voice hook's listener; answer both so the
+    // harness is deterministic with no unhandled invoke.
+    adapterBridge.setInvoke((async (command: string) =>
+      command === 'stt_check_model' ? { ready: true } : undefined) as never);
+    adapterBridge.setListen((async () => () => {}) as never);
   });
 
   afterEach(() => {
@@ -230,14 +256,16 @@ describe('LauncherShell — entryCount/safeSelectedIndex/activeTileId collapse i
     vi.clearAllMocks();
   });
 
-  it('reveals ONE tile per distinct id and navigates within the deduped grid (no nav gaps)', () => {
+  it('reveals ONE tile per distinct id and navigates within the deduped grid (no nav gaps)', async () => {
     const onOpenFeature = vi.fn();
     // Home.tsx:22-23 derivation — SHOWABLE_FEATURES = dedupeByFeatureId(showables).
     const deduped = dedupeByFeatureId(duplicateLadenList());
 
-    renderWithChakra(
-      <LauncherShell showableFeatures={deduped} onOpenFeature={onOpenFeature} />,
-    );
+    await act(async () => {
+      renderWithChakra(
+        <LauncherShell showableFeatures={deduped} onOpenFeature={onOpenFeature} />,
+      );
+    });
 
     // Engage the grid by focusing the command-bar searchbox (#2819).
     const searchbox = screen.getByRole('searchbox');

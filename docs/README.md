@@ -23,6 +23,7 @@
 | [CLI Guide](CLI_GUIDE.md) | All `fredo` CLI subcommands with examples |
 | [Security](SECURITY.md) | IPC socket security, OTLP, Tauri capabilities, input handling, process isolation |
 | [FAQ](FAQ.md) | Common questions and troubleshooting |
+| [STT Engine Selection (research)](research/stt-engine-selection.md) | Binding local-first streaming STT engine decision (#2876 spike): candidate comparison (6 engines × 8 criteria, cited), measured host numbers, and the capture + provisioning recommendation the follow-up voice-input specs plan against |
 
 ### Archived
 Historical documentation for superseded components is in [`archive/`](archive/README.md).

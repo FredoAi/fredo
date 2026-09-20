@@ -16,10 +16,12 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 | Up | `powershell -File .opencode/scripts/dev-env.ps1 -Action Up` | Ensure dev instance is running AND ready. Auto-starts if not running. Polls ports until responsive. |
 | Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. |
 | Status | `powershell -File .opencode/scripts/dev-env.ps1 -Action Status` | Read-only: `running` / `starting` / `stopped`. |
-| Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart` | Down then Up. |
+| Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart -Spec <N>` | Down then Up. **`-Spec` (or a repo root already on `spec/<N>`) is resolved BEFORE anything is stopped** — a missing `-Spec` now exits with a clear error and leaves the running instance up, instead of killing it and then failing the Up leg's range guard. |
 | Logs | `powershell -File .opencode/scripts/dev-env.ps1 -Action Logs` | Tail process stdout/stderr. |
 
 Optional parameters: `-VitePort 5174`, `-McpPort 9223`, `-TimeoutSecs 120`, `-Lines 50`, `-At <commit-ish>` (baseline-leg serving, Up only — see the baseline rule below).
+
+> **`-EnvVar` (Up only) — the sanctioned way to drive an ENV-GATED app seam.** Repeatable `NAME=value` pairs inject extra environment variables into the launched dev instance (and every opencode session it spawns). Agents cannot set a process env var for the app any other way: every script invocation is a fresh shell and shell chaining/metacharacters are sandbox-denied, so an env-gated seam is otherwise undrivable and the row becomes a permanent named blocker. Example (the STT deterministic capture feed): `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec <N> -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`. **Do NOT use the `-EnvVars @{ NAME = "value" }` hashtable form from a `powershell -File` invocation** — the outer shell passes the literal to the script as a STRING and it fails with `Cannot convert the ... Hashtable value`; `-EnvVars` remains available only to dot-sourced callers. Inject a var ONLY from an in-repo value (never a path outside the repo — G-172), and always pair an env-gated leg with an unset-env control run so the observation is non-vacuous.
 
 ## Cleaning the Fredo DB (fresh-slate reset for live e2e)
 
@@ -31,13 +33,29 @@ The tester **cannot** `Remove-Item` the live DB directly — the sandbox allowli
 |---------|-------------|
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1` | Stop dev instance (`dev-env.ps1 -Action Down`), delete `%APPDATA%\com.fredo.app\fredo.db` (+ `-wal`/`-shm`), verify deletion. |
 | `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restart` | Clean, then restart the dev instance (`dev-env.ps1 -Action Up`). |
+| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Backup [-Name <n>]` | Stop the app and copy the live DB (+ `-wal`/`-shm`) into `.opencode/tmp/db-snapshots/<name>/` (default name = timestamp). Does NOT delete the live DB. Add `-Restart` to bring the app back up. |
+| `powershell -File .opencode/scripts/clean-fredo-db.ps1 -Restore -Name <n> [-Restart]` | Stop the app, replace the live DB with the named snapshot, verify. Errors with the available snapshot names when `<n>` is missing. |
 
 Notes:
+- **Corpus-size comparison levers (`-Backup` / `-Restore`).** A check that compares behavior across corpus sizes (e.g. "open time does not grow with total stored history") needs BOTH a small corpus and the real corpus back. Sequence: measure on the real DB → `-Backup -Name big` → `-Restart` (fresh small DB; drive a few fixtures) → measure → `-Restore -Name big -Restart`. Snapshots are gitignored in-repo state under `.opencode/tmp/db-snapshots/`, so the real corpus is never lost. Never use `Remove-Item` on the live DB directly (G-009).
 - The app holds `fredo.db` open (WAL) while running, so it MUST be stopped first — the script does this. If you see "fredo.db still present", the app is still up.
 - The schema is recreated on next launch (`CREATE TABLE IF NOT EXISTS` / `ensure_schema`), so a deleted DB is a fully clean slate.
 - This wipes `feature_mission-monitor_*` tables AND `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` — everything. Use it when a spec AC requires "fresh DBs" (e.g. Mission Monitor e2e) or when the DB has bloated (a stray DB has grown to ~1.9 GB from accumulated telemetry).
 - The thousands of `.tmpXXXXXX\fredo.db` files under `%TEMP%` are Rust unit-test temp DBs — never clean those manually; they are test debris, ignore them.
 - Run the clean BEFORE `dev-env.ps1 -Action Up` for the next test session.
+
+## Evidence upload (gh-image prerequisite)
+
+Test screenshots are uploaded to GitHub as `user-attachments` by the `gh-image` CLI extension, invoked by the state machine's `upload-evidence` action (agents never call `gh` directly).
+
+| Command | Description |
+| --- | --- |
+| `gh extension list` | Confirm `gh image` is installed (expect `gh image  drogers0/gh-image`) |
+| `gh extension install drogers0/gh-image` | Install it on a machine that lacks it |
+
+- `upload-evidence` prints a `https://github.com/user-attachments/...` URL — nothing is committed to the repo (no `.opencode/evidence` store, no branch commit).
+- The `gh` token must have push access to the repo; no browser session (`GH_SESSION_TOKEN`) is needed for uploads to a repo you can push to.
+- If an upload fails, it is a named blocker: the extension is missing, or `gh` auth lacks push access.
 
 ## Bounded telemetry polling (CONFIRM gates)
 
@@ -74,6 +92,8 @@ Notes:
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
 
 > **Baseline legs (research-first specs) — NEVER hand-roll a dev-server spawn.** A Before/baseline measurement in a research-first perf spec (Spec #498 pattern, e.g. #2835) runs against the **pre-fix `spec/<N>` state** — the branch state BEFORE the fix work pushed (that state IS the same buggy code as `main`). The rule: **a baseline leg runs through `dev-env.ps1 -Action Up -Spec <N>`; you NEVER check out `main` for a baseline and NEVER hand-roll a detached spawn** (no ad-hoc `.mjs`/`.ps1`/`.js` scratch script that starts `pnpm dev:tauri` — `.opencode/tmp/<issue>/` is for DATA, not for re-inventing infrastructure). When the fix commits already sit on the branch and a pre-fix measurement is still required, serve the pre-fix ancestor commit through the sanctioned tool: `dev-env.ps1 -Action Up -Spec <N> -At <pre-fix-sha>` — the tool materializes ONLY the pre-fix product code (`apps/`) into the current `spec/<N>` serving tree and cold-starts it (tooling/`opencode.json` stay at the tip, so the sandbox and tool surface are unchanged); it is fail-closed (root must be on `spec/<N>`; the commit must be reachable from the `origin/spec/<N>` tip — main and foreign commits are refused). After the baseline leg, the next standard `Up` (no `-At`) restores the tip product code for the AFTER legs. **If a genuine cross-branch measurement (code NOT reachable from the spec branch tip) is ever required, that is a TOOLING REQUEST to the Self-Improver (a new script/param), not an ad-hoc agent script** — report the exact gap (command + why denied + what the provisioned tool lacks) and block/escalate instead of writing a scratch runner that re-implements a sanctioned tool's internals (G-110).
+
+> **Screenshot analysis is vision-native — no image-decoding scripts.** Every agent role is vision-capable: read a screenshot directly (the Read tool) to judge what it shows. Do NOT hand-roll PNG decode/measure/composite scripts (`*.mjs`/`*.js`/`*.ps1` under `.opencode/tmp/<issue>/`) — the image-analysis scratch scripts seen in early specs are obsolete. For exact pixel geometry, use measured rendered values (DOM `getBoundingClientRect`/`offsetWidth`), not pixel sampling (G-154).
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
 
@@ -150,6 +170,8 @@ Remediation ladder when `ref` is false:
 3. Still failing after a fresh session → escalate to the full Down → Up (G-046 path above), wait for full render, then a fresh driver session again.
 
 Never loop implementation rounds on this signature — it is tooling state, not a product defect.
+
+**Settings → Telemetry wedge (G-145, observed #2868):** navigating to the Settings Telemetry section can wedge the bridge — `execute_js`/`read_logs` time out with no product error in the console, matching the pre-existing full-viewport Telemetry capture quirk (#2864 E-3). Recover with a driver-session stop/start (the G-067 ladder), re-verify the section rendered, and do not report the timeout as a product defect.
 
 ### Structured telemetry (error spans, traces, metrics)
 

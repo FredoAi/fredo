@@ -1,0 +1,129 @@
+# Llama Setup — Smoke
+
+> Standardized smoke checks for the guided llama.cpp setup wizard domain (seeded at Spec #2855).
+> Short, high-signal: app boots + the Companion settings / wizard surface is reachable. Evidence:
+> `tauri_webview_dom_snapshot` / `tauri_webview_screenshot` / `tauri_read_logs(source="console")`.
+> **Verification policy: live.**
+
+- [x] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>`.
+- [x] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [x] S-3: Feature surface reachable — open Settings (gear) → Companion; the section renders (either the llama setup wizard on a not-set-up machine, or the normal companion controls on a set-up machine).
+- [x] S-4: Telemetry Settings accessible — the settings dialog opens with its sections/nav visible.
+- [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2855/e2e/smoke.jpeg")` succeeds.
+- [x] S-6: Wizard quick path — on a not-set-up machine the wizard shows both prerequisite rows (`llama-server` + model files) with a per-row state, and no normal companion controls are rendered.
+
+## Execution Log — round 1 (2026-09-11, spec/2855 @ c5c29c42)
+
+All six smoke checks PASS live. S-1 body non-empty; S-2 console clean (only pre-existing
+`motion() is deprecated` warning) checked after every interaction; S-3 gear → Companion renders
+the wizard (MS-3: llama missing / models installed); S-4 settings nav visible; S-5
+`.opencode/tmp/2855/e2e/*.jpeg` captured; S-6 `companion-step-llama-server` +
+`companion-step-model-files` rendered with per-row state, `companion-controls` query = 0.
+
+## Execution Log — round 2 (2026-09-11, spec/2855 @ b7cc2d13 / e735e92)
+
+All six smoke checks PASS live again after the winget-id fix. S-1 body non-empty; S-2 console clean
+after every interaction (only pre-existing `motion() is deprecated` warning); S-3 gear → Companion
+renders the wizard on MS-3; S-4 settings nav visible; S-5 new round-2 screenshots under
+`.opencode/tmp/2855/e2e/`; S-6 `companion-step-llama-server` + `companion-step-model-files` rendered
+with per-row state, `companion-controls` query = 0.
+
+**Round-2 note:** the real `Install llama.cpp` action now resolves + installs `ggml.llamacpp`
+(round 1 failed with "No package found matching input criteria."). See functional F-08/F-14/F-17.
+
+## #2856 — Smoke (three-file model acquisition)
+
+> Quick sanity for the per-file download surface. Use the stub base URL + manifest override;
+> never a real multi-GB download.
+
+- [x] S-7: On a not-ready machine, the Companion model step renders THREE file rows, each with its
+      own icon+text status ("Missing"), and the step summary reads incomplete.
+- [x] S-8: Start acquisition against the injected stub manifest + server; the in-flight row enters `downloading` and
+      a progress affordance renders (determinate or indeterminate); no console `Error:`/`Uncaught`.
+- [x] S-9: Screenshot the three-file model step —
+      `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2856/e2e/model-step.jpeg")`
+      succeeds.
+
+## Execution Log — round 1 (2026-09-11, spec/2856 @ 0f3f3595)
+
+Real wizard-driven pull (superseding the stub methodology per the binding human directive). S-7
+PASS (3 rows, all `Missing`, summary `0 of 3`, step `data-state=incomplete`); S-8 PASS (real
+`download_model` → `downloading` with determinate progress, no console errors); S-9 PASS
+(screenshots captured under `.opencode/tmp/2856/e2e/` and uploaded to
+`.opencode/evidence/2856/`). Console clean after every interaction (only the pre-existing
+`motion() is deprecated` warning).
+
+## Execution Log — round 2 (2026-09-12, spec/2856 @ 1bef0ef5)
+
+Real wizard-driven round (human directive). S-7 PASS (mixed state: `model` Missing + detail
+`Incomplete — 1304074347 of 2620370976 bytes`, `vision`/`mtp` Present with resolved paths; step
+`2 of 3 present`; summary names the interrupted file). S-8 PASS (resume click → `model` entered
+`downloading` with determinate `Progress.Root` (`data-value`, `aria-valuetext`); vision/mtp
+`skipped`; no console errors). S-9 PASS (screenshots under `.opencode/tmp/2856/e2e/`, uploaded to
+`.opencode/evidence/2856/`). Console clean after every leg (only pre-existing `motion()` warning).
+
+## #2857 — Smoke (out-of-process launch)
+
+> Quick sanity for the launch/health/round-trip surface. REAL `llama-server` only — no stub
+> servers, no scratch-dir shortcuts (binding human methodology). A ~2.6 GB CUDA load is heavy;
+> allow the recorded health budget (~60–180 s) before declaring a hang.
+
+- [ ] S-10: Companion surface renders the new launch step alongside the existing
+      prerequisites — `tauri_webview_dom_snapshot` shows `companion-step-server-launch` with a
+      per-step state (`data-state` + `data-server-state`, default `notRunning`) and no console error.
+- [ ] S-11: On a ready machine, start the companion (`-start`) and reach a ready/health-confirmed
+      state without hanging — the card leaves `starting` only after the health probe succeeds
+      (`data-server-state=healthy`).
+- [ ] S-12: Screenshot the launch/ready surface —
+      `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2857/e2e/smoke.jpeg")`
+      succeeds.
+- [ ] S-13: No orphan — after exiting Fredo, the process listing shows no surviving
+      `llama-server.exe` and the configured port is free.
+
+## Execution Log — round 2 (2026-09-12, spec/2857 @ 61f77d18)
+
+- **S-10 PASS:** `companion-step-server-launch` rendered alongside `companion-step-llama-server` +
+  `companion-step-model-files`, in that order, with `data-state` + `data-server-state`; no console error.
+- **S-11 FAIL:** the launch never reached `data-server-state=healthy`; the real child died at startup
+  (`error: invalid argument: 1`) and the card went `starting` → `failed` at the 180 s bound.
+- **S-12 PASS:** screenshots captured under `.opencode/tmp/2857/e2e/` and uploaded to `.opencode/evidence/2857/`.
+- **S-13 UNVERIFIED:** no server ever ran (AC2 defect), so there is no orphan to check; the tester sandbox
+  exposes no `llama-server.exe` process-lister or :8080 port probe. Named blocker (G-053).
+
+## #2865 — Smoke (wizard UX visual audit)
+
+> Quick paths for the visual audit. Live policy — screenshot + console-clean per step. Distinct
+> BEFORE/AFTER evidence names (G-135).
+
+- [ ] S-14: Wizard reachable in BOTH themes — `stop_llama_server` → open Settings → Companion; the
+      wizard renders (`companion-setup-wizard` + summary + step cards) in dark `classic` AND light
+      `light-default`; `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+- [ ] S-15: State quick path — with the wizard open, drive one step to `running` (install/download)
+      and the server to `starting`; each shows an icon+text status and a moving affordance with no
+      console error; screenshot succeeds.
+
+- [ ] S-16: Error quick path — force a step failure (bad `llama_server_path` / broken install); the
+      card shows `error` with actionable copy + a Retry control (never a raw stack/IPC string);
+      screenshot succeeds; console clean.
+
+- [ ] S-17: BEFORE/AFTER screenshots exist under DISTINCT names — `.opencode/tmp/2865/e2e/before/`
+      `before-*` and `.opencode/tmp/2865/e2e/after/` `after-*`; no BEFORE frame overwritten by the
+      AFTER re-capture; `upload-evidence` raw URLs recorded.
+
+- [ ] S-18: UI/UX visual artifacts exist — `.opencode/tmp/2865/visual-eval-before.md` (reads every
+      BEFORE image) and `.opencode/tmp/2865/before-after-verdict.md` (pairs + dispositions);
+      `pnpm --filter @fredo/ui build` exit 0; frozen hooks (`companion-setup-wizard`,
+      `data-state`, `data-server-state`) still present.
+
+## #2871 extension — bar-chat quick path
+
+- [ ] S-19: On a ready host, send a message from the launcher command bar → the reply streams and
+      completes; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`.
+  - **#2871 round 2 (spec/2871 @ bd168ee) — PASS.** Ready host (`healthy:true, port:8080`); bar
+    sends streamed and completed (single `runGeneration` → single `llm-done` per send; 1000-word
+    prompt streamed 2,638 chars). Console error-level: only ONE `[MCP][BRIDGE]` instrumentation
+    artifact from a tester-dispatched synthetic `document` event — no product error. Screenshot
+    `req8-filter-active.png` / `req1-send-streaming.png`.

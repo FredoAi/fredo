@@ -1,0 +1,116 @@
+/**
+ * Companion setup step registry (Spec #2855) — THE single ordered extension
+ * seam for the one user-facing setup wizard.
+ *
+ * The backend `check_companion_readiness` owns the prerequisite SET; this
+ * registry supplies the presentation/action metadata keyed by prerequisite id.
+ * #2856 supplies the `download_model` action for `modelFiles`; #2857 appends a
+ * `serverLaunch` prerequisite + `launch_llama_server` action. Neither adds a
+ * second wizard, tab, or window — they append here.
+ */
+
+import type React from 'react';
+import { LuCpu, LuFileArchive, LuMic, LuServer } from 'react-icons/lu';
+
+import type { PrerequisiteId } from './companionReadiness';
+
+export interface CompanionSetupStepAction {
+  command:
+    | 'install_llama_cpp'
+    | 'download_model'
+    | 'launch_llama_server'
+    | 'download_stt_model';
+  label: string;
+  runningLabel: string;
+  kind: 'install' | 'download' | 'launch';
+}
+
+export interface CompanionSetupStepMeta {
+  id: PrerequisiteId;
+  /** kebab-case id for the stable QA `data-testid` hooks. */
+  testId: string;
+  label: string;
+  description: string;
+  icon: React.ElementType;
+  /** undefined = detect-only step this slice. */
+  action?: CompanionSetupStepAction;
+  /**
+   * #2876 ST-5 — an OPTIONAL step. Optional steps are rendered in a separate
+   * group and are EXCLUDED from the wizard's `installed/total` summary and from
+   * the `CompanionReadiness.ready` gate. Installing/removing one can never
+   * block or unblock companion chat.
+   */
+  optional?: boolean;
+}
+
+/** ONE ordered registry — the single place future slices add steps/actions. */
+export const COMPANION_SETUP_STEPS: CompanionSetupStepMeta[] = [
+  {
+    id: 'llamaServer',
+    testId: 'llama-server',
+    label: 'llama.cpp runtime',
+    description: 'A usable llama-server executable the companion can run.',
+    icon: LuCpu,
+    action: {
+      command: 'install_llama_cpp',
+      label: 'Install llama.cpp',
+      runningLabel: 'Installing llama.cpp…',
+      kind: 'install',
+    },
+  },
+  {
+    id: 'modelFiles',
+    testId: 'model-files',
+    label: 'Model files',
+    description: 'The required GGUF + mmproj model files for the companion.',
+    icon: LuFileArchive,
+    action: {
+      command: 'download_model',
+      label: 'Download model files',
+      runningLabel: 'Downloading…',
+      kind: 'download',
+    },
+  },
+  {
+    // #2857 — the third step, appended LAST (it depends on the binary + models).
+    // Its state is composed in `useCompanionReadiness` from
+    // `get_llama_server_status` (the backend readiness command stays 2-prereq).
+    id: 'serverLaunch',
+    testId: 'server-launch',
+    label: 'Companion server',
+    description: 'Runs llama-server locally and confirms it is healthy before Fredo can chat.',
+    icon: LuServer,
+    action: {
+      command: 'launch_llama_server',
+      label: 'Start companion server',
+      runningLabel: 'Starting server…',
+      kind: 'launch',
+    },
+  },
+  {
+    // #2876 ST-5 — the OPTIONAL voice-input model, appended LAST. Its state is
+    // composed in `useCompanionReadiness` from `stt_check_model`; acquisition
+    // reuses the SAME streamed download + SHA-256 verify engine. It is excluded
+    // from the `installed/total` summary and NEVER gates companion chat.
+    id: 'sttModel',
+    testId: 'stt-model',
+    label: 'Voice input model',
+    description:
+      'Optional — on-device speech-to-text for voice dictation. Four files run locally and no audio leaves this machine. Not required for companion chat.',
+    icon: LuMic,
+    optional: true,
+    action: {
+      command: 'download_stt_model',
+      label: 'Download voice model',
+      runningLabel: 'Downloading voice model…',
+      kind: 'download',
+    },
+  },
+];
+
+/** Convenience lookup; returns undefined for a prerequisite with no metadata. */
+export function companionSetupStepMeta(
+  id: PrerequisiteId,
+): CompanionSetupStepMeta | undefined {
+  return COMPANION_SETUP_STEPS.find((step) => step.id === id);
+}

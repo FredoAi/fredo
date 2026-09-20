@@ -97,7 +97,7 @@ apps/
 - MCP bridge binds to `127.0.0.1:9223` (localhost only, pinned in `lib.rs`) — deterministic, no port scanning
 - OTLP receivers bind to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP); only spans reach the UI, metrics/logs dropped
 - **OTel GenAI semantic conventions are the source of truth** for all `gen_ai.*` emission from `apps/opencode-plugin` (spans, agent spans, events, exceptions, metrics). Reference: https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/ (files: `gen-ai-spans.md`, `gen-ai-agent-spans.md`, `gen-ai-events.md`, `gen-ai-exceptions.md`, `gen-ai-metrics.md`). Any attribute emitted under `gen_ai.*` MUST match a key defined in that registry; a convention the spec renamed (e.g. legacy `gen_ai.system` → `gen_ai.provider.name`) MUST be emitted under its current spec name. Deviations require a PO-amended acceptance criterion — triage may never silently substitute an AC's observable key.
-- LlmEngine runs in-process — never spawn `llama-server` subprocess
+- Companion inference runs out-of-process via a managed `llama-server` sidecar (installed from Companion setup, launched only through the managed server feature); the in-process `LlmEngine` is retired. Never spawn `llama-server` ad-hoc from feature code.
 
 ### Frontend (React/TypeScript)
 - All grid features extend `FredoFeatureClass`
@@ -134,10 +134,10 @@ apps/
 - **`NativeSelect` component:** `NativeSelect.Root` + `NativeSelect.Field` + `NativeSelect.Indicator` render a native HTML `<select>` element that does NOT inherit Chakra theme tokens (`--card-bg`, `--text-primary`, `--border-color`). The result is unstyled browser-default dropdowns that don't adapt to Fredo's theme. Prefer `<chakra.select>` with explicit CSS variable props (`bg`, `borderColor`, `color`, `_hover`, `_focus`, `_disabled`) for dropdowns that must match the application theme. Spec #431 fix (PR #437): replaced 3 NativeSelect usages with `chakra.select` + CSS variable props.
 - **Global CSS + `colorPalette` interaction:** The global CSS rule in `apps/ui/src/app/theme/system.ts` (`button[data-variant="outline"]: { borderColor: 'var(--border-color)' }`) overrides Chakra's native border coloring for ALL outline buttons. This means `variant="outline" colorPalette="red"` on a `<Button>` will NOT produce red borders — the border will always be `var(--border-color)`. When you need a specific status color on a button, prefer `variant="solid"` with explicit `bg` + `color` CSS variables (e.g. `bg="var(--status-error)" color="white"`), or verify the outline variant renders correctly across BOTH light and dark themes. Spec #431 bug: purge button used `variant="outline" colorPalette="red"` — red text on neutral border was hard to see in both themes (fixed in PR #437).
 
-### Settings UI Hierarchy (Spec #396)
-- **The main settings dialog** is `apps/ui/src/features/home/components/ProfileSettingsModal.tsx` — a sidebar-nav modal with static sections (Companion, Appearance, Fredo Setup) plus auto-discovered feature-level sections via `hasSettings`.
-- **`SettingsPanel.tsx`** is a **legacy tab-based component** — do NOT target it for new settings. The settings dialog uses `ProfileSettingsModal`, NOT `SettingsPanel`.
-- When the Architect's spec **forbidden_changes** lists `ProfileSettingsModal.tsx`, that is a signal that the settings modal shell must not be modified — but the feature's settings content must be wired INTO it. The Architect MUST include the wiring in the capsule that creates the settings UI component (add nav item + content section to ProfileSettingsModal).
+### Settings UI Hierarchy (Spec #396, updated Spec #2868)
+- **The live settings surface** is `apps/ui/src/features/settings-app/components/SettingsSurface.tsx` — a sidebar-nav surface with static sections (Companion, Appearance, Fredo Setup, Telemetry) plus auto-discovered feature-level sections via `hasSettings` + `renderSettings()`. The **Appearance** pane renders `ThemingSettings` and `DockPositionSettings`.
+- **`ProfileSettingsModal.tsx` (`features/home/components/`) and `SettingsPanel.tsx` are RETIRED** — Spec #2868 removed them. Do NOT target either for new settings; do NOT cite their paths in specs or dispatch briefs. Verify the host path exists before wiring anything into it (G-207).
+- When the Architect's spec **forbidden_changes** lists the settings surface shell, that is a signal that the settings shell must not be modified — but the feature's settings content must be wired INTO it. The Architect MUST include the wiring in the capsule that creates the settings UI component (add nav item + content section to `SettingsSurface.tsx`).
 
 ## Build Hygiene
 

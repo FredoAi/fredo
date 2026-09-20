@@ -37,8 +37,6 @@ futures-util = "0.3"
 portable-pty = "0.8"
 image = "0.25"
 xcap = "0.0.14"
-# In-process LLM inference via llama.cpp Rust bindings (mtmd = multimodal/vision)
-llama-cpp-2 = { version = "0.1", features = ["mtmd"] }
 encoding_rs = "0.8"
 # OTLP receiver
 tonic = { version = "0.12", features = ["transport"] }
@@ -46,6 +44,8 @@ axum = { version = "0.7", features = ["http1", "http2"] }
 opentelemetry-proto = { version = "0.7", features = ["gen-tonic", "logs", "metrics", "trace", "with-serde"] }
 prost = "0.13"
 bytes = "1"
+# Streaming SHA-256 verification for model-file acquisition (Spec #2856)
+sha2 = "0.10"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
@@ -56,6 +56,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-mcp-bridge = "0.12"
+# Voice input / STT — local, on-device transcription (see infrastructure/voice).
+# cpal 0.18 (native WASAPI capture) and sherpa-onnx 1.13.8 (pinned via `=`,
+# streaming zipformer decode) are the shipped production dependencies.
+# On Windows, sherpa-onnx-sys fetches its prebuilt static win-x64 archive at
+# build time; set SHERPA_ONNX_LIB_DIR to point at a local library directory
+# instead (offline/CI builds).
+cpal = "0.18"
+sherpa-onnx = "=1.13.8"
 
 [dev-dependencies]
 tempfile = "3"

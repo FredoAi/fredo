@@ -15,15 +15,12 @@
 # WebView2 (usually pre-installed on Windows 11)
 # Install from: https://developer.microsoft.com/microsoft-edge/webview2/
 
-# Visual Studio 2022 Build Tools with C++ workload (for Rust + CMake compilation)
+# Visual Studio 2022 Build Tools with C++ workload (MSVC linker for Rust Windows builds)
 # The --add flag ensures the C++ toolchain is included
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-
-# LLVM/Clang (required by llama-cpp-sys-2 for bindgen)
-winget install LLVM.LLVM
 ```
 
-> **Important:** Restart your terminal after installing LLVM and VS Build Tools so `libclang.dll` and CMake generators are found on `PATH`.
+> **Important:** Restart your terminal after installing VS Build Tools so the MSVC linker is found on `PATH`.
 
 ### macOS additional dependencies
 
@@ -47,25 +44,25 @@ pnpm install
 
 ## Download Models
 
-GGUF model files are **not required to build** — they are only needed at runtime for local AI inference. Models are **not stored in git** (too large). Download them as an optional post-build step:
+GGUF model files are **not required to build** — they are only needed at runtime for local AI inference. Models are **not stored in git** (too large).
 
-### Quick download (recommended)
+The **Companion** (out-of-process `llama-server` runtime) downloads its three required files in-app — no manual download is required for a normal setup.
 
-```powershell
-# From repo root — downloads Gemma 4 E2B model + vision projector (~4 GB total)
-pwsh apps/tauri/src-tauri/scripts/download-mmproj.ps1
-```
+### In-app download (Companion — recommended)
+
+Open **Settings → Companion** and click **Download model files** in the guided setup wizard's **Model files** step. Fredo fetches the three pinned companion files with per-file progress and verifies each with its SHA-256; already-present files are skipped and an interrupted transfer resumes from where it stopped. They land under `<models_dir>/gemma-4-e2b-it-qat/` (the models directory is the `models_dir` setting; default `~/fredo-models`).
+
+| File | Size | Source ([unsloth/gemma-4-E2B-it-qat-GGUF](https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF)) |
+|------|------|--------|
+| `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf` | ~2.6 GB | model |
+| `mmproj-BF16.gguf` | ~987 MB | vision projector |
+| `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` | ~59 MB | speculative draft (MTP) |
 
 ### Manual download
 
-Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`:
+Place the required files (table above) under `<models_dir>/gemma-4-e2b-it-qat/` — default `~/fredo-models/gemma-4-e2b-it-qat/`. Preserve the `MTP/` subfolder for the draft file. Correctly-sized files dropped there manually are detected by **Re-check** in the wizard.
 
-| File | Size | Source |
-|------|------|--------|
-| `gemma-4-E2B-it-Q4_K_M.gguf` | ~3.1 GB | [unsloth/gemma-4-E2B-it-GGUF](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
-| `mmproj-F16.gguf` | ~986 MB | [unsloth/gemma-4-E2B-it-GGUF](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf) |
-
-> `*.gguf` files are gitignored. The metadata files (`config.json`, `tokenizer.json`, etc.) are tracked in git and already present after cloning.
+> `*.gguf` files are not stored in git.
 
 ### Supported Models
 
@@ -74,7 +71,26 @@ Place GGUF files under `apps/tauri/src-tauri/models/<model-name>/`:
 | Gemma 4 E2B (`gemma-4-e2b`) | ✅ | Full vision support via mmproj projector |
 | MiniCPM-V 4.6 (`minicpm-v-4-6`) | ⚠️ | Vision projector unsupported; falls back to text-only |
 
-Switch models via Settings → Model Selector in the UI. Changes take effect on next launch.
+The companion serves the model set configured in the Companion setup; no separate model selector is required.
+
+## Companion Setup
+
+The companion's runtime prerequisites are checked in-app. Open **Settings → Companion** on a machine that is not yet set up and the panel shows a setup wizard as its only content:
+
+- **llama.cpp runtime** — a usable `llama-server` (resolved from a configured path, then `PATH`, then the winget Links shim). The wizard offers a one-click **Install llama.cpp** (`winget install --id ggml.llamacpp -e`) and re-checks readiness in place — no app reload.
+- **Model files** — the three required files (model + vision projector + MTP speculative draft) under `<models_dir>/gemma-4-e2b-it-qat/`. The step lists them individually (`missing` / `downloading` / `present` / `error`), downloads them in-app with per-file progress, skips files already present, resumes an interrupted transfer via HTTP `Range`, verifies each with its pinned SHA-256, and names exactly which file(s) are missing. See [Download Models](#download-models).
+- **Companion server** — starting the companion launches `llama-server` from the generated launch config and confirms readiness with a health check on the configured port before any chat is sent. Its state is composed from `get_llama_server_status`; its action calls `launch_llama_server`, which always returns an actionable error (never hangs).
+
+Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once all prerequisites are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
+
+A separate **Voice input model** step is **optional and non-gating** — it is rendered under an explicit *Optional / Not required for companion chat* group, excluded from the wizard's `installed/total` summary, and installing or removing it never changes Companion readiness. It downloads the four-file sherpa-onnx English model (`tokens.txt` / `encoder` / `decoder` / `joiner`, ~72.7 MB) through the same streamed download + per-file SHA-256 verification path as the GGUF set, into `<models_dir>/sherpa-onnx-streaming-zipformer-en-2023-06-26/`, where `<models_dir>` is the models directory the backend reports. Voice input is a **shipped, opt-in** feature (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the model setup/repair row (with a re-check action and the resolved model location), the input-device selection, and the autosend toggle. All transcription runs on-device — audio never leaves the machine.
+
+**Speech handling.** The same group holds a **Speech handling** selector (persisted per user as `Fredo_companion_voice_handling`) with two methods:
+
+- **Local transcription** (default) — today's behaviour: speech is transcribed on-device by the sherpa-onnx engine and the recognized words appear in the launcher bar as you speak.
+- **Model audio** — the captured utterance is handed to the locally-managed companion model as that turn's input, and **no transcript is shown**. The recording is bounded (about 30 s) with a visible auto-stop at the limit that keeps the whole clip, and it is delivered only to the loopback `llama-server` — nothing leaves the machine.
+
+Model audio is available only when the installed companion model supports audio; when it does not, or the local model server is not running, Fredo says so (nothing is sent) and offers a one-click switch back to **Local transcription**. The change applies to the next dictation without an app restart.
 
 ## OTLP Configuration
 
@@ -140,6 +156,8 @@ window.__devAdapter.emit({
 ```bash
 pnpm build:tauri
 ```
+
+> **Native STT dependency:** the Rust workspace carries pinned `cpal` (0.18) and `sherpa-onnx` (1.13.8) dependencies backing the shipped on-device voice-input feature. On Windows, `sherpa-onnx-sys` fetches a prebuilt static x64 archive during `cargo build`; set `SHERPA_ONNX_LIB_DIR` to point at a local library directory for offline or CI builds.
 
 A local build produces an installer for your current OS in `apps/tauri/src-tauri/target/release/bundle/`:
 

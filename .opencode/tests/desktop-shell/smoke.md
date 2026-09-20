@@ -20,3 +20,35 @@
 
 - [ ] S-6: Idle chrome renders — on a fresh launch, the FREDO notch, PERSISTENT pixel-butler avatar, `>` search-or-command bar, LEFT side-tick ruler, RIGHT dot-grid, online clock, and thin rounded frame are present; `#fredo-launcher-grid` is ABSENT.
 - [ ] S-7: Engage → idle quick path — focusing the command bar reveals the grid + keyboard hints; pressing ESC hides them and restores the idle chrome (no console error, focus back on the notch).
+
+## #2850 extension — shared-avatar smoke
+
+> Issue #2850 — the launcher avatar renders from the shared `FredoAvatar size="md"`; the
+> companion overlay renders the same shared avatar at sm.
+
+- [ ] S-8: The shell boots with the shared md avatar — on a fresh launch the avatar SVG
+      (`viewBox="0 0 1014 1264"`, 58 crisp rects, accent fill) renders above the command bar at
+      132 × 165; `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`; a screenshot succeeds.
+
+> **#2852 note:** S-8's `132 × 165 md` expectation is SUPERSEDED — the shell mascot now renders at the
+> shared `sm` size (80×100) with idle bob+glow; the historical record is preserved. Reference
+> `.opencode/tests/launcher/smoke.md` S-12.
+
+## #2870 extension — home-seat shell smoke
+
+> Issue #2870 keeps Fredo at the shell's centre seat when the companion is enabled; the launcher bar never
+> shifts. Live policy — screenshot + console-clean.
+
+- [ ] S-9: The shell boots with the companion ON — the centre seat renders the interactive Fredo (not a corner Fredo, not the decorative mascot), the command-bar `getBoundingClientRect().y` is within ±1 px of the OFF baseline, and `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`; a screenshot succeeds.
+
+## #2886 extension — never-cover quick path
+
+> Issue #2886 keeps Fredo fully visible while he speaks. Quick path only — the full matrix lives in
+> `functional.md` F-19/F-20 / `regression.md` R-14/R-15. Live policy — screenshot + console-clean.
+
+- [ ] S-10: With the companion ON at the seat, send `Reply with exactly: Hi there!`; a DOM/geometry
+      probe shows `intersectionArea(.fredo-companion-avatar, [data-testid="fredo-reply-surface"])
+      === 0` (both rects read in the SAME `execute_js` task) and the seat-slot wrapper still 80×100
+      with the command-bar `y` within ±1 px of the no-reply baseline; `tauri_webview_screenshot`
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
