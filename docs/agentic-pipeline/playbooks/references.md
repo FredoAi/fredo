@@ -53,6 +53,22 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-209: parity_claim_presupposes_a_capability_on_neither_path
+- **activation_date:** 2026-09-19
+- **observed:** #2903 planning — the backlog required a spoken CLOSE "at parity with the typed/companion path" while constraining the slice as "NOT a new app-control capability and does not change the typed/companion path". Research found the close intent existed on NEITHER path (only the open intent was registered), so the AC's parity anchor was vacuous and could not be satisfied by reuse; three planners independently flagged it. It was resolved before convergence by a recorded PO amendment authorising a bounded shared-layer close intent that reuses the existing close mechanism, so no round was burned.
+- **target_failure:** a revision/fix spec asserts parity with an existing path for a capability that exists on neither the target nor the reference path, so the plan cannot satisfy the AC by reuse and either silently drops the AC or silently adds unapproved scope.
+- **guardrail:** At triage, verify each AC's claimed parity anchor actually exists on the reference path. When the capability is absent on both paths, surface it as a PO scope decision BEFORE convergence and record the amendment (drop the AC, or authorise a bounded shared-layer increment that reuses the existing mechanism) — never silently add a capability or silently drop an AC.
+- **home:** playbooks/software-architect.md (domain model) + playbooks/self-improver.md (convergence) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-208: synthetic_selection_injection_does_not_terminate_the_generation
+- **activation_date:** 2026-09-19
+- **observed:** #2903 round 1 — the tester proved an app-control action by injecting a validated skill-call on the product's REAL subscription channel while a model-audio turn was live. The action executed and the deterministic reply settled, but because the injection does not halt the backend generation (the model never actually selected the tool), the model's later tokens appended to the already-settled bubble. Disclosed as an exploratory observation; the real selection path terminates the stream on the tool-call finish, so no post-settle tokens occur there.
+- **target_failure:** a synthetic action/skill fixture injected into a live generation does not stop the model stream, so post-settle tokens append to the settled reply and are misread as a reply-accuracy or false-success product defect, burning a round on a test-seam artifact.
+- **guardrail:** When an action is proven by injecting the validated event on the product's real channel, read the deterministic reply from the settled live-region text and treat post-settle appended tokens as a fixture-seam artifact, not a product defect — unless the same append is reproduced on the real selection path, which is the genuine defect signature (a missing post-settle token guard).
+- **home:** playbooks/tester.md (synthetic-injection seams) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-207: dispatch_brief_carries_a_stale_doc_path
 - **activation_date:** 2026-09-19
 - **observed:** #2899 — all three triage planners were dispatched with the host file `apps/ui/src/features/home/components/ProfileSettingsModal.tsx`, which AGENTS.md's "Settings UI Hierarchy" still names as the main settings dialog but which Spec #2868 retired. Every planner independently discovered the file does not exist and self-corrected to the live `SettingsSurface.tsx`; a planner with less research budget could have wired the control into a dead path, and the stale reference also reached the initial UI/UX brief.
@@ -67,7 +83,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a requirement whose observable is an end-to-end flow is decomposed into its per-layer components only, so the wiring between them is owned by nobody and the gap is discovered during implementation or testing instead of at convergence.
 - **guardrail:** At convergence, for every EARS clause whose observable is a flow, confirm that an owning checklist line covers the WIRING between the components — not merely their existence. A requirement split across capsules must name the integration point and the capsule that owns it.
 - **home:** playbooks/software-architect.md (decomposition) + playbooks/self-improver.md (plan review) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-19, #2903 round 1) — #2903 IS the repaired #2897 integration-wiring miss: the converged plan owned the wiring per capsule (the request/event seam, the audio-to-skill-call generation, and the skill-call-to-dispatch-to-reply hook) and named every integration point, and the feature landed first-pass with 0 rework.
 
 ### G-205: live_probe_subtask_assigned_to_a_role_without_the_live_tooling
 - **activation_date:** 2026-09-19
@@ -75,7 +91,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a sub-task whose decision output is a live observation is assigned to a role whose sandbox cannot drive the live lever, so the capsule cannot produce its verdict and the gating decision slips to a later phase or stalls as a named blocker.
 - **guardrail:** Plan review must apply G-179 to every empirical or gating sub-task: name the role that can actually execute the live probe (the tester harness) or route the live receipt to a tester row, and scope the implementation capsule to the artifact it CAN produce. A gate whose verdict needs a running app belongs in a phase where the live tooling exists.
 - **home:** playbooks/software-architect.md (sub-task authoring) + playbooks/self-improver.md (plan review) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-19, #2903 round 1) — every live probe was routed to a tester row and both developer capsules verified with build + unit pins only (no running app/model needed); the single live receipt landed in the tester round with no gate slipping a phase.
 
 ### G-206: provider_concurrency_budget_exhausted_by_parallel_dispatches
 - **activation_date:** 2026-09-19
@@ -83,7 +99,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** the orchestrator dispatches more concurrent subagents than the provider's real budget sustains, so some dispatches fail with a quota gate that is easy to misread as a role or model wedge and the whole wave has to be re-driven.
 - **guardrail:** Stage concurrent subagent dispatches to the provider's observed budget and retry a single-role quota failure sequentially before treating the role as unavailable. A quota or billing failure is a capacity limit, not a model-availability wedge, and sequential retry is the remedy.
 - **home:** playbooks/self-improver.md (dispatch waves) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-19, #2903 round 1) — dispatches were staged in waves of at most two (planners; developers 2 then 1) and no quota-gate failure occurred across either wave; one spec is not enough to confirm the provider budget.
 
 ### G-203: on_the_go_improvement
 - **activation_date:** 2026-09-19
@@ -158,6 +174,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** A state-machine action that persists content to another branch must leave the source working tree clean (reset the touched paths, or write from a temporary index/worktree). Until the machine does, an agent that hits the block restores the affected paths from HEAD and reports it; the served checkout must be clean before any branch switch or tester handoff.
 - **home:** .opencode/scripts/pipeline-state.rs (tests-commit) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
 - **re-validated:** 2026-09-19, #2899 — the dirt recurred on BOTH tests-commit rounds (the planning→implementation side-effect and the tester's suite persist): the root `main` checkout kept the persisted suite files as unstaged modifications and the local `main` ref lagged `origin/main` by the API-written commits. Both round-1 developers independently flagged the dirty tree. The prescribed remedy was applied twice — reconcile the local ref to the API-written origin tip (fast-forward form; the local ref was an ancestor) and reset the touched suite paths — after which every branch switch and handoff proceeded cleanly. Third recurrence on record (#2896, #2897, #2899); the source fix (clean the source tree and advance the local ref inside the action) remains the durable hardening.
+- **re-validated:** 2026-09-19, #2903 — the residue recurred after the tester's two tests-commit rounds: because the served root was on the spec branch (not `main`), the source fix's local-`main` fast-forward path was skipped, the persisted suite files stayed dirty in the spec checkout, and the subsequent `git checkout main` carried them and blocked the fast-forward. The documented force-checkout recovery (content already upstream, verified by an empty two-ref diff of the suite paths, then a force checkout of the origin tip) cleared it exactly as prescribed — a fourth recurrence for the record, with the source fix still unable to clean a non-`main` served root.
 - **effectiveness:** Confirmed (2026-09-19, #2897) — the block recurred after both tests-commit rounds; restoring the affected suite paths from HEAD before the branch switch cleared it exactly as the guardrail prescribes, so the remedy is sound (the underlying dirt remains a machine defect to fix at source).
 - **source fix:** 2026-09-19 — `tests-commit` now best-effort fast-forwards the local root `main` to `origin/main` after the Contents-API write (root checkout only — skips linked worktrees and non-`main` branches; only when local `main` is fast-forwardable, so no local commits are ever discarded; a `--mixed` reset preserves the working tree, so the persisted suite files become clean while unrelated uncommitted work survives). Strictly no-op in mock mode; pinned by the harness assertion that `tests-commit` never emits `SYNCED:` offline (`test-scripts.ps1`, 112/112).
 
@@ -184,6 +201,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** At convergence, for EVERY new/changed control, cross-check the UI/UX display unit and the testid/id NAME against the QA Plan rows AND the seeded suite rows (not only that each artifact carries some literal); realign the contradictory sections in the same pass and bind the shipped hook in the owning sub-task. Storage-unit vs display-unit (e.g. persisted ms vs displayed seconds) must be stated explicitly on both sides.
 - **home:** playbooks/self-improver.md (convergence) + playbooks/qa-expert.md (suite seeding) + references.md (this record)
 - **re-validated:** 2026-09-19, #2899 — the UI/UX descriptor ids/labels, store hook names, and layer testid diverged from the Architect's API contract (and the QA rows referenced the layer generically), so a literal-presence check would have passed while the developer built one name set and the tester probed another. The SI cross-checked the hook/testid names against the QA rows and the seeded suite rows and realigned every section + suite in the same convergence pass, binding the shipped hook in the owning sub-tasks; no round was burned on a name mismatch.
+- **re-validated:** 2026-09-19, #2903 — the close intent was a NEW control binding decided at convergence: the close reply copy, the close skill name, the unchanged event/reply-surface names, and the two new formatters were cross-checked against the QA rows AND both seeded suites and realigned (the QA row that read "TBD at convergence" was bound char-for-char, and the seeded suite rows carrying pre-decision "PO-decline" wording were refreshed) before the plan was declared agreed; no round was burned on a copy/name mismatch.
 - **effectiveness:** Confirmed (2026-09-18, #2892) — caught pre-implementation and realigned (QA rows + seeded settings suite + ST-6 hook binding); no round was burned on the mismatch.
 
 ### G-186: ark_number_input_id_override_breaks_display_sync
