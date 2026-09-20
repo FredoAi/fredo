@@ -49,3 +49,27 @@
 ### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
 - **S-4 PASS.** Cold `dev-env.ps1 -Action Up -Spec 2903 -EnvVar "FREDO_STT_FEED_WAV=…"` (serving `spec/2903 @ 813b0060`) → app booted and rendered; `stt_start` → `{deviceName:"stt-feed", sampleRate:16000}` (feed branch proven, no `cpal`); `stt_stop` → `phase:"processing"` and the app stayed responsive; no transcript appeared; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`. The fixture carries no intelligible speech — the acoustic app-request leg stays a NAMED BLOCKER (see #2903 R-1.4).
+
+---
+
+## #2914 extension — feed quick path on the single-model-audio tip
+
+> Issue #2914 deletes the local STT engine/mode; the feed seam may or may not survive. Quick path
+> only — the full matrix lives in `functional.md` F-7..F-9 / `regression.md` R-5/R-6.
+> **Verification policy: live.** Serving checkout: the `spec/2914` tip (fill the SHA per round).
+
+- [ ] S-5: **Feed quick path (or named blocker).** Launch with
+      `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2914 -EnvVar
+      "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`;
+      model mode; `stt_start` → `stt_stop`.
+  **Expected (seam retained):** the feed branch is proven (`{deviceName:"stt-feed", sampleRate:16000}`, no
+      `cpal` device); the app boots/renders; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; screenshot succeeds. **If the seam was deleted with the local reader → NAMED BLOCKER
+      (record `deviceName`/`sampleRate` and the source state), not a PASS.**
+- [ ] S-6: **Evidence + telemetry receipt.** A capture from S-5 is uploaded via `upload-evidence --issue
+      2914`, the raw URL resolves, and it is embedded in `## Tests Runs` with a textual description; the
+      body also references `telemetry_spans` (non-zero, recent `max(ingested_at)`).
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
