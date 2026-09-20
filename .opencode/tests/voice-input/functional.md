@@ -1400,3 +1400,120 @@ is live. Host mic is virtual-only → L4 feed for audio; L3 for local transcript
 ### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
 
 - **F-127 PASS (live, mode parity).** Local: chip `Listening` (63.5×24, `nowrap`, lineCount 1) + `Listening…` placeholder + `release Space to finish` hint chip; model: chip `Fredo is listening` (105.8×24, `nowrap`, lineCount 1) + `release Space to finish` placeholder, hint chip suppressed. Each mode in `light-default` AND `dark`: identical geometry, `verticalOrNarrow []`, empty content-box overlap, model `fieldContentW 206`. Processing window (`Fredo is processing your speech…`) on ONE line. `telemetry_spans` live receipt (17154 rows). Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2914 extension — ONE mode only: model-audio dictation, no on-device STT engine (G-136/G-183)
+
+> Issue #2914 deletes the on-device `sherpa-onnx` STT pipeline and the `local` speech-handling mode.
+> Exactly ONE mode remains: **model audio** (the captured clip loopback to the local multimodal
+> `llama-server` as an `input_audio` content part). Rows **F-128..F-142** map 1:1 to the QA Plan
+> `AC1..AC5` + `NFR-1`. **Verification policy: live.** Evidence: the running app + the real control
+> plane, DOM snapshots/screenshots, `tauri_read_logs(console)`, `pnpm --filter @fredo/ui test:run`,
+> the CI `rust-validate` result, and the mandatory `telemetry_spans` receipt (F-142). A static-only
+> PASS is a FALSE PASS.
+>
+> **SUPERSESSION (history preserved — do NOT re-run any retired row as PASS or FAIL):**
+> - **F-102** (mode selector `local`/`model`, default `local`) — **RETIRED**: `companion-voice-handling-select`
+>   and the mode choice must not exist.
+> - **F-103** (local-mode dictation; partials in the bar) — **RETIRED**: no local engine emits partials.
+> - **F-104** (model-audio states) — **PRESERVED**, narrowed to model-only (F-131/F-136).
+> - **F-105** (clip → `input_audio` turn) — **PRESERVED** (F-133).
+> - **F-106** (over-limit surfaced + non-lossy) — **PRESERVED** (F-134).
+> - **F-107** (unsupported/unavailable → `Use local transcription` fallback) — **PARTIALLY RETIRED**: the
+>   *fallback to local* action must NOT exist; the typed `modelAudioUnavailable` state + a NON-local
+>   remediation remains (F-135).
+> - **F-110** (ST-0 sherpa gate) — **RETIRED** as a sherpa-model readiness gate; the model-audio
+>   capability probe survives (folded into F-135).
+> - **F-127** — the `local` half is **RETIRED**; the **model** half is **PRESERVED** (F-136).
+> - **F-83..F-101** (sentence-case / the name `Fredo` / L3 `stt:transcript` content) — **RETIRED for the
+>   product**: with local STT gone there is NO `stt:transcript` consumer and no transcript content to
+>   normalize. Keep the records as history; do NOT assert transcript casing in this spec.
+>
+> **The sanctioned levers (there is no fifth; the L3 CONTENT leg is RETIRED):**
+> - **L1 REAL gesture:** `tauri_webview_keyboard(action="down"/"up", key=" ")` on the focused EMPTY
+>   `textarea[data-testid="launcher-command-input"][role="searchbox"]`.
+> - **L2 REAL control plane:** `stt_start` / `stt_stop` / `stt_cancel` / `stt_status` / `stt_warm` /
+>   `stt_release` / `stt_take_audio_clip` / `llm_chat_with_audio` / `stt_audio_capability` via
+>   `tauri_ipc_execute_command`.
+> - **L3 SYNTHETIC STATE ONLY (the REAL `adapterBridge.listen` channel):**
+>   `tauri_ipc_emit_event(eventName="stt:state", …)` for UI-state assertions. **`stt:transcript` is
+>   RETIRED** — no engine emits it and no consumer reads it once local mode is gone; it MUST NOT be
+>   used as any content/loopback evidence. Content already exists as an `lorem`-free assertion:
+>   model-audio produces NO transcript at all (assert ZERO).
+> - **L4 DETERMINISTIC CAPTURE FEED:** the in-repo fixture via
+>   `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2914 -EnvVar
+>   "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`
+>   (the `>30 s` variant for the bound). **IF the feed seam survives the local-reader deletion** —
+>   always pair with an UNSET-env control.
+>
+> **FORBIDDEN:** any recorded-speech WAV / model / path outside `C:\Code\fredo` (G-172/G-009).
+> **Model-audio content/loopback evidence decision:** clip identity via L4 + `stt_take_audio_clip`;
+> the `build_audio_request_body` unit/CI pin asserting the `input_audio` content part; the live
+> streamed reply with ZERO transcript. If the L4 feed seam was deleted with the local reader, the
+> clip-identity clause is a **NAMED BLOCKER** and the residual is the payload pin + the `stt:state`
+> lifecycle — never a fabricated PASS. (QA Discussion #2914-1 / #2914-2.)
+
+- [ ] F-128 (AC1-a / supersedes F-102 + F-127-local): **The voice settings group offers exactly ONE mode — no STT/local row.** Open the Settings app window → Companion (ready branch). Enumerate every `[data-testid^="companion-voice-"]` node inside `companion-controls` and every nav/section title; read the visible text of the group.
+  **Expected:** the group renders ONLY the enable toggle, the input-device select (`companion-voice-device-select`) and the model-audio controls; `companion-voice-model-row` / `-model-status` / `-model-download` / `-model-recheck` / `-model-progress` / `-model-location` / `companion-voice-handling-row` / `-handling-select` / `companion-voice-model-audio-use-local` are ALL ABSENT (`queryByTestId` null / no node); ZERO nav or section titled "Voice"; ZERO visible `Local transcription` / `sherpa` / `Voice input model`. Receipt = the full testid list + a DOM structure snapshot + screenshot.
+  - **Edge:** the not-ready gate renders the wizard first — assert the wizard too carries no STT step; both themes; a second Settings window; a stale bundle (hard-reload) must not resurrect the row.
+
+- [ ] F-129 (AC1-a / AC5-a / supersedes F-110+the wizard half of F-102): **The Companion setup wizard has NO STT model step.** Reach the not-ready wizard (a missing GGUF) and the ready branch; enumerate steps + the Optional group.
+  **Expected:** `companion-step-stt-model` is ABSENT (and `-status`/`-summary`/`-location`); the Optional group is absent OR present without any voice-model step; the gating `installed/total` summary is unchanged; clicking nothing acquires a voice model.
+  - **Edge:** the wizard reached from a fresh profile; a leftover `sttModel` readiness caller must not render a ghost row.
+
+- [ ] F-130 (AC1-b / AC1-c / AC5-a): **No UI or CLI path selects local transcription; no local engine starts; the removed commands are gone.** (a) Interact with every voice control + the launcher; subscribe to `stt:state` AND `stt:transcript` for a full session. (b) `tauri_ipc_execute_command("download_stt_model")` and `stt_check_model`. (c) Static-grep `apps/tauri/src-tauri/src` + `Cargo.toml`/`Cargo.lock`.
+  **Expected:** (a) ZERO `stt:transcript` events over the whole session; ZERO local-engine start; only the model-audio mode is observable (`stt:state.phase` cycles `capturing → processing`); (b) the removed commands return a typed "not found / not registered" (never a local-engine start, never a panic); (c) ZERO `sherpa_onnx` / `SherpaRecognizer` / `STT_SUBDIR` / `STT_DEFAULT_MANIFEST` / resident-engine / `download_stt_model` symbols; no engine/manifest module.
+  - **Edge:** an old script/CLI invoking a removed command (typed error, app responsive); a lingering import/registration; a build script still naming the native archive.
+
+- [ ] F-131 (AC2-a / preserved F-104+F-127-model): **Model-audio lifecycle preserved — arm, capture, indicator, cancel/stop.** Mode = model-audio. Arm with the REAL hold-Space gesture (L1) on the EMPTY focused bar; sample the cue at ≤50 ms through the capture; release; re-arm and cancel mid-hold (Escape + the visible `×`). Subscribe to `stt:state`.
+  **Expected:** arms with `stt:state{listening:true, phase:"capturing", origin:"launcher"}`; the visible indicator (`launcher-command-model-listening-chip` + `release Space to finish` placeholder + the announcer) is present for the WHOLE capture and absent before/after; release → `phase:"processing"`; cancel/stop → `listening:false`, indicator cleared; mic released (`stt_status.listening === false`; the working set back to baseline).
+  - **Edge:** a sub-threshold TAP lands exactly one ordinary space + ZERO capture; a never-live hold; voice disabled mid-hold; re-arm immediately after a cancel.
+
+- [ ] F-132 (AC2-a / AC1-b): **The hold-Space arming gate no longer depends on a sherpa model.** With NO sherpa model present at all (`stt_check_model`/`download_stt_model` removed; the STT dir absent), focus the EMPTY bar and hold Space.
+  **Expected:** the bar ARMS on the model-audio capability and a hold goes live — the gate reads `voiceEnabled && <model-audio capability ready>` (NOT `sttModelReady`); voice disabled or capability unavailable ⇒ an ordinary space, no capture attempt, no `role="alert"`. `stt:state` never shows a local phase.
+  - **Edge:** capability `unsupported`; capability `serverUnavailable`; readiness UNKNOWN ⇒ the bar is unarmed and Space keeps its native default; **a gate still reading `sttModelReady` ⇒ the bar silently never arms — a FAIL of this row and the AC2 contract.**
+
+- [ ] F-133 (AC2-b / preserved F-105): **The captured clip is delivered loopback as the turn's `input_audio` part.** Feed the in-repo 1.6 s fixture via L4; `stt_stop`; `stt_take_audio_clip`; then run one model-audio turn and read the streamed reply; pair with an UNSET-env control.
+  **Expected:** clip `{format:"wav", sampleRate:16000, durationMs:1600, truncated:false}` byte-identical to the fixture; the `build_audio_request_body` unit/CI pin asserts the audio is carried as an `input_audio` content part with NO transcript text part; exactly ONE reply streams via the normal conversation path; ZERO transcript text anywhere; the UNSET-env control is non-vacuous.
+  - **Edge:** exactly at the bound; an empty/silent feed; server unavailable at submit; a second turn in the same session; **the feed seam removed with the local reader ⇒ NAMED BLOCKER + the payload pin + the `stt:state` lifecycle as residual (QA Discussion #2914-1).**
+
+- [ ] F-134 (AC2-c / preserved F-106): **The clip is bounded and an over-limit capture is surfaced non-lossily.** Feed the ST-9 `>30 s` variant via L4; observe the auto-stop + the visible notice; compare the delivered clip's duration to the capture. Read `MAX_AUDIO_CLIP_MS` from source (never hardcode 30 000).
+  **Expected:** auto-stop at the single pinned `MAX_AUDIO_CLIP_MS`; `stt:state.limitReached === true`; `launcher-command-model-limit-status` present (warning treatment, NOT `role="alert"`); the delivered clip is the ENTIRE bounded capture (`at_limit:true`, `truncated:false`, `durationMs == captured duration`); a fresh session resets the buffer (no stale second clip).
+  - **Edge:** exactly-at-bound; 2× the bound; re-listen immediately after; no long-WAV generator ⇒ NAMED BLOCKER + the non-lossy unit pin.
+
+- [ ] F-135 (AC2-a / AC2-d / replaces the local half of F-107): **Unavailable/unsupported → typed state with a NON-local remediation.** Stop the managed server; and (if constructible) point at a non-audio model. Select model-audio; read the readiness row; attempt to arm/submit; read the user-facing message.
+  **Expected:** the typed `modelAudioUnavailable` (or `unsupported`) state + curated copy is shown; `stt_start` is blocked before any capture; `companion-voice-model-audio-use-local` is ABSENT — the offered remediation is NON-local (start the server / change the model) and `stt:audio_capability` never infers capability from the model name; NO local path starts.
+  - **Edge:** server killed mid-listen; capability probed at selection vs submit; `unsupported` unreachable via a manifest change ⇒ unit-pinned residual only; no raw IPC string surfaced.
+
+- [ ] F-136 (AC2-a / preserved F-127-model): **The model-audio indicator copy renders on ONE line and clears on turn completion.** Drive a launcher-origin model capture; sample the `capturing` and `processing` copy; let the reply complete.
+  **Expected:** `launcher-command-model-listening-chip` reads `Fredo is listening` (or the countdown variant) and `launcher-command-model-limit-status`/processing copy `Fredo is processing your speech…` each render on ONE line (`whiteSpace:nowrap`, line count 1, no `verticalWrap`/`narrow` node, empty content-box overlap); the chip clears on `llm-done` within the same session without a next `stt_start`; ZERO transcript text.
+  - **Edge:** a non-empty query present; a theme switch mid-capture; both themes; the narrowing window.
+
+- [ ] F-137 (AC2-d / NFR): **All-local / no audio-or-transcript egress (supersedes F-108's local legs).** Static-scan `infrastructure/voice/**` + `features/llm_server/**` for remote clients; read the managed `llama-server` bind + the turn URL; attempt a process-scoped outbound block proven by a FAILING control fetch. `fredo emit` marker rows + `telemetry_spans` via the telemetry-query skill.
+  **Expected:** ZERO `reqwest/ureq/hyper/TcpStream/UdpSocket/std::net/websocket` on the audio→model path; the server binds `127.0.0.1`; the turn URL is loopback; no audio or transcript leaves the machine; `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`.
+  - **Edge:** the live block is a NAMED BLOCKER (no elevation/adapter lever) recorded ALONGSIDE the static pin — never a substitute; a block mid-session must not crash; a new cloud/fallback branch FAILs.
+
+- [ ] F-138 (AC4-a): **Cleanup is destructive ONLY within the STT model dir; no-op when absent.** **First point the AppStore `models_dir` key at an IN-REPO scratch dir** (the default `{home}/fredo-models` is outside the repo and must NEVER be read — G-172/G-207). Present case: seed `<scratch>/sherpa-onnx-streaming-zipformer-en-2023-06-26/` + unrelated sibling files/dirs; restart; read the cleanup result + hash the siblings/an outside-repo file. Absent case: no STT dir; restart.
+  **Expected:** the previously downloaded sherpa model data is removed; with nothing to remove the cleanup is a silent no-op (no error, no dialog); ZERO unrelated files/dirs are modified or deleted; the cleanup ran once (idempotent on the next boot).
+  - **Edge:** a half-downloaded dir; a read-only/locked dir (no boot block, no crash — report the outcome); an unexpected extra file INSIDE the STT dir (still scoped); user data outside `models_dir` byte-unchanged.
+
+- [ ] F-139 (AC4-b / supersedes F-102's default-local leg): **A persisted `local` handling preference resolves to model-audio (no dead/blocked state).** Seed `Fredo_companion_voice_handling='local'` (and legacy/malformed `'MODEL'`, `''`, `null`); restart (`dev-env Down` → `Up -Spec 2914`); enable voice; arm and run a turn.
+  **Expected:** no dead/blocked voice state — a persisted `'local'` resolves to model-audio and a hold works end-to-end (capture → processing → reply); malformed/legacy values heal deterministically with no crash; the archived value never blocks arming. **Storage-unit vs display-unit:** if the key is retained, its STORED value may be `'local'`/`'model'` while there is NO display unit for `local` — the reader maps `local → model-audio`. (Architect must declare whether the key survives — QA Discussion #2914-2.)
+  - **Edge:** the key absent; the value toggled pre-upgrade; the app killed mid-upgrade; localStorage and SQLite disagreeing.
+
+- [ ] F-140 (AC3-a / AC3-b): **Dependency gone / build footprint + CI-parity green.** `cargo build` and `cargo check --locked` with `SHERPA_ONNX_LIB_DIR` UNSET and no network pre-seed; inspect `Cargo.toml`/`Cargo.lock`; then the CI-parity set (`cargo clippy --locked -- -D warnings`, all-targets test build, `pnpm --filter @fredo/ui build`, `pnpm --filter @fredo/ui test:run`).
+  **Expected:** the build completes WITHOUT fetching the sherpa-onnx native archive and WITHOUT `SHERPA_ONNX_LIB_DIR`; ZERO `sherpa-onnx`/`sherpa-onnx-sys` entries in `Cargo.toml` + `Cargo.lock`; ZERO warnings; the UI suite green with the removed `sttModel`/mode pins gone and NO assertion weakened/disabled/deleted (G-125). Record the CI `rust-validate` result (the tester shell has no `cargo`).
+  - **Edge:** a stale `Cargo.lock`; a leftover transitive entry; a pre-existing unrelated CI red reported separately; a moved/renamed frozen hook refreshed in the same scope and named (G-187).
+
+- [ ] F-141 (AC5-b / AC5-c): **Docs describe ONE path; the historical research doc is superseded; the in-repo tests are updated.** Read `docs/SETUP.md`, `SECURITY.md`, `FAQ.md`, `ARCHITECTURE.md`, `README.md`; read `docs/research/stt-engine-selection.md`; read `apps/tauri/src-tauri/tests/voice_invariants.rs` + the UI `sttModel` tests.
+  **Expected:** the docs describe only the model-audio path and no longer present `sherpa-onnx`/on-device STT/`download_stt_model`/`SHERPA_ONNX_LIB_DIR`/the STT model step/`Local transcription` as current; `stt-engine-selection.md` is marked **superseded** (pointer to #2914) and keeps its history; `voice_invariants.rs` no longer pins the local branch / `SherpaRecognizer` / `STT_SUBDIR` / the handling reader, and the UI `sttModel` tests are removed/updated — ZERO stale assertion still expecting removed behaviour (G-183); `.opencode/tests/**` is NOT hand-edited by the developer.
+  - **Edge:** a SETUP claim and the FAQ answer must agree; a doc that still names local transcription FAILs; doc-sync authoring is SI-owned — report a mismatch, do not fix it here.
+
+- [ ] F-142 (NFR-1 + LIVE): **No regression to companion readiness / spoken-input responsiveness + mandatory live receipts.** With no sherpa model present: exercise companion chat + companion readiness; measure a warm hold-Space press→capture and the reply settle; read the console across every leg; `fredo emit` marker rows + `telemetry_spans` via the telemetry-query skill; upload every capture with `upload-evidence --issue 2914`.
+  **Expected:** companion chat is ready/usable with ZERO sherpa model (readiness inputs unchanged; no `sttModel` prerequisite blocking); spoken-input responsiveness within the shipped #2887/#2903 envelope; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`; no new idle CPU/capture; no new persisted key; `telemetry_spans` NON-ZERO with a recent `max(ingested_at)` and the literal token in Evidence; every capture uploaded with a raw URL + description. **A static-only PASS is a FALSE PASS.**
+  - **Edge:** fresh profile vs upgraded profile; the resident engine across the upgrade; a stale round's receipt does not clear the round-aware guard; every number carries its lever + clock domain (G-171).
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED with the levers used and raw numbers; do not pre-fill)_
