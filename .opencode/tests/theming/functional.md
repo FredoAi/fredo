@@ -166,6 +166,9 @@
 > **G-170:** the "never covers/intercepts" rows assert a present, measured element at its resting
 > rect. **Animation is out of scope** (no animated descriptor ships), so no non-identity-transform
 > frame leg applies; assert instead that the slice introduces no `@keyframes`/continuous animation.
+> **G-136 SUPERSEDED (#2905):** the static-only animation scope on this line, and the
+> "no `@keyframes`/continuous animation" clauses in F-22/F-24/F-25, are SUPERSEDED by the
+> `#2905 extension` below — animated built-ins are now REQUIRED. Historical rows preserved.
 
 - [x] **F-20 (REQ-1 / AC1):** Open Settings → Appearance → Background. DOM-snapshot + screenshot the
       selector; on a fresh profile read the default; select each option then **None**; compare the
@@ -197,7 +200,9 @@
       one scenario): recolor is live (no reload/restart), and the post-switch frame keeps chrome +
       content legible. Animation is **out of scope** (all six descriptors ship static) — assert no
       `@keyframes`/continuous animation is introduced, so chrome/window separation holds on the
-      post-switch frame.
+      post-switch frame. **[G-136 SUPERSEDED (#2905): the "no animation" clause is superseded —
+      animated built-ins are required; see F-32/F-33. The recolor + post-switch legibility intent
+      stands.]**
   - **Edge:** dark→light and light→dark; light preset captured on the post-switch frame; switch with
     a window maximized (chrome + content both in frame).
 
@@ -212,7 +217,9 @@
     present-but-empty; value written by an older build.
 
 - [x] **F-24 (REQ-4 / AC4):** With each background active (all six ship **static** — animation is out
-      of scope), measure contrast of shell chrome text (command bar, side ticks, clock, tiles) and
+      of scope **[G-136 SUPERSEDED (#2905): animated built-ins are now required — contrast must be
+      measured on the ANIMATED render; see F-30/F-34. The legibility + no-window-intercept intent
+      stands]**), measure contrast of shell chrome text (command bar, side ticks, clock, tiles) and
       window content vs their surfaces; `elementFromPoint` at points inside a maximized and a floating
       window; read stacking/z-order; click + type into a window while the background is active.
   **Expected:** shell chrome and window content stay **legible** (body text ≥4.5:1, large/bold ≥3:1,
@@ -229,7 +236,10 @@
       **`prefers-reduced-motion: reduce`**.
   **Expected:** backgrounds are **procedural only** — zero uploaded/bundled raster, **zero hardcoded
       colors** (all paint from theme values; comment issue-refs exempt). **No animated descriptor
-      ships** (static-only scope): no `@keyframes`/continuous animation/rAF/interval in the slice; the
+      ships** (static-only scope) **[G-136 SUPERSEDED (#2905): animated built-ins are REQUIRED; the
+      "zero @keyframes/rAF" assertion is inverted to "animation is present AND gated under
+      `prefers-reduced-motion: reduce`" — see F-32/F-34/F-35]**: no `@keyframes`/continuous
+      animation/rAF/interval in the slice; the
       only motion is the selection crossfade, which snaps to **0 ms** under
       `prefers-reduced-motion: reduce` and never flashes/strobes. App stays responsive: no perceptible
       launch/interaction degradation, CPU/GPU bounded and non-growing over a sustained idle window.
@@ -262,3 +272,180 @@
 - **F-25 PASS (live+static).** Empty backdrop div, no raster, zero literals/rAF/`@keyframes`; 16.5 ms avg frame / flat heap. Reduced-motion OS toggle not emulable via the Tauri MCP driver — non-blocking: zero animation ships.
 - **F-26 PASS (live).** `telemetry_spans` 15680, `max(ingested_at) 2026-09-19T13:16:33Z`; `chat_rows` 49057 (`user_message` extracted) + `tool_use_rows` 63247/63296 classified.
 - **F-27 PASS.** Build exit 0 (`✓ 2576 modules`); `test:run` 107 files / 1732 tests passed, 0 failed.
+
+---
+
+## #2905 extension — visibly applied + animated procedural backgrounds
+
+> Issue #2905 is a **bug + enhancement revising #2899**: the chosen procedural background must be
+> **visibly applied behind the windows** (AC1), read clearly on dark + light incl. the reporter's
+> dark/brown palette (AC2), be **animated** with living/generative motion while each option stays
+> distinct (AC3), honor OS reduced-motion and never flash/strobe (AC4), stay CPU/GPU-bounded with
+> **None restoring today's clean desktop** (AC5). Rows map to the QA Plan `Q-1..Q-11`
+> (the Architect's **`R-1..R-5`** sub-clauses + live/NF) in `.opencode/tmp/2905/triage.md`.
+> Contract hooks bound here: `data-motion`, `data-background-id`,
+> `[data-testid="desktop-backdrop-motion-styles"]`, `[data-background-layer]`, and the chooser
+> caption `[data-testid="desktop-background-motion-status"]`; constants `MOTION_LAYERS_MAX=3`,
+> `MOTION_DURATION_MIN_MS=8000`, `MOTION_OPACITY_MIN=0.35`; pure `resolveBackgroundMotion` +
+> `isBoundedMotion`.
+>
+> **G-136 SUPERSESSION (mandatory):** the `#2899 extension` above (and its rows F-22/F-24/F-25)
+> asserted animation was **out of scope** and that the slice introduces **no** `@keyframes`/
+> continuous animation. **#2905 inverts that scope** — animated built-ins are now REQUIRED. Those
+> static-only assertions are marked `G-136 SUPERSEDED (#2905)` in place (rows preserved); the
+> tester must NOT execute them as written. The product invariant test
+> `background.invariants.test.tsx` leg (d) ("no continuous animation") is likewise superseded and
+> must be inverted to gate animation under reduced motion.
+>
+> **AC1 is rendered-pixel based.** #2899 passed AC1 by reading the backdrop element's computed
+> `background-image` while the user reports the background is not visible at all. A computed-style
+> read is **explicitly insufficient** here — F-28/F-29 sample the rendered pixels so a
+> correctly-painted-but-occluded element cannot pass.
+>
+> **Verification policy: live.** F-37 carries the mandatory `telemetry_spans` receipt; F-38 the gates.
+> **Contract names (G-187):** `[data-testid="desktop-backdrop"]`,
+> `[data-testid="desktop-background-chooser"]`, `[data-testid="desktop-background-option-{none,aurora,nebula,mesh,topography,constellation,halo}"]`,
+> key `Fredo_desktop_background`.
+
+- [ ] **F-28 (Q-1 / R-1.1, R-1.2, AC1):** Open Settings → Appearance → Desktop Background
+      (`[data-testid="desktop-background-chooser"]`). For **None**, **Aurora**, **Nebula** (≥2
+      procedural): select the option, screenshot the desktop, then sample the **rendered pixels** at
+      a fixed set of ≥5 desktop points (top-left quadrant, top-right quadrant, centre, lower-left,
+      lower-right — inside the desktop region, NOT inside any window resting rect). Report sampled
+      RGB per option. Repeat with **Mesh**; then select `None`.
+  **Expected:** sampled pixels differ **per procedural option**, each differing from the **None**
+      control at **≥3 of 5** points (per-channel Δ ≥ 8 or ΔE ≥ 2); procedural options pairwise
+      distinct. A non-empty computed `backgroundImage` whose sampled pixels equal the None control is
+      an explicit **FAIL**.
+  - **Edge:** all 6 procedural options (pairwise distinct); window over a sample point (re-sample
+    outside its resting rect, G-170/G-171); maximized window; launcher strip displayed vs hidden.
+
+- [ ] **F-29 (Q-2 / R-1.1, R-1.3, AC1):** With a procedural option active, read the backdrop's
+      `getBoundingClientRect()` + effective stacking, then `document.elementFromPoint(x,y)` at the
+      F-28 points and compare each painted pixel against the None control.
+  **Expected:** ≥1 desktop point shows the backdrop's paint (differs from None) — the background is
+      actually **visible**, not merely present in the DOM. If every sampled point equals the None
+      control → **FAIL** naming the covering layer (report `elementFromPoint` tag/testid per point).
+      `elementFromPoint` returning the transparent shell is acceptable; the **pixel** comparison is
+      authoritative.
+  - **Edge:** **Architect root cause (R-1.1):** the always-mounted `LauncherShell` fixed surface at
+    `SURFACE_Z_VISIBLE=1100` (`LauncherShell.tsx:817-820`) was filled
+    `tint('var(--body-bg)', 72)` — a 72%-opaque full-viewport veil above the z=0 backdrop, diluting
+    each option to ≈3–7% net. F-29 MUST FAIL on that pre-fix state and PASS only after the
+    non-`none` fill is `transparent` (or ≤ `tint(...,20)`); name `LauncherShell.tsx:817-820` as the
+    occluder in the evidence. Other edges: desktop region vs launcher strip; window dragged across
+    all samples; dark + light.
+
+- [ ] **F-30 (Q-3 / R-2.2, AC2):** With a procedural background active, measure contrast for
+      (a) shell chrome text (command bar, clock, tiles) vs its effective backdrop and (b) window
+      title/body content vs the window surface, on **Dark/classic**, the **reporter's dark/brown
+      palette** (record the exact preset id — e.g. Coffee/Sunset), and a **light** preset
+      (Light Default). Compute ratios from sampled/composited colors.
+  **Expected:** body text **≥4.5:1**, large/bold **≥3:1**, non-text UI (borders, tiles, ticks)
+      **≥3:1** on every combination. Quote every measured ratio; a pair below threshold = **FAIL**
+      naming it. Window-content contrast is background-invariant (windows keep their opaque surface).
+  - **Edge:** reporter's exact dark/brown preset (state which); pale accent + light worst case;
+    accent override set/cleared live; window over the busiest background region.
+
+- [ ] **F-31 (Q-4 / R-2.1):** With a procedural background active, switch dark→light and
+      set/clear an `accentPrimary` override; sample rendered pixels before/after each change; also
+      override an unused token (`cardBg`).
+  **Expected:** pixels change **live with no restart** and derive from live theme tokens; the unused
+      override leaves paint unchanged; no hardcoded color survives a switch (static grep corroborates:
+      zero hex/rgb/hsl in the background module).
+  - **Edge:** rapid churn; theme switch with the chooser open; token the recipe does not consume.
+
+- [ ] **F-32 (Q-5 / R-3.1, AC3):** **FIRST** read
+      `window.matchMedia('(prefers-reduced-motion: reduce)').matches` via `tauri_webview_execute_js`
+      and record the raw value. If `false`: immediately after selecting a procedural option capture
+      **t0**, then take **3–5 SHORT SYNCHRONOUS samples ~150–300 ms apart** (NO `setTimeout`/async —
+      a delayed sampling call times out in the Tauri webview) of the backdrop's computed paint
+      (`background-position`/`transform`/`opacity`) and read
+      `document.querySelector('[data-testid="desktop-backdrop"]')?.getAnimations()`.
+  **Expected:** `reduce:false` → **≥2 distinct intermediate frames** across consecutive samples AND
+      `getAnimations()` returns ≥1 `running` animation with non-zero duration, AND the backdrop's
+      `data-motion` attribute reads `animated` (Architect DOM contract). `reduce:true` → a **static** render is
+      CORRECT; do NOT require intermediate frames — `data-motion` reads `static` and the motion
+      caption (`[data-testid="desktop-background-motion-status"]`) reads
+      `Motion: off (system reduced motion)`. Record the flag verbatim; a single sample or a delayed
+      async read is insufficient evidence.
+  - **Edge:** capture immediately after the trigger; two different options (distinct motion); theme
+    switch mid-animation; drag during animation.
+
+- [ ] **F-33 (Q-6 / R-3.3, AC3):** Read `getAnimations()` (animation-name + duration/timing) and/or
+      each animated element's computed animation properties for all 6 procedural options.
+  **Expected:** each animated descriptor's motion is **visibly distinct** per the Architect's
+      per-option identity table (aurora = 2 veils drifting apart; nebula = breathing cloud + grain
+      twinkle; mesh = 3 independent currents; topography = contour expand; constellation = night-sky
+      twinkle + breathe; halo = breathing halo) — a distinct `@keyframes` kind/duration/delay/easing
+      signature; no two options share an identical animation signature. `data-background-id` confirms
+      the applied descriptor; each animated option renders its declared `[data-background-layer]`
+      children (≤ `MOTION_LAYERS_MAX` = 3). Any intentionally-static layer is recorded as such.
+  - **Edge:** all 6 options; reduced-motion on (all static); re-select the same option (idempotent
+    signature).
+
+- [ ] **F-34 (Q-7 / R-4.1, R-4.2, R-4.3, AC4):** (a) **Product-unit/static pin (G-050/#2870):** a unit/static test
+      asserts the animated descriptors are **suppressed/gated** under reduced motion: the pure
+      `resolveBackgroundMotion({ systemReducedMotion })` (`{true}` → `'static'`, `{false}` →
+      `'animated'`) is exhaustively unit-tested, `isBoundedMotion` rejects out-of-budget motion (no
+      `steps()`, duration ≥ 8000, opacity ≥ 0.35, scale/translate in range), and a render test
+      asserts the static leg carries `data-motion="static"`, NO motion `<style>`, and zero
+      `animation*` properties (the `@media (prefers-reduced-motion: reduce)` + `[data-motion="static"]`
+      CSS gates are declarative belt-and-braces). (b) **Live leg — NAMED
+      BLOCKER:** record the raw `matchMedia(...).matches` value and mark the live flip
+      **UNVERIFIED** — the Tauri MCP driver exposes no media-emulation API on this host
+      (G-050/G-148/#2870); never a blockerless row. (c) **No-strobe:** with animation running, sample
+      ≥8 consecutive synchronous frames and compute per-frame mean luminance.
+  **Expected:** the static pin PASSES — `resolveBackgroundMotion({ systemReducedMotion: true })`
+      → `'static'`, `{ false }` → `'animated'`, `isBoundedMotion` rejects out-of-budget motion and
+      every descriptor layer passes; the static render has `data-motion="static"`, NO
+      `[data-testid="desktop-backdrop-motion-styles"]` `<style>`, and ZERO `animation*` properties
+      (the caption `desktop-background-motion-status` reads `Motion: off (system reduced motion)`
+      where it ships). No consecutive-frame
+      **luminance inversion** beyond the strobe threshold — quote the raw luminance series; any
+      high-frequency full-frame inversion = **FAIL**. A static-only live claim without the pin is not
+      acceptable evidence.
+  - **Edge:** reduce ON + each option; reduce OFF strobe check; screenshot on both paths.
+
+- [ ] **F-35 (Q-8 / R-3.2, AC5):** With a procedural option active, record rAF frame intervals over
+      ≥10 s / ≥300 frames, JS heap, and process CPU/GPU idle + during interaction (window
+      drag/open/close).
+  **Expected:** **zero JS frame loops** (source-grep the background slice for
+      `requestAnimationFrame`/`setInterval` — none); animated layers ≤ `MOTION_LAYERS_MAX` (3) and
+      constant across the ≥60 s soak (`document.getAnimations()` count + `[data-background-layer]`
+      node count stable); every animation duration ≥ `MOTION_DURATION_MIN_MS` (8000); cadence bounded
+      (state the target: ~60 fps, no sustained dropped-frame burst); **no unbounded draw**
+      (compositor/CSS-driven, no per-frame JS allocation churn); heap **non-growing** across the
+      window (report start/end); no perceptible launch/interaction degradation. Any unbounded growth,
+      animation-count drift, or sustained high usage = **FAIL** with raw numbers.
+  - **Edge:** sustained idle soak (minutes); interaction during animation; two windows;
+    reduced-motion on (should be cheaper).
+
+- [ ] **F-36 (Q-9 / R-5.1, AC5):** Select **None**; compare the desktop against a pre-#2905 BEFORE
+      capture (pixel-comparable; backdrop DOM absent); cold-restart. Then select a procedural option,
+      cold-restart, re-open Appearance. Inject a stale/unknown value into
+      `Fredo_desktop_background` and restart.
+  **Expected:** with None: zero `[data-testid="desktop-backdrop"]` DOM, **zero injected motion
+      `<style>`**, the launcher surface carries `NONE_BACKGROUND.css` byte-identically, and the
+      desktop is **byte-identical/pixel-comparable** to today's clean desktop. The selection
+      (procedural and None) **persists across a full restart** and restores exactly.
+      Stale/unknown/empty falls back **safely to None** — no crash, no blank desktop.
+  - **Edge:** None after a procedural option; stale id, `''`, `null`, removed id; restart immediately
+    after a selection.
+
+- [ ] **F-37 (Q-10 / REQ-LIVE, NF):** During the run: `fredo emit --event-type chat --session-id
+      e2e-2905-chat` + `--event-type tool_use --session-id e2e-2905-tool --tool-name read_file`;
+      query `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill); retain
+      screenshot raw URLs + live `tauri_webview_*` receipts.
+  **Expected:** `telemetry_spans` **NON-ZERO** with a recent `max(ingested_at)`; both markers
+      classify (`user_message` extracted / tool row classified). **A static-only PASS is a FALSE
+      PASS.**
+  - **Edge:** re-run on the tested tip; keep emit + query output verbatim; do not fabricate a span
+    query.
+
+- [ ] **F-38 (Q-11 / REQ-NF):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`;
+      run the theming + desktop-shell regression suites.
+  **Expected:** build exit 0, zero TS errors/warnings; suites green; existing assertions **not
+      weakened/disabled/deleted** (the ONLY permitted change is the explicit #2899 static-only
+      supersession above).
+  - **Edge:** no dangling import; overlap suites green.
