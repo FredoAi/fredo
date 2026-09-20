@@ -393,6 +393,11 @@
       no action, and claim no success? A hang, an unhandled console error, or a false success is a
       finding (promotes to F-120/NFR-2).
 
-### #2903 testing round 1 — result
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
-- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+- **E-59 PASS (observed).** Rapid close→open→open→close on the model-audio channel: never more than ONE Settings window (singleton raise); no duplicate window, no doubled reply. The shipped reply-before-open 800 ms beat makes rapid interleaved requests converge asynchronously — expected shipped behavior.
+- **E-60 OBSERVED (not a defect).** An `llm-skill-call` arriving after the generation settled still executes the window action but the deterministic reply is (correctly) not re-applied to the settled generation (`applyAppOpenReply` guards on `isGenerating`/`generationSettled`); no phantom window from a stale push.
+- **E-61 NOT DRIVEN (named).** A mode switch between selection and action needs the Settings Companion selector while the managed server is healthy; the mode is read per `stt_start` (CI-pinned). Not exercised this round; no failure claimed.
+- **E-62 OBSERVED (synthetic-lever artifact disclosed).** The deterministic reply replaces the streamed prose at settle (bubble sample 0 = pure deterministic string; live region retained it). Because the L3 injection does not terminate the backend generation, the model's later tokens are appended by `onToken` (no post-settle guard) — the bubble can end `Opening SettingsHello! …`. The REAL path emits `llm-skill-call` on `finish_reason:"tool_calls"` and stops (llm-done last), so this is not real-path-reachable. Recorded as a robustness observation, not promoted to a FAIL.
+- **E-63 PASS (observed).** 7-injection churn: close→closed, 2×open→singleton, `tell_joke`→zero actions, `open_app Narnia`→zero actions, close→closed. No reply storm, no duplicate window, no `Maximum update depth exceeded`.
+- **E-64 NOT DRIVEN (named).** Killing the managed server mid-turn needs in-round isolation from the managed-server auto-relaunch; #2897 E-53 already established the typed curated `modelAudioUnavailable` path. No failure claimed.
