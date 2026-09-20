@@ -1337,3 +1337,24 @@ is live. Host mic is virtual-only → L4 feed for audio; L3 for local transcript
     turn settling via `llm-error`; the L4 feed present with no selection. Reference UI/UX's residual
     note (`.opencode/tests/companion/exploratory.md` ~line 320).
   - **Receipt:** the channel observation (zero `llm-skill-call`) + the settled reply + the window delta.
+
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
+
+**Verdict PASS** — 30 PASS / 0 FAIL / 2 BLOCKED (R-1.4 acoustic; NFR-1 live outbound block) / 3 named UNVERIFIED (voice-dictation E-5; E-61; E-64). Full report: `## Tests Runs (round 1)` on #2903.
+
+- **F-111 PASS (live, L3 + DOM).** Live model-audio turn (console `runGeneration called — … withSkills: true withAudio: true`), emitted `{open_app,{app:"Settings"}}` → live region + bubble `Opening Settings` at t≈1161 ms; `.fredo-window__surface[role="group"][aria-label="Settings"]` appeared at t≈1932 ms (labels `[]`→`["Settings"]`). Screenshot `f111-open-settings.jpeg`.
+- **F-112 PASS (live, L2).** `run_open_app_cli {identity:"settings"}` → `{exitCode:0, outcome:"opened"}` + window; `Narnia` → `{exitCode:1, outcome:"unknown"}` + zero windows; `s` → `{exitCode:1, outcome:"ambiguous"}`; `fredo open-app settings` → `{displayName:"Settings", outcome:"opened"}`.
+- **F-113 PASS (CI, pins cited verbatim).** `rust-validate` PASS (16m52s) + the named Rust/TS pins (see R-1.3 in `## Tests Runs`).
+- **F-114 BLOCKED (named).** No intelligible in-repo WAV + no physical mic; missing asset named; residual = F-111+F-112+F-113.
+- **F-115 PASS (live).** Live turn + `{close_app,{app:"Settings"}}` → window `["Settings"]`→`[]`, live `Closing Settings`. Close-not-open → `Settings isn't open`, zero windows. No `appCloseFailedReply` exists.
+- **F-116 CONTEXT (not scored).** `close_app` in the ONE registry + the ONE hook; no forked dispatcher.
+- **F-117 INACTIVE (not scored).**
+- **F-118 PASS (live).** open/close/unknown/ambiguous/not-open produce the SAME outcome + byte-identical replies on both paths.
+- **F-119 PASS (live).** Typed `open settings`+Enter → real model selected `open_app` → window + `Opening Settings`; `close settings`+Enter → `Closing Settings`. `pnpm --filter @fredo/ui test:run` 107 files / 1745 tests / 0 failed.
+- **F-120 PASS (live).** `Opening Settings` / `Closing Settings` / `Settings isn't open` / `I couldn't find "Narnia"` / ambiguous copy / blank-app `I couldn't find ""` — all char-for-char; no raw JSON.
+- **F-121 PASS (live, with disclosure).** The settled bubble is the deterministic reply (prose replaced). Synthetic-lever artifact: the un-terminated stream's later tokens can append (see E-62); the REAL `finish_reason:"tool_calls"` path stops before any post-settle token.
+- **F-122 PASS (live).** `open_app Narnia` + `close_app Narnia` → ZERO windows, `I couldn't find "Narnia"`, app grid present (G-170). Screenshot `f122-unknown-narnia.jpeg`.
+- **F-123 PASS (live + CI).** blank app → `I couldn't find ""`, zero windows; non-app skill ignored; fail-closed CI pins green.
+- **F-124 PASS (static).** `infrastructure/voice/**` zero network symbols; `features/llm_server/**` loopback only.
+- **F-125 PASS (live receipts).** `telemetry_spans` 16,401 rows, newest `2026-09-20T02:00:18.633Z`; chip clears on `llm-done`; console clean. Live outbound block BLOCKED (no lever).
+- **F-126 PASS (live).** No-selection turn → zero `llm-skill-call`, window set unchanged, model prose settle.
