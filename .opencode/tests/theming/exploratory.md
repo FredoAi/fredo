@@ -79,6 +79,9 @@
       the selection crossfade snaps to 0 ms and no recipe introduces continuous animation/`@keyframes`
       (all six ship static). Sample consecutive frames for high-frequency luminance inversion
       (flash/strobe) — any finding promotes to F-25.
+      **[G-136 SUPERSEDED (#2905): the "all six ship static / no continuous animation" premise is
+      inverted — animated built-ins are now required. The reduced-motion + strobe intent stands; see
+      E-28/E-30 and F-32/F-34.]**
 - [x] **E-22 — Stale/garbage persistence sweep.** Inject `''`, `null`, `undefined`, an object, and a
       removed id into the background persistence key; restart each time. Confirm a safe None fallback
       with no crash/blank desktop (promotes to F-23).
@@ -99,3 +102,42 @@
 - **E-23 — regression-free.** With Aurora active across two window surfaces and a maximized/floating window, `elementFromPoint` always returned window content, never the backdrop; typed input delivered.
 - **E-24 — FINDING (disclosed residue, no promotion).** Light-preset legibility confirmed on the post-switch frame; the background sits behind opaque windows so it cannot alter window-content contrast. The chooser's `--text-secondary` `#888888` on `--card-bg` `#2d2d2d` 12px captions measure **3.89:1** (< AA) — but the pre-existing DockPosition helper text measures identically (3.89:1), and the pair is background-invariant, so this is a pre-existing theming caption characteristic, not a #2899 regression. Recorded in the verdict as a disclosed residual.
 - **E-25 — regression-free.** 90 rAF frames @ avg 16.5 ms (p95 16.7, max 16.8) and JS heap 37,920→36,965→36,966 KB over the soak — no unbounded growth.
+
+## #2905 extension — animated procedural background probes
+
+> Unscripted probes for issue #2905 (revises #2899). A confirmed finding PROMOTES to `functional.md`
+> as a new `F-` row (keep the origin note). **G-136:** the #2899 probes that assumed a static-only
+> slice (E-21) are superseded for animated built-ins.
+
+- [ ] **E-26 — Rapid option churn with animation.** Cycle None → each animated background → None
+      repeatedly (≥3 full cycles); watch the console for `Maximum update depth exceeded`, stale
+      paint, orphaned animations (an `getAnimations()` entry surviving a switch), or lag
+      (AGENTS.md #523). Any finding promotes to F-35/F-32.
+
+- [ ] **E-27 — Sustained animation soak.** Leave a procedural background active for several minutes;
+      sample rAF cadence + heap at start/middle/end. Any unbounded growth, cadence decay, or
+      runaway GPU/CPU is a finding (promotes to F-35).
+
+- [ ] **E-28 — Reduced-motion path (named blocker).** Read
+      `window.matchMedia('(prefers-reduced-motion: reduce)').matches` and attempt to flip it live;
+      record that the live flip is UNVERIFIED with the Tauri-driver named blocker (G-050/#2870).
+      Confirm via the product-unit/static pin that the animated descriptors are gated under reduce;
+      any animation still running under reduce is a finding (promotes to F-34).
+
+- [ ] **E-29 — None round-trip + persistence.** After a full animation session, select None, confirm
+      the backdrop DOM is absent and the desktop matches the BEFORE capture, cold-restart, then
+      reselect a procedural option and cold-restart again. Any residual paint, non-persistence, or
+      stale-id crash is a finding (promotes to F-36).
+
+- [ ] **E-30 — Strobe / high-frequency luminance probe.** With animation running, capture ≥8
+      consecutive synchronous frames of the backdrop region and compute per-frame mean luminance;
+      look for full-frame inversions or a flicker rate that could trigger photosensitivity. Any
+      finding promotes to F-34.
+
+- [ ] **E-31 — Reporter dark/brown worst-case contrast.** Apply the reporter's dark/brown preset
+      (record the id) + a procedural background; sample shell chrome + window text contrast. Any
+      pair below AA is a finding (promotes to F-30).
+
+- [ ] **E-32 — Animation + theme/accent churn.** Switch dark↔light and set/clear the accent override
+      while the animation runs; watch for a stopped animation, a frozen frame, stale color, or a
+      re-render loop. Any finding promotes to F-31/F-32.
