@@ -500,3 +500,9 @@
       live. Does the indicator stay one line and clear of the field at every intermediate width, and
       does the full-size render restore cleanly (no stuck narrow width, no orphan clip)? Any
       transient or persistent stacking/overlap/clip is a finding (promotes to F-105).
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — results
+
+- **E-67 PASS (live).** Countdown copy `Fredo is listening · 7s left` (146.8×24, ONE line, whole countdown visible — no ellipsis of the bound) at default; processing copy `Fredo is processing your speech…` (212.2×24, ONE line). At the narrowest supported window (900×600, bar constant 560) both stayed one line with `fieldContentW ≥ 140`; no field displacement. No promotion.
+- **E-68 PASS (live, driven mid-capture).** While the model capture was live, switched the shipped `select[aria-label="Theme presets"]` `dark`→`light-default` in one in-page task: chip color `rgb(229,231,235)` → `rgb(12,17,23)`, card `#151a21` → `#f7f8fa`, chip rect **byte-identical** (`left 1037.2 / right 1143 / 105.8×24`), still `nowrap`/`horizontal-tb`; dot stayed `rgb(0,209,209)`, field border accent-30. No stale color, no geometry change, no console error. No promotion.
+- **E-69 PASS (resize churn) / 125% DPI sub-leg UNVERIFIED (named blocker).** Mid-capture churn 900×600 ↔ 1400×900 ↔ 700×900 ↔ 1936×1056: one line + clear of the field at every width; full-size restored cleanly. **NAMED BLOCKER:** no lever to force a fractional OS/webview scale — the MCP driver exposes only `tauri_manage_window resize` in logical px, and the observed scale is 1:1 (`window.innerWidth 1936 == window width 1936` ⇒ 100%); `execute_js` cannot set devicePixelRatio. Command attempted: `tauri_manage_window(action="resize", width=…)` + `window.innerWidth` probe. No promotion.
