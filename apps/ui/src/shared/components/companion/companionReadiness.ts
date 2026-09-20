@@ -336,15 +336,18 @@ export type ModelAudioFailureCode =
 
 /**
  * The curated fallback sentences (UI/UX §7). NEVER the raw IPC string; each names
- * the cause and the next step, and every one offers the explicit local switch.
+ * the cause and the next step. Spec #2914 ST-3 (R-3): the local fallback is gone
+ * (there is exactly ONE voice path), so every sentence names a REACHABLE
+ * remediation — install an audio-capable model / start the companion server /
+ * try again — and none offers or names the removed local transcription.
  */
 export const MODEL_AUDIO_FAILURE_COPY: Record<ModelAudioFailureCode, string> = {
   modelAudioUnsupported:
-    "The companion model can't interpret audio — your recording wasn't sent. Switch to Local transcription to dictate with words, or install a model with audio support.",
+    "The companion model can't interpret audio — your recording wasn't sent. Install a model with audio support from Companion setup, or choose Change model.",
   modelAudioUnavailable:
-    "The local model server isn't running, so Fredo couldn't interpret that. Start it, or switch to Local transcription.",
+    "The local model server isn't running, so Fredo couldn't interpret that. Start the companion server, then try again.",
   modelAudioFailed:
-    "Fredo couldn't interpret that recording. Try again, or switch to Local transcription.",
+    "Fredo couldn't interpret that recording. Try again.",
 };
 
 /** The distinct cause of the fallback's generic copy (a null clip / dispatch error). */
@@ -376,12 +379,10 @@ export type ModelAudioReadinessState =
   | 'server-unavailable'
   | 'unknown';
 
-/** The derived C0r row: state + sentence + which actions it offers. */
+/** The derived row: state + sentence + which actions it offers. */
 export interface ModelAudioReadinessRow {
   state: ModelAudioReadinessState;
   sentence: string;
-  /** Offer the explicit one-click switch to Local transcription. */
-  offerLocal: boolean;
   /** Offer `Change model` (unsupported only — install an audio-capable model). */
   offerChangeModel: boolean;
   /** Offer `Try again` (re-probe). */
@@ -389,10 +390,11 @@ export interface ModelAudioReadinessRow {
 }
 
 /**
- * Derive the C0r `Model audio status` row from the backend capability. Pure and
- * fail-closed: a missing capability (no probe / rejected invoke) is `unknown`
- * ("can't check"), never a fabricated `ready`. `checking` is the UI-side
- * probe-in-flight value.
+ * Derive the model-audio `Model audio status` row from the backend capability.
+ * Pure and fail-closed: a missing capability (no probe / rejected invoke) is
+ * `unknown` ("can't check"), never a fabricated `ready`. `checking` is the
+ * UI-side probe-in-flight value. Spec #2914 ST-3 (R-3): the row NEVER offers a
+ * local-transcription fallback — every offered action is a reachable remediation.
  */
 export function deriveModelAudioReadinessRow(
   capability: SttAudioCapability | null,
@@ -402,7 +404,6 @@ export function deriveModelAudioReadinessRow(
     return {
       state: 'checking',
       sentence: "Checking the companion model's audio support…",
-      offerLocal: false,
       offerChangeModel: false,
       offerRetry: false,
     };
@@ -416,7 +417,6 @@ export function deriveModelAudioReadinessRow(
       return {
         state: 'ready',
         sentence: `${subject} can interpret audio. Recordings stay on this machine.`,
-        offerLocal: false,
         offerChangeModel: false,
         offerRetry: false,
       };
@@ -426,7 +426,6 @@ export function deriveModelAudioReadinessRow(
         state: 'unsupported',
         sentence:
           "The installed companion model can't interpret audio. Recordings won't be sent.",
-        offerLocal: true,
         offerChangeModel: true,
         offerRetry: false,
       };
@@ -435,7 +434,6 @@ export function deriveModelAudioReadinessRow(
         state: 'server-unavailable',
         sentence:
           "The local model server isn't running, so Fredo can't interpret audio.",
-        offerLocal: true,
         offerChangeModel: false,
         offerRetry: true,
       };
@@ -443,7 +441,6 @@ export function deriveModelAudioReadinessRow(
       return {
         state: 'unknown',
         sentence: "Can't check audio support right now.",
-        offerLocal: false,
         offerChangeModel: false,
         offerRetry: true,
       };
