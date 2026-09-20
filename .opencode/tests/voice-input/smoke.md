@@ -229,6 +229,9 @@
       textual description; the body also references `telemetry_spans` (non-zero, recent
       `max(ingested_at)`).
 
-### #2903 testing round 1 — result
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
-- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
+- **S-24 PASS.** Mode=`model` (`Fredo_companion_voice_handling='model'`), managed server healthy; live model-audio turn + L3 `{open_app,{app:"Settings"}}` → Settings window opened + live region `Opening Settings`; no transcript; no raw tool JSON; console clean. Screenshot `f111-open-settings.jpeg`.
+- **S-25 PASS.** `{open_app,{app:"Narnia"}}` and `{close_app,{app:"Narnia"}}` → ZERO windows (grid intact) + `I couldn't find "Narnia"`; typed `Narnia` via the L3 channel on both intents. Screenshot `f122-unknown-narnia.jpeg`.
+- **S-26 PASS.** Typed `open settings` + Enter → the real model selected `open_app` → the SAME Settings window + `Opening Settings`. Screenshot `f119-typed-open-settings.jpeg`.
+- **S-27 PASS.** 4 captures uploaded via `upload-evidence --issue 2903`; the report references `telemetry_spans` (16,401 rows, newest `2026-09-20T02:00:18.633Z`) + the `fredo emit` marker rows.
