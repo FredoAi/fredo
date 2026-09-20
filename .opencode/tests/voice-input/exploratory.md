@@ -419,3 +419,8 @@
       `Fredo is listening` chip is live (model mode). Does the typed text stay clear of the chip
       (reserved 312px gutter) with no vertical relayout, and does the chip stay one line? Any
       overlap, stacking, or console error is a finding (promotes to `launcher` F-103/F-106).
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — results
+
+- **E-65 PASS (live).** Countdown copy `Fredo is listening · 7s left` (146.8×24) and processing copy `Fredo is processing your speech…` (212.2×24) each on ONE line (whole countdown visible — no ellipsis of the bound); at the narrowest supported window (900×600, bar constant 560) still one line, `fieldContentW ≥ 140`. No promotion.
+- **E-66 PASS (live).** Typed `Settings` while the model chip was live (light preset): `fieldContentW 206`, chip one line (`nowrap`/`horizontal-tb`), the typed text clear of the chip (content-box right 928 vs chip left 1029.2), no vertical relayout, console clean. Screenshot `fb6bfb67`. No promotion.
