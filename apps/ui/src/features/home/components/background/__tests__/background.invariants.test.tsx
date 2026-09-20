@@ -1,5 +1,5 @@
 /**
- * #2899 ST-5 / #2905 ST-4 — cross-cutting invariant + continuous-state suite.
+ * #2899 ST-5 / #2905 ST-4 / #2909 ST-3 — cross-cutting invariant + continuous-state suite.
  *
  * The capstone `WHILE …` properties that must hold for EVERY background the
  * user can select. Each leg pins an invariant that is easy to break with a
@@ -27,6 +27,19 @@
  *       zero motion `<style>`, the launcher surface keeps `NONE_BACKGROUND.css`
  *       byte-identically, and the registry ground deep-equals the shipped
  *       literal.
+ *   (g) #2909 ST-3 continuous-state + cross-cutting pins — the WHILE-running
+ *       invariants and the structural perceptibility contract, so a later edit
+ *       cannot silently re-flatten the motion: the structural R-1.1/R-1.2 proxy
+ *       (every animated layer declares a real non-no-op motion; every recipe has
+ *       ≥1 broad-edge PRIMARY driver moving its paint ≥8 % of the viewport within
+ *       ≤20 s); R-2.1/R-2.2 identity + pairwise-distinct motion signatures +
+ *       `data-motion-kind`; R-3.1/R-3.2 the reduced-motion static render (both
+ *       `resolveBackgroundMotion` legs, no stylesheet, zero animation properties)
+ *       + `NONE_BACKGROUND` byte-identity; R-4.1/R-4.2/R-4.3 the NF-1 safety
+ *       envelope bounds and the zero-JS-frame-loop source pin; R-5.1 the
+ *       token-only motion slice (source + emitted keyframe CSS); and the G-162
+ *       named-observable hook contract. The rendered AC1 perceptibility floor
+ *       itself stays a tester row (G-205) — this leg is the structural proxy.
  *
  * The store is driven for real (`resetBackgroundStoreForTests()` +
  * `selectBackground('aurora')`) with only `settingsService` mocked — the
@@ -50,8 +63,25 @@ import {
   BACKGROUND_DESCRIPTORS,
   NONE_BACKGROUND,
   getBackgroundDescriptor,
+  type BackgroundDescriptor,
 } from '../backgroundRegistry';
-import { MOTION_LAYERS_MAX, MOTION_LAYER_OVERSCAN_PCT, isBoundedMotion } from '../backgroundMotion';
+import {
+  MOTION_DURATION_MIN_MS,
+  MOTION_LAYERS_MAX,
+  MOTION_LAYER_OVERSCAN_PCT,
+  MOTION_OPACITY_MIN,
+  MOTION_OPACITY_SWING_MAX,
+  MOTION_ROTATE_MAX_DEG,
+  MOTION_SCALE_MAX,
+  MOTION_SCALE_MIN,
+  MOTION_TRANSLATE_MAX_PCT,
+  buildBackgroundMotionCss,
+  isBoundedMotion,
+  overscanCovers,
+  requiredOverscanPct,
+  resolveBackgroundMotion,
+  type BackgroundLayerMotion,
+} from '../backgroundMotion';
 import {
   getBackgroundId,
   resetBackgroundStoreForTests,
@@ -105,6 +135,107 @@ function stripComments(source: string): string {
 /** The serialized paint of a descriptor — ground + every layer. */
 function serializePaint(descriptor: (typeof BACKGROUND_DESCRIPTORS)[number]): string {
   return JSON.stringify({ css: descriptor.css, layers: descriptor.layers.map((l) => l.css) });
+}
+
+/* -------------------------------------------------------------------------- */
+/* #2909 ST-3 structural proxies                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A layer-box percent maps to `LAYER_BOX_FACTOR` viewport percent: an animated
+ * layer is oversized by `MOTION_LAYER_OVERSCAN_PCT` per edge, so its box spans
+ * `100 + 2·overscan` % of the viewport (G-169).
+ */
+const LAYER_BOX_FACTOR = 1 + (2 * MOTION_LAYER_OVERSCAN_PCT) / 100;
+
+/** NF-2 horizon: the first half-cycle reaches the `to` endpoint. */
+const PRIMARY_HORIZON_MS = 20000;
+
+/** The absolute travel of an envelope (0 when absent). */
+function envelopeSwing(envelope?: { from: number; to: number }): number {
+  return envelope ? Math.abs(envelope.to - envelope.from) : 0;
+}
+
+/** NF-1: at least one declared envelope must actually move (no no-op motion). */
+function hasNonZeroAmplitude(motion: BackgroundLayerMotion): boolean {
+  return (
+    envelopeSwing(motion.translateXPct) > 0 ||
+    envelopeSwing(motion.translateYPct) > 0 ||
+    envelopeSwing(motion.opacity) > 0 ||
+    envelopeSwing(motion.scale) > 0 ||
+    (motion.rotateDeg !== undefined && motion.rotateDeg !== 0)
+  );
+}
+
+/** Peak-to-peak translate travel in VIEWPORT percent (the envelope is layer-box %). */
+function translateViewportPct(motion: BackgroundLayerMotion): number {
+  return (
+    Math.max(envelopeSwing(motion.translateXPct), envelopeSwing(motion.translateYPct)) *
+    LAYER_BOX_FACTOR
+  );
+}
+
+/** How far a scale envelope moves a box edge, as a fraction of the box (0.5·Δscale). */
+function scaleEdgeMove(motion: BackgroundLayerMotion): number {
+  return envelopeSwing(motion.scale) / 2;
+}
+
+/**
+ * NF-2 broad-edge PRIMARY driver — the structural proxy for R-1.1: the layer's
+ * translate moves ≥8 % of the viewport, or its scale moves an edge ≥8 % of the
+ * box, reaching that endpoint within ≤20 s (half the cycle). The rendered
+ * perceptibility floor itself remains a tester row (G-205).
+ */
+function isBroadEdgePrimary(motion: BackgroundLayerMotion): boolean {
+  if (motion.durationMs / 2 > PRIMARY_HORIZON_MS) return false;
+  return translateViewportPct(motion) >= 8 || scaleEdgeMove(motion) >= 0.08;
+}
+
+/** The full motion signature (kind + cadence + phase + easing + every envelope). */
+function motionSignature(descriptor: BackgroundDescriptor): string {
+  const layers = descriptor.layers
+    .map((layer) => layer.motion)
+    .filter((motion): motion is BackgroundLayerMotion => motion !== undefined)
+    .map((motion) =>
+      JSON.stringify([
+        motion.kind,
+        motion.durationMs,
+        motion.delayMs,
+        motion.easing,
+        motion.direction ?? 'normal',
+        motion.translateXPct ?? null,
+        motion.translateYPct ?? null,
+        motion.opacity ?? null,
+        motion.scale ?? null,
+        motion.rotateDeg ?? null,
+      ]),
+    );
+  return JSON.stringify([...layers].sort());
+}
+
+/**
+ * The exact contract hooks bound by SA-3 / G-162 — grepped against the merged
+ * source as literals so a rename can never slip past the render-level tests.
+ */
+const BOUND_HOOKS = {
+  backdropRoot: 'data-testid="desktop-backdrop"',
+  backdropLayerAttr: 'data-background-layer=',
+  motionKindAttr: 'data-motion-kind=',
+  motionStyles: 'data-testid="desktop-backdrop-motion-styles"',
+  motionStatus: 'data-testid="desktop-background-motion-status"',
+  chooserOption: 'data-testid={`desktop-background-option-${option.id}`}',
+} as const;
+
+/** Assert a layer carries no live animation* signal (the R-3.1 static leg). */
+function expectNoAnimationSignal(layer: Element, label: string): void {
+  const style = getComputedStyle(layer);
+  expect(style.animationName || 'none', `${label}: animation-name`).toBe('none');
+  expect(['', '0s', '0ms'], `${label}: animation-duration`).toContain(style.animationDuration);
+  expect(['', '0s', '0ms'], `${label}: animation-delay`).toContain(style.animationDelay);
+  expect(['', '1'], `${label}: animation-iteration-count`).toContain(
+    style.animationIterationCount,
+  );
+  expect(layer.getAttribute('style') ?? '', `${label}: inline animation`).not.toMatch(/animation/i);
 }
 
 /** Stub the OS reduced-motion media query before a render. */
@@ -412,6 +543,313 @@ describe('#2905 ST-4 (f) — None byte-identical invariant', () => {
       expect(new Set(layerIds).size, `${descriptor.id}: unique layer ids`).toBe(layerIds.length);
       // Grounds + layers are all distinct per option (identity distinctness).
       expect(serializePaint(descriptor)).toBeTruthy();
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* #2909 ST-3 — continuous-state + cross-cutting invariant pins.              */
+/* The rendered dense-diff AC1 perceptibility floor stays a tester row        */
+/* (G-205); these are the structural proxies a later edit cannot re-flatten.  */
+/* -------------------------------------------------------------------------- */
+
+describe('#2909 ST-3 (R-1.1/R-1.2) — structural perceptibility proxy', () => {
+  it('every animated layer declares a real, non-no-op motion envelope (NF-1)', () => {
+    let animated = 0;
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      for (const layer of descriptor.layers) {
+        if (!layer.motion) continue;
+        animated += 1;
+        expect(hasNonZeroAmplitude(layer.motion), `${descriptor.id}/${layer.id}: amplitude`).toBe(
+          true,
+        );
+        expect(isBoundedMotion(layer.motion), `${descriptor.id}/${layer.id}: bounded`).toBe(true);
+      }
+    }
+    expect(animated).toBeGreaterThan(0);
+  });
+
+  it('isBoundedMotion rejects a flat no-op envelope (a constant cannot drive perceptibility)', () => {
+    expect(
+      isBoundedMotion({
+        kind: 'sweep',
+        durationMs: 26000,
+        delayMs: 0,
+        easing: 'linear',
+        translateXPct: { from: 5, to: 5 },
+      }),
+    ).toBe(false);
+    expect(
+      isBoundedMotion({
+        kind: 'twinkle',
+        durationMs: 9000,
+        delayMs: 0,
+        easing: 'ease-in-out',
+        opacity: { from: 0.5, to: 0.5 },
+      }),
+    ).toBe(false);
+    // A non-zero rotate with no other envelope is a real motion (not a no-op).
+    expect(
+      isBoundedMotion({
+        kind: 'rotate',
+        durationMs: 8000,
+        delayMs: 0,
+        easing: 'linear',
+        rotateDeg: 2,
+      }),
+    ).toBe(true);
+  });
+
+  it('every recipe has ≥1 broad-edge PRIMARY driver moving ≥8% of the viewport within ≤20s', () => {
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      const primaries = descriptor.layers.filter(
+        (layer) => layer.motion !== undefined && isBroadEdgePrimary(layer.motion),
+      );
+      expect(primaries.length, `${descriptor.id}: broad-edge primary`).toBeGreaterThan(0);
+      for (const primary of primaries) {
+        // NF-2: the primary is a broad spatial transition / repeating tile.
+        expect(
+          String(primary.css.backgroundImage ?? ''),
+          `${descriptor.id}/${primary.id}: broad-edge paint`,
+        ).toMatch(/repeating-linear-gradient|radial-gradient/);
+      }
+    }
+  });
+});
+
+describe('#2909 ST-3 (R-2.1/R-2.2) — motion identity + distinctness', () => {
+  it('the six recipes carry pairwise-distinct motion signatures (kinds + durations + delays + amplitudes)', () => {
+    expect(BACKGROUND_DESCRIPTORS).toHaveLength(6);
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      expect(
+        JSON.parse(motionSignature(descriptor)).length,
+        `${descriptor.id}: animated layers`,
+      ).toBeGreaterThan(0);
+    }
+    const signatures = BACKGROUND_DESCRIPTORS.map(motionSignature);
+    expect(new Set(signatures).size).toBe(6);
+  });
+
+  it('declares ≤3 layers per recipe with unique ids, each carrying a declared identity kind', () => {
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      expect(descriptor.layers.length, `${descriptor.id}: ≤3 layers`).toBeLessThanOrEqual(
+        MOTION_LAYERS_MAX,
+      );
+      const ids = descriptor.layers.map((layer) => layer.id);
+      expect(new Set(ids).size, `${descriptor.id}: unique ids`).toBe(ids.length);
+      for (const layer of descriptor.layers) {
+        if (!layer.motion) continue;
+        expect(typeof layer.motion.kind, `${descriptor.id}/${layer.id}: kind`).toBe('string');
+      }
+    }
+  });
+
+  it('renders every animated layer with its declared data-motion-kind identity hook', async () => {
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      cleanup();
+      stubReducedMotion(false);
+      await selectBackground(descriptor.id);
+      expect(getBackgroundId()).toBe(descriptor.id);
+
+      const { container } = renderWithChakra(<DesktopBackdrop />);
+      const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
+      expect(root.getAttribute('data-background-id')).toBe(descriptor.id);
+
+      const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
+      expect(layers.length, `${descriptor.id}: rendered layers`).toBe(descriptor.layers.length);
+      for (const layer of layers) {
+        const id = layer.getAttribute('data-background-layer') ?? '';
+        const declared = descriptor.layers.find((candidate) => candidate.id === id);
+        expect(declared, `${descriptor.id}/${id}: declared`).toBeDefined();
+        if (declared?.motion) {
+          expect(layer.getAttribute('data-motion-kind'), `${descriptor.id}/${id}: hook`).toBe(
+            declared.motion.kind,
+          );
+        } else {
+          expect(layer.hasAttribute('data-motion-kind'), `${descriptor.id}/${id}: no hook`).toBe(
+            false,
+          );
+        }
+      }
+    }
+  });
+
+  it('covers every declarer with the automatic overscan (requiredOverscanPct <= OVERSCAN)', () => {
+    let declarers = 0;
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      for (const layer of descriptor.layers) {
+        if (!layer.motion) continue;
+        declarers += 1;
+        expect(
+          requiredOverscanPct(layer.motion),
+          `${descriptor.id}/${layer.id}: required`,
+        ).toBeLessThanOrEqual(MOTION_LAYER_OVERSCAN_PCT);
+        expect(overscanCovers(layer.motion), `${descriptor.id}/${layer.id}: covered`).toBe(true);
+      }
+    }
+    expect(declarers).toBeGreaterThan(0);
+  });
+});
+
+describe('#2909 ST-3 (R-3.1/R-3.2) — reduced-motion static render + None byte-identity', () => {
+  it('resolveBackgroundMotion maps BOTH OS legs (pure product-unit gate)', () => {
+    expect(resolveBackgroundMotion({ systemReducedMotion: true })).toBe('static');
+    expect(resolveBackgroundMotion({ systemReducedMotion: false })).toBe('animated');
+  });
+
+  it('renders every recipe static under reduce: data-motion=static, no stylesheet, zero animation properties', async () => {
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      cleanup();
+      stubReducedMotion(true);
+      await selectBackground(descriptor.id);
+
+      const { container } = renderWithChakra(<DesktopBackdrop />);
+      const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
+      expect(root.getAttribute('data-motion'), `${descriptor.id}: data-motion`).toBe('static');
+      expect(
+        container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
+        `${descriptor.id}: no stylesheet`,
+      ).toBeNull();
+
+      const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
+      expect(layers.length).toBe(descriptor.layers.length);
+      for (const layer of layers) {
+        const id = layer.getAttribute('data-background-layer') ?? '';
+        expectNoAnimationSignal(layer, `${descriptor.id}/${id}`);
+      }
+    }
+  });
+
+  it('NONE_BACKGROUND css + layers stay byte-identical to the shipped literal (R-3.2)', () => {
+    const shipped = {
+      backgroundColor: 'var(--card-bg)',
+      backgroundImage: [
+        'linear-gradient(to right, color-mix(in srgb, var(--border-color) 12%, transparent) 1px, transparent 1px)',
+        'linear-gradient(to bottom, color-mix(in srgb, var(--border-color) 12%, transparent) 1px, transparent 1px)',
+      ].join(', '),
+      backgroundSize: '28px 28px',
+    };
+    expect(JSON.stringify(NONE_BACKGROUND.css)).toBe(JSON.stringify(shipped));
+    expect(JSON.stringify(NONE_BACKGROUND.layers)).toBe('[]');
+  });
+
+  it('renders zero backdrop DOM for None in both motion legs (no stylesheet either)', () => {
+    for (const reduced of [true, false]) {
+      cleanup();
+      stubReducedMotion(reduced);
+      const { container } = renderWithChakra(<DesktopBackdrop />);
+      expect(container.querySelector('[data-testid="desktop-backdrop"]')).toBeNull();
+      expect(container.querySelector('[data-testid="desktop-backdrop-motion-styles"]')).toBeNull();
+    }
+  });
+});
+
+describe('#2909 ST-3 (R-4.1/R-4.2/R-4.3) — no strobe + zero JS frame loop', () => {
+  it('every motion envelope stays inside the NF-1 safety bounds', () => {
+    let animated = 0;
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      for (const layer of descriptor.layers) {
+        const motion = layer.motion;
+        if (!motion) continue;
+        animated += 1;
+        const label = `${descriptor.id}/${layer.id}`;
+
+        expect(motion.durationMs, `${label}: duration`).toBeGreaterThanOrEqual(
+          MOTION_DURATION_MIN_MS,
+        );
+        expect(String(motion.easing), `${label}: no steps()`).not.toMatch(/steps/);
+        expect(['linear', 'ease-in-out'], `${label}: easing`).toContain(motion.easing);
+
+        if (motion.opacity) {
+          for (const value of [motion.opacity.from, motion.opacity.to]) {
+            expect(value, `${label}: opacity floor`).toBeGreaterThanOrEqual(MOTION_OPACITY_MIN);
+            expect(value, `${label}: opacity ceiling`).toBeLessThanOrEqual(1);
+          }
+          expect(
+            Math.abs(motion.opacity.to - motion.opacity.from),
+            `${label}: opacity swing`,
+          ).toBeLessThanOrEqual(MOTION_OPACITY_SWING_MAX + 1e-9);
+        }
+
+        if (motion.scale) {
+          for (const value of [motion.scale.from, motion.scale.to]) {
+            expect(value, `${label}: scale min`).toBeGreaterThanOrEqual(MOTION_SCALE_MIN);
+            expect(value, `${label}: scale max`).toBeLessThanOrEqual(MOTION_SCALE_MAX);
+          }
+        }
+
+        if (motion.rotateDeg !== undefined) {
+          expect(Math.abs(motion.rotateDeg), `${label}: rotate`).toBeLessThanOrEqual(
+            MOTION_ROTATE_MAX_DEG,
+          );
+        }
+
+        for (const envelope of [motion.translateXPct, motion.translateYPct]) {
+          if (!envelope) continue;
+          expect(Math.abs(envelope.from), `${label}: translate from`).toBeLessThanOrEqual(
+            MOTION_TRANSLATE_MAX_PCT,
+          );
+          expect(Math.abs(envelope.to), `${label}: translate to`).toBeLessThanOrEqual(
+            MOTION_TRANSLATE_MAX_PCT,
+          );
+        }
+      }
+    }
+    expect(animated).toBeGreaterThan(0);
+  });
+
+  it('never emits steps() in any recipe envelope or generated keyframe stylesheet', () => {
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      for (const layer of descriptor.layers) {
+        if (!layer.motion) continue;
+        expect(String(layer.motion.easing), `${descriptor.id}/${layer.id}`).not.toMatch(/steps/);
+      }
+      expect(buildBackgroundMotionCss(descriptor.layers), `${descriptor.id}: css`).not.toMatch(
+        /steps\s*\(/,
+      );
+    }
+  });
+
+  it('the motion module runs zero JS frame loops (R-4.3)', () => {
+    const code = stripComments(readSource(MOTION_MODULE_PATH));
+    expect(code).not.toMatch(/requestAnimationFrame/);
+    expect(code).not.toMatch(/setInterval/);
+  });
+});
+
+describe('#2909 ST-3 (R-5.1) — theme-token-only motion slice', () => {
+  it('the motion slice source has no color literal, no var(--x)NN append, no raster art', () => {
+    for (const path of MODULE_PATHS) {
+      const code = stripComments(readSource(path));
+      expect(code, `${path}: hex`).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+      expect(code, `${path}: rgb`).not.toMatch(/\brgba?\s*\(/);
+      expect(code, `${path}: hsl`).not.toMatch(/\bhsla?\s*\(/);
+      expect(code, `${path}: url`).not.toMatch(/url\s*\(/);
+      expect(code, `${path}: data:`).not.toMatch(/data:/);
+      expect(code, `${path}: var(--x)NN`).not.toMatch(/var\(--[a-z0-9-]+\)\d/);
+    }
+  });
+
+  it('every generated keyframe stylesheet animates transform/opacity only (no colour substrate)', () => {
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      const css = buildBackgroundMotionCss(descriptor.layers);
+      expect(css, `${descriptor.id}: hex`).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+      expect(css, `${descriptor.id}: rgb`).not.toMatch(/\brgba?\s*\(/);
+      expect(css, `${descriptor.id}: colour decl`).not.toMatch(/\bcolor\s*:/);
+      expect(css, `${descriptor.id}: background-position`).not.toMatch(/background-position/);
+      expect(css, `${descriptor.id}: background-size`).not.toMatch(/background-size\s*:/);
+    }
+  });
+});
+
+describe('#2909 ST-3 — G-162 named-observable contract hooks', () => {
+  it('every bound hook exists exactly as named in the merged source', () => {
+    const backdrop = stripComments(readSource(`${BACKGROUND_DIR}/DesktopBackdrop.tsx`));
+    const settings = stripComments(readSource(`${BACKGROUND_DIR}/BackgroundSettings.tsx`));
+
+    for (const [name, hook] of Object.entries(BOUND_HOOKS)) {
+      const haystack = name === 'motionStatus' || name === 'chooserOption' ? settings : backdrop;
+      expect(haystack, `${name} (${hook})`).toContain(hook);
     }
   });
 });
