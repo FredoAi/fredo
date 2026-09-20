@@ -1395,4 +1395,8 @@ is live. Host mic is virtual-only → L4 feed for audio; L3 for local transcript
     non-empty query present; the managed server unavailable → the model leg is a NAMED BLOCKER
     (G-053) + the synthetic-`stt:state` receipt, never a real-audio PASS.
   - **Receipt:** per mode/theme — the probe JSON + the quoted indicator copy + the screenshot +
-    `telemetry_spans` (the live-policy receipt).
+      `telemetry_spans` (the live-policy receipt).
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
+
+- **F-127 PASS (live, mode parity).** Local: chip `Listening` (63.5×24, `nowrap`, lineCount 1) + `Listening…` placeholder + `release Space to finish` hint chip; model: chip `Fredo is listening` (105.8×24, `nowrap`, lineCount 1) + `release Space to finish` placeholder, hint chip suppressed. Each mode in `light-default` AND `dark`: identical geometry, `verticalOrNarrow []`, empty content-box overlap, model `fieldContentW 206`. Processing window (`Fredo is processing your speech…`) on ONE line. `telemetry_spans` live receipt (17154 rows). Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
