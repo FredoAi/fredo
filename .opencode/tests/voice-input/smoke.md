@@ -255,3 +255,47 @@
 ### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
 
 - **S-28 PASS (live).** Local then model, via the shipped `companion-voice-handling-select` (mode persisted `model`): each mode's indicator rendered on ONE line (local `Listening` + `Listening…` + `release Space to finish` hint; model `Fredo is listening` + `release Space to finish` placeholder, hint suppressed); no `verticalWrap`/`narrow` node; content-box overlap 0; screenshots succeeded; console error-level empty. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
+## #2914 extension — model-audio-only quick paths (the local mode is gone)
+
+> Issue #2914 deletes the local STT engine + the mode. Quick paths only — the full matrix lives in
+> `functional.md` F-128..F-142 / `regression.md` R-42..R-47 / `exploratory.md` E-67..E-72.
+> **Verification policy: live.** Serving checkout: the `spec/2914` tip (fill the SHA per round).
+> **SUPERSESSION:** **S-10** (the `sttModel` model step) and **S-20** (the mode selector, default
+> `local`) are **RETIRED** — the model step and the mode control must not exist; **S-28's LOCAL half**
+> is **RETIRED** (the MODEL half survives as S-30). **S-4** (settings has no voice section) remains a
+> historical spike annotation, not re-run.
+> **Levers (from `functional.md`):** L1 real hold-Space gesture · L2 real control plane
+> (`stt_start|stop|cancel|status|warm|release`, `stt_take_audio_clip`, `llm_chat_with_audio`,
+> `stt_audio_capability`) · L3 synthetic `stt:state` (state only) · L4 `FREDO_STT_FEED_WAV` in-repo
+> feed (`dev-env.ps1 -EnvVar NAME=value`). **`stt:transcript` is RETIRED.** No out-of-repo asset (G-172).
+
+- [ ] S-29: **Settings → Companion voice group has NO STT row.** Open the Settings app window →
+      Companion (ready branch); enumerate `[data-testid^="companion-voice-"]` + nav/section titles.
+  **Expected:** the enable toggle + `companion-voice-device-select` + the model-audio controls render;
+      `companion-voice-model-row` / `-model-download` / `companion-voice-handling-select` /
+      `companion-voice-model-audio-use-local` are ABSENT; no "Voice"/"Local transcription"/"sherpa"
+      text; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-30: **Model-audio listening quick path (no transcript).** Hold Space (L1) on the EMPTY focused
+      bar; sample the chip; release.
+  **Expected:** `Fredo is listening` (`launcher-command-model-listening-chip`) present for the capture
+      with ZERO dictated words anywhere; release → processing → chip clears on `llm-done`; `stt_status.listening`
+      `true` → `false`; screenshot succeeds; console clean. **If the model-audio capability is
+      unavailable → assert the typed non-local remediation instead — never a fabricated delivery.**
+- [ ] S-31: **Wizard has no STT step.** Open `companion-setup-wizard`; enumerate steps + Optional group.
+  **Expected:** no `companion-step-stt-model`; the gating summary unchanged; screenshot succeeds.
+- [ ] S-32: **Build-footprint quick check.** Read `apps/tauri/src-tauri/Cargo.toml` (+ `Cargo.lock`) and
+      grep the source for `sherpa_onnx` / `SherpaRecognizer` / `STT_SUBDIR` / `download_stt_model`.
+  **Expected:** ZERO sherpa entries/symbols; no `SHERPA_ONNX_LIB_DIR` note; the default build needs no
+      native-archive fetch. Record the CI `rust-validate` result (the tester shell has no `cargo`).
+- [ ] S-33: **Cleanup quick path (no-op).** Boot with NO sherpa STT dir; then boot with a seeded one.
+  **Expected:** both boots succeed; the absent case is a silent no-op; the present case removes only the
+      STT dir and touches nothing else; the voice feature stays usable.
+- [ ] S-34: **Evidence + telemetry receipt.** A capture from S-29/S-30 is uploaded via
+      `upload-evidence --issue 2914`, the raw URL resolves, and it is embedded in `## Tests Runs` with a
+      textual description; the body also references `telemetry_spans` (non-zero, recent
+      `max(ingested_at)`).
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
