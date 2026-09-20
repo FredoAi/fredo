@@ -36,7 +36,7 @@ import {
   type BackgroundId,
 } from './backgroundRegistry';
 import { hydrateBackground, selectBackground, useBackgroundId } from './backgroundStore';
-import { useBackgroundMotion } from './backgroundMotion';
+import { layerBoxStyle, useBackgroundMotion } from './backgroundMotion';
 
 /** Chooser order: the shipped `None` first (the default), then the recipes. */
 const BACKGROUND_OPTIONS = [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS] as const;
@@ -193,9 +193,8 @@ export const BackgroundSettings: React.FC = () => {
                     key={layer.id}
                     data-background-layer={layer.id}
                     position="absolute"
-                    inset={0}
                     pointerEvents="none"
-                    css={layer.css}
+                    css={{ ...layer.css, ...layerBoxStyle(layer) }}
                   />
                 ))}
               </Box>

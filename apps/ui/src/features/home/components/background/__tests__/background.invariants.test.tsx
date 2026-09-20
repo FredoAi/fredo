@@ -51,7 +51,7 @@ import {
   NONE_BACKGROUND,
   getBackgroundDescriptor,
 } from '../backgroundRegistry';
-import { MOTION_LAYERS_MAX, isBoundedMotion } from '../backgroundMotion';
+import { MOTION_LAYERS_MAX, MOTION_LAYER_OVERSCAN_PCT, isBoundedMotion } from '../backgroundMotion';
 import {
   getBackgroundId,
   resetBackgroundStoreForTests,
@@ -294,9 +294,9 @@ describe('#2905 ST-4 (d) — motion is declarative + bounded (animated), absent 
     const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
     expect(root.getAttribute('data-motion')).toBe('animated');
     expect(root.getAttribute('data-background-id')).toBe('aurora');
-    expect(
-      container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
-    ).not.toBeNull();
+    const stylesheet = container.querySelector('[data-testid="desktop-backdrop-motion-styles"]');
+    expect(stylesheet).not.toBeNull();
+    const motionCss = stylesheet?.textContent ?? '';
 
     const layers = Array.from(root.querySelectorAll('[data-background-layer]'));
     expect(layers.length).toBeGreaterThan(0);
@@ -312,6 +312,13 @@ describe('#2905 ST-4 (d) — motion is declarative + bounded (animated), absent 
       animatedLayers += 1;
       expect(layer.getAttribute('style') ?? '', `${id}: inline animation`).toMatch(
         /animation-name\s*:/,
+      );
+      // #2909 ST-1: per-layer generated keyframes + the identity hook, and the
+      // shared overscan geometry so travel never exposes an edge.
+      expect(motionCss, `${id}: per-layer keyframes`).toContain(`@keyframes fredo-bg-${id}`);
+      expect(layer.getAttribute('data-motion-kind'), `${id}: identity hook`).toBe(motion.kind);
+      expect(getComputedStyle(layer).inset, `${id}: overscan`).toBe(
+        `-${MOTION_LAYER_OVERSCAN_PCT}%`,
       );
     }
     expect(animatedLayers).toBeGreaterThan(0);
@@ -333,6 +340,14 @@ describe('#2905 ST-4 (d) — motion is declarative + bounded (animated), absent 
     for (const layer of layers) {
       expect(layer.getAttribute('style') ?? '', 'no inline animation').not.toMatch(/animation/i);
       expect(getComputedStyle(layer).animationName || 'none').toBe('none');
+      // Geometry is not an animation property: overscan applies in both legs.
+      const id = layer.getAttribute('data-background-layer');
+      const declared = getBackgroundDescriptor('aurora').layers.find(
+        (candidate) => candidate.id === id,
+      );
+      expect(getComputedStyle(layer).inset, `${id}: overscan`).toBe(
+        declared?.motion ? `-${MOTION_LAYER_OVERSCAN_PCT}%` : '0',
+      );
     }
   });
 });

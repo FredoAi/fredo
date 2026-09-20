@@ -14,9 +14,11 @@
  * order. While animated, the root stamps `data-motion="animated"` and injects
  * the ONE motion stylesheet (`[data-testid="desktop-backdrop-motion-styles"]`)
  * and each animated layer carries its bounded inline `animation*` properties.
+ * Animated layers are oversized by the shared `layerBoxStyle` geometry (so
+ * travel never exposes an edge — G-169) and carry `data-motion-kind="<kind>"`.
  * Under reduced motion the root stamps `data-motion="static"`, the stylesheet is
  * NOT rendered, and no layer carries an animation property — the identical paint
- * with animations removed (not paused mid-frame).
+ * with animations removed (not paused mid-frame); the overscan geometry stays.
  *
  * `none` renders `null` — ZERO new DOM — keeping the shipped default path
  * byte-identical to pre-#2899.
@@ -33,9 +35,10 @@ import { Box } from '@chakra-ui/react';
 import { getBackgroundDescriptor } from './backgroundRegistry';
 import { hydrateBackground, useBackgroundId } from './backgroundStore';
 import {
-  BACKGROUND_MOTION_CSS,
+  buildBackgroundMotionCss,
   MOTION_LAYER_CLASS,
   layerAnimationStyle,
+  layerBoxStyle,
   useBackgroundMotion,
 } from './backgroundMotion';
 
@@ -68,18 +71,24 @@ export const DesktopBackdrop: React.FC = () => {
       css={descriptor.css}
     >
       {animated && (
-        <style data-testid="desktop-backdrop-motion-styles">{BACKGROUND_MOTION_CSS}</style>
+        <style data-testid="desktop-backdrop-motion-styles">
+          {buildBackgroundMotionCss(descriptor.layers)}
+        </style>
       )}
       {descriptor.layers.map((layer) => (
         <Box
           key={layer.id}
           data-background-layer={layer.id}
+          data-motion-kind={layer.motion?.kind}
           className={MOTION_LAYER_CLASS}
           position="absolute"
-          inset={0}
           pointerEvents="none"
-          css={layer.css}
-          style={animated && layer.motion ? layerAnimationStyle(layer.motion) : undefined}
+          css={{ ...layer.css, ...layerBoxStyle(layer) }}
+          style={
+            animated && layer.motion
+              ? layerAnimationStyle({ id: layer.id, motion: layer.motion })
+              : undefined
+          }
         />
       ))}
     </Box>

@@ -4,9 +4,10 @@
  *
  * Every descriptor carries:
  *   - `css` — the GROUND fill: an opaque, theme-derived surface (`var(--…)`);
- *   - `layers` — the ordered paint stack (bottom → top). Each layer is exactly
- *     ONE gradient/fill plus optional bounded motion metadata. The renderer adds
- *     `position: absolute; inset: 0`; the registry owns only the paint + motion.
+ *   - `layers` — the ordered paint stack (bottom → top). Each layer is one or
+ *     more stacked token-only gradients plus optional bounded motion metadata.
+ *     The renderer adds `position: absolute` and the shared `layerBoxStyle`
+ *     geometry (overscan for animated layers); the registry owns paint + motion.
  *
  * Every colour is a PURE function of live theme CSS custom properties: no colour
  * literal, no raster asset, no `url()`/`data:` URI. Translucency is produced
@@ -26,6 +27,7 @@
 
 import type { CSSProperties } from 'react';
 import { tint } from '../../../../shared/utils/colorTint';
+import type { BackgroundLayerMotion } from './backgroundMotion';
 
 /** The closed background id set: `none` (default) + six procedural recipes. */
 export type BackgroundId =
@@ -37,29 +39,8 @@ export type BackgroundId =
   | 'constellation'
   | 'halo';
 
-/** The bounded motion vocabulary (Spec #2905 ST-2). Each kind maps to ONE
- *  `@keyframes` block in `backgroundMotion.ts`. */
-export type BackgroundMotionKind =
-  | 'drift' // lateral translate (translate3d)
-  | 'breathe' // scale + gentle opacity swell
-  | 'pulse' // small scale + small opacity
-  | 'twinkle' // opacity only, phase-varied
-  | 'sweep' // directional translate of a line/contour layer (NO opacity)
-  | 'rotate'; // slow rotate (transform only)
-
-/** The bounded timing envelope for ONE animated layer. */
-export interface BackgroundLayerMotion {
-  kind: BackgroundMotionKind;
-  /** >= MOTION_DURATION_MIN_MS (8000). */
-  durationMs: number;
-  /** 0 <= delayMs < durationMs (phase offset). */
-  delayMs: number;
-  /** Never `steps()` — no visible restart seam / strobe. */
-  easing: 'linear' | 'ease-in-out';
-  direction?: 'normal' | 'alternate' | 'reverse';
-}
-
-/** ONE paint layer. The renderer adds `position: absolute; inset: 0`. */
+/** ONE paint layer. The renderer adds `position: absolute` and the shared
+ *  `layerBoxStyle` geometry (`inset`). */
 export interface BackgroundLayer {
   /** Drives `data-background-layer` — unique within a descriptor. */
   id: string;
@@ -110,14 +91,30 @@ const AURORA_BACKGROUND: BackgroundDescriptor = {
       css: {
         backgroundImage: `radial-gradient(120% 90% at 15% 0%, ${tint('var(--accent-primary)', 26)}, transparent 60%)`,
       },
-      motion: { kind: 'drift', durationMs: 45000, delayMs: 0, easing: 'ease-in-out', direction: 'normal' },
+      motion: {
+        kind: 'drift',
+        durationMs: 45000,
+        delayMs: 0,
+        easing: 'ease-in-out',
+        direction: 'normal',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 1.5, to: -1.5 },
+      },
     },
     {
       id: 'aurora-curtain-east',
       css: {
         backgroundImage: `radial-gradient(120% 90% at 85% 20%, ${tint('var(--accent-secondary)', 22)}, transparent 60%)`,
       },
-      motion: { kind: 'drift', durationMs: 68000, delayMs: 6000, easing: 'ease-in-out', direction: 'reverse' },
+      motion: {
+        kind: 'drift',
+        durationMs: 68000,
+        delayMs: 6000,
+        easing: 'ease-in-out',
+        direction: 'reverse',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 1.5, to: -1.5 },
+      },
     },
   ],
 };
@@ -133,14 +130,28 @@ const NEBULA_BACKGROUND: BackgroundDescriptor = {
       css: {
         backgroundImage: `radial-gradient(90% 70% at 70% 15%, ${tint('var(--accent-primary)', 20)}, transparent 65%)`,
       },
-      motion: { kind: 'breathe', durationMs: 110000, delayMs: 0, easing: 'ease-in-out' },
+      motion: {
+        kind: 'breathe',
+        durationMs: 110000,
+        delayMs: 0,
+        easing: 'ease-in-out',
+        opacity: { from: 0.85, to: 0.95 },
+        scale: { from: 0.96, to: 1.06 },
+      },
     },
     {
       id: 'nebula-counter-bloom',
       css: {
         backgroundImage: `radial-gradient(90% 70% at 20% 80%, ${tint('var(--accent-secondary)', 16)}, transparent 65%)`,
       },
-      motion: { kind: 'rotate', durationMs: 110000, delayMs: 0, easing: 'linear' },
+      motion: {
+        kind: 'rotate',
+        durationMs: 110000,
+        delayMs: 0,
+        easing: 'linear',
+        opacity: { from: 0.9, to: 0.95 },
+        rotateDeg: 1,
+      },
     },
     {
       // The non-moving texture anchor — NO motion on purpose.
@@ -164,21 +175,42 @@ const MESH_BACKGROUND: BackgroundDescriptor = {
       css: {
         backgroundImage: `radial-gradient(80% 80% at 15% 10%, ${tint('var(--accent-primary)', 18)}, transparent 60%)`,
       },
-      motion: { kind: 'drift', durationMs: 48000, delayMs: 0, easing: 'ease-in-out' },
+      motion: {
+        kind: 'drift',
+        durationMs: 48000,
+        delayMs: 0,
+        easing: 'ease-in-out',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 1.5, to: -1.5 },
+      },
     },
     {
       id: 'mesh-node-secondary',
       css: {
         backgroundImage: `radial-gradient(80% 80% at 85% 15%, ${tint('var(--accent-secondary)', 16)}, transparent 60%)`,
       },
-      motion: { kind: 'drift', durationMs: 61000, delayMs: 12000, easing: 'ease-in-out' },
+      motion: {
+        kind: 'drift',
+        durationMs: 61000,
+        delayMs: 12000,
+        easing: 'ease-in-out',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 1.5, to: -1.5 },
+      },
     },
     {
       id: 'mesh-node-info',
       css: {
         backgroundImage: `radial-gradient(80% 80% at 50% 100%, ${tint('var(--status-info)', 12)}, transparent 60%)`,
       },
-      motion: { kind: 'drift', durationMs: 74000, delayMs: 24000, easing: 'ease-in-out' },
+      motion: {
+        kind: 'drift',
+        durationMs: 74000,
+        delayMs: 24000,
+        easing: 'ease-in-out',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 1.5, to: -1.5 },
+      },
     },
   ],
 };
@@ -194,7 +226,14 @@ const TOPOGRAPHY_BACKGROUND: BackgroundDescriptor = {
       css: {
         backgroundImage: `repeating-radial-gradient(circle at 30% 40%, transparent 0 22px, ${tint('var(--accent-primary)', 10)} 22px 23px)`,
       },
-      motion: { kind: 'sweep', durationMs: 100000, delayMs: 0, easing: 'linear' },
+      motion: {
+        kind: 'sweep',
+        durationMs: 100000,
+        delayMs: 0,
+        easing: 'linear',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 3, to: -3 },
+      },
     },
   ],
 };
@@ -210,7 +249,14 @@ const CONSTELLATION_BACKGROUND: BackgroundDescriptor = {
       css: {
         backgroundImage: `radial-gradient(100% 80% at 50% 50%, ${tint('var(--accent-primary)', 10)}, transparent 60%)`,
       },
-      motion: { kind: 'drift', durationMs: 120000, delayMs: 0, easing: 'linear' },
+      motion: {
+        kind: 'drift',
+        durationMs: 120000,
+        delayMs: 0,
+        easing: 'linear',
+        translateXPct: { from: -3, to: 3 },
+        translateYPct: { from: 1.5, to: -1.5 },
+      },
     },
     {
       id: 'constellation-stars-far',
@@ -218,7 +264,13 @@ const CONSTELLATION_BACKGROUND: BackgroundDescriptor = {
         backgroundImage: `radial-gradient(${tint('var(--text-primary)', 16)} 1.2px, transparent 1.2px)`,
         backgroundSize: '26px 26px',
       },
-      motion: { kind: 'twinkle', durationMs: 11000, delayMs: 0, easing: 'ease-in-out' },
+      motion: {
+        kind: 'twinkle',
+        durationMs: 11000,
+        delayMs: 0,
+        easing: 'ease-in-out',
+        opacity: { from: 0.4, to: 0.65 },
+      },
     },
     {
       id: 'constellation-stars-near',
@@ -226,7 +278,13 @@ const CONSTELLATION_BACKGROUND: BackgroundDescriptor = {
         backgroundImage: `radial-gradient(${tint('var(--text-primary)', 20)} 1.6px, transparent 1.6px)`,
         backgroundSize: '34px 34px',
       },
-      motion: { kind: 'twinkle', durationMs: 8000, delayMs: 3500, easing: 'ease-in-out' },
+      motion: {
+        kind: 'twinkle',
+        durationMs: 8000,
+        delayMs: 3500,
+        easing: 'ease-in-out',
+        opacity: { from: 0.4, to: 0.65 },
+      },
     },
   ],
 };
@@ -242,7 +300,14 @@ const HALO_BACKGROUND: BackgroundDescriptor = {
       css: {
         backgroundImage: `radial-gradient(120% 100% at 50% 18%, ${tint('var(--accent-primary)', 16)}, transparent 62%)`,
       },
-      motion: { kind: 'breathe', durationMs: 18000, delayMs: 0, easing: 'ease-in-out' },
+      motion: {
+        kind: 'breathe',
+        durationMs: 18000,
+        delayMs: 0,
+        easing: 'ease-in-out',
+        opacity: { from: 0.85, to: 0.95 },
+        scale: { from: 0.96, to: 1.06 },
+      },
     },
   ],
 };

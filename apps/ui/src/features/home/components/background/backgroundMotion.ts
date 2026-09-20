@@ -1,19 +1,37 @@
 /**
- * backgroundMotion — the ONE module that owns desktop-background motion
- * (Spec #2905 ST-2 / ST-3).
+ * backgroundMotion — the ONE module that owns the desktop-background motion
+ * CONTRACT (Spec #2905 ST-2 / ST-3; per-layer envelopes + generated keyframes +
+ * overscan in Spec #2909 ST-1).
  *
- * Motion is declARATIVE CSS `@keyframes` applied to already-painted gradient
+ * This module is the source of truth for the motion TYPES
+ * (`BackgroundMotionKind` / `BackgroundLayerMotion` / `MotionEnvelope`) — the
+ * registry imports them (type-only, no runtime cycle). It is also the ONLY
+ * module allowed to author `@keyframes`.
+ *
+ * Motion is declarative CSS `@keyframes` applied to already-painted gradient
  * layers. It animates `transform` and `opacity` ONLY — never a colour property,
  * never `background-position`/`background-size` (those repaint every frame), and
- * never a JS frame loop (no `requestAnimationFrame`, no `setInterval`). Every
- * motion is bounded by the constants below so it can never strobe or blank out:
+ * never a JS frame loop (no `requestAnimationFrame`, no `setInterval`).
+ *
+ * Amplitude is now a PER-LAYER envelope (`translateXPct` / `translateYPct` /
+ * `opacity` / `scale` / `rotateDeg`) instead of a fixed per-kind table, and one
+ * `@keyframes` block is generated PER ANIMATED LAYER ID (`fredo-bg-<layerId>`)
+ * so two layers of the same kind can carry different amplitudes. Every motion is
+ * bounded by the constants below so it can never strobe or blank out:
  *
  *   - no cycle shorter than `MOTION_DURATION_MIN_MS` (8 s);
- *   - layer opacity never drops below `MOTION_OPACITY_MIN` and never swings more
- *     than `MOTION_OPACITY_SWING_MAX` (no 0↔1 blank-out);
- *   - `translate` stays within `MOTION_TRANSLATE_MAX_PCT` of the layer box;
+ *   - layer opacity stays within `[MOTION_OPACITY_MIN, 1]` and swings at most
+ *     `MOTION_OPACITY_SWING_MAX`;
+ *   - every `translate` endpoint is within `MOTION_TRANSLATE_MAX_PCT` of the
+ *     layer box;
  *   - `scale` stays within `[MOTION_SCALE_MIN, MOTION_SCALE_MAX]`;
- *   - `rotate` stays within `MOTION_ROTATE_MAX_DEG`.
+ *   - `rotate` stays within `MOTION_ROTATE_MAX_DEG`;
+ *   - every motion declares at least one non-zero amplitude envelope.
+ *
+ * A layer that carries `motion` is OVERSIZED by `MOTION_LAYER_OVERSCAN_PCT` per
+ * edge via the shared `layerBoxStyle` helper (G-169) so translate/scale/rotate
+ * never expose an edge. The required overscan is a pure function of the composed
+ * envelope (`requiredOverscanPct`) and `overscanCovers` asserts it fits.
  *
  * The static gate is DECLARATIVE (belt-and-braces): the injected stylesheet
  * removes the animation property under `@media (prefers-reduced-motion: reduce)`
@@ -29,10 +47,46 @@
 import type { CSSProperties } from 'react';
 import { useEffect, useState } from 'react';
 
-import type {
-  BackgroundLayerMotion,
-  BackgroundMotionKind,
-} from './backgroundRegistry';
+/** The bounded motion vocabulary. `rotate`/`pulse` are retained for compatible
+ *  recipes even though the six shipped recipes do not all use them. */
+export type BackgroundMotionKind =
+  | 'drift' // lateral translate (translate3d)
+  | 'breathe' // scale + gentle opacity swell
+  | 'pulse' // small scale + small opacity
+  | 'twinkle' // opacity only, phase-varied
+  | 'sweep' // directional translate of a line/contour layer
+  | 'rotate'; // slow rotate (transform only)
+
+/** An envelope pair: the keyframe emits `from` at 0%/100% and `to` at 50%. */
+export interface MotionEnvelope {
+  from: number;
+  to: number;
+}
+
+/**
+ * The bounded motion declaration for ONE animated layer. Amplitude is
+ * PER-LAYER (`translateXPct`/`translateYPct`/`opacity`/`scale`/`rotateDeg`), so
+ * two layers of the same `kind` can move by different amounts.
+ */
+export interface BackgroundLayerMotion {
+  kind: BackgroundMotionKind;
+  /** >= MOTION_DURATION_MIN_MS (8000). */
+  durationMs: number;
+  /** 0 <= delayMs < durationMs (phase offset). */
+  delayMs: number;
+  /** Never `steps()` — no visible restart seam / strobe. */
+  easing: 'linear' | 'ease-in-out';
+  direction?: 'normal' | 'alternate' | 'reverse';
+  /** translate as a % of the LAYER box (0 = no x travel). */
+  translateXPct?: MotionEnvelope;
+  translateYPct?: MotionEnvelope;
+  /** Both endpoints within [MOTION_OPACITY_MIN, 1]. */
+  opacity?: MotionEnvelope;
+  /** Both endpoints within [MOTION_SCALE_MIN, MOTION_SCALE_MAX]. */
+  scale?: MotionEnvelope;
+  /** Symmetrical -d..+d (|d| <= MOTION_ROTATE_MAX_DEG). */
+  rotateDeg?: number;
+}
 
 /** At most three simultaneously animated layers per recipe. */
 export const MOTION_LAYERS_MAX = 3;
@@ -42,43 +96,26 @@ export const MOTION_DURATION_MIN_MS = 8000;
 /** A layer's opacity never drops below this — never a blank-out. */
 export const MOTION_OPACITY_MIN = 0.35;
 /** A layer's opacity delta across the whole cycle is never larger than this. */
-export const MOTION_OPACITY_SWING_MAX = 0.25;
+export const MOTION_OPACITY_SWING_MAX = 0.45;
 /** The largest `|translate|` a layer may travel, as a % of its own box. */
-export const MOTION_TRANSLATE_MAX_PCT = 3;
+export const MOTION_TRANSLATE_MAX_PCT = 12;
 /** The smallest / largest `scale` a layer may reach. */
-export const MOTION_SCALE_MIN = 0.94;
-export const MOTION_SCALE_MAX = 1.1;
+export const MOTION_SCALE_MIN = 0.85;
+export const MOTION_SCALE_MAX = 1.2;
 /** The largest `|rotate|` (degrees) a layer may reach. */
-export const MOTION_ROTATE_MAX_DEG = 2;
-
-/** Speed classes (UI/UX §2 identity table). Plain numeric literals — timings
- *  are not colours and are allowed in the registry/motion layer. */
-export const MOTION_DRIFT_SLOW_MIN_MS = 90000;
-export const MOTION_DRIFT_MEDIUM_MIN_MS = 45000;
-export const MOTION_BREATHE_MIN_MS = 18000;
-export const MOTION_TWINKLE_MIN_MS = 8000;
+export const MOTION_ROTATE_MAX_DEG = 4;
+/**
+ * The automatic overscan (viewport % per edge) applied to EVERY layer carrying
+ * motion — so travel/scale/rotate never exposes a hard edge (G-169). The shared
+ * `layerBoxStyle` helper is the single source of the geometry, used by the
+ * backdrop AND the chooser thumbnails so the preview cannot drift.
+ */
+export const MOTION_LAYER_OVERSCAN_PCT = 30;
 
 /** The class the injected stylesheet (and the declarative static gates) target. */
 export const MOTION_LAYER_CLASS = 'fredo-bg-layer';
 
-/** One `@keyframes` kind's paint budget. `isBoundedMotion` validates a motion
- *  against its kind's spec (overridable so violations are unit-testable). */
-export interface BackgroundMotionKeyframes {
-  /** Minimum opacity the cycle reaches (>= `MOTION_OPACITY_MIN`). */
-  opacityMin: number;
-  /** Maximum opacity the cycle reaches (<= 1). */
-  opacityMax: number;
-  /** Smallest scale reached (>= `MOTION_SCALE_MIN`). */
-  scaleMin: number;
-  /** Largest scale reached (<= `MOTION_SCALE_MAX`). */
-  scaleMax: number;
-  /** Largest `|translate|` as a % of the layer box (<= `MOTION_TRANSLATE_MAX_PCT`). */
-  translatePct: number;
-  /** Largest `|rotate|` in degrees (<= `MOTION_ROTATE_MAX_DEG`). */
-  rotateDeg: number;
-}
-
-/** Every motion kind, in the order the keyframe blocks are emitted. */
+/** Every motion kind, in the order the kind vocabulary is declared. */
 export const BACKGROUND_MOTION_KINDS: readonly BackgroundMotionKind[] = [
   'drift',
   'breathe',
@@ -88,85 +125,57 @@ export const BACKGROUND_MOTION_KINDS: readonly BackgroundMotionKind[] = [
   'rotate',
 ];
 
-/**
- * The per-kind keyframe budget. These MUST stay within the hard bounds above —
- * the keyframe CSS below is authored to match, and `isBoundedMotion` is the
- * guard that keeps a future edit honest.
- */
-export const MOTION_KEYFRAME_SPECS: Readonly<
-  Record<BackgroundMotionKind, BackgroundMotionKeyframes>
-> = {
-  // Pure lateral/parallax travel — opacity is constant (never a flicker).
-  drift: { opacityMin: 1, opacityMax: 1, scaleMin: 1, scaleMax: 1, translatePct: 3, rotateDeg: 0 },
-  // Slow radial scale + gentle opacity swell.
-  breathe: { opacityMin: 0.85, opacityMax: 0.95, scaleMin: 0.96, scaleMax: 1.06, translatePct: 0, rotateDeg: 0 },
-  // Small, calm scale + opacity pulse.
-  pulse: { opacityMin: 0.88, opacityMax: 0.94, scaleMin: 0.98, scaleMax: 1.04, translatePct: 0, rotateDeg: 0 },
-  // Opacity only, phase-varied (constellation's signature).
-  twinkle: { opacityMin: 0.4, opacityMax: 0.65, scaleMin: 1, scaleMax: 1, translatePct: 0, rotateDeg: 0 },
-  // Directional travel of a line/contour layer — ZERO opacity change.
-  sweep: { opacityMin: 1, opacityMax: 1, scaleMin: 1, scaleMax: 1, translatePct: 3, rotateDeg: 0 },
-  // Slow rotation (transform only) + a whisper of opacity.
-  rotate: { opacityMin: 0.9, opacityMax: 0.95, scaleMin: 1, scaleMax: 1, translatePct: 0, rotateDeg: 1 },
-};
-
-/**
- * The ONE injected stylesheet: one `@keyframes` block per kind
- * (`transform`/`opacity` ONLY) plus the two declarative static gates. It is
- * emitted only while the backdrop is animated (`data-motion="animated"`) — the
- * static leg renders zero motion CSS and zero inline animation properties.
- */
-export const BACKGROUND_MOTION_CSS = `
-@keyframes fredo-bg-drift {
-  0% { transform: translate3d(-3%, 1.5%, 0); }
-  50% { transform: translate3d(3%, -1.5%, 0); }
-  100% { transform: translate3d(-3%, 1.5%, 0); }
-}
-@keyframes fredo-bg-breathe {
-  0%, 100% { opacity: 0.85; transform: scale(0.96); }
-  50% { opacity: 0.95; transform: scale(1.06); }
-}
-@keyframes fredo-bg-pulse {
-  0%, 100% { opacity: 0.88; transform: scale(0.98); }
-  50% { opacity: 0.94; transform: scale(1.04); }
-}
-@keyframes fredo-bg-twinkle {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.65; }
-}
-@keyframes fredo-bg-sweep {
-  0% { transform: translate3d(-3%, 3%, 0); }
-  50% { transform: translate3d(3%, -3%, 0); }
-  100% { transform: translate3d(-3%, 3%, 0); }
-}
-@keyframes fredo-bg-rotate {
-  0%, 100% { opacity: 0.9; transform: rotate(-1deg); }
-  50% { opacity: 0.95; transform: rotate(1deg); }
-}
-.${MOTION_LAYER_CLASS} {
-  will-change: transform, opacity;
-}
-@media (prefers-reduced-motion: reduce) {
-  .${MOTION_LAYER_CLASS} { animation: none !important; }
-}
-[data-motion="static"] .${MOTION_LAYER_CLASS} {
-  animation: none !important;
-}
-`.trim();
-
 const MOTION_KIND_SET: ReadonlySet<string> = new Set(BACKGROUND_MOTION_KINDS);
-
 const MOTION_EASINGS: ReadonlySet<string> = new Set(['linear', 'ease-in-out']);
 const MOTION_DIRECTIONS: ReadonlySet<string> = new Set(['normal', 'alternate', 'reverse']);
 
 /**
- * PURE bound validator (R-3.2/R-4.3). `spec` defaults to the motion's own kind
- * budget; passing an override lets a unit test prove a violation is rejected.
+ * The layer-box factor implied by the maximum overscan: the layer spans
+ * `100 + 2*overscan` % of the viewport, so one layer-box percent is
+ * `K = 1 + 2*overscan/100` viewport percent. Used to translate envelopes
+ * (expressed in layer-box %) into the viewport-relative overscan they need.
  */
-export function isBoundedMotion(
-  motion: BackgroundLayerMotion,
-  spec?: BackgroundMotionKeyframes,
-): boolean {
+const MOTION_LAYER_BOX_FACTOR = 1 + (2 * MOTION_LAYER_OVERSCAN_PCT) / 100;
+
+/** A minimal layer shape the motion helpers accept (structurally `BackgroundLayer`). */
+export interface MotionLayerLike {
+  id: string;
+  motion?: BackgroundLayerMotion;
+}
+
+function envelopeIsFinite(envelope: MotionEnvelope): boolean {
+  return Number.isFinite(envelope.from) && Number.isFinite(envelope.to);
+}
+
+function envelopeWithin(envelope: MotionEnvelope, min: number, max: number): boolean {
+  return envelope.from >= min && envelope.from <= max && envelope.to >= min && envelope.to <= max;
+}
+
+function envelopeMoves(envelope: MotionEnvelope | undefined): boolean {
+  return (
+    envelope !== undefined &&
+    Number.isFinite(envelope.from) &&
+    Number.isFinite(envelope.to) &&
+    envelope.from !== envelope.to
+  );
+}
+
+/** At least one declared envelope must actually move (NF-1: no no-op motion). */
+function hasNonZeroAmplitude(motion: BackgroundLayerMotion): boolean {
+  return (
+    envelopeMoves(motion.translateXPct) ||
+    envelopeMoves(motion.translateYPct) ||
+    envelopeMoves(motion.opacity) ||
+    envelopeMoves(motion.scale) ||
+    (motion.rotateDeg !== undefined && Number.isFinite(motion.rotateDeg) && motion.rotateDeg !== 0)
+  );
+}
+
+/**
+ * PURE bound validator. A motion is bounded when every declared envelope stays
+ * inside the hard caps and it declares at least one non-zero amplitude (NF-1).
+ */
+export function isBoundedMotion(motion: BackgroundLayerMotion): boolean {
   if (!MOTION_KIND_SET.has(motion.kind)) return false;
   if (!Number.isFinite(motion.durationMs) || motion.durationMs < MOTION_DURATION_MIN_MS) return false;
   if (!Number.isFinite(motion.delayMs) || motion.delayMs < 0 || motion.delayMs >= motion.durationMs) {
@@ -175,24 +184,143 @@ export function isBoundedMotion(
   if (!MOTION_EASINGS.has(motion.easing)) return false; // rejects steps(...)
   if (motion.direction !== undefined && !MOTION_DIRECTIONS.has(motion.direction)) return false;
 
-  const bounds = spec ?? MOTION_KEYFRAME_SPECS[motion.kind];
-  if (bounds.opacityMin < MOTION_OPACITY_MIN) return false;
-  if (bounds.opacityMax > 1) return false;
-  if (bounds.opacityMax - bounds.opacityMin > MOTION_OPACITY_SWING_MAX) return false;
-  if (bounds.scaleMin < MOTION_SCALE_MIN) return false;
-  if (bounds.scaleMax > MOTION_SCALE_MAX) return false;
-  if (Math.abs(bounds.translatePct) > MOTION_TRANSLATE_MAX_PCT) return false;
-  if (Math.abs(bounds.rotateDeg) > MOTION_ROTATE_MAX_DEG) return false;
-  // topography's sweep must NOT oscillate opacity at all.
-  if (motion.kind === 'sweep' && bounds.opacityMin !== bounds.opacityMax) return false;
+  const translate = [motion.translateXPct, motion.translateYPct];
+  for (const envelope of translate) {
+    if (envelope === undefined) continue;
+    if (!envelopeIsFinite(envelope)) return false;
+    if (Math.abs(envelope.from) > MOTION_TRANSLATE_MAX_PCT) return false;
+    if (Math.abs(envelope.to) > MOTION_TRANSLATE_MAX_PCT) return false;
+  }
 
-  return true;
+  if (motion.opacity !== undefined) {
+    if (!envelopeIsFinite(motion.opacity)) return false;
+    if (!envelopeWithin(motion.opacity, MOTION_OPACITY_MIN, 1)) return false;
+    // Epsilon: `0.8 - 0.35` is `0.45000000000000007` in IEEE-754, so an
+    // envelope exactly AT the cap must still pass.
+    if (Math.abs(motion.opacity.to - motion.opacity.from) > MOTION_OPACITY_SWING_MAX + 1e-9) {
+      return false;
+    }
+  }
+
+  if (motion.scale !== undefined) {
+    if (!envelopeIsFinite(motion.scale)) return false;
+    if (!envelopeWithin(motion.scale, MOTION_SCALE_MIN, MOTION_SCALE_MAX)) return false;
+  }
+
+  if (motion.rotateDeg !== undefined) {
+    if (!Number.isFinite(motion.rotateDeg)) return false;
+    if (Math.abs(motion.rotateDeg) > MOTION_ROTATE_MAX_DEG) return false;
+  }
+
+  return hasNonZeroAmplitude(motion);
+}
+
+/**
+ * The overscan (viewport % per edge) a motion's COMPOSED envelope requires
+ * (G-169): the largest translate × the layer-box factor, plus the scale shrink
+ * (`0.5·(1−scaleMin)`), plus the rotate corner slack (`0.5·sin θ`), all scaled
+ * by the layer-box factor. Pure, and unit-pinned.
+ */
+export function requiredOverscanPct(motion: BackgroundLayerMotion): number {
+  const translate = Math.max(
+    Math.abs(motion.translateXPct?.from ?? 0),
+    Math.abs(motion.translateXPct?.to ?? 0),
+    Math.abs(motion.translateYPct?.from ?? 0),
+    Math.abs(motion.translateYPct?.to ?? 0),
+  );
+  const scaleMin = motion.scale ? Math.min(motion.scale.from, motion.scale.to) : 1;
+  const rotateDeg = Math.abs(motion.rotateDeg ?? 0);
+  const rotateSlack = 0.5 * Math.sin((rotateDeg * Math.PI) / 180);
+  const scaleSlack = 0.5 * (1 - scaleMin);
+  return (translate + scaleSlack + rotateSlack) * MOTION_LAYER_BOX_FACTOR;
+}
+
+/** True when the automatic overscan covers the motion's required envelope. */
+export function overscanCovers(motion: BackgroundLayerMotion): boolean {
+  return requiredOverscanPct(motion) <= MOTION_LAYER_OVERSCAN_PCT;
+}
+
+/** Compose the transform functions for a `from`/`to` keyframe stop. */
+function transformFor(motion: BackgroundLayerMotion, stop: 'from' | 'to'): string | undefined {
+  const parts: string[] = [];
+  if (motion.translateXPct || motion.translateYPct) {
+    const x = (stop === 'from' ? motion.translateXPct?.from : motion.translateXPct?.to) ?? 0;
+    const y = (stop === 'from' ? motion.translateYPct?.from : motion.translateYPct?.to) ?? 0;
+    parts.push(`translate3d(${x}%, ${y}%, 0)`);
+  }
+  if (motion.scale) {
+    parts.push(`scale(${stop === 'from' ? motion.scale.from : motion.scale.to})`);
+  }
+  if (motion.rotateDeg !== undefined) {
+    parts.push(`rotate(${stop === 'from' ? -motion.rotateDeg : motion.rotateDeg}deg)`);
+  }
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
+/** The declarations emitted at one keyframe stop (transform/opacity ONLY). */
+function declarationFor(motion: BackgroundLayerMotion, stop: 'from' | 'to'): string {
+  const declarations: string[] = [];
+  if (motion.opacity) {
+    declarations.push(`opacity: ${stop === 'from' ? motion.opacity.from : motion.opacity.to};`);
+  }
+  const transform = transformFor(motion, stop);
+  if (transform) declarations.push(`transform: ${transform};`);
+  return declarations.join(' ');
+}
+
+/** One generated `@keyframes` block for one animated layer. */
+function keyframesBlockFor(layer: MotionLayerLike & { motion: BackgroundLayerMotion }): string {
+  const from = declarationFor(layer.motion, 'from');
+  const to = declarationFor(layer.motion, 'to');
+  return [
+    `@keyframes fredo-bg-${layer.id} {`,
+    `  0%, 100% { ${from} }`,
+    `  50% { ${to} }`,
+    `}`,
+  ].join('\n');
+}
+
+/**
+ * The declarative gates shared by every generated stylesheet (the shared layer
+ * class + the two static gates). Keyframe blocks are per descriptor.
+ */
+export const MOTION_GATES_CSS = [
+  `.${MOTION_LAYER_CLASS} {`,
+  `  will-change: transform, opacity;`,
+  `}`,
+  `@media (prefers-reduced-motion: reduce) {`,
+  `  .${MOTION_LAYER_CLASS} { animation: none !important; }`,
+  `}`,
+  `[data-motion="static"] .${MOTION_LAYER_CLASS} {`,
+  `  animation: none !important;`,
+  `}`,
+].join('\n');
+
+/**
+ * The ONE injected stylesheet for the ACTIVE descriptor: one `@keyframes` block
+ * per animated layer id (`fredo-bg-<layerId>`, 0%/100% `from`, 50% `to`,
+ * transform/opacity ONLY) plus the declarative static gates. Static layers get
+ * no block. Emitted only while the backdrop is animated — the static leg renders
+ * zero motion CSS and zero inline animation properties.
+ */
+export function buildBackgroundMotionCss(layers: readonly MotionLayerLike[]): string {
+  const blocks = layers
+    .filter(
+      (layer): layer is MotionLayerLike & { motion: BackgroundLayerMotion } =>
+        layer.motion !== undefined,
+    )
+    .map(keyframesBlockFor);
+  return [...blocks, MOTION_GATES_CSS].join('\n');
 }
 
 /** The inline animation properties for one bounded layer (animated leg only). */
-export function layerAnimationStyle(motion: BackgroundLayerMotion): CSSProperties {
+export function layerAnimationStyle(layer: {
+  id: string;
+  motion: BackgroundLayerMotion;
+}): CSSProperties {
+  const { motion } = layer;
   return {
-    animationName: `fredo-bg-${motion.kind}`,
+    animationName: `fredo-bg-${layer.id}`,
     animationDuration: `${motion.durationMs}ms`,
     animationDelay: `${motion.delayMs}ms`,
     animationTimingFunction: motion.easing,
@@ -200,6 +328,18 @@ export function layerAnimationStyle(motion: BackgroundLayerMotion): CSSPropertie
     animationDirection: motion.direction ?? 'normal',
     animationFillMode: 'both',
   };
+}
+
+/**
+ * ONE shared layer-box geometry (UX-3): the backdrop AND the chooser thumbnails
+ * call this, so the static preview cannot drift from the composition. A layer
+ * carrying motion is oversized by `MOTION_LAYER_OVERSCAN_PCT` per edge (G-169);
+ * a static layer stays at `inset: 0`. Returns `{ inset }` as CSS unit strings
+ * (Chakra numeric props are SPACE TOKENS — references.md:24).
+ */
+export function layerBoxStyle(layer: { motion?: BackgroundLayerMotion }): CSSProperties {
+  if (!layer.motion) return { inset: '0' };
+  return { inset: `-${MOTION_LAYER_OVERSCAN_PCT}%` };
 }
 
 /** The resolved motion status the paint gates on. */
