@@ -427,20 +427,11 @@ pub fn run() {
                 .await;
             });
 
-            // Voice / STT session state: holds the ONE active listening session.
-            // The microphone is still opened ONLY by `stt_start`; the engine, by
-            // contrast, loads once per process into the resident slot (see
-            // `infrastructure::voice::resident`) so a dictation does not re-pay
-            // the model load (Spec #2887 R-1/R-6/R-7).
+            // Voice session state: holds the ONE active listening session and the
+            // bounded model-audio clip awaiting `stt_take_audio_clip`. The
+            // microphone is opened ONLY by `stt_start` (Spec #2887 / #2914 —
+            // there is no resident engine: the captured clip is the ONE path).
             app.manage(infrastructure::voice::session::VoiceState::new());
-            app.manage(infrastructure::voice::resident::ResidentEngine::new());
-
-            // Earliest-safe warm (Spec #2887 ST-1): FIRE-AND-FORGET — nothing on
-            // this path awaits it, so app startup is never blocked or delayed.
-            // Gated on the persisted opt-in flag + model presence, silent on
-            // failure, engine-only (it never touches capture). Spawned AFTER the
-            // state is managed so the background task can always resolve it.
-            infrastructure::voice::resident::ResidentEngine::warm_at_setup(app.handle());
 
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
@@ -533,17 +524,14 @@ pub fn run() {
             infrastructure::feature_data::commands::feature_data_write,
             infrastructure::feature_data::commands::feature_data_delete,
             infrastructure::feature_data::commands::feature_data_declare,
-            // Voice / STT (local, opt-in transcription; control-plane events)
-            infrastructure::voice::commands::stt_check_model,
+            // Voice input (opt-in, one model-audio path; control-plane events)
             infrastructure::voice::commands::stt_list_devices,
             infrastructure::voice::commands::stt_start,
             infrastructure::voice::commands::stt_stop,
             infrastructure::voice::commands::stt_cancel,
             infrastructure::voice::commands::stt_status,
-            infrastructure::voice::commands::stt_warm,
-            infrastructure::voice::commands::stt_release,
             // #2897 ST-2 — take (and clear) the bounded model-audio clip after a
-            // model-audio stop; the clip crosses IPC only.
+            // stop; the clip crosses IPC only.
             infrastructure::voice::commands::stt_take_audio_clip,
             // Features
             features::settings::commands::save_setting,
@@ -566,7 +554,6 @@ pub fn run() {
             features::setup::commands::run_setup_step,
             features::setup::commands::check_model_files,
             features::setup::commands::download_model,
-            features::setup::commands::download_stt_model,
             features::setup::commands::check_companion_readiness,
             features::setup::commands::install_llama_cpp,
             // Companion llama-server (Spec #2857 ST-4): rerouted chat/vision +
