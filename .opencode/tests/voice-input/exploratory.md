@@ -424,3 +424,52 @@
 
 - **E-65 PASS (live).** Countdown copy `Fredo is listening · 7s left` (146.8×24) and processing copy `Fredo is processing your speech…` (212.2×24) each on ONE line (whole countdown visible — no ellipsis of the bound); at the narrowest supported window (900×600, bar constant 560) still one line, `fieldContentW ≥ 140`. No promotion.
 - **E-66 PASS (live).** Typed `Settings` while the model chip was live (light preset): `fieldContentW 206`, chip one line (`nowrap`/`horizontal-tb`), the typed text clear of the chip (content-box right 928 vs chip left 1029.2), no vertical relayout, console clean. Screenshot `fb6bfb67`. No promotion.
+
+---
+
+## #2914 extension — single-mode (model-audio) removal probes
+
+> Issue #2914 deletes the local STT pipeline + mode. A confirmed finding PROMOTES to `functional.md`
+> as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a NAMED BLOCKER
+> (G-053) with a static/unit pin — never fabricated. **`stt:transcript` is RETIRED as a lever** (no
+> engine emits it, no consumer remains); `stt:state` remains valid for UI-state probes.
+> **SUPERSEDED probes (do NOT re-run as PASS or FAIL):** **E-52** (switch mode mid-listen) and
+> **E-56** (rapid mode toggling + persistence churn) — the mode choice no longer exists;
+> **E-57/E-58** lose the `Use local transcription` remediation (E-58's curated-alert half survives).
+
+- [ ] E-67: **Upgrade with a half-finished sherpa state.** Seed a profile with a PARTIALLY downloaded
+      `sherpa-onnx-streaming-zipformer-en-2023-06-26` dir (2 of 4 files) + `Fredo_companion_voice_handling='local'`,
+      then upgrade/restart. Does the app boot to a working model-audio state, remove the partial dir
+      cleanly, and never render a "repair/download" affordance? A boot block, a ghost STT row, or a
+      dead/blocked voice state is a finding (promotes to F-138/F-139).
+
+- [ ] E-68: **Cleanup cannot delete the STT dir (locked/read-only).** Make the STT model dir read-only
+      (or hold a file handle), restart. Does the app boot and keep the voice feature usable with a
+      typed/non-blocking outcome (retry later), and is nothing OUTSIDE the dir touched? A boot failure,
+      a crash, an unbounded retry loop, or a delete outside the dir is a finding (promotes to F-138).
+
+- [ ] E-69: **A stale `sttModel` readiness caller.** Force a render of any component still holding a
+      `sttModel` reference (Settings Companion, the wizard). Does it degrade with a null/absent report
+      without throwing, without a console `Error:`, and without rendering a ghost STT row? A throw, a
+      blank panel, or a ghost row is a finding (promotes to F-128/F-129).
+
+- [ ] E-70: **Server down at arm vs at submit.** Stop the managed `llama-server` before arming and
+      again after a clip is captured. Is the typed `modelAudioUnavailable` state surfaced with a
+      NON-local remediation, and is there NO path that starts a local engine or offers "Use local
+      transcription"? A local fallback, a raw IPC string, a hang, or a false success is a finding
+      (promotes to F-135).
+
+- [ ] E-71: **Does `FREDO_STT_FEED_WAV` still feed model-audio after the local-reader deletion?** Launch
+      with the in-repo fixture via L4; `stt_start` (model mode); read `stt_status`/`stt:state`. Does the
+      feed branch still engage (`deviceName:"stt-feed"`, no `cpal` device) and produce a bounded clip, or
+      was the seam deleted with the local reader? Record the actual — a silently-ignored env var is a
+      tooling/lever finding (feeds QA Discussion #2914-1), NOT a product FAIL by itself.
+
+- [ ] E-72: **An old script/CLI invokes a removed command.** Call `download_stt_model` / `stt_check_model`
+      (and any legacy sherpa CLI flag). Does the app return a typed not-found and stay responsive, with
+      no panic and no local-engine start? A panic, a hang, or a silent success is a finding (promotes to
+      F-130).
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
