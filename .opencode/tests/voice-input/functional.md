@@ -1111,3 +1111,229 @@ is live. Host mic is virtual-only → L4 feed for audio; L3 for local transcript
 - **F-102/F-103 PASS (F-103 re-run; selector persistence re-checked in S-20).**
 - **Captures (round 2):** f104 listening; f104 processing+limit; f104 idle-after-reply; f105/f104 model
   reply; f107 server-unavailable alert.
+
+---
+
+## #2903 extension — model-audio app open/close must PERFORM the action (revises #2897)
+
+> Issue #2903 fixes a **performed-action** gap: in model-audio mode a spoken open/close app request is
+> answered as text only ("I can certainly open settings for you.") but no window opens or closes, while
+> the typed/companion path performs these. Rows **F-111..F-126** map 1:1 to the QA-Plan
+> `R-1..R-5` + `NFR-1`/`NFR-2` + `REG-1` in `.opencode/tmp/2903/triage.md` `## QA Expert`.
+> **Close is IN SCOPE** — the PO amendment approved `close_app` in the ONE shared registry + dispatch
+> hook via `windowStore.closeWindow` (13 points, ST-3 retained); **no row treats close as out of scope,
+> conditional, or TBD.**
+> **Verification policy: live.** Evidence: the running bar/window DOM (`tauri_webview_find_element` /
+> `execute_js` / `dom_snapshot`), the real control plane, `tauri_ipc_emit_event`, screenshots,
+> `tauri_read_logs(console)`, the CI check result (`rust-validate` + `pnpm --filter @fredo/ui test:run`),
+> and the mandatory `telemetry_spans` receipt (F-125). A static-only PASS is a FALSE PASS.
+>
+> **Root cause under test (confirmed by the Architect's Domain Model):** the model-audio path never
+> offers the skill registry — `build_audio_request_body` (`features/llm_server/chat.rs:330-335`) sends no
+> `tools`/`tool_choice`/`parallel_tool_calls`, `run_audio_chat` (`chat.rs:418-442`) uses the plain
+> content stream (no `ToolCallAccumulator`/`plan_terminal_events`), and the frontend audio branch calls
+> `llmChatWithAudio(..., onToken, onDone, onError)` with NO `onSkillCall`
+> (`CompanionEntity.tsx:883-895`). The typed/companion path is `llmChatWithSkills` →
+> `llm-skill-call` → `useAppOpenRequests` → `run_open_app_cli` (`app_open.rs:312`).
+>
+> **Sanctioned levers (there is no sixth):**
+> - **L1 REAL gesture:** `keyboard(action="down"/"up", key=" ")` on the focused EMPTY
+>   `textarea[data-testid="launcher-command-input"][role="searchbox"]`.
+> - **L2 REAL control plane:** `stt_start` / `stt_stop` / `stt_cancel` / `stt_status` /
+>   `stt_take_audio_clip` / `llm_chat_with_audio` / `stt_audio_capability` / `run_open_app_cli` /
+>   `confirm_app_open_request` and `fredo open-app <identity>`.
+> - **L3 SYNTHETIC MODEL SELECTION on the REAL channel:** `tauri_ipc_emit_event(eventName="llm-skill-call",
+>   payload={skill:"open_app"|"close_app", arguments:{app:"<name>"}})` — the exact event
+>   `useAppOpenRequests` subscribes to (`useAppOpenRequests.ts:226`) — and `app-open-request` for the CLI
+>   branch. **Selection content ONLY — it never evidences that the model heard anything.**
+> - **L4 DETERMINISTIC CAPTURE FEED (audio lifecycle only):** `dev-env.ps1 -Action Up -Spec 2903 -EnvVar
+>   "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`;
+>   the fixture is **explicitly non-intelligible** (`generate-dictation-phrase.mjs:14-23`) — liveness,
+>   never content. Always pair with an UNSET-env control (`.opencode/tests/voice-dictation/` F-3/F-4).
+> - **L5 CI/unit pins (developer-executed, `CI rust-validate` + `pnpm --filter @fredo/ui test:run`).**
+>   Cite the Architect's named identifiers verbatim in `## Tests Runs` (see F-113/F-119/F-123).
+>
+> **FORBIDDEN:** any recorded-speech WAV or out-of-repo asset — none exists under `C:\Code\fredo`;
+> hunting for one is a documented failure mode (G-172/G-009). The acoustic leg is a NAMED BLOCKER.
+
+- [ ] F-111 (REQ-1 / AC1): **Model-audio skill selection OPENS the window (L3 + L2).** Mode=`model`
+      (`Fredo_companion_voice_handling`), managed server healthy; `stt_start{origin:"launcher"}` so the
+      audio turn dispatches; while the model-audio turn is in flight (chip
+      `launcher-command-model-processing-chip`), emit `llm-skill-call {skill:"open_app",
+      arguments:{app:"Settings"}}` on the real channel.
+  **Expected:** the Settings window ACTUALLY opens — `.fredo-window__surface[role="group"]` with
+      `aria-label="Settings"` present and the kernel singleton id `settings`; the companion surface +
+      `fredo-companion-live-region` carry exactly `Opening Settings`; the bar's model chip returns to
+      rest; raw tool JSON (`open_app`/`arguments`) is never rendered; no transcript appears.
+  - **Edge:** Settings already open → exactly ONE window (raised, not duplicated — `SettingsFeature`
+    `isMultiWindow=false`); an injection before/after the turn's `llm-done` → the stale push is dropped
+    (no stale reply, no second window); two injections → one window; a second app opened after Settings
+    leaves both windows present.
+  - **Receipt:** the emitted payload, the window-count delta, the reply string verbatim, the session id.
+  - **FAIL:** a prose reply with no window (the reported bug), or a window with no deterministic reply.
+
+- [ ] F-112 (REQ-1 / AC1): **The real control plane/CLI seam opens the window (L2).** Invoke
+      `run_open_app_cli {identity:"settings"}`; separately run `fredo open-app settings` and confirm the
+      `app-open-request` → `confirm_app_open_request` round trip.
+  **Expected:** `run_open_app_cli` → `{exitCode:0, outcome:"opened"}` AND the Settings window opens;
+      the CLI child round-trips through the SAME single kernel opener (`openFeatureWindow`).
+  - **Edge:** `identity:"Narnia"` → `{exitCode:1, outcome:"unknown"}` + ZERO windows; a leading verb
+    (`open Settings`) resolves; `identity:"monitor"` (ambiguous) → `{outcome:"ambiguous"}` + ZERO
+    windows; managed server down → bounded 5 s confirm / 10 s child, never a hang.
+  - **Receipt:** each result verbatim + the window-count delta.
+
+- [ ] F-113 (REQ-1 / AC1, **executor: CI developer** — no `cargo` in the tester sandbox): **Root-cause
+      pins for the audio→skill route (L5).** Assert the audio request body offers the SAME registry
+      (`tools` = the `open_app` schema, `tool_choice:"auto"`, `parallel_tool_calls:false`) and that the
+      audio stream routes a `tool_calls` finish through the SAME `plan_terminal_events` →
+      `llm-skill-call`; assert the audio turn forwards an `onSkillCall` consumer.
+  **Expected:** a named unit/integration pin exists for each; a malformed/rejected selection is
+      fail-closed (readable `llm-error`, NO `llm-skill-call`, `llm-done` last); the audio body is the
+      skill body modulo the audio part (ONE registry — no fork). Record the CI check result.
+  - **Edge:** transport failure → `llm-error`+`llm-done`, never a hang; a `tool_calls` turn producing no
+    call → typed error, never a phantom action.
+
+- [ ] F-114 (REQ-1 / AC1): **NAMED BLOCKER — the acoustic end-to-end.** A genuinely spoken "open
+      settings" through ASR → model → skill.
+  **Expected:** **BLOCKED — not PASS, not FAIL.** No intelligible-speech asset exists under
+      `C:\Code\fredo`: the committed `dictation-phrase-16k-mono.wav` is explicitly non-intelligible by
+      its own provenance header, and the host has no physical mic (the only devices are the virtual
+      `Iriun Webcam` / `Steam Streaming Microphone`). If the Architect requires this leg live, post a
+      `block` naming the missing asset (a committed intelligible 16 kHz WAV, e.g.
+      `.opencode/tests/voice-dictation/fixtures/open-settings-16k-mono.wav`); otherwise the residual is
+      F-111 + F-112 + F-113.
+  - **Edge / FAIL:** recording an L3 injection or the L4 feed as the acoustic PASS; hunting media
+    outside the repo (`~`, `%USERPROFILE%`, `node_modules`, `C:\Windows\Media`, the STT model dir).
+
+- [ ] F-115 (REQ-2 / AC2): **Model-audio skill selection CLOSES the window — ACTIVE (the PO amendment is
+      APPROVED; 13 points, ST-3 retained).** Drive `close_app` (ONE shared registry, same `{ app }`
+      shape) on the model-audio channel (F-111's lever) and on the typed/companion baseline. The close
+      MECHANISM is `windowStore.closeWindow(id)` with the open-check via `getWindowSnapshot()`
+      (`windowStore.ts:37,116-124`). The reply is deterministic, char-for-char (the ONE copy source
+      `appOpenReply.ts`): close success `appCloseSuccessReply(displayName)` → `Closing {displayName}`;
+      target NOT open `appCloseNotOpenReply(displayName)` → `{displayName} isn't open`;
+      unrecognized/unsupported close REUSES `appOpenUnknownReply(spokenName)` → `I couldn't find
+      "{spokenName}"`. **There is NO `appCloseFailedReply`** (G-198 — `closeWindow` is
+      synchronous/idempotent/`void`, so no user-reachable close-failure path exists; do NOT assert one).
+  **Expected:** `.fredo-window__surface[aria-label="Settings"]` count 1→0, the kernel entry absent from
+      `getWindowSnapshot()`, and the reply EXACTLY the declared close string; the SAME request on both
+      paths → the SAME outcome.
+  - **Edge:** close an app that is NOT open → no action + exactly `Settings isn't open`; an unrecognized
+    close name → zero actions + `I couldn't find "<spoken>"`; a minimized target; the last window; two
+    closes → idempotent (`closeWindow` is re-entrancy-guarded — no double-remove, no console error);
+    NEVER a `Closing …` claim when no window disappeared.
+  - **Receipt:** the window-count delta via `getWindowSnapshot()` + the reply verbatim on BOTH paths.
+
+- [ ] F-116 (REQ-2 / AC2): **Present-state audit — CONTEXT, not a scored row (the finding is CLOSED by the
+      approved amendment).** Before the amendment no close capability existed on either path
+      (`SkillRegistry::with_open_app()` was the sole registry — `infrastructure/companion/skills.rs:96`;
+      `useAppOpenRequests` executed `open_app` only, `useAppOpenRequests.ts:158,193`; `normalizeAppQuery`
+      stripped only `open/launch/show/start` — `appIdentity.ts:45`).
+  **Expected:** the amendment adds `close_app` to the ONE shared registry (`infrastructure/companion/skills.rs`)
+      + the ONE shared dispatch hook (`useAppOpenRequests`) via `windowStore.closeWindow` — no parallel
+      action system. Assert the shipped state: `close_app` registered with the same `{ app }` shape; both
+      paths dispatch through the ONE hook; no forked dispatcher/resolver. This row is NOT scored as a
+      separate PASS/FAIL.
+  - **Edge:** a `close_app` implementation that forks a second registry/hook or renames the declared names
+    FAILs (G-187); the pre-amendment "no close" state must never be re-run as a PASS.
+
+- [ ] F-117 (REQ-2 / AC2): **INACTIVE — PO-decline branch record (do NOT execute as an alternative required
+      path; no third branch).** Retained only as the pre-amendment fallback note.
+  **Expected:** INACTIVE — the approved amendment makes F-115 the required path. If the amendment were ever
+      reverted, a close-sounding model-audio turn must run NO action and must not claim one.
+  - **Edge:** do not score this row; it may never be used to soften or substitute for a failing F-115.
+
+- [ ] F-118 (REQ-3 / AC3): **Parity matrix — model-audio vs typed/companion.** For each request record
+      the window-count delta + the reply read char-for-char on BOTH paths: `Settings` (resolved open),
+      `Settings` (resolved close), `Narnia` (unknown), a ≥2-match name (ambiguous), a re-request of an
+      already-open app, a non-showable id, an unrecognized close name.
+  **Expected:** the SAME supported-app set, the SAME window outcome, and a byte-identical reply on both
+      paths: `Opening Settings` / `Closing Settings` / `Settings isn't open` / `I couldn't find "Narnia"` /
+      `I found more than one app matching "<spoken>". Which one did you mean: A or B?` / `I couldn't open
+      Settings. Try again from the launcher grid.` Enumerate the sets and assert equality — not wider,
+      not narrower — for BOTH intents.
+  - **Edge:** leading verb (`open settings`), quotes, case, kebab id `settings`; duplicate feature ids
+    dedupe; a minimized target; an already-focused target.
+  - **Receipt:** the per-request pair table (window delta + reply) for both paths.
+
+- [ ] F-119 (REQ-3 / AC3): **The typed/companion path's WIRING and existing pins are UNCHANGED.** Re-run
+      a live typed `open settings` + Enter; record the results of the existing `useAppOpenRequests` /
+      `skillSettle` / `CompanionEntity.dispatch` pins.
+  **Expected:** the window opens and the reply reads exactly as before #2903; the existing pins stay
+      green with NO assertion weakened, disabled or deleted (G-125). The approved amendment makes the
+      typed path GAIN the close intent through the SAME shared layer — that shared-layer increment is
+      expected (it is what makes AC3 parity true by construction); a FORKED registry/resolver/dispatcher
+      is a FAIL, and the new `close_app` declaration must not alter the shipped `open_app` declaration.
+  - **Edge:** `llm_chat`/vision paths keep NO tools unless the Architect declares otherwise.
+
+- [ ] F-120 (REQ-4 / AC4): **Outcome-accurate reply.** Drive success, unknown, CLI-failure, unavailable,
+      close-success, close-not-open and unrecognized-close outcomes through the model-audio path; read
+      the settled bubble + live region.
+  **Expected:** each settle carries EXACTLY the deterministic string for its outcome: open success
+      `Opening Settings`; close success `Closing Settings`; unknown (incl. unrecognized close)
+      `I couldn't find "Narnia"`; close-not-open `Settings isn't open`; open failure `I couldn't open
+      Settings. Try again from the launcher grid.`; unavailable the curated `modelAudioUnavailable`
+      copy — never freeform prose, never raw tool JSON. The action text is never model-authored.
+      **No close-failure string is asserted — none exists (G-198).**
+  - **Edge:** the success/close `happy` beat vs the idle hold is observable (close-not-open settles idle,
+    never happy); a raw IPC string surfaced verbatim is a FAIL.
+
+- [ ] F-121 (REQ-4 / AC4): **Prose-vs-action honesty.** Where the model streams prose before selecting
+      the skill, the deterministic reply REPLACES it.
+  **Expected:** the settled bubble never ends with "I can certainly open settings for you." when a
+      window opened — and never when none opened; no claim of an action without the corresponding
+      window mutation; no window mutation without a reply. This is the exact reported bug class
+      (performed → told performed; not performed → does not claim success).
+  - **Edge:** prose and NO selection → no window + no success claim; a watchdog settle after a dropped
+    reply; a late final after `llm-done`.
+  - **Receipt:** the streamed prose (if any) + the settled reply + the window delta.
+
+- [ ] F-122 (REQ-5 / AC5): **Unsupported/unrecognized app name performs nothing and says so.** Emit
+      `llm-skill-call {skill:"open_app", arguments:{app:"Narnia"}}`; separately
+      `{skill:"close_app", arguments:{app:"Narnia"}}`; and type `Narnia` + Enter.
+  **Expected:** ZERO windows — assert the PRESENT app grid + the window count are UNCHANGED (G-170,
+      never by hiding the grid) — and the user is told exactly `I couldn't find "Narnia"` (the
+      unresolved name echoed verbatim) for BOTH intents; no false success.
+  - **Edge:** blank/whitespace app; a name matching zero addressable features; an app that exists but is
+    not `showable`; a close request for an app that is not open (→ `Settings isn't open`, not the
+    unknown copy).
+
+- [ ] F-123 (REQ-5 / AC5): **Fail-closed on a malformed/rejected selection.** Inject an unknown skill
+      name, a missing/blank `app`, and non-object arguments on the real channel; plus the CI pin.
+  **Expected:** ZERO windows + a readable `llm-error`; the user is told nothing was executed;
+      `llm-skill-call` is NEVER emitted for an invalid selection (`skills.rs:249-286`); `llm-done` is
+      always last (never a hang). Record the CI check result for the unit pin.
+  - **Edge:** a transport error mid-stream; a tool-call turn with no call; `arguments` absent.
+
+- [ ] F-124 (NFR-1): **All-local under the new route.** Static-scan `infrastructure/voice/**` +
+      `features/llm_server/**` for `reqwest/ureq/hyper/TcpStream/UdpSocket/std::net/websocket`; read the
+      managed host + the turn URL; watch for new outbound connections during a model-audio turn.
+  **Expected:** ZERO remote clients on the audio→text→model path; the managed host is `127.0.0.1` and
+      the turn URL targets loopback; the fix adds NO remote client; audio/transcripts never leave the
+      machine. The live process-scoped outbound block is a NAMED BLOCKER (no elevation lever) recorded
+      ALONGSIDE the static pin — never as a substitute.
+  - **Edge:** a block mid-session must not crash; a new cloud/fallback branch FAILs.
+
+- [ ] F-125 (NFR-2 + LIVE): **No model-audio responsiveness regression + live receipts.** Re-run
+      F-104 (the `capturing→processing→settled` state machine clearing on `llm-done`) and the #2897
+      F-109 rows on the #2903 tip; sample the press→capture and reply-settle timings; `fredo emit`
+      marker rows + `telemetry_spans` via the telemetry-query skill; upload every capture with
+      `upload-evidence --issue 2903`.
+  **Expected:** the model-audio chip states, the limit notice and the reply-settle timing are unchanged
+      (within the #2897 envelope); console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no new polling/effect loop (AGENTS.md #523); `telemetry_spans` returns a NON-ZERO count
+      with a recent `max(ingested_at)` and the literal token appears in Evidence; every capture
+      uploaded with a raw URL + description. **A static-only PASS is a FALSE PASS.**
+  - **Edge:** the L4 feed is non-intelligible (liveness only); every number carries its lever + clock
+    domain (G-171); a stale round's receipt does not clear the round-aware guard.
+
+- [ ] F-126 (REQ-4 / AC4, R-4.3): **No-selection negative leg (the residual the deterministic-copy
+      override cannot cover).** Make an explicit open/close-shaped request in a model-audio turn that
+      yields NO `open_app`/`close_app` selection — deliberately DO NOT fire the L3 lever.
+  **Expected:** ZERO windows and a settled reply that does NOT claim the action (the generation settles
+      on the model's own prose, or the watchdog — never a fabricated skill reply); no `llm-skill-call`
+      is observed on the channel; the model-audio chip settles normally.
+  - **Edge:** prose that merely *mentions* opening/closing; a selection arriving on a LATER turn; the
+    turn settling via `llm-error`; the L4 feed present with no selection. Reference UI/UX's residual
+    note (`.opencode/tests/companion/exploratory.md` ~line 320).
+  - **Receipt:** the channel observation (zero `llm-skill-call`) + the settled reply + the window delta.
