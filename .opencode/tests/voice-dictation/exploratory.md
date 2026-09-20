@@ -24,3 +24,25 @@
 ### #2897 testing round 1 — result
 
 - [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+
+---
+
+## #2903 extension — feed + synthetic selection probes
+
+> Issue #2903 runs the L4 feed (audio lifecycle) alongside the L3 synthetic selection (app action).
+> A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). Live
+> policy; an undrivable lever is a NAMED BLOCKER (G-053) with a static/unit pin — never fabricated.
+> **FORBIDDEN:** any recorded-speech WAV or out-of-repo asset (G-172/G-009).
+
+- [ ] E-4: **Feed + selection in the same turn.** Run the L4 1.6 s feed into a mode=`model` session and
+      emit the L3 `llm-skill-call` selection during the turn. Does the window open exactly once, does the
+      turn settle without a transcript leak, and is there any false action/prose? A transcript appearing
+      in model mode, a duplicate action, or a stuck chip is a finding (promotes to `voice-input` F-111).
+- [ ] E-5: **Malformed feed on a model-audio turn.** Point `FREDO_STT_FEED_WAV` at a byte-truncated or
+      wrong-format copy (generated in-repo), then start a mode=`model` session. Does the turn degrade
+      with a typed/curated state, perform no action, and claim no success? A hang, a false success, or a
+      capture left running is a finding (promotes to `voice-input` F-120).
+
+### #2903 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
