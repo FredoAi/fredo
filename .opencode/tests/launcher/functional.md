@@ -1613,3 +1613,182 @@ is verified live. Chip visible with the companion OFF. BEFORE frames (pre-change
 - **F-99 PASS (live).** `telemetry_spans` = 11336, `max(ingested_at)=2026-09-18T20:59:30.4Z`; `chat_rows`/`tool_use_rows` markers (`e2e-2892-r2-chat`/`-tool`) each = 1.
 - **F-100 PASS (static/build/console).** Zero colour literals in the changed launcher/companion TSX; console clean (only the pre-existing `motion() is deprecated` WARN); round-1 `pnpm` build/test gates unchanged (the fix touched only `CompanionSettingsPanel.tsx` + its test).
 - **Harness note (promoted technique):** the AC5/AC6 in-flight legs are ONLY reachable by issuing both sends in a single in-page script (or a real-keyboard second send against a long generation) — two serial driver round-trips are ~6 s each and always land after `llm-done`. Recorded in `exploratory.md` round 2.
+
+---
+
+## #2904 extension — launcher search-bar / listening-indicator clean-render (live)
+
+> Issue #2904 (revises #2897, `intent: fix`) — while dictating, a stray `Fredo…` string rendered
+> VERTICALLY (one letter per line) in/near the app search bar, overlapping the input. The slice
+> removes the visual glitch and guarantees clean rendering in BOTH speech-handling modes with NO
+> redesign of the search bar or the listening indicator. Surfaces in `LauncherCommandBar.tsx`:
+> model mode → `launcher-command-model-listening-chip` (`Fredo is listening`) is the SOLE listening
+> claim; the `release Space to finish` hint chip is suppressed while a model chip is up and the
+> instruction relocates into the field placeholder (`release Space to finish`) [AC2 resolution =
+> Architect contract, see `.opencode/tmp/2904/triage.md`]; local mode →
+> `launcher-command-listening-chip` (`Listening`) + the
+> `Listening…` placeholder + the `release Space to finish` hint chip (unchanged); the field is a `<textarea role="searchbox"
+> data-testid="launcher-command-input">`; the dot is `launcher-command-listening`.
+> **Verification policy: live** — pure rendering. Live evidence = `tauri_webview_dom_snapshot` +
+> `tauri_webview_screenshot` + `getBoundingClientRect`/`getComputedStyle`/`execute_js` scans +
+> `upload-evidence` raw URL, PLUS the mandatory `telemetry_spans` liveness receipt (F-107). A
+> static-only PASS is a FALSE PASS. Map 1:1 to `.opencode/tmp/2904/triage.md` `## QA Expert`
+> (REQ-1..REQ-5 + NFR-1 + REQ-LIVE).
+> **Dictation lever:** the sanctioned in-repo capture feed `FREDO_STT_FEED_WAV`
+> (`.opencode/tests/voice-dictation/fixtures/dictation-phrase-16k-mono.wav`; content = liveness
+> only, never speech). Inject with the WORKING string form
+> `dev-env.ps1 -Action Up -Spec 2904 -EnvVar "FREDO_STT_FEED_WAV=<abs path>"`; ALWAYS pair with an
+> UNSET-env control. The `-EnvVars @{}` hashtable form is BROKEN (tooling gap; `voice-dictation` F-6).
+> **Reference images (Read by EXPLICIT absolute path, NEVER glob):**
+> `C:\Code\fredo\.opencode\wireframes\desktop-light.png`,
+> `C:\Code\fredo\.opencode\wireframes\desktop-light-dark-theme-compare.png`. There is NO #2904 bug
+> screenshot — capture a fresh one under `.opencode/tmp/2904/e2e/`.
+
+### Shared probe (used by F-101/F-103/F-105) — vertical-wrap + overlap signature
+
+Run in ONE `execute_js` task while dictating; return JSON:
+
+```js
+(() => {
+  const bar = document.querySelector('[data-testid="launcher-command-bar"]');
+  const field = document.querySelector('[data-testid="launcher-command-input"]');
+  const rect = (el) => { const r = el.getBoundingClientRect();
+    return { x:r.x, y:r.y, w:r.width, h:r.height, right:r.right, bottom:r.bottom }; };
+  const inter = (a,b) => Math.max(0, Math.min(a.right,b.right)-Math.max(a.x,b.x)) *
+                          Math.max(0, Math.min(a.bottom,b.bottom)-Math.max(a.y,b.y));
+  const visible = (el) => { const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+    return s.display!=='none' && s.visibility!=='hidden' && +s.opacity>0 &&
+           r.width>1 && r.height>1 && s.clipPath==='none'; };
+  const nodes = [...bar.querySelectorAll('*')].filter(visible).map((el) => {
+    const t = (el.childElementCount===0 ? (el.textContent||'') : '').trim();
+    if (!t) return null;
+    const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+    return { testid: el.getAttribute('data-testid'), text: t.slice(0,60),
+      w:+r.width.toFixed(1), h:+r.height.toFixed(1), whiteSpace: s.whiteSpace,
+      wordBreak: s.wordBreak, writingMode: s.writingMode,
+      verticalWrap: r.height > r.width && t.length > 3,
+      narrow: r.width < 20 && t.length > 3, rect: rect(el) };
+  }).filter(Boolean);
+  const fs = getComputedStyle(field);
+  const contentW = field.getBoundingClientRect().width
+    - parseFloat(fs.paddingLeft) - parseFloat(fs.paddingRight)
+    - parseFloat(fs.borderLeftWidth) - parseFloat(fs.borderRightWidth);
+  return JSON.stringify({ innerWidth: window.innerWidth,
+    fieldClientW: field.clientWidth, fieldScrollW: field.scrollWidth,
+    fieldContentW: +contentW.toFixed(1), fieldPaddingEnd: fs.paddingRight,
+    placeholder: field.getAttribute('placeholder'), bar: rect(bar), field: rect(field),
+    chips: [...bar.querySelectorAll('[data-testid^="launcher-command-"]')].map((e)=>({
+      testid:e.getAttribute('data-testid'), text:(e.textContent||'').slice(0,60), ...rect(e) })),
+    overlapField: nodes.filter(n => inter(n.rect, rect(field)) > 0).map(n => n.testid || n.text),
+    nodes });
+})()
+```
+
+**FAIL signature (the bug):** any visible node with `verticalWrap:true` or `narrow:true`, OR a
+non-empty `overlapField`, OR `field.scrollWidth > field.clientWidth + 2`, OR a `writingMode`
+starting `vertical`, OR — the **decisive model-audio collapse signal** — `fieldContentW < 140` while
+the model capture chip is live. **The placeholder is NOT in `textContent`, so the node scan alone
+cannot see a stacked placeholder; `fieldContentW` is what catches it.** The PRE-FIX composition
+(collapse) was a `560px` bar minus the `40px` leading gutter minus the reserved end padding
+`220 (hint) + 208 (model chip) + 30 + 30 (cancel/stop) + 44 (minimize) = 532px` → ~0px content box.
+The FIXED composition suppresses the hint chip in model mode (REQ-3), so the model reservation is
+`208 (model chip) + 30 + 30 + 44 = 312px` and the field content box is ~206px (floor
+`MIN_FIELD_CONTENT_PX = 140`, which fits the `release Space to finish` placeholder on one line).
+
+## F-101 (REQ-1 / AC1) — model-audio dictation: no stray/vertical text in or near the bar
+
+- [ ] F-101: Mode=`model` (`companion-voice-handling-select` → `Model audio`), managed server
+      healthy; focus the empty `[data-testid="launcher-command-input"]`; drive a LIVE capture with
+      the in-repo `FREDO_STT_FEED_WAV` feed (or, only if the server is unavailable, the synthetic
+      `stt:state {listening:true, phase:"capturing", origin:"launcher"}` fallback). While the
+      `Fredo is listening` chip is visible run the **Shared probe** + `tauri_webview_screenshot`.
+  **Expected:** the probe returns ZERO visible node with `verticalWrap:true` / `narrow:true` /
+      `writingMode` starting `vertical`; the ONLY element stating a listening claim is
+      `launcher-command-model-listening-chip` = `Fredo is listening` on ONE line; the
+      `release Space to finish` hint chip is NOT rendered while a model chip is up (REQ-3) — the field
+      placeholder carries the instruction (`release Space to finish`);
+      `fieldScrollW ≤ fieldClientW + 2` AND **`fieldContentW ≥ 140`** (the placeholder fits on ONE line —
+      the decisive model-leg collapse signal, since the placeholder is NOT in `textContent`); the
+      search input renders cleanly (value/placeholder fully inside its content box); the screenshot
+      shows no letter-per-line string.
+  - **Edge:** 560px bar AND a narrow (<600px) bar; the countdown copy
+    `Fredo is listening · 10s left`; a NON-EMPTY query in the field; the bounded
+    `starting voice input…` chip must not stack either.
+  - **Receipt:** the raw probe JSON (nodes + overlapField) + the screenshot + the feed receipt
+    (`{deviceName:"stt-feed", sampleRate:16000}`) / the UNSET-env control.
+
+## F-102 (REQ-2 / AC2) — the listening indicator is the ONLY listening-related text, on one line
+
+- [ ] F-102: While dictating (F-101 leg), enumerate every VISIBLE text node in the launcher subtree
+      matching `/listening|release Space|Fredo/i`; record element/testid, text, line count
+      `= round(rect.height / lineHeight)`, `whiteSpace`, `writingMode`.
+  **Expected:** EXACTLY ONE visible listening indicator per session (model:
+      `launcher-command-model-listening-chip`; local: `launcher-command-listening-chip`); it is
+      `whiteSpace:nowrap` and line count = 1; NO second visible `Fredo…` / straggler; the SR-only
+      announcers (`voice-listening-announcer`, `voice-transcript-announcer`) are clipped (≤1px,
+      `clip-path: inset(50%)`) and NOT visible.
+  - **Edge:** start→capturing→processing; the below-bar hearing-nothing / limit notice present; in
+    LOCAL mode a hint chip (`launcher-command-hint`) is present alongside the capture chip — still
+    exactly ONE listening indicator (never two); in MODEL mode the hint chip is suppressed and the
+    instruction relocates to the placeholder (REQ-3).
+
+## F-103 (REQ-3 / AC3) — indicator and search input do not overlap or clip at the default size
+
+- [ ] F-103: At the default window size, while dictating, compute `intersectionArea(field, chip /
+      dot / controls)` and the containment of every visible bar child inside the bar rect.
+  **Expected:** `intersectionArea(field, listeningIndicator) === 0` and
+      `intersectionArea(field, any visible text node) === 0`; the reserved end gutter
+      (`computeEndPaddingPx` model-listening = 208+30+30+44 = **312px** once the hint chip is
+      suppressed in model mode, REQ-3) keeps **`fieldContentW ≥ 140`** (the Architect/UI-UX
+      `MIN_FIELD_CONTENT_PX` floor — `field.clientWidth > 0` alone is insufficient because the end
+      padding collapses the CONTENT box) and the chip fully inside the bar (no frame clip); chip right
+      edge ≤ bar right edge; the typed text never runs under the chip.
+  - **Edge:** a query present; the countdown chip; Cancel + Stop present; the `processing` chip
+    (`Fredo is processing your speech…`).
+
+## F-104 (REQ-4 / AC4) — both speech-handling modes + both themes render cleanly
+
+- [ ] F-104: Repeat F-101..F-103 with mode=`local` (shipped `Listening` chip + `Listening…`
+      placeholder + `release Space to finish` hint chip) AND mode=`model` (`Fredo is listening` chip +
+      `release Space to finish` placeholder, hint chip suppressed);
+      run each in a LIGHT preset (`light-default` via the shipped `select[aria-label="Theme presets"]`)
+      AND the DARK base (`dark`/`classic`). Do NOT invent a toggle (G-050).
+  **Expected:** BOTH modes — exactly ONE horizontal indicator, ZERO vertical/stray text, no
+      overlap/clip. BOTH themes — identical geometry with token-native colors and legible contrast;
+      the selector copy (`Local transcription`/`Model audio`) unchanged.
+  - **Edge:** the mode selected between sessions (a mid-capture switch is out of scope); the model
+    `processing` chip; light `light-default` + dark `dark` + `classic`; a non-cyan accent preset.
+
+## F-105 (REQ-5 / AC5) — resizing never reintroduces vertical/overlapping text
+
+- [ ] F-105: While dictating, run the **Shared probe** at 1920×1080 → 1440×900 → 900×600 (shipped
+      minimum) + a 700×900 dev viewport; record `window.innerWidth` per sample.
+  **Expected:** at EVERY sampled width ZERO vertical/stacked text, `overlapField` empty, no
+      clipping; the indicator stays on ONE line or truncates with an ellipsis (NEVER one char per
+      line); the bar re-centers; re-widening restores the clean render.
+  - **Edge:** the narrowest supported width; fractional OS scale/zoom (125%); resize DURING the
+    countdown; resize during `processing`.
+
+## F-106 (NFR-1) — token hygiene / console clean / no re-render loop
+
+- [ ] F-106: Static-grep the changed launcher files for `#[0-9a-fA-F]{3,8}`, `rgba(`, `rgb(`,
+      `hsla(`, `var(--x)NN`; re-theme live while dictating; read
+      `tauri_read_logs(source="console")` after every leg.
+  **Expected:** ZERO hardcoded color literals (comment issue-refs exempt) and NO `var(--x)NN`
+      alpha-append; colors flow `var(--...)`/`tint()`/semantic tokens; no `Error:`/`Uncaught`/
+      `Maximum update depth exceeded`; no effect/memo on an array `.length` or a fresh object
+      (#523); the indicator re-tints with the live accent.
+  - **Edge:** re-theme mid-capture; rapid resize churn; the pre-existing `motion() is deprecated`
+    WARN is exempt.
+
+## F-107 (REQ-LIVE) — live liveness receipt (policy gate)
+
+- [ ] F-107: After a real dictation session, query `telemetry_spans` (telemetry-query skill) and
+      capture a rendered-webview screenshot; upload via `upload-evidence --issue 2904`; embed BOTH
+      in `## Tests Runs`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; a
+      rendered-webview receipt exists for the dictating state (the `Fredo is listening` chip +
+      clean field); the fresh capture shows the stray vertical text GONE. **A static-only PASS is a
+      FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; a pre-fix capture is
+    evidence, never a substitute for the live receipt.
