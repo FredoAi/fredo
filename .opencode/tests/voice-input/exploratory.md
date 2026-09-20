@@ -355,3 +355,44 @@
   transcription`; no transcript while mode=`model`. Also observed on the null-clip path.
 - **Round-2 resolution of the round-1 promoted F-104 finding:** the model-audio `stopped` state is now
   reachable — the chip clears on `llm-done` within the same session (`F-104 PASS`).
+
+---
+
+## #2903 extension — model-audio app-action probes (open/close parity)
+
+> Issue #2903 makes the model-audio path perform open/close app requests. A confirmed finding PROMOTES
+> to `functional.md` as a new `F-` row (keep the origin note). Live policy; an undrivable lever is a
+> NAMED BLOCKER (G-053) with a static/unit pin — never fabricated. App-action content uses L3 (the
+> synthetic `llm-skill-call` on the REAL channel); the audio lifecycle uses L4 (see
+> `functional.md` `#2903`).
+
+- [ ] E-59: **Duplicate / out-of-order selections.** Emit two identical `llm-skill-call` payloads in
+      quick succession, then two different apps. Does each resolve exactly once, does the second
+      raise (not duplicate) an already-open window, and does no reply land for a dropped stale push? A
+      duplicate window, a doubled reply, or a reply applied after its generation settled is a finding
+      (promotes to F-111/F-118).
+- [ ] E-60: **Selection during a terminal turn.** Emit the selection (a) after a limit-reached stop,
+      (b) after a cancel, (c) after an `llm-error`. Does the action still perform honestly, or does a
+      reply land with no generation to own it / a generation settle without a reply? A stuck pending
+      generation, a phantom window, or a vanished toast is a finding (promotes to F-121).
+- [ ] E-61: **Mode switch between selection and action.** Emit the selection in mode=`model`, then
+      switch to `local` before release (and the reverse). Does the action still perform exactly once
+      with no orphan capture and no stuck/dishonest indicator? A dual-path action or a lost action is a
+      finding (promotes to F-118).
+- [ ] E-62: **Prose flash vs the deterministic reply.** Watch the bubble at ≤50 ms from selection to
+      settle with the model streaming prose first. Is any transient "I can certainly open …" visible,
+      and is the SETTLED text the deterministic reply? A settled prose claim with no action (or with an
+      action) is a finding (promotes to F-121). Record whether a transient flash occurs — the QA plan
+      scores only the settled state, so a flash is a UI/UX note unless declared otherwise.
+- [ ] E-63: **Window churn under repeated requests.** Request the same app ≥5× and alternate
+      two apps; count windows and reply dispatches per request. Is there exactly one window per feature
+      id, no leaked frame, no reply storm, and no console `Maximum update depth exceeded`? Any
+      duplicate window or unbounded reply is a finding (promotes to F-111/R-37).
+- [ ] E-64: **Server dies at/after dispatch.** Kill the managed server while the model-audio turn that
+      would carry the selection is in flight. Does the turn settle with a typed/curated error, perform
+      no action, and claim no success? A hang, an unhandled console error, or a false success is a
+      finding (promotes to F-120/NFR-2).
+
+### #2903 testing round 1 — result
+
+- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
