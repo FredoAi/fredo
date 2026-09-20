@@ -632,3 +632,7 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
       hold. Reference `launcher` R-62 + `voice-dictation` F-1..F-4 (the feed lever is unchanged).
   - **Edge:** a query present; the countdown copy; a theme switch mid-capture; `pnpm --filter
     @fredo/ui test:run` green with the model-audio pins unweakened.
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
+
+- **R-41 PASS (live).** Local: `stt_start` → placeholder `Listening…`, chip `Listening`, model chip ABSENT, announcer `Listening`; `stt_stop` → placeholder `search or command`, `listening:false`. Model: chip `Fredo is listening` + placeholder `release Space to finish` (hint chip suppressed — the intentional #2904 REQ-3 relocation); processing → `Fredo is processing your speech…` + busy placeholder; chip cleared on settle; exactly ONE indicator per mode; persisted `Fredo_companion_voice_handling` stable across the `local`↔`model` switches (`local` → `model`). No lost/converted Space observed. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
