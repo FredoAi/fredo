@@ -276,3 +276,7 @@
       `Error:`/`Uncaught`/`Maximum update depth exceeded`. (The live `telemetry_spans` receipt is
       F-107's job.)
 
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
+
+- **S-31 PASS (live).** Model capture: one-line indicator `launcher-command-model-listening-chip` (`Fredo is listening`), `fieldContentW 206 ≥ 140`, `verticalOrNarrow []`, probe `overlapField` = the end-slot chip only (border-box probe artifact; content-box intersection 0); screenshot succeeded; console clean. Local leg: `Listening` chip + `Listening…` + hint chip, one line. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
