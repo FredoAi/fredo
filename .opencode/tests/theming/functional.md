@@ -307,7 +307,7 @@
 > `[data-testid="desktop-background-chooser"]`, `[data-testid="desktop-background-option-{none,aurora,nebula,mesh,topography,constellation,halo}"]`,
 > key `Fredo_desktop_background`.
 
-- [ ] **F-28 (Q-1 / R-1.1, R-1.2, AC1):** Open Settings → Appearance → Desktop Background
+- [x] **F-28 (Q-1 / R-1.1, R-1.2, AC1):** Open Settings → Appearance → Desktop Background
       (`[data-testid="desktop-background-chooser"]`). For **None**, **Aurora**, **Nebula** (≥2
       procedural): select the option, screenshot the desktop, then sample the **rendered pixels** at
       a fixed set of ≥5 desktop points (top-left quadrant, top-right quadrant, centre, lower-left,
@@ -320,7 +320,7 @@
   - **Edge:** all 6 procedural options (pairwise distinct); window over a sample point (re-sample
     outside its resting rect, G-170/G-171); maximized window; launcher strip displayed vs hidden.
 
-- [ ] **F-29 (Q-2 / R-1.1, R-1.3, AC1):** With a procedural option active, read the backdrop's
+- [x] **F-29 (Q-2 / R-1.1, R-1.3, AC1):** With a procedural option active, read the backdrop's
       `getBoundingClientRect()` + effective stacking, then `document.elementFromPoint(x,y)` at the
       F-28 points and compare each painted pixel against the None control.
   **Expected:** ≥1 desktop point shows the backdrop's paint (differs from None) — the background is
@@ -336,7 +336,7 @@
     occluder in the evidence. Other edges: desktop region vs launcher strip; window dragged across
     all samples; dark + light.
 
-- [ ] **F-30 (Q-3 / R-2.2, AC2):** With a procedural background active, measure contrast for
+- [x] **F-30 (Q-3 / R-2.2, AC2):** With a procedural background active, measure contrast for
       (a) shell chrome text (command bar, clock, tiles) vs its effective backdrop and (b) window
       title/body content vs the window surface, on **Dark/classic**, the **reporter's dark/brown
       palette** (record the exact preset id — e.g. Coffee/Sunset), and a **light** preset
@@ -347,7 +347,7 @@
   - **Edge:** reporter's exact dark/brown preset (state which); pale accent + light worst case;
     accent override set/cleared live; window over the busiest background region.
 
-- [ ] **F-31 (Q-4 / R-2.1):** With a procedural background active, switch dark→light and
+- [x] **F-31 (Q-4 / R-2.1):** With a procedural background active, switch dark→light and
       set/clear an `accentPrimary` override; sample rendered pixels before/after each change; also
       override an unused token (`cardBg`).
   **Expected:** pixels change **live with no restart** and derive from live theme tokens; the unused
@@ -355,7 +355,7 @@
       zero hex/rgb/hsl in the background module).
   - **Edge:** rapid churn; theme switch with the chooser open; token the recipe does not consume.
 
-- [ ] **F-32 (Q-5 / R-3.1, AC3):** **FIRST** read
+- [x] **F-32 (Q-5 / R-3.1, AC3):** **FIRST** read
       `window.matchMedia('(prefers-reduced-motion: reduce)').matches` via `tauri_webview_execute_js`
       and record the raw value. If `false`: immediately after selecting a procedural option capture
       **t0**, then take **3–5 SHORT SYNCHRONOUS samples ~150–300 ms apart** (NO `setTimeout`/async —
@@ -372,7 +372,7 @@
   - **Edge:** capture immediately after the trigger; two different options (distinct motion); theme
     switch mid-animation; drag during animation.
 
-- [ ] **F-33 (Q-6 / R-3.3, AC3):** Read `getAnimations()` (animation-name + duration/timing) and/or
+- [x] **F-33 (Q-6 / R-3.3, AC3):** Read `getAnimations()` (animation-name + duration/timing) and/or
       each animated element's computed animation properties for all 6 procedural options.
   **Expected:** each animated descriptor's motion is **visibly distinct** per the Architect's
       per-option identity table (aurora = 2 veils drifting apart; nebula = breathing cloud + grain
@@ -384,7 +384,7 @@
   - **Edge:** all 6 options; reduced-motion on (all static); re-select the same option (idempotent
     signature).
 
-- [ ] **F-34 (Q-7 / R-4.1, R-4.2, R-4.3, AC4):** (a) **Product-unit/static pin (G-050/#2870):** a unit/static test
+- [x] **F-34 (Q-7 / R-4.1, R-4.2, R-4.3, AC4):** (a) **Product-unit/static pin (G-050/#2870):** a unit/static test
       asserts the animated descriptors are **suppressed/gated** under reduced motion: the pure
       `resolveBackgroundMotion({ systemReducedMotion })` (`{true}` → `'static'`, `{false}` →
       `'animated'`) is exhaustively unit-tested, `isBoundedMotion` rejects out-of-budget motion (no
@@ -407,7 +407,7 @@
       acceptable evidence.
   - **Edge:** reduce ON + each option; reduce OFF strobe check; screenshot on both paths.
 
-- [ ] **F-35 (Q-8 / R-3.2, AC5):** With a procedural option active, record rAF frame intervals over
+- [x] **F-35 (Q-8 / R-3.2, AC5):** With a procedural option active, record rAF frame intervals over
       ≥10 s / ≥300 frames, JS heap, and process CPU/GPU idle + during interaction (window
       drag/open/close).
   **Expected:** **zero JS frame loops** (source-grep the background slice for
@@ -421,7 +421,7 @@
   - **Edge:** sustained idle soak (minutes); interaction during animation; two windows;
     reduced-motion on (should be cheaper).
 
-- [ ] **F-36 (Q-9 / R-5.1, AC5):** Select **None**; compare the desktop against a pre-#2905 BEFORE
+- [x] **F-36 (Q-9 / R-5.1, AC5):** Select **None**; compare the desktop against a pre-#2905 BEFORE
       capture (pixel-comparable; backdrop DOM absent); cold-restart. Then select a procedural option,
       cold-restart, re-open Appearance. Inject a stale/unknown value into
       `Fredo_desktop_background` and restart.
@@ -433,7 +433,7 @@
   - **Edge:** None after a procedural option; stale id, `''`, `null`, removed id; restart immediately
     after a selection.
 
-- [ ] **F-37 (Q-10 / REQ-LIVE, NF):** During the run: `fredo emit --event-type chat --session-id
+- [x] **F-37 (Q-10 / REQ-LIVE, NF):** During the run: `fredo emit --event-type chat --session-id
       e2e-2905-chat` + `--event-type tool_use --session-id e2e-2905-tool --tool-name read_file`;
       query `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill); retain
       screenshot raw URLs + live `tauri_webview_*` receipts.
@@ -443,9 +443,26 @@
   - **Edge:** re-run on the tested tip; keep emit + query output verbatim; do not fabricate a span
     query.
 
-- [ ] **F-38 (Q-11 / REQ-NF):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`;
+- [x] **F-38 (Q-11 / REQ-NF):** `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`;
       run the theming + desktop-shell regression suites.
   **Expected:** build exit 0, zero TS errors/warnings; suites green; existing assertions **not
       weakened/disabled/deleted** (the ONLY permitted change is the explicit #2899 static-only
       supersession above).
   - **Edge:** no dangling import; overlap suites green.
+
+
+### #2905 testing round 1 (spec/2905 @ d64ac959) — results
+
+> Live policy. Serving commit `spec/2905 @ d64ac959`; webview 1920×1017 dpr 1; raw `matchMedia('(prefers-reduced-motion: reduce)').matches` = **false**.
+
+- **F-28 PASS (live, rendered-pixel).** Fixed 5 points P1(300,180) P2(1620,180) P3(960,300) P4(300,850) P5(1620,850); raw-pixel vs None `(21,26,33)`: aurora 5/5, nebula 3/5, mesh 4/5, halo 3/5, constellation 5/5; full-frame scans differ 97.8/58.2/84.6/62.0/97.7 %, topography 4.6 % (peak Δ16). Pairwise min 40.5 % (nebula↔halo). **Disclosure:** topography's 1 px contour bands alias with the canonical points (0/5) — band-hit points differ Δ14–16 (4/5) and the exhaustive scan proves the paint; not a product defect. Evidence images: none/aurora/nebula/mesh/topography/constellation desktops (see verdict).
+- **F-29 PASS (live).** Backdrop z=0, `pointer-events:none`; launcher surface (`role=dialog`, z=1100) computed `rgba(0,0,0,0)` for non-none; `elementFromPoint` returns the transparent shell; the pre-fix `tint('var(--body-bg)',72)` veil is removed by ST-1 (diff + invariants pin).
+- **F-30 PASS (live).** coffee `#1f140e` 11.58–14.36:1; dark/classic 11.69–14.96:1; light-default 16.18–18.46:1; window title 14.79:1 on its opaque surface; status LED 7.61–9.74:1. Revealed residual: decorative aria-hidden frame ticks ~1.05:1 (non-semantic decoration, None-invariant).
+- **F-31 PASS (live).** Mesh dark→light live; accent-primary `#00d1d1`→`#ff00ff` shifted P1 `(10,46,51)`→`(49,14,58)`; unused `cardBg` override left paint unchanged (Δmax 2); reset cleared overrides `{}`.
+- **F-32 PASS (live).** `reduce:false`; `data-motion="animated"`; motion `<style>` present; ≥1 running backdrop animation; 8 consecutive rAF frames (~16.5 ms) + 4 tool-spaced samples all distinct.
+- **F-33 PASS (live).** Six distinct bounded signatures: aurora drift 45 s/0 normal + 68 s/6000 reverse; nebula breathe 110 s + rotate 110 s + static grain; mesh drift 48/61/74 s staggered; topography sweep 100 s (zero opacity); constellation drift 120 s + twinkle 11 s/0 + 8 s/3500; halo breathe 18 s. All ≤3 layers, all durations ≥8000.
+- **F-34 PASS (static pin) with Q-7(b) UNVERIFIED (named blocker).** 5 background files / 64 tests passed (both `resolveBackgroundMotion` legs, `isBoundedMotion` rejections, static render zero `animation*`/no `<style>`). Live `matchMedia` flip not drivable — Tauri MCP driver has no media-emulation API (G-050/G-148/#2870). No-strobe: constellation 8-frame mean-opacity 0.6703→0.6735 monotonic; 6-frame full-frame luminance 0.01086…0.01080.
+- **F-35 PASS (live).** 600 frames / 9,966 ms, p50 16.7 ms / p95 16.8 ms / max 16.8 ms; 154 s soak, backdrop layers constant 3, heap +0.16 %; zero rAF/setInterval in the production module.
+- **F-36 PASS (live).** None → zero backdrop DOM / zero motion style / `rgb(45,45,45)`+28 px grid (matches #2899 F-20 baseline); mesh and none round-trip cold restarts; AppStore `banana` → safe None fallback, no crash.
+- **F-37 PASS (live).** `telemetry_spans` 17597→17603, `max(ingested_at)` 2026-09-20T03:25:11.940Z; `chat_rows` e2e-2905-chat (state init) + `tool_use_rows` e2e-2905-tool (tool_name read_file).
+- **F-38 PASS.** `pnpm --filter @fredo/ui build` exit 0 (`✓ 2577 modules`); `test:run` 108 files / 1779 tests passed, 0 failed; only the explicit G-136 supersession inverted (not deleted).
