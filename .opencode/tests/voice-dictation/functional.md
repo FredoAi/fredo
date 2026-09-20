@@ -70,3 +70,37 @@
   hold-length clip and produced a reply → the fed observations are non-vacuous.
 - **Env form used (tooling gap):** unchanged from round 1 — `-EnvVars @{ … }` via `powershell -File`
   stringifies the hashtable; the feed was driven from the parent env of the allowlisted `bun` launcher.
+
+---
+
+## #2903 extension — the feed lever's bound for model-audio app control
+
+> Issue #2903 makes the model-audio path PERFORM app open/close requests. The app-action CONTENT lever
+> is the synthetic `llm-skill-call` on the real channel (`voice-input/functional.md` F-111); the L4
+> capture feed below carries **liveness only** and can never carry a spoken app request. **Verification
+> policy: live.** No prior row is retired.
+
+- [ ] F-5 (#2903 support): **The fixture's declared bound is liveness, never content.** Read the
+      generator's provenance header (`generate-dictation-phrase.mjs:14-23`); assert the committed
+      fixture is described as non-intelligible; grep the #2903 rows for any claim that the feed carries
+      an app intent.
+  **Expected:** the fixture is explicitly a deterministic synthetic waveform whose only job is to be a
+      valid 16 kHz mono 16-bit PCM WAV with non-zero signal at sample 0; NO #2903 row reads it as
+      speech; the app-action content lever named is the in-repo synthetic `llm-skill-call` event.
+  - **Edge:** a row that scores an L4-fed turn as "opened an app" is a FALSE PASS; an in-repo
+    intelligible-speech WAV does not exist — if the Architect requires the acoustic leg, the tester
+    `block`s naming it (G-172/G-009); never hunt media outside the repo.
+
+- [ ] F-6 (#2903 support): **The env lever form is drivable (`-EnvVar NAME=value`).** Launch with
+      `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2903 -EnvVar
+      "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`;
+      `stt_start`; watch `stt_status`/`stt:state`; `stt_stop`. Pair with an UNSET-env control (F-4).
+  **Expected:** the feed branch is taken (`{deviceName:"stt-feed", sampleRate:16000}`, NO `cpal` device),
+      the session goes live 1× real time, `stt_stop` releases cleanly, the app stays responsive; the
+      UNSET control uses the shipped `cpal` path so the observation is non-vacuous.
+  - **Edge:** a path containing spaces; `dev-env` refusing the env var → report as a tooling gap, not a
+    product FAIL; a silent/empty WAV.
+
+### #2903 testing round 1 — result
+
+- [ ] _(pending — the Tester appends per-row PASS/FAIL/UNVERIFIED; do not pre-fill)_
