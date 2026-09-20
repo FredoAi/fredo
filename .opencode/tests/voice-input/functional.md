@@ -1358,3 +1358,41 @@ is live. Host mic is virtual-only → L4 feed for audio; L3 for local transcript
 - **F-124 PASS (static).** `infrastructure/voice/**` zero network symbols; `features/llm_server/**` loopback only.
 - **F-125 PASS (live receipts).** `telemetry_spans` 16,401 rows, newest `2026-09-20T02:00:18.633Z`; chip clears on `llm-done`; console clean. Live outbound block BLOCKED (no lever).
 - **F-126 PASS (live).** No-selection turn → zero `llm-skill-call`, window set unchanged, model prose settle.
+
+---
+
+## #2904 extension — mode-parity clean render of the dictation indicator
+
+> Issue #2904 fixes a stray vertically-stacked `Fredo…` string in the launcher search bar while
+> dictating. The mode-specific copy is `voice-input` territory: mode=`local` → the shipped
+> `Listening` chip (`launcher-command-listening-chip`) + `Listening…` placeholder + `release Space to
+> finish` hint chip (UNCHANGED); mode=`model` → the `Fredo is listening` chip
+> (`launcher-command-model-listening-chip`) is the sole listening claim and the hint chip is suppressed
+> (the instruction relocates into the `release Space to finish` placeholder) [AC2 resolution = Architect
+> contract, see `.opencode/tmp/2904/triage.md`]. Both must render HORIZONTALLY and be the ONLY listening-related text. The launcher
+> `functional.md` F-101..F-107 owns the render matrix; this row owns the MODE PARITY. **Verification
+> policy: live.** No row is retired.
+
+- [ ] F-127 (REQ-4 / AC4): **Mode parity — both speech-handling modes render the indicator on ONE
+      line, with no stray/stacked text and no overlap.** For mode=`local` then mode=`model`
+      (`companion-voice-handling-select`; the mode applies to the NEXT session), focus the empty
+      `[data-testid="launcher-command-input"]` and drive a live launcher-origin capture (the
+      `FREDO_STT_FEED_WAV` in-repo feed, or the synthetic `stt:state
+      {listening:true, phase:"capturing", origin:"launcher"}` fallback). Per mode, run the
+      `launcher/functional.md` `#2904` **Shared probe** + screenshot; enumerate every visible text
+      node matching `/listening|Fredo/i` and its line count; repeat with a LIGHT preset
+      (`light-default` via the shipped `select[aria-label="Theme presets"]`) and the DARK base.
+  **Expected:** in EACH mode — exactly ONE visible listening indicator with `whiteSpace:nowrap` and
+      line count = 1; the copy (`Listening` + `Listening…` + `release Space to finish` hint in local;
+      `Fredo is listening` chip + `release Space to finish` placeholder, hint chip suppressed, in model
+      — the #2904 AC2 relocation); ZERO `verticalWrap`/`narrow` node and
+      an empty `overlapField`; **`fieldContentW ≥ 140`** (model mode — the decisive collapse signal,
+      since the placeholder is not in `textContent`); the field renders cleanly. In EACH theme —
+      identical geometry, token-native colours. The `processing` window renders
+      `Fredo is processing your speech…` on ONE line (model only).
+  - **Edge:** a mid-capture mode switch is OUT of scope (the mode is read per `stt_start`) — the
+    parity leg is run across two sessions; the countdown copy `Fredo is listening · 10s left`; a
+    non-empty query present; the managed server unavailable → the model leg is a NAMED BLOCKER
+    (G-053) + the synthetic-`stt:state` receipt, never a real-audio PASS.
+  - **Receipt:** per mode/theme — the probe JSON + the quoted indicator copy + the screenshot +
+    `telemetry_spans` (the live-policy receipt).
