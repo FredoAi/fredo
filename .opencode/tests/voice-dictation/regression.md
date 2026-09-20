@@ -34,3 +34,25 @@
 - **R-1 PASS** — committed fixture SHA-256 `33c2f129d17a555b9faad66e21eab5c8069712c8836cc8d363e97c1555343428`, 16 kHz mono 16-bit PCM, 25,600 samples / 1.6 s; regeneration byte-identical; the `#2887` format pin still accepts it.
 - **R-2 PASS** — with `FREDO_STT_FEED_WAV` unset (the pre-feed session) the shipped `cpal` path was used (48000 Hz virtual mic), start/stop/cue/mic-release unchanged, console clean.
 - **R-3 PASS** — no out-of-repo audio reference: every audio source named is the in-repo fixture / its deterministic generator; the plan + suites contain no `~`, `%USERPROFILE%`, `node_modules`, `~\.cargo`, or `C:\Windows\Media` asset. **Tooling gap:** the documented `-EnvVars @{ … }` form via `powershell -File` is broken; the feed was driven from the parent env of an allowlisted `bun` launcher.
+
+---
+
+## #2903 extension — the lever is unchanged and stays in-repo (G-172/G-009)
+
+> Issue #2903 adds no audio asset; it uses the existing L4 feed for the model-audio lifecycle only.
+> R-1..R-3 remain in force. **Verification policy: live.**
+
+## R-4 — No out-of-repo audio asset is introduced by the #2903 legs
+
+- [ ] R-4: Grep the #2903 plan + suites (`voice-input` F-111..F-126, this file's F-5/F-6/R-4) for any
+      path under `~`, `%USERPROFILE%`, `node_modules`, `~\.cargo`, `C:\Windows\Media`, or an STT model
+      directory; confirm the only app-action lever named is the in-repo synthetic `llm-skill-call`.
+  **Expected:** ZERO out-of-repo audio/media references; the only audio source named is the committed
+      fixture + its deterministic in-repo generator; the app-action content lever is a synthetic event
+      on the product's REAL channel (no asset at all); the legs are reproducible on a clean checkout.
+  - **Edge:** the fixture's declared non-intelligibility is NOT a defect — it is the documented bound
+    (F-5); a leg that silently claims a spoken request from the feed is a FALSE PASS.
+
+### #2903 testing round 1 — result
+
+- [ ] _(pending — the Tester appends the result; do not pre-fill)_
