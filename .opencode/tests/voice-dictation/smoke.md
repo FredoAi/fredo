@@ -28,3 +28,24 @@
 - **S-2 PASS** — feed quick path: app booted, `stt_start` went live from the feed
   (`deviceName:"stt-feed"`, 16,000 Hz, no `cpal`), `stt_stop` released cleanly; console clean.
 - **S-3 PASS** — 5 captures uploaded via `upload-evidence --issue 2897` with textual descriptions.
+
+---
+
+## #2903 extension — feed quick path on the model-audio tip
+
+> Issue #2903 reuses the L4 feed for the model-audio lifecycle. **Verification policy: live.**
+> **Serving checkout:** the `spec/2903` tip (fill the SHA per round).
+
+- [ ] S-4: **Feed quick path (string env form).** Launch with
+      `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2903 -EnvVar
+      "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`;
+      mode=`model` selected; `stt_start` → `stt_stop`.
+      **Expected:** the app boots and renders, the feed branch is proven
+      (`{deviceName:"stt-feed", sampleRate:16000}`, no `cpal` device), the turn settles with the curated
+      model-audio state and NO transcript, `stt_stop` releases; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; screenshot succeeds. **The fixture carries no
+      intelligible speech — the acoustic app-request leg stays a NAMED BLOCKER, not a PASS.**
+
+### #2903 testing round 1 — result
+
+- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
