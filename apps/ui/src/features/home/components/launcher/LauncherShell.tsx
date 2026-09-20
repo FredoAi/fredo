@@ -12,12 +12,12 @@ import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureC
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
 // shipped grid texture (ONE definition, shared with the launcher surface).
 import { NONE_BACKGROUND } from '../background/backgroundRegistry';
-// Spec #2899 ST-3 — the selected background id. While a non-`none` background is
-// active the surface drops the shipped grid texture (the pattern lives ONLY in
-// the z=0 `DesktopBackdrop` layer, so it can never lift above a window at
-// SURFACE_Z_OPENED) and keeps a token-derived scrim for launcher legibility.
+// Spec #2899 ST-3 / #2905 ST-1 — the selected background id. While a non-`none`
+// background is active the surface drops BOTH the shipped grid texture and any
+// veil (the pattern lives ONLY in the z=0 `DesktopBackdrop` layer, so it can
+// never lift above a window at SURFACE_Z_OPENED and the backdrop is fully
+// visible through this transparent surface).
 import { useBackgroundId } from '../background/backgroundStore';
-import { tint } from '../../../../shared/utils/colorTint';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
@@ -808,16 +808,16 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // below a maximized window.
   const surfaceZ = open ? SURFACE_Z_OPENED : coveredByWindow ? SURFACE_Z_COVERED : SURFACE_Z_VISIBLE;
 
-  // #2899 ST-3 (Architect API Contracts §4) — the surface keeps the shipped
-  // texture byte-identically for `none` (R-1.3) and switches to a theme-derived
-  // translucent scrim otherwise. The procedural pattern itself lives ONLY in the
-  // z=0 `DesktopBackdrop`; the resting surface at SURFACE_Z_VISIBLE (1100) would
-  // otherwise occlude it, and at SURFACE_Z_OPENED (1300) the pattern would paint
-  // above a window (R-4.1) — so the surface never carries the pattern.
+  // #2899 ST-3 / #2905 ST-1 — the surface keeps the shipped texture
+  // byte-identically for `none`. For any procedural option the surface is
+  // FULLY TRANSPARENT: the descriptor's own opaque `backgroundColor` ground (in
+  // the z=0 `DesktopBackdrop`) is the opaque layer, and a translucent veil here
+  // would dilute the recipe to near-invisibility (the #2905 defect: the old
+  // `tint('var(--body-bg)', 72)` scrim was a 72%-opaque full-viewport veil above
+  // the backdrop). The pattern is NEVER painted on this surface — at
+  // SURFACE_Z_OPENED (1300) it would rise above a window.
   const surfaceCss =
-    backgroundId === 'none'
-      ? NONE_BACKGROUND.css
-      : { backgroundColor: tint('var(--body-bg)', 72) };
+    backgroundId === 'none' ? NONE_BACKGROUND.css : { backgroundColor: 'transparent' };
 
   // Command-bar query filters the grid by tile name (type-ahead highlight).
   const filteredEntries = useMemo(() => {

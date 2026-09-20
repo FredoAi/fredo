@@ -1,18 +1,25 @@
 /**
- * DesktopBackdrop — the full-bleed desktop background layer (Spec #2899 ST-3).
+ * DesktopBackdrop — the full-bleed desktop background layer (Spec #2899 ST-3;
+ * layered + animated in Spec #2905 ST-2/ST-3).
  *
- * Renders the user's selected background descriptor as an inert layer at the
- * BOTTOM of the desktop stack (`zIndex 0` in the `Home.tsx` desktop box, before
+ * Renders the user's selected descriptor as an inert layer at the BOTTOM of the
+ * desktop stack (`zIndex 0` in the `Home.tsx` desktop box, before
  * `<WindowManager/>` whose container is `zIndex 1`). Because it is strictly
- * below the window stack it can never paint above a window (AC4 / R-4.1), and
- * it is `pointerEvents="none"` + `aria-hidden` with no handlers and no
- * `tabIndex`, so it never receives pointer or keyboard input (R-4.2).
+ * below the window stack it can never paint above a window, and it is
+ * `pointerEvents="none"` + `aria-hidden` with no handlers and no `tabIndex`, so
+ * it never receives pointer or keyboard input.
+ *
+ * Structure: the root paints the descriptor's GROUND (`descriptor.css`); one
+ * absolutely positioned `[data-background-layer]` child paints each layer in
+ * order. While animated, the root stamps `data-motion="animated"` and injects
+ * the ONE motion stylesheet (`[data-testid="desktop-backdrop-motion-styles"]`)
+ * and each animated layer carries its bounded inline `animation*` properties.
+ * Under reduced motion the root stamps `data-motion="static"`, the stylesheet is
+ * NOT rendered, and no layer carries an animation property — the identical paint
+ * with animations removed (not paused mid-frame).
  *
  * `none` renders `null` — ZERO new DOM — keeping the shipped default path
- * byte-identical to pre-#2899 (R-1.3). The paint for a selected descriptor comes
- * verbatim from the registry (`getBackgroundDescriptor(id).css`), which is a
- * pure function of the live theme CSS vars, so it recolors without a restart
- * (R-2.1).
+ * byte-identical to pre-#2899.
  *
  * Mount-time hydration: the desktop shell owns this component unconditionally,
  * so its mount effect restores the persisted selection on boot (mirrors the
@@ -25,9 +32,16 @@ import { Box } from '@chakra-ui/react';
 
 import { getBackgroundDescriptor } from './backgroundRegistry';
 import { hydrateBackground, useBackgroundId } from './backgroundStore';
+import {
+  BACKGROUND_MOTION_CSS,
+  MOTION_LAYER_CLASS,
+  layerAnimationStyle,
+  useBackgroundMotion,
+} from './backgroundMotion';
 
 export const DesktopBackdrop: React.FC = () => {
   const backgroundId = useBackgroundId();
+  const motion = useBackgroundMotion();
 
   // Restore the persisted selection once, when the desktop shell mounts. The
   // store is idempotent + dirty-guarded, so this is safe on every remount.
@@ -38,15 +52,36 @@ export const DesktopBackdrop: React.FC = () => {
   // Default path: no extra DOM at all.
   if (backgroundId === 'none') return null;
 
+  const descriptor = getBackgroundDescriptor(backgroundId);
+  const animated = motion === 'animated';
+
   return (
     <Box
       data-testid="desktop-backdrop"
+      data-background-id={descriptor.id}
+      data-motion={motion}
       aria-hidden="true"
       position="absolute"
       inset={0}
       zIndex={0}
       pointerEvents="none"
-      css={getBackgroundDescriptor(backgroundId).css}
-    />
+      css={descriptor.css}
+    >
+      {animated && (
+        <style data-testid="desktop-backdrop-motion-styles">{BACKGROUND_MOTION_CSS}</style>
+      )}
+      {descriptor.layers.map((layer) => (
+        <Box
+          key={layer.id}
+          data-background-layer={layer.id}
+          className={MOTION_LAYER_CLASS}
+          position="absolute"
+          inset={0}
+          pointerEvents="none"
+          css={layer.css}
+          style={animated && layer.motion ? layerAnimationStyle(layer.motion) : undefined}
+        />
+      ))}
+    </Box>
   );
 };

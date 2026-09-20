@@ -1,16 +1,24 @@
 /**
  * Background registry — the closed set of desktop-background descriptors
- * (Spec #2899 ST-1).
+ * (Spec #2899 ST-1; reshaped to layered descriptors in Spec #2905 ST-2).
  *
- * Every descriptor's `css` is a PURE function of live theme CSS custom
- * properties: no color literal, no raster asset, no `url()`/`data:` URI, no
- * animation. Translucency is produced exclusively through the shared `tint()`
- * helper (`color-mix(in srgb, var(--…) N%, transparent)`), which resolves at
- * paint time — so a theme/accent switch recolors every recipe with zero JS and
- * no restart (AC2).
+ * Every descriptor carries:
+ *   - `css` — the GROUND fill: an opaque, theme-derived surface (`var(--…)`);
+ *   - `layers` — the ordered paint stack (bottom → top). Each layer is exactly
+ *     ONE gradient/fill plus optional bounded motion metadata. The renderer adds
+ *     `position: absolute; inset: 0`; the registry owns only the paint + motion.
+ *
+ * Every colour is a PURE function of live theme CSS custom properties: no colour
+ * literal, no raster asset, no `url()`/`data:` URI. Translucency is produced
+ * exclusively through the shared `tint()` helper
+ * (`color-mix(in srgb, var(--…) N%, transparent)`), which resolves at paint time
+ * — so a theme/accent switch recolours every recipe with zero JS and no restart
+ * (AC2). Motion metadata is declarative and bounded (see `backgroundMotion.ts`);
+ * this module contains no CSS `@keyframes` and no animation shorthand.
  *
  * `none` reuses the shell's shipped desktop texture verbatim, moved here so the
- * grid has ONE definition shared by the launcher surface and the registry.
+ * grid has ONE definition shared by the launcher surface and the registry; its
+ * `css` is UNCHANGED and it carries `layers: []`.
  *
  * `getBackgroundDescriptor` is LENIENT: any unknown, stale, malformed, or
  * removed id normalizes to `NONE_BACKGROUND` and never throws (AC3).
@@ -29,18 +37,53 @@ export type BackgroundId =
   | 'constellation'
   | 'halo';
 
-/** A named background and the paint it contributes. `css` is a pure function
- *  of live theme variables (theme-driven, literal-free). */
+/** The bounded motion vocabulary (Spec #2905 ST-2). Each kind maps to ONE
+ *  `@keyframes` block in `backgroundMotion.ts`. */
+export type BackgroundMotionKind =
+  | 'drift' // lateral translate (translate3d)
+  | 'breathe' // scale + gentle opacity swell
+  | 'pulse' // small scale + small opacity
+  | 'twinkle' // opacity only, phase-varied
+  | 'sweep' // directional translate of a line/contour layer (NO opacity)
+  | 'rotate'; // slow rotate (transform only)
+
+/** The bounded timing envelope for ONE animated layer. */
+export interface BackgroundLayerMotion {
+  kind: BackgroundMotionKind;
+  /** >= MOTION_DURATION_MIN_MS (8000). */
+  durationMs: number;
+  /** 0 <= delayMs < durationMs (phase offset). */
+  delayMs: number;
+  /** Never `steps()` — no visible restart seam / strobe. */
+  easing: 'linear' | 'ease-in-out';
+  direction?: 'normal' | 'alternate' | 'reverse';
+}
+
+/** ONE paint layer. The renderer adds `position: absolute; inset: 0`. */
+export interface BackgroundLayer {
+  /** Drives `data-background-layer` — unique within a descriptor. */
+  id: string;
+  /** Exactly ONE gradient/fill, token-only. */
+  css: CSSProperties;
+  /** Absent → a static layer (never animated). */
+  motion?: BackgroundLayerMotion;
+}
+
+/** A named background: an opaque ground plus its ordered paint layers. */
 export interface BackgroundDescriptor {
   id: BackgroundId;
   label: string;
+  /** The GROUND fill. `NONE_BACKGROUND` keeps the shipped texture verbatim. */
   css: CSSProperties;
+  /** Paint order (bottom → top). `none`: `[]`. */
+  layers: readonly BackgroundLayer[];
 }
 
 /**
  * The shell's shipped desktop texture (Asset 1.7) — moved VERBATIM from
  * `LauncherShell.tsx` so it has exactly one definition. Faint border-color
- * color-mix lines behind every window.
+ * color-mix lines behind every window. Carries no layers (byte-identical to
+ * pre-#2905 — ST-4).
  */
 export const NONE_BACKGROUND: BackgroundDescriptor = {
   id: 'none',
@@ -53,86 +96,155 @@ export const NONE_BACKGROUND: BackgroundDescriptor = {
     ].join(', '),
     backgroundSize: '28px 28px',
   },
+  layers: [],
 };
 
-/** Two large accent blooms over the body ground. */
+/** Two accent curtains that drift AGAINST each other (counter-drift). */
 const AURORA_BACKGROUND: BackgroundDescriptor = {
   id: 'aurora',
   label: 'Aurora',
-  css: {
-    backgroundColor: 'var(--body-bg)',
-    backgroundImage: [
-      `radial-gradient(120% 90% at 15% 0%, ${tint('var(--accent-primary)', 26)}, transparent 60%)`,
-      `radial-gradient(120% 90% at 85% 20%, ${tint('var(--accent-secondary)', 22)}, transparent 60%)`,
-    ].join(', '),
-  },
+  css: { backgroundColor: 'var(--body-bg)' },
+  layers: [
+    {
+      id: 'aurora-curtain-west',
+      css: {
+        backgroundImage: `radial-gradient(120% 90% at 15% 0%, ${tint('var(--accent-primary)', 26)}, transparent 60%)`,
+      },
+      motion: { kind: 'drift', durationMs: 45000, delayMs: 0, easing: 'ease-in-out', direction: 'normal' },
+    },
+    {
+      id: 'aurora-curtain-east',
+      css: {
+        backgroundImage: `radial-gradient(120% 90% at 85% 20%, ${tint('var(--accent-secondary)', 22)}, transparent 60%)`,
+      },
+      motion: { kind: 'drift', durationMs: 68000, delayMs: 6000, easing: 'ease-in-out', direction: 'reverse' },
+    },
+  ],
 };
 
-/** A primary bloom with a counter-bloom and a faint dot grain. */
+/** A diffuse breathing cloud + a counter-rotating bloom, anchored by static grain. */
 const NEBULA_BACKGROUND: BackgroundDescriptor = {
   id: 'nebula',
   label: 'Nebula',
-  css: {
-    backgroundColor: 'var(--card-bg)',
-    backgroundImage: [
-      `radial-gradient(90% 70% at 70% 15%, ${tint('var(--accent-primary)', 20)}, transparent 65%)`,
-      `radial-gradient(90% 70% at 20% 80%, ${tint('var(--accent-secondary)', 16)}, transparent 65%)`,
-      `radial-gradient(${tint('var(--text-primary)', 8)} 1px, transparent 1px)`,
-    ].join(', '),
-    backgroundSize: 'auto, auto, 22px 22px',
-  },
+  css: { backgroundColor: 'var(--card-bg)' },
+  layers: [
+    {
+      id: 'nebula-bloom',
+      css: {
+        backgroundImage: `radial-gradient(90% 70% at 70% 15%, ${tint('var(--accent-primary)', 20)}, transparent 65%)`,
+      },
+      motion: { kind: 'breathe', durationMs: 110000, delayMs: 0, easing: 'ease-in-out' },
+    },
+    {
+      id: 'nebula-counter-bloom',
+      css: {
+        backgroundImage: `radial-gradient(90% 70% at 20% 80%, ${tint('var(--accent-secondary)', 16)}, transparent 65%)`,
+      },
+      motion: { kind: 'rotate', durationMs: 110000, delayMs: 0, easing: 'linear' },
+    },
+    {
+      // The non-moving texture anchor — NO motion on purpose.
+      id: 'nebula-grain',
+      css: {
+        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 8)} 1px, transparent 1px)`,
+        backgroundSize: '22px 22px',
+      },
+    },
+  ],
 };
 
-/** Three corner tints over the body ground. */
+/** Three tint nodes drifting on phase-staggered diagonal paths (parallax). */
 const MESH_BACKGROUND: BackgroundDescriptor = {
   id: 'mesh',
   label: 'Mesh',
-  css: {
-    backgroundColor: 'var(--body-bg)',
-    backgroundImage: [
-      `radial-gradient(80% 80% at 15% 10%, ${tint('var(--accent-primary)', 18)}, transparent 60%)`,
-      `radial-gradient(80% 80% at 85% 15%, ${tint('var(--accent-secondary)', 16)}, transparent 60%)`,
-      `radial-gradient(80% 80% at 50% 100%, ${tint('var(--status-info)', 12)}, transparent 60%)`,
-    ].join(', '),
-  },
+  css: { backgroundColor: 'var(--body-bg)' },
+  layers: [
+    {
+      id: 'mesh-node-primary',
+      css: {
+        backgroundImage: `radial-gradient(80% 80% at 15% 10%, ${tint('var(--accent-primary)', 18)}, transparent 60%)`,
+      },
+      motion: { kind: 'drift', durationMs: 48000, delayMs: 0, easing: 'ease-in-out' },
+    },
+    {
+      id: 'mesh-node-secondary',
+      css: {
+        backgroundImage: `radial-gradient(80% 80% at 85% 15%, ${tint('var(--accent-secondary)', 16)}, transparent 60%)`,
+      },
+      motion: { kind: 'drift', durationMs: 61000, delayMs: 12000, easing: 'ease-in-out' },
+    },
+    {
+      id: 'mesh-node-info',
+      css: {
+        backgroundImage: `radial-gradient(80% 80% at 50% 100%, ${tint('var(--status-info)', 12)}, transparent 60%)`,
+      },
+      motion: { kind: 'drift', durationMs: 74000, delayMs: 24000, easing: 'ease-in-out' },
+    },
+  ],
 };
 
-/** Concentric accent contour rings over the card ground. */
+/** Concentric accent contour rings that sweep directionally (no opacity change). */
 const TOPOGRAPHY_BACKGROUND: BackgroundDescriptor = {
   id: 'topography',
   label: 'Topography',
-  css: {
-    backgroundColor: 'var(--card-bg)',
-    backgroundImage: [
-      `repeating-radial-gradient(circle at 30% 40%, transparent 0 22px, ${tint('var(--accent-primary)', 10)} 22px 23px)`,
-    ].join(', '),
-  },
+  css: { backgroundColor: 'var(--card-bg)' },
+  layers: [
+    {
+      id: 'topography-contours',
+      css: {
+        backgroundImage: `repeating-radial-gradient(circle at 30% 40%, transparent 0 22px, ${tint('var(--accent-primary)', 10)} 22px 23px)`,
+      },
+      motion: { kind: 'sweep', durationMs: 100000, delayMs: 0, easing: 'linear' },
+    },
+  ],
 };
 
-/** A star-like dot field over the body ground with a soft accent bloom. */
+/** A drifting star field with two out-of-phase twinkle layers over a soft bloom. */
 const CONSTELLATION_BACKGROUND: BackgroundDescriptor = {
   id: 'constellation',
   label: 'Constellation',
-  css: {
-    backgroundColor: 'var(--body-bg)',
-    backgroundImage: [
-      `radial-gradient(${tint('var(--text-primary)', 16)} 1.2px, transparent 1.2px)`,
-      `radial-gradient(100% 80% at 50% 50%, ${tint('var(--accent-primary)', 10)}, transparent 60%)`,
-    ].join(', '),
-    backgroundSize: '26px 26px, auto',
-  },
+  css: { backgroundColor: 'var(--body-bg)' },
+  layers: [
+    {
+      id: 'constellation-bloom',
+      css: {
+        backgroundImage: `radial-gradient(100% 80% at 50% 50%, ${tint('var(--accent-primary)', 10)}, transparent 60%)`,
+      },
+      motion: { kind: 'drift', durationMs: 120000, delayMs: 0, easing: 'linear' },
+    },
+    {
+      id: 'constellation-stars-far',
+      css: {
+        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 16)} 1.2px, transparent 1.2px)`,
+        backgroundSize: '26px 26px',
+      },
+      motion: { kind: 'twinkle', durationMs: 11000, delayMs: 0, easing: 'ease-in-out' },
+    },
+    {
+      id: 'constellation-stars-near',
+      css: {
+        backgroundImage: `radial-gradient(${tint('var(--text-primary)', 20)} 1.6px, transparent 1.6px)`,
+        backgroundSize: '34px 34px',
+      },
+      motion: { kind: 'twinkle', durationMs: 8000, delayMs: 3500, easing: 'ease-in-out' },
+    },
+  ],
 };
 
-/** One soft accent halo near the top over the card ground. */
+/** One soft accent halo breathing gently near the top (smallest amplitude). */
 const HALO_BACKGROUND: BackgroundDescriptor = {
   id: 'halo',
   label: 'Halo',
-  css: {
-    backgroundColor: 'var(--card-bg)',
-    backgroundImage: [
-      `radial-gradient(120% 100% at 50% 18%, ${tint('var(--accent-primary)', 16)}, transparent 62%)`,
-    ].join(', '),
-  },
+  css: { backgroundColor: 'var(--card-bg)' },
+  layers: [
+    {
+      id: 'halo-glow',
+      css: {
+        backgroundImage: `radial-gradient(120% 100% at 50% 18%, ${tint('var(--accent-primary)', 16)}, transparent 62%)`,
+      },
+      motion: { kind: 'breathe', durationMs: 18000, delayMs: 0, easing: 'ease-in-out' },
+    },
+  ],
 };
 
 /** The six procedural recipes, in chooser order. `none` is intentionally

@@ -36,6 +36,7 @@ import {
   type BackgroundId,
 } from './backgroundRegistry';
 import { hydrateBackground, selectBackground, useBackgroundId } from './backgroundStore';
+import { useBackgroundMotion } from './backgroundMotion';
 
 /** Chooser order: the shipped `None` first (the default), then the recipes. */
 const BACKGROUND_OPTIONS = [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS] as const;
@@ -73,6 +74,7 @@ const SectionLabel: React.FC<{ id?: string; children: React.ReactNode }> = ({ id
 
 export const BackgroundSettings: React.FC = () => {
   const backgroundId = useBackgroundId();
+  const motion = useBackgroundMotion();
   const tileRefs = useRef<Array<HTMLElement | null>>([]);
 
   // Restore the persisted selection at first consumer mount. Idempotent (runs
@@ -174,15 +176,29 @@ export const BackgroundSettings: React.FC = () => {
               _focusVisible={{ outline: '2px solid var(--accent-strong)', outlineOffset: '2px' }}
             >
               {/* Live preview — the tile IS the result: the descriptor's own
-                  recipe at 16/10 scale, decorative + non-interactive. */}
+                  ground + layers at 16/10 scale, rendered STATICALLY (no
+                  animation on the thumbnail — ST-2), decorative + non-interactive. */}
               <Box
                 aria-hidden="true"
                 pointerEvents="none"
+                position="relative"
                 w="100%"
+                overflow="hidden"
                 borderBottom="1px solid"
                 borderColor="var(--border-color)"
                 css={{ aspectRatio: '16 / 10', ...getBackgroundDescriptor(option.id).css }}
-              />
+              >
+                {getBackgroundDescriptor(option.id).layers.map((layer) => (
+                  <Box
+                    key={layer.id}
+                    data-background-layer={layer.id}
+                    position="absolute"
+                    inset={0}
+                    pointerEvents="none"
+                    css={layer.css}
+                  />
+                ))}
+              </Box>
               <Text
                 data-testid={option.id === 'none' ? 'desktop-background-none' : undefined}
                 fontSize="xs"
@@ -216,6 +232,18 @@ export const BackgroundSettings: React.FC = () => {
       </Box>
       <Text fontSize="xs" color="var(--text-secondary)" mt={3} lineHeight="short">
         Renders behind your windows and never blocks clicks.
+      </Text>
+      {/* Display-only motion status (UI/UX §5): not a control, not focusable.
+          The OS reduced-motion preference is the only motion off switch. */}
+      <Text
+        data-testid="desktop-background-motion-status"
+        data-motion={motion}
+        fontSize="xs"
+        color="var(--text-secondary)"
+        mt={1}
+        lineHeight="short"
+      >
+        {motion === 'animated' ? 'Motion: on' : 'Motion: off (system reduced motion)'}
       </Text>
     </Box>
   );

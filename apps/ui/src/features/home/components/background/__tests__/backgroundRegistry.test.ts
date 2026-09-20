@@ -1,11 +1,13 @@
 /**
- * #2899 ST-1 — background registry unit pin.
+ * #2899 ST-1 / #2905 ST-5 — background registry unit pin.
  *
- * Pins the closed id set (`none` + six procedural recipes), the descriptor
- * contract, the verbatim extraction of the shipped `DESKTOP_TEXTURE_CSS` into
- * `NONE_BACKGROUND.css`, the lenient never-throwing fallback of
- * `getBackgroundDescriptor`, and the literal-free paint contract (no hex /
- * rgb / hsl literal, no `data:` / `url(` in the registry source).
+ * Pins the closed id set (`none` + six procedural recipes), the LAYERED
+ * descriptor contract (`css` ground + `layers[]` each with one gradient and
+ * optional bounded motion), the per-option motion identity distinctness, the
+ * verbatim extraction of the shipped desktop texture into `NONE_BACKGROUND.css`,
+ * the lenient never-throwing fallback of `getBackgroundDescriptor`, and the
+ * literal-free paint contract (no hex / rgb / hsl literal, no `data:` / `url(` in
+ * the registry source OR in any emitted ground/layer).
  *
  * Source-scan pattern mirrors
  * `shared/components/companion/__tests__/companion.cursorReducedMotion.test.ts`
@@ -23,7 +25,9 @@ import {
   isBackgroundId,
   type BackgroundDescriptor,
   type BackgroundId,
+  type BackgroundLayerMotion,
 } from '../backgroundRegistry';
+import { MOTION_DURATION_MIN_MS, isBoundedMotion } from '../backgroundMotion';
 
 const REGISTRY_PATH = 'src/features/home/components/background/backgroundRegistry.ts';
 
@@ -42,7 +46,26 @@ function stripComments(source: string): string {
 const ALL: readonly BackgroundDescriptor[] = [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS];
 const ALL_IDS: readonly BackgroundId[] = ALL.map((descriptor) => descriptor.id);
 
-describe('#2899 ST-1 — background registry', () => {
+/** Ground + every layer's paint — the full serialized recipe. */
+function serializePaint(descriptor: BackgroundDescriptor): string {
+  return JSON.stringify({ css: descriptor.css, layers: descriptor.layers.map((l) => l.css) });
+}
+
+/** The per-option animation signature set (kind/duration/delay/easing/direction). */
+function motionSignatures(descriptor: BackgroundDescriptor): string {
+  const signatures = descriptor.layers
+    .map((layer) => layer.motion)
+    .filter((motion): motion is BackgroundLayerMotion => motion !== undefined)
+    .map((motion) =>
+      [motion.kind, motion.durationMs, motion.delayMs, motion.easing, motion.direction ?? 'normal'].join(
+        '|',
+      ),
+    )
+    .sort();
+  return JSON.stringify(signatures);
+}
+
+describe('#2899 ST-1 / #2905 ST-5 — background registry', () => {
   it('defines the closed 7-id set: none + six procedural recipes', () => {
     expect(ALL_IDS).toEqual([
       'none',
@@ -100,13 +123,57 @@ describe('#2899 ST-1 — background registry', () => {
     }
   });
 
-  it('the 6 procedural descriptors are pairwise distinct (serialized css)', () => {
-    const serialized = BACKGROUND_DESCRIPTORS.map((descriptor) => JSON.stringify(descriptor.css));
-    expect(new Set(serialized).size).toBe(6);
-    // `none` must not collide with any procedural recipe either.
-    for (const css of serialized) {
-      expect(css).not.toBe(JSON.stringify(NONE_BACKGROUND.css));
+  it('exposes a layered descriptor contract: ground css + layers[] (none has none)', () => {
+    expect(NONE_BACKGROUND.layers).toEqual([]);
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      expect(Array.isArray(descriptor.layers)).toBe(true);
+      expect(descriptor.layers.length).toBeGreaterThanOrEqual(1);
+      expect(descriptor.layers.length).toBeLessThanOrEqual(3);
+      for (const layer of descriptor.layers) {
+        expect(typeof layer.id).toBe('string');
+        expect(layer.id.length).toBeGreaterThan(0);
+        expect(layer.css).toBeTypeOf('object');
+        expect(Object.keys(layer.css).length).toBeGreaterThan(0);
+      }
+      const ids = descriptor.layers.map((layer) => layer.id);
+      expect(new Set(ids).size, `${descriptor.id}: unique layer ids`).toBe(ids.length);
     }
+  });
+
+  it('the 6 procedural descriptors are pairwise distinct (ground + layers + motion identity)', () => {
+    const paints = BACKGROUND_DESCRIPTORS.map(serializePaint);
+    expect(new Set(paints).size).toBe(6);
+    for (const paint of paints) {
+      expect(paint).not.toBe(serializePaint(NONE_BACKGROUND));
+    }
+
+    const signatures = BACKGROUND_DESCRIPTORS.map(motionSignatures);
+    for (const signature of signatures) {
+      expect(JSON.parse(signature).length).toBeGreaterThan(0);
+    }
+    expect(new Set(signatures).size).toBe(6);
+  });
+
+  it('every layer motion is bounded (duration >= 8000, valid easing/delay/direction)', () => {
+    let motionCount = 0;
+    for (const descriptor of BACKGROUND_DESCRIPTORS) {
+      for (const layer of descriptor.layers) {
+        if (!layer.motion) continue;
+        motionCount += 1;
+        const motion = layer.motion;
+        expect(motion.durationMs, `${layer.id}: duration`).toBeGreaterThanOrEqual(
+          MOTION_DURATION_MIN_MS,
+        );
+        expect(motion.delayMs, `${layer.id}: delay >= 0`).toBeGreaterThanOrEqual(0);
+        expect(motion.delayMs, `${layer.id}: delay < duration`).toBeLessThan(motion.durationMs);
+        expect(['linear', 'ease-in-out']).toContain(motion.easing);
+        if (motion.direction !== undefined) {
+          expect(['normal', 'alternate', 'reverse']).toContain(motion.direction);
+        }
+        expect(isBoundedMotion(motion), `${layer.id}: isBoundedMotion`).toBe(true);
+      }
+    }
+    expect(motionCount).toBeGreaterThan(0);
   });
 
   it('NONE_BACKGROUND.css deep-equals the shipped DESKTOP_TEXTURE_CSS values', () => {
@@ -121,9 +188,14 @@ describe('#2899 ST-1 — background registry', () => {
     });
   });
 
-  it('registry source + emitted paint contain no hex/rgb/hsl literal and no data:/url( reference', () => {
+  it('registry source + emitted paint (grounds + every layer) contain no hex/rgb/hsl literal and no data:/url( reference', () => {
     const code = stripComments(readRegistrySource());
-    const emitted = JSON.stringify(ALL.map((descriptor) => descriptor.css));
+    const emitted = JSON.stringify(
+      ALL.map((descriptor) => ({
+        css: descriptor.css,
+        layers: descriptor.layers.map((layer) => layer.css),
+      })),
+    );
 
     for (const subject of [code, emitted]) {
       expect(subject).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
@@ -136,5 +208,17 @@ describe('#2899 ST-1 — background registry', () => {
     // The emitted paint *must* still use the live theme surface, not a literal.
     expect(emitted).toContain('color-mix(in srgb, var(--');
     expect(emitted).toContain('var(--card-bg)');
+  });
+
+  it('never alpha-appends digits onto a var() reference (invalid var(--x)NN form)', () => {
+    const code = stripComments(readRegistrySource());
+    expect(code).not.toMatch(/var\(--[a-z0-9-]+\)\d/);
+    const emitted = JSON.stringify(
+      ALL.flatMap((descriptor) => [
+        descriptor.css,
+        ...descriptor.layers.map((layer) => layer.css),
+      ]),
+    );
+    expect(emitted).not.toMatch(/var\(--[a-z0-9-]+\)\d/);
   });
 });
