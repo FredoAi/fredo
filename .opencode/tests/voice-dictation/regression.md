@@ -53,6 +53,6 @@
   - **Edge:** the fixture's declared non-intelligibility is NOT a defect — it is the documented bound
     (F-5); a leg that silently claims a spoken request from the feed is a FALSE PASS.
 
-### #2903 testing round 1 — result
+### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
-- [ ] _(pending — the Tester appends the result; do not pre-fill)_
+- **R-4 PASS.** Grep of the #2903 plan + suites (`voice-input` F-111..F-126, this file's F-5/F-6/R-4) finds `%USERPROFILE%`/`node_modules`/`C:\Windows\Media`/`~\.cargo` ONLY inside the guardrail text that forbids them — no actual out-of-repo media path. Every audio source named is the committed in-repo fixture + its deterministic generator; the app-action content lever is the synthetic `llm-skill-call` event (no asset). The fixture's declared non-intelligibility is the documented bound (F-5), not a defect.
