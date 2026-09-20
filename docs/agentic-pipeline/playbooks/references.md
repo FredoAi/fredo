@@ -53,6 +53,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-216: motion_ac_verified_by_animation_property_existence
+- **activation_date:** 2026-09-20
+- **observed:** #2905 shipped six procedural desktop backgrounds whose animation was technically running but imperceptible (travel ~ plus/minus 3 percent, 45-120 s cycles, opacity swings of at most 0.25 over diffuse gradients); its tests verified keyframe presence, bounded amplitude, reduced-motion gates and running-animation signatures plus static distinctness, so the suite passed while the user-visible result read as static. #2909 corrected it by binding a rendered-output metric — a dense/full-frame pixel diff between captures a defined interval apart, with named cadence/window/delta/coverage constants and per-recipe floors — and the tester measured 12-91 percent of pixels changing per 3 s (controls at or below 0.2 percent; the #2905 baseline of about 0.09 percent per 3 s rejected by roughly 130x-1000x).
+- **target_failure:** a motion/perceptibility acceptance criterion is verified only by the existence, bounds, or running state of an animation property, so an imperceptible-but-technically-animated surface passes and ships as "animated".
+- **guardrail:** When an acceptance criterion asserts a user-PERCEIVED motion or animation, bind a rendered-output metric and judge it on the rendered target's pixel delta over TIME — a dense/full-frame diff between frames a defined interval apart, with named cadence/window/delta/coverage constants and a per-target floor — corroborated by a human/vision read; a computed-style or animation-property observation is never sufficient evidence. Sample across a full cycle, or supplement a fixed short window with a full-cycle seek, so a window that lands inside one cycle phase cannot present as a one-shot settle.
+- **home:** playbooks/qa-expert.md (QA plan design) + playbooks/tester.md (motion evidence) + playbooks/self-improver.md (plan review + audit) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-212: geometry_overlap_probe_measures_the_border_box
 - **activation_date:** 2026-09-20
 - **observed:** #2904 — the QA plan's shared probe asserted "no overlap between the field and the indicator" by intersecting the indicator with the field's full border box, which includes an intentionally reserved inline end gutter; the probe therefore flagged the by-design indicator at rest and while capturing (and even the field's own rect). The tester correctly judged the acceptance criterion on the content-box criterion and disclosed the probe imprecision, so no round was lost.
@@ -67,7 +75,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a dispatch brief points at the transient `.opencode/tmp/<issue>/triage-plan.md` (or another consumed draft) as the plan/verdict source, so the agent hunts a deleted file instead of the authoritative posted comment.
 - **guardrail:** Every dispatch brief that needs the plan/verdict/summary must cite the POSTED GitHub comment (`## Triage Plan` / `## Tests Runs` / `## Fix Plan`) as the authoritative source; the `.opencode/tmp/<issue>/*.md` drafts are transient and consumed by their transition. Name a draft path only as a known-live fallback.
 - **home:** playbooks/self-improver.md (dispatch briefs) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — 2026-09-20, #2909 round 1: every dispatch brief cited the posted `## Triage Plan` comment (and named the A2A file as a live path) as the plan source; the consumed `triage-plan.md` draft was never offered, and neither the developers nor the tester hunted a deleted file.
 
 ### G-215: si_direct_main_write_committed_before_integrating_origin
 - **activation_date:** 2026-09-20
@@ -75,7 +83,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a direct SI write to `main` (doc-sync / guardrail persistence) is committed before the local ref integrates the origin tip, so the push is rejected and the SI forces a merge commit onto a no-merge-commit trunk, bypassing branch protection.
 - **guardrail:** Before any direct commit to `main`, `git fetch origin` and fast-forward the local `main` to `origin/main` FIRST, then commit on the reconciled tip so the push is a true fast-forward. `origin/main` advances concurrently (spec-PR squash merges, `tests-commit`), so never assume the local ref is current. If the origin tip moved after the commit was made, do not paper over it with a merge commit — reconcile the ref before re-committing, and surface any bypassed ruleset violation to the human.
 - **home:** playbooks/self-improver.md (audit doc-sync / guardrail persistence) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — 2026-09-20, #2909: the audit's guardrail persistence fetched `origin/main` and fast-forwarded the local `main` to the origin tip BEFORE committing, so the push was a true fast-forward with no merge commit and no bypassed branch protection.
 
 ### G-213: sparse_point_pixel_sampling_aliases_on_periodic_patterns
 - **activation_date:** 2026-09-20
@@ -83,7 +91,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a sparse fixed-point pixel sampler aliases with a periodic/thin-line paint (its sample points fall in the pattern's gaps), reporting 0/5 for a background that is visibly applied — a false negative that can burn a round or, if undisclosed, a false PASS/FAIL.
 - **guardrail:** A rendered-pixel visibility assertion must pair sparse fixed-point sampling with a dense/full-frame pixel diff (and, for repeating/thin-lined patterns, a band-hit sample set); judge the AC on the full-frame diff and the screenshot, and treat a disclosed aliasing residual with raw numbers as an observation (G-171 posture), not a round burn. Never conclude "not visible" from a sparse grid alone.
 - **home:** playbooks/qa-expert.md (probe design) + playbooks/tester.md (pixel sampling) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed — 2026-09-20, #2909 round 1: the dense full-frame diff was the load-bearing evidence for every recipe, and specifically for topography's thin periodic contours (12-24 percent changed per 3 s where a sparse point grid aliases); the technique matches G-216's temporal application.
 
 ### G-211: convergence_contract_change_not_propagated_to_every_plan_row
 - **activation_date:** 2026-09-20
@@ -91,7 +99,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a contract change adopted at convergence is propagated to some artifacts but not every affected row of the working plan file, so the assembled plan contradicts the shipped behavior and its own suites.
 - **guardrail:** When the orchestrator adopts a revised contract at convergence, propagate it to EVERY affected planner row in the working plan file — not only the prose sections, the seeded suites, and the dispatch brief — and grep the assembled plan for the superseded literal before the transition assembles it.
 - **home:** playbooks/self-improver.md (convergence) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial — 2026-09-20, #2909 round 1: concurrent Architect/QA edits churned the perceptibility metric literals, and the QA Expert self-resolved to one set; the orchestrator independently verified the assembled plan carried no superseded literal (SI-1) and realigned a separate cross-section numeric contradiction (SI-2). The failure class did not recur in the assembled plan, but the propagation was partly planner-owned rather than guardrail-prevented.
 
 ### G-210: plan_bound_contradicts_a_shipped_state_exceeding_it
 - **activation_date:** 2026-09-20
