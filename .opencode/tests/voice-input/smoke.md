@@ -198,3 +198,37 @@
   committed 1.6 s fixture SHA-256 `33c2f129…` unchanged.
 - **Env form:** `-EnvVars @{ … }` via `powershell -File` remains broken (hashtable→string); the feed ran
   from the parent env of the allowlisted `bun` launcher (disclosed tooling gap).
+
+---
+
+## #2903 extension — model-audio app action quick paths
+
+> Issue #2903 makes the model-audio path perform app open/close requests. Quick paths only — the full
+> matrix lives in `functional.md` F-111..F-126 / `regression.md` R-35..R-40 / `exploratory.md`
+> E-59..E-64. **Verification policy: live.** App-action content uses L3 (`llm-skill-call` on the REAL
+> channel); the audio lifecycle uses L4. **The host has no physical mic and no intelligible in-repo
+> audio — the acoustic leg is a NAMED BLOCKER, never a PASS.**
+
+- [ ] S-24: **Model-audio open quick path.** Select `Model audio` (`companion-voice-handling-select`,
+      `Fredo_companion_voice_handling='model'`); managed server healthy; `stt_start{origin:"launcher"}`;
+      with the model chip `launcher-command-model-processing-chip` present, emit
+      `llm-skill-call {skill:"open_app", arguments:{app:"Settings"}}`.
+      **Expected:** the Settings window opens (`.fredo-window__surface[role="group"][aria-label="Settings"]`)
+      AND the reply reads exactly `Opening Settings` on `fredo-companion-live-region`; no transcript; no
+      raw tool JSON; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`.
+- [ ] S-25: **Unrecognized-app quick path.** Same setup; emit `llm-skill-call {app:"Narnia"}`; also type
+      `Narnia` + Enter on the typed path.
+      **Expected:** ZERO windows on BOTH paths (the app grid stays present — G-170) and the reply reads
+      exactly `I couldn't find "Narnia"`; no false success; console clean.
+- [ ] S-26: **Typed/companion parity quick path.** Type `open settings` into the bar + Enter.
+      **Expected:** the SAME Settings window opens with the SAME `Opening Settings` reply as S-24 (AC3
+      parity); screenshot succeeds; console clean.
+- [ ] S-27: **Evidence + telemetry receipt.** A capture from S-24/S-25 is uploaded via
+      `upload-evidence --issue 2903`, the raw URL resolves, and it is embedded in `## Tests Runs` with a
+      textual description; the body also references `telemetry_spans` (non-zero, recent
+      `max(ingested_at)`).
+
+### #2903 testing round 1 — result
+
+- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
