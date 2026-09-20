@@ -474,3 +474,29 @@
 - [x] **E-65 (disposition flips between sends) — partially observed.** The disposition was switched `interrupt ↔ queue` live (Settings → Companion select) and the effective dispatch followed the persisted value (interrupt superseded; queue queued). A flip *between* an enqueue and its drain was not isolated.
 - [ ] **E-66 (indicator vs status-slot precedence) — not driven (time-box).** Named blocker: a hearing-nothing/alert status must be raised concurrently with a queued item; the driver cannot hold the voice-capture state while sending. Pin: `launcherCommandBarVoice.test.tsx` precedence suite.
 - **Finding (harness technique, no product defect) — promoted to `functional.md` F-93/F-94 round 2.** Two sends must be issued inside ONE in-page `execute_js` script (or the second via real keyboard against a deliberately long first generation). The native-setter + `input`-event approach did NOT reliably update React's `query` for the SECOND send after a first send cleared the bar (the re-send carried the stale first prompt); `document.execCommand('insertText')` and a real keyboard send both propagate correctly. The driver's own `tauri_webview_keyboard`/`interact` round-trips are ~6 s each — longer than the ~1–2 s local generation — so serial tool calls can never land in-flight.
+
+---
+
+## #2904 extension — clean-render edge probes
+
+> Unscripted probes for issue #2904. A confirmed finding PROMOTES to `functional.md` as a new `F-`
+> row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
+> static/unit pin — never fabricated.
+
+- [ ] E-67: **The narrowest bar with the longest indicator copy.** While dictating in model mode,
+      force the bar to its narrowest practical width and hold the countdown copy
+      (`Fredo is listening · 10s left`) and then the `processing` copy
+      (`Fredo is processing your speech…`, the widest reservation). Does the chip stay on ONE line
+      (ellipsis is acceptable) or does it stack one character per line / push the field? Any
+      vertical/stacked string, any ellipsis that hides the countdown, or any field displacement is a
+      finding (promotes to F-101/F-105).
+- [ ] E-68: **Theme/accent switch during a live capture.** Start a launcher-origin dictation, then
+      switch presets (`light-default` ↔ `dark`, and a non-cyan accent) while the indicator is
+      visible. Does the indicator + field re-tint token-native with no stale colour, no geometry
+      change, and no vertical relayout? Any stale colour, layout jump, or console error is a
+      finding (promotes to F-104/F-106).
+- [ ] E-69: **Resize / DPI churn mid-capture.** Drag the window from full size to the shipped
+      minimum (900×600) and back, and run at a fractional OS scale (125%), all while the chip is
+      live. Does the indicator stay one line and clear of the field at every intermediate width, and
+      does the full-size render restore cleanly (no stuck narrow width, no orphan clip)? Any
+      transient or persistent stacking/overlap/clip is a finding (promotes to F-105).
