@@ -56,3 +56,38 @@
 ### #2903 testing round 1 — result (`spec/2903 @ 813b0060`, 2026-09-20, live)
 
 - **R-4 PASS.** Grep of the #2903 plan + suites (`voice-input` F-111..F-126, this file's F-5/F-6/R-4) finds `%USERPROFILE%`/`node_modules`/`C:\Windows\Media`/`~\.cargo` ONLY inside the guardrail text that forbids them — no actual out-of-repo media path. Every audio source named is the committed in-repo fixture + its deterministic generator; the app-action content lever is the synthetic `llm-skill-call` event (no asset). The fixture's declared non-intelligibility is the documented bound (F-5), not a defect.
+
+---
+
+## #2914 extension — the sherpa removal must not disturb the feed lever or the fixture (G-172/G-009)
+
+> Issue #2914 deletes the on-device sherpa engine + the local mode. R-1..R-4 remain in force; these rows
+> check the deletion did not disturb the capture-feed lever, the committed fixture, or the in-repo-only
+> discipline. **Verification policy: live.** No prior row is retired.
+
+## R-5 — The fixture, its generator and the format pin are UNCHANGED by the deletion
+
+- [ ] R-5: Re-run R-1: hash the committed `dictation-phrase-16k-mono.wav`, re-run the generator, parse the
+      header, and read the format pin in `apps/tauri/src-tauri/src/infrastructure/voice/capture.rs` (if it
+      survives the reader deletion).
+  **Expected:** the fixture is byte-identical (SHA-256 `33c2f129…`), 16 kHz mono 16-bit PCM, 25,600 samples
+      / 1.6 s; regeneration is byte-identical; the `#2887` feed contract is untouched — **or** `capture.rs`
+      was deleted with the local reader and the row reports it with expected-vs-actual (that breaks the L4
+      lever → QA Discussion #2914-1, never a silent PASS).
+  - **Edge:** the deletion touched `capture.rs`/the fixture dir by accident; the `>30 s` variant contract
+      (F-2) broke.
+
+## R-6 — No out-of-repo asset introduced; the lever stays reproducible on a clean checkout
+
+- [ ] R-6: Re-run R-3/R-4 over the #2914 plan + suites: grep for any path under `~`, `%USERPROFILE%`,
+      `node_modules`, `~\.cargo`, `C:\Windows\Media`, or an STT model directory; confirm the only audio
+      source named is the in-repo fixture + its deterministic generator.
+  **Expected:** ZERO out-of-repo audio/media references; no test artifact sourced from a user profile or a
+      model dir; the `stt:transcript` content lever is RETIRED (its removal introduces no new asset need);
+      the legs are reproducible on a clean checkout.
+  - **Edge:** a row that requires the deleted sherpa model dir to reproduce is a FAIL of this row; a leg
+      that hunts for recorded speech is a FALSE PASS.
+
+### #2914 run log
+
+- [ ] _(pending — the Tester appends R-5/R-6 results; do not pre-fill)_
