@@ -43,26 +43,32 @@ export const VOICE_DEVICE_ID_SETTING_KEY = 'Fredo_companion_voice_device_id';
 export const DEFAULT_VOICE_DEVICE_ID = '';
 
 // ── Speech handling (#2897 ST-1, persisted setting) ──────────────────────────
-// `Fredo_companion_voice_handling`, a CLOSED two-member set, DEFAULT 'local'
-// (behaviour parity with the shipped dictation on every existing install — an
-// absent/unknown key heals to 'local'). The backend reads the key on EVERY
-// `stt_start` (`infrastructure/voice/session.rs`), so a change applies to the
-// NEXT listen with no app restart; an in-flight session is never
-// retro-switched. The setting NEVER gates companion chat and never removes the
-// local engine.
+// `Fredo_companion_voice_handling`, a CLOSED two-member set. Spec #2914 ST-3
+// (R-4) reduced voice input to the SINGLE model-audio mode: `DEFAULT_VOICE_HANDLING`
+// is now `'model'` and every stored value that is not the exact `'model'` literal
+// (`'local'`, absent, unknown, stale) heals to `'model'`. The backend no longer
+// reads the key (the local engine is deleted), so a persisted `'local'` simply
+// renders the model-audio controls — there is no dead or blocked voice state.
+// The setting still NEVER gates companion chat.
+//
+// NOTE (ST-3 scope): `voiceHandling`/`setVoiceHandling`/`VOICE_HANDLING_SETTING_KEY`
+// remain EXPORTED this round because the concurrent ST-5 launcher rework still
+// consumes them (`LauncherShell.tsx`). With the default + parse healing to
+// `'model'`, `setVoiceHandling('local')` is already a no-op. The symbols are
+// removed once ST-5 lands (reported as an integration step).
 
 export type VoiceHandling = 'local' | 'model';
 
 export const VOICE_HANDLING_SETTING_KEY = 'Fredo_companion_voice_handling';
-export const DEFAULT_VOICE_HANDLING: VoiceHandling = 'local';
+export const DEFAULT_VOICE_HANDLING: VoiceHandling = 'model';
 
 /**
- * Parse a stored speech-handling mode. Anything that is not the exact `'model'`
- * literal (unknown/stale/cleared) heals to the default `'local'` — the closed
- * two-member set can never leave the app without the shipped local engine.
+ * Parse a stored speech-handling mode. Spec #2914 ST-3 (R-4): there is exactly
+ * ONE voice mode, so every value — `'local'`, absent, unknown or cleared — heals
+ * to `'model'`. The single-mode contract can never leave the app without a
+ * usable voice path.
  */
-const parseVoiceHandling = (raw: string): VoiceHandling =>
-  raw === 'model' ? 'model' : DEFAULT_VOICE_HANDLING;
+const parseVoiceHandling = (_raw: string): VoiceHandling => DEFAULT_VOICE_HANDLING;
 
 // ── Send-during-reply disposition (#2892 ST-1, persisted setting) ────────────
 // `Fredo_companion_send_during_reply`, `'queue' | 'interrupt'`, DEFAULT 'queue'.
@@ -222,11 +228,10 @@ interface CompanionContextValue {
   voiceDeviceId: string;
   setVoiceDeviceId: (deviceId: string) => void;
   /**
-   * #2897 ST-1 (REQ-1): persisted speech-handling mode
-   * (`Fredo_companion_voice_handling`, DEFAULT 'local'). `'local'` is the shipped
-   * on-device transcription; `'model'` hands the captured utterance to the
-   * locally-running companion model as the turn's input. Read by the backend on
-   * every `stt_start`, so a change applies to the next listen with no restart.
+   * #2914 ST-3 (was #2897 REQ-1): the persisted speech-handling mode. There is
+   * exactly ONE voice mode (model audio), so this value is always `'model'` —
+   * `'local'`/absent/unknown stored values heal to `'model'`. Retained this
+   * round only because the concurrent launcher rework still reads it.
    */
   voiceHandling: VoiceHandling;
   setVoiceHandling: (handling: VoiceHandling) => void;
@@ -393,9 +398,9 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     (r) => r,
   );
 
-  // #2897 ST-1 (REQ-1) — persisted speech handling ('local' | 'model', DEFAULT
-  // 'local'). Same `usePersistedSetting` path; a stale/unknown stored value
-  // heals to 'local' via `parseVoiceHandling`.
+  // #2897 ST-1 / #2914 ST-3 (R-4) — persisted speech handling, now a single
+  // mode ('model'). Same `usePersistedSetting` path; every stored value that is
+  // not 'model' heals to 'model' via `parseVoiceHandling`.
   const [voiceHandling, setVoiceHandlingValue] = usePersistedSetting<VoiceHandling>(
     VOICE_HANDLING_SETTING_KEY, DEFAULT_VOICE_HANDLING,
     (v) => v,
@@ -552,8 +557,9 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setSendDuringReplyValue(d === 'interrupt' ? 'interrupt' : DEFAULT_COMPANION_SEND_DURING_REPLY);
   }, [setSendDuringReplyValue]);
 
-  // #2897 ST-1 (REQ-1): persist the speech-handling mode; a non-mode value at
-  // runtime heals to the default (mirrors the load-time parse).
+  // #2914 ST-3 (R-4): persist the speech-handling mode. With the single-mode
+  // default (`'model'`), any non-`'model'` runtime value heals to `'model'` —
+  // `setVoiceHandling('local')` (a stale caller) is therefore a no-op.
   const setVoiceHandling = useCallback((handling: VoiceHandling) => {
     setVoiceHandlingValue(handling === 'model' ? 'model' : DEFAULT_VOICE_HANDLING);
   }, [setVoiceHandlingValue]);

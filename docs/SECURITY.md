@@ -54,28 +54,27 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 ---
 
-## Voice Input (local STT)
+## Voice Input
 
-Voice input (Spec #2877) is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`) and speech-to-text runs in-process via a statically linked `sherpa-onnx` `OnlineRecognizer` reading a pinned local model directory. Audio and transcripts never traverse the network: the **only** network-capable component of the feature is model acquisition (`download_stt_model` → the shared download + SHA-256 verify engine).
+Voice input is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`), and the captured utterance is understood by the locally-managed companion model itself as that turn's input. There is exactly **one speech path** (model audio) and **no separate on-device recognizer or transcription mode**. Audio never traverses the network: the **only** way the clip leaves the capture path is the `input_audio` content part of a turn sent over **loopback** to the managed `llama-server` (the same `127.0.0.1` process documented above).
 
-**Speech handling (Spec #2897).** The user may choose how an utterance is handled (persisted as `Fredo_companion_voice_handling`): **Local transcription** (default — today's on-device recognizer) or **Model audio**, which hands the captured clip to the locally-managed companion model as that turn's input and shows **no transcript**. Model audio is still local-only: the clip is delivered over **loopback only** to the managed `llama-server` (the same `127.0.0.1` process documented above), is never uploaded, and adds no outbound route. It is used only when the installed model reports audio support — capability is probed, never inferred from a model name — and when the model does not support audio (or the local server is unavailable) nothing is transmitted and Fredo offers a one-click fallback to Local transcription.
+**Model audio.** A captured clip is handed to the locally-managed companion model as that turn's input and **no transcript is shown**. It is delivered over **loopback only**, is never uploaded, and adds no outbound route. It is used only when the installed model reports audio support — capability is probed, never inferred from a model name — and when the model does not support audio (or the local server is unavailable) nothing is transmitted and Fredo says so.
 
 **Protections:**
-- No audio or audio-derived payload is transmitted; the capture/decode path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
+- No audio or audio-derived payload is transmitted; the capture path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
 - Voice is **opt-in** (`Fredo_companion_voice_enabled`, default `false`) — nothing is captured before the user enables it
 - Capture can be started ONLY by **holding Space in the focused, empty launcher search bar** (Spec #2882) — no keyboard gesture (Ctrl+Space included) starts a session and **no new capture path exists**, so nothing is captured while the user is merely typing or navigating
 - Capture must be **visibly indicated for its whole duration** by the **launcher bar cue** (the `Listening` chip and placeholder, announced as text), and the cue appears only while capture is genuinely live, so audio is never captured without a visible active indicator; Spec #2882 retired the companion listening bubble, leaving the bar cue as the only capture indicator
-- **Residency is engine-only (Spec #2887):** the STT **engine** is loaded once at setup and may be warm/resident while Fredo is idle, but **no microphone stream exists and no audio is captured until the Space hold** — the resident engine opens no device. Voice stays opt-in (`Fredo_companion_voice_enabled`, default `false`), so with the feature disabled (or its model not installed) there is no resident engine and nothing to capture
+- **No capture before the gesture:** no microphone stream exists and no audio is captured until the Space hold; with voice disabled nothing is captured
 - The microphone is released the moment Space is released, the utterance is cancelled, the bar or window loses focus, or voice is disabled
-- **Model audio adds no new egress (Spec #2897):** a model-audio clip is carried by the existing loopback chat transport to the managed `llama-server`; the layer-confinement invariant over `infrastructure/voice/**` (no network/process symbols) is unchanged, and there is no cloud-fallback branch
-- **Model audio never displays a transcript:** while the method is `model`, the transcript write/announce paths are gated at their source, so no audio-derived word reaches any surface
-- **The clip is bounded and non-lossy:** capture auto-stops at the pinned limit (~30 s) with a visible notice, and the entire clip is kept and delivered — never a silent truncation or a dropped tail
-- **Both methods are visibly indicated for the whole capture** by the launcher bar cue (model audio adds its own listening indicator); there is no silent capture in either mode
+- **Model audio adds no new egress:** a model-audio clip is carried by the existing loopback chat transport to the managed `llama-server`; the layer-confinement invariant over `infrastructure/voice/**` (no network/process symbols) is unchanged, and there is no cloud-fallback branch
+- **No transcript exists:** the single speech path produces no transcript, so no audio-derived word reaches any surface
+- **The clip is bounded and non-lossy:** capture auto-stops at the pinned limit (`MAX_AUDIO_CLIP_MS`, ~30 s) with a visible notice, and the entire clip is kept and delivered — never a silent truncation or a dropped tail
+- **The capture is visibly indicated for its whole duration** by the launcher bar cue (including its processing state); there is no silent capture
 - The native WASAPI path needs no CSP widening and no new Tauri capability
 
 **Limitations:**
 - Any process on the same machine can access the microphone under the same OS user — the OS owns the microphone privacy/permission boundary
-- Model files are downloaded from a pinned upstream revision over HTTPS (the same trust model as the companion GGUF set)
 
 ---
 

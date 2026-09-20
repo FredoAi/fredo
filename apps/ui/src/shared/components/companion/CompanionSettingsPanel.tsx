@@ -207,12 +207,11 @@ export const CompanionSettingsPanel: React.FC = () => {
   const idleBorderColor = isIdleDraftInvalid ? 'var(--status-error)' : 'var(--border-color)';
   const idleHighlightColor = isIdleDraftInvalid ? 'var(--status-error)' : 'var(--accent-primary)';
 
-  // ── Voice input (#2876 ST-5 → #2877 ST-4) ──────────────────────────────────
+  // ── Voice input (#2876 ST-5 → #2877 ST-4 → #2914 ST-3) ─────────────────────
   // The voice group is informational: it NEVER gates this panel (the readiness
-  // gate above is fed by the backend + serverLaunch only). `sttModel` is optional
-  // — null when the probe is unavailable.
-  const sttRunning = runningActionId === 'sttModel';
-
+  // gate above is fed by the backend + serverLaunch only). Spec #2914 ST-3
+  // removed the STT model row, so the panel no longer passes model/download
+  // props — only the input-device probe remains.
   if (!isReady) {
     // While checking (or not ready), render ONLY the wizard — never the toggle
     // or the Teleport tip (AC-1 / REQ-6). During the first probe, derive the
@@ -512,16 +511,12 @@ export const CompanionSettingsPanel: React.FC = () => {
         </VStack>
       </Box>
 
-      {/* Voice input group (#2877 ST-4) — enable switch, model row, input device
-          and autosend. Extracted into `VoiceInputSettings`; still a THIRD group
-          inside this existing Companion section (no new nav item/section). */}
+      {/* Voice input group (#2877 ST-4 → #2914 ST-3) — enable switch, model-audio
+          capability row and input device. Extracted into `VoiceInputSettings`;
+          still a THIRD group inside this existing Companion section (no new nav
+          item/section). */}
       <VoiceInputSettings
-        sttModel={sttModel}
         sttDevices={sttDevices}
-        sttDownloading={sttRunning}
-        sttError={actionError.sttModel ?? null}
-        onDownloadModel={() => { void runAction('sttModel'); }}
-        onRecheck={() => { void refresh(); }}
         onRescanDevices={() => { void refreshSttDevices(); }}
       />
 
