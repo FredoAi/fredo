@@ -606,3 +606,29 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
 - **R-38 PASS (live).** `launcher-command-model-processing-chip` = `Fredo is processing your speech…` present during the turn; absent after `llm-done` (exactly one); `stt_status.listening=false` after every stop; zero transcript text in model mode.
 - **R-39 PASS.** `pnpm --filter @fredo/ui build` clean (tsc + vite, 2576 modules); `test:run` 1745/0; CI `rust-validate` PASS (16m52s) + `ui-validate` PASS; changed files carry no true colour literals / no `var(--x)NN` alpha-append.
 - **R-40 PASS (static) / live block BLOCKED.** `infrastructure/voice/**` zero `reqwest/ureq/hyper/TcpStream/UdpSocket/std::net/websocket`; managed server healthy on `127.0.0.1:8080`; turn URL `http://127.0.0.1:8080/v1/chat/completions`. Live process-scoped outbound block BLOCKED (no elevation lever) — static pin alongside, never a substitute.
+
+---
+
+## #2904 extension — mode copy + indicator contracts unchanged (G-136)
+
+> Issue #2904 removes a stray vertical-text glitch in the launcher search bar while dictating. The
+> speech-handling mode copy + the indicator contracts are NON-GOALS and MUST be unchanged. Run
+> alongside R-1..R-40, `functional.md` F-127, and the `launcher` R-62/R-63 extension.
+> **Verification policy: live.**
+
+## R-41 — The mode-specific indicator copy + the local-mode contract are unchanged
+
+- [ ] R-41: With mode=`local` re-run `functional.md` F-103's contract: `stt_start` (launcher origin)
+      → placeholder `Listening…`, local chip `Listening`, model chip ABSENT, announcer `Listening`;
+      `stt_stop` → placeholder `search or command`, `listening:false`. With mode=`model` re-run
+      F-104/F-106's contract: `Fredo is listening` chip + `release Space to finish` placeholder
+      (hint chip suppressed — the #2904 AC2 relocation, intentional, not a regression) during
+      capture; `Fredo is processing your speech…` + `Fredo is processing…` during processing; the
+      chip clears on `llm-done`; ZERO transcript text. Re-read `Fredo_companion_voice_handling`
+      across a `local`↔`model` switch.
+  **Expected:** LOCAL copy char-for-char as shipped; MODEL copy as shipped EXCEPT the placeholder
+      relocation mandated by #2904 REQ-3 (chip + controls unchanged); exactly ONE indicator per mode; the persisted
+      mode key unchanged; NO lost/converted Space; the reference #2897 R-30/R-36/R-38 contracts
+      hold. Reference `launcher` R-62 + `voice-dictation` F-1..F-4 (the feed lever is unchanged).
+  - **Edge:** a query present; the countdown copy; a theme switch mid-capture; `pnpm --filter
+    @fredo/ui test:run` green with the model-audio pins unweakened.
