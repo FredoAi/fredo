@@ -122,3 +122,44 @@
 - **R-18 PASS (live).** Preset select (Deep Space → Light Default), per-token accent override (`#123456`), per-token `cardBg` override, and "Reset to theme defaults" all behaved as before (override cleared to `{}`, preset cleared to base); existing surfaces (Settings chrome, launcher, window title) unchanged. No `var(--x)NN` alpha-append in the slice.
 - **R-19 PASS (live).** With None: no `desktop-backdrop` DOM, launcher surface `rgb(45,45,45)` + 28px grid byte-identical to pre-slice; windows opened/minimized/maximized/restored, z-order and input unchanged.
 - **R-20 PASS (static+gates).** `pnpm --filter @fredo/ui build` exit 0 (`✓ 2576 modules`); `pnpm --filter @fredo/ui test:run` 107 files / 1732 tests passed, 0 failed; zero literals/`var(--x)NN`/raster in the slice; no existing assertion weakened.
+
+---
+
+## #2905 extension — animated backgrounds must not regress the desktop or the theme engine
+
+> Issue #2905 revises #2899: the procedural background must be visibly applied + animated. These
+> invariants MUST hold; run alongside R-1..R-20 and the desktop-shell / settings suites.
+> **G-136 supersession:** the `#2899` rows F-22/F-24/F-25 asserted the ABSENCE of animation; that
+> static-only scope is superseded — R-20's "no raster / no literals" intent stands, its (implicit)
+> no-animation intent does not. **Verification policy: live.**
+
+- [ ] **R-21 (today's desktop unchanged with None):** with **None** (the default) the desktop shell,
+      window chrome, layout, z-order, and input behavior are unchanged — the desktop is
+      **pixel-comparable** to a pre-#2905 BEFORE capture; feature windows still open, move, resize,
+      focus, minimize, and close; the background layer is fully absent/inert (zero
+      `[data-testid="desktop-backdrop"]` DOM). Reference F-36/F-29.
+  - **Edge:** None reselected after each procedural option; upgrade from an install that had a
+    procedural option persisted.
+
+- [ ] **R-22 (theming engine unchanged):** preset selection, per-token overrides, "Reset to theme
+      defaults", the readout, and the `overrides ?? preset ?? base` layering behave exactly as
+      before; the animated background must not shift any existing theming computed color (compare
+      before/after on a sample: Settings chrome, launcher, mission-monitor node chrome). Reference
+      F-1..F-19.
+  - **Edge:** theme/accent switch while the animation runs; light + dark.
+
+- [ ] **R-23 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0;
+      `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted —
+      the `#2899` static-only animation assertions are the ONLY permitted supersession (marked
+      `G-136 SUPERSEDED (#2905)`); zero hardcoded literals / `var(--x)NN` in the slice; no raster
+      asset added. Reference F-38.
+  - **Edge:** the superseded `background.invariants.test.tsx` leg (d) must be **inverted** (assert
+    animation present AND reduced-motion-gated), not deleted; `var(--x)NN` still absent.
+
+- [ ] **R-24 (shell/window styling + z-order + input unchanged — scope guard):** the animated
+      background changes the **shell/desktop background only** — no window/card/surface styling
+      changes; the backdrop stays strictly below `WindowManager` (z=0) and `pointer-events:none` +
+      `aria-hidden` + non-focusable, so it intercepts no pointer/keyboard input and never paints
+      above a window. Reference F-29 (occlusion) / legacy F-24.
+  - **Edge:** maximized / floating / minimized windows; window dragged over the animated region;
+    input typed into a focused field while the animation runs; two windows.
