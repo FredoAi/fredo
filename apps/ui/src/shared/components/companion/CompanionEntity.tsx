@@ -77,10 +77,18 @@ export const FREDO_PERSONA =
 // #2871 ST-1r — the launcher command bar's chat persona. A general, concise
 // desktop assistant: answer the user's message directly; do not default to a
 // joke (the joke voice is `FREDO_PERSONA`, reserved for the avatar-click path).
+// #2903 ST-2b (continuous invariant, G-123) — the honesty clause below applies to
+// BOTH `ask` (typed) and `askWithAudio` (spoken): the model must never claim an
+// action it did not take. The deterministic pushed reply remains the ONLY settle
+// for a skill-aware generation; this clause keeps the model's OWN prose honest on
+// the no-selection path (R-4/R-5).
 export const FREDO_CHAT_PERSONA =
   'You are Fredo, a friendly, concise desktop assistant. ' +
   'Answer the user\'s message directly and helpfully in a warm but brief voice. ' +
-  'Do not reply with a joke unless the user explicitly asks for one.';
+  'Do not reply with a joke unless the user explicitly asks for one. ' +
+  'Only claim to have performed an action (such as opening or closing an app) when ' +
+  'that action was actually performed; if you did not perform it, say so plainly ' +
+  'instead of claiming success.';
 
 function buildJokeMessages(): LlmMessage[] {
   const topic = JOKE_TOPICS[Math.floor(Math.random() * JOKE_TOPICS.length)];
@@ -884,8 +892,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         // #2897 ST-3 (REQ-5) — the clip IS the turn's input: the last user
         // message's content is replaced by the backend renderer with the single
         // `input_audio` part. No transcript text is sent for this turn.
+        // #2903 ST-2 — the audio turn is SKILL-AWARE: the same validated
+        // `onSkillCall` channel the typed path uses is threaded through the
+        // additive trailing parameter, so a spoken selection marks this
+        // generation skill-pending and its settle is deferred to the pushed
+        // deterministic reply (raw tool-call JSON is never rendered).
         console.log('[companion] calling adapterBridge.llmChatWithAudio');
-        adapterBridge.llmChatWithAudio(messages, audioBase64, onToken, onDone, onError);
+        adapterBridge.llmChatWithAudio(messages, audioBase64, onToken, onDone, onError, onSkillCall);
       } else if (withSkills) {
         console.log('[companion] calling adapterBridge.llmChatWithSkills');
         adapterBridge.llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
@@ -1030,6 +1043,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // the reply streams on the same channels as `ask`. The audio turn cannot join
     // the TEXT FIFO, so an in-flight generation is superseded through the SAME
     // logical-interrupt path `ask` uses (never dropped, never a second route).
+    // #2903 ST-2 (G-204 integration point) — the audio generation is started
+    // SKILL-AWARE (`withSkills = true`): the registry is offered to the model, a
+    // validated selection marks the generation skill-pending (the settle is
+    // deferred), and the pushed deterministic reply is admitted by the
+    // `generationUsesSkillsRef` gate in `applyAppOpenReply`. Starting it with
+    // `false` (the #2897 shipped value) is exactly the reported bug: the push was
+    // discarded and the bubble settled on prose that claimed the action.
     const askWithAudio = useCallback((clipBase64: string): CompanionSendResult => {
       announceGenerationRef.current = true;
       // A teleport owns the entity: there is no generation to stream into, so the
@@ -1045,7 +1065,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       runGeneration([
         { role: 'system', content: FREDO_CHAT_PERSONA },
         { role: 'user', content: '' },
-      ], false, clipBase64);
+      ], true, clipBase64);
       return { outcome: 'dispatched' };
     }, [runGeneration, clearTimer]);
 

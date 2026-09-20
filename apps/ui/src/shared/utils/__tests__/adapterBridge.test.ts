@@ -245,6 +245,61 @@ describe('adapterBridge', () => {
       expect(onError).toHaveBeenCalledWith('boom');
     });
 
+    // #2903 ST-2 — the additive trailing skill channel (AFTER `onError`) that
+    // makes the model-audio path skill-aware.
+    it('forwards the additive onSkillCall channel on the model-audio path (#2903)', async () => {
+      const onToken = vi.fn();
+      const onDone = vi.fn();
+      const onError = vi.fn();
+      const onSkillCall = vi.fn();
+      const call: LlmSkillCall = { skill: 'open_app', arguments: { app: 'Settings' } };
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _audioBase64: string,
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+          _onError?: (message: string) => void,
+          _onSkillCall?: (c: LlmSkillCall) => void,
+        ) => {
+          _onSkillCall?.(call);
+          _onDone();
+        },
+      );
+      adapterBridge.setLlmChatWithAudio(mockChat);
+
+      const messages = createMockMessages();
+      await adapterBridge.llmChatWithAudio(messages, 'QUJD', onToken, onDone, onError, onSkillCall);
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      expect(mockChat).toHaveBeenCalledWith(
+        messages,
+        'QUJD',
+        onToken,
+        onDone,
+        onError,
+        onSkillCall,
+      );
+      expect(onSkillCall).toHaveBeenCalledWith(call);
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the 4-arg model-audio call contract byte-identical when no onSkillCall is supplied (#2903)', async () => {
+      const onToken = vi.fn();
+      const onDone = vi.fn();
+      const mockChat = vi.fn(async () => {});
+      adapterBridge.setLlmChatWithAudio(mockChat);
+
+      const messages = createMockMessages();
+      await adapterBridge.llmChatWithAudio(messages, 'QUJD', onToken, onDone);
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      expect(mockChat).toHaveBeenCalledWith(messages, 'QUJD', onToken, onDone);
+      // Byte-identical: exactly four arguments — no trailing `undefined` slots are
+      // introduced by the additive skill channel.
+      expect(mockChat.mock.calls[0]).toHaveLength(4);
+    });
+
     it('unregistered — warns and still completes (never hangs)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const onDone = vi.fn();

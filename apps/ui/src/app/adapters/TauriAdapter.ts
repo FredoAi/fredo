@@ -238,6 +238,13 @@ export class TauriAdapter implements HostAdapter {
    * last user message by the backend renderer (no transcript text is sent). The
    * additive `llm-error` channel is routed to `onError` when the caller supplies
    * it, else the readable line arrives via `onToken` (the #2871 contract).
+   *
+   * #2903 ST-2 — the ADDITIVE trailing `onSkillCall` channel (AFTER `onError`)
+   * makes the audio turn skill-aware. The `llm-skill-call` listener is registered
+   * BEFORE the invoke (mirroring `llmChatWithSkills`) so a fast validated
+   * selection is never missed; raw tool-call JSON is never routed to `onToken`.
+   * The listener is bound only when the caller supplies the optional channel, so a
+   * 4-arg/5-arg caller sees the exact #2897 behavior.
    */
   async llmChatWithAudio(
     messages: LlmMessage[],
@@ -245,6 +252,7 @@ export class TauriAdapter implements HostAdapter {
     onToken: (token: string) => void,
     onDone: () => void,
     onError?: (message: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
   ): Promise<void> {
     const { listen } = await import('@tauri-apps/api/event');
     const { invoke } = await import('@tauri-apps/api/core');
@@ -252,6 +260,7 @@ export class TauriAdapter implements HostAdapter {
     let unlistenToken: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
+    let unlistenSkill: (() => void) | undefined;
     let settled = false;
 
     // Complete exactly once (see llmChat): a server failure emits `llm-error`
@@ -262,6 +271,7 @@ export class TauriAdapter implements HostAdapter {
       unlistenToken?.();
       unlistenDone?.();
       unlistenError?.();
+      unlistenSkill?.();
       onDone();
     };
 
@@ -278,6 +288,14 @@ export class TauriAdapter implements HostAdapter {
       else onToken(event.payload);
       finish();
     });
+
+    // #2903 ST-2 — the validated selection channel (registered BEFORE the invoke,
+    // exactly as `llmChatWithSkills` does). Never a token.
+    if (onSkillCall) {
+      unlistenSkill = await listen<LlmSkillCall>('llm-skill-call', (event) => {
+        onSkillCall(event.payload);
+      });
+    }
 
     unlistenDone = await listen<void>('llm-done', () => {
       finish();

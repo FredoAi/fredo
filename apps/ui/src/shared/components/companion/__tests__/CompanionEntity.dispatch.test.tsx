@@ -105,10 +105,13 @@ let generations: Generation[] = [];
 
 // #2897 ST-3 — the model-audio dispatch captures: the clip + the messages the
 // entity handed to the audio transport (empty-content user turn = no transcript).
+// #2903 ST-2 — plus the additive `onSkillCall` channel the skill-aware audio
+// generation must be given.
 type AudioDriver = {
   onToken: (token: string) => void;
   onDone: () => void;
   onError: (message: string) => void;
+  onSkillCall: (call: LlmSkillCall) => void;
 };
 type AudioGeneration = { audioBase64: string; messages: LlmMessage[]; driver: AudioDriver };
 let audioGenerations: AudioGeneration[] = [];
@@ -178,13 +181,21 @@ beforeEach(() => {
       driver: { onToken, onDone, onSkillCall, onError: (m: string) => onError?.(m) },
     });
   });
-  adapterBridge.setLlmChatWithAudio(async (messages, audioBase64, onToken, onDone, onError) => {
-    audioGenerations.push({
-      audioBase64,
-      messages,
-      driver: { onToken, onDone, onError: (m: string) => onError?.(m) },
-    });
-  });
+  adapterBridge.setLlmChatWithAudio(
+    async (messages, audioBase64, onToken, onDone, onError, onSkillCall) => {
+      audioGenerations.push({
+        audioBase64,
+        messages,
+        driver: {
+          onToken,
+          onDone,
+          onError: (m: string) => onError?.(m),
+          // #2903 ST-2 — the additive trailing skill channel (AFTER `onError`).
+          onSkillCall: (c: LlmSkillCall) => onSkillCall?.(c),
+        },
+      });
+    },
+  );
 });
 
 afterEach(() => {
@@ -535,5 +546,68 @@ describe('#2897 ST-3 — model-audio dispatch (REQ-5)', () => {
     act(() => { result = ref.current?.askWithAudio('QUJD'); });
     expect(result).toEqual({ outcome: 'rejected' });
     expect(audioGenerations).toHaveLength(0);
+  });
+});
+
+// ── #2903 ST-2/ST-2b — the audio generation is SKILL-AWARE (G-204) ─────────────
+//
+// The reported bug: the audio invoke had no `llm-skill-call` channel and
+// `askWithAudio` started the generation with `withSkills = false`, so a validated
+// selection was both unheard and its pushed deterministic reply discarded by the
+// `generationUsesSkillsRef` gate — the bubble could settle on prose that claimed
+// the action. These pins assert the generation is started skill-aware, that
+// `onSkillCall` marks it pending and defers the settle, and that the pushed reply
+// REPLACES the streamed prose (never a raw-prose success claim).
+
+describe('#2903 ST-2 — model-audio generations are skill-aware', () => {
+  const OPEN_SETTINGS: LlmSkillCall = { skill: 'open_app', arguments: { app: 'Settings' } };
+  const liveRegion = () => screen.getByTestId('fredo-companion-live-region');
+
+  it('starts a model-audio generation skill-aware: onSkillCall marks it pending and defers the settle (#2903)', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    let result: CompanionSendResult | undefined;
+    act(() => { result = ref.current?.askWithAudio('UklGRg=='); });
+    expect(result).toEqual({ outcome: 'dispatched' });
+    expect(audioGenerations).toHaveLength(1);
+    expect(api.replyInFlight).toBe(true);
+
+    // The audio transport carries the skill channel — the generation is skill-aware.
+    expect(typeof lastAudioGen().driver.onSkillCall).toBe('function');
+
+    // A validated selection marks the generation skill-pending…
+    act(() => { lastAudioGen().driver.onSkillCall(OPEN_SETTINGS); });
+    // …so the transport's `llm-done` must NOT settle it (the pushed reply or the
+    // watchdog is the settle).
+    act(() => { lastAudioGen().driver.onDone(); });
+    expect(api.replyInFlight).toBe(true);
+
+    // The pushed deterministic reply is the settle — admitted by the gate.
+    act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Settings' }); });
+    expect(api.replyInFlight).toBe(false);
+  });
+
+  it('applies the pushed deterministic reply to a model-audio generation and never settles on the streamed prose (#2903)', async () => {
+    const { ref } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { ref.current?.askWithAudio('UklGRg=='); });
+    // The model streams a success-claiming sentence…
+    act(() => { lastAudioGen().driver.onToken('I can certainly open Settings for you.'); });
+    expect(surfaceText()).toContain('I can certainly open Settings for you.');
+
+    // …then makes the validated selection (skill-pending) and the transport ends.
+    act(() => { lastAudioGen().driver.onSkillCall(OPEN_SETTINGS); });
+    act(() => { lastAudioGen().driver.onDone(); });
+    expect(api.replyInFlight).toBe(true);
+    expect(surfaceText()).toContain('I can certainly open Settings for you.');
+
+    // The pushed deterministic reply REPLACES the prose and is the ONLY settle.
+    act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Settings' }); });
+    expect(api.replyInFlight).toBe(false);
+    expect(surfaceText()).toContain('Opening Settings');
+    expect(surfaceText()).not.toContain('I can certainly open Settings for you.');
+    expect(liveRegion().textContent).toBe('Opening Settings');
   });
 });

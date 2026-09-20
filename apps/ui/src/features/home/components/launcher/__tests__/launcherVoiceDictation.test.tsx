@@ -2859,6 +2859,31 @@ describe('LauncherShell — model-audio delivery glue + fallback (#2897 ST-6)', 
     expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
   });
 
+  // #2903 ST-2 — the model-audio turn is dispatched through the SKILL-AWARE entry
+  // (`askActiveCompanionWithAudio` → `CompanionEntity.askWithAudio`, which starts
+  // the generation with `withSkills = true` and threads the same `llm-skill-call`
+  // channel the typed path uses). It is never routed through the plain text `ask`
+  // path, and no transcript text is fabricated for the turn. The entity-side
+  // skill-aware behaviour is pinned in `CompanionEntity.dispatch.test.tsx`.
+  it('dispatches the model-audio turn through the skill-aware path (#2903)', async () => {
+    const invoke = installInvoke({ clip: CLIP, code: null, detail: null });
+    renderShell();
+
+    emitState({ listening: true, phase: 'capturing' });
+    emitState({ listening: false, phase: 'processing' });
+
+    await waitFor(() => {
+      expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledTimes(1);
+    });
+    expect(companionDispatchMock.askActiveCompanionWithAudio).toHaveBeenCalledWith('QUJD');
+    // The skill-aware audio entry is the ONLY route taken; the text `ask` path is
+    // never used for the model-audio turn (no fabricated transcript).
+    expect(companionDispatchMock.askActiveCompanion).not.toHaveBeenCalled();
+    expect(
+      invoke.mock.calls.filter((call) => call[0] === 'stt_take_audio_clip').length,
+    ).toBe(1);
+  });
+
   it('a NULL clip surfaces the generic fallback copy + the one-click local switch (never dispatches)', async () => {
     installInvoke({ clip: null, code: null, detail: null });
     renderShell();
