@@ -1,11 +1,17 @@
 /**
- * useVoiceDictation — STT transcript stream client (Spec #2877 ST-3).
+ * useVoiceDictation — STT control-plane state client (Spec #2877 ST-3; one path
+ * since Spec #2914 ST-5).
  *
- * The single shared client for the control-plane `stt:transcript` /
- * `stt:state` events. It exposes the committed + current-partial transcript
- * merge plus the session lifecycle (`start` / `stop` / `cancel`) every consumer
- * shares — the launcher bar cue (ST-5), the companion listening bubble (ST-6),
- * and #2878's chat binding. There is NO per-consumer re-subscription.
+ * The single shared client for the control-plane `stt:state` event. It exposes
+ * the session lifecycle (`start` / `stop` / `cancel`) and the state contract
+ * every consumer shares. There is NO per-consumer re-subscription.
+ *
+ * Spec #2914 ST-5 — the `stt:transcript` producer/consumer/merge is GONE: voice
+ * input has exactly ONE path (the captured model-audio clip delivered to the
+ * local multimodal server), so this hook no longer carries transcript text
+ * (`committed` / `partial` / `liveText`) and no longer registers
+ * `stt:transcript`. The one transcript projection (`transcriptCase`) and its
+ * wiring were removed with the deleted on-device engine.
  *
  * The subscription goes through the shared `adapterBridge.listen`, which
  * performs the guarded DYNAMIC `@tauri-apps/api/event` import internally and is
@@ -15,33 +21,19 @@
  *
  * These events are CONTROL PLANE — they never go through `EventBus`/RTDB rows
  * (only `RowDeliveryBatch` envelopes do), so this hook never uses
- * `useEventRows`. It also never auto-submits: writing a finished transcript
- * into the launcher bar and the autosend dispatch belong to ST-5 / #2878.
+ * `useEventRows`. Contract: every method resolves and never throws to the
+ * caller, and no state is updated after unmount.
  *
- * Merge semantics (R-3.1): a non-final transcript REPLACES the current
- * segment's partial (the backend sends CUMULATIVE segment text); a final
- * transcript commits the segment and clears the partial. `cancel` discards the
- * current partial; `stop` commits it (the backend emits the final first —
- * R-4.3). Contract: every method resolves and never throws to the caller, and
- * no state is updated after unmount.
- *
- * Spec #2887 ST-7 — the state contract also carries the resident-engine
- * observable (`engineResident`, ST-3's `stt:state` stamp) that the launcher's
- * honest hold cue derives from; see the field docs below.
- *
- * Spec #2888 ST-2 — this hook is ALSO the single transcript-case seam: every
- * `stt:transcript` segment is projected through
- * `normalizeTranscriptSegment` (sentence case, the product name, the declared
- * intentional capitals) BEFORE it is committed/rendered, so every consumer of
- * transcript text sees the same normal form and the app's own transport is the
- * only place the transform lives. The projection is upstream of the bar write,
- * so `LauncherShell`'s live-write/finalize/provenance logic is untouched.
+ * Spec #2897 ST-2 — the state contract carries the model-audio phase
+ * (`capturing` / `processing`) and the at-ceiling signal the launcher's
+ * model-audio indicator derives from; Spec #2897 ST-5 adds the pinned per-input
+ * ceiling (`limitMs`) so the UI copy and the backend constant can never
+ * disagree.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { adapterBridge } from '../utils/adapterBridge';
-import { normalizeTranscriptSegment } from '../utils/transcriptCase';
 
 /** STT session origin — the context-dependent Ctrl+Space cascade picks one. */
 export type VoiceOrigin = 'launcher' | 'companion';
@@ -66,17 +58,6 @@ export type VoiceErrorCode =
  */
 export type VoiceModelAudioPhase = 'capturing' | 'processing';
 
-/** Rust `SttTranscriptEvent` (camelCase wire). */
-export interface SttTranscriptEvent {
-  sessionId: string;
-  revision: number;
-  segmentId: number;
-  /** CUMULATIVE text of the CURRENT segment. */
-  text: string;
-  isFinal: boolean;
-  latencyMs: number;
-}
-
 /** Rust `SttStateEvent` (camelCase wire). */
 export interface SttStateEvent {
   listening: boolean;
@@ -97,8 +78,8 @@ export interface SttStateEvent {
   engineResident?: boolean;
   /**
    * Spec #2897 ST-2 — the model-audio phase (`capturing` while accumulating,
-   * `processing` once a stop committed the clip). `null` on every legacy /
-   * `'local'` path.
+   * `processing` once a stop committed the clip). `null` on every path that is
+   * not a model-audio session.
    */
   phase?: VoiceModelAudioPhase | null;
   /**
@@ -109,7 +90,7 @@ export interface SttStateEvent {
   limitReached?: boolean | null;
   /**
    * Spec #2897 ST-5 (REQ-6) — the pinned per-input ceiling, in milliseconds, the
-   * model-audio capture is bounded by. `null` on every legacy / `'local'` path.
+   * model-audio capture is bounded by. `null` outside a model-audio session.
    * The launcher's "last N seconds" countdown and its limit notice derive from
    * THIS value, so the backend constant and the UI copy can never disagree.
    */
@@ -128,12 +109,6 @@ export interface SttStartResult {
 export interface VoiceDictation {
   /** True while the backend reports an active capture session. */
   listening: boolean;
-  /** Finalized segments of this session, space-joined. */
-  committed: string;
-  /** Current segment, cumulative. */
-  partial: string;
-  /** `committed + (committed && partial ? ' ' : '') + partial`. */
-  liveText: string;
   /** Typed failure code for the last failed start / current error state. */
   errorCode: VoiceErrorCode | null;
   /** Actionable detail paired with `errorCode` (null when there is no error). */
@@ -149,13 +124,13 @@ export interface VoiceDictation {
    * the next hold pay a model load?". An idle event NEVER rewrites it (its
    * `engineResident:false` means "no start happened", not "the resident is
    * gone"); the typed `disabled` voice-off signal clears it. `false` while no
-   * session has started — the launch window, when the engine is not resident yet.
+   * session has started.
    */
   engineResident: boolean;
   /**
    * Spec #2897 ST-2 — the model-audio phase the launcher indicator derives from:
    * `'capturing'` while the clip accumulates, `'processing'` once a stop
-   * committed it, `null` on every legacy / local-transcription path.
+   * committed it, `null` outside a model-audio session.
    */
   modelAudioPhase: VoiceModelAudioPhase | null;
   /**
@@ -176,20 +151,11 @@ export interface VoiceDictation {
   cancel(): Promise<void>;
 }
 
-/** Space-join two segment strings without a trailing/duplicate space. */
-const joinSegments = (lead: string, tail: string): string => {
-  if (!lead) return tail;
-  if (!tail) return lead;
-  return `${lead} ${tail}`;
-};
-
 const isVoiceOrigin = (value: string | null): value is VoiceOrigin =>
   value === 'launcher' || value === 'companion';
 
 export function useVoiceDictation(): VoiceDictation {
   const [listening, setListening] = useState(false);
-  const [committed, setCommitted] = useState('');
-  const [partial, setPartial] = useState('');
   const [errorCode, setErrorCode] = useState<VoiceErrorCode | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
@@ -209,15 +175,7 @@ export function useVoiceDictation(): VoiceDictation {
   // state so a late `stt_start`/`stop`/`cancel` resolution is a no-op.
   const mountedRef = useRef(true);
 
-  // Spec #2888 ST-2 — has a FINAL segment already been emitted in this session?
-  // The utterance opening is capitalised ONCE per session: until the first final
-  // arrives every segment is the opening (`atUtteranceStart = true`), and any
-  // continuation segment must not manufacture a mid-sentence capital. A ref (not
-  // state) is correct here — it carries no render output and MUST reset per
-  // mount; a new `listening` session re-opens the utterance.
-  const segmentSeenRef = useRef(false);
-
-  // ── Event subscriptions (register-once; unlisten on unmount) ───────────────
+  // ── Event subscription (register-once; unlisten on unmount) ────────────────
   useEffect(() => {
     mountedRef.current = true;
     let disposed = false;
@@ -238,27 +196,9 @@ export function useVoiceDictation(): VoiceDictation {
         });
     };
 
-    register('stt:transcript', (payload) => {
-      if (disposed || !mountedRef.current) return;
-      const event = payload as SttTranscriptEvent;
-      // Spec #2888 ST-2 — the ONE projection point for transcript text.
-      const text = normalizeTranscriptSegment(event.text, !segmentSeenRef.current);
-      if (event.isFinal) {
-        setCommitted((prev) => joinSegments(prev, text));
-        setPartial('');
-        // The utterance opening has been emitted: a later segment is a
-        // continuation and stays lowercase-initial.
-        segmentSeenRef.current = true;
-      } else {
-        setPartial(text);
-      }
-    });
-
     register('stt:state', (payload) => {
       if (disposed || !mountedRef.current) return;
       const event = payload as SttStateEvent;
-      // Spec #2888 ST-2 — a new session re-opens the utterance.
-      if (event.listening) segmentSeenRef.current = false;
       setListening(event.listening);
       if (isVoiceOrigin(event.origin)) setOrigin(event.origin);
       // An error state clears as soon as a session is (re)started.
@@ -276,12 +216,12 @@ export function useVoiceDictation(): VoiceDictation {
       }
       // Spec #2897 ST-2 — the model-audio phase travels on the event itself:
       // `capturing` on the start stamp, `processing` on a model-audio stop, and
-      // `null` (cleared) on every legacy / local / error path. `limitReached`
-      // is a one-shot signal — `true` only on the at-ceiling stop event.
+      // `null` (cleared) on every other path. `limitReached` is a one-shot
+      // signal — `true` only on the at-ceiling stop event.
       setModelAudioPhase(event.phase ?? null);
       setLimitReached(event.limitReached === true);
       // Spec #2897 ST-5 (REQ-6) — the pinned ceiling travels on every
-      // model-audio state; a legacy/local event carries `null` and clears it.
+      // model-audio state; an event without a bound clears it.
       setModelAudioLimitMs(typeof event.limitMs === 'number' ? event.limitMs : null);
     });
 
@@ -348,19 +288,15 @@ export function useVoiceDictation(): VoiceDictation {
     try {
       await adapterBridge.invoke('stt_cancel');
     } catch {
-      // Cancel is best-effort; the partial is discarded locally regardless.
+      // Cancel is best-effort; local state is set regardless.
     }
     if (!mountedRef.current) return;
-    setPartial('');
     setListening(false);
   }, []);
 
   return useMemo(
     () => ({
       listening,
-      committed,
-      partial,
-      liveText: joinSegments(committed, partial),
       errorCode,
       detail,
       deviceName,
@@ -375,8 +311,6 @@ export function useVoiceDictation(): VoiceDictation {
     }),
     [
       listening,
-      committed,
-      partial,
       errorCode,
       detail,
       deviceName,
