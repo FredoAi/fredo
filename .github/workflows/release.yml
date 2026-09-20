@@ -30,6 +30,10 @@ jobs:
           node-version: 20
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
+      # bun builds the OpenCode plugin (`apps/opencode-plugin`) invoked by
+      # tauri.conf.json's beforeBuildCommand; no other workflow installs it, so the
+      # release build is the only leg that needs it (F-4 / NFR-2: SHA-pinned).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       # Resolved to the current `stable` ref commit SHA (dtolnay updates the ref on
       # every stable Rust release); toolchain defaults to `stable` at this commit.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (resolved SHA)
