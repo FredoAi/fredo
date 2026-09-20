@@ -3,7 +3,6 @@ import { useExtension } from '../providers/ExtensionProvider';
 import { Home } from '../../features/home';
 import { ArchitectureDiagram } from '../../features/diagram/components/ArchitectureDiagram';
 import { DevMode } from '../../features/dev-mode';
-import { Settings } from '../../features/settings';
 import { RunCliTerminalWindow } from '../../features/run-cli';
 
 export const Router: React.FC = () => {
@@ -13,10 +12,6 @@ export const Router: React.FC = () => {
   }
 
   const { currentPage, showDiagram } = useExtension();
-
-  if (currentPage === 'settings') {
-    return <Settings />;
-  }
 
   if (currentPage === 'dev-mode') {
     return <DevMode />;

@@ -133,7 +133,7 @@ The single most repeated "what works" across all sources:
 
 ## 5. DeepSeek-Specific Guidance
 
-The pipeline runs `deepseek-v4-flash` for all agents (including planning/review roles), plus `mimo` for vision (not a DeepSeek model — ignore the below for it).
+The pipeline runs `opencode-go/deepseek-v4.1-flash` for every agent role (`opencode.json`), and the model accepts image input — all roles are vision-capable (no separate vision model is configured).
 
 1. **System role only.** The DeepSeek public API **rejects the `developer` role**; `system` is the only first-class long-lived role. Put the agent definition in `system`.
 2. **Thinking is ON by default (effort `high`); temperature/top_p are silently ignored in thinking mode.** Don't rely on low temperature for format discipline — rely on schema + examples. If tuning sampling, use the official agentic recipe `temperature=1.0, top_p=0.95` (Flash-0731 card) / `1.0/1.0` (Pro card) in non-thinking mode.

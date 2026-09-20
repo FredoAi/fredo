@@ -22,8 +22,9 @@ import { act } from '@testing-library/react';
 import React from 'react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import type { WindowEntry } from '@/shared/window-system/windowTypes';
-import { AppDock } from '../AppDock';
+import { AppDock, EDGE_ZONE_PX, DOCK_BOTTOM_KEEP_ZONE_PX, HIDE_DELAY_MS } from '../AppDock';
 import { dockEntryLabel } from '../DockEntry';
+import { setDockPosition, getDockPosition, resetDockPositionStoreForTests } from '../dockPositionStore';
 
 // ── Mock state (vi.hoisted — referenced by vi.mock factories, mutable per test) ──
 
@@ -45,6 +46,17 @@ vi.mock('@/shared/window-system/useWindows', () => ({
 
 vi.mock('@/shared/window-system/useWindowActions', () => ({
   useWindowActions: () => actionsState,
+}));
+
+// The dock's position store persists through settingsService. Mock it so the
+// bottom-orientation tests can drive `setDockPosition('bottom')` without a
+// Tauri host (same seam as dockPositionStore.test.ts) — the store move + notify
+// is synchronous, only the persistence is stubbed.
+vi.mock('../../../../settings', () => ({
+  settingsService: {
+    get: vi.fn().mockResolvedValue('sidebar'),
+    set: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 // AppDock reads framer-motion's useReducedMotion unguarded — neutralize it for
@@ -103,6 +115,7 @@ afterEach(() => cleanup());
 describe('AppDock AC5-a (≥6 apps — scroll/clip, no entry lost, every entry reachable)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetDockPositionStoreForTests();
     dockState.entries = buildEntries(8);
   });
 
@@ -221,5 +234,266 @@ describe('AppDock AC5-a (≥6 apps — scroll/clip, no entry lost, every entry r
     const remainingLabels = remainingButtons.map((btn) => btn.getAttribute('aria-label'));
     expect(remainingLabels).toEqual(dockState.entries.map((win) => dockEntryLabel(win)));
     expect(remainingLabels.some((label) => label?.includes(FIXTURE_TITLES[7]))).toBe(false);
+  });
+});
+
+// ── Bottom-orientation behavior (Spec #2848 ST-3b) ─────────────────────────────
+// The bottom-center dock mirrors the sidebar reveal/keep + roving model on the
+// Y axis. These tests drive `AppDock` in the `position: 'bottom'` store state
+// (set BEFORE render — the position is read at mount) and exercise the real
+// document-pointermove input path with a raw MouseEvent (the same seam the
+// sidebar reveal tests use) so the covered-branch edge-peek machine, the
+// orientation-aware predicates, and the roving keys are all exercised as-is.
+
+function bottomRevealPointerMove(): void {
+  // Bottom reveal zone: `clientY >= innerHeight - EDGE_ZONE_PX`. Dispatch the
+  // raw MouseEvent class the dock listens for (jsdom fireEvent does not set
+  // coordinates).
+  document.dispatchEvent(
+    new MouseEvent('pointermove', { clientX: window.innerWidth / 2, clientY: window.innerHeight - EDGE_ZONE_PX }),
+  );
+}
+
+function bottomAboveKeepZonePointerMove(): void {
+  // Above the bottom keep-zone band (inside the reveal axis but far from the
+  // docked edge) — the pointer "left" the dock + its keep zone.
+  document.dispatchEvent(
+    new MouseEvent('pointermove', {
+      clientX: window.innerWidth / 2,
+      clientY: window.innerHeight - DOCK_BOTTOM_KEEP_ZONE_PX - 50,
+    }),
+  );
+}
+
+describe('AppDock bottom orientation (Spec #2848 ST-3b — render, roving, reveal/keep on the Y axis)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    resetDockPositionStoreForTests();
+    dockState.entries = buildEntries(8);
+    // Drive the dock to the bottom position BEFORE mount (the component reads
+    // the module store at render time). settingsService is mocked — the store
+    // move + subscriber notify is synchronous, only the persistence is stubbed.
+    await act(async () => {
+      await setDockPosition('bottom');
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetDockPositionStoreForTests();
+  });
+
+  it('renders the bottom-anchored centered dock (fixed bottom inset + centered + horizontal pill + horizontal list flow)', () => {
+    const { container } = renderWithChakra(<AppDock />);
+    act(() => {
+      bottomRevealPointerMove();
+    });
+
+    const region = screen.getByRole('region', { name: 'Open applications' });
+    expect(region).toBeDefined();
+
+    // Bottom-center anchoring: `bottom: 12px` resting inset + `left: 50%`.
+    expect(getComputedStyle(region).bottom).toBe('12px');
+    expect(getComputedStyle(region).left).toBe('50%');
+
+    // The pill (the region's direct child) is a horizontal track of pill height.
+    const pill = region.firstElementChild as HTMLElement | null;
+    expect(pill).not.toBeNull();
+    if (pill) {
+      expect(getComputedStyle(pill).height).toBe('52px');
+      expect(getComputedStyle(pill).flexDirection).toBe('row');
+    }
+
+    // The entry list flows horizontally (overflowX auto past the width clamp).
+    const list = container.querySelector<HTMLElement>('[role="list"]');
+    expect(list).not.toBeNull();
+    if (list) {
+      expect(getComputedStyle(list).flexDirection).toBe('row');
+      expect(getComputedStyle(list).overflowX).toBe('auto');
+    }
+  });
+
+  it('roves with ArrowLeft/ArrowRight (not ArrowUp/ArrowDown) when the position is bottom', () => {
+    const { container } = renderWithChakra(<AppDock />);
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const buttons = entryButtons(container);
+
+    // Focus a middle entry (index 1) — a real keyboard-roving start point.
+    act(() => {
+      buttons[1].focus();
+    });
+    expect(document.activeElement).toBe(buttons[1]);
+
+    // ArrowLeft roves back to index 0.
+    act(() => {
+      fireEvent.keyDown(buttons[1], { key: 'ArrowLeft' });
+    });
+    expect(document.activeElement).toBe(buttons[0]);
+
+    // ArrowRight roves forward.
+    act(() => {
+      fireEvent.keyDown(buttons[0], { key: 'ArrowRight' });
+    });
+    expect(document.activeElement).toBe(buttons[1]);
+    act(() => {
+      fireEvent.keyDown(buttons[1], { key: 'ArrowRight' });
+    });
+    expect(document.activeElement).toBe(buttons[2]);
+
+    // The vertical arrows do NOT rove in the bottom orientation.
+    act(() => {
+      fireEvent.keyDown(buttons[2], { key: 'ArrowDown' });
+    });
+    expect(document.activeElement).toBe(buttons[2]);
+    act(() => {
+      fireEvent.keyDown(buttons[2], { key: 'ArrowUp' });
+    });
+    expect(document.activeElement).toBe(buttons[2]);
+
+    // Home/End reach the first/last entry (unchanged semantics).
+    act(() => {
+      fireEvent.keyDown(buttons[2], { key: 'End' });
+    });
+    expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+    act(() => {
+      fireEvent.keyDown(buttons[buttons.length - 1], { key: 'Home' });
+    });
+    expect(document.activeElement).toBe(buttons[0]);
+  });
+
+  it('reveals when the pointer reaches the bottom edge (covered desktop → edge-peek on the Y axis)', () => {
+    renderWithChakra(<AppDock />);
+
+    // Covered desktop (non-minimized windows): the dock starts off-canvas and
+    // out of the a11y tree.
+    expect(screen.queryByRole('region', { name: 'Open applications' })).toBeNull();
+
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const region = screen.getByRole('region', { name: 'Open applications' });
+    expect(region).toBeVisible();
+  });
+
+  it('hides after the pointer leaves the bottom keep zone for the hide-delay grace', () => {
+    vi.useFakeTimers();
+    renderWithChakra(<AppDock />);
+
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const region = screen.getByRole('region', { name: 'Open applications' });
+    expect(region).toBeVisible();
+
+    // Pointer moves above the bottom keep-zone band → the hide timer arms.
+    act(() => {
+      bottomAboveKeepZonePointerMove();
+    });
+    // Before the grace elapses the dock is still revealed.
+    expect(screen.getByRole('region', { name: 'Open applications' })).toBeVisible();
+
+    act(() => {
+      vi.advanceTimersByTime(HIDE_DELAY_MS);
+    });
+    expect(screen.queryByRole('region', { name: 'Open applications' })).toBeNull();
+  });
+});
+
+// ── Round-2 FD-4 (F-3 / E-9 fix regressions) ─────────────────────────────────
+// FD-1 boot hydration: AppDock's first mount must trigger the module store's
+// once-only `hydrateDockPosition()`, so a persisted 'bottom' renders the bottom
+// pill WITHOUT any Settings mount. FD-2: the active entry's bar axis follows the
+// orientation (left-edge `inset 3px 0` in the sidebar, bottom-edge
+// `inset 0 -3px` in the bottom bar).
+
+import { settingsService } from '../../../../settings';
+
+describe('AppDock boot hydration (Spec #2848 round-2 FD-1 — F-3 regression)', () => {
+  beforeEach(() => {
+    resetDockPositionStoreForTests();
+    // The persisted value ('bottom') is what AppDock's mount hydration must read.
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue('bottom');
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    cleanup();
+  });
+
+  it('mounts AppDock with settingsService.get resolving "bottom" and renders the bottom pill WITHOUT any Settings mount', async () => {
+    dockState.entries = buildEntries(8);
+
+    renderWithChakra(<AppDock />);
+
+    // AppDock's boot mount effect fires hydration → the async settingsService.get
+    // resolves 'bottom' → notify() → re-render to the bottom pill. Flush the
+    // microtask chain inside act.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The persisted position was applied WITHOUT any Settings surface.
+    expect(getDockPosition()).toBe('bottom');
+    expect(screen.queryByRole('combobox', { name: 'Dock position' })).toBeNull();
+
+    // Reveal the dock (covered desktop starts off-canvas) and assert the BOTTOM
+    // pill geometry — the F-3 observable at boot.
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const region = screen.getByRole('region', { name: 'Open applications' });
+    expect(region).toBeDefined();
+    expect(getComputedStyle(region).bottom).toBe('12px');
+    expect(getComputedStyle(region).left).toBe('50%');
+    const pill = region.firstElementChild as HTMLElement | null;
+    expect(pill).not.toBeNull();
+    if (pill) {
+      expect(getComputedStyle(pill).height).toBe('52px');
+      expect(getComputedStyle(pill).flexDirection).toBe('row');
+    }
+  });
+});
+
+describe('AppDock active-bar axis (Spec #2848 round-2 FD-2 — E-9 regression)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    resetDockPositionStoreForTests();
+    dockState.entries = buildEntries(8);
+    // Default persisted value ('sidebar') — the sidebar leg of this describe
+    // relies on hydration resolving the DEFAULT so the store never flips.
+    (settingsService.get as ReturnType<typeof vi.fn>).mockResolvedValue('sidebar');
+  });
+
+  it('renders the left-edge bar (`inset 3px 0`) on the active entry in the SIDEBAR orientation', () => {
+    const { container } = renderWithChakra(<AppDock />);
+    act(() => {
+      revealDock();
+    });
+    // The dock is in the default sidebar store state → hydration is a no-op
+    // (settingsService.get resolves 'sidebar' via the module mock).
+    const buttons = entryButtons(container);
+    const activeBtn = buttons[0]; // buildEntries: index 0 is focused + not minimized
+    expect(activeBtn.getAttribute('aria-current')).toBe('step');
+    // The `css` prop emits an Emotion class → read the resolved cascade from
+    // jsdom's injected stylesheet (same read the existing maxHeight assertions use).
+    expect(getComputedStyle(activeBtn).boxShadow).toBe('inset 3px 0 0 0 var(--accent-primary)');
+  });
+
+  it('renders the bottom-edge bar (`inset 0 -3px`) on the active entry in the BOTTOM orientation', async () => {
+    await act(async () => {
+      await setDockPosition('bottom');
+    });
+    const { container } = renderWithChakra(<AppDock />);
+    act(() => {
+      bottomRevealPointerMove();
+    });
+    const buttons = entryButtons(container);
+    expect(buttons.length).toBe(8);
+    const activeBtn = buttons[0];
+    expect(activeBtn.getAttribute('aria-current')).toBe('step');
+    expect(getComputedStyle(activeBtn).boxShadow).toBe('inset 0 -3px 0 0 var(--accent-primary)');
   });
 });

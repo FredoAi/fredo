@@ -97,3 +97,41 @@
   - **PASS (spec/2838 @ 6ccf4820, round 1):** `git diff main spec/2838` under `shared/window-system/` = only `AppDrawer.tsx` DELETED (270 lines); `git grep AppDrawer apps/ui/src` = 0 matches; `Home.tsx` mounts `<AppDock/>`. Zero diff to the six kernel files listed in the row (verified `git diff --stat`). `AppDock.tsx` imports only `useWindows()` + `useWindowActions()` (shared), never an engine setter. Empty gate verified: 0 windows → dock unmounted entirely (`dockPresent:false`); ≥1 window → dock mounted (hidden at rest). Build green (F-34).
 - [x] R-12 (#2838): the dock at rest changes NOTHING about desktop/window stacking, pointer reach, or desktop chrome. EXPECTED: at rest the dock is off-canvas + `pointer-events:none` + `visibility:hidden` (out of tab order + a11y tree) — a maximized window stays full-bleed edge-to-edge, left-edge content stays pointer-reachable, the window min/max/close controls stay clickable; the chrome band z model (uncovered 1200 / covered 0, #2830 R-9) is untouched; `DOCK_Z_INDEX = 1200` (Architect binding, left-edge rail with ~88px top/bottom insets) never occludes the top-right clock/LED cluster. Edge: rapid reveal/hide does not re-indent content or re-render-loop (#523); desktop-chrome regression R-7..R-14 (single top-right LED, band passive) still hold alongside.
   - **PASS (spec/2838 @ 6ccf4820, round 1):** at rest the dock is `visibility:hidden`, `pointer-events:none`, x=-60 (off-canvas), entries not focusable and absent from the a11y tree (F-22/F-35 evidence); a maximized window measures full-bleed `x:0 w:1920` with NO indent; `elementFromPoint(6/10/30, y)` at rest returns the WINDOW/desktop surface never the dock (F-31); min/max/close hit-test SELF (F-33); band z model verified (surface z 1100 rest / 0 covered / 1300 Ctrl+Space; dock z=1200 sits between resting launcher and Ctrl+Space overlay — `launcherZ:1300 > dockZ:1200` while overlay open); revealed rail `{x:0,y:482,w:52,h:54}` disjoint from clock `{x:1863}` and LED `{x:1884}` (F-33). 5+ reveal/hide cycles with no re-indent and no `Maximum update depth exceeded` (F-23). Desktop-chrome R-7..R-14 hold: exactly ONE top-right LED (`statusRoles:["Online"]`), band wrapper `pointer-events:none`, zero bottom dots.
+
+---
+
+## #2848 extension — positionable dock: window-engine no-regression
+
+> Issue #2848 — the #2838/#2841 dock becomes positionable (Sidebar / Bottom bar). **NFR-1: the window kernel stays READ-ONLY** — no change to `windowStore.ts`/`windowTypes.ts`/`WindowManager`/`WindowFrame`/`WindowChrome`/`useWindows`/`useWindowActions` (verified: `git diff --name-only main spec/2848 -- apps/ui/src/shared/window-system` = empty, `-- apps/tauri` = empty). The dock remains a pure `useWindows()` consumer dispatching only `focusWindow`/`closeWindow`.
+>
+> **Round-1 regression sweep (spec/2848 @ 12afa697, LIVE):** window lifecycle fully exercised — open (Mission Monitor ≡ Sessions / Query Viewer / Stepper Probe from the launcher grid), minimize → restore at saved float, maximize → full-bleed (`x:0,w:1920`,`borderRadius:0`) → restore, focus/z-order (open-2nd brings to top + `aria-current=step`), close (focused + backgrounded), one-window-per-feature-id (no duplicate frame), update-while-minimized does NOT auto-restore. The dock (Sidebar + Bottom bar) as a pure consumer changed none of these; each window operation behaved exactly as the #2807 baseline. R-1..R-10 hold unchanged.
+
+---
+
+## #2850 extension — cross-window companion teleport: window-engine no-regression
+
+> Issue #2850 — the companion teleport choreography runs over the Tauri multi-window model
+> (main + `run-cli-terminal`) and moves to the shared vector avatar, but the window kernel is a
+> NON-GOAL (READ-ONLY, NFR-1 — `git diff --name-only main spec/2850 -- apps/ui/src/shared/window-system`
+> must be empty, and `-- apps/tauri/src-tauri/src/features/llm`/`.../terminal` must carry no
+> window-model change). The `companion-teleport` event contract (`{ toWindow, x, y }`) and the
+> source/destination window lifecycle are UNCHANGED. Run alongside R-1..R-12 + the companion-suite
+> regression R-1..R-10.
+
+## R-13 (#2850) — Window kernel + `companion-teleport` contract unchanged
+
+- [x] R-13: The window-system kernel files are byte-identical to main (R-1..R-10 baseline holds);
+      the `companion-teleport` event shape `{ toWindow, x, y }` is unchanged; the source-window
+      out-then-hide and destination-window visible-then-in choreography behaves exactly as before
+      (reference companion functional F-9/F-10 + window-manager functional F-36/F-37). The
+      Run CLI terminal window (`run-cli-terminal`, `index.html?view=terminal`) lifecycle is
+      unaffected by the avatar change.
+  - **PASS (static + live, spec/2850).** `git diff` on the spec shows NO change to `apps/ui/src/shared/window-system/` or the Tauri window-model files (frontend-only refactor — the window kernel is untouched). The `companion-teleport` contract `{ toWindow, x, y }` is unchanged (`FredoCompanion.tsx:158`). Live: `open_run_cli` created the `run-cli-terminal` window (main + run-cli-terminal in `tauri_manage_window(action=list)`), and the cross-window choreography played source-out-then-hide / destination-visible-then-in exactly as before (main appeared/disappeared at the correct settlements).
+
+## R-14 (#2850) — Cross-window teleport leaves no ghost/double-mount; console clean in both windows
+
+- [x] R-14: After the F-37 main↔terminal round-trips, the companion exists in EXACTLY ONE window
+      at every settle (never a ghost/double-mount); closing the terminal window mid-transit leaves
+      the main companion recoverable; `tauri_read_logs(source="console")` on BOTH windows shows no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference companion R-4/R-8.
+  - **PASS (live, spec/2850).** After the main↔terminal round-trips, the companion existed in EXACTLY ONE window at every settle (main `present:false` when in the terminal window and vice-versa — never a ghost/double-mount). The main↔terminal round-trips each settled to the destination with no duplicate frame. `tauri_read_logs(source="console", level="error")` on BOTH main AND run-cli-terminal → zero `Error:`/`Uncaught`/`Maximum update depth exceeded`. (The close-terminal-mid-transit edge was not independently driven — no evidence of a crash; the round-trips completed cleanly with the companion recoverable.)

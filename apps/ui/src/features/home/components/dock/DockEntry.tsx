@@ -18,6 +18,7 @@ import React from 'react';
 import { Box, chakra, Tooltip, Portal } from '@chakra-ui/react';
 import { tint } from '../../../../shared/utils/colorTint';
 import type { WindowEntry } from '../../../../shared/window-system/windowTypes';
+import type { DockPosition } from './dockPositionStore';
 
 /** Icon-well geometry (module-level named constants — testability). */
 const DOCK_WELL_WIDTH_PX = 36;
@@ -37,6 +38,10 @@ export interface DockEntryProps {
   onActivate: (win: WindowEntry) => void;
   /** Close dispatch — closes ONLY this app. */
   onClose: (win: WindowEntry) => void;
+  /** Layout orientation (Spec #2848 ST-2). Defaults to `'sidebar'` so the
+   *  existing left-rail call site compiles unchanged and ST-3 lands
+   *  independently. Only the tooltip placement is orientation-aware here. */
+  orientation?: DockPosition;
 }
 
 /** Accessible name = app name + window state (D-3). */
@@ -61,10 +66,34 @@ function DockGlyph({ icon }: { icon: React.ReactNode }): React.ReactElement {
   return <>{icon}</>;
 }
 
-export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose }) => {
+export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose, orientation = 'sidebar' }) => {
   const minimized = win.isMinimized;
   const active = win.focused && !minimized;
   const label = dockEntryLabel(win);
+  // Tooltip placement is orientation-aware (Spec #2848 ST-2): the sidebar rail
+  // sits on the left edge so the title reads to the RIGHT; the bottom bar sits
+  // at the viewport's bottom edge so a right/left placement would clip — the
+  // title reads ABOVE. Accessible names live on the real buttons (D-3) — the
+  // tooltip is never the sole label.
+  // Round-2 FD-3 (F-12): the BOTTOM pill trigger sits at the viewport's bottom
+  // edge inside a `backdropFilter`/`overflow:hidden` track, so the Ark/floating-ui
+  // resolver collision-flipped the requested `top` to `right` (the live
+  // `data-placement="right"` defect). Make the requested placement robust:
+  //  - `strategy: 'fixed'` — the positioner is already portaled to
+  //    `document.body`, so a fixed strategy removes any transform /
+  //    containing-block (backdrop-filter) ancestor influence on the coordinate
+  //    space and lets the popper measure against the true viewport;
+  //  - `flip: false` — disables the fallback re-aim so a bottom-edge trigger
+  //    can never be flipped to `right` (zag-js popper only adds the flip
+  //    middleware when `opts.flip` is truthy — get-placement.js:77-85);
+  //  - `gutter` stays on the shared default (8px) — verified the emitted
+  //    box-shadow + offset path is untouched for the sidebar leg.
+  // The `right` fallback for the sidebar leg keeps its default flip: true so
+  // title placement there is unchanged baseline behavior.
+  const tooltipPositioning =
+    orientation === 'bottom'
+      ? ({ placement: 'top' as const, strategy: 'fixed' as const, flip: false } as const)
+      : ({ placement: 'right' as const } as const);
 
   return (
     <Box
@@ -87,7 +116,7 @@ export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose }
         },
       }}
     >
-      <Tooltip.Root positioning={{ placement: 'right' }} openDelay={150} closeDelay={0}>
+      <Tooltip.Root positioning={tooltipPositioning} openDelay={150} closeDelay={0}>
         <Tooltip.Trigger asChild>
           <chakra.button
             type="button"
@@ -109,10 +138,16 @@ export const DockEntry: React.FC<DockEntryProps> = ({ win, onActivate, onClose }
               padding: 0,
               background: active ? tint('var(--accent-primary)', 12) : 'transparent',
               color: minimized ? WELL_COLOR_MUTED : WELL_COLOR,
-              // Active/focused window: 3px accent left-edge bar (inside the
-              // well = inside the rail) + accent-tinted well fill.
+              // Active/focused window: 3px accent bar + accent-tinted well fill.
+              // The bar's axis is orientation-aware (Spec #2848 round-2 FD-2 /
+              // E-9): the sidebar is a LEFT-edge rail so the bar sits on the
+              // well's left edge (`inset 3px 0 0 0`); the bottom bar is a
+              // horizontal pill so the bar is a bottom-edge underline
+              // (`inset 0 -3px 0 0`) — matching the dock-bar wireframe.
               boxShadow: active
-                ? `inset ${DOCK_ACTIVE_BAR_PX}px 0 0 0 var(--accent-primary)`
+                ? orientation === 'bottom'
+                  ? `inset 0 -${DOCK_ACTIVE_BAR_PX}px 0 0 var(--accent-primary)`
+                  : `inset ${DOCK_ACTIVE_BAR_PX}px 0 0 0 var(--accent-primary)`
                 : undefined,
               transition: 'background-color 0.15s ease, color 0.15s ease',
               '&:hover': { background: minimized ? 'transparent' : 'var(--card-hover-bg)' },

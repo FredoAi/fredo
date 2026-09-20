@@ -38,6 +38,47 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 
 ---
 
+## Companion `llama-server`
+
+The companion's inference runtime is a managed `llama-server` **child process**, launched by the app from a launch config generated from local settings. It binds to **loopback (`127.0.0.1`) only** on the configured port (default `8080`) — it is not reachable from other machines on the network.
+
+**Protections:**
+- Loopback-only binding prevents external access
+- Spawned and stopped only through the `features/llm_server` commands; the process is never started ad-hoc from other feature code
+- Terminated on app exit (kill-on-exit hook); a PID-reuse-guarded startup sweep reclaims an orphan after a hard-kill, so no stale server survives
+- The generated launch config and model paths come from the local settings DB — no network fetch at launch
+
+**Limitations:**
+- Any process on the same machine can reach the loopback port
+- The server has no authentication — the same local-user threat model as the IPC socket and OTLP receivers
+
+---
+
+## Voice Input (local STT)
+
+Voice input (Spec #2877) is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`) and speech-to-text runs in-process via a statically linked `sherpa-onnx` `OnlineRecognizer` reading a pinned local model directory. Audio and transcripts never traverse the network: the **only** network-capable component of the feature is model acquisition (`download_stt_model` → the shared download + SHA-256 verify engine).
+
+**Speech handling (Spec #2897).** The user may choose how an utterance is handled (persisted as `Fredo_companion_voice_handling`): **Local transcription** (default — today's on-device recognizer) or **Model audio**, which hands the captured clip to the locally-managed companion model as that turn's input and shows **no transcript**. Model audio is still local-only: the clip is delivered over **loopback only** to the managed `llama-server` (the same `127.0.0.1` process documented above), is never uploaded, and adds no outbound route. It is used only when the installed model reports audio support — capability is probed, never inferred from a model name — and when the model does not support audio (or the local server is unavailable) nothing is transmitted and Fredo offers a one-click fallback to Local transcription.
+
+**Protections:**
+- No audio or audio-derived payload is transmitted; the capture/decode path contains no network client (pinned by the `voice_decode_path_has_no_network_or_process_symbols` invariant test)
+- Voice is **opt-in** (`Fredo_companion_voice_enabled`, default `false`) — nothing is captured before the user enables it
+- Capture can be started ONLY by **holding Space in the focused, empty launcher search bar** (Spec #2882) — no keyboard gesture (Ctrl+Space included) starts a session and **no new capture path exists**, so nothing is captured while the user is merely typing or navigating
+- Capture must be **visibly indicated for its whole duration** by the **launcher bar cue** (the `Listening` chip and placeholder, announced as text), and the cue appears only while capture is genuinely live, so audio is never captured without a visible active indicator; Spec #2882 retired the companion listening bubble, leaving the bar cue as the only capture indicator
+- **Residency is engine-only (Spec #2887):** the STT **engine** is loaded once at setup and may be warm/resident while Fredo is idle, but **no microphone stream exists and no audio is captured until the Space hold** — the resident engine opens no device. Voice stays opt-in (`Fredo_companion_voice_enabled`, default `false`), so with the feature disabled (or its model not installed) there is no resident engine and nothing to capture
+- The microphone is released the moment Space is released, the utterance is cancelled, the bar or window loses focus, or voice is disabled
+- **Model audio adds no new egress (Spec #2897):** a model-audio clip is carried by the existing loopback chat transport to the managed `llama-server`; the layer-confinement invariant over `infrastructure/voice/**` (no network/process symbols) is unchanged, and there is no cloud-fallback branch
+- **Model audio never displays a transcript:** while the method is `model`, the transcript write/announce paths are gated at their source, so no audio-derived word reaches any surface
+- **The clip is bounded and non-lossy:** capture auto-stops at the pinned limit (~30 s) with a visible notice, and the entire clip is kept and delivered — never a silent truncation or a dropped tail
+- **Both methods are visibly indicated for the whole capture** by the launcher bar cue (model audio adds its own listening indicator); there is no silent capture in either mode
+- The native WASAPI path needs no CSP widening and no new Tauri capability
+
+**Limitations:**
+- Any process on the same machine can access the microphone under the same OS user — the OS owns the microphone privacy/permission boundary
+- Model files are downloaded from a pinned upstream revision over HTTPS (the same trust model as the companion GGUF set)
+
+---
+
 ## Tauri Capabilities
 
 Tauri v2 uses a capability system (`capabilities/default.json`) to declare the minimum set of permissions the webview requires. Fredo follows least-privilege:
@@ -109,6 +150,7 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 - The Rust backend and the React webview run in separate processes (Tauri architecture)
 - The webview has no access to the filesystem, PTY, or IPC socket — only to declared Tauri commands and events
 - The communication layer (`infrastructure/comm/`) and the RTDB row pipeline (`infrastructure/rtdb/`) provide the security boundary between agent input and frontend features. OTLP receivers persist raw spans and the ingest classifier maps them onto canonical rows; `fredo emit` CLI events are enriched by `InternalAdapter` and fed through the same classifier. `EventBus.emit_row_delivery_batch` emits `RowDeliveryBatch` envelopes on the `fredo-stream-event` IPC channel; raw `FredoEvent` never crosses IPC.
+- The feature-owned data layer (`infrastructure/feature_data/`) sits ON TOP of the canonical rows: a feature declares its structure and source mapping, and the backend materializes/writes its declared tables in the same `fredo.db` (`feature_<sanitized featureId>_<table>`). Every read/watch/write is validated against the requesting `featureId`, so one feature never observes or mutates another's data; canonical rows are READ-ONLY to the projection. Notifications ride the same `fredo-stream-event` channel as `FeatureDeliveryBatch` envelopes, discriminated in `AppProvider` before the RTDB validators.
 - The PTY terminal spawns child processes as the same OS user; no privilege escalation occurs
 - OTLP receivers run as separate tokio tasks within the same process; no additional processes spawned
 

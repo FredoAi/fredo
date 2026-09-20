@@ -21,6 +21,14 @@ interface SessionHistoryDrawerProps {
    * self-contained; a no-op default keeps un-wired consumers compiling.
    */
   onRename?: (sessionId: string, name: string) => void;
+  /**
+   * Spec #2896 ST-6 (S5): true once the durable declared-table read has
+   * settled. The `No sessions yet` placeholder renders ONLY when the read has
+   * settled empty — never as the pre-read placeholder while stored sessions
+   * exist. Defaults to `true` so self-contained/un-wired consumers keep their
+   * existing behavior.
+   */
+  settled?: boolean;
 }
 
 /** Deterministic short-month names for the compact start-time line (AC-1). */
@@ -85,6 +93,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
   searchFilter,
   onSearchChange,
   onRename,
+  settled = true,
 }) => {
   const DRAWER_WIDTH = 210;
   const COLLAPSED_WIDTH = 28;
@@ -457,7 +466,11 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
               );
             })}
 
-            {filteredSessions.length === 0 && (
+            {/* Spec #2896 ST-6 (S5): the empty list placeholder renders only
+                after the durable declared-table read has SETTLED (or when a
+                search filter is active — search implies rows existed). While
+                the read is still in flight it is never the visible state. */}
+            {filteredSessions.length === 0 && (searchFilter !== '' || settled) && (
               <div style={{ padding: '16px 10px', fontSize: 10, color: 'var(--text-secondary)', textAlign: 'center' }}>
                 {searchFilter ? 'No matching sessions' : 'No sessions yet'}
               </div>

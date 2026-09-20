@@ -4,11 +4,16 @@ mod runtime;
 mod utils;
 
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use features::llm::state::{LlmLoadingState, LlmState};
 use features::terminal::state::RunCliState;
 use infrastructure::comm::bus::EventBus;
+use infrastructure::feature_data::commands::FeatureDataState;
+use infrastructure::feature_data::envelope::FeatureRowNotification;
+use infrastructure::feature_data::projection::{install_row_upsert_observer, ProjectionEngine, RowUpsertObserver};
+use infrastructure::feature_data::registry::DeclarationRegistry;
+use infrastructure::feature_data::store::FeatureDataStore;
+use infrastructure::feature_data::watch::{run_watch_flush_task, NotificationSink, WatchRegistry};
+use infrastructure::rtdb::commands::IngestRow;
 use infrastructure::rtdb::cache::{
     prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
 };
@@ -33,6 +38,60 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+/// A `NotificationSink` that emits feature-data batches through the `EventBus`
+/// (the ONLY sanctioned emission path) on the `"fredo-stream-event"` channel.
+struct EventBusSink {
+    app: tauri::AppHandle,
+}
+
+impl NotificationSink for EventBusSink {
+    fn emit(&self, notifications: &[FeatureRowNotification]) {
+        let bus = self.app.state::<EventBus>();
+        bus.emit_feature_delivery_batch(notifications);
+    }
+}
+
+/// The ONE canonical-upsert observer: feeds canonical-table watches AND the
+/// declared-row projection engine (which then fans declared changes back into
+/// the same watch registry).
+struct FeatureDataUpsertObserver {
+    engine: Arc<ProjectionEngine>,
+    watches: Arc<WatchRegistry>,
+}
+
+impl RowUpsertObserver for FeatureDataUpsertObserver {
+    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
+        self.watches.on_canonical_row(row, changed_fields);
+        self.engine.on_row_upsert(row, changed_fields);
+    }
+}
+
+/// One declared-table retention prune cycle; every eviction fans out into the
+/// watch registry as a `remove` notification (the function itself returns the
+/// evictions and emits nothing).
+fn prune_feature_data(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<Arc<FeatureDataState>>() else {
+        return;
+    };
+    match infrastructure::feature_data::lifecycle::prune_declared_tables(
+        &state.meta,
+        &state.tables,
+        &state.app_store,
+    ) {
+        Ok(evicted) if !evicted.is_empty() => {
+            let removed = evicted.len();
+            state.watches.handle_declared_changes(&evicted);
+            tracing::info!(target: "fredo::feature_data", removed, "declared retention prune");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!(
+            target: "fredo::feature_data",
+            error = %e,
+            "declared retention prune failed"
+        ),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _runtime = AppRuntime::new();
@@ -54,13 +113,16 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("Failed to resolve app data dir");
-            let store = AppStore::open(data_dir.clone()).expect("Failed to open settings store");
-            app.manage(Arc::new(store));
+            let app_store = Arc::new(
+                AppStore::open(data_dir.clone()).expect("Failed to open settings store"),
+            );
+            app.manage(app_store.clone());
 
             // -- FeatureStore (generic typed-column SQLite store for features) --
-            let feature_store =
-                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore");
-            app.manage(Arc::new(feature_store));
+            let feature_store = Arc::new(
+                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore"),
+            );
+            app.manage(feature_store.clone());
 
             // -- Tracing subscriber initialization (Spec #408) -----------------
             // Initialize before any tracing::info!/warn!/error! calls.
@@ -84,101 +146,19 @@ pub fn run() {
                     .init();
             }
 
-            // -- LLM service (in-process llama.cpp engine) --------------------
-            app.manage(LlmState(Mutex::new(None)));
-            let is_loading = Arc::new(AtomicBool::new(false));
-            app.manage(LlmLoadingState(Arc::clone(&is_loading)));
+            // -- Companion llama-server state (Spec #2857 ST-4) ----------------
+            // Out-of-process inference: the managed child process lives in this
+            // state and is spawned/killed via the `features::llm_server`
+            // commands registered below. There is NO in-process engine load —
+            // readiness is the server's own `/health`, gated by the wizard.
+            app.manage(features::llm_server::state::LlamaServerState::default());
 
-            // Which model is selected? Read from SQLite (default: gemma-4-e2b).
-            let selected_model = {
-                let store_ref = app.state::<Arc<AppStore>>();
-                store_ref.get("llm_model").ok().flatten()
-                    .unwrap_or_else(|| "gemma-4-e2b".to_string())
-            };
-
-            // Read configured models_dir from AppStore (default: {home}/fredo-models)
-            let models_dir = {
-                let store_ref = app.state::<Arc<AppStore>>();
-                store_ref.get("models_dir").ok().flatten()
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
-                        app.path().home_dir().unwrap_or_default().join("fredo-models")
-                    })
-            };
-
-            let resolve_path = |subdir: &str, filename: &str| -> Option<std::path::PathBuf> {
-                // 1. Configured models_dir (primary — user can control this)
-                let candidate = models_dir.join(subdir).join(filename);
-                if candidate.exists() {
-                    tracing::info!(target: "fredo::llm", path = %candidate.display(), "found model in models_dir");
-                    return Some(candidate);
-                }
-                // 2. Resource dir (legacy — may contain stale copies from pre-Spec#108 builds)
-                if let Ok(rd) = app.path().resource_dir() {
-                    let fb = rd.join("models").join(subdir).join(filename);
-                    if fb.exists() {
-                        tracing::info!(target: "fredo::llm", path = %fb.display(), "found model in resource_dir");
-                        return Some(fb);
-                    }
-                }
-                // 3. CARGO_MANIFEST_DIR fallback (source-tree development)
-                let fb = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("models").join(subdir).join(filename);
-                if fb.exists() {
-                    tracing::info!(target: "fredo::llm", path = %fb.display(), "found model in source tree");
-                    return Some(fb);
-                }
-                None
-            };
-
-            // Map model id ? (subdir, gguf filename, optional mmproj filename)
-            // MiniCPM-V 4.6's projector type is not supported in llama-cpp-2 v0.1.146,
-            // so it runs text-only. Gemma gets the mmproj for vision.
-            let (model_file, mmproj_file, model_dir) = match selected_model.as_str() {
-                "minicpm-v-4-6" => (
-                    "MiniCPM-V-4_6-Q4_K_M.gguf",
-                    None,   // projector type unsupported in this version
-                    "minicpm-4-6",
-                ),
-                _ => (
-                    "gemma-4-E2B-it-Q4_K_M.gguf",
-                    Some("mmproj-F16.gguf"),
-                    "gemma-e2b-it",
-                ),
-            };
-
-            let model_path = resolve_path(model_dir, model_file);
-            let mmproj_path = mmproj_file.and_then(|f| resolve_path(model_dir, f));
-            tracing::info!(target: "fredo::llm", selected_model, model_path = ?model_path, mmproj_path = ?mmproj_path, "model configuration");
-
-            if let Some(model) = model_path {
-                is_loading.store(true, Ordering::SeqCst);
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let result = tokio::task::spawn_blocking(move || {
-                        if let Some(mmproj) = mmproj_path {
-                            features::llm::engine::LlmEngine::load_with_vision(&model, &mmproj)
-                        } else {
-                            features::llm::engine::LlmEngine::load(&model)
-                        }
-                    })
-                    .await;
-
-                    match result {
-                        Ok(Ok(engine)) => {
-                            let svc = features::llm::service::LlmService::new(engine);
-                            *handle.state::<LlmState>().0.lock().unwrap() = Some(svc);
-                            tracing::info!(target: "fredo::llm", "in-process engine ready");
-                        }
-                        Ok(Err(e)) => tracing::error!(target: "fredo::llm", error = %e, "engine load failed"),
-                        Err(e) => tracing::error!(target: "fredo::llm", error = %e, "task panicked"),
-                    }
-
-                    handle.state::<LlmLoadingState>().0.store(false, Ordering::SeqCst);
-                });
-            } else {
-                tracing::warn!(target: "fredo::llm", "model not found - LLM features disabled.");
-            }
+            // -- Startup orphan sweep (Spec #2857 ST-7) ------------------------
+            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
+            // reclaim a persisted `llama-server` PID on the next launch. The sweep
+            // is PID-reuse guarded (image name) and can never kill an unrelated
+            // process (R-3.3).
+            features::llm_server::process::sweep_orphan(app.handle());
 
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(RunCliState::new()));
@@ -336,7 +316,7 @@ pub fn run() {
             rtdb_store
                 .ensure_schema()
                 .expect("Failed to create rtdb schema");
-            let (rtdb_cache, rtdb_rx) = RtdbCache::new(rtdb_store);
+            let (rtdb_cache, rtdb_rx) = RtdbCache::new(Arc::clone(&rtdb_store));
             app.manage(rtdb_cache.clone());
 
             // -- RTDB live pipeline (Spec #2788 P2.3) --------------------------
@@ -366,6 +346,102 @@ pub fn run() {
             app.manage(rtdb);
             app.manage(classifier);
 
+            // -- Feature-owned data layer (Spec #2896 ST-4) --------------------
+            // Declared, backend-owned, persistent per-feature tables: compose
+            // the declaration registry + projection engine here, install the
+            // projection observer UNCONDITIONALLY (never gated by a watch/read/
+            // open UI — R-4.2), and make the watch registry the declared-row
+            // sink. Canonical-table watches are fed by the same observer.
+            let feature_meta = Arc::new(
+                FeatureDataStore::open(data_dir.clone()).expect("Failed to open FeatureDataStore"),
+            );
+            feature_meta
+                .ensure_schema()
+                .expect("Failed to create feature data schema");
+            let feature_registry = Arc::new(DeclarationRegistry::new(
+                feature_meta.clone(),
+                feature_store.clone(),
+            ));
+            // Re-materialize every persisted declaration (R-4.4: a restart over
+            // an existing fredo.db preserves the declared rows).
+            match feature_registry.materialize_persisted() {
+                Ok(materialized) if !materialized.is_empty() => tracing::info!(
+                    target: "fredo::feature_data",
+                    tables = materialized.len(),
+                    "persisted declared tables re-materialized"
+                ),
+                Ok(_) => {}
+                Err(errors) => tracing::warn!(
+                    target: "fredo::feature_data",
+                    error = %errors.join("; "),
+                    "declared table re-materialization reported errors"
+                ),
+            }
+            let feature_engine = Arc::new(
+                ProjectionEngine::new(
+                    data_dir.clone(),
+                    feature_meta.clone(),
+                    feature_store.clone(),
+                )
+                .expect("Failed to open feature-data projection engine"),
+            );
+            let feature_watches = Arc::new(WatchRegistry::new(Arc::new(EventBusSink {
+                app: app.handle().clone(),
+            })));
+            feature_engine.set_declared_row_observer(feature_watches.clone());
+            // ONE observer slot: a composite feeding canonical watches AND the
+            // projection engine. Installing the ST-3 engine alone would leave
+            // canonical-table watches (contract (c) `featureId: null`) un-fed.
+            install_row_upsert_observer(Arc::new(FeatureDataUpsertObserver {
+                engine: feature_engine.clone(),
+                watches: feature_watches.clone(),
+            }));
+            app.manage(Arc::new(FeatureDataState {
+                data_dir: data_dir.clone(),
+                meta: feature_meta.clone(),
+                tables: feature_store.clone(),
+                app_store: app_store.clone(),
+                registry: feature_registry,
+                engine: feature_engine.clone(),
+                watches: feature_watches.clone(),
+                rtdb_store: rtdb_store.clone(),
+            }));
+            // Watch flush task: emits due coalescing windows (~5 ms cadence).
+            let feature_flush = feature_watches.clone();
+            tauri::async_runtime::spawn(async move {
+                run_watch_flush_task(feature_flush).await;
+            });
+            // One-time declared-table projection backfill (A-17): spawned,
+            // never awaited on the read path.
+            let backfill_dir = data_dir.clone();
+            let backfill_meta = feature_meta.clone();
+            let backfill_engine = feature_engine.clone();
+            let backfill_store = rtdb_store.clone();
+            tauri::async_runtime::spawn(async move {
+                infrastructure::feature_data::backfill::run_backfill(
+                    backfill_dir,
+                    backfill_meta,
+                    backfill_engine,
+                    backfill_store,
+                )
+                .await;
+            });
+
+            // Voice / STT session state: holds the ONE active listening session.
+            // The microphone is still opened ONLY by `stt_start`; the engine, by
+            // contrast, loads once per process into the resident slot (see
+            // `infrastructure::voice::resident`) so a dictation does not re-pay
+            // the model load (Spec #2887 R-1/R-6/R-7).
+            app.manage(infrastructure::voice::session::VoiceState::new());
+            app.manage(infrastructure::voice::resident::ResidentEngine::new());
+
+            // Earliest-safe warm (Spec #2887 ST-1): FIRE-AND-FORGET — nothing on
+            // this path awaits it, so app startup is never blocked or delayed.
+            // Gated on the persisted opt-in flag + model presence, silent on
+            // failure, engine-only (it never touches capture). Spawned AFTER the
+            // state is managed so the background task can always resolve it.
+            infrastructure::voice::resident::ResidentEngine::warm_at_setup(app.handle());
+
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
             tauri::async_runtime::spawn(async move {
@@ -389,6 +465,20 @@ pub fn run() {
             // the writer task re-prunes on a 60-minute interval). P2.3: the
             // evicted keys route `kind: remove` deliveries through Rtdb.
             prune_with_knobs(app.handle());
+
+            // Declared-table retention prune: once at startup, then on the same
+            // 60-minute cadence as the RTDB writer prune (ST-7 supplies the
+            // function; evictions fan out as `remove` notifications here).
+            prune_feature_data(app.handle());
+            let feature_prune_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+                interval.tick().await; // consume the immediate first tick
+                loop {
+                    interval.tick().await;
+                    prune_feature_data(&feature_prune_handle);
+                }
+            });
 
             // RTDB write-behind task: drains the bounded queue in ~30 ms
             // batches; overflow sheds the storage write, never in-memory state.
@@ -419,6 +509,13 @@ pub fn run() {
                 }
             });
 
+            // -- App-open request registry (Spec #2893 ST-4) -------------------
+            // `fredo open-app <IDENTITY>` emits `app-open-request` to the main
+            // window and waits (bounded 5 s) for the webview's confirmation
+            // through this registry. The Rust side never resolves identities —
+            // the frontend owns the one resolution rule.
+            app.manage(infrastructure::app_open::AppOpenRegistry::new());
+
             // -- OTLP receiver (gRPC :4317 + HTTP :4318) -----------------------
             infrastructure::otlp::start(app.handle().clone());
 
@@ -428,6 +525,26 @@ pub fn run() {
             // RTDB (Spec #2788 P2.3)
             infrastructure::rtdb::commands::subscribe_events,
             infrastructure::rtdb::commands::unsubscribe_events,
+            // Feature-owned data layer (Spec #2896 ST-4): read/watch/unwatch +
+            // write/delete/declare over declared and canonical tables.
+            infrastructure::feature_data::commands::feature_data_read,
+            infrastructure::feature_data::commands::feature_data_watch,
+            infrastructure::feature_data::commands::feature_data_unwatch,
+            infrastructure::feature_data::commands::feature_data_write,
+            infrastructure::feature_data::commands::feature_data_delete,
+            infrastructure::feature_data::commands::feature_data_declare,
+            // Voice / STT (local, opt-in transcription; control-plane events)
+            infrastructure::voice::commands::stt_check_model,
+            infrastructure::voice::commands::stt_list_devices,
+            infrastructure::voice::commands::stt_start,
+            infrastructure::voice::commands::stt_stop,
+            infrastructure::voice::commands::stt_cancel,
+            infrastructure::voice::commands::stt_status,
+            infrastructure::voice::commands::stt_warm,
+            infrastructure::voice::commands::stt_release,
+            // #2897 ST-2 — take (and clear) the bounded model-audio clip after a
+            // model-audio stop; the clip crosses IPC only.
+            infrastructure::voice::commands::stt_take_audio_clip,
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
@@ -449,8 +566,32 @@ pub fn run() {
             features::setup::commands::run_setup_step,
             features::setup::commands::check_model_files,
             features::setup::commands::download_model,
-            features::llm::commands::llm_chat,
-            features::llm::commands::llm_chat_with_image,
+            features::setup::commands::download_stt_model,
+            features::setup::commands::check_companion_readiness,
+            features::setup::commands::install_llama_cpp,
+            // Companion llama-server (Spec #2857 ST-4): rerouted chat/vision +
+            // the lifecycle commands. SAME `llm_chat` / `llm_chat_with_image`
+            // IPC names and argument shapes as the deleted in-process path.
+            features::llm_server::commands::llm_chat,
+            features::llm_server::commands::llm_chat_with_image,
+            // #2897 ST-3 — model-audio turn: the captured clip is attached to the
+            // last user message and delivered over the managed loopback server.
+            features::llm_server::commands::llm_chat_with_audio,
+            features::llm_server::commands::generate_llama_server_config,
+            features::llm_server::commands::launch_llama_server,
+            features::llm_server::commands::stop_llama_server,
+            features::llm_server::commands::get_llama_server_status,
+            // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
+            // `/props` + `tools`/`response_format` probe; no window, no state write.
+            features::llm_server::probe::probe_companion_skills,
+            // #2897 ST-6 — backend-owned model-audio capability for the Companion
+            // readiness row + the pre-start gate. Reads the managed loopback
+            // server and records the verdict on `VoiceState` (REQ-7).
+            features::llm_server::commands::stt_audio_capability,
+            // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
+            // registry, validates a selection, emits `llm-skill-call` then
+            // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.
+            features::llm_server::skills::llm_chat_with_skills,
             features::screenshot::commands::capture_screen_region,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
@@ -467,7 +608,20 @@ pub fn run() {
             // Telemetry Logging (Spec #408)
             features::telemetry::commands::telemetry_logging_toggle,
             features::telemetry::commands::telemetry_logging_set_level,
+            // App-open transport (Spec #2893 ST-4): the webview's confirmation
+            // of an emitted `app-open-request`, and the companion's thin CLI
+            // spawn/bound/parse seam.
+            infrastructure::app_open::confirm_app_open_request,
+            infrastructure::app_open::run_open_app_cli,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Fredo application");
+        .build(tauri::generate_context!())
+        .expect("error while building Fredo application")
+        .run(|app, event| {
+            // Spec #2857 ST-4: the app-exit hook. Terminate the managed
+            // `llama-server` tree so no orphan survives Fredo (R-3.3). The
+            // startup PID sweep + the kill-on-exit test are ST-7's.
+            if let tauri::RunEvent::Exit = event {
+                features::llm_server::commands::stop_llama_server_on_exit(app);
+            }
+        });
 }

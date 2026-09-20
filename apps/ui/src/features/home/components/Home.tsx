@@ -5,16 +5,18 @@ import { WindowManager } from '../../../shared/window-system/WindowManager';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
 import { AppDock } from './dock/AppDock';
-import { FloatingSettingsButton } from './settings/FloatingSettingsButton';
+import { DesktopBackdrop } from './background/DesktopBackdrop';
 import { myWorkItemsFeature } from '../../my-workitems';
 import { createWorkItemFeature } from '../../my-workitems';
 import { devModeFeature } from '../../dev-mode';
 import { setupFeature } from '../../setup';
 import '../../allFeatures';
+import { declareAllRegisteredFeatureData } from '../../../shared/feature-data/registry';
 import { getFeatures, dedupeByFeatureId } from '../../featureRegistry';
 import { settingsService } from '../../settings';
 import { useCompanion } from '../../../shared/contexts/CompanionContext';
 import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
+import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
 import type { FredoFeatureClass } from '../../../shared/classes/FredoFeatureClass';
 
 // Features self-register via allFeatures.ts — no manual list needed.
@@ -23,7 +25,7 @@ const ALL_FEATURES = getFeatures();
 // grid and its keyboard-nav indices are index-aligned BY CONSTRUCTION — one tile
 // per distinct id (no ghost tiles, no nav-sequence gaps), robust to double
 // registration. ALL_FEATURES stays un-deduped for the open-callback registration
-// loop (line 41) and the settings button (line 190).
+// loop below.
 const SHOWABLE_FEATURES = dedupeByFeatureId(ALL_FEATURES.filter((feature) => feature.showable));
 
 // ── Inner desktop component — must live inside <WindowSystemProvider> ─────────
@@ -47,6 +49,11 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
         openFeatureWindowRef.current(feature.id, feature);
       });
     });
+    // Spec #2896 ST-5 — bootstrap: materialize EVERY registered feature-data
+    // declaration with ONE idempotent `feature_data_declare` (A-17). Runs at
+    // runtime (after feature modules registered their declarations and after
+    // main.tsx registered the adapter), never at module-evaluation time.
+    void declareAllRegisteredFeatureData();
   }, []);
 
   const handleKonamiCode = useCallback(() => {
@@ -138,6 +145,14 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
     }, 0);
   }, [openWindow, closeWindow, updateWindow]);
 
+  // #2893 ST-6 — the ONE app-open request/confirm loop: the CLI `open-app`
+  // round trip (`app-open-request`) and the companion skill selection
+  // (`llm-skill-call`) both resolve through `resolveAppIdentity` and open
+  // through THIS full-lifecycle `openFeatureWindow` (never a raw `openWindow`).
+  // The backend addresses the `main` window only, so the terminal route never
+  // receives these events.
+  useAppOpenRequests({ openFeatureWindow, features: SHOWABLE_FEATURES });
+
   // Keep the ref in sync so transition callbacks always call the latest version, and
   // register the opener with the Home-level ref so the sibling LauncherShell (which
   // renders outside HomeDesktop, inside the provider) can route launcher clicks through
@@ -187,10 +202,13 @@ export const Home: React.FC = () => {
           <WindowSystemProvider>
             <Box display="flex" flexDirection="column" height="100%">
               <Box flex="1" position="relative" overflow="hidden">
+                {/* #2899 ST-3 — the desktop background layer. FIRST child at
+                    zIndex 0, strictly below WindowManager's z=1 container, so it
+                    never paints above a window. Renders null for `none`. */}
+                <DesktopBackdrop />
                 <WindowManager />
                 <HomeDesktop registerOpenFeature={registerOpenFeature} />
                 <AppDock />
-                <FloatingSettingsButton features={ALL_FEATURES} />
               </Box>
               <LauncherShell
                 showableFeatures={SHOWABLE_FEATURES}

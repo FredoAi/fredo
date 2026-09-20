@@ -80,9 +80,6 @@ export const settingsService = {
   },
 };
 
-/** Null component kept for legacy route compatibility — settings live in the modal. */
-export const Settings = () => null;
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function defaultDeserialize<T>(raw: string): T {

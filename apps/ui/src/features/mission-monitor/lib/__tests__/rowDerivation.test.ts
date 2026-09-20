@@ -16,7 +16,7 @@
  *   duplicates (first-match insert semantics, original beats copy), and late
  *   re-key stamps never grow the unattributed count (the 234-bug kill).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { ChatRow, ToolUseRow } from '../../../../shared/classes/EventSubscription';
 import {
   deriveRowGraphState,
@@ -392,5 +392,76 @@ describe('deriveRenderableSessions / sessionEmitsNodes (Spec #2795 — shared re
     const state2 = deriveRowGraphState([a, b, ghost], []);
     expect(deriveRenderableSessions(state2).has('ghost')).toBe(false);
     expect(deriveRenderableSessions(state2).has('s1')).toBe(true);
+  });
+});
+
+describe('rawJson parse memoization (RD-1, #2893 Q-15 latency)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A small multi-row corpus whose `rawJson` strings are all distinct, so a
+   *  parse-count delta is unambiguous. `toolName` stays non-task so the only
+   *  `JSON.parse` traffic is `rawPayload`. */
+  function buildCorpus(): { chatRows: ChatRow[]; toolRows: ToolUseRow[] } {
+    const chatRows = [
+      chatRow({ correlationId: 'c1', sessionId: 'ses_a', rawJson: JSON.stringify({ agent: 'a', agentThinking: 't1' }) }),
+      chatRow({ correlationId: 'c2', sessionId: 'ses_a', rawJson: JSON.stringify({ agent: 'a', agentThinking: 't2' }) }),
+      chatRow({ correlationId: 'c3', sessionId: 'ses_b', rawJson: JSON.stringify({ agent: 'b', reasoningTokens: 5 }) }),
+    ];
+    const toolRows = [
+      toolRow({ correlationId: 'ses_a_1', sessionId: 'ses_a', rawJson: JSON.stringify({ promptTokens: 1 }) }),
+      toolRow({ correlationId: 'ses_a_2', sessionId: 'ses_a', rawJson: JSON.stringify({ promptTokens: 2 }) }),
+      toolRow({ correlationId: 'ses_b_1', sessionId: 'ses_b', isSubagent: true, rawJson: JSON.stringify({ parentSessionId: 'ses_a' }) }),
+      toolRow({ correlationId: 'ses_b_2', sessionId: 'ses_b', isSubagent: true, rawJson: JSON.stringify({ parentSessionId: 'ses_a' }) }),
+    ];
+    return { chatRows, toolRows };
+  }
+
+  /** Count `JSON.parse` calls whose first argument is one of the corpus rows'
+   *  `rawJson` sources — isolates the row-payload parses from any other parse
+   *  traffic in the call path. */
+  function countRowParses(spy: { mock: { calls: unknown[][] } }, sources: Set<string>): number {
+    return spy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && sources.has(args[0] as string),
+    ).length;
+  }
+
+  it('a single derive parses each row rawJson exactly once (no triple/duplicate parse)', () => {
+    const spy = vi.spyOn(JSON, 'parse');
+    const { chatRows, toolRows } = buildCorpus();
+    const sources = new Set([...chatRows, ...toolRows].map((r) => r.rawJson));
+    const rowCount = chatRows.length + toolRows.length;
+
+    deriveRowGraphState(chatRows, toolRows);
+
+    expect(countRowParses(spy, sources)).toBe(rowCount);
+  });
+
+  it('a SECOND derive over the SAME row objects parses ZERO additional row payloads', () => {
+    const spy = vi.spyOn(JSON, 'parse');
+    const { chatRows, toolRows } = buildCorpus();
+    const sources = new Set([...chatRows, ...toolRows].map((r) => r.rawJson));
+
+    deriveRowGraphState(chatRows, toolRows);
+    spy.mockClear();
+
+    deriveRowGraphState(chatRows, toolRows);
+
+    expect(countRowParses(spy, sources)).toBe(0);
+  });
+
+  it('a row whose rawJson CHANGES in place IS re-parsed (the source guard, not just object identity)', () => {
+    const spy = vi.spyOn(JSON, 'parse');
+    const row = chatRow({ rawJson: JSON.stringify({ agent: 'a', agentThinking: 'v1' }) });
+
+    deriveRowGraphState([row], []);
+    spy.mockClear();
+
+    row.rawJson = JSON.stringify({ agent: 'a', agentThinking: 'v2' });
+    const state = deriveRowGraphState([row], []);
+
+    expect(countRowParses(spy, new Set([row.rawJson]))).toBe(1);
+    expect(state.agentNodes.get(row.correlationId)?.payload.agentThinking).toBe('v2');
   });
 });

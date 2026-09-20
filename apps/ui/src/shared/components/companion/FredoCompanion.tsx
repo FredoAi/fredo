@@ -1,154 +1,57 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useCompanion } from '../../contexts/CompanionContext';
-import type { CompanionState } from '../../contexts/CompanionContext';
-import { SpeechBubble } from './SpeechBubble';
-import { TicTacToe } from './features/tictactoe';
-import './companion.css';
-import spritesheetUrl from '../../../assets/spritesheet.png';
-import { adapterBridge } from '../../utils/adapterBridge';
-import type { LlmMessage } from '../../../app/adapters/HostAdapter';
-
-// ── Sprite-sheet constants ────────────────────────────────────────────────────
-// Sheet: 1264x843px  |  6 cols x 4 rows  |  display at 80x80px per frame
-const FRAME_W = 80;
-const FRAME_H = 80;
-const FRAMES_PER_ROW = 6;
-const SHEET_DISPLAY_W = FRAME_W * FRAMES_PER_ROW; // 480
-const SHEET_DISPLAY_H = FRAME_H * 4;               // 320
-
-const ROW_Y: Record<CompanionState, number> = {
-  'idle':          0,
-  'talk':         -FRAME_H,
-  'teleport-out': -FRAME_H * 2,
-  'teleport-in':  -FRAME_H * 3,
-};
-
-const ANIM_DURATION: Record<CompanionState, number> = {
-  'idle':         800,
-  'talk':          500,
-  'teleport-out':  400,
-  'teleport-in':   400,
-};
-
-const JOKE_TOPICS = [
-  'recursion', 'null pointers', 'git', 'CSS', 'regex', 'merge conflicts',
-  'JavaScript', 'TypeScript', 'Rust', 'Python', 'compilers', 'debugging',
-  'documentation', 'code reviews', 'off-by-one errors', 'binary',
-  'async/await', 'memory leaks', 'Docker', 'databases',
-];
-
-function buildJokeMessages(): LlmMessage[] {
-  const topic = JOKE_TOPICS[Math.floor(Math.random() * JOKE_TOPICS.length)];
-  return [
-    {
-      role: 'system',
-      content:
-        'You are Fredo, a friendly and enthusiastic little robot companion who loves programming. ' +
-        'You have a playful personality and enjoy making developers smile. ' +
-        'You love telling clever programming jokes and playing Tic-Tac-Toe. ' +
-        'In Tic-Tac-Toe you always play as O against the human\'s X — the board has 9 cells numbered 0-8 ' +
-        '(row 0: 0,1,2 | row 1: 3,4,5 | row 2: 6,7,8). ' +
-        'To win you try to get three O\'s in a row; you also block X from completing a row of three. ' +
-        'When asked to make a move you reply with only a single digit 0-8. ' +
-        'For everything else, reply with a single short funny programming joke — no intro, no "sure!", just the joke itself.',
-    },
-    { role: 'user', content: `Tell me a short joke about ${topic}.` },
-  ];
-}
-
-// ── Window identity ───────────────────────────────────────────────────────────
-// Each Tauri WebviewWindow loads this same bundle. Distinguish them by ?view=.
-const MY_WINDOW = new URLSearchParams(window.location.search).get('view') === 'terminal'
-  ? 'terminal'
-  : 'main';
-const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+import {
+  ANIM_DURATION,
+  CompanionEntity,
+  IS_TAURI,
+  MY_WINDOW,
+  computeTeleportTarget,
+  getActiveCompanionEntity,
+} from './CompanionEntity';
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 export const FredoCompanion: React.FC = () => {
-  const { state, setState, teleport, showMessage, hideMessage } = useCompanion();
-  const { animState, message, isVisible, position } = state;
+  const { state, confirmAutoReturn, setHosting, markAway, notifyInteraction, teleport } = useCompanion();
+  const { isAway, isAutoHidden, isAutoReturning, position } = state;
 
-  const [displayPos, setDisplayPos] = useState({ x: position.x, y: position.y });
-  const [streamingMessage, setStreamingMessage] = useState<string | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const isGeneratingRef = useRef(false);
-  const [showTicTacToe, setShowTicTacToe] = useState(false);
-  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // currentAnim drives which row is displayed
-  const [currentAnim, setCurrentAnim] = useState<CompanionState>('idle');
-  // animKey forces the div to remount and restart CSS animation cleanly
-  const [animKey, setAnimKey] = useState(0);
-
-  const isTeleportingRef = useRef(false);
-  const pendingDestRef = useRef<{ x: number; y: number } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Cross-window: companion starts in main, hidden in terminal
+  // The interactive body lives in CompanionEntity. The host keeps every
+  // window-level concern exactly once per window (never per surface): the
+  // cross-window `companion-teleport` listener, the Ctrl+right-click gesture
+  // handler, the auto-return settle, and the hosting report — driving whichever
+  // entity surface is currently active through the module-scoped registry
+  // (`getActiveCompanionEntity`). At home that is the launcher SEAT; while away
+  // it is this host's OVERLAY.
   const isInThisWindowRef = useRef(MY_WINDOW === 'main');
   const [isInThisWindow, setIsInThisWindow] = useState(MY_WINDOW === 'main');
-  // Pending teleport-in destination — applied once the component becomes visible
+  // Pending teleport-in destination — applied once the overlay becomes active
   const pendingTeleportInRef = useRef<{ x: number; y: number } | null>(null);
+  // Bumped on every cross-window arrival so the arrive effect fires even when
+  // `isInThisWindow` was already true (rapid leave→return within one settle).
+  const [arrivalSeq, setArrivalSeq] = useState(0);
 
-  const clearTimer = () => {
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-  };
+  // Auto-return settle timer (distinct from the teleport sequence timer):
+  // observed from `isAutoReturning`, cleared on cancel/unmount.
+  const autoReturnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const playAnim = useCallback((anim: CompanionState) => {
-    setCurrentAnim(anim);
-    setAnimKey((k) => k + 1);
-  }, []);
+  // #2853 ST-2 / #2870 ST-2b: report host identity to the context so ONLY the
+  // webview that currently displays the companion arms the host-owned idle
+  // auto-return timer. Hosting now also requires Fredo to be AWAY from the home
+  // seat, so the #2853 timer arms only for an out Fredo (never while he sits at
+  // the seat).
+  useEffect(() => { setHosting(isAway && isInThisWindow); }, [isAway, isInThisWindow, setHosting]);
 
-  // Sync context position changes (initial placement / external teleport)
+  // Once this window becomes active (cross-window arrival), fire the queued
+  // teleport-in. Keyed on `arrivalSeq` (not `isInThisWindow`) so a return leg
+  // whose state was already true still plays the in motion; the overlay mounts in
+  // this commit and registers its handle before the host's effect runs (child
+  // passive effects run first), so `getActiveCompanionEntity()` is the overlay.
   useEffect(() => {
-    setDisplayPos({ x: position.x, y: position.y });
-  }, [position.x, position.y]);
-
-  // Respond to context animState (message show -> 'talk', hide -> 'idle')
-  // Ignore during active teleport sequence
-  useEffect(() => {
-    if (isTeleportingRef.current) return;
-    if (animState === 'talk' || animState === 'idle') {
-      playAnim(animState);
-    }
-  }, [animState, playAnim]);
-
-  // Teleport sequence (fully timer-driven)
-  const startTeleportIn = useCallback((dest: { x: number; y: number }) => {
-    teleport(dest.x, dest.y);
-    setDisplayPos(dest);
-    playAnim('teleport-in');
-
-    timerRef.current = setTimeout(() => {
-      isTeleportingRef.current = false;
-      pendingDestRef.current = null;
-      playAnim('idle');
-      setState('idle');
-    }, ANIM_DURATION['teleport-in'] + 50);
-  }, [teleport, playAnim, setState]);
-
-  const startTeleportOut = useCallback((dest: { x: number; y: number }) => {
-    clearTimer();
-    isTeleportingRef.current = true;
-    pendingDestRef.current = dest;
-    playAnim('teleport-out');
-    setState('teleport-out');
-
-    timerRef.current = setTimeout(() => {
-      startTeleportIn(dest);
-    }, ANIM_DURATION['teleport-out'] + 50);
-  }, [playAnim, setState, startTeleportIn]);
-
-  // Once this window becomes active (cross-window arrival), fire the queued teleport-in
-  useEffect(() => {
-    if (isInThisWindow && pendingTeleportInRef.current) {
-      const dest = pendingTeleportInRef.current;
-      pendingTeleportInRef.current = null;
-      isTeleportingRef.current = true;
-      startTeleportIn(dest);
-    }
-  }, [isInThisWindow, startTeleportIn]);
+    if (!pendingTeleportInRef.current) return;
+    const dest = pendingTeleportInRef.current;
+    pendingTeleportInRef.current = null;
+    getActiveCompanionEntity()?.arrive(dest);
+  }, [arrivalSeq]);
 
   // Cross-window teleport via Tauri global events
   useEffect(() => {
@@ -161,50 +64,98 @@ export const FredoCompanion: React.FC = () => {
 
         if (toWindow === MY_WINDOW) {
           if (isInThisWindowRef.current) {
-            // Same-window teleport: companion is already here, just move it
-            startTeleportOut({ x, y });
+            // Same-window teleport: the active entity (seat at home, overlay when
+            // away) plays out → in at the clicked point. No entity mounted (e.g.
+            // a window with no surface yet) → settle directly on the context.
+            const entity = getActiveCompanionEntity();
+            if (entity) entity.teleportTo({ x, y });
+            else teleport(x, y);
           } else {
-            // Cross-window arrival: make component visible, then teleport-in fires via effect
+            // Cross-window arrival: mark Fredo AWAY + set the landing position
+            // NOW so the overlay is eligible to mount at `{x,y}` (ST-2b gates it
+            // on `isAway`); the queued teleport-in then fires via the effect.
+            // `teleport` also broadcasts the away presence — this window is the
+            // authoritative destination.
             isInThisWindowRef.current = true;
             pendingTeleportInRef.current = { x, y };
+            teleport(x, y);
             setIsInThisWindow(true);
+            setArrivalSeq((n) => n + 1);
           }
         } else if (isInThisWindowRef.current) {
-          // Companion is leaving this window — play teleport-out, THEN hide
+          // Companion is leaving this window.
           isInThisWindowRef.current = false;
-          clearTimer();
-          isTeleportingRef.current = true;
-          playAnim('teleport-out');
-          setState('teleport-out');
-          timerRef.current = setTimeout(() => {
-            // Hide only after animation finishes
+          const entity = getActiveCompanionEntity();
+          if (entity?.surface === 'overlay') {
+            // Away overlay: play the out motion, then hide on the preserved
+            // settle (the overlay stays mounted through the out via the ref gate).
+            entity.leaveWindow(() => setIsInThisWindow(false));
+          } else {
+            // Home seat (or no entity): the seat belongs to the launcher, not
+            // this host, so `markAway` drops it immediately and there is no
+            // overlay out-motion to await — settle this window synchronously
+            // (never two Fredos, and `isAway && isInThisWindow` can not leave the
+            // host idle timer armed).
+            markAway();
             setIsInThisWindow(false);
-            isTeleportingRef.current = false;
-          }, ANIM_DURATION['teleport-out'] + 50);
+          }
         }
       }).then(fn => { unlisten = fn; });
     });
 
     return () => { unlisten?.(); };
-  }, [playAnim, setState, startTeleportOut]);
+  }, [markAway, teleport]);
 
-  // Ctrl+right-click — teleport companion to THIS window at clicked position
+  // ── Idle auto-return (host-initiated, distinct from teleport) ──────────────
+  // The context requests the return when the host idle timer fires. Play the
+  // existing teleport-out leave motion, then settle to hidden after the
+  // preserved +50 ms gap and let the provider broadcast the global presence.
+  // NOT startTeleportOut — that path re-enters via startTeleportIn.
+  useEffect(() => {
+    if (!isAutoReturning) return;
+    getActiveCompanionEntity()?.playLeave();
+    autoReturnTimerRef.current = setTimeout(() => {
+      autoReturnTimerRef.current = null;
+      confirmAutoReturn();
+    }, ANIM_DURATION['teleport-out'] + 50);
+    return () => {
+      if (autoReturnTimerRef.current) {
+        clearTimeout(autoReturnTimerRef.current);
+        autoReturnTimerRef.current = null;
+      }
+    };
+  }, [isAutoReturning, confirmAutoReturn]);
+
+  // Ctrl+right-click — teleport companion to THIS window at clicked position.
+  // The gesture handler is registered exactly once per window; it dispatches to
+  // the active entity surface. When NO entity is mounted in this window (e.g.
+  // Fredo sits at the main-window seat and the gesture fires in the terminal
+  // window), the host dispatches the request itself so the cross-window hand-off
+  // still starts — the clamp uses the exact declared `AVATAR_SM` box.
   const handleMouseDown = useCallback((e: MouseEvent) => {
     if (e.button !== 2 || !e.ctrlKey) return;
     e.preventDefault();
-    const targetX = Math.max(0, Math.min(e.clientX - FRAME_W / 2, window.innerWidth - FRAME_W));
-    const targetY = Math.max(0, Math.min(e.clientY - FRAME_H / 2, window.innerHeight - FRAME_H));
-
+    const entity = getActiveCompanionEntity();
+    if (entity) {
+      entity.requestTeleport(e.clientX, e.clientY);
+      return;
+    }
+    // #2853 ST-3: a teleport request is a companion interaction — reset the idle timer.
+    notifyInteraction();
+    const target = computeTeleportTarget(e.clientX, e.clientY);
     if (IS_TAURI) {
-      // Broadcast to all webview windows (including this one)
+      // Broadcast to all webview windows (including this one) — the destination
+      // arrival / source leave both run in the `companion-teleport` listener.
       import('@tauri-apps/api/event').then(({ emit }) => {
-        emit('companion-teleport', { toWindow: MY_WINDOW, x: targetX, y: targetY });
+        emit('companion-teleport', { toWindow: MY_WINDOW, x: target.x, y: target.y });
       });
     } else {
-      // Dev mode: local-only teleport
-      startTeleportOut({ x: targetX, y: targetY });
+      // Dev mode: no entity to animate — settle the context directly.
+      isInThisWindowRef.current = true;
+      setIsInThisWindow(true);
+      teleport(target.x, target.y);
     }
-  }, [startTeleportOut]);
+  }, [notifyInteraction, teleport]);
 
   const handleContextMenu = useCallback((e: MouseEvent) => {
     if (e.ctrlKey) e.preventDefault();
@@ -219,150 +170,25 @@ export const FredoCompanion: React.FC = () => {
     };
   }, [handleMouseDown, handleContextMenu]);
 
-  useEffect(() => () => clearTimer(), []);
+  useEffect(() => () => {
+    if (autoReturnTimerRef.current) clearTimeout(autoReturnTimerRef.current);
+  }, []);
 
-  // ── LLM joke generation ───────────────────────────────────────────────────
-  const askForJoke = useCallback(() => {
-    console.log('[companion] askForJoke called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current);
-    if (isTeleportingRef.current || isGeneratingRef.current) return;
-    isGeneratingRef.current = true;
-    setStreamingMessage('💭 Thinking...');
-    setIsStreaming(true);
-    playAnim('talk');
-    setState('talk');
-
-    console.log('[companion] calling adapterBridge.llmChat');
-    adapterBridge.llmChat(
-      buildJokeMessages(),
-      (token) => {
-        console.log('[companion] llm-token:', token.slice(0, 40));
-        setStreamingMessage((prev) => {
-          // Clear the placeholder on the first real token
-          if (prev === '💭 Thinking...' || prev === '⏳ Loading model...') return token;
-          return (prev ?? '') + token;
-        });
-      },
-      () => {
-        console.log('[companion] llm-done received');
-        isGeneratingRef.current = false;
-        setIsStreaming(false);
-        isGeneratingRef.current = false;
-        setIsStreaming(false);
-        // Hold 'talk' for 5 s then return to idle
-        timerRef.current = setTimeout(() => {
-          setStreamingMessage(null);
-          playAnim('idle');
-          setState('idle');
-          hideMessage();
-        }, 5000);
-      },
-    );
-  }, [playAnim, setState, hideMessage]);
-
-  // ── Click / double-click on sprite ────────────────────────────────────────
-  // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
-  const handleSpriteClick = useCallback(() => {
-    console.log('[companion] sprite clicked — showTicTacToe:', showTicTacToe, 'clickTimer:', !!clickTimerRef.current);
-    if (clickTimerRef.current) {
-      // Second click within 250 ms → double-click → toggle game
-      clearTimeout(clickTimerRef.current);
-      clickTimerRef.current = null;
-      console.log('[companion] double-click → toggle TicTacToe');
-      setShowTicTacToe((v) => {
-        if (!v) setStreamingMessage(null);
-        return !v;
-      });
-      return;
-    }
-    // Start timer; if no second click arrives, treat as single click
-    clickTimerRef.current = setTimeout(() => {
-      clickTimerRef.current = null;
-      console.log('[companion] single-click fired — showTicTacToe:', showTicTacToe);
-      if (!showTicTacToe) askForJoke();
-    }, 250);
-  }, [askForJoke, showTicTacToe]);
-
-  // Hide when companion is not in this window, but keep mounted during teleport-out
-  // so the leaving animation can still play
-  if (!isVisible) return null;
-  if (!isInThisWindow && !isTeleportingRef.current) return null;
-
-  const isOneShot = currentAnim === 'teleport-out' || currentAnim === 'teleport-in';
-  const duration = ANIM_DURATION[currentAnim];
-  // One-shot: steps(5,end) over 0→-400px lands on frame 5, held by forwards fill-mode.
-  // Loop: steps(6,end) over 0→-480px wraps cleanly back to frame 0.
-  const animName = isOneShot ? 'Fredo-sprite-once' : 'Fredo-sprite-loop';
-  const animSteps = isOneShot ? FRAMES_PER_ROW - 1 : FRAMES_PER_ROW;
-  const animFill = isOneShot ? 'forwards' : 'none';
-
-  // Prefer the live streaming message; fall back to context message.
-  // Strip any model control tokens that may leak through (e.g. <end_of_turn>).
-  const displayMessage = (streamingMessage ?? message)
-    ?.replace(/<end_of_turn>|<start_of_turn>/g, '').trimEnd() || null;
+  // #2870 ST-2b / ST-2c: the overlay is the AWAY representation only. It renders
+  // when Fredo is away AND this window is the active destination. The gate reads
+  // the synchronous `isInThisWindowRef` (not the state) so a same-tick `away` —
+  // the local `markAway` on a cross-window leave, or the destination's
+  // `companion-presence {away:true}` broadcast — can never re-mount an overlay in
+  // the LEAVING window while its out motion is still playing. The state stays true
+  // through the leave motion (so the out animation completes); the ref clears
+  // immediately. At home the launcher renders the seat.
+  if (!isAway || !isInThisWindowRef.current || isAutoHidden) return null;
 
   return (
-    <>
-      <SpeechBubble
-        message={showTicTacToe ? null : displayMessage}
-        companionX={displayPos.x}
-        companionY={displayPos.y}
-        companionWidth={FRAME_W}
-        companionHeight={FRAME_H}
-        isStreaming={isStreaming && !showTicTacToe}
-      >
-        {showTicTacToe && (
-          <TicTacToe
-            onStreamingMessage={(msg) => setStreamingMessage(msg)}
-            onStartStreaming={() => {
-              setIsStreaming(true);
-              playAnim('talk');
-              setState('talk');
-            }}
-            onDoneStreaming={() => {
-              setIsStreaming(false);
-              timerRef.current = setTimeout(() => {
-                setStreamingMessage(null);
-                playAnim('idle');
-                setState('idle');
-              }, 4000);
-            }}
-          />
-        )}
-      </SpeechBubble>
-
-      {/* Outer clipping viewport; inner div handles GPU-accelerated transform animation */}
-      <div
-        onClick={handleSpriteClick}
-        title="Click to chat | Double-click to play Tic-Tac-Toe | Ctrl+right-click to teleport"
-        aria-label={`Fredo companion -- ${currentAnim}`}
-        style={{
-          position: 'fixed',
-          left: displayPos.x,
-          top: displayPos.y,
-          width: FRAME_W,
-          height: FRAME_H,
-          overflow: 'hidden',
-          zIndex: 100,
-          pointerEvents: 'auto',
-          cursor: isGeneratingRef.current ? 'default' : 'pointer',
-        }}
-      >
-        <div
-          key={animKey}
-          style={{
-            width: SHEET_DISPLAY_W,
-            height: SHEET_DISPLAY_H,
-            backgroundImage: `url(${spritesheetUrl})`,
-            backgroundSize: `${SHEET_DISPLAY_W}px ${SHEET_DISPLAY_H}px`,
-            backgroundRepeat: 'no-repeat',
-            imageRendering: 'pixelated',
-            position: 'relative',
-            top: `${ROW_Y[currentAnim]}px`,
-            willChange: 'transform',
-            animation: `${animName} ${duration}ms steps(${animSteps}, end) ${isOneShot ? `1 ${animFill}` : 'infinite'}`,
-          }}
-        />
-      </div>
-    </>
+    <CompanionEntity
+      surface="overlay"
+      x={position.x}
+      y={position.y}
+    />
   );
 };

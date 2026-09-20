@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useState } from 'react';
+import React, { useRef, useCallback, useState, useEffect } from 'react';
 import { Box, Text, Button, VStack } from '@chakra-ui/react';
 import { TicTacToeBoard } from './TicTacToeBoard';
 import { useGameState } from './useGameState';
@@ -17,16 +17,39 @@ interface TicTacToeProps {
   onStreamingMessage: (msg: string | null) => void;
   onStartStreaming: () => void;
   onDoneStreaming: () => void;
+  // #2854 ST-3 — terminal-outcome signal, fired exactly once per game on a
+  // null -> terminal `winner` transition ('X' | 'O' | 'draw'). Optional so the
+  // companion integration can land as its own step (ST-2).
+  onOutcome?: (winner: 'X' | 'O' | 'draw') => void;
 }
 
 export const TicTacToe: React.FC<TicTacToeProps> = ({
   onStreamingMessage,
   onStartStreaming,
   onDoneStreaming,
+  onOutcome,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const { board, currentTurn, winner, makePlayerMove, makeCompanionMove, reset } = useGameState();
   const [isCompanionThinking, setIsCompanionThinking] = useState(false);
+
+  // #2854 ST-3 — exactly one `onOutcome` per game. The effect depends only on
+  // the primitive `winner` (no array `.length` / fresh object identity —
+  // AGENTS.md #523): it re-arms when `reset()` returns `winner` to null (so a
+  // reset never fires), the ref guard prevents a duplicate fire while a
+  // terminal winner is held, and `onOutcome` is read from the same render that
+  // changed `winner`, so it is always the current callback.
+  const outcomeFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (!winner) {
+      outcomeFiredRef.current = false;
+      return;
+    }
+    if (outcomeFiredRef.current) return;
+    outcomeFiredRef.current = true;
+    onOutcome?.(winner);
+  }, [winner]);
 
   const triggerCompanionMove = useCallback(async () => {
     if (!boardRef.current) return;

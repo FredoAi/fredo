@@ -43,7 +43,7 @@ The `comm` module holds the canonical wire types and the single IPC emitter. Sin
 ### Core Types
 
 - **`FredoEvent`** — the `fredo emit` CLI wire format and classifier input: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. **Demoted, not deleted**: FredoEvent no longer crosses IPC to the webview.
-- **`EventBus`** — emits RTDB `RowDeliveryBatch` envelopes on the `"fredo-stream-event"` Tauri IPC channel via `emit_row_delivery_batch` (the ONLY sanctioned RTDB emission path). Registered as Tauri state in `lib.rs`.
+- **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel. It carries TWO envelope families: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` (the ONLY sanctioned RTDB emission path) and feature-data `FeatureDeliveryBatch` envelopes (`{"featureBatch": …}`) via `emit_feature_delivery_batch`. Registered as Tauri state in `lib.rs`.
 - **`CommAdapter`** trait — retained and implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
 ### Adapters
@@ -103,11 +103,20 @@ The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registr
 
 When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust feature handler; the resulting rows flow back through the same subscription path.
 
-Only `RowDelivery`/`RowDeliveryBatch` envelopes cross IPC — raw `FredoEvent` never does (it is the CLI wire format only). The **ingest classifier** (`rtdb/ingest.rs`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `rtdb/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
+No raw `FredoEvent` crosses IPC (it is the CLI wire format only); the `"fredo-stream-event"` channel carries only projected envelope families — RTDB `RowDelivery`/`RowDeliveryBatch` and feature-data `FeatureDeliveryBatch`. The **ingest classifier** (`rtdb/ingest.rs`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `rtdb/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
 
 ### Replay + Live Boundary (P2.3, F-33 fix)
 
 `subscribe_events` is an async command: it registers the live subscriptions FIRST, returns immediately, and hands the snapshot SELECT to `tauri::async_runtime::spawn_blocking` — the replay leg is a background drain (NFR-1). The drain's final ≤512-row chunk of each query carries the per-query `replayCompleteQueryId` settle marker (an empty terminal envelope when nothing remained pending); `useEventRows.ready` resolves on the marker, never on subscribe resolution alone. Batches are chunked at `RTDB_MAX_EMISSION_BATCH = 512` rows per IPC envelope. `flushMs: 0` bypasses coalescing and emits one envelope per patch (AC1-c timing).
+
+### Feature-Owned Data Layer (`infrastructure/feature_data/`)
+
+A feature declares, on the frontend, the data structure it owns plus the source mapping onto already-captured canonical activity (or a closed `sessionRollup` aggregate over it). The backend materializes the declared tables idempotently on every launch, owns the writes, and persists them in the SAME `fredo.db` as `feature_<sanitized featureId>_<table>` (declaration metadata in `feature_data_tables`, deletion tombstones in `feature_data_tombstones`).
+
+- **Materialization is schema-aware.** A same-named table that is not declaration-shaped is quarantined under a `__legacy_<timestamp>` name (never dropped) and the declared schema is created; additive column changes are applied in place, and a column removal/retype is refused with a hard named error. Declarations and their rows survive restarts; a one-time read-only projection backfill seeds a new declared table from canonical history (marker-gated, per-table, set only on success).
+- **Projection is unconditional.** A canonical row upsert updates the declared rows whether or not a feature UI, read, or watch is open (`R-4.2`). A row-sourced projection costs O(rows of its source); an aggregate recomputes once per distinct group, not once per input row.
+- **Read/watch/write surface.** `feature_data_declare` (idempotent), `feature_data_read` (rows + the scope `version` + the resolved retention bound), `feature_data_watch` (table / record / query scope, optional field narrowing, optional atomic initial snapshot), `feature_data_unwatch` (per watch), `feature_data_write` (feature-owned columns only; an unchanged value is a silent no-op), `feature_data_delete` (tombstoned, never resurrected). Failures reject with hard named errors that the consumer hooks surface verbatim.
+- **Notifications** ride the existing `"fredo-stream-event"` channel as `FeatureDeliveryBatch` (`{"featureBatch": …}`) and are discriminated in `AppProvider` BEFORE the RTDB validators. A notification carries the table, the record key, the change kind (`insert`/`update`/`remove`), the changed field names, their current values, and the version at which the change was applied; a removal carries no value. Declared-table retention evicts oldest-first and emits a removal per evicted row. Every read/watch/write is validated against the requesting `featureId` — one feature never observes another's data.
 
 ### Known limitation
 
@@ -163,18 +172,22 @@ src-tauri/src/
 |   |   +-- mod.rs              — TerminalFeature (DesktopCapable)
 |   |   +-- state.rs            — RunCliState (PTY writer, buffer, killer)
 |   |   +-- commands.rs         — open_run_cli, get_pty_buffer, write_pty_input, resize_pty, close_run_cli
-|   +-- llm/                    — In-process llama.cpp inference
-|   |   +-- mod.rs              — LlmFeature (DesktopCapable)
-|   |   +-- engine.rs           — LlmEngine (direct llama.cpp bindings via llama-cpp-2)
-|   |   +-- service.rs          — LlmService (async chat, chat_with_image)
-|   |   +-- state.rs            — LlmState + LlmLoadingState
-|   |   +-- commands.rs         — llm_chat, llm_chat_with_image
+|   +-- llm_server/             — Out-of-process companion inference (managed `llama-server`)
+|   |   +-- mod.rs              — persisted setting keys + launch defaults
+|   |   +-- config.rs           — pure launch-config model + generated `.bat` (single argv builder)
+|   |   +-- process.rs          — spawn/stop the child process tree + startup orphan sweep
+|   |   +-- health.rs           — bounded HTTP `/health` readiness probe
+|   |   +-- state.rs            — LlamaServerState + ManagedServer
+|   |   +-- commands.rs         — generate_llama_server_config, launch_llama_server, stop_llama_server, get_llama_server_status, llm_chat, llm_chat_with_image
+|   |   +-- chat.rs             — chat + vision routing to the server HTTP API
 |   +-- settings/               — Persistent KV settings (SQLite)
 |   |   +-- mod.rs              — SettingsFeature
 |   |   +-- commands.rs         — save_setting, get_setting
-|   +-- setup/                  — CLI detection, PATH management, OTel config, model download
+|   +-- setup/                  — CLI detection, PATH management, OTel config, three-file model acquisition, Companion readiness + llama.cpp install
 |   |   +-- mod.rs              — SetupFeature
-|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model
+|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness, install_llama_cpp
+|   |   +-- model_download_state.rs — pure required-file manifest (pinned URLs/sizes/SHA-256), on-disk classifier, complete-iff-all-present aggregator
+|   |   +-- model_download.rs   — streamed acquisition engine (HTTP Range resume, streaming SHA-256, bounded retry/backoff)
 |   +-- screenshot/             — Screen capture (xcap)
 |       +-- mod.rs              — ScreenshotFeature
 |       +-- commands.rs         — capture_screen_region
@@ -191,6 +204,17 @@ src-tauri/src/
     |       +-- mod.rs
     |       +-- internal.rs     — InternalAdapter (fredo emit enrichment)
     |       +-- parent_prompt_cache.rs — bounded parent-prompt cache helpers
+    +-- companion/              — Shared companion runtime helpers (Spec #2857)
+    |   +-- resolver.rs         — `llama-server` executable resolution (setting → PATH → winget shim)
+    |   +-- models.rs           — required model-file manifest (pinned names/sizes/SHA-256) + on-disk probe
+    +-- voice/                  — Local on-device speech-to-text (Spec #2877; resident engine #2887): engine + capture + one session
+    |   +-- manifest.rs         — pinned sherpa-onnx model manifest (4 files / 72,654,782 B / SHA-256)
+    |   +-- capture.rs          — native cpal (WASAPI) input stream → mono-mix + resample → 16 kHz chunks; env-gated deterministic WAV feed seam (#2887 — absent unless the feed variable is set, and it opens no device)
+    |   +-- engine.rs           — sherpa-onnx OnlineRecognizer + SHA-256 content gate; created once per process at setup when voice input is enabled (resident), reused across sessions
+    |   +-- resident.rs         — the app-global resident engine: single-flight warm, engine-only reuse, release on the voice-disabled edge (#2887)
+    |   +-- session.rs          — single app-global session; the worker takes the resident engine (or joins the in-flight warm) and owns the capture stream
+    |   +-- state.rs            — `Stt*` IPC wire types (camelCase), incl. the `readyMs` / `engineResident` observables
+    |   +-- commands.rs         — stt_check_model, stt_list_devices, stt_start, stt_stop, stt_cancel, stt_status, stt_warm, stt_release
     +-- rtdb/                   — RTDB row store — the production event pipeline
     |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
     |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables
@@ -204,6 +228,17 @@ src-tauri/src/
     |   +-- commands.rs         — Rtdb orchestrator + subscribe_events/unsubscribe_events
     |   +-- ingest.rs           — IngestClassifier (spans/events → row upserts; relationship registry)
     |   +-- backfill.rs         — canonical backfill from telemetry_spans (read-only)
+    +-- feature_data/           — feature-owned declared tables (declaration → projection → read/watch)
+    |   +-- declaration.rs      — declaration model + hard named validation
+    |   +-- registry.rs         — persistence, schema-aware materialization, additive migration
+    |   +-- store.rs            — FeatureDataStore (metadata + tombstones; own SQLite connection)
+    |   +-- projection.rs       — projection engine (row-source + rollup entry points)
+    |   +-- session_rollup.rs   — the closed sessionRollup aggregate
+    |   +-- watch.rs            — global watch registry (table/record/query + field narrowing)
+    |   +-- envelope.rs         — FeatureRowNotification / FeatureDeliveryBatch wire types
+    |   +-- backfill.rs         — one-time projection backfill (read-only)
+    |   +-- lifecycle.rs        — declared-table retention + tombstone guard
+    |   +-- commands.rs         — feature_data_declare/read/watch/unwatch/write/delete
     +-- storage/
     |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
     |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
@@ -386,24 +421,27 @@ A background async task in `lib.rs` runs `LogCollector.flush_if_needed()` at a 1
 
 ---
 
-## In-Process LLM Engine
+## Out-of-Process `llama-server`
 
-The `llm` feature runs **llama.cpp directly in-process** via vendored `llama-cpp-2` Rust bindings — no child processes, no HTTP/SSE round-trips.
+Companion inference is served by a managed `llama-server` **child process** — the in-process engine is retired and there is no `llama-cpp-2` dependency. The `llm_server` feature (`features/llm_server/`) owns the runtime; executable resolution and the required model-file manifest live in the shared `infrastructure/companion/` layer, consumed by both `features/setup` (readiness/acquisition) and `features/llm_server` (launch/config).
 
-### LlmEngine
-- `load()` — text-only GGUF model loading
-- `load_with_vision()` — multimodal loading with mmproj projector
-- `generate()` — autoregressive token generation with greedy+dist sampler
-- `generate_with_image()` — decodes PNG/JPEG, resizes to 448×448, creates `MtmdBitmap`, tokenizes with media markers
+### Launch Config
+`generate_llama_server_config` builds the launch config from persisted settings (executable path, model / vision / MTP paths, host, port, launch parameters) and materializes a runnable `.bat`. There is exactly ONE argv builder (`LlamaServerConfig::to_args`) — the `.bat` text and the spawned process both derive from it, so they can never drift.
 
-### Token Streaming
-`LlmService.chat_async()` and `chat_with_image_async()` stream tokens via `mpsc::unbounded_channel` → `tokio::task::spawn_blocking` → Tauri `app.emit("llm-token")` / `app.emit("llm-done")`.
+### Process Lifecycle
+- `launch_llama_server` — generate → resolve the executable → spawn the child (`std::process::Command`, not a Tauri sidecar) → poll the server's `/health` with a bounded timeout → record the managed server. Idempotent when already healthy; ALWAYS resolves (never hangs).
+- `stop_llama_server` — kill the process tree and clear the managed state.
+- `get_llama_server_status` — the UI/QA poll target (running / healthy / port / PID / last error).
+- No orphan survives Fredo: the `RunEvent::Exit` hook calls `stop_llama_server_on_exit`, and a PID-reuse-guarded startup sweep (`process::sweep_orphan`) reclaims a persisted PID after a hard-kill.
 
-### Supported Models
-| Model | Vision | Notes |
-|-------|--------|-------|
-| Gemma 4 E2B (`gemma-4-e2b`) | ✓ | Full vision support via mmproj |
-| MiniCPM-V 4.6 (`minicpm-v-4-6`) | ⚠️ | Vision projector unsupported in current llama.cpp; falls back to text-only |
+### Chat Routing
+`llm_chat` and `llm_chat_with_image` preserve the frontend contract (`adapterBridge.llmChat` / `llmChatWithImage`, same argument shapes) but route to the server's OpenAI-compatible streaming API (`POST /v1/chat/completions`, `stream: true`). Each SSE delta emits `llm-token`; `[DONE]` emits `llm-done`; a connection / non-200 / stream error emits an additive `llm-error` line followed by `llm-done`, so the UI never hangs. Sampling parameters are NOT sent per request — the generated launch config is authoritative.
+
+### Model-Audio Turns (#2897)
+When the user's speech-handling setting (`Fredo_companion_voice_handling`) is `model` and the installed model accepts audio, a captured utterance becomes that turn's user input instead of being transcribed. The clip is pulled from the capture session after stop and delivered as the turn's user message through the **same loopback transport** to the managed `llama-server` — an `input_audio` content part, with **no transcript text** accompanying it — and the model's reply streams into the shipped companion conversation exactly like a typed message (the reply is rendered; no transcript of the user's audio is shown). Audio capability is probed through the app's own check, which reports `ready` / `unsupported` / `serverUnavailable` and never infers capability from a model name; when the model is unsupported or the server is unavailable, no audio is transmitted and the UI surfaces the reason with a one-click switch to `local`. Capture stays bounded by `MAX_AUDIO_CLIP_MS` (~30 s): reaching the bound auto-stops capture, surfaces a visible notice, and delivers the **entire** clip (`at_limit: true`, `truncated: false`). The path adds no network client — it reuses the managed server's loopback endpoint, so the local-only contract is unchanged. Since **#2903** the model-audio turn is skill-aware on the SAME shared path as typed input: it offers the identical companion-skill registry (`open_app`, `close_app`) as OpenAI-style `tools`, routes a validated `llm-skill-call` through the same adapter contract, and the ONE shared app-control hook performs the action and settles the same deterministic reply — so a spoken open/close request actually acts, at parity with the typed/companion path, and the reply never claims an action that was not performed.
+
+### Wizard Step
+The Companion setup wizard appends a `serverLaunch` step (after `llamaServer` and `modelFiles`). Its state is composed in `useCompanionReadiness` from `get_llama_server_status`, and its action calls `launch_llama_server`; the backend readiness command stays two-prerequisite.
 
 ---
 
@@ -426,7 +464,8 @@ apps/ui/src/
 |   +-- run-cli/                    — xterm.js terminal (PTY output)
 |   +-- query-viewer/               — SQL query result display (multi-instance)
 |   +-- my-workitems/               — Azure DevOps work items
-|   +-- settings/                   — Settings panel + ModelSelector
+|   +-- settings/                   — Settings persistence service (settingsService + SettingsSaveContext)
+|   +-- settings-app/               — Settings app (first-class feature; sidebar nav + auto-discovered feature sections + unified Save)
 |   +-- setup/                      — SetupWizard (OTel config, CLI detection)
 |   +-- mission-monitor/            — Real-time agent activity graph
 |   +-- dev-mode/                   — Dev tools + OTLP inspector
@@ -445,8 +484,9 @@ apps/ui/src/
     |   +-- types.ts                — GridItemConfig
     +-- utils/adapterBridge.ts      — non-React singleton for feature → invoke()
     +-- components/
+        +-- fredo-avatar/         — shared FREDO avatar (FredoAvatar.tsx, geometry, sizes, css)
         +-- companion/
-            +-- FredoCompanion.tsx  — Animated sprite + LLM companion
+            +-- FredoCompanion.tsx  — LLM companion rendering the shared FredoAvatar (sm)
             +-- SpeechBubble.tsx    — Positionable bubble with game slot
             +-- features/
                 +-- tictactoe/      — Tic-Tac-Toe game (vision-based AI)
@@ -461,7 +501,7 @@ apps/ui/src/
 | run-cli | ✓ | — | xterm.js terminal (PTY output from Rust) |
 | query-viewer | ✓ | (dynamic) | SQL query result display (multi-instance) |
 | my-workitems | ✓ | — | Azure DevOps work items |
-| settings | ✓ | — | App settings + model selection |
+| settings | ✓ | — | Settings app — Companion, Appearance, Fredo Setup, Telemetry + auto-discovered feature settings (unified Save) |
 | setup | ✗ | — | OTel configuration, CLI detection |
 | mission-monitor | ✓ | RTDB Chat/ToolUse rows | Row-driven agent activity graph (ReactFlow; height-aware chat chain, recursive per-subagent delegation tree with per-subagent tool ownership) |
 | dev-mode | ✗ | RTDB row-mutation log | Dev tools + live row-mutation inspector |
@@ -584,21 +624,30 @@ live traffic on the identical path — observable, replayable, interruptible.
 
 ## FredoCompanion
 
-The animated companion sprite on the Home panel:
+The animated companion on the Home panel renders the **shared `FredoAvatar` component** (size `sm`, 80×100px, derived from the single `FREDO_AVATAR_SPACE` aspect constant):
 
-- **Spritesheet**: 6-col × 4-row at 80×80px per frame
-- **States**: idle (loop), talk (loop), teleport-out (one-shot), teleport-in (one-shot)
+- **Shared avatar**: `apps/ui/src/shared/components/fredo-avatar/` — `FredoAvatar.tsx` (frozen 58-rect base SVG + expression overlay), `fredoAvatarGeometry.ts` (canonical rect table), `fredoAvatarSizes.ts` (`AVATAR_SM`/`AVATAR_MD`), `fredo-avatar.css` (expression-overlay keyframes for the status vocabulary + reduced-motion), `fredoAvatarIdle.css` (the shared consumer-wrapper idle bob + accent glow + per-status motion, reused by both surfaces; `prefers-reduced-motion` suppresses it), and `apps/ui/src/shared/hooks/useFredoRestingCadence.ts` (the shared resting-cadence hook driving the bounded `playful` beat). The launcher renders the same component at `sm` (80×100) and applies the same wrapper motion on its own wrapper (`.fredo-avatar-idle`) — one consistent, alive mascot across both surfaces (#2852).
+- **States (#2854)**: idle (58 base rects only), talk (mouth overlay + streaming pulse), teleport-out (closed-eyes + streak), teleport-in (sparkles), **thinking** (thought dots + bubble trail; while an LLM response is pending), **joking** (wide open laugh + tongue + laugh lines; while a joke streams), **happy** (smile arc + star burst; joke completion, a Tic-Tac-Toe terminal outcome, or a launcher tile open), and **playful** (smirk + brow + cheek star; a bounded resting beat — ≈12 s rest → ≈1.8 s beat via `useFredoRestingCadence`). All are expressed via the overlay `<g id="fredo-expression" data-state>` + wrapper-level CSS motion; base rects frozen byte-identical in every state, and each transient status returns to rest (a 15 s watchdog guards LLM-bound states). The companion renders all eight statuses; the launcher mascot renders idle/thinking/happy/playful through the same shared vocabulary.
 - **Personality**: "friendly robot who loves programming, tells jokes, plays Tic-Tac-Toe"
 - **Jokes**: 20 topics (recursion, git, CSS, regex, etc.)
 - **Streaming**: Token-by-token accumulation with `<end_of_turn>`/`<start_of_turn>` stripping
-- **Cross-window teleport**: Tauri global `companion-teleport` events broadcast to all webview windows
+- **Cross-window teleport**: Tauri global `companion-teleport` events broadcast to all webview windows (dev mode — no Tauri host — teleports locally via `startTeleportOut`, guarded `IS_TAURI` branch)
 - **Interaction**: Single-click → joke; double-click → Tic-Tac-Toe; Ctrl+right-click → teleport
+- **Command-bar chat (#2871)**: while the companion is active (present at the home seat — `isVisible && !isAway`), the launcher command bar doubles as a chat input. The bar's field is **multiline (#2883)**: a query longer than the bar wraps onto additional visible lines inside the field's content box — never under the Enter hint or the collapse/minimize control — growing from its 48 px base height and capped at 108 px (five lines), then scrolling internally; `Shift+Enter` inserts a newline at the caret, while `Enter` keeps exactly the action described here and never inserts a newline. Enter is **smart** (#2882 replaced the exact-full-name rule): a TYPED query is matched as a whole, case-insensitively, against each app's displayed name — a prefix of that name (`set` → Settings) or a whole word / contiguous run of whole words inside it (`Miss`, `monitor` → Mission Monitor) — and a match launches that app **regardless of the companion's state** (present, away, off, or replying), the top-ranked (earliest matching) rendered result winning an ambiguity; any other query is sent to the companion LLM as a **single-shot** message (no transcript/memory) and the streamed reply renders in the companion's `SpeechBubble` **reply surface (#2883)** — a two-tier card: today's **240×120** base tier while the text fits, growing with the arriving reply up to `min(560, available)` wide × `clamp(120, contentHeight, available)` tall and re-evaluated as content arrives (never a fixed box showing only the opening lines). It is placed inside the launcher-measured band (`above` the seat by default, else beside it) so it stays entirely within the window and intersects neither the command bar nor its field. Since **#2886** it also never intersects **Fredo's avatar footprint** or the **app tiles**: the placement is derived in viewport px from the **measured avatar rect** (the `.fredo-companion-avatar` wrapper box — 80×100 at the seat; never the bubble-only `fredo-companion-surface` wrapper, whose in-flow height is 0) plus the band (`barrierTop` = the lower of the command-bar box top and the `#fredo-launcher-grid` resting top, so the tiles are covered by the same barrier), it keeps a bound **`REPLY_AVATAR_CLEARANCE` = 14 px** strip on the placement axis with the **facing edge pinned** at `footprint ± 14` (growth is one-directional and the separation is constant at every size), it ranks `above > right > left` at the seat (`below` is the away overlay's last resort only) **rejecting** any candidate that would intersect the footprint, break the clearance or leave the region, and when no candidate is viable it degrades to the reduced extent + the #2883 scroller (`scrollable`, height first then width — never the separation, floored at `REPLY_MIN_USABLE_W` 160 × `REPLY_MIN_USABLE_H` 48) rather than covering him; `data-reply-placement` exposes the chosen side next to `data-reply-tier`/`data-reply-kind`. The launcher keeps the app tiles mounted and hit-testable for the whole time a message surface is displayed — sending a bar message no longer unmounts the grid — so the tiles stay visible and clickable while a reply, welcome or joke is read. The **away overlay** (`CompanionEntity surface="overlay"`, rendered by `main.tsx` outside `LauncherShell`) ranks the same candidates against the same measured footprint plus the launcher region published through the module-scoped `companionGeometry` registry (the #2870 ST-2c cross-subtree pattern), so a teleported Fredo is never covered and the bar/tiles stay clear there too. A reply longer than the largest surface that fits stops at the cap and scrolls internally — the whole answer stays reachable, with a labelled **Newest** control to return to the newest text when the reader has scrolled back (the reading position otherwise holds as new tokens arrive). A reply being read does not auto-dismiss: the pointer over the surface or keyboard focus inside it cancels a countdown that had already started, and the reply clears only after the pointer/focus leaves (a 2000 ms grace); while protected it also suppresses the companion's idle auto-return. Short content is untouched — a one-line query keeps the 48 px field with no scrollbar and a reply that fits keeps the 240×120 base tier. There is no fragment matching: `Missing all the time` is sent, never launched, and the non-empty non-match `openSelected()` fall-through is retired. The hint chip is label-driven (`showHint = Boolean(hintLabel)`, the `chatAvailable` gate retired) and names Enter's action in every state — open the matched app, send to Fredo, send the dictated transcript to Fredo, `no match`, or the busy `Fredo is replying…` — derived from the same decision function the handler consumes. The bar shows a busy state (`aria-busy`, read-only input, `Fredo is replying…` hint) for the whole stream, and Enter never starts a second stream (a typed app match still opens its app while a reply is streaming). Dispatch goes through the per-window `CompanionEntity` registry (`askActiveCompanion`), reusing the entity's shared generation core and single-in-flight/stale-token guard; `llm-error` is routed through a typed `onError` channel and mapped to a readable sentence (never the raw backend string). A bar message uses a general chat persona; the single-click joke path keeps its joke persona. With the companion OFF or away, the bar is filter/launch only. Reduced motion keeps the streaming cursor static.
+- **Hold-to-dictate into the bar (#2882 superseded the #2878 two-surface routing)**: the #2877 voice session's finalized transcript always lands in the **launcher command bar**. Capture is reachable ONLY from the bar: **Ctrl+Space brings the bar to the front and focuses its search field — nothing else** (it never starts or stops a session and never closes the bar; the #2823 non-launcher-text-control pass-through carve-out is retained), and **holding Space in the focused, EMPTY search bar** starts a `launcher`-origin capture after a bounded 200 ms hold. The hold gesture is unchanged; because the recognizer is now resident — created once per process at setup when voice input is enabled, engine-only — capture begins effectively immediately once that threshold is crossed, with no model-load wait before speech is recorded. Listening runs only while Space is held; releasing finalizes the recognized words into the bar as ordinary editable text. A sub-threshold tap writes exactly one ordinary space and never opens the microphone — as does any Space in a non-empty query, or a hold with voice disabled / its model not installed (no capture, no error). While listening, live partials render into the bar (the text stays editable; a manual edit stops partial writes, finals still append) and the bar cue — the `Listening` chip and `Listening…` placeholder plus a polite text announcement — is honest: it appears ONLY while capture is genuinely live, so it indicates the capture for its whole duration and never claims to be listening before it is. On finalize the bar content is marked DICTATED and runs through one shared commit path: **a dictated transcript is sent to Fredo (`askActiveCompanion`) and NEVER runs the app-open rule, including after the user edits it** (provenance clears only when the bar is emptied), so a transcript that spells an app name cannot launch it. The companion-origin path is retired with its indicator: `CompanionListeningBubble` is deleted, no keyboard gesture starts a companion-origin session (the wire `VoiceOrigin` vocabulary keeps `'companion'`), and the capture indication is the bar cue alone. The finalize commit's evidence is the session's own recognized FINAL transcript (the session-scoped delta of the append-only committed accumulator), never the bar's text mirror — so a silent session, a partial-only session, a backend-initiated cancel, or a typed-error end restores the pre-session text once and never dispatches (the pre-fix phantom-dispatch defect and its discriminator tests are pinned in the launcher suite). **Send voice transcripts automatically** (Settings → Companion → Voice input, default off) is opt-in; with it off the finalized text stays in the bar for Enter. Cancel (Escape or the bar's cancel control) discards the utterance; Stop finalizes; blur mid-hold STOPS the capture, keeps the recognized words in the bar and suppresses the autosend commit. Dictation never adds a second dispatch path and never regresses the non-voice bar. Listening is announced on a polite live region (finals only, never partials) and cued by text, never colour or animation alone.
+- **Dictated transcript output form (#2888)**: the text a dictation produces is normalised for reading, and only its casing changes. The engine's hypothesis is rendered in **sentence case** — the utterance's first letter upper-cased and the rest lower-cased — with a closed, product-owned vocabulary of intentionally capitalised tokens preserved exactly (for example `API` and `SQL`, and the product name), and the product name "Fredo" recognised from a closed set of engine spellings and rendered `Fredo` wherever it occurs (alone, inside a sentence, or repeated). Nothing else is touched: the same words in the same order — nothing rewritten, added, removed, reordered or summarised — and a user's own edit is never re-cased. Normalisation runs at the single shared `stt:transcript` consumer (`useVoiceDictation`) as one synchronous pass, so it adds no wait to the capture-start path and cannot affect the #2887 latency budgets. Recognition is dictation-only: no wake word, no always-on listening, no voice commands. Because the pinned English engine emits a capitals-free hypothesis, capitalisation is *re-applied from the declared tables* rather than recovered from the audio, so an acronym or proper noun outside that vocabulary is lower-cased (the honest boundary of this feature); the local-only, opt-in, visibly-indicated capture contract is unchanged.
+- **Reply-resilient composing + send disposition (#2892)**: the launcher command bar stays editable WHILE a reply bubble is on screen (streaming or complete) — no reply state sets the field read-only — and the "Fredo is replying…" status (placeholder, `aria-busy`, accent dot, Enter hint) is truthful: it keys on the companion's actual generation (`replyInFlight`), not on the read/hold flag, and it clears at every settle even with the pointer resting on the bubble. Hover/focus on the bubble changes ONLY its hold-open window; the read-held reply still suppresses idle auto-return (the `isInUse` predicate is unchanged). A send while a reply is in flight is never dropped: it is accepted (the bar clears only on an accepted outcome) and, per the **Settings → Companion** disposition (`Fredo_companion_send_during_reply`, default `queue`, or `interrupt`), it either queues FIFO — shown as `Queued — waiting for Fredo…` and auto-dispatched exactly once when the in-flight reply settles — or supersedes the in-flight generation (a logical supersession: the stale callbacks and pending hold timers are invalidated). The reply bubble's leave grace is configurable (`Fredo_companion_reply_leave_grace_ms`, default 2000 ms, clamp 0–60000 ms; the control is shown in seconds), with the shipped hold-open rules otherwise unchanged.
+- **Companion app-open skill (#2893)**: the launcher ask path (typed or dictated) is skill-aware — the registered `open_app` skill is offered to the model, and when it selects it the app opens the named feature with the deterministic reply committed first and the open dispatched after a bounded beat (`APP_OPEN_REPLY_BEAT_MS`). The visible reply is deterministic copy (`Opening <App Name>`; unknown ⇒ `I couldn't find "<name>"`; ambiguous ⇒ asks which; failure ⇒ `I couldn't open <name>…`); unknown/ambiguous open nothing, and non-app-open messages keep exactly today's chat behaviour (zero spurious opens). Identity resolution is a single frontend rule (feature `id` or display name, the launcher's whole-query matcher) shared by the CLI and companion paths; execution goes through `fredo open-app`.
+- **Model-audio app control (#2903, revises #2897)**: the model-audio turn is skill-aware on the SAME shared app-control path as typed input. The audio request offers the identical companion-skill registry (`open_app` plus `close_app`) as OpenAI-style `tools` (`tool_choice: auto`, `parallel_tool_calls: false`) through one shared request renderer, the audio adapter carries the validated `llm-skill-call` over the additive `onSkillCall` channel, and the ONE shared hook (`useAppOpenRequests`) executes it — open through `fredo open-app`, close through the window store's `closeWindow` (guarded by an open-check) — then settles the deterministic reply. The typed and model-audio paths share the same registry and hook, so app-control coverage and outcomes are identical across both (parity by construction); the model never claims an action it did not perform — the deterministic reply replaces any streamed prose, a skill-pending generation never settles on a raw prose claim, and an unsupported/unrecognized name performs zero actions and says so.
+- **Setup gating (#2855)**: **Settings → Companion** renders a setup wizard as its ONLY content until the machine is ready — i.e. a usable `llama-server` is available AND all required model files are present. The wizard reports each prerequisite independently (`checking | missing | installed | error`), offers a one-click `install_llama.cpp` via `winget` with an in-session re-check (no reload), and shows an actionable error (staying not-set-up) when `winget` is unavailable or the install fails. Once both prerequisites are satisfied, the normal Companion controls (toggle + Teleport tip) replace the wizard.
+- **Model-file acquisition (#2856)**: the wizard's **Model files** step lists the three required companion files individually — model `gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, vision `mmproj-BF16.gguf`, and speculative draft `MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` — each with its own state (`missing | downloading | present | error`); the filenames/sizes/SHA-256 are pinned to a fixed Hugging Face revision. The user starts acquisition in-app; the in-flight file shows determinate progress and files already present are skipped; a partial set never reads complete and the summary names exactly the missing/truncated file(s); an interrupted transfer resumes from its persisted offset via HTTP `Range` with a bounded retry, and each file is verified by streaming SHA-256. Files land under `<models_dir>/gemma-4-e2b-it-qat/`. The engine (`model_download.rs` + `model_download_state.rs`) is shared by the `download_model` command and the CLI mirror.
+- **Home seat + one Fredo (#2853, re-modelled in #2870)**: the launcher's centre slot is Fredo's **home seat**, rendered unconditionally as an 80×100 (`AVATAR_SM`) slot plus its `mb="4"` margin — the command bar never shifts (the old `!companionPresent` gate that unmounted the slot is removed). `isAway` (a transient, never-persisted `CompanionContext` flag, synced over the existing `companion-presence` broadcast with an `away` field) records whether Fredo is home; the seat renders the shared interactive `CompanionEntity` when the companion is ON and home, the decorative `FredoAvatar` when OFF, and the token-native `EmptySeat` placeholder when away. **Turning the companion ON activates the role in place — it never relocates Fredo, and no bottom-right/corner position state exists.** The interactive body (`CompanionEntity.tsx`) is shared by the seat and the fixed away overlay; **teleport (Ctrl+right-click) is the only relocation mechanism**, and every relocation (TELEPORT/`markAway`) clears any stale auto-hide state so the relocated Fredo is present at its new location. Each OFF→ON turn-on fires `showMessage(WELCOME_TEXT, 4000)` — the `SpeechBubble` welcome bubble, fade-only under `prefers-reduced-motion`. After an idle period with no interaction Fredo auto-returns home — default **60 s**, configurable in **Settings → Companion** (key `Fredo_companion_idle_timeout`, integer seconds, range 5–3600 via `usePersistedSetting`; invalid/cleared/≤0 values fall back to 60, out-of-range values clamp). Any interaction (click/joke, double-click/game, Ctrl+right-click teleport) resets the timer, and an open Tic-Tac-Toe, an active joke stream, or a reply being read (pointer over it or keyboard focus inside it, #2883) *suppresses* the return while in use (continuous-interaction gate). Auto-return is transient — it never rewrites the persisted visibility preference. The idle timer is **host-owned** (`isHosting = away && isInThisWindow`; only the window currently displaying the companion arms it) and transient presence is synced across webview windows via the global `companion-presence` broadcast, so the main-window seat shows the empty placeholder while the companion is hosted in the terminal window and is re-occupied on the host's idle-settle.
 
 ### Tic-Tac-Toe
 - Player = X, Companion = O
 - **Vision-based AI**: screenshot of board → `capture_screen_region` → LLM vision prompt → parse digit 0-8
 - **Fallback**: first empty cell on error/invalid response
-- Embedded in `SpeechBubble` component (208×268px fixed dimensions)
+- Embedded in the `SpeechBubble` component's **game card** (`208×268px` fixed dimensions — a surface distinct from the two-tier text reply, which grows with its content and scrolls, #2883)
 
 ---
 
@@ -607,7 +656,7 @@ The animated companion sprite on the Home panel:
 Mission Monitor is the row-driven agent activity graph (ReactFlow). It derives its entire graph from typed RTDB rows — no v1 deliveries exist anywhere.
 
 - **Data source**: `useEventRows('Chat', {}, { replay: true })` + `useEventRows('ToolUse', ...)` — the module-scoped row store. Replay restores the persisted snapshot as full-row inserts, settled by the per-query `replayCompleteQueryId` marker; live patches continue on the same path. The Mission Monitor replay args are bounded by a mount-stable `now − 7d` recency cutoff (`lib/replayWindow.ts`) and, on a warm reopen (feature remount in the same app session), a module-scoped `updatedAt > watermark` delta arg so the drain returns only rows the surviving store does not hold. The session drawer unlocks **progressively** (#2835 ST-9-R3): `useDeliverySessions` opens its `loaded` gate on row presence (`rows.size > 0`) after the persisted snapshot loads — an oversized multi-batch replay fires ONE early epoch bump at its first row-bearing batch (`StreamContext.tsx`), so the list renders from the first drained rows instead of parking until the drain end. `ready` remains the completeness signal (resolves only on the settle marker); an empty store still parks until the (empty) drain settles, so the true-empty state is unchanged.
-- **Graph builder**: `useMissionMonitor()` → `lib/rowDerivation.ts` derives ReactFlow nodes/edges from ALL typed chat/tool rows (cross-session, not filtered by sessionId) so the selected session's chat chain is complete. `insert` creates nodes, `update` merges metadata (spread-merge; init-time data survives), `end`-state rows set final status. `task` dispatches split out of the tool-association path into SubagentNode state (keyed by task correlationId, gated by the `build`/`plan` internal-agent exclusion) — the SubagentNode is the dispatch's sole representation. **Embedded chat tools**: resolved non-task tool calls attach to the anchor chat node's payload (`AgentNodePayload.tools`, deterministically `byStartTimeThenCorrId`-ordered) instead of creating a companion node; the standalone ToolsNode class was deleted. **Transitional-turn suppression**: completed chat nodes with an empty `agentReply` (a transitional tool-call turn) are suppressed at emission (builder state kept intact) and the chain re-anchors to the nearest visible chat node.
+- **Graph builder**: `useMissionMonitor()` → `lib/rowDerivation.ts` derives ReactFlow nodes/edges from ALL typed chat/tool rows (cross-session, not filtered by sessionId) so the selected session's chat chain is complete. `insert` creates nodes, `update` merges metadata (spread-merge; init-time data survives), `end`-state rows set final status. `task` dispatches split out of the tool-association path into SubagentNode state (keyed by task correlationId, gated by the `build`/`plan` internal-agent exclusion) — the SubagentNode is the dispatch's sole representation. **Embedded chat tools**: resolved non-task tool calls attach to the anchor chat node's payload (`AgentNodePayload.tools`, deterministically `byStartTimeThenCorrId`-ordered) instead of creating a companion node; the standalone ToolsNode class was deleted. **Transitional-turn suppression**: completed chat nodes with an empty `agentReply` (a transitional tool-call turn) are suppressed at emission (builder state kept intact) and the chain re-anchors to the nearest visible chat node. Row payloads are parsed at most once per row object per session (a module-scoped memo guarded by the raw JSON string, #2893) and the tool-row sort is a plain comparator, so a mount derive over a large corpus no longer blocks the main thread.
 - **Node types**: Agent (Chat) and SubagentNode (driven from the parent's `task` row + the classifier's parent-child compositing stamps, not from subagent chat rows). The standalone ToolsNode was removed: chat tool calls render inside the chat node as an embedded `── TOOLS (N) ──` accordion, hidden entirely when the chat has no tool calls. The dead ToolNode/FileNode machinery was removed.
 - **Tool call details**: double-clicking any part of an embedded tool accordion item opens the scoped tool-call detail view (`ToolCallDetailView`: Status/Duration/Input/Output) via `stopPropagation`, so ReactFlow's `onNodeDoubleClick` never selects the parent chat node. Single-click still toggles only the item's expansion. Missing call details degrade to safe absent-states.
 - **Recursive delegation tree**: tool ownership and nesting extend to every depth of the delegation chain. A subagent's tools attach to that subagent's own embedded tools section (never the root chat node); nested `task` dispatches render sub-subagent nodes, producing readable multi-level chains. The classifier's relationship registry (`rtdb/ingest.rs`) propagates the parent-session relationship, with the `build`/`plan` internal-agent exclusion applied at registration, so per-subagent ownership holds at every depth.
@@ -659,8 +708,10 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 | **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
 | **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and classifies spans into RTDB rows via the ingest classifier (`rtdb/ingest.rs`), which resolves the canonical op by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`, helpers in `rtdb/attrs.rs`) with generic heuristics and derives row state from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
 | **`fredo emit` CLI** | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich` → RTDB row classifier. Payload-shape conventions in `.opencode/skills/fredo-cli-events/SKILL.md`. |
+| **`fredo open-app` CLI (#2893)** | Named-pipe `CliCommand::OpenApp` → the app's request registry emits `app-open-request` to the `main` window → the webview resolves the identity with the launcher's whole-query matcher and opens the feature through the home window opener, then confirms the structured outcome. Bounded: 5 s confirmation / 10 s child; an unknown identity opens nothing and exits non-zero; app-not-running keeps the shared exit-2 fallback. Documented in `docs/CLI_GUIDE.md`. |
 | **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
-| **LLM feature** | In-process llama.cpp inference. `llm_chat` Tauri command accepts messages and streams tokens. |
+| **LLM feature** | Out-of-process companion inference via a managed `llama-server` child process. `llm_chat` / `llm_chat_with_image` route requests to the server's OpenAI-compatible streaming API and stream tokens back. |
+| **Companion skills (#2893; extended to model audio #2903)** | `llm_chat_with_skills` (typed) and the model-audio turn (`llm_chat_with_audio`, now skill-aware) offer the provider-agnostic companion-skill registry (`infrastructure/companion/skills.rs`; `open_app`, `close_app`) to the model as OpenAI-style `tools` (`tool_choice: auto`, `parallel_tool_calls: false`) and emit a validated `llm-skill-call` when the model selects one; the ONE shared frontend hook executes it. The managed launch config enables the Jinja chat-template engine (`--jinja`) so the pinned model's native tool-call template is honoured (optional template override available). Raw tool-call JSON is never rendered — the visible reply is deterministic copy. |
 
 ### Classifier Row-State Mapping
 
@@ -700,6 +751,8 @@ The local socket accepts newline-delimited JSON. Each message is a `CliCommand`.
 ```jsonc
 // Generic FredoEvent emission
 { "type": "emit_event", "event": { "id": "...", "eventType": "tool_use", ... } }
+// Open a Fredo app/feature by stable id or display name (#2893)
+{ "type": "open_app", "identity": "Mission Monitor" }
 ```
 
 ### IPC Dispatch Flow
@@ -712,6 +765,15 @@ CLI client (fredo emit ...)
       └── EmitEvent → dispatch_emit_event()
             → InternalAdapter::enrich(event)  (stamp defaults)
             → IngestClassifierState::ingest_event(&enriched)  (RTDB rows)
+
+CLI client (fredo open-app ...)
+  → connect to local socket
+  → send CliCommand JSON ({ "type": "open_app", "identity": "..." })
+  → dispatch_command()
+      └── OpenApp → dispatch_open_app()
+            → emit "app-open-request" to the main window  (bounded 5 s wait)
+            → webview resolves the identity and opens via the home window opener
+            → confirm_app_open_request(outcome) → CLI prints the machine-readable result
 ```
 
 ---
@@ -743,6 +805,12 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 |---------|---------|-------------|
 | `subscribe_events` | rtdb | Register RTDB row queries (async; registers live subs, returns queryIds, drains the snapshot in the background — F-33) |
 | `unsubscribe_events` | rtdb | Unregister queries; discards pending deliveries (no post-unsubscribe emission) |
+| `feature_data_declare` | feature_data | Idempotent declare + schema-aware materialization of feature-owned tables (returns per-table revision/created) |
+| `feature_data_read` | feature_data | Read current rows for a scope with the scope `version` and the resolved retention bound (rows + version are taken atomically) |
+| `feature_data_watch` | feature_data | Register a table/record/query watch with optional field narrowing and an optional atomic initial snapshot; returns the watchId |
+| `feature_data_unwatch` | feature_data | Stop the named watches only; every other watch keeps delivering |
+| `feature_data_write` | feature_data | Write feature-owned columns on a declared row (an unchanged value is a silent no-op — no version bump, no notification) |
+| `feature_data_delete` | feature_data | Delete a declared row and tombstone it (emits a removal; the projection never re-creates it) |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
 | `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
@@ -759,10 +827,24 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `get_setup_plan` | setup | List pending setup steps |
 | `check_all_setup` | setup | Run all setup checks |
 | `run_setup_step` | setup | Execute a single setup step |
-| `check_model_files` | setup | Check local model file existence |
-| `download_model` | setup | Download model GGUF + mmproj |
-| `llm_chat` | llm | Chat with in-process LLM (streams tokens) |
-| `llm_chat_with_image` | llm | Chat with image (multimodal) |
+| `check_model_files` | setup | Report per-file state for the three required model files (legacy `gguf_exists`/`mmproj_exists` fields preserved) |
+| `download_model` | setup | Download the three required model files with per-file progress, skip-present, HTTP `Range` resume, and streaming SHA-256 verification |
+| `check_companion_readiness` | setup | Report Companion prerequisites (`llama-server` availability + required model files) and overall readiness |
+| `install_llama_cpp` | setup | Install llama.cpp via `winget` off the UI thread; returns a structured result (no launch, no model download) |
+| `stt_check_model` | voice | Report per-file STT model state (size-gated) |
+| `stt_list_devices` | voice | Enumerate cpal input devices, mark the system default, and report the persisted selection |
+| `stt_start` / `stt_stop` / `stt_cancel` / `stt_status` | voice | Drive the single app-global local STT session (typed `SttErrorCode` on every failure; a duplicate start is an idempotent `alreadyListening`) |
+| `download_stt_model` | setup | Acquire the four-file sherpa-onnx STT model through the shared streamed download + SHA-256 verify engine |
+| `generate_llama_server_config` | llm_server | Build the `llama-server` launch config from persisted settings and materialize the `.bat` |
+| `launch_llama_server` | llm_server | Resolve/spawn the managed `llama-server`, poll `/health` until ready (bounded), and record it |
+| `stop_llama_server` | llm_server | Stop the managed server and clear its state |
+| `get_llama_server_status` | llm_server | Report running/healthy state, port, PID, config/log paths, and last error |
+| `llm_chat` | llm_server | Chat via the managed server's streaming API (streams tokens) |
+| `llm_chat_with_image` | llm_server | Chat with image (multimodal) via the managed server |
+| `llm_chat_with_skills` | llm_server | Skill-aware chat: offers the companion-skill registry as OpenAI-style `tools` and emits a validated `llm-skill-call`; the legacy `llm_chat` path is unchanged |
+| `probe_companion_skills` | llm_server | Read-only Phase-0 diagnostic: probes the managed server's `/props` plus one `tools` and one `response_format` request and returns the raw result (never opens a window, never writes state) |
+| `run_open_app_cli` | app_open | Spawn `fredo open-app <identity>` and return its bounded outcome (the companion's execution path reuses the CLI) |
+| `confirm_app_open_request` | app_open | Complete a pending `fredo open-app` request from the webview with the structured outcome |
 | `capture_screen_region` | screenshot | Capture screen region as base64 PNG |
 | `feature_store_ensure_table` | storage | Create a typed-column feature namespaced table |
 | `feature_store_insert` | storage | Insert rows into a feature namespaced table |
@@ -781,15 +863,14 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 ## Startup Sequence
 
 1. Initialize `AppStore` (SQLite KV store) — managed via `app.manage()`
-2. Read `llm_model` setting, resolve model paths
-3. Spawn `LlmEngine` loading in `spawn_blocking` task
-4. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
-5. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
-6. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
-7. Start IPC socket server (`tauri::async_runtime::spawn`)
-8. Start OTLP receivers (gRPC :4317 + HTTP :4318)
-9. Register all Tauri command handlers via `generate_handler![]`
-10. Launch Tauri webview window
+2. Manage `LlamaServerState` (the managed out-of-process `llama-server` lifecycle) and run the PID-reuse-guarded startup orphan sweep — no in-process engine load
+3. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
+4. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
+5. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
+6. Start IPC socket server (`tauri::async_runtime::spawn`)
+7. Start OTLP receivers (gRPC :4317 + HTTP :4318)
+8. Register all Tauri command handlers via `generate_handler![]`
+9. Launch Tauri webview window
 
 ---
 
@@ -802,6 +883,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Not yet reimplemented |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` feature |
 | `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP-based ingest classifier (`rtdb/`) |
+| `features/llm` (in-process `LlmEngine` + `llama-cpp-2`) | Direct in-process llama.cpp bindings requiring a CMake/VS native build | Managed out-of-process `llama-server` (`features/llm_server`) |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub features | Consolidated into Mission Monitor |
 
 ---

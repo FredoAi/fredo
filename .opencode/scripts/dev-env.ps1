@@ -48,9 +48,11 @@
   REFUSED. Baseline legs never serve main and never hand-roll a detached
   dev-server spawn; a cross-branch serving need the tool does not cover is a
   tooling request to the Self-Improver (new script/param), not an ad-hoc agent
-  script. The next standard Up (without -At) restores apps/ to the spec/<Spec>
-  tip for the AFTER legs. Without -At the strict G-052 origin-tip check applies
-  (the normal flow).
+  script. The next standard Up (without -At) FULLY restores apps/ to the spec/<Spec>
+  tip for the AFTER legs (G-163: tracked content reset to HEAD, baseline-only files
+  deleted, and the restore fails closed if apps/ still differs from HEAD -- a plain
+  `git checkout HEAD -- apps` left files the tip deletes behind). Without -At the
+  strict G-052 origin-tip check applies (the normal flow).
 
 .PARAMETER VitePort
   Vite dev server port. Default: 5174.
@@ -91,7 +93,24 @@ param(
   [int]$Lines = 50,
 
   # Hygiene passthrough: forward -Kill as process-hygiene.ps1 -KillOrphans.
-  [switch]$Kill
+  [switch]$Kill,
+
+  # Extra environment variables for the LAUNCHED dev instance (Up only).
+  # PREFERRED form — repeatable `NAME=value` strings; this is the form that
+  # works under `powershell -File`:
+  #   -EnvVar "FREDO_STT_FEED_WAV=C:\repo\...\fixture.wav"
+  # The launched app (and the opencode sessions it spawns) inherit them.
+  # This exists because a tester/agent shell has no other way to set a process
+  # env var for the app: every script invocation is a fresh shell and shell
+  # chaining/metacharacters are sandbox-denied, so an env-gated app seam is
+  # otherwise undrivable (see G-172 / the STT deterministic-feed seam).
+  [string[]]$EnvVar = @(),
+
+  # Hashtable form — for DOT-SOURCED callers only. `powershell -File x.ps1
+  # -EnvVars @{ K = "v" }` hands the outer shell a literal that reaches the
+  # script as a STRING, so it fails ("Cannot convert the ... Hashtable value").
+  # Under `powershell -File`, use -EnvVar instead.
+  [hashtable]$EnvVars = @{}
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,6 +124,22 @@ function Write-Log {
     "ERROR" { Write-Host "[$ts] $Message" -ForegroundColor Red }
     "WARN"  { Write-Host "[$ts] $Message" -ForegroundColor Yellow }
     default { Write-Host "[$ts] $Message" }
+  }
+}
+
+# Merge the repeatable `-EnvVar NAME=value` form into the hashtable so all
+# callers share one injection path. Fails closed on a malformed pair rather
+# than silently launching without the requested seam.
+if ($EnvVar -and $EnvVar.Count -gt 0) {
+  foreach ($pair in $EnvVar) {
+    $eq = if ($null -ne $pair) { $pair.IndexOf("=") } else { -1 }
+    if ($eq -lt 1) {
+      Write-Log "ERROR: -EnvVar must be NAME=value (got '$pair')" "ERROR"
+      exit 2
+    }
+    $name = $pair.Substring(0, $eq).Trim()
+    $value = $pair.Substring($eq + 1)
+    $EnvVars[$name] = $value
   }
 }
 
@@ -217,6 +252,43 @@ function Get-PidByPort {
   return $null
 }
 
+# Kill the process listening on $Port (and its tree), retrying because a
+# native-abort instance can survive a first /PID kill and keep the socket, and
+# re-running the targeted /IM fredo.exe pass covers an owner already absent from
+# Win32_Process enumeration. Returns $true when the port is free afterwards.
+function Clear-Port {
+  param([int]$Port)
+
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    if (-not (Test-Port $Port)) { return $true }
+    $owner = Get-PidByPort $Port
+    if ($owner) {
+      $alive = $null -ne (Get-Process -Id $owner -ErrorAction SilentlyContinue)
+      Write-Log "Reclaiming port ${Port}: owner PID $owner (alive: $alive), attempt $attempt"
+      Invoke-NativeQuiet taskkill /PID $owner /T /F | Out-Null
+    }
+    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
+    Start-Sleep -Milliseconds 800
+  }
+  return (-not (Test-Port $Port))
+}
+
+# Last-resort reclaim for bridge/Vite helpers that outlive the app: an
+# npx-launched MCP or Vite server (node.exe/bun.exe) can hold a port after the
+# app is gone. Kill ONLY helpers whose command line references THIS repo, so
+# unrelated Node processes are never touched.
+function Stop-RepoNodeHolders {
+  try {
+    $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+    Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='bun.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -and $_.CommandLine -like "*$root*" } |
+      ForEach-Object {
+        Write-Log "Killing orphaned dev helper PID $($_.ProcessId) on this repo (node/bun)..."
+        Invoke-NativeQuiet taskkill /PID $_.ProcessId /T /F | Out-Null
+      }
+  } catch {}
+}
+
 # -- Root serving currency (G-052) ---------------------------------------------
 
 # The repo root IS the serving checkout: during implementation/testing it must
@@ -302,16 +374,46 @@ function Prepare-BaselineServing {
 # Restore apps/ to the current HEAD (spec/<Spec> tip) after a baseline leg. Runs
 # automatically on the standard Up path when the product tree carries baseline
 # residue; never touches anything outside apps/.
+#
+# G-163: `git checkout HEAD -- apps` alone is NOT a full restore. Files that exist
+# at the baseline (-At) commit but were DELETED at the tip are staged as additions;
+# they are not paths in HEAD, so a checkout of HEAD never removes them -- the
+# serving tree silently kept the pre-fix file set and the AFTER legs could run
+# against contaminated code (observed #2882). Capture those stale paths, force the
+# tree+index back to HEAD, delete the stale files, and FAIL CLOSED if anything
+# under apps/ still differs from HEAD (never serve a contaminated tree).
 function Restore-ProductTree {
   param([uint64]$SpecIssue)
   $dirty = ((& git status --porcelain -- apps 2>$null) | Out-String).Trim()
-  if ($dirty) {
-    Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
-    if ((Invoke-NativeQuiet git checkout HEAD -- apps) -ne 0) {
-      Write-Log "ERROR: could not restore apps/ from HEAD (git checkout failed)." -Level ERROR
-      exit 1
+  if (-not $dirty) { return }
+
+  Write-Log "Restoring product code (apps/) to spec/$SpecIssue tip after a baseline leg..."
+  $staleAdds = @(
+    (& git diff --cached --name-only --diff-filter=A -- apps 2>$null) |
+      Where-Object { $_ -and $_.Trim() } |
+      ForEach-Object { $_.Trim() }
+  )
+  if ((Invoke-NativeQuiet git checkout -f HEAD -- apps) -ne 0) {
+    Write-Log "ERROR: could not restore apps/ from HEAD (git checkout failed)." -Level ERROR
+    exit 1
+  }
+  if ((Invoke-NativeQuiet git reset -q HEAD -- apps) -ne 0) {
+    Write-Log "ERROR: could not reset the apps/ index to HEAD (git reset failed)." -Level ERROR
+    exit 1
+  }
+  foreach ($f in $staleAdds) {
+    if (Test-Path -LiteralPath $f) {
+      Write-Log "Removing baseline-only file not present at the tip: $f"
+      Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
     }
   }
+  $leftover = ((& git status --porcelain -- apps 2>$null) | Out-String).Trim()
+  if ($leftover) {
+    Write-Log "ERROR: apps/ still differs from HEAD after the baseline restore -- refusing to serve a contaminated tree:" -Level ERROR
+    Write-Log $leftover -Level ERROR
+    exit 1
+  }
+  Write-Log "Product code (apps/) restored to spec/$SpecIssue tip (G-163 full restore)."
 }
 
 # -- Actions ------------------------------------------------------------------
@@ -358,7 +460,7 @@ switch ($Action) {
     }
 
     # Kill any stale instance from a previous (possibly mismatched) run.
-    foreach ($port in @($McpPort, $VitePort)) {
+    foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
       $stalePid = Get-PidByPort $port
       if ($stalePid) {
         Write-Log "Killing stale instance PID $stalePid (port :$port)..."
@@ -366,6 +468,11 @@ switch ($Action) {
         Start-Sleep -Seconds 1
       }
     }
+    # A terminating fredo.exe can hold its ports and its log handles while
+    # being absent from Win32_Process enumeration (observed #2876: a
+    # native-abort instance survived /PID kills and kept :9223/:4318 plus
+    # dev-env-stdout.log). /IM reaches it by image name regardless.
+    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
 
     Write-Log "Starting pnpm dev:tauri (repo root on spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length))))..."
 
@@ -379,6 +486,21 @@ switch ($Action) {
       New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     }
 
+    # If a wedged previous instance still holds the primary log file handle,
+    # the cmd `>` redirect below would fail to open it and the launch would die
+    # silently (observed #2876: a stuck instance held dev-env-stdout.log while
+    # :9223/:4318 stayed bound and Vite never came up). Fall back to a
+    # per-launch log so a stale handle can never block a cold start.
+    try {
+      $probe = [System.IO.File]::Open($Stdout, 'Append', 'Write', 'None')
+      $probe.Close()
+    } catch {
+      $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+      $Stdout = Join-Path $LogDir "dev-env-stdout-$stamp.log"
+      $Stderr = Join-Path $LogDir "dev-env-stderr-$stamp.log"
+      Write-Log "Primary dev logs are locked by a wedged instance -- falling back to $Stdout" -Level WARN
+    }
+
     # Telemetry prerequisites (G-046): force the OPENCODE_* OTEL vars into the
     # dev instance's environment so fredo.exe AND every opencode session it
     # spawns via Run CLI inherit them -- independent of the launching agent's
@@ -388,13 +510,13 @@ switch ($Action) {
     $env:OPENCODE_OTLP_ENDPOINT    = "http://localhost:4317"
     $env:OPENCODE_OTLP_PROTOCOL    = "grpc"
 
-    # Native-build generator pin (observed 2026-08-26): llama-cpp-sys-2's CMake
-    # auto-detection can pick "Visual Studio 18 2026" whose instance is unusable,
-    # failing every fresh native rebuild with "could not find any instance of
-    # Visual Studio". Pin the known-good installed generator for this machine's
-    # cargo/cmake child processes (no-op on non-Windows).
-    if ($IsWindows -or $env:OS -eq "Windows_NT") {
-      $env:CMAKE_GENERATOR = "Visual Studio 17 2022"
+    # Extra caller-supplied env vars (e.g. the env-gated STT deterministic feed
+    # seam). Set on THIS process so the child started below inherits them.
+    if ($EnvVars -and $EnvVars.Count -gt 0) {
+      foreach ($envKey in @($EnvVars.Keys)) {
+        [Environment]::SetEnvironmentVariable([string]$envKey, [string]$EnvVars[$envKey], "Process")
+        Write-Log "Injected env var $envKey for the dev instance"
+      }
     }
 
     $proc = Start-Process -FilePath "cmd" `
@@ -435,7 +557,7 @@ switch ($Action) {
   "Down" {
     $killed = $false
 
-    foreach ($port in @($McpPort, $VitePort)) {
+    foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
       $targetPid = Get-PidByPort $port
       if ($targetPid) {
         Write-Log "Found process $targetPid on port $port. Killing..."
@@ -444,10 +566,46 @@ switch ($Action) {
       }
     }
 
+    # Terminating fredo.exe instances can hold ports/log handles while being
+    # absent from Win32_Process enumeration; /IM reaches them by image name
+    # (observed #2876: a native-abort instance survived port-owner /PID kills).
+    Invoke-NativeQuiet taskkill /F /T /IM fredo.exe | Out-Null
+
     if (-not $killed) {
       Write-Log "No dev:tauri instance found on ports $VitePort / $McpPort"
     } else {
       Write-Log "dev:tauri stopped"
+    }
+
+    # Reclaim any port a wedged instance still holds. Retries the targeted kill,
+    # then sweeps repo-scoped node/bun dev helpers, so a stale :9223/:4318 socket
+    # does not force a reboot (G-163). Only a genuinely orphaned OS socket survives
+    # all of this -- surface that precisely, never vaguely.
+    Start-Sleep -Seconds 1
+    $stuck = @()
+    foreach ($port in @($McpPort, $VitePort, 4317, 4318)) {
+      if (Test-Port $port) {
+        Write-Log "Port $port still bound after Down -- attempting to reclaim..."
+        if (Clear-Port $port) {
+          Write-Log "Port $port reclaimed."
+          $killed = $true
+        } else {
+          $stuck += $port
+        }
+      }
+    }
+    if ($stuck.Count -gt 0) {
+      Stop-RepoNodeHolders
+      Start-Sleep -Seconds 1
+      foreach ($port in $stuck) {
+        if ((Test-Port $port) -and -not (Clear-Port $port)) {
+          $owner = Get-PidByPort $port
+          Write-Log "WARNING: port $port could not be reclaimed (owner PID $owner). This is an orphaned OS-level socket -- the MCP bridge falls back to the next port and the OTLP receiver cannot bind until it clears. Kill the holder (e.g. a node.exe MCP/Vite helper) or reboot." -Level WARN
+        } else {
+          Write-Log "Port $port reclaimed."
+          $killed = $true
+        }
+      }
     }
   }
 
@@ -471,6 +629,21 @@ switch ($Action) {
 
   # -- Restart -----------------------------------------------------------------
   "Restart" {
+    # -Spec is required by the Up leg. Resolve it BEFORE stopping anything: with
+    # the caller's omission previously forwarded as Spec=0, the Up re-invoke hit
+    # the ValidateRange guard AFTER the running app had been killed, leaving the
+    # instance DOWN (observed #2887 round 2).
+    if ($Spec -eq 0) {
+      $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+      if ($branch -match '^spec/(\d+)$') {
+        $Spec = [uint64]$Matches[1]
+        Write-Log "Resolved -Spec $Spec from the current branch ($branch)"
+      } else {
+        Write-Log "ERROR: -Action Restart requires -Spec <N> (the repo root is on '$branch', not spec/<N>). Nothing was stopped." -Level ERROR
+        exit 1
+      }
+    }
+
     Write-Log "Restarting dev:tauri..."
 
     foreach ($port in @($McpPort, $VitePort)) {
@@ -483,8 +656,8 @@ switch ($Action) {
 
     Start-Sleep -Seconds 2
 
-    # Re-invoke Up
-    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs
+    # Re-invoke Up (forwarding the env forms so injected seams survive a Restart)
+    & $PSCommandPath -Action Up -Spec $Spec -At $At -VitePort $VitePort -McpPort $McpPort -TimeoutSecs $TimeoutSecs -EnvVar $EnvVar -EnvVars $EnvVars
     exit $LASTEXITCODE
   }
 

@@ -174,6 +174,25 @@ webview window min/max/close controls). Seeded from issue #2825.
 ## F-23 (live gate) — `telemetry_spans` live-query reference for the live policy
 
 - [x] F-23: Reference `telemetry_spans` as the live span-store proof (desktop-shell F-14 pattern): `SELECT COUNT(*) FROM telemetry_spans` returns a non-zero count with a recent `max(timestamp)`. **NOTE:** the rail/clock/LED are NOT row-driven — no `fredo emit` injection is needed; `telemetry_spans` is the live-store reference, not a row-equality assertion.
+
+---
+
+## #2868 extension — the floating settings button is retired (G-136)
+
+> Issue #2868 deletes `FloatingSettingsButton` and moves Settings to the launcher app grid.
+> **G-136:** F-19 ("settings button center → click → `ProfileSettingsModal` opens") and S-8's
+> floating-gear-present check are SUPERSEDED — there is NO floating gear anymore; the Settings
+> entry is the launcher grid tile. Historical PASS records above preserved. Live policy.
+
+- [ ] F-24 (AC-1 / #2868): On a clean desktop (all windows minimized) AND with a maximized window,
+      scan the bottom-right region and the whole chrome for the retired floating settings button
+      (`IconButton[aria-label="Settings"]`, `position:fixed`, `right:24 bottom:24`). EXPECTED: NO
+      floating gear renders in either state — the chrome band, clock/single-LED cluster, and app
+      dock are unchanged; the launcher `[role="button"][aria-label="Settings"]` tile is the SOLE
+      Settings entry (open it → `div[role="group"][aria-label="Settings"]`). A residual gear
+      (z≈1250 uncovered / 0 covered) is a FAIL. Cross-ref `.opencode/tests/settings/` F-37/F-39 +
+      `.opencode/tests/launcher/` F-50. Edge: no gear over the window min/max/close controls; no
+      residual gear z-layer in any theme; console clean.
   - **PASS (spec/2841 @ 0852210f, round 1):** `SELECT COUNT(*) AS total_spans, MAX(ingested_at) AS newest, datetime(MAX(start_time_ns)/1e9,'unixepoch') AS newest_start FROM telemetry_spans` → **4672 spans** (non-zero), `MAX(ingested_at) = 2026-09-08T17:15:23Z` (recent, same round), `newest_start = 2026-09-08 17:15:22`. The live span-store is non-empty and current — the live-policy gate reference is satisfied. The rail/clock/LED are NOT row-driven (they exercise `useWindows()` store, not `telemetry_spans`), so this is the required live-store proof per the QA plan's Verification policy.
 
 ## F-28 blockable-edge note (≥6 windows — component-test contingency)
@@ -187,3 +206,33 @@ webview window min/max/close controls). Seeded from issue #2825.
 > `pointermove` to reveal the rail — review whether it needs updating for the new
 > resting-visible rest state (if the rail no longer requires the edge gesture to be
 > visible, the helper is a behavioral regression trap on AC1).
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — result
+
+- **F-24 PASS (live).** Clean resting desktop (all Settings windows closed) AND while the Settings window was open: `document.querySelectorAll('button[aria-label="Settings"]').length === 0` — NO floating gear in either state; no residual gear z-layer. The chrome band/clock/LED/dock were unchanged. The launcher `[role="button"][aria-label="Settings"]` tile is the sole Settings entry and opens `div[role="group"][aria-label="Settings"]`. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2872 extension — top-right clock/status-LED cluster corner padding (G-136)
+
+> Issue #2872 — the human reports the consolidated clock + single status-LED cluster crowding/touching
+> the window corner. **BINDING PO AMENDMENT:** the target inset is FIXED and ASYMMETRIC — **top 20px /
+> right 24px** — asserted on the **rendered** `getBoundingClientRect`, NEVER the source constant.
+> **G-136:** F-17 (pinned `top:16/right:16`, tolerated `|topMargin-rightMargin| ≤ 6px`) is SUPERSEDED by
+> this extension; its historical PASS record above is preserved and is NO LONGER the current expectation.
+> Live policy. Distinct BEFORE/AFTER evidence dirs + filename prefixes per G-135.
+> Source: `LauncherChrome.tsx:68` (symmetric `CLOCK_CORNER_INSET_PX = 16`) → `:373-374`.
+
+- [x] F-25 (REQ-1 / AC1, PO-amended): Rendered geometry of the top-right cluster (`<time aria-label="HH:MM, online|offline">` wrapper) on a clean desktop (all feature windows minimized; launcher at rest). Capture BEFORE on the pre-fix rendered tip (`main`) and AFTER on `spec/2872`: `topMargin = rect.top`, `rightMargin = viewport.width - rect.right`. **Expected:** AFTER `topMargin == 20px` AND `rightMargin == 24px` (±1px), fixed ASYMMETRIC (not symmetric, not 16/16); BEFORE records the ACTUAL rendered value verbatim (the diagnostic — do NOT assume 16; if it already reads 20/24 the defect is visual and the spec must state it, not a code change). **FAIL:** any deviation from 20/24, or a code-only change whose rendered value is unchanged.
+  - **Edge:** 1920×1080 / 1366×768 / 900×600 narrow; light + dark; online + offline; 1- vs 2-digit hour; re-read after a preset switch (no re-flow). Evidence (G-135): `.opencode/tmp/2872/e2e/before/before-*.jpeg` + `.opencode/tmp/2872/e2e/after/after-*.jpeg`.
+  - **PASS (spec/2872 @ a4074073, round 1, LIVE).** BEFORE (baseline leg `dev-env.ps1 -Action Up -Spec 2872 -At d71fe7d`, pre-fix product code, same host + 1920×1017 viewport): rendered `topMargin:16, rightMargin:16` (cluster box `{x:1866.63,y:16,right:1904,bottom:54}`) — the genuinely symmetric pre-fix baseline, diagnostic recorded verbatim (NOT assumed). AFTER (tip `a4074073`): rendered `topMargin:20, rightMargin:24` (cluster box `{x:1859,y:20,w:37,h:38,right:1896,bottom:58}`) — exact binding asymmetric target, `|diff| = 4`. The rendered value genuinely CHANGED (16/16 → 20/24), so this is NOT a no-op constant edit. Identical 20/24 in both themes (light `bg:rgb(255,255,255)` / dark `bg:rgb(12,17,23)`) and at 900×600 narrow (cluster `{x:838.67,y:20,right:876}`) with no re-flow across 6 rapid preset switches (E-20). Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/before-cluster-geometry.jpeg`, `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-cluster-geometry.jpeg`, `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-cluster-dark.jpeg`.
+- [x] F-26 (REQ-2 / AC2): LED x-centre == clock x-centre (within 2px, LED under the clock); EXACTLY ONE `role="status"` LED (no bottom-centre LEDs / no second status surface); clock HH:MM advances on the 60s timer.
+  - **Edge:** minute boundary; light + dark; `prefers-reduced-motion` (clock still advances); offline = documented-partial (not live-toggleable, #2830 precedent).
+  - **PASS (spec/2872 @ a4074073, round 1, LIVE).** LED trigger `[data-testid="desktop-status-led"]` x-centre **1877.5** == clock x-centre **1877.5** (diff 0.0 ≤ 2px, LED centred directly under the HH:MM). EXACTLY ONE status-LED trigger (`statuses=["Online"]` from the LED); the sole other `role="status"` node is `div[data-testid="fredo-companion-live-region"]` (a 1×1 companion announcement live-region, NOT an LED, NOT a second status surface) — zero bottom-centre LEDs. Clock advanced **16:32 → 16:34** across a ≥75s wall-clock gap on its 60s interval timer. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-cluster-light.jpeg`.
+- [x] F-27 (REQ-3 / AC3, G-106): With a maximized window, force the chrome overlay `style.pointerEvents='auto'` then `elementFromPoint` at each Minimize / Maximize‑Restore / Close centre — returns the WINDOW CONTROL, never the cluster; band z sinks to 0 under the z=1 window stack; 900×600 no clip; legible light + dark (`windows-buttons-time-overlap.png` / `led-overlay.png` must NOT reproduce). Probe only via G-106 method a/c — NEVER a bare `elementFromPoint`.
+  - **Edge:** maximized full-bleed; floating window under the cluster; 2 windows; no window open; theme switch while maximized; Settings modal CLOSED before probing.
+  - **PASS (spec/2872 @ a4074073, round 1, LIVE).** Maximized Query Viewer (header `{x:1,y:1,w:1918,h:40}`, controls cx 1833/1865/1897 cy 20.5). G-106 method a — band root (`div` `position:fixed; inset:0; pointer-events:none`) forced `style.pointerEvents='auto'`, `elementFromPoint` at each control centre returned an SVG child whose `closest('button')` is the WINDOW CONTROL each time (`Minimize Query Viewer` / `Restore Query Viewer` / `Close Query Viewer`), NEVER the cluster (`isCluster:false`); restored `pointerEvents`. Method c — band z **1200** uncovered → **0** covered (window stack z=1). Repeated in light (`light-default`) AND dark (`dark`). 900×600 narrow: cluster `{x:838.67,y:20,right:876}` fully in viewport (`insideViewport:true`, clock + LED not clipped), notch right 538 < cluster left 838.67. `windows-buttons-time-overlap.png` / `led-overlay.png` did NOT reproduce. Settings modal confirmed CLOSED before probing. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-maximized-controls-light.jpeg`, `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-maximized-controls-dark.jpeg`.
+- [x] F-28 (REQ-4 / AC4): Cluster rect DISJOINT from the #2838 dock rail rect (`[data-testid="app-dock"]`) — both resting-visible (≥1 minimized) and covered/peek (maximized).
+  - **PASS (spec/2872 @ a4074073, round 1, LIVE).** Dock is the bottom pill (dock position = `bottom`). Resting-visible: dock `{x:935,y:953,right:985,bottom:1005}` vs cluster `{left:1858.67,top:20}` → `disjoint:true` (gapX 873.67). Covered/peek (maximized window): dock `{x:935,y:1013,right:985,bottom:1065}`, `visibility:hidden`, `pointer-events:none` vs cluster `{left:1859,top:20}` → `disjoint:true`. `region "Open applications"` confirmed. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-clean-desktop-dock-cluster-light.jpeg`, `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-clean-desktop-dock-cluster-dark.jpeg`.
+- [x] F-29 (NFR-1/2/3): `pnpm --filter @fredo/ui build` exit 0 + `pnpm --filter @fredo/ui test:run` green; no layout shift of the notch / `>` command bar / side ticks / dot-grid / hints (±1px); changed files token-native (zero colour literals, zero `var(--x)NN`); `telemetry_spans` live-store reference (`COUNT(*) > 0`, recent `MAX(ingested_at)`).
+  - **PASS (spec/2872 @ a4074073, round 1).** NFR-1: static grep of `LauncherChrome.tsx` for `#[0-9a-fA-F]{3,8}|rgba\(|rgb\(|hsla\(|var\(--x\)NN` → 8 matches, ALL comment issue-refs (`#2830`/`#2819`/`#2825`/`#2841`), ZERO true colour literals, ZERO `var(--x)NN` alpha-append; live clock `--text-secondary` (dark `rgb(156,163,175)` / light `rgb(95,107,122)`), LED `--accent-primary` + `tint(...,22)` halo both themes. NFR-2: build exit 0 (2550 modules, zero TS errors); `test:run` **72 files / 905 tests passed**; geometry diff BEFORE→AFTER — cluster +4 top / +8 right (intended), FREDO notch `{x:872,y:0,w:176,h:58}` / notch text `{x:929.44,y:25,w:61.11,h:13}` / command bar `{x:680,y:485.77,w:560,h:48}` pixel-identical (Δ 0). NFR-3: `telemetry_spans` `COUNT(*)=24466`, `MAX(ingested_at)=2026-09-13T22:50:32Z` (recent, same round). Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-narrow-900x600-light.jpeg`.

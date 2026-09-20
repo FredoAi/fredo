@@ -61,3 +61,39 @@
 ## E-12 — ESC vs shell-close (redesigned semantics)
 
 - [ ] E-12: Probe ESC throughout the #2819 redesign — the surface must STAY (idle), NOT close to bare chrome. Confirm ESC never sets `open=false` (bare chrome is reached only via tile-open / `—`-minimize), and that focus always lands on the command bar after ESC. Any ESC that collapses the whole surface is a regression against the Architect's binding contract (triage line 388).
+
+## #2850 extension — shared-avatar refactor probes
+
+> Add findings here for issue #2850; a confirmed finding PROMOTES to `functional.md` as a new
+> `F-` row (keep the origin note). Probe the shared-avatar change for unforeseen shell-surface
+> interactions; a confirmed regression-free probe is recorded here (no promotion).
+
+## E-13 — Mount-order race between the shared avatar consumers
+
+- [ ] E-13: With the companion toggled ON, boot the shell and immediately open the launcher (avatar
+      mount) while the companion avatar mounts — is there any mount-order race, double-render, or
+      console error from BOTH surfaces consuming the same shared component module? Any error / flicker
+      is a finding.
+
+## E-14 — Shared-avatar re-theme across both surfaces simultaneously
+
+- [ ] E-14: With the launcher md avatar AND the companion sm avatar both visible, switch theme presets
+      rapidly (light ↔ dark ↔ a changed accent). Do BOTH surfaces re-tint from the same
+      `--accent-primary` in lockstep with no stale color, no flicker, and no geometry deformation?
+      Any surface left on a stale color or deformed is a finding.
+
+## #2886 extension — placement x shell-overlay probes
+
+> Unscripted probes for issue #2886 (the message surface must never cover Fredo, the tiles or the
+> search bar). A confirmed finding PROMOTES to `functional.md` as a new `F-` row (keep the origin
+> note). Live policy.
+
+- [ ] E-15: **Placement with the Setup wizard / a maximized feature window over the shell.** With
+      the Setup wizard auto-open (or a feature window covering the resting surface), send a message
+      and observe where the surface anchors. Does it stay clear of Fredo AND of the covering overlay,
+      or does it land underneath / clipped? Any hidden, clipped, overlapping or unreachable message
+      placement is a finding (promotes to F-19).
+- [ ] E-16: **Resize + re-theme while a message is displayed.** Resize default → 900×600 → default
+      and switch light ↔ dark mid-reply. Do the shell chrome + seat stay put (≤1 px) and the surface
+      re-anchor / re-tint with no stale colour and no avatar overlap? Any shift, stale colour or
+      overlap is a finding (promotes to F-19 / R-15).

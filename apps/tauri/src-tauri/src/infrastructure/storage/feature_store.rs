@@ -1,10 +1,10 @@
 ﻿use anyhow::{bail, Result};
-use rusqlite::{params, Connection, types::Value as SqlValue};
+use rusqlite::{params, Connection, OptionalExtension, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 // â”€â”€ Column Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -19,7 +19,7 @@ pub struct ColumnDef {
     pub primary_key: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
     TEXT,
     INTEGER,
@@ -96,6 +96,24 @@ pub struct FeatureStore {
     conn: Mutex<Connection>,
 }
 
+/// One physical column of a feature-namespaced table, as reported by
+/// `pragma_table_info`.
+///
+/// `sql_type` is the raw declared SQLite type (used in diagnostics); `col_type`
+/// is the normalized affinity produced by the single
+/// [`FeatureStore::normalize_column_type`] rule that [`FeatureStore::column_types`]
+/// also uses. `not_null` / `primary_key` expose the DDL constraints so the
+/// declared-table layer can tell its own tables apart from a foreign/legacy table
+/// that happens to share the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PhysicalColumn {
+    pub name: String,
+    pub sql_type: String,
+    pub col_type: ColumnType,
+    pub not_null: bool,
+    pub primary_key: bool,
+}
+
 impl FeatureStore {
     /// Open (or create) fredo.db with WAL journal mode.
     pub fn open(data_dir: PathBuf) -> Result<Self> {
@@ -117,7 +135,11 @@ impl FeatureStore {
     }
 
     /// Validate that the given full table name is properly namespaced to the feature.
-    fn validate_namespace(feature_id: &str, table_name: &str) -> Result<String> {
+    ///
+    /// Crate-internal so the feature-owned data layer (`infrastructure::feature_data`)
+    /// reuses the EXACT namespace rule for declared tables — one implementation,
+    /// no drift.
+    pub(crate) fn validate_namespace(feature_id: &str, table_name: &str) -> Result<String> {
         let sanitized = feature_id.replace('-', "_");
         let full = Self::full_table_name(feature_id, table_name);
         let expected_prefix = format!("feature_{}_", sanitized);
@@ -129,6 +151,21 @@ impl FeatureStore {
             );
         }
         Ok(full)
+    }
+
+    /// Normalize a raw `pragma_table_info.type` string to a [`ColumnType`].
+    ///
+    /// The ONE shared normalization rule — [`Self::column_types`] and
+    /// [`Self::table_schema`] both use it, so the physical/declared type
+    /// comparison in the feature-data registry cannot drift from the physical
+    /// type mapping used by insert/upsert.
+    fn normalize_column_type(type_str: &str) -> ColumnType {
+        match type_str.to_uppercase().as_str() {
+            "INTEGER" => ColumnType::INTEGER,
+            "REAL" => ColumnType::REAL,
+            "BLOB" => ColumnType::BLOB,
+            _ => ColumnType::TEXT,
+        }
     }
 
     /// Look up the column-name â†’ ColumnType mapping for a feature-namespaced table.
@@ -144,13 +181,7 @@ impl FeatureStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut map = HashMap::new();
         for (name, type_str) in rows {
-            let col_type = match type_str.to_uppercase().as_str() {
-                "INTEGER" => ColumnType::INTEGER,
-                "REAL" => ColumnType::REAL,
-                "BLOB" => ColumnType::BLOB,
-                _ => ColumnType::TEXT,
-            };
-            map.insert(name, col_type);
+            map.insert(name, Self::normalize_column_type(&type_str));
         }
         Ok(map)
     }
@@ -285,6 +316,162 @@ impl FeatureStore {
         }
 
         Ok(total)
+    }
+
+    /// Upsert rows keyed by `primary_key` (`INSERT ... ON CONFLICT(pk) DO UPDATE`).
+    ///
+    /// Unlike [`Self::insert`] (an `INSERT OR IGNORE`), an existing row is
+    /// UPDATED. The written column set is the union of the keys present across
+    /// `rows` (deterministic order); a column absent from a row is bound as NULL.
+    /// The caller supplies the backend-managed reserved columns (`_row_version`,
+    /// `_updated_at`) where required. Returns the number of affected rows.
+    pub fn upsert(
+        &self,
+        feature_id: &str,
+        table_name: &str,
+        primary_key: &[String],
+        rows: &[serde_json::Map<String, JsonValue>],
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let full = Self::validate_namespace(feature_id, table_name)?;
+        let conn = self.lock_conn();
+        let col_types = Self::column_types(&conn, &full)?;
+
+        // Deterministic union of the columns present across all rows.
+        let mut columns: Vec<&str> = Vec::new();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for row in rows {
+            for key in row.keys() {
+                if seen.insert(key.as_str()) {
+                    columns.push(key.as_str());
+                }
+            }
+        }
+
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
+        let sql = if primary_key.is_empty() {
+            // No declared key — a plain insert (nothing to conflict on).
+            format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                full,
+                columns.join(", "),
+                placeholders.join(", ")
+            )
+        } else {
+            let updates: Vec<String> = columns
+                .iter()
+                .filter(|c| !primary_key.iter().any(|pk| pk.as_str() == **c))
+                .map(|c| format!("{c} = excluded.{c}"))
+                .collect();
+            let conflict_action = if updates.is_empty() {
+                "DO NOTHING".to_string()
+            } else {
+                format!("DO UPDATE SET {}", updates.join(", "))
+            };
+            format!(
+                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) {}",
+                full,
+                columns.join(", "),
+                placeholders.join(", "),
+                primary_key.join(", "),
+                conflict_action
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mut total = 0u64;
+        for row in rows {
+            let values: Vec<SqlValue> = columns
+                .iter()
+                .map(|&name| {
+                    let col_type = col_types.get(name);
+                    Self::json_to_sql(row.get(name).unwrap_or(&JsonValue::Null), col_type)
+                })
+                .collect();
+
+            let params: Vec<&dyn rusqlite::types::ToSql> =
+                values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+
+            total += stmt.execute(params.as_slice())? as u64;
+        }
+
+        Ok(total)
+    }
+
+    /// Execute a raw DDL/DML batch against this store's connection.
+    ///
+    /// Crate-internal: the feature-owned data layer builds declared-table DDL —
+    /// callers must only pass identifiers obtained from [`Self::validate_namespace`].
+    pub(crate) fn execute_batch(&self, sql: &str) -> Result<()> {
+        let conn = self.lock_conn();
+        conn.execute_batch(sql)?;
+        Ok(())
+    }
+
+    /// `true` iff the given (already validated, fully-qualified) table exists.
+    pub(crate) fn table_exists(&self, full_table: &str) -> Result<bool> {
+        let conn = self.lock_conn();
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![full_table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Physical schema of the given (fully-qualified) table: one entry per column
+    /// in `pragma_table_info` order. An absent table yields an empty `Vec`, which
+    /// callers treat as "table absent".
+    pub(crate) fn table_schema(&self, full_table: &str) -> Result<Vec<PhysicalColumn>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare("SELECT name, type, `notnull`, pk FROM pragma_table_info(?1)")?;
+        let columns = stmt
+            .query_map(params![full_table], |row| {
+                let name: String = row.get(0)?;
+                let sql_type: String = row.get(1)?;
+                Ok(PhysicalColumn {
+                    name,
+                    col_type: Self::normalize_column_type(&sql_type),
+                    sql_type,
+                    not_null: row.get::<_, i64>(2)? != 0,
+                    primary_key: row.get::<_, i64>(3)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(columns)
+    }
+
+    /// Row count of the given (fully-qualified) table.
+    pub(crate) fn row_count(&self, full_table: &str) -> Result<i64> {
+        let conn = self.lock_conn();
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {}", full_table),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Physical column names of the given (fully-qualified) table.
+    pub(crate) fn table_column_names(&self, full_table: &str) -> Result<Vec<String>> {
+        Ok(self
+            .table_schema(full_table)?
+            .into_iter()
+            .map(|column| column.name)
+            .collect())
+    }
+
+    /// Lock helper with poison recovery (no `unwrap`).
+    fn lock_conn(&self) -> MutexGuard<'_, Connection> {
+        match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 
     /// REQ-3: Query rows with optional WHERE, ORDER BY, and LIMIT.
@@ -1061,6 +1248,120 @@ mod tests {
     }
 
     #[test]
+    fn test_upsert_updates_existing_row_on_conflict() {
+        // The projection path needs UPDATE-on-conflict, not INSERT OR IGNORE.
+        let store = make_store();
+        let columns = vec![
+            ColumnDef {
+                name: "id".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "value".to_string(),
+                col_type: ColumnType::INTEGER,
+                nullable: false,
+                primary_key: false,
+            },
+        ];
+        store.ensure_table("upserttest", "t", &columns).unwrap();
+
+        let first = store
+            .upsert(
+                "upserttest",
+                "t",
+                &["id".to_string()],
+                &[serde_json::json!({"id": "a", "value": 1})
+                    .as_object()
+                    .unwrap()
+                    .clone()],
+            )
+            .unwrap();
+        assert_eq!(first, 1);
+
+        // Same key, new value — UPDATE, not ignore.
+        let second = store
+            .upsert(
+                "upserttest",
+                "t",
+                &["id".to_string()],
+                &[serde_json::json!({"id": "a", "value": 42})
+                    .as_object()
+                    .unwrap()
+                    .clone()],
+            )
+            .unwrap();
+        assert_eq!(second, 1);
+
+        let rows = store.query("upserttest", "t", None, None, None).unwrap();
+        assert_eq!(rows.len(), 1, "conflict must update in place, not duplicate");
+        assert_eq!(rows[0].get("value").unwrap(), 42);
+
+        // A new key inserts.
+        store
+            .upsert(
+                "upserttest",
+                "t",
+                &["id".to_string()],
+                &[serde_json::json!({"id": "b", "value": 7})
+                    .as_object()
+                    .unwrap()
+                    .clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.query("upserttest", "t", None, None, None).unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_upsert_composite_primary_key() {
+        let store = make_store();
+        // `ensure_table` only expresses per-column PRIMARY KEY, so build the
+        // composite-key table the way a declared table is created.
+        store
+            .execute_batch(
+                "CREATE TABLE feature_upsertmulti_rows (
+                    session_id     TEXT NOT NULL,
+                    correlation_id TEXT NOT NULL,
+                    agent_reply    TEXT,
+                    PRIMARY KEY (session_id, correlation_id)
+                );",
+            )
+            .unwrap();
+
+        let key = vec!["session_id".to_string(), "correlation_id".to_string()];
+        store
+            .upsert(
+                "upsertmulti",
+                "rows",
+                &key,
+                &[serde_json::json!({"session_id": "s1", "correlation_id": "c1", "agent_reply": "one"})
+                    .as_object()
+                    .unwrap()
+                    .clone()],
+            )
+            .unwrap();
+        store
+            .upsert(
+                "upsertmulti",
+                "rows",
+                &key,
+                &[serde_json::json!({"session_id": "s1", "correlation_id": "c1", "agent_reply": "two"})
+                    .as_object()
+                    .unwrap()
+                    .clone()],
+            )
+            .unwrap();
+
+        let rows = store.query("upsertmulti", "rows", None, None, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("agent_reply").unwrap(), "two");
+    }
+
+    #[test]
     fn test_idempotent_insert_mixed_unique_and_duplicate() {
         // AC-3 (extended): Insert multiple rows where some have duplicate
         // primary keys and some are new. Only new rows should be counted.
@@ -1109,5 +1410,67 @@ mod tests {
             .query("idempotent", "multi", None, None, None)
             .unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_table_schema_reports_type_nullability_and_primary_key() {
+        let store = make_store();
+        let columns = vec![
+            ColumnDef {
+                name: "id".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "count".to_string(),
+                col_type: ColumnType::INTEGER,
+                nullable: true,
+                primary_key: false,
+            },
+            ColumnDef {
+                name: "label".to_string(),
+                col_type: ColumnType::TEXT,
+                nullable: false,
+                primary_key: false,
+            },
+        ];
+        store
+            .ensure_table("myfeature", "mytable", &columns)
+            .unwrap();
+
+        let schema = store.table_schema("feature_myfeature_mytable").unwrap();
+        assert_eq!(schema.len(), 3);
+        assert_eq!(schema[0].name, "id");
+        assert_eq!(schema[0].sql_type, "TEXT");
+        assert_eq!(schema[0].col_type, ColumnType::TEXT);
+        assert!(!schema[0].not_null); // PK, declared without NOT NULL here
+        assert!(schema[0].primary_key);
+        assert_eq!(schema[1].name, "count");
+        assert_eq!(schema[1].col_type, ColumnType::INTEGER);
+        assert_eq!(schema[2].name, "label");
+        assert!(schema[2].not_null, "declared non-nullable");
+        assert!(!schema[2].primary_key);
+
+        // `table_column_names` delegates to the same physical inspection.
+        assert_eq!(
+            store.table_column_names("feature_myfeature_mytable").unwrap(),
+            vec!["id", "count", "label"]
+        );
+
+        // An absent table yields an empty physical schema.
+        assert!(store
+            .table_schema("feature_myfeature_missing")
+            .unwrap()
+            .is_empty());
+
+        let row = serde_json::json!({"id": "a", "count": 1, "label": "x"})
+            .as_object()
+            .unwrap()
+            .clone();
+        store
+            .insert("myfeature", "mytable", &[row])
+            .unwrap();
+        assert_eq!(store.row_count("feature_myfeature_mytable").unwrap(), 1);
     }
 }

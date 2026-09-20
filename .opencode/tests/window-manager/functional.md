@@ -273,3 +273,42 @@
 > read from the same `useWindows()` the shell uses (`LauncherShell.tsx:195`). The
 > resting-visible rail is a pure re-render/geometry change; the kernel is untouched.
 > Map 1:1 to `.opencode/tmp/2841/triage.md` `## QA Expert` (R-2 / R-6 / R-7).
+
+---
+
+## #2850 extension — cross-window companion teleport choreography
+
+> Issue #2850 — the companion's teleport runs over the Tauri multi-window model (main +
+> `run-cli-terminal`); its state expression moves from the raster sprite pipeline to the shared
+> vector avatar, but the cross-window choreography, the `companion-teleport` event contract, and
+> the window lifecycle must be UNCHANGED. The window kernel itself is a NON-GOAL (READ-ONLY for
+> this spec — same NFR-1 discipline as #2841). **Verification policy: live** — telemetry-backed
+> via `tauri_ipc_monitor` (`companion-teleport` capture) + the companion F-17 live receipt.
+> Map 1:1 to `.opencode/tmp/2850/triage.md` `## QA Expert` (Q-8/Q-11/Q-12/M5/M6).
+
+## F-36 (Q-11/M5) — Same-window Ctrl+right-click teleport; `companion-teleport` emitted once
+
+- [ ] F-36: With the companion visible in main, start `tauri_ipc_monitor` and Ctrl+right-click a
+      point in main. **Expected:** exactly ONE `companion-teleport` event captured with
+      `{ toWindow: 'main', x, y }` (clamped); the source window runs out → hidden → in → idle
+      (~400 ms / ~400 ms + settle) with no console error; the landing position is clamped so the
+      full avatar is on-screen. When the terminal window is ALSO open, the same-window
+      (`toWindow === 'main'`) teleport animates ONLY main (the terminal companion stays hidden).
+  - **Edge:** right-click WITHOUT Ctrl does nothing (context menu suppressed only under Ctrl); a
+    click at the extreme bottom/right clamps on all four sides.
+
+## F-37 (Q-12/M6) — Cross-window teleport main ↔ terminal; leave/arrive + hidden-elsewhere
+
+- [ ] F-37: Launch Run CLI so the `run-cli-terminal` (`index.html?view=terminal`) window exists
+      (`tauri_manage_window(action="list")` = main + run-cli-terminal). Confirm the companion is
+      mounted-but-hidden in the terminal window until arrival. Start `tauri_ipc_monitor`;
+      Ctrl+right-click in the TERMINAL window. **Expected:** main plays teleport-out (~400 ms) then
+      the companion disappears from main; the terminal companion becomes visible and plays
+      teleport-in (~400 ms + settle) then idle at the clamped point; after arrival the companion is
+      visible ONLY in terminal (hidden in main). Mirror back (Ctrl+right-click in main): terminal
+      plays out + hides, main plays in. Console clean in BOTH windows.
+  - **Edge:** teleport while a bubble/TicTacToe is open in the source window (state cleaned on
+    out); two rapid cross-window teleports (no double-mount/ghost in either window); closing the
+    terminal window mid-transit → no crash, main companion recovers.
+  - **Environment note:** if Run CLI cannot be launched (plugin/binary missing), report
+    BLOCKED-environment — never convert to a same-window-only PASS.

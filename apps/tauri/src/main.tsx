@@ -21,6 +21,14 @@ const adapter = new TauriAdapter();
 adapterBridge.setInvoke(adapter.invoke!.bind(adapter));
 adapterBridge.setLlmChat(adapter.llmChat.bind(adapter));
 adapterBridge.setLlmChatWithImage(adapter.llmChatWithImage.bind(adapter));
+// #2893 ST-7 rework — the skill-aware path must be registered in the SERVED
+// Tauri entry (this file), not only in the standalone UI dev entry. `adapter`
+// is the concrete TauriAdapter, which implements the method.
+adapterBridge.setLlmChatWithSkills(adapter.llmChatWithSkills.bind(adapter));
+// #2897 ST-3 (REQ-5) — the model-audio path must also be registered in the
+// SERVED Tauri entry (this file), not only in the standalone UI dev entry.
+// `adapter` is the concrete TauriAdapter, which implements the method.
+adapterBridge.setLlmChatWithAudio(adapter.llmChatWithAudio.bind(adapter));
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('[Fredo] Root element #root not found');

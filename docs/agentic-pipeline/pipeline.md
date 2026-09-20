@@ -58,7 +58,7 @@ flowchart TD
     end
 
     subgraph P6[Phase 6: Cleanup - teardown only]
-        CLEAN[Self-Improver<br/>remove worktrees, prune stale branches, clean scratch, retain evidence]
+        CLEAN[Self-Improver<br/>remove worktrees, prune stale branches + closed-spec branches, clean scratch]
         CLEAN --> |teardown complete| DONE2
     end
 
@@ -183,7 +183,7 @@ The Self-Improver reviews each developer's pushes on the spec integration branch
 1. **Read the plan's `### QA Plan`** — QA Plan checklist, the spec integration branch to test (`spec/<N>`), and required test data. Identify the feature domain(s) and read the matching durable suites under `.opencode/tests/<feature>/` (persisted to `main` via `tests-commit`; conventions in `.opencode/tests/README.md`).
 2. **Ensure the dev instance is running on the spec integration branch** (see the dev-environment workflow). Before starting, the tester (or the SI) must ensure `spec/<N>` is synced with `main`'s pipeline config and the dev build's checkout has `node_modules` installed — a stale `opencode.json` re-blocks the tester's sandbox (telemetry-query, `fredo emit`, opencode prerequisites), and a bare worktree cannot build the app.
 3. **Execute each test case** in order — functional + smoke, then regression + exploratory (unscripted probes; a confirmed finding promotes to `functional.md`):
-   - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are committed to `.opencode/evidence/<feature-issue>/` on `spec/<N>` via `upload-evidence` and embedded as their raw URLs in the `## Tests Runs` draft, so they open for repo members.
+   - Attach evidence per case: screenshots, logs, DOM snapshots, test output. Screenshots are uploaded to GitHub as `user-attachments` assets via `upload-evidence` (the `gh-image` extension) and embedded as their URLs in the `## Tests Runs` draft, so they open for repo members without committing binaries to the repo.
    - Classify PASS / FAIL.
    - Persist suite updates to `main` via the `tests-commit` action.
 4. **Verdict:**
@@ -219,8 +219,8 @@ Failing work goes back through Implementation (Phase 3) and, once pushed again, 
 **Goals:** Teardown complete — no leftover worktrees, stale branches, or scratch — then the feature is labeled `done` (the human closes it manually after review).
 
 1. **Remove worktrees** — any leftover developer worktrees are removed (`git worktree remove` / `prune`).
-2. **Prune stale branches** — leftover local feature branches pruned via the state machine's `prune` action. **`spec/*` is always kept** — the spec integration branch `spec/<N>` carries the evidence trail, and `prune` never touches `spec/*`.
-3. **Clean scratch** — leftover gitignored scratch under `.opencode/tmp/` is removed; `.opencode/evidence/<N>/` is **retained** (it is committed evidence).
+2. **Prune stale branches** — the state machine's `prune` action deletes local `spec/*`/`feat/*` branches whose remote counterpart is gone, and `prune --remote` deletes `origin/spec/<N>` for every **closed** spec (open-issue list read once; fail-safe). Merged spec PRs also auto-delete their head branch (`delete_branch_on_merge`); `spec/*` is no longer kept as an evidence record — evidence is uploaded as GitHub `user-attachments`.
+3. **Clean scratch** — leftover gitignored scratch under `.opencode/tmp/` is removed; evidence now lives on GitHub as `user-attachments` (no repo copy to retain).
 4. **Verify no dirty state** — confirm the working tree is clean (no leftover modified/untracked files from the run).
 5. **Label done (leave open)** — `close-issue --to-phase done` (cleanup → done): the machine swaps the label to `done`, records the phase transition, and posts the final-metrics summary. **The issue is NOT closed by the machine** — it stays OPEN so the human closes it manually after review.
 6. **Human review + close** — the human validates the finished feature manually, then closes the issue. If the human finds an issue, they report back and the Product Owner opens a follow-up backlog item (labeled `backlog`, with the bug variant of the PO template).

@@ -1,0 +1,126 @@
+//! STT Tauri commands.
+//!
+//! [`stt_check_model`] probes the pinned STT model files with the shared
+//! exact-size classifier (NFR-6); [`stt_list_devices`] enumerates the host input
+//! devices and reports the persisted selection. Acquisition lives in
+//! `features::setup::commands::download_stt_model`, which reuses the companion
+//! streamed download + SHA-256 verify engine. The session commands delegate to
+//! [`super::session`].
+
+use serde::Serialize;
+use tauri::{AppHandle, Manager};
+
+use crate::infrastructure::companion::models::{
+    is_step_complete, probe_files, resolve_models_dir, ModelFileStatus,
+};
+
+use super::capture;
+use super::manifest::resolve_stt_manifest;
+use super::resident::ResidentEngine;
+use super::session;
+use super::state::{
+    SttAudioClipResult, SttDevicesResult, SttErrorCode, SttStartResult, SttStateEvent,
+    SttWarmResult,
+};
+
+/// Per-file STT model probe result returned by [`stt_check_model`].
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SttModelStatus {
+    /// true iff EVERY pinned STT file is present-and-complete.
+    pub ready: bool,
+    /// Per-file status, ordered tokens → encoder → decoder → joiner.
+    pub files: Vec<ModelFileStatus>,
+}
+
+/// Probe the pinned STT model files. Presence is the shared exact-size gate
+/// (`classify_file`, reused through `probe_files`/`is_step_complete`) — SHA-256
+/// is verified by the download path, never re-read on every probe.
+#[tauri::command]
+pub fn stt_check_model(app: AppHandle) -> SttModelStatus {
+    let manifest = resolve_stt_manifest();
+    let models_dir = resolve_models_dir(&app);
+    let files = probe_files(&models_dir, &manifest);
+    let ready = is_step_complete(&models_dir, &manifest);
+    SttModelStatus { ready, files }
+}
+
+/// Enumerate the host input devices for the Companion settings picker, marking
+/// the system default and echoing the persisted selection
+/// (`Fredo_companion_voice_device_id`). Never panics: an empty host or an
+/// enumeration failure reports the typed `noDevice` code with an empty list.
+#[tauri::command]
+pub fn stt_list_devices(app: AppHandle) -> SttDevicesResult {
+    let selected_id = session::persisted_device(&app);
+    match capture::list_input_devices() {
+        Ok(devices) if !devices.is_empty() => SttDevicesResult {
+            devices,
+            selected_id,
+            code: None,
+        },
+        Ok(devices) => SttDevicesResult {
+            devices,
+            selected_id,
+            code: Some(SttErrorCode::NoDevice),
+        },
+        Err(error) => SttDevicesResult {
+            devices: Vec::new(),
+            selected_id,
+            code: Some(error.code),
+        },
+    }
+}
+
+/// Start a listening session (context-dependent Ctrl+Space path). Never panics;
+/// every failure is a typed [`super::state::SttErrorCode`].
+#[tauri::command]
+pub async fn stt_start(app: AppHandle, origin: String) -> SttStartResult {
+    session::start(&app, &origin).await
+}
+
+/// Stop listening and commit the final partial (R-3.3).
+#[tauri::command]
+pub async fn stt_stop(app: AppHandle) -> SttStateEvent {
+    session::stop(&app).await
+}
+
+/// Cancel listening and discard the current partial.
+#[tauri::command]
+pub async fn stt_cancel(app: AppHandle) -> SttStateEvent {
+    session::cancel(&app).await
+}
+
+/// The current listening state.
+#[tauri::command]
+pub fn stt_status(app: AppHandle) -> SttStateEvent {
+    session::status(&app)
+}
+
+/// #2897 ST-2 — take (and clear) the bounded model-audio clip a stop committed.
+/// Taking is destructive: a second call returns `clip: None`. The clip is the
+/// ENTIRE captured audio as a 16 kHz mono 16-bit PCM WAV (`truncated` always
+/// false), and it leaves via this IPC command only — `infrastructure/voice/`
+/// never transmits it (REQ-8).
+#[tauri::command]
+pub fn stt_take_audio_clip(app: AppHandle) -> SttAudioClipResult {
+    session::take_audio_clip(&app)
+}
+
+/// Warm the process-resident STT engine (ST-1). Idempotent and engine-only:
+/// it NEVER opens the microphone. It is silent on failure — the failed warm
+/// leaves the resident slot empty, so the next `stt_start` cold-loads and
+/// reports the typed error exactly as today. `warmed:true` is reported only once
+/// the engine is genuinely resident; a warm arriving while a load is in flight
+/// joins that single load instead of starting a second one.
+#[tauri::command]
+pub async fn stt_warm(app: AppHandle) -> SttWarmResult {
+    let resident = app.state::<ResidentEngine>();
+    resident.warm(&app).await
+}
+
+/// Release the resident STT engine and reclaim its memory (the voice-disabled
+/// edge, R-6). Idempotent; returns whether an engine was actually dropped.
+#[tauri::command]
+pub fn stt_release(app: AppHandle) -> bool {
+    app.state::<ResidentEngine>().release()
+}

@@ -23,3 +23,17 @@
 - [ ] S-10 (open for #2795): Select a listed session — the canvas renders ≥1 node; NEVER a silent blank canvas and NEVER the #2791 "No graph content for this session" explanatory state.
 - [ ] S-11 (open for #2795): Session list — every listed session is a real session (renders ≥1 node once its rows land); no listed session is a ghost. Cross-check `telemetry_spans` at the same instant.
 - [ ] S-12 (open for #2795): Live drive — launch a session via Run CLI and confirm it appears in the sidebar and resolves to content; no ghost entry appears at any point; no real session is dropped.
+
+## Mission Monitor realtime-data quick path (Spec #2896)
+
+- [ ] S-13 (FAIL 2026-09-19 #2896): Open Mission Monitor with stored history — the list shows `No sessions yet` + spinner `Waiting for agent activity…` despite 29,503 canonical chat rows / 176 sessions. No persisted session renders.
+- [ ] S-14 (FAIL 2026-09-19 #2896): With no session selected, `fredo emit` a `chat` event (`e2e-2896p0a1`) — the new session does NOT appear in the list; the declared table watch shows `0 delivered`; the projection failed (`no such column: sessionId`).
+- [ ] S-15 (UNVERIFIED 2026-09-19 #2896 — named blocker: 0 sessions ⇒ nothing to select or switch): Select a session, switch to a second live session — no sessions exist to drive.
+- [ ] S-16 (FAIL 2026-09-19 #2896): Fully restart the app and reopen Mission Monitor — `No sessions yet` again; the declared store is still 0 rows (`last_version=0`).
+
+## Round-3 re-run (#2896, 2026-09-19, `spec/2896 @ 74449897`)
+
+- [x] S-13 (PASS round 3): MM open with stored history lists the stored sessions (31 `.mm-session-row` in the drawer container) — no `No sessions yet`, no `Waiting for agent activity`.
+- [x] S-14 (PASS round 3): with a canonical `fredo emit` mutation the declared table watch delivers `featureBatch` and the projected row appears (disposable-DB re-drive).
+- [x] S-15 (PASS round 3): a session renders its Chat node on selection; declared-table `remove` re-fits the canvas (`auto-fit … epoch` console lines).
+- [x] S-16 (PASS round 3): a full cold restart serves the 31 stored sessions immediately (`backfill_done=1`; no backfill re-drain in the log; only `persisted declared tables re-materialized tables=1`).

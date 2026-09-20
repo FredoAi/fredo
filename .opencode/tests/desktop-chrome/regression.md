@@ -107,7 +107,50 @@ Overlapping suites to run alongside: `mission-monitor` (opens feature windows vi
 ## R-20 — Corner cluster cleanup: no clock/LED overlap regressions remain
 
 - [x] R-20: The clock/LED cluster centering change does NOT reintroduce any overlap of the cluster or the rail with the window titlebar min/max/close controls (`windows-buttons-time-overlap.png` class bug must NOT recur), and the cluster stays DISJOINT from the left-edge rail (`getBoundingClientRect` disjointness holds).
+
+---
+
+## #2868 extension — no floating gear; chrome band unchanged (G-136)
+
+> Issue #2868 retires `FloatingSettingsButton`. **G-136:** R-18's changed-files list (which includes
+> `settings/FloatingSettingsButton.tsx`) and any expectation that a floating gear renders are
+> SUPERSEDED — the file is DELETED and no gear renders. Historical records above preserved. Live
+> policy.
+
+- [ ] R-21: The chrome band (clock + single top-right LED + FREDO notch + frame/ticks/dot-grid) and
+      its z-model (1200 uncovered / 0 covered) are unchanged; the app-dock rail is unchanged; NO
+      floating gear (`IconButton[aria-label="Settings"]`) renders in any state (uncovered or under a
+      maximized window). The changed files (new Settings feature/chrome files, `Home.tsx`) carry
+      ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN` alpha-append; Chakra v3 only. Reference
+      #2868 functional F-24 + R-18/R-19 + `.opencode/tests/settings/` R-14.
+  - **Edge:** the deleted gear leaves no orphan import; window min/max/close controls stay unoccluded
+    (R-9/R-20 hold); console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **Edge:** maximized full-bleed; window dragged under the cluster; rail revealed vs hidden; light + dark; narrow viewport.
   - **PASS (spec/2841 @ 0852210f, round 1):** With a maximized window, `elementFromPoint` at Min/Max/Close centers returns the window control (isControl:true) — `windows-buttons-time-overlap.png` does NOT recur (F-18). Cluster DISJOINT from the rail: rail x:0..52, cluster box x:1874+ (top-right), LED x:1878 — no overlap. Verified light + dark + narrow viewport.
 
 Overlapping suites to run alongside: `window-manager` (window lifecycle + rail F-25..F-35 from #2838), `launcher` (Ctrl+Space + grid + clock), `theming` (preset re-tint).
+
+---
+
+## #2848 extension — positionable dock: desktop-chrome no-regression
+
+> Issue #2848 — the #2838/#2841 left-edge dock becomes positionable (Sidebar / Bottom bar). The desktop-chrome invariants (single top-right LED, band passive, clock advancing, band z sink, cluster centered) must hold unchanged whichever dock orientation renders. The dock remains a pure `useWindows()` consumer; the window kernel is READ-ONLY.
+>
+> **Round-1 sweep (spec/2848 @ 12afa697, LIVE):** EXACTLY ONE top-right status LED (`statusCount:1`,`statusLabels:["Online"]`, inside `<time aria-label="22:51, online">`), ZERO bottom LEDs; band clock advancing (22:23→22:51 across the round); dock revealed (Sidebar + Bottom bar) never paints over the window min/max/close controls; left-edge Sidebar rail (`w:52`, ~88px top/bottom insets) stays DISJOINT from the top-right clock/LED cluster; the maximized window stays full-bleed (`x:0,w:1920`) with the dock both hidden AND revealed (no re-indent); `git diff --name-only main spec/2848 -- apps/ui/src/shared/window-system` = empty, `-- apps/tauri` = empty (kernel READ-ONLY, no Rust diff). R-7..R-14 hold unchanged.
+
+### #2868 testing round 1 (spec/2868 @ 90da8de) — result
+
+- **R-21 PASS (live).** NO floating gear (`button[aria-label="Settings"]` count 0) in the resting desktop OR while a Settings window was open; the chrome band/dock were unchanged; the window min/max/close controls stay reachable (`Restore Settings`/`Maximize Settings`/`Close Settings` all dispatched). New Settings feature/chrome files carry ZERO hardcoded hex/`rgba(`/`rgb(` and NO `var(--x)NN`. Evidence: `.opencode/tmp/2868/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2872 extension — corner-padding: no-regression invariants (G-136)
+
+> Issue #2872 moves the cluster inset to the binding ASYMMETRIC **top 20px / right 24px** (rendered).
+> F-17/S-8's `top:16/right:16` expectation is SUPERSEDED (historical records preserved). The clock/LED
+> contract, band z-model, rail disjointness and token-native rules must hold unchanged.
+
+- [x] R-22: The cluster's NEW rendered inset (top 20 / right 24) holds while the clock+LED contract is untouched: EXACTLY ONE top-right status LED, advancing clock, band z 1200 uncovered ↔ 0 covered (R-17/R-9); cluster rect DISJOINT from the left-edge dock rail (R-20) with the new geometry; `windows-buttons-time-overlap.png` / `led-overlay.png` do NOT recur.
+  - **PASS (spec/2872 @ a4074073, round 1, LIVE).** Rendered 20/24 on the clean desktop; EXACTLY ONE status LED trigger (the only other `role="status"` is the unrelated 1×1 `fredo-companion-live-region`); clock advanced 16:32→16:34; band z 1200 uncovered → 0 covered; dock (bottom pill `[data-testid="app-dock"]`, `region "Open applications"`) DISJOINT from the cluster in both resting-visible (`disjoint:true`, gapX 873.67) and covered/peek (`disjoint:true`) states; G-106 maximized probe returned the window controls, never the cluster — `windows-buttons-time-overlap.png` / `led-overlay.png` did NOT recur. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-maximized-controls-light.jpeg`.
+- [x] R-23: No layout shift — the FREDO notch, `>` command bar, side-tick rulers, dot-grid, keyboard-hints row and the dock rail rects are unchanged (±1px); ONLY the cluster box moves. Changed files token-native (zero colour literals / zero `var(--x)NN`); `pnpm --filter @fredo/ui build` exit 0 + `test:run` green; console clean.
+  - **PASS (spec/2872 @ a4074073, round 1).** Live BEFORE→AFTER rect diff (same viewport 1920×1017): FREDO notch `{x:872,y:0,w:176,h:58}` → identical; notch text `{x:929.44,y:25,w:61.11,h:13}` → identical; `>` command bar `{x:680,y:485.77,w:560,h:48}` → identical (Δ 0); ONLY the cluster box moved (+4 top / +8 right, by design). Static grep → zero colour literals / zero `var(--x)NN`; build exit 0; `test:run` 72 files / 905 tests passed; console zero errors. `git diff --name-only main spec/2872 -- apps/ui/src` = only `LauncherChrome.tsx`.
