@@ -1792,3 +1792,14 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
       FALSE PASS.**
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; a pre-fix capture is
     evidence, never a substitute for the live receipt.
+
+### #2904 testing round 1 (spec/2904 @ 027bbf1f) — results
+
+- **F-101 PASS (live).** Model capture @1936×1056 dark: `fieldContentW 206 ≥ 140`, `fieldPaddingEnd 312px`, `fieldScrollW 558 == fieldClientW 558`, `placeholder "release Space to finish"`, `verticalOrNarrow []`; the only listening text is `launcher-command-model-listening-chip` (`Fredo is listening`, `nowrap`/`horizontal-tb`, lineCount 1); the hint chip is ABSENT. Screenshot `aef1bfe1`.
+- **F-102 PASS (live).** Exactly ONE visible `/listening|Fredo/i` indication per capture (model chip; local chip in local mode). Processing window sampled live: `launcher-command-model-processing-chip` = `Fredo is processing your speech…`, 212.2×24, one line (`fieldContentW 226`, `pe 292px`).
+- **F-103 PASS (live).** Binding content-box intersection 0 (`chip.left 1029.2` vs text-area right 928 ⇒ `+101.2px`); `fieldContentW 206`; no clip; `fieldScrollW == fieldClientW`. NOTE: the Shared probe's literal `overlapField` is non-empty because it intersects the field's border-box (it also flags the textarea's own rect + the idle hint chip at rest) — probe imprecision, not a defect signature.
+- **F-104 PASS (live, 4 legs).** model-light, model-dark, local-light, local-dark: every chip `nowrap`/`horizontal-tb`/lineCount 1, `verticalOrNarrow []`; local `fieldContentW 122` + `Listening…` + hint chip (byte-identical shipped copy); model `fieldContentW 206` + `release Space to finish` placeholder, hint suppressed; token-native colors re-tint (`light-default` ↔ `dark`).
+- **F-105 PASS (live).** Mid-capture sweep 1936×1056 → 900×600 → 1400×900 → 700×900: one line + empty content-box overlap at every width; `fieldContentW 206` constant (bar is a constant 560px). Screenshot `ff84fe06`.
+- **F-106 PASS (live + static).** Changed file `LauncherCommandBar.tsx`: 0 true color literals (`#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(`/`hsla(`) and 0 `var(--x)NN` alpha-appends; console error-level EMPTY across all legs; re-theme live while capturing re-tinted token-native with a byte-identical chip rect (`left 1037.2 / right 1143 / 105.8×24`); no re-render loop; seat wrapper 80×100 + 16px, no new scrollbar.
+- **F-107 PASS (live).** `telemetry_spans` = **17154 rows**, `max(ingested_at) 2026-09-20T02:37:09.279…Z`; recent `fredo.llm` 115 / `fredo.tool.*` all `status_code=OK`. Dictating-state screenshot `aef1bfe1` uploaded. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+- **Not injected:** `FREDO_STT_FEED_WAV` (the legs used the real device capture — the UNSET-env control, `deviceName:"Micrófono (Iriun Webcam)"`).
