@@ -29,6 +29,10 @@ adapterBridge.setLlmChatWithSkills(adapter.llmChatWithSkills?.bind(adapter));
 // #2897 ST-3 (REQ-5) — the model-audio path is optional on HostAdapter; in-repo
 // adapters implement it, so this is always registered in practice.
 adapterBridge.setLlmChatWithAudio(adapter.llmChatWithAudio?.bind(adapter));
+// #2918 ST-3 — the structured-status path is optional on HostAdapter; in-repo
+// adapters (TauriAdapter/DevAdapter) implement it, so this is always registered
+// in practice.
+adapterBridge.setLlmChatWithStatus(adapter.llmChatWithStatus?.bind(adapter));
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

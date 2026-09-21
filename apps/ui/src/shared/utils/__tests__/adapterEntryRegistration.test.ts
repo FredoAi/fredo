@@ -67,4 +67,11 @@ describe('#2893 ST-7 rework — served Tauri entry register every adapter bridge
     const source = readTauriEntry();
     expect(source).toMatch(/adapterBridge\.setLlmChatWithAudio\(\s*adapter\.llmChatWithAudio\.bind\(adapter\)/);
   });
+
+  it('#2918 ST-3 — binds the structured-status registration to the concrete adapter', () => {
+    const source = readTauriEntry();
+    expect(source).toMatch(
+      /adapterBridge\.setLlmChatWithStatus\(\s*adapter\.llmChatWithStatus\.bind\(adapter\)/,
+    );
+  });
 });

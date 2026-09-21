@@ -90,6 +90,40 @@ export interface HostAdapter {
     onError?: (message: string) => void,
     onSkillCall?: (call: LlmSkillCall) => void,
   ): Promise<void>;
+
+  /**
+   * #2918 ST-3 — the structured-status streaming variant. Token/done/error/skill
+   * semantics are identical to `llmChatWithAudio` / `llmChatWithSkills`; the
+   * ADDITIVE `onStatus` channel carries the RAW model status string from the
+   * backend's `llm-status` event (emitted BEFORE `llm-done`) so the caller can map
+   * it through `resolveReplyStatus`. The `options` bag selects the shipped request
+   * shape: `offerSkills` picks the skill/audio skill body, `audioBase64` attaches a
+   * captured clip (backend renderer). The adapter NEVER synthesizes a status — it
+   * only forwards what the backend sends, so the plain/fallback path yields no
+   * status call (R-7).
+   *
+   * Optional so existing `HostAdapter` implementations and test doubles stay valid;
+   * in-repo adapters (`TauriAdapter`, `DevAdapter`) implement it.
+   */
+  llmChatWithStatus?(
+    messages: LlmMessage[],
+    options: LlmChatWithStatusOptions,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onStatus: (status: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void>;
+}
+
+/**
+ * #2918 ST-3 — the request-shape options for the structured-status streaming path.
+ * `offerSkills` selects the shipped skill/audio-skill request body; `audioBase64`
+ * attaches a captured clip to the last user message (backend renderer).
+ */
+export interface LlmChatWithStatusOptions {
+  offerSkills: boolean;
+  audioBase64?: string;
 }
 
 /** A single turn in an LLM conversation. */

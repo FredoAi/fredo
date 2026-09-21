@@ -6,7 +6,11 @@
  * available before any feature class calls it.
  */
 
-import type { LlmMessage, LlmSkillCall } from '../../app/adapters/HostAdapter';
+import type {
+  LlmChatWithStatusOptions,
+  LlmMessage,
+  LlmSkillCall,
+} from '../../app/adapters/HostAdapter';
 
 type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 type LlmChatFn = (
@@ -44,12 +48,25 @@ type LlmChatWithAudioFn = (
   onError?: (message: string) => void,
   onSkillCall?: (call: LlmSkillCall) => void,
 ) => Promise<void>;
+// #2918 ST-3 — the structured-status variant: same token/done/error/skill channels
+// plus the ADDITIVE `onStatus` channel carrying the raw `llm-status` string emitted
+// BEFORE `llm-done`. The `options` bag selects the shipped request shape.
+type LlmChatWithStatusFn = (
+  messages: LlmMessage[],
+  options: LlmChatWithStatusOptions,
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onStatus: (status: string) => void,
+  onSkillCall?: (call: LlmSkillCall) => void,
+  onError?: (message: string) => void,
+) => Promise<void>;
 
 let _invoke: InvokeFn | undefined;
 let _llmChat: LlmChatFn | undefined;
 let _llmChatWithImage: LlmChatWithImageFn | undefined;
 let _llmChatWithSkills: LlmChatWithSkillsFn | undefined;
 let _llmChatWithAudio: LlmChatWithAudioFn | undefined;
+let _llmChatWithStatus: LlmChatWithStatusFn | undefined;
 
 type UnlistenFn = () => void;
 type ListenFn = <T>(event: string, handler: (payload: T) => void) => Promise<UnlistenFn>;
@@ -77,6 +94,11 @@ export const adapterBridge = {
   /** #2897 ST-3 — register the model-audio streaming implementation. */
   setLlmChatWithAudio(fn: LlmChatWithAudioFn | undefined): void {
     _llmChatWithAudio = fn;
+  },
+
+  /** #2918 ST-3 — register the structured-status streaming implementation. */
+  setLlmChatWithStatus(fn: LlmChatWithStatusFn | undefined): void {
+    _llmChatWithStatus = fn;
   },
 
   setListen(fn: ListenFn): void {
@@ -210,6 +232,35 @@ export const adapterBridge = {
     }
     if (onError) return _llmChatWithAudio(messages, audioBase64, onToken, onDone, onError);
     return _llmChatWithAudio(messages, audioBase64, onToken, onDone);
+  },
+
+  /**
+   * #2918 ST-3 — the structured-status streaming path. Mirrors `llmChatWithAudio`'s
+   * forwarding (optional trailing channels passed only when supplied) and adds the
+   * `onStatus` channel carrying the raw `llm-status` string. A missing
+   * implementation is a safe no-op that still completes (`onDone`) — never a hang.
+   */
+  async llmChatWithStatus(
+    messages: LlmMessage[],
+    options: LlmChatWithStatusOptions,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onStatus: (status: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    if (!_llmChatWithStatus) {
+      console.warn('[adapterBridge] llmChatWithStatus called before adapter registered');
+      onDone();
+      return;
+    }
+    if (onSkillCall) {
+      return _llmChatWithStatus(messages, options, onToken, onDone, onStatus, onSkillCall, onError);
+    }
+    if (onError) {
+      return _llmChatWithStatus(messages, options, onToken, onDone, onStatus, undefined, onError);
+    }
+    return _llmChatWithStatus(messages, options, onToken, onDone, onStatus);
   },
 };
 

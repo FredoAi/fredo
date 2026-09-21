@@ -29,6 +29,10 @@ adapterBridge.setLlmChatWithSkills(adapter.llmChatWithSkills.bind(adapter));
 // SERVED Tauri entry (this file), not only in the standalone UI dev entry.
 // `adapter` is the concrete TauriAdapter, which implements the method.
 adapterBridge.setLlmChatWithAudio(adapter.llmChatWithAudio.bind(adapter));
+// #2918 ST-3 — the structured-status path must also be registered in the SERVED
+// Tauri entry (this file), not only in the standalone UI dev entry. `adapter` is
+// the concrete TauriAdapter, which implements the method.
+adapterBridge.setLlmChatWithStatus(adapter.llmChatWithStatus.bind(adapter));
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('[Fredo] Root element #root not found');
