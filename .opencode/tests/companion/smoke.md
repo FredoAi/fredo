@@ -310,17 +310,24 @@
 > definition is in the companion functional `#2922 extension` block. **Verification policy: live** —
 > a property-existence check is never a PASS.
 
-- [ ] S-44: **Solid body in both themes.** Companion ON at the seat; capture dark base + `light-default`
-      and sample the BODY region (viewBox `y 812–1234`: bow tie, arms, buttons, legs, feet) with the
-      frames-A/B open metric. **Expected:** `holeCount == 0` (no backdrop shows through the body) in
-      BOTH themes; `tauri_webview_screenshot` succeeds; console clean of
+- [ ] S-44: **Solid body in both themes.** Companion ON at the seat; freeze motion
+      (`document.getAnimations().forEach(a => { a.currentTime = 0; a.pause(); })`); capture dark base
+      + `light-default` and evaluate the BINDING `seeThrough` metric over the mask `M`
+      (`union(58 base rects) ∪ union(17 interior bands)`, eroded `E = 2 rendered px`) — frame **A**
+      (as rendered, backdrop `B0`) vs frame **D** (the same DOM with a solid probe `B1` inserted
+      BEHIND the figure in the same stacking context; `B1` = `#ffffff` on dark presets, `#000000` on
+      `light-default`), `T = 8`. **Expected:** `seeThroughCount == 0` (no backdrop shows through the
+      body: bow tie, arms, buttons, legs, feet) in BOTH themes — the residual is zero, not a
+      property check; `tauri_webview_screenshot` succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 - [ ] S-45: **A state renders legibly over the solid body.** Single-click the avatar → the joke streams
       (`thinking` → `joking` → `happy`). **Expected:** the expression overlay renders ON TOP of the
       filled body and is distinguishable from `idle`; the body stays solid across the states;
       screenshot succeeds; console clean.
 - [ ] S-46: **No leak + no stuck state.** Ctrl+right-click (teleport-out → in → idle) and drive
-      `open NotARealApp` (`error`). **Expected:** the inter-leg gap and shoulder notches stay
-      background (no fill leak), the avatar returns to `idle` (no lingering `error`/`joking`), the body
-      stays solid; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
-      exceeded`.
+      `open NotARealApp` (`error`). **Expected:** `leakCount == 0` — frames A + C (`T = 8`) over the
+      UI/UX-bound negative-space boxes `N`, inset per box by the binding non-uniform tuck rule
+      `inset = min(6, floor(w/4), floor(h/4))` (every box 6 except the bow-tie notch 2) — so the
+      inter-leg gap and shoulder notches stay background (no fill leak), the avatar returns to `idle`
+      (no lingering `error`/`joking`), the body stays solid; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
