@@ -447,12 +447,23 @@ enum StructuredAttempt {
 
 /// Whether the structured-status path should be used for this turn.
 ///
-/// ST-2 wires the cached `response_format` capability verdict into this ONE
-/// decision point. Until then the structured path is attempted, and an
-/// unsupported/incompatible server degrades through the bounded plain retry
-/// (R-5/R-6) — never a raw error.
-fn should_use_structured_status() -> bool {
-    true
+/// ST-2 wires the CACHED `response_format` capability verdict into this ONE
+/// decision point. The cache is keyed by the resolved managed `(host, port)`
+/// (`probe::resolved_status_capability`), populated by
+/// `companion_status_capability`; the probe therefore never runs per turn. When
+/// the cached verdict says unsupported / unreachable / erroring, the turn
+/// delegates to the shipped plain path (R-7): plain-text reply, no `llm-status`,
+/// no user-visible error. An unprobed `(host, port)` attempts the structured path,
+/// which already degrades through the bounded plain retry (R-5/R-6).
+fn should_use_structured_status(app: &AppHandle) -> bool {
+    should_use_structured_status_for(super::probe::resolved_status_capability(app).as_ref())
+}
+
+/// Pure: the gate decision for a cached capability (`None` = not probed yet).
+fn should_use_structured_status_for(
+    capability: Option<&super::probe::StatusCapability>,
+) -> bool {
+    capability.map(|capability| capability.supported).unwrap_or(true)
 }
 
 /// Emit the parsed status on the ADDITIVE `llm-status` channel (before the
@@ -597,7 +608,7 @@ async fn run_status_chat(
 ) -> Result<(), String> {
     let mut attempt = 0usize;
     loop {
-        if attempt == 0 && should_use_structured_status() {
+        if attempt == 0 && should_use_structured_status(app) {
             match run_structured_attempt(app, &messages, offer_skills, audio_base64.as_deref())
                 .await
             {
@@ -935,5 +946,33 @@ mod tests {
     #[test]
     fn the_status_schema_name_is_fredo_reply() {
         assert_eq!(FREDO_STATUS_SCHEMA_NAME, "fredo_reply");
+    }
+
+    // ── #2918 ST-2: the capability gate (R-7) ─────────────────────────────────
+
+    /// The gate only takes the plain path when the cached capability is KNOWN
+    /// unsupported; an unprobed `(host, port)` or a supported verdict uses the
+    /// structured path (which degrades through the bounded plain retry).
+    #[test]
+    fn the_capability_gate_takes_the_plain_path_only_when_known_unsupported() {
+        // Not probed for this (host, port) → attempt the structured path.
+        assert!(should_use_structured_status_for(None));
+
+        // A cached supported verdict → the structured path.
+        assert!(should_use_structured_status_for(Some(
+            &super::super::probe::StatusCapability {
+                supported: true,
+                detail: "schema-constrained content".to_string(),
+            }
+        )));
+
+        // Unsupported / unreachable / erroring → the shipped plain path (R-7).
+        assert!(!should_use_structured_status_for(Some(
+            &super::super::probe::StatusCapability {
+                supported: false,
+                detail: "the response_format capability probe failed: connection refused"
+                    .to_string(),
+            }
+        )));
     }
 }

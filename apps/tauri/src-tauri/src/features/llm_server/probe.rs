@@ -27,7 +27,7 @@
 //! transcript observers are unit-tested here.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -567,6 +567,170 @@ pub async fn probe_companion_skills(app: AppHandle) -> Result<CompanionSkillProb
         verdict,
         cleanup_catalogue: CLEANUP_CATALOGUE.to_string(),
     })
+}
+
+// ── #2918 ST-2: response_format capability gate ───────────────────────────────
+//
+// AC-4 requires the structured-reply gate to REUSE the existing probe mechanism —
+// exactly the [`build_response_format_probe_body`] + [`run_stream_probe`] +
+// [`observe_sse`] path `probe_companion_skills` uses. There is NO second `/props`
+// check, NO model-name inference, and no other detector: the verdict is the pure
+// predicate ([`response_format_capability`]) over the EXISTING
+// [`ResponseFormatProbe`] outcome. The result is cached per resolved
+// `(host, port)` so the per-turn gate never probes.
+
+/// The pure `response_format` capability predicate over the EXISTING probe result.
+///
+/// A usable capability is a probe that did not error, terminated, and produced
+/// non-empty schema-constrained content. Every other outcome (unreachable server,
+/// HTTP/stream error, non-terminating stream, empty reply) is NOT a capability.
+pub fn response_format_capability(probe: &ResponseFormatProbe) -> bool {
+    probe.error.is_none() && probe.terminated && !probe.content.trim().is_empty()
+}
+
+/// Pure: the readable detail for a capability verdict (never a raw payload dump).
+pub fn capability_detail(probe: &ResponseFormatProbe) -> String {
+    if let Some(error) = probe.error.as_deref() {
+        return format!("the response_format capability probe failed: {error}");
+    }
+    if !probe.terminated {
+        return format!(
+            "the response_format capability probe did not terminate within {PROBE_TIMEOUT_S} s"
+        );
+    }
+    if probe.content.trim().is_empty() {
+        return "the response_format capability probe returned no content".to_string();
+    }
+    format!(
+        "the response_format capability probe returned schema-constrained content ({} chars)",
+        probe.content.chars().count()
+    )
+}
+
+/// The `response_format` capability verdict returned to the webview (camelCase IPC).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusCapability {
+    /// Whether the managed server supports the schema-constrained
+    /// `response_format` contract (the REUSED probe verdict).
+    pub supported: bool,
+    /// A readable reason (never a raw dump).
+    pub detail: String,
+}
+
+/// The cached capability verdict, keyed by the resolved managed `(host, port)`.
+struct CachedStatusCapability {
+    host: String,
+    port: u16,
+    capability: StatusCapability,
+}
+
+/// The ONE capability cache: a single entry keyed by the resolved managed
+/// `(host, port)`. A port (or host) change is a cache MISS, so a server restart
+/// that rebinds invalidates the verdict; the per-turn gate only ever reads this.
+static STATUS_CAPABILITY_CACHE: Mutex<Option<CachedStatusCapability>> = Mutex::new(None);
+
+/// The cached verdict for THIS resolved `(host, port)`, if the capability was
+/// already checked for it. A different host/port is a miss (invalidated).
+pub(crate) fn cached_status_capability(host: &str, port: u16) -> Option<StatusCapability> {
+    let guard = STATUS_CAPABILITY_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_ref() {
+        Some(cached) if cached.host == host && cached.port == port => {
+            Some(cached.capability.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Store the verdict, replacing any entry for a different `(host, port)`.
+fn cache_status_capability(host: &str, port: u16, capability: &StatusCapability) {
+    let mut guard = STATUS_CAPABILITY_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some(CachedStatusCapability {
+        host: host.to_string(),
+        port,
+        capability: capability.clone(),
+    });
+}
+
+/// The cached verdict for the currently-resolved managed server, if known.
+///
+/// The per-turn gate reads ONLY this (R-7): the capability probe never runs per
+/// turn. An unprobed `(host, port)` yields `None` — the caller defaults to the
+/// structured attempt, which already degrades through the bounded plain retry.
+pub(crate) fn resolved_status_capability(app: &AppHandle) -> Option<StatusCapability> {
+    let host = chat::resolve_host(store_string(app, LLAMA_SERVER_HOST_KEY).as_deref());
+    let port = resolve_probe_port(app);
+    cached_status_capability(&host, port)
+}
+
+/// Fold a raw probe stream outcome into the EXISTING [`ResponseFormatProbe`] wire
+/// struct so the capability predicate consumes the same shape the shipped probe
+/// reports.
+fn response_format_probe_from_outcome(
+    request: serde_json::Value,
+    outcome: StreamOutcome,
+) -> ResponseFormatProbe {
+    ResponseFormatProbe {
+        request,
+        raw_sse: outcome.raw_sse,
+        content: outcome.content,
+        finish_reason: outcome.finish_reason,
+        terminated: outcome.terminated,
+        duration_ms: outcome.duration_ms,
+        error: outcome.error,
+    }
+}
+
+/// Run the EXISTING `response_format` probe once (bounded by [`PROBE_TIMEOUT_S`])
+/// and apply the pure predicate. Strictly read-only: no `/props` check, no state
+/// write, no `llm-token`.
+async fn probe_status_capability(host: &str, port: u16) -> StatusCapability {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(PROBE_TIMEOUT_S))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return StatusCapability {
+                supported: false,
+                detail: format!("could not build the capability probe HTTP client: {error}"),
+            }
+        }
+    };
+
+    let request = build_response_format_probe_body();
+    let chat_url = chat::chat_completions_url(host, port);
+    let outcome = run_stream_probe(&client, &chat_url, &request).await;
+    let probe = response_format_probe_from_outcome(request, outcome);
+    StatusCapability {
+        supported: response_format_capability(&probe),
+        detail: capability_detail(&probe),
+    }
+}
+
+/// **#2918 ST-2** — the cached read-only `response_format` capability verdict.
+///
+/// REUSES the existing probe mechanism (no new detector): the same
+/// [`build_response_format_probe_body`] request through [`run_stream_probe`] and
+/// [`observe_sse`], folded into the existing [`ResponseFormatProbe`] and judged by
+/// the pure [`response_format_capability`] predicate. The verdict is cached per
+/// resolved `(host, port)` — a miss probes once and stores it, so the per-turn
+/// chat gate never probes. Bounded by [`PROBE_TIMEOUT_S`]; never writes state.
+#[tauri::command]
+pub async fn companion_status_capability(app: AppHandle) -> StatusCapability {
+    let host = chat::resolve_host(store_string(&app, LLAMA_SERVER_HOST_KEY).as_deref());
+    let port = resolve_probe_port(&app);
+    if let Some(cached) = cached_status_capability(&host, port) {
+        return cached;
+    }
+    let capability = probe_status_capability(&host, port).await;
+    cache_status_capability(&host, port, &capability);
+    capability
 }
 
 // ── ST-6 model-audio capability probe (Spec #2897; REQ-7) ─────────────────────
@@ -1434,5 +1598,107 @@ mod tests {
             models_url("127.0.0.1", 8080),
             "http://127.0.0.1:8080/v1/models"
         );
+    }
+
+    // ── #2918 ST-2 — the capability gate over the EXISTING probe result ───────
+
+    /// Shape a [`ResponseFormatProbe`] result for the pure predicate pins.
+    fn probe_with(error: Option<&str>, terminated: bool, content: &str) -> ResponseFormatProbe {
+        ResponseFormatProbe {
+            request: serde_json::json!({}),
+            raw_sse: String::new(),
+            content: content.to_string(),
+            finish_reason: None,
+            terminated,
+            duration_ms: 1,
+            error: error.map(str::to_string),
+        }
+    }
+
+    /// R-7: only a probe that did not error, terminated, AND produced non-empty
+    /// content is a capability; an unreachable / erroring / empty probe is not.
+    #[test]
+    fn response_format_capability_requires_a_clean_terminated_non_empty_probe() {
+        // A clean terminated probe with content IS the capability.
+        assert!(response_format_capability(&probe_with(
+            None,
+            true,
+            "{\"app\":\"Mission Monitor\"}"
+        )));
+
+        // An erroring probe is never a capability, whatever else it carries.
+        assert!(!response_format_capability(&probe_with(
+            Some("error sending request: connection refused"),
+            false,
+            ""
+        )));
+        assert!(!response_format_capability(&probe_with(
+            Some("HTTP 400: unsupported"),
+            true,
+            "some content"
+        )));
+
+        // A stream that never terminated is not a capability.
+        assert!(!response_format_capability(&probe_with(None, false, "partial")));
+
+        // Empty / whitespace-only content is not a capability.
+        assert!(!response_format_capability(&probe_with(None, true, "")));
+        assert!(!response_format_capability(&probe_with(None, true, "  \n\t ")));
+    }
+
+    /// The detail names the failure mode (readable, never a raw dump).
+    #[test]
+    fn capability_detail_names_the_observed_outcome() {
+        let supported = capability_detail(&probe_with(None, true, "hello"));
+        assert!(supported.contains("schema-constrained"), "detail: {supported}");
+        assert!(supported.contains("5 chars"), "detail: {supported}");
+
+        let errored = capability_detail(&probe_with(Some("connection refused"), false, ""));
+        assert!(errored.contains("connection refused"), "detail: {errored}");
+
+        let unterminated = capability_detail(&probe_with(None, false, "partial"));
+        assert!(unterminated.contains("terminate"), "detail: {unterminated}");
+
+        let empty = capability_detail(&probe_with(None, true, "   "));
+        assert!(empty.contains("no content"), "detail: {empty}");
+    }
+
+    /// The verdict is cached per resolved `(host, port)` — a different host or
+    /// port is a MISS (the port-change invalidation rule), so the per-turn gate
+    /// never re-probes. This is the ONLY test that touches the single-entry cache,
+    /// so it is deterministic under any suite order (G-222).
+    #[test]
+    fn capability_cache_is_keyed_by_the_resolved_host_and_port() {
+        const HOST_A: &str = "127.0.0.1";
+        const HOST_B: &str = "192.168.0.9";
+        const PORT_A: u16 = 61_001;
+        const PORT_B: u16 = 61_002;
+
+        // Cold cache for these keys.
+        assert_eq!(cached_status_capability(HOST_A, PORT_A), None);
+
+        let capability = StatusCapability {
+            supported: true,
+            detail: "ok".to_string(),
+        };
+        cache_status_capability(HOST_A, PORT_A, &capability);
+        assert_eq!(
+            cached_status_capability(HOST_A, PORT_A),
+            Some(capability.clone())
+        );
+
+        // A port change (a rebound server) invalidates the verdict.
+        assert_eq!(cached_status_capability(HOST_A, PORT_B), None);
+        // A host change invalidates too.
+        assert_eq!(cached_status_capability(HOST_B, PORT_A), None);
+
+        // Re-storing under a new key replaces the single entry.
+        let unsupported = StatusCapability {
+            supported: false,
+            detail: "unreachable".to_string(),
+        };
+        cache_status_capability(HOST_B, PORT_B, &unsupported);
+        assert_eq!(cached_status_capability(HOST_B, PORT_B), Some(unsupported));
+        assert_eq!(cached_status_capability(HOST_A, PORT_A), None);
     }
 }

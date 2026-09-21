@@ -603,6 +603,11 @@ pub fn run() {
             // before the shipped `llm-done`. ADDITIVE — `llm_chat` /
             // `llm_chat_with_skills` unchanged.
             features::llm_server::status::llm_chat_with_status,
+            // #2918 ST-2 — the cached read-only `response_format` capability gate.
+            // REUSES the existing `probe_companion_skills` mechanism (no new
+            // detector); the chat gate reads this cache, so the capability is
+            // never probed per turn.
+            features::llm_server::probe::companion_status_capability,
             features::screenshot::commands::capture_screen_region,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
