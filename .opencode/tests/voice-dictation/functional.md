@@ -144,6 +144,8 @@
   **Expected:** the shipped `cpal`/virtual path is used (non-1.6 s, hold-length clip) so the fed observation
       is non-vacuous; the control is NEVER scored as a product FAIL when the host has no physical mic.
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends F-7..F-9 results here; do not pre-fill)_
+- **F-7 PASS — the seam SURVIVED.** `dev-env.ps1 -Action Up -Spec 2914 -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"` → `stt_start` `{started:true, deviceName:"stt-feed", sampleRate:16000}` (no `cpal`); `stt_stop` → `{phase:"processing"}`; `stt_take_audio_clip` `{format:"wav", sampleRate:16000, durationMs:1600, truncated:false, base64Len:68328}` == the fed fixture; app responsive.
+- **F-8 PASS.** Committed fixture SHA-256 `33c2f129d17a555b9faad66e21eab5c8069712c8836cc8d363e97c1555343428` (51,244 B, 16 kHz mono 16-bit, 25,600 samples) byte-identical after regeneration; `--seconds 31` → `dictation-31s-16k-mono.wav` 992,044 B / 496,000 samples / SHA-256 `06a192e647f4c2b1a273c0e4cbf6445e88a8865d021630d89c6006cf51f1cfa1`; `capture.rs` format pin still accepts the fixture.
+- **F-9 PASS (non-vacuous control).** UNSET env → `stt_start` `{deviceName:"Micrófono (Iriun Webcam)", sampleRate:48000}` and an 800 ms hold-length clip (≠ 1.6 s).
