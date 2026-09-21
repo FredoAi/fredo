@@ -470,6 +470,12 @@
       no panic and no local-engine start? A panic, a hang, or a silent success is a finding (promotes to
       F-130).
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends probe findings here; do not pre-fill)_
+- **E-67 PASS.** Half-finished sherpa state (2 of 4 files + `handling='local'`): booted working model-audio, dir removed cleanly, no download/repair affordance.
+- **E-68 UNVERIFIED (named blocker).** Locked/read-only STT dir not constructible — no allowlisted filesystem-permission verb in the tester sandbox. Residual: ST-2 unit pin `a_locked_legacy_path_is_reported_absent_and_never_torn_down`.
+- **E-69 PASS.** Stale `sttModel` caller: wizard + ready branch render with no ghost STT row and no console error/throw.
+- **E-70 PASS.** Server stopped: `serverUnavailable`/`modelAudioUnavailable`; `stt_start` blocked before capture; no local fallback offered.
+- **E-71 PASS (the decider).** `FREDO_STT_FEED_WAV` SURVIVED — `{deviceName:"stt-feed", sampleRate:16000}`, no `cpal` device, bounded 1.6 s clip.
+- **E-72 PASS.** Removed commands → typed "not found", no panic, app responsive.
+- **Finding (promoted observation, not a new F row).** `voiceStartErrorCopy` (`LauncherShell.tsx:309-311`) retains dead `modelMissing`/`modelCorrupt` copy; unreachable (backend no longer emits those codes; grep = 0), so no user-visible AC impact — cosmetic remnant for a follow-up cleanup.
