@@ -196,6 +196,44 @@ beforeEach(() => {
       });
     },
   );
+  // #2918 ST-5 — the structured-status transport is now the ONE generation route
+  // (joke / typed ask / dictation). It dispatches by request shape so the shipped
+  // captures (`generations` text + `audioGenerations` clip) stay byte-identical;
+  // every assertion below is unchanged.
+  adapterBridge.setLlmChatWithStatus(
+    async (messages, options, onToken, onDone, _onStatus, onSkillCall, onError) => {
+      if (options.audioBase64 !== undefined) {
+        audioGenerations.push({
+          audioBase64: options.audioBase64,
+          messages,
+          driver: {
+            onToken,
+            onDone,
+            onError: (m: string) => onError?.(m),
+            onSkillCall: (c: LlmSkillCall) => onSkillCall?.(c),
+          },
+        });
+        return;
+      }
+      if (options.offerSkills) {
+        const last = messages[messages.length - 1] as { content: string };
+        generations.push({
+          text: last.content,
+          driver: {
+            onToken,
+            onDone,
+            onSkillCall: (c: LlmSkillCall) => onSkillCall?.(c),
+            onError: (m: string) => onError?.(m),
+          },
+        });
+        return;
+      }
+      generations.push({
+        text: 'joke',
+        driver: { onToken, onDone, onSkillCall: () => {}, onError: (m: string) => onError?.(m) },
+      });
+    },
+  );
 });
 
 afterEach(() => {

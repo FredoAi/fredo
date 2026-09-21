@@ -140,6 +140,12 @@ beforeEach(() => {
   adapterBridge.setLlmChatWithSkills(async (_messages, onToken, onDone, onSkillCall, onError) => {
     skills = { onToken, onDone, onSkillCall, onError: (message: string) => onError?.(message) };
   });
+  // #2918 ST-5 — the structured-status transport is now the ONE generation route
+  // (joke / typed ask / dictation). The skill-aware generation's callbacks are
+  // captured here verbatim; every shipped per-generation assertion is unchanged.
+  adapterBridge.setLlmChatWithStatus(async (_messages, _options, onToken, onDone, _onStatus, onSkillCall, onError) => {
+    skills = { onToken, onDone, onSkillCall: (c: LlmSkillCall) => onSkillCall?.(c), onError: (message: string) => onError?.(message) };
+  });
 });
 
 afterEach(() => {
