@@ -2305,3 +2305,159 @@ clean.
       injected markers classify under their session ids; every live row carries a rendered receipt.
       **A static-only PASS with no live receipt is a FALSE PASS.**
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+---
+
+## #2918 extension — model-driven status via a structured reply object
+
+> Issue #2918 obtains the WHOLE companion reply under a JSON-Schema-constrained `response_format`
+> contract (reply content + a model-declared status field), applies the parsed status to the
+> companion's user-visible state for that turn, and degrades safely when the object is
+> absent/unknown/unusable or the capability is unsupported. Rows map 1:1 to the QA Plan **Q-1..Q-8**
+> in `.opencode/tmp/2918/triage.md` `## QA Expert`. **Verification policy: live** — every AC is
+> judged on the RUNNING system; the mandatory live receipt is F-132. A static-only PASS is a
+> FALSE PASS.
+>
+> **Sanctioned levers (all in-repo / loopback — G-172/G-009):**
+> - **LV1** the real managed `llama-server` via the MCP bridge (`com.fredo.app`) + the real
+>   launcher/companion UI — the live structured generation.
+> - **LV2** deterministic synthetic injection on the REAL `llm-token` / `llm-error` / `llm-done`
+>   channel via `tauri_ipc_emit_event` — forces an exact object shape, token boundary, or status
+>   value on the channel the backend actually emits on.
+> - **LV3** the EXISTING read-only `probe_companion_skills` (`responseFormat` sub-report) — the
+>   capability source; no new detector.
+> - **LV4** the pure pins: `resolveCompanionAvatarState` + the reply-request builder + the object
+>   parser (in-repo unit tests).
+>
+> **Frozen hooks:** wrapper `.fredo-companion-avatar` `data-state`; `#fredo-expression[data-state=…]`;
+> `[data-testid="fredo-reply-surface"]`; `[data-testid="fredo-reply-scroll"]`;
+> `[data-testid="fredo-companion-live-region"]`; `[data-testid="fredo-game-bubble"]`;
+> `[data-testid="launcher-command-bar"]`/`"launcher-command-input"`. Vocabulary `FREDO_AVATAR_STATES`
+> (`apps/ui/src/shared/components/fredo-avatar/fredoAvatarStates.ts`); resolver
+> `apps/ui/src/shared/components/fredo-avatar/fredoAvatarResolver.ts` (`modelStatus` seam).
+> **Evidence renderability (G-104):** frames named WITHOUT image extensions in prose; a `.png`/`.jpeg`
+> token only on a line that also carries an `https://` URL; descriptive link labels.
+
+## F-126 (Q-1 / AC-1) — The reply is a structured contract and the model status drives the rendered state
+
+- [ ] F-126: (a) Drive TWO real managed-`llama-server` replies with different intent (the
+      Architect-bound forcing prompts, quoted verbatim); sample `.fredo-companion-avatar`
+      `data-state` + `#fredo-expression[data-state]` across each turn (≥5 samples + screenshots).
+      (b) Inject `{"reply":"…","status":"happy"}` then `{"reply":"…","status":"joking"}` then
+      `llm-done` on `llm-token` (LV2). (c) Inject an object with NO status. (d) Read the outgoing
+      request constraint (LV4 builder pin + the managed-server log).
+  **Expected:** the request is constrained by `response_format` (`type === "json_schema"`, schema
+      carrying reply content + ≥1 status field) and carries NO `tools`/`tool_choice` — a structured
+      contract, NOT a tool call. The parsed status is applied to the companion's user-visible state
+      for that turn: (a) the two real-intent replies render DIFFERENT `data-state` values (record
+      both; each ∈ `FREDO_AVATAR_STATES`); (b) `happy` vs `joking` render as different `data-state`
+      + a different `#fredo-expression[data-state]` overlay; (c) absent status → the Architect-bound
+      safe default (record its literal; ∈ `FREDO_AVATAR_STATES`). The status word never appears as
+      text in `[data-testid="fredo-reply-surface"]`.
+  - **Edge:** a status equal to a base state (`talk`/`idle`) still renders; two consecutive turns
+    with different statuses converge; a status equal to the current flow no-ops; a status arriving
+    on the last token still applies; a skill turn (R-63).
+
+## F-127 (Q-2 / AC-2 — RISKIEST) — No raw JSON at any frame; the reply renders progressively
+
+- [ ] F-127: (a) A real chatty/long reply — sample `[data-testid="fredo-reply-surface"]` text +
+      `data-streaming` at ~100 ms across the whole stream. (b) Split-token injection on `llm-token`:
+      emit the object across ≥3 events each breaking INSIDE a JSON token — `{"rep` / `ly":"Hello
+      there` / `","status":"happy"}` plus a variant splitting inside `status` — then `llm-done`;
+      capture the surface text per frame. (c) The settled view after `llm-done`.
+  **Expected:** NO sampled frame's visible surface text contains `{`, `}`, `"reply"`, `"status"`,
+      `json`, or a truncated fragment; the settled visible text === the reply string EXACTLY (no
+      markup, no quote-wrapper). Progressive: ≥3 distinct increasing text samples while still
+      arriving — OR, if the plan declares buffering, its declared time-to-first-text is MEASURED and
+      reported with the trade-off (no silent switch).
+  - **Edge:** a boundary exactly at `{"reply":"` and at `","status":"`; an empty reply string;
+    `<end_of_turn>`/`<start_of_turn>` still stripped; a reply whose PROSE contains the literal word
+    `json` (must render as prose); a unicode/emoji reply split mid-codepoint.
+
+## F-128 (Q-3 / AC-3) — Robust degradation; bounded retry; the complex scenario
+
+- [ ] F-128: (a) Empty content — emit `llm-token` with an empty/whitespace reply object, then
+      `llm-done`; count the re-request attempts over the turn. (b) Malformed — emit `not json at all`
+      and a truncated `{"reply":"half`. (c) Non-conforming — emit `{"status":"happy"}` (no reply),
+      `{"reply":123}` (wrong type), `{"reply":"x","status":"dancing"}` (non-member status; healing
+      is the parser's job, not the model's).
+      (d) **Complex scenario:** server healthy + structured output enabled, model returns an
+      empty/non-conforming object. (e) After each leg send the next message from the bar.
+  **Expected:** no raw output is ever shown; no broken turn; a plain reply (or a readable empty/error
+      line) + default status; empty content is retried a BOUNDED number of attempts then settles
+      (record the bound from source; assert attempts ≥1 AND ≤ bound); the fallback never hangs and
+      never double-settles (exactly ONE settle per turn, incl. the `llm-error` → `llm-done` pair);
+      the bar accepts the next send and a normal reply follows; console clean.
+  - **Edge:** an error mid-retry; `llm-error` + follow-up `llm-done`; a retry at the watchdog
+    boundary; empty after a valid turn; whitespace-only; two consecutive empty turns.
+
+## F-129 (Q-4 / AC-4) — Capability-gated fallback (existing probe; no new detector)
+
+- [ ] F-129: Re-run the EXISTING read-only `probe_companion_skills` and read `responseFormat.content`
+      / `error` / `terminated`; then with the capability reported unsupported drive a companion
+      reply. Static: grep that the gate consumes the EXISTING probe result and that no second
+      detector exists.
+  **Expected:** unsupported `response_format` → today's plain-text reply (progressive, no raw JSON) +
+      default status, with NO user-visible error (no error bubble, no raw backend string) and the
+      outgoing request carrying NO `response_format`; the gate reuses the existing probe mechanism
+      (no new detector); no regression to the pre-change reply experience.
+  - **Named blocker (G-053):** if the shipped managed server SUPPORTS `response_format`, the
+    capability-OFF RENDER leg is UNVERIFIED live — residual pin = the pure-gate unit pin (a verdict
+    with `responseFormat.error` selects the plain-text path) + the probe's recorded verdict. Never a
+    fabricated cap-off PASS; if the Architect exposes a deterministic in-repo seam to feed the gate a
+    synthesized verdict, this leg becomes fully live.
+  - **Edge:** probe in flight / `checking`; a probe that errors (server down) → fail-safe to plain
+    text with no error UI; the capability flipping between turns.
+
+## F-130 (Q-5 / AC-5) — Closed vocabulary heals; the prompt contract is literal
+
+- [ ] F-130: (a) Inject out-of-vocabulary statuses on the real channel — `"success"`, `"dancing"`,
+      `"IDLE"`, `""`, `123`, `null` — and sample `.fredo-companion-avatar` `data-state` across each
+      turn. (b) Read the prompt/system constant (LV4) and quote its lines. (c) Read
+      `FREDO_AVATAR_STATES`.
+  **Expected:** every out-of-vocabulary / absent value heals to the safe default; at EVERY sample the
+      wrapper `data-state` ∈ `FREDO_AVATAR_STATES` (an out-of-vocabulary `data-state` reaching the
+      DOM is a FAIL); the vocabulary is the frozen 12 (`success`/`waiting`/`reasoning` absent —
+      quote); the prompt contains the literal word `json` AND an example, and contains NO
+      free-text-JSON instruction (quote the lines).
+  - **Edge:** a status after the reply text; a mix of valid+invalid in one turn; a valid status in the
+    next turn after an invalid one; an integer/`null` status.
+
+## F-131 (Q-6 / Precedence) — The model status composes without masking an existing state's sole trigger (G-220)
+
+- [ ] F-131: (a) Inject a model status then drive a same-window teleport mid-turn; timestamp the
+      `data-state` sequence at ~50 ms. (b) Stream a turn with NO status and read the wrapper state.
+      (c) Inject a status-bearing object then emit `llm-error` followed by `llm-done`. (d) Drive the
+      #2917 flow-owned beats (a skill selection → `working`; a joke → `joking`; a settle → `happy`)
+      with a model status present.
+  **Expected:** (a) the sequence stays `idle → teleport-out → (hidden in transit) → teleport-in →
+      idle` at ~400 ms / ~+50 ms / ~400 ms; the model status NEVER appears during the teleport (a
+      teleport always wins); (b) `data-state="talk"` renders while streaming with no status — the
+      `talk` sole trigger stays REACHABLE; (c) `error` renders with no false `happy` (the model status
+      never masks the error path); (d) `working`/`happy`/`joking` still render per their triggers.
+  - **Edge:** a model status equal to `error`; a status at the settle boundary; a status during the
+    `happy` hold; a status during `working`.
+
+## F-132 (Q-7 / LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-132: Same run as F-126..F-131: `fredo emit --event-type chat --session-id e2e-2918-chat` +
+      `--event-type tool_use --session-id e2e-2918-tool --tool-name read_file`; query
+      `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the per-case
+      frames via `upload-evidence --issue 2918`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered receipt.
+      **A static-only PASS with no live receipt is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+## F-133 (Q-8 / NF) — Build, suite, console, token purity
+
+- [ ] F-133: `cargo check` + `cargo clippy --all-targets` (incl. test targets); `pnpm --filter
+      @fredo/ui build` + `pnpm --filter @fredo/ui test:run`; read the console after EVERY leg;
+      inspect the parser/gate/resolver code for effect/memo deps on array `.length`/fresh objects;
+      grep the changed files for `#[0-9a-fA-F]{3,8}`/`rgba(`/`rgb(`/`hsla(`/`var(--x)NN`.
+  **Expected:** zero Rust warnings incl. test targets; build exit 0 / zero TS errors; the full UI
+      suite green with no assertion weakened/deleted (a moved pin named per G-125); no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window; no re-render loop
+      (AGENTS.md #523); ZERO hardcoded colour literals / no alpha-append.
+  - **Edge:** a status forced mid-theme-switch; the pre-existing `motion() is deprecated` WARN is
+    exempt; a retry path that must not add a per-frame computation.
