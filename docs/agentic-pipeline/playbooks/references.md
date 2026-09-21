@@ -52,6 +52,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-230: on_the_go_improvement
+- **activation_date:** 2026-09-21
+- **observed:** #2922 round 2
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Fixed the stale Development-summary comment template: it attributed the draft to the Self-Improver (header + '*Authored by Self-Improver*' footer) but the Developer authors .opencode/tmp/<issue>/dev-summary.md each round - the round-1/round-2 drafts correctly carried '*Authored by Developer*' and the flush gate accepted them, so the template was out of sync with the pipeline. Header now says the Developer drafts it (SI may amend at step-7 review) and the footer matches the real author.
+- **home:** references.md (G-230)
+- **effectiveness:** Pending
+
 
 ### G-227: declared_legibility_floor_not_prevalidated_against_the_painted_token
 - **activation_date:** 2026-09-21
