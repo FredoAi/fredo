@@ -3,10 +3,10 @@
  * launcher command bar.
  *
  * Pins:
- *   1. `deriveModelAudioPhase` — the ONE pure derivation: local mode is always
- *      `idle`; a typed error outranks everything; `processing` outranks the
- *      capture; `listening` is the live capture; `starting` is the shipped
- *      bounded window; anything else is `idle` (the `stopped` resting render).
+ *   1. `deriveModelAudioPhase` — the ONE pure derivation (Spec #2914 ST-8: model
+ *      audio is the only mode): a typed error outranks everything; `processing`
+ *      outranks the capture; `listening` is the live capture; `starting` is the
+ *      shipped bounded window; anything else is `idle` (the `stopped` render).
  *   2. The model listening chip — `launcher-command-model-listening-chip` reading
  *      `Fredo is listening`, the `release Space to finish` placeholder (#2904
  *      ST-2: while the model chip is up it is the ONLY listening claim, so the
@@ -17,8 +17,9 @@
  *      the `Fredo is processing…` placeholder, the dot, and NO stop/cancel.
  *   4. `stopped`/`idle` removes the chip/indicator and returns the resting
  *      placeholder; `error` keeps the below-bar `role="alert"` surface.
- *   5. LOCAL mode (omitted `voiceMode`) is byte-identical to the shipped bar: the
- *      `Listening` chip + `Listening…` placeholder, and no model chip.
+ *   5. Spec #2914 ST-8 — voice input has ONE mode: the model-audio path renders
+ *      for every session (the removed `voiceMode='local'` cue is gone; there is no
+ *      `voiceMode` input on the derivation).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
@@ -51,21 +52,11 @@ describe('deriveModelAudioPhase — the ONE model-audio state derivation (#2897 
   const input = (
     over: Partial<Parameters<typeof deriveModelAudioPhase>[0]> = {},
   ): Parameters<typeof deriveModelAudioPhase>[0] => ({
-    voiceMode: 'model',
     listening: false,
     modelAudioPhase: null,
     starting: false,
     error: false,
     ...over,
-  });
-
-  it('local mode is ALWAYS idle — the shipped transcription cue is untouched', () => {
-    expect(
-      deriveModelAudioPhase(input({ voiceMode: 'local', listening: true })),
-    ).toBe('idle');
-    expect(
-      deriveModelAudioPhase(input({ voiceMode: 'local', modelAudioPhase: 'processing' })),
-    ).toBe('idle');
   });
 
   it('a typed error outranks every other model-audio signal', () => {
@@ -106,19 +97,6 @@ describe('deriveModelAudioPhase — the ONE model-audio state derivation (#2897 
       deriveModelAudioPhase(input({ listening: true, modelAudioPhase: 'capturing', turnSettled: true })),
     ).toBe('listening');
     expect(deriveModelAudioPhase(input({ starting: true, turnSettled: true }))).toBe('starting');
-  });
-
-  it('local mode is `idle` for BOTH settled states — the overlay never fires off-model', () => {
-    expect(
-      deriveModelAudioPhase(
-        input({ voiceMode: 'local', modelAudioPhase: 'processing', turnSettled: false }),
-      ),
-    ).toBe('idle');
-    expect(
-      deriveModelAudioPhase(
-        input({ voiceMode: 'local', modelAudioPhase: 'processing', turnSettled: true }),
-      ),
-    ).toBe('idle');
   });
 });
 
@@ -238,14 +216,21 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
     expect(status).toHaveTextContent('Model audio is unavailable.');
   });
 
-  it('LOCAL mode (omitted `voiceMode`) renders the shipped `Listening` chip unchanged', () => {
+  it('ONE mode: a bare `listening` render is the model-audio cue (no `voiceMode` prop needed)', () => {
     renderWithChakra(
       <LauncherCommandBar query="live" onQueryChange={vi.fn()} listening onStopListening={vi.fn()} />,
     );
 
-    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
-    expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
+    expect(screen.getByTestId('launcher-command-model-listening-chip')).toHaveTextContent(
+      MODEL_AUDIO_LISTENING_CHIP_COPY,
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute(
+      'placeholder',
+      MODEL_AUDIO_LISTENING_PLACEHOLDER,
+    );
+    // The removed `'local'` transcription cue never renders (Spec #2914 ST-8).
+    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
+    expect(screen.queryByText('Listening')).toBeNull();
     expect(screen.queryByTestId('launcher-command-model-processing-chip')).toBeNull();
   });
 });
@@ -309,9 +294,12 @@ describe('computeEndSlotBudgetPx / computeEndPaddingPx — the model-audio budge
     expect(computeEndPaddingPx({ showHint: false, listening: false })).toBeUndefined();
     // Hint chip + minimize.
     expect(computeEndPaddingPx({ showHint: true, listening: false })).toBe(220 + 44);
-    // Local listening keeps its SHIPPED 396px reservation (220 + 72 + 60 + 44) —
-    // the budget is a model-audio floor, not a global cap (REQ-5, content 122px).
-    expect(computeEndPaddingPx({ showHint: true, listening: true })).toBe(220 + 72 + 60 + 44);
+    // Model listening WITH the hint chip collides (220 + 208 + 60 + 44 = 532) and
+    // is clamped to the model budget — the ONLY chip reservation left (Spec #2914
+    // ST-8 removed the `'local'` reservation).
+    expect(
+      computeEndPaddingPx({ showHint: true, listening: true, modelPhase: 'listening' }),
+    ).toBe(computeEndSlotBudgetPx());
     // Model listening WITHOUT the hint chip reserves 208 + 60 + 44 = 312.
     expect(
       computeEndPaddingPx({ showHint: false, listening: true, modelPhase: 'listening' }),
@@ -372,22 +360,6 @@ describe('LauncherCommandBar — the model-audio composition (#2904 ST-2, REQ-3/
       MODEL_AUDIO_PROCESSING_PLACEHOLDER,
     );
   });
-
-  it('LOCAL mode is unchanged: the `Listening` chip + `Listening…` placeholder + the hint chip all render (REQ-5)', () => {
-    renderWithChakra(
-      <LauncherCommandBar
-        query=""
-        onQueryChange={vi.fn()}
-        listening
-        hintLabel="release Space to finish"
-        onStopListening={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
-    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent('release Space to finish');
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
-  });
 });
 
 // ── The live-region copy (transition-driven) ──────────────────────────────────
@@ -419,7 +391,7 @@ describe('LauncherCommandBar — the model-audio announcements (#2897 ST-4)', ()
     expect(announcer).not.toHaveTextContent('Stopped listening');
   });
 
-  it('the mount is silent and a non-model render never uses the model copy', () => {
+  it('the mount is silent and a bare `listening` render uses the model copy (one mode)', () => {
     const { rerender } = renderWithChakra(
       <LauncherCommandBar query="" onQueryChange={vi.fn()} />,
     );
@@ -427,7 +399,6 @@ describe('LauncherCommandBar — the model-audio announcements (#2897 ST-4)', ()
     expect(announcer.textContent).toBe('');
 
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} listening />);
-    expect(announcer).toHaveTextContent('Listening');
-    expect(announcer).not.toHaveTextContent(MODEL_AUDIO_LISTENING_ANNOUNCEMENT);
+    expect(announcer).toHaveTextContent(MODEL_AUDIO_LISTENING_ANNOUNCEMENT);
   });
 });

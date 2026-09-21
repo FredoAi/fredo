@@ -78,23 +78,20 @@ const VOICE_DEVICE_HELP_ID = 'companion-voice-device-help';
 export const SYSTEM_DEFAULT_DEVICE_LABEL = 'System default';
 
 /**
- * Help copy under the master enable label (#2882 ST-7 / R-7). It teaches the
- * SHIPPED gesture only: hold Space in the launcher search bar, release for
- * editable text, Enter to send, a dictated transcript that is always Fredo's,
- * and Ctrl+Space as the bar-opening chord — never dictation.
- *
- * Spec #2914 ST-3: this copy is RETAINED byte-identical (the UI/UX declaration
- * freezes the enable toggle's `aria-label` + help id and scopes copy deltas to
- * `MODEL_AUDIO_FAILURE_COPY`/`voiceErrorCopyFor`). Its transcript/autosend
- * sentences describe the removed local path; flagged in the ST-3 Status report
- * as a follow-up copy cleanup rather than silently edited here.
+ * Help copy under the master enable label (#2882 ST-7 / R-7; re-pointed in
+ * Spec #2914 ST-8). It teaches the SHIPPED gesture only: hold Space in an empty
+ * launcher search bar, release and the recording is handed to the locally-managed
+ * companion model — there is exactly ONE speech path (model audio), no transcript
+ * is shown, and Ctrl+Space only brings the bar forward. The prior copy described
+ * dictation landing as editable text, an autosend toggle and a transcript that
+ * "always goes to Fredo" — all removed with the local mode (R-1/R-4).
  */
 const VOICE_ENABLE_HELP_COPY =
-  'In the launcher search bar, hold Space to dictate; release and the words land in the bar as ' +
-  'editable text. Enter then sends them to Fredo — with “Send voice transcripts automatically” ' +
-  'on, they’re sent the moment you release. A dictated transcript always goes to Fredo and never ' +
-  'opens an app, even after you edit it. Ctrl+Space only brings the search bar forward; it never ' +
-  'starts dictation. Transcription runs locally — nothing leaves this machine.';
+  'In the launcher search bar, hold Space to dictate (the bar must be empty); release and the ' +
+  'recording is handed to Fredo’s locally-managed model — no transcript is shown, and Fredo’s ' +
+  'reply appears in the normal conversation surface. Ctrl+Space only brings the search bar ' +
+  'forward; it never starts dictation. Speech is captured and understood on this machine — ' +
+  'nothing leaves it.';
 
 // ── Curated voice engine-error copy (DR-11) ──────────────────────────────────
 

@@ -13,7 +13,8 @@
  *      exactly once on the rise.
  *   4. Below-bar precedence — alert (voice error) > model-audio limit > queued,
  *      measured with a present counter-element (never by hiding the loser).
- *   5. Invariance — local mode / no bound / no auto-stop render no notice.
+ *   5. Invariance — no auto-stop / no bound render no notice; a bound-less
+ *      auto-stop stays truthful (Spec #2914 ST-8: there is no `'local'` mode).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
@@ -209,12 +210,18 @@ describe('LauncherCommandBar — the auto-stop limit notice (#2897 ST-5)', () =>
     );
   });
 
-  it('local mode / no auto-stop / no bound never render the notice (invariance)', () => {
+  it('no auto-stop / no bound render no notice; a bound-less auto-stop stays truthful (one mode)', () => {
+    // Spec #2914 ST-8 — there is no `'local'` mode, so `limitReached` alone is a
+    // model-audio terminal state: it renders the notice WITHOUT a fabricated
+    // number (the wire carried no bound).
     renderWithChakra(
       <LauncherCommandBar query="" onQueryChange={vi.fn()} limitReached />,
     );
-    expect(screen.queryByTestId('launcher-command-model-limit-status')).toBeNull();
+    expect(screen.getByTestId('launcher-command-model-limit-status')).toHaveTextContent(
+      "That's the limit — Fredo has your recording and is responding.",
+    );
 
+    // No auto-stop ⇒ no notice, even with the bound on the wire.
     cleanup();
     renderWithChakra(
       <LauncherCommandBar

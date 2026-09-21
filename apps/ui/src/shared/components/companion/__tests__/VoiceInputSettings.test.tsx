@@ -44,14 +44,14 @@ import type { VoiceInputSettingsProps } from '@/shared/components/companion/Voic
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { SttDeviceProbe } from '@/shared/components/companion/companionReadiness';
 
-// ── #2882 ST-7 pinned copy (R-7) — retained byte-identical by #2914 ST-3 ─────
+// ── #2882 ST-7 pinned copy (R-7); re-pointed by #2914 ST-8 (one model-audio path) ──
 const VOICE_ENABLE_LABEL = 'Hold Space to dictate';
 const VOICE_ENABLE_HELP_TEXT =
-  'In the launcher search bar, hold Space to dictate; release and the words land in the bar as ' +
-  'editable text. Enter then sends them to Fredo — with “Send voice transcripts automatically” ' +
-  'on, they’re sent the moment you release. A dictated transcript always goes to Fredo and never ' +
-  'opens an app, even after you edit it. Ctrl+Space only brings the search bar forward; it never ' +
-  'starts dictation. Transcription runs locally — nothing leaves this machine.';
+  'In the launcher search bar, hold Space to dictate (the bar must be empty); release and the ' +
+  'recording is handed to Fredo’s locally-managed model — no transcript is shown, and Fredo’s ' +
+  'reply appears in the normal conversation surface. Ctrl+Space only brings the search bar ' +
+  'forward; it never starts dictation. Speech is captured and understood on this machine — ' +
+  'nothing leaves it.';
 const VOICE_DISABLED_ERROR_TEXT =
   'Voice input is off. Turn on “Hold Space to dictate” above, then hold Space in the launcher search bar.';
 

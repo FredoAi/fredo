@@ -956,3 +956,35 @@ describe('CompanionProvider — #2892 ST-1 transient signals', () => {
     expect(presence().autoHidden).toBe(false);
   });
 });
+
+// ── 11. One voice mode — the removed members are gone (Spec #2914 ST-8) ──────
+
+describe('CompanionProvider — removed speech-handling/autosend surface (#2914 ST-8)', () => {
+  it('the context value no longer exposes the speech-handling or autosend members', async () => {
+    await mountProvider({ visible: true, timeoutS: 5 });
+
+    // R-4: the handling key is never read, so the members are deleted (not a
+    // `'model'`-only shim). The autosend toggle is gone with the transcript path.
+    expect('voiceHandling' in api).toBe(false);
+    expect('setVoiceHandling' in api).toBe(false);
+    expect('voiceAutosend' in api).toBe(false);
+    expect('setVoiceAutosend' in api).toBe(false);
+
+    // The surviving voice surface is unchanged.
+    expect('voiceEnabled' in api).toBe(true);
+    expect('voiceDeviceId' in api).toBe(true);
+  });
+
+  it('the module no longer exports the speech-handling/autosend symbols', async () => {
+    const mod = await import('@/shared/contexts/CompanionContext');
+
+    expect('VOICE_HANDLING_SETTING_KEY' in mod).toBe(false);
+    expect('DEFAULT_VOICE_HANDLING' in mod).toBe(false);
+    expect('VOICE_AUTOSEND_SETTING_KEY' in mod).toBe(false);
+    expect('DEFAULT_VOICE_AUTOSEND' in mod).toBe(false);
+
+    // The retained enable/device symbols are still exported.
+    expect('VOICE_ENABLED_SETTING_KEY' in mod).toBe(true);
+    expect('VOICE_DEVICE_ID_SETTING_KEY' in mod).toBe(true);
+  });
+});

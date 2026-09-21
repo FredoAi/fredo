@@ -56,10 +56,12 @@
  * only while the host reports `listening` (the host gates it to a `launcher`-
  * origin session, so exactly ONE indicator shows per session — R-5.3):
  *   • the FROZEN static accent dot `launcher-command-listening` (no pulse);
- *   • a visible `Listening` text chip `launcher-command-listening-chip` and a
- *     tab-reachable Stop control `launcher-command-listening-stop`
+ *   • a tab-reachable Stop control `launcher-command-listening-stop`
  *     (`aria-label="Stop listening"`), inserted before the minimize control;
- *   • the `Listening…` placeholder + accent-tinted border;
+ *   • the model-audio chip + the `release Space to finish` placeholder + the
+ *     accent-tinted border (Spec #2897 ST-4). Spec #2914 ST-8 removed the old
+ *     `'local'` `Listening` chip and `Listening…` placeholder — voice input has
+ *     exactly one mode, so there is no transcription cue to render;
  *   • `launcher-command-listening-status` below the bar: the hearing-nothing hint
  *     after `HEARING_NOTHING_MS` of silence, or an inline `role="alert"` with
  *     curated copy when a start failed (the raw backend detail is never the
@@ -130,8 +132,8 @@
  *     INSIDE the existing `fredo-command-hint-sr` mirror so `aria-describedby`
  *     keeps its shipped value. Enter's wording is owned by #2882 and untouched.
  *
- * Spec #2897 ST-4 (REQ-3/REQ-4) — the MODEL-AUDIO indicator (`voiceMode='model'`),
- * gated by the ONE pure `deriveModelAudioPhase`:
+ * Spec #2897 ST-4 (REQ-3/REQ-4); Spec #2914 ST-8 — the MODEL-AUDIO indicator,
+ * the ONLY voice mode, gated by the ONE pure `deriveModelAudioPhase`:
  *   • `listening` → the accent dot (`launcher-command-listening`) + the
  *     `Fredo is listening` chip (`launcher-command-model-listening-chip`, the ONLY
  *     listening claim — #2904 ST-2) + the `×` Cancel / `■` Stop controls + the
@@ -147,11 +149,9 @@
  *     (`launcher-command-listening-status`); the curated copy is owned elsewhere.
  *   The mode-agnostic ids (`launcher-command-listening`,
  *   `launcher-command-listening-stop`, `launcher-command-listening-cancel`) are
- *   unchanged in BOTH modes, so keyboard/mouse targets stay stable, and the
- *   shipped `Listening` chip/`Listening…` copy is the ONLY indicator in `'local'`
- *   mode (the `voiceMode` prop defaults to `'local'` — omitted ⇒ byte-identical).
- *   ZERO transcript text: `finalTranscript` is host-suppressed in model mode, and
- *   the transcript announcer stays mounted-but-empty.
+ *   unchanged, so keyboard/mouse targets stay stable.
+ *   ZERO transcript text: `finalTranscript` is host-suppressed (no producer
+ *   remains), and the transcript announcer stays mounted-but-empty.
  *
  * Spec #2897 ST-5 (REQ-6) — the over-limit, NON-LOSSY bound:
  *   • the pinned ceiling reaches the bar as a NUMBER (`modelAudioLimitMs`, from
@@ -169,7 +169,7 @@
  *     limit > hearing-nothing > queued > newline caption.
  *
  * Inactive-companion invariance (AC4): every new prop is OPTIONAL and defaults to
- * today's rendering (`voiceMode='local'` / `enterMode='launch'` / no `hintLabel` /
+ * today's rendering (`enterMode='launch'` / no `hintLabel` /
  * `busy=false` / `listening=false` / no stop or cancel handler / no error / no
  * final transcript / `voiceEnabled=false`) — no chip, no glyph swap, no reserved
  * padding, and `aria-busy` is omitted (not rendered as `"false"`). #2882 ST-4
@@ -292,14 +292,16 @@ export function modelAudioLimitNoticeCopy(limitSeconds: number | null): string {
  * ONE place the model-audio state is decided, so the indicator cannot drift from
  * the signals ST-2 exposes on `useVoiceDictation`:
  *
- *   local mode          → `'idle'` (the shipped transcription cue is untouched —
- *                          this derivation never fires for `'local'`);
  *   typed error         → `'error'` (the below-bar `role="alert"`);
  *   `processing`        → the stop delivered the clip; the backend is interpreting
  *                          (unless `turnSettled`, see `#2897 round 2` below);
  *   `listening`         → capture live (`listening && origin === 'launcher'`);
  *   `starting`          → the shipped bounded `starting voice input…` window;
  *   otherwise           → `'idle'` (includes `'stopped'`: indicator removed).
+ *
+ * Spec #2914 ST-8 — voice input has exactly ONE mode (model audio), so the
+ * former `voiceMode='local'` short-circuit is gone: every session derives from
+ * the model-audio signals.
  *
  * #2897 round 2 (R2-1, F-104): the STT plane is SILENT after the stop commits
  * `processing`, so the shell supplies `turnSettled` once the dispatched turn's
@@ -309,7 +311,6 @@ export function modelAudioLimitNoticeCopy(limitSeconds: number | null): string {
  * backend-owned; only this DERIVED layer clears.
  */
 export function deriveModelAudioPhase(input: {
-  voiceMode: 'local' | 'model';
   /** `captureLive` — the launcher-origin capture is genuinely live. */
   listening: boolean;
   /** ST-2's `voice.modelAudioPhase` (backend `stt:state.phase`). */
@@ -326,7 +327,6 @@ export function deriveModelAudioPhase(input: {
    */
   turnSettled?: boolean;
 }): ModelAudioPhase {
-  if (input.voiceMode !== 'model') return 'idle';
   if (input.error) return 'error';
   if (input.modelAudioPhase === 'processing' && input.turnSettled !== true) return 'processing';
   if (input.listening) return 'listening';
@@ -526,12 +526,14 @@ export interface LauncherCommandBarProps {
    */
   containerRef?: React.Ref<HTMLDivElement>;
   /**
-   * Spec #2897 ST-4 (REQ-3/REQ-4) — the persisted speech-handling mode. `'local'`
-   * (default) renders the shipped transcription cue EXACTLY as before; `'model'`
-   * swaps the capture cue for the model-audio indicator (`deriveModelAudioPhase`)
-   * with ZERO transcript text. Omitted ⇒ `'local'` (byte-identical rendering).
+   * Spec #2897 ST-4; Spec #2914 ST-8 — voice input has exactly ONE mode (model
+   * audio), so this member collapsed to the single `'model'` value. It is
+   * retained ONLY as an accepted (unread) prop so the ST-5 launcher call site
+   * keeps compiling; the bar ALWAYS renders the model-audio indicator
+   * (`deriveModelAudioPhase`) with ZERO transcript text. Deleting it outright
+   * would require editing `LauncherShell.tsx`, which is outside ST-8's scope.
    */
-  voiceMode?: 'local' | 'model';
+  voiceMode?: 'model';
   /**
    * Spec #2897 ST-4 — ST-2's `voice.modelAudioPhase` (the backend
    * `stt:state.phase`): `'capturing'` while the clip accumulates, `'processing'`
@@ -576,9 +578,12 @@ export interface LauncherCommandBarProps {
  * a lying instruction (R-6.3).
  */
 const HINT_CHIP_MAX_WIDTH_PX = 220;
-/** Static `Listening` chip width (12px text) + the Stop control's footprint.
- *  CSS unit strings only (G-146 → exact pixels). */
-const LISTENING_CHIP_WIDTH_PX = 72;
+/**
+ * Spec #2882 ST-5 — the bounded `starting voice input…` pending chip's width
+ * (12px text) + the Stop control's footprint. It shares the single chip slot
+ * with the model-audio chips. CSS unit strings only (G-146 → exact pixels).
+ */
+const PENDING_CHIP_WIDTH_PX = 72;
 /**
  * Spec #2897 ST-4/ST-5 — the model-audio chip reservations. The listening chip
  * (`Fredo is listening`, and `Fredo is listening · 10s left` in the countdown
@@ -731,18 +736,16 @@ export function computeEndPaddingPx(options: {
   // never rendered while one of them is up (exactly ONE indicator).
   const pendingChip =
     !options.listening && !modelListening && !modelProcessing && options.holdPending === true;
-  // The chip slot holds AT MOST ONE chip: the shipped `Listening` chip (local
-  // mode), the model listening chip, the model processing chip, or the bounded
-  // pending chip — never together.
+  // The chip slot holds AT MOST ONE chip: the model listening chip, the model
+  // processing chip, or the bounded pending chip — never together. Spec #2914
+  // ST-8 removed the old `'local'` transcription chip from this slot.
   const chipPx = modelListening
     ? MODEL_AUDIO_LISTENING_CHIP_WIDTH_PX
     : modelProcessing
       ? MODEL_AUDIO_PROCESSING_CHIP_WIDTH_PX
-      : options.listening
-        ? LISTENING_CHIP_WIDTH_PX
-        : pendingChip
-          ? LISTENING_CHIP_WIDTH_PX
-          : 0;
+      : pendingChip
+        ? PENDING_CHIP_WIDTH_PX
+        : 0;
   // Cancel + Stop render only while a capture is live (both modes). `processing`
   // deliberately has none.
   const controlPx = options.listening || modelListening ? CANCEL_GUTTER_PX + STOP_GUTTER_PX : 0;
@@ -761,10 +764,9 @@ export function computeEndPaddingPx(options: {
   // `overflow-wrap:break-word` then stacks the placeholder one character per line.
   // Clamp the model reservation to `computeEndSlotBudgetPx()` so the invariant
   // `BAR_LEADING_GUTTER_PX + pe + 2 + BAR_FIELD_MIN_CONTENT_PX ≤ BAR_MAX_WIDTH_PX`
-  // holds. Local mode's shipped 396px reservation is preserved VERBATIM (REQ-5):
-  // its field has always kept a 122px content box on one line, and reducing it
-  // would regress the shipped transcription cue — the budget is a model-audio
-  // floor, not a global cap.
+  // holds. Spec #2914 ST-8: the model reservation is the ONLY chip reservation
+  // left (the `'local'` chip was removed), so the budget governs every live
+  // capture/processing composition.
   if (!modelListening && !modelProcessing) return px;
   const budgetPx = computeEndSlotBudgetPx(options.barMaxWidthPx);
   const budgeted = Math.min(px, budgetPx);
@@ -906,7 +908,6 @@ export function LauncherCommandBar({
   ariaDescribedBy,
   newlineHint = false,
   containerRef,
-  voiceMode = 'local',
   modelAudioPhase = null,
   modelAudioTurnSettled = false,
   limitReached = false,
@@ -1003,15 +1004,13 @@ export function LauncherCommandBar({
   // and it never says `Listening`.
   const startingChip = (holdCue === 'starting' || holdCue === 'warming') && !captureLive;
 
-  // Spec #2897 ST-4 (REQ-3/REQ-4) — the DERIVED model-audio phase. Local mode is
-  // `'idle'` by construction, so the shipped transcription cue is untouched. Read
-  // off ST-2's signals (never re-derived): `modelAudioPhase` is the backend's
-  // `stt:state.phase`, `listening` is the live capture, and the bounded hold
-  // window is the shipped `startingChip`. `'stopped'` collapses to `'idle'` (the
-  // indicator is removed and the resting placeholder returns — no stale chip).
-  const isModelVoice = voiceMode === 'model';
+  // Spec #2897 ST-4 (REQ-3/REQ-4); Spec #2914 ST-8 — the DERIVED model-audio
+  // phase (the ONLY voice mode). Read off ST-2's signals (never re-derived):
+  // `modelAudioPhase` is the backend's `stt:state.phase`, `listening` is the live
+  // capture, and the bounded hold window is the shipped `startingChip`.
+  // `'stopped'` collapses to `'idle'` (the indicator is removed and the resting
+  // placeholder returns — no stale chip).
   const modelPhase = deriveModelAudioPhase({
-    voiceMode,
     listening,
     modelAudioPhase,
     starting: startingChip,
@@ -1082,28 +1081,20 @@ export function LauncherCommandBar({
   };
 
   // The placeholder (UI/UX §9): busy > the LIVE capture > the pre-capture
-  // acknowledgement > the S1 promise > the legacy resting copy. Only `captureLive`
-  // may produce `Listening…` (R-3); the armed/pending windows say `Hold to dictate…`.
-  // Spec #2897 ST-4: in model mode the interpreting window is `Fredo is processing…`
-  // (never `Listening…` — model audio opens no recogniser, so a `Listening…` claim
-  // would imply words). Spec #2904 ST-2 (REQ-3): the capture placeholder is
+  // acknowledgement > the S1 promise > the resting copy. The armed/pending
+  // windows say `Hold to dictate…`. Spec #2897 ST-4; Spec #2914 ST-8: the ONLY
+  // voice mode is model audio, so the interpreting window is `Fredo is processing…`
+  // (never `Listening…` — no recogniser exists, so a `Listening…` claim would
+  // imply words). Spec #2904 ST-2 (REQ-3): the capture placeholder is
   // `release Space to finish` — while the model chip is up it is the ONLY listening
   // claim, so the field carries the instruction (relocated from the suppressed hint
   // chip) rather than restating `Fredo is listening…`.
   const placeholder = busy
     ? 'Fredo is replying…'
-    : isModelVoice
-      ? modelListening
-        ? MODEL_AUDIO_LISTENING_PLACEHOLDER
-        : modelProcessing
-          ? MODEL_AUDIO_PROCESSING_PLACEHOLDER
-          : cueReadying
-            ? HOLD_ACKNOWLEDGE_PLACEHOLDER
-            : holdAvailable && inputFocused && query === ''
-              ? HOLD_AVAILABLE_PLACEHOLDER
-              : 'search or command'
-      : captureLive
-        ? 'Listening…'
+    : modelListening
+      ? MODEL_AUDIO_LISTENING_PLACEHOLDER
+      : modelProcessing
+        ? MODEL_AUDIO_PROCESSING_PLACEHOLDER
         : cueReadying
           ? HOLD_ACKNOWLEDGE_PLACEHOLDER
           : holdAvailable && inputFocused && query === ''
@@ -1199,32 +1190,30 @@ export function LauncherCommandBar({
     }
     if (!listening && voiceOffRef.current) return;
     if (listening) {
-      // Spec #2897 ST-4 — in model mode the capture is an audio capture, so the
-      // announcement names it exactly (`Fredo is listening`); the shipped
-      // transcription line stays for local mode.
-      setListenAnnouncement(isModelVoice ? MODEL_AUDIO_LISTENING_ANNOUNCEMENT : 'Listening');
+      // Spec #2897 ST-4; Spec #2914 ST-8 — the capture is a model-audio capture,
+      // so the announcement names it exactly (`Fredo is listening`).
+      setListenAnnouncement(MODEL_AUDIO_LISTENING_ANNOUNCEMENT);
       return;
     }
     // Falling edge. Spec #2897 ST-4 — a model-audio STOP hands over to the
     // `processing` window, whose own rise edge announces (`Fredo is processing
     // your speech`); one stop must never announce twice.
-    if (isModelVoice && modelAudioPhase === 'processing') return;
+    if (modelAudioPhase === 'processing') return;
     setListenAnnouncement('Stopped listening');
-  }, [listening, isModelVoice, modelAudioPhase]);
+  }, [listening, modelAudioPhase]);
 
   // Spec #2897 ST-4 (UI/UX §4) — the `processing` rise edge, announced ONCE.
   // Declared AFTER the listening effect so that on the stop commit (listening
-  // false + phase `processing`) this line is the one the region reads. It is
-  // model-mode only: local mode never has a backend `processing` phase.
+  // false + phase `processing`) this line is the one the region reads. Spec #2914
+  // ST-8 — model audio is the only mode, so there is no non-model branch.
   const prevModelAudioPhaseRef = useRef<VoiceModelAudioPhase | null>(modelAudioPhase);
   useEffect(() => {
     const was = prevModelAudioPhaseRef.current;
     prevModelAudioPhaseRef.current = modelAudioPhase;
-    if (!isModelVoice) return;
     if (modelAudioPhase === 'processing' && was !== 'processing') {
       setListenAnnouncement(MODEL_AUDIO_PROCESSING_ANNOUNCEMENT);
     }
-  }, [modelAudioPhase, isModelVoice]);
+  }, [modelAudioPhase]);
 
   // Spec #2897 ST-5 (REQ-6) — the auto-stop bound, announced ONCE on the
   // `limitReached` rise. Declared AFTER the processing effect so that on the
@@ -1235,10 +1224,10 @@ export function LauncherCommandBar({
   useEffect(() => {
     const was = prevLimitReachedRef.current;
     prevLimitReachedRef.current = limitReached;
-    if (isModelVoice && limitReached && !was) {
+    if (limitReached && !was) {
       setListenAnnouncement(MODEL_AUDIO_LIMIT_ANNOUNCEMENT);
     }
-  }, [limitReached, isModelVoice]);
+  }, [limitReached]);
 
   useEffect(() => {
     const was = prevVoiceEnabledRef.current;
@@ -1254,8 +1243,7 @@ export function LauncherCommandBar({
   // WARNING (never `role="alert"`) and carries the REAL bound from the backend
   // constant. The below-bar slot precedence becomes: alert (voice error) >
   // model-audio limit > hearing-nothing > queued > newline caption.
-  const modelLimitMessage =
-    isModelVoice && limitReached ? modelAudioLimitNoticeCopy(limitSeconds) : null;
+  const modelLimitMessage = limitReached ? modelAudioLimitNoticeCopy(limitSeconds) : null;
   // The error takes precedence over every other line; the limit notice in turn
   // outranks the hearing-nothing hint (an auto-stopped capture is not "silent").
   const statusMessage =
@@ -1406,33 +1394,11 @@ export function LauncherCommandBar({
                 {STARTING_VOICE_INPUT_COPY}
               </Box>
             )}
-            {/* #2877 ST-5 (DR-7) — visible `Listening` chip + Stop control, before
-                the existing hint chip / divider / `—` minimize (which stays LAST).
-                Spec #2897 ST-4 — `'local'` mode ONLY; model mode renders its own
-                chip below (never the transcription wording). */}
-            {listening && !isModelVoice && (
-              <Box
-                as="span"
-                data-testid="launcher-command-listening-chip"
-                display="block"
-                height="24px"
-                lineHeight="24px"
-                px="8px"
-                borderRadius="4px"
-                bg="accent.subtle"
-                color="fg.default"
-                fontFamily="var(--font-primary)"
-                fontSize="12px"
-                whiteSpace="nowrap"
-                flexShrink={0}
-              >
-                Listening
-              </Box>
-            )}
             {/* Spec #2897 ST-4 (UI/UX §4, REQ-3) — the MODEL-AUDIO capture chip.
                 Text carries the state; the mode-agnostic dot above is the mark.
-                It occupies the SAME single chip slot as the local Listening chip
-                (never both). */}
+                It occupies the SAME single chip slot as the bounded pending chip
+                and the processing chip (never together). Spec #2914 ST-8 removed
+                the old `'local'` transcription chip — there is one voice mode. */}
             {modelListening && (
               <Box
                 as="span"
