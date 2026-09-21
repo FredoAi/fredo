@@ -41,7 +41,8 @@ import type { CSSProperties } from 'react';
 import { tint } from '../../../../shared/utils/colorTint';
 import type { BackgroundLayerMotion } from './backgroundMotion';
 
-/** The closed background id set: `none` (default) + six procedural recipes. */
+/** The closed background id set: `none` (default) + six procedural recipes +
+ *  `life` (the engine-backed Conway's Game of Life surface, Spec #2915). */
 export type BackgroundId =
   | 'none'
   | 'aurora'
@@ -49,7 +50,11 @@ export type BackgroundId =
   | 'mesh'
   | 'topography'
   | 'constellation'
-  | 'halo';
+  | 'halo'
+  | 'life';
+
+/** Paint-engine discriminator: absent ⇒ the declarative CSS-recipe renderer. */
+export type BackgroundRenderer = 'css' | 'life';
 
 /** ONE paint layer. The renderer adds `position: absolute` and the shared
  *  `layerBoxStyle` geometry (`inset`). */
@@ -70,6 +75,8 @@ export interface BackgroundDescriptor {
   css: CSSProperties;
   /** Paint order (bottom → top). `none`: `[]`. */
   layers: readonly BackgroundLayer[];
+  /** Paint engine discriminator: absent ⇒ `'css'` (declarative recipe layers). */
+  renderer?: BackgroundRenderer;
 }
 
 /**
@@ -400,6 +407,25 @@ const HALO_BACKGROUND: BackgroundDescriptor = {
   ],
 };
 
+/**
+ * Life — the engine-backed Conway's Game of Life surface (Spec #2915). Unlike
+ * the six declarative CSS recipes it paints through a canvas engine (exactly ONE
+ * bounded `requestAnimationFrame` loop) in the sibling `life/` subsystem; its
+ * `layers` is EMPTY by design (the generic layer loop maps zero children) and its
+ * `renderer` discriminator dispatches the backdrop to the engine. The ground is
+ * the deepest page surface and cells resolve `--accent-primary` at paint time —
+ * zero colour literal, exactly like every recipe. It is deliberately NOT part of
+ * `BACKGROUND_DESCRIPTORS` (the six declarative recipes, whose ≥1-layer contract
+ * is byte-pinned); the chooser appends it explicitly.
+ */
+export const LIFE_BACKGROUND: BackgroundDescriptor = {
+  id: 'life',
+  label: 'Life',
+  css: { backgroundColor: 'var(--body-bg)' },
+  layers: [],
+  renderer: 'life',
+};
+
 /** The six procedural recipes, in chooser order. `none` is intentionally
  *  separate (`NONE_BACKGROUND`) — it is the shipped texture, not a recipe. */
 export const BACKGROUND_DESCRIPTORS: readonly BackgroundDescriptor[] = [
@@ -411,7 +437,7 @@ export const BACKGROUND_DESCRIPTORS: readonly BackgroundDescriptor[] = [
   HALO_BACKGROUND,
 ];
 
-/** Every valid id — `none` + the six procedural recipes. */
+/** Every valid id — `none` + the six procedural recipes + `life`. */
 const BACKGROUND_IDS: readonly BackgroundId[] = [
   'none',
   'aurora',
@@ -420,6 +446,7 @@ const BACKGROUND_IDS: readonly BackgroundId[] = [
   'topography',
   'constellation',
   'halo',
+  'life',
 ];
 
 const BACKGROUND_ID_SET: ReadonlySet<string> = new Set(BACKGROUND_IDS);
@@ -448,6 +475,8 @@ export function getBackgroundDescriptor(raw: string): BackgroundDescriptor {
       return CONSTELLATION_BACKGROUND;
     case 'halo':
       return HALO_BACKGROUND;
+    case 'life':
+      return LIFE_BACKGROUND;
     case 'none':
     default:
       return NONE_BACKGROUND;
