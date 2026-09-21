@@ -530,3 +530,33 @@
       on the launcher leg, compare a dense full-frame diff with a sparse point-grid diff. Any state where
       the sparse grid would pass while the dense diff fails must be recorded — the sparse grid is never
       admissible (promotes to `companion` F-121).
+
+---
+
+## #2922 extension — body-solidity edge probes on the launcher surface
+
+> Unscripted probes for issue #2922. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note); a confirmed regression-free probe is recorded here. Live policy; an
+> undrivable lever is a named blocker (G-053) with a static/unit pin — never fabricated. The metric
+> definition lives in `.opencode/tests/companion/functional.md` `#2922 extension`.
+
+- [ ] E-74: **Seat mascot solidity across open/close churn.** Remount the launcher (open → close →
+      open) several times and re-run the body metric at the seat each time. Does the mascot render
+      fully solid every time (no partial/stale fill after a remount, no stale colour, no half-painted
+      body), and does the open/close animation frame where the mascot is mid-bob still measure 0? Any
+      partial fill / stale frame is a finding (promotes to launcher F-113).
+- [ ] E-75: **Worst-case accent vs the seat fill.** With the accent nearest the launcher page
+      background, is the seat mascot's body still distinguishable as a filled region at the sm 80×100
+      scale (fill-vs-backdrop delta > `4×T_OPEN`) and does the figure read as one solid shape? Any
+      body region merging with the surface is a finding (promotes to launcher F-114 + the QA
+      Discussion Q-2).
+- [ ] E-76: **Leak-boundary probe on the seat mascot.** Walk the seat mascot's silhouette boundary
+      (outer-arm/hip steps, neck band either side of the jaw bar, crotch) at 1-unit steps and record
+      any pixel where frame A differs from frame B inside a background box. Any single-pixel leak is a
+      finding (promotes to launcher F-115 / companion F-138); explicitly note the `x 460, y 1150`
+      false-positive (the left inner leg's own edge) so it is not re-filed.
+- [ ] E-77: **The md 132×165 render leg (only if a surface ever renders it).** No surface renders
+      `size="md"` today (`AVATAR_MD` is only exported). If one is wired, re-run the body metric at md
+      and check band joins at the larger scale (the 6-unit rim tuck is scale-independent in viewBox
+      units but the antialias width is not). Absent an md surface, record the shared-component RTL pin
+      as the residual and do NOT claim a rendered md PASS (promotes to launcher F-113).
