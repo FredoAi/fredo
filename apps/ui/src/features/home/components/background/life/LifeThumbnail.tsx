@@ -11,12 +11,14 @@
  *
  * Paint contract (Spec #2925, R-5f): the preview mirrors the SAME shared dimmed
  * expression the live field paints — ground `var(--body-bg)`, cells
- * `var(--life-cell)`, and a final `var(--life-dim)` scrim rect composited over
- * both so the tile can never promise a brighter field than the desktop delivers.
- * All three consumers name the tokens only; the mix arithmetic lives once in
- * `ThemeProvider.tsx` and the authored weights in `lifeConstants.ts`. Alpha is
- * expressed ONLY through the numeric SVG `opacity` attribute — never a colour
- * alpha-append and never a literal.
+ * `var(--life-cell)` (the accent-strong cell blended toward the `--life-neutral`
+ * mid-luminance chroma leg, itself `--text-primary` toward `--body-bg`), and a
+ * final `var(--life-dim)` scrim rect composited over both so the tile can never
+ * promise a brighter field than the desktop delivers. All three consumers name
+ * the tokens only; the mix arithmetic lives once in `ThemeProvider.tsx` and the
+ * authored weights in `lifeConstants.ts`. Alpha is expressed ONLY through the
+ * numeric SVG `opacity` attribute — never a colour alpha-append and never a
+ * literal.
  */
 
 import React from 'react';

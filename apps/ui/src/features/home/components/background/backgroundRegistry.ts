@@ -415,7 +415,8 @@ const HALO_BACKGROUND: BackgroundDescriptor = {
  * `renderer` discriminator dispatches the backdrop to the engine. The ground is
  * the deepest page surface and cells resolve the `--life-cell` token at paint
  * time — the dimmed `--accent-strong` expression (accent-strong mixed toward
- * `--text-primary`), over which `paint()` lays ONE field-wide `--life-dim` scrim
+ * the derived `--life-neutral` mid-luminance chroma leg), over which `paint()`
+ * lays ONE field-wide `--life-dim` scrim
  * — zero colour literal, exactly like every recipe. It is deliberately NOT part of
  * `BACKGROUND_DESCRIPTORS` (the six declarative recipes, whose ≥1-layer contract
  * is byte-pinned); the chooser appends it explicitly.

@@ -60,19 +60,37 @@ export const LIFE_ATTRIBUTION = 'Patterns: Life Lexicon (Stephen Silver), CC BY-
 /* Painted-dim contract (Spec #2925, ST-1)                                    */
 /* -------------------------------------------------------------------------- */
 /*
- * The two authored weights below compose the derived `--life-cell` /
- * `--life-dim` expressions registered ONCE in `ThemeProvider.tsx` (base pass,
- * next to `--accent-strong`). They are the SINGLE authored-number home for the
- * calmer/less-glaring field: the provider string-interpolates them into the
- * two `color-mix()` custom properties, and `lifeEngine.ts` reads the resolved
- * values at paint time. See `docs/features/desktop-background-life.md`.
+ * The three authored weights below compose the derived `--life-neutral` /
+ * `--life-cell` / `--life-dim` expressions registered ONCE in
+ * `ThemeProvider.tsx` (base pass, next to `--accent-strong`). They are the
+ * SINGLE authored-number home for the calmer/less-glaring field: the provider
+ * string-interpolates them into the three `color-mix()` custom properties, and
+ * `lifeEngine.ts` reads the resolved values at paint time. See
+ * `docs/features/desktop-background-life.md`.
+ *
+ * The cell desaturation leg targets a DERIVED mid-neutral (`--life-neutral`,
+ * `--text-primary` blended toward `--body-bg`) rather than `--text-primary`
+ * directly: HSL saturation is scale-invariant under a multiplicative darken, so
+ * blending toward the near-black `--text-primary` on light presets was
+ * effectively a uniform darken and did not reduce chroma. A mid-luminance
+ * neutral compresses the channel range on BOTH light and dark presets.
  */
 
-/** Cell blend toward `--text-primary` — the desaturation leg of the cell mix. */
-export const LIFE_CELL_MIX = 0.2;
+/**
+ * Cell blend toward the derived `--life-neutral` mid-neutral — the
+ * chroma-reducing leg of the cell mix (`--accent-strong` keeps the rest).
+ */
+export const LIFE_CELL_MIX = 0.35;
 
-/** `--overlay-bg` weight in `--life-dim` (black alpha = 0.6 × 0.2 = 0.12). */
-export const LIFE_SCRIM_WEIGHT = 0.2;
+/**
+ * `--body-bg` share of the derived `--life-neutral` mid-neutral
+ * (`--text-primary` gets the remaining 0.7), so the neutral sits at
+ * mid-luminance on every preset instead of tracking the text token.
+ */
+export const LIFE_NEUTRAL_BG_MIX = 0.3;
+
+/** `--overlay-bg` weight in `--life-dim` (black alpha = 0.6 × 0.12 = 0.072). */
+export const LIFE_SCRIM_WEIGHT = 0.12;
 
 /**
  * Contrast floor for the resolved dimmed cell-vs-ground pair. If the WCAG

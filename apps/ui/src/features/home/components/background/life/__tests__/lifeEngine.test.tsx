@@ -367,6 +367,42 @@ describe('#2925 ST-4 — dimmed paint contract', () => {
     expect(tokens.cell).toBe('color-mix(in srgb, #ffffff 80%, #000000 20%)');
     expect(tokens.dim).toBe('rgba(0, 0, 0, 0.12)');
   });
+
+  it('resolves a fully-substituted THIRD-level nested --life-cell (the neutral leg)', () => {
+    // The browser's computed `--life-cell` is the substituted token stream:
+    // `--accent-strong` (a color-mix) AND `--life-neutral` (a color-mix) both
+    // nest inside the outer color-mix — three levels deep. The recursive parser
+    // must resolve it; otherwise the guard would fail-safe and never fire.
+    const keep = document.createElement('canvas');
+    keep.style.setProperty('--body-bg', '#ffffff');
+    keep.style.setProperty('--accent-strong', '#00d1d1');
+    keep.style.setProperty(
+      '--life-cell',
+      'color-mix(in srgb, color-mix(in srgb, #00d1d1 55%, #0c1117 45%) 65%, color-mix(in srgb, #0c1117 70%, #ffffff 30%) 35%)',
+    );
+    keep.style.setProperty('--life-dim', 'rgba(0, 0, 0, 0.072)');
+
+    const kept = resolveLifeTokens(keep);
+    // Above the floor the dimmed (nested) pair is kept — the guard PARSED it.
+    expect(kept.cell).toBe(
+      'color-mix(in srgb, color-mix(in srgb, #00d1d1 55%, #0c1117 45%) 65%, color-mix(in srgb, #0c1117 70%, #ffffff 30%) 35%)',
+    );
+    expect(kept.dim).toBe('rgba(0, 0, 0, 0.072)');
+
+    const fallback = document.createElement('canvas');
+    fallback.style.setProperty('--body-bg', '#000000');
+    fallback.style.setProperty('--accent-strong', '#ffffff');
+    fallback.style.setProperty(
+      '--life-cell',
+      'color-mix(in srgb, color-mix(in srgb, #202020 55%, #101010 45%) 65%, color-mix(in srgb, #101010 70%, #000000 30%) 35%)',
+    );
+    fallback.style.setProperty('--life-dim', 'rgba(0, 0, 0, 0.072)');
+
+    const reverted = resolveLifeTokens(fallback);
+    // Below the floor the same nested shape reverts to the untransformed pair.
+    expect(reverted.cell).toBe('#ffffff');
+    expect(reverted.dim).toBe('transparent');
+  });
 });
 
 describe('#2915 ST-3 — React binding data-life-* hooks', () => {

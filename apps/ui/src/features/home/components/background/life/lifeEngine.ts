@@ -8,7 +8,10 @@
  *     aware but bounded to `LIFE_DPR_MAX` × the CSS viewport (a LINEAR ratio);
  *   - resolve the THREE paint tokens from the LIVE theme CSS custom properties
  *     (`--body-bg` ground, `--life-cell` dimmed cell, `--life-dim` scrim) —
- *     never a colour literal and never a `var(--x)NN` alpha-append;
+ *     never a colour literal and never a `var(--x)NN` alpha-append. The
+ *     `--life-cell` expression embeds the derived `--life-neutral`
+ *     mid-luminance chroma leg, so its resolved text is a THIRD-level nested
+ *     `color-mix()`; the guard's recursive parser resolves any nesting depth;
  *   - paint ground → cells → EXACTLY ONE field-wide `--life-dim` scrim
  *     (`fillRect` over the finished frame), so the ground and the cells dim
  *     together and the cell-vs-ground ratio is preserved;
@@ -42,7 +45,10 @@ import { createLifeSimulation, type LifeSimulation } from './lifeSimulation';
 export interface LifeTokens {
   /** Backdrop ground — `--body-bg`. */
   ground: string;
-  /** Live-cell colour — `--life-cell` (the dimmed `--accent-strong` expression). */
+  /**
+   * Live-cell colour — `--life-cell`: the dimmed `--accent-strong` expression
+   * blended toward the `--life-neutral` mid-luminance chroma leg.
+   */
   cell: string;
   /** Field-wide scrim painted once over ground+cells — `--life-dim`. */
   dim: string;
@@ -112,8 +118,11 @@ function readToken(
 /* #2925 ST-2 — WCAG contrast guard (token-resolution time only, never per     */
 /* frame). It parses only the colour shapes the live theme can produce: hex,   */
 /* rgb()/rgba(), `transparent`, and the `color-mix(in srgb, …)` expressions    */
-/* the provider registers. Anything unrecognised yields null → the guard is    */
-/* skipped and the authored dimmed pair is kept (fail-safe).                   */
+/* the provider registers. `splitTopLevel` + `parseColorMix` recurse, so the   */
+/* nested `--accent-strong` / `--life-neutral` legs of `--life-cell` resolve   */
+/* at ANY nesting depth (the third-level `--life-neutral` leg included).       */
+/* Anything unrecognised yields null → the guard is skipped and the authored   */
+/* dimmed pair is kept (fail-safe).                                            */
 /* -------------------------------------------------------------------------- */
 
 interface LifeRgb {

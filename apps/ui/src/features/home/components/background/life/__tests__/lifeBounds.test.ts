@@ -25,7 +25,12 @@ import { resolve } from 'node:path';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 
-import { LIFE_CELL_MIX, LIFE_CONTRAST_MIN, LIFE_SCRIM_WEIGHT } from '../lifeConstants';
+import {
+  LIFE_CELL_MIX,
+  LIFE_CONTRAST_MIN,
+  LIFE_NEUTRAL_BG_MIX,
+  LIFE_SCRIM_WEIGHT,
+} from '../lifeConstants';
 import { createLifeEngine } from '../lifeEngine';
 import { LifeBackgroundCanvas } from '../LifeBackgroundCanvas';
 
@@ -319,8 +324,9 @@ describe('#2915 ST-5 (e) — Life slice source pin', () => {
 
 describe('#2925 ST-4 — authored dim contract', () => {
   it('pins the authored dim weights and the contrast floor', () => {
-    expect(LIFE_CELL_MIX).toBeCloseTo(0.2, 5);
-    expect(LIFE_SCRIM_WEIGHT).toBeCloseTo(0.2, 5);
+    expect(LIFE_CELL_MIX).toBeCloseTo(0.35, 5);
+    expect(LIFE_NEUTRAL_BG_MIX).toBeCloseTo(0.3, 5);
+    expect(LIFE_SCRIM_WEIGHT).toBeCloseTo(0.12, 5);
     expect(LIFE_CONTRAST_MIN).toBe(3);
   });
 
@@ -329,25 +335,36 @@ describe('#2925 ST-4 — authored dim contract', () => {
       expect(weight).toBeGreaterThan(0);
       expect(weight).toBeLessThan(0.5);
     }
+    // The neutral is a blend SHARE (0 < x < 1), not a transform amount.
+    expect(LIFE_NEUTRAL_BG_MIX).toBeGreaterThan(0);
+    expect(LIFE_NEUTRAL_BG_MIX).toBeLessThan(1);
     // The scrim's effective black alpha (0.6 base × weight) stays a light touch.
     expect(0.6 * LIFE_SCRIM_WEIGHT).toBeLessThanOrEqual(0.2);
   });
 
-  it('composes --life-cell / --life-dim from the weights with no literal or alpha-append', () => {
+  it('composes --life-neutral / --life-cell / --life-dim from the weights with no literal or alpha-append', () => {
     const lines = readSource('src/app/providers/ThemeProvider.tsx').split('\n');
+    const neutralLine = lines.find(
+      (line) => line.includes('color-mix') && line.includes('LIFE_NEUTRAL_BG_PCT'),
+    );
     const cellLine = lines.find(
       (line) => line.includes('color-mix') && line.includes('LIFE_CELL_BASE_PCT'),
     );
     const dimLine = lines.find(
       (line) => line.includes('color-mix') && line.includes('LIFE_SCRIM_BASE_PCT'),
     );
+    expect(neutralLine, 'ThemeProvider must compose --life-neutral').toBeTruthy();
     expect(cellLine, 'ThemeProvider must compose --life-cell from LIFE_CELL_MIX').toBeTruthy();
     expect(dimLine, 'ThemeProvider must compose --life-dim from LIFE_SCRIM_WEIGHT').toBeTruthy();
+    // --life-neutral is the mid-neutral chroma leg (text-primary toward body-bg).
+    expect(neutralLine).toContain('var(--text-primary)');
+    expect(neutralLine).toContain('var(--body-bg)');
+    // --life-cell targets that derived neutral, not --text-primary directly.
     expect(cellLine).toContain('var(--accent-strong)');
-    expect(cellLine).toContain('var(--text-primary)');
+    expect(cellLine).toContain('var(--life-neutral)');
     expect(dimLine).toContain('transparent');
     expect(dimLine).toContain('var(--overlay-bg)');
-    for (const line of [cellLine as string, dimLine as string]) {
+    for (const line of [neutralLine as string, cellLine as string, dimLine as string]) {
       expect(line).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
       expect(line).not.toMatch(/\brgba?\s*\(/);
       expect(line).not.toMatch(/\bhsla?\s*\(/);

@@ -18,7 +18,10 @@
  * paint expression the engine resolves and the chooser thumbnail mirrors —
  * `color: var(--life-cell)` over `backgroundColor: var(--body-bg)`, with the
  * field-wide `--life-dim` scrim composited by `lifeEngine` after ground + cells.
- * All three consumers name the tokens only; the mix arithmetic lives once in
+ * `--life-cell` is the accent-strong cell blended toward the `--life-neutral`
+ * mid-luminance chroma leg (itself `--text-primary` toward `--body-bg`), so the
+ * field is less single-hue-dominant on light presets as well as dark. All three
+ * consumers name the tokens only; the mix arithmetic lives once in
  * `ThemeProvider.tsx` and the authored weights in `lifeConstants.ts`. No colour
  * literal, no `var(--x)NN` alpha-append.
  *
