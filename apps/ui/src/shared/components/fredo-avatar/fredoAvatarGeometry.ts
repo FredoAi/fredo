@@ -164,11 +164,18 @@ export function expandFredoRects(src: readonly FredoAvatarSourceRect[]): FredoRe
  * only — `expandFredoRects`), and the fill is rendered as ONE `<path>` (never a
  * `<rect>`), so `svg.querySelectorAll('rect')` stays exactly 58.
  *
- * The bands tile the head cavity only — the body stays deliberately fragmented.
- * Rows 1–5 cover the head interior (the eyes sit on top of the fill), rows 6–9
- * cover the mouth void down to the jaw bar (y=761; no fill below). x-ranges are
- * the cavity's inner faces expanded 6 units outward so each band tucks UNDER the
- * opaque accent rim (invisible there) and every band is symmetric about X=507.
+ * Bands 1–9 tile the head cavity (#2917): rows 1–5 cover the head interior (the
+ * eyes sit on top of the fill) and rows 6–9 cover the mouth void down to the jaw
+ * bar (y=761). Their x-ranges are the cavity's inner faces expanded 6 units
+ * outward so each band tucks UNDER the opaque accent rim (invisible there) and
+ * every band is symmetric about X=507.
+ *
+ * Bands 10–17 (#2922) extend the SAME single fill through the body cavity
+ * (torso/hips/legs, y 824–1200) so the whole figure reads opaque: the inter-leg
+ * slit (x 488–526) and the shoulder/neck + armpit notches stay background (bound
+ * negative space, never filled), the feet rows keep the between-feet gap, and
+ * each band tucks ~6 units under the base-rect rim so no fill paints past the
+ * silhouette.
  *
  * Bands 6 and 7 are trimmed 1 unit at their bottom edge (h=58 / h=41) versus the
  * triage table (h=59 / h=42): the head rim steps INWARD at y=644 (the inner face
@@ -191,6 +198,22 @@ export const FREDO_AVATAR_INTERIOR_RECTS: readonly FredoAvatarSourceRect[] = [
   { x: 209, y: 644, width: 596, height: 41, src: 'interior-7', mirrored: false }, // mouth void
   { x: 270, y: 686, width: 474, height: 42, src: 'interior-8', mirrored: false }, // mouth void
   { x: 337, y: 727, width: 340, height: 34, src: 'interior-9', mirrored: false }, // mouth void → jaw
+  // ---- #2922 ST-1 — BODY interior fill (torso, hips, legs; additive, appended
+  // AFTER the byte-identical 9 head bands). Tiles the body cavity so the torso,
+  // arms and legs render opaque instead of letting the page show through. The
+  // inter-leg slit (x 488–526, y 1097–1200) and the shoulder/neck + armpit
+  // notches stay background (bound negative space); every band tucks ~6 units
+  // under the opaque base-rect rim so its free edges terminate on an existing rim
+  // edge and no fill paints past the silhouette. The feet rows (y 1201–1234) keep
+  // the between-feet gap so two legs stay two legs.
+  { x: 382, y: 824, width: 51, height: 10, src: 'interior-10', mirrored: false }, // left chest cavity, tucked 6 under the inner-arm + bow-tie rims
+  { x: 581, y: 824, width: 51, height: 10, src: 'interior-11', mirrored: false }, // right chest cavity (mirror of band 10)
+  { x: 382, y: 834, width: 250, height: 82, src: 'interior-12', mirrored: false }, // torso core — bow-tie knot + chest → waist, tucked under both inner-arm rims
+  { x: 414, y: 916, width: 186, height: 93, src: 'interior-13', mirrored: false }, // lower torso around the centre button, tucked 6 under the inner lower-arm rims
+  { x: 327, y: 1009, width: 360, height: 52, src: 'interior-14', mirrored: false }, // hips, tucked 6 under the hip rims
+  { x: 327, y: 1061, width: 360, height: 24, src: 'interior-15', mirrored: false }, // hip → leg bridge — closes the rim gap so the body reads solid to the legs
+  { x: 355, y: 1085, width: 133, height: 115, src: 'interior-16', mirrored: false }, // left leg interior, stops at the inter-leg slit (x 488)
+  { x: 526, y: 1085, width: 133, height: 115, src: 'interior-17', mirrored: false }, // right leg interior (mirror of band 16), stops at the inter-leg slit (x 526)
 ];
 
 /**
