@@ -881,3 +881,68 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
 - **R-63 PASS (live, re-confirmed).** Typed skill turn `askActiveCompanion('open Mission Monitor')` → `llm-skill-call {"skill":"open_app","arguments":{"app":"Mission Monitor"}}` (t=842 ms) + exactly one `llm-done`, **zero `llm-status`**, app opened (`[mission-monitor] auto-fit … 6 nodes`). The shipped `llm_chat_with_skills` control emits the same selection. The tools bodies on the status path carry NO `response_format` (pin `the_tools_bodies_on_the_status_path_carry_no_response_format`, `status.rs:1088`).
 - **R-64 PASS (live).** Status-free state fingerprints unchanged: `idle` (no `#fredo-expression`), `thinking`, `joking`, `teleport-out`/`teleport-in`, `working`. The resolver priority order and `ANIM_DURATION` are unchanged.
 - **R-65 PASS (live + static).** Reply surface/chrome, bubble geometry, presence/persisted keys unchanged; teleport timing unchanged. **F-134 residual CLEARED:** a teleport mid-hold now ends `happy → teleport-out → teleport-in → idle` and the reply bubble clears; post-settle samples at +5/+13/+20/+27 s are `idle`/`playful` only (no re-asserted model status). Round-3 commit `df42538` touches only `CompanionEntity.tsx` + its `__tests__` file (frontend, entity-local).
+
+---
+
+## #2922 extension — the body-wide interior fill must NOT disturb the shipped avatar/companion contracts
+
+> Issue #2922 extends the ADDITIVE interior fill (`#fredo-interior`, one `<path>`) from the head-only
+> `y 106–761` bands to the WHOLE body (`y ≈ 812–1234`). The fill stays ADDITIVE, so the frozen-geometry
+> rows stay in force unchanged (only the 58 BASE rects are pinned, never the total node count). R-1..R-65
+> above remain in force and run alongside the companion F-135..F-143 + launcher R-67..R-69.
+> **Verification policy: live.**
+
+## R-66 — Frozen 58 base rects + ONE `<path>` fill drawn first + the parity guard untouched
+
+- [ ] R-66: In EVERY state read the direct `<svg>` `<rect>` children and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; enumerate `#fredo-interior` (tag, document
+      order, `data-layer`); count `svg.querySelectorAll('rect')`; run `fredoAvatarGeometry.test.ts`
+      + `fredoAvatarInterior.test.tsx`.
+  **Expected:** the 58 base rects are byte-identical across ALL states on BOTH surfaces; the fill is
+      ONE `<path>` (never a `<rect>`) drawn BEFORE the base rects; the geometry suite passes
+      UNMODIFIED; a body band implemented by mutating `FREDO_AVATAR_SOURCE_RECTS`, the mirror math, or
+      the base-table count-parity guard is a FAIL. The interior band-count pin is the ONE expected
+      named refresh (G-125). Reference R-20/R-59 + #2917 R-58/R-59.
+
+## R-67 — Existing state fingerprints / overlay rect sets / timing unchanged
+
+- [ ] R-67: Drive `idle`/`talk`/`teleport-out`/`teleport-in` + the #2917/#2918 status states; probe the
+      wrapper `data-state`, `#fredo-expression[data-state=…]` rect sets and the consumer computed
+      `animationName`; timestamp a same-window teleport.
+  **Expected:** the pre-#2922 per-state fingerprints are unchanged (talk 2 / teleport-out 3 /
+      teleport-in 2 / thinking 6 / joking 4 / happy 8 / playful 4 / listening 3 / working 6 / error 6 /
+      greeting 12; `idle` = no overlay); `ANIM_DURATION` unchanged (idle 800 / talk 500 / out 400 /
+      in 400), teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `HAPPY_HOLD_MS 5000` /
+      `ERROR_HOLD_MS 8000` / `TALK_HOLD_MS 4000` / `WORKING_BEAT_MS 900` / `GREETING_BEAT_MS 1500`
+      unchanged; the 250 ms click discriminator, the joke and TicTacToe still work; a body band must
+      not shadow an existing overlay selector or be inserted between the base rects and the overlay.
+  - **Edge:** a state sampled mid-teleport; the fill must not reorder the overlay `g` relative to the
+    base rects. Reference R-19/R-33/R-58.
+
+## R-68 — Joke / TicTacToe / bubble / presence / persisted keys untouched
+
+- [ ] R-68: Single-click joke; double-click TicTacToe (250 ms discriminator); Ctrl+right-click
+      teleport (same + cross-window via `run-cli-terminal`); toggle the companion ON/OFF; let a short
+      idle auto-return fire; drive the reply surface; `open Mission Monitor` (skill) and
+      `open NotARealApp` (fail-closed); read `Fredo_companion_visible` / `Fredo_companion_idle_timeout`
+      and confirm `isAway` is not persisted.
+  **Expected:** R-1..R-5, R-33..R-49, R-53..R-65 still hold — the 240×120 base / grown+scroll reply,
+      the 208×268 game card, the `above > right > left` placement, the streaming cursor, the
+      joke/vision flows, the teleport timing, one-Fredo-at-home, the seat wrapper 80×100 + 16 px, and
+      the persisted keys/ranges are byte/behaviour-identical. A body band adds no persisted key and
+      mutates none.
+  - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-status; an auto-return at the idle
+    deadline; the `error` hold must not be extended/shortened by the fill.
+
+## R-69 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-69: Static-grep the changed avatar + companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg in both windows; inspect the fill/state
+      code for effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); the body fill reads ONLY
+      `var(--fredo-avatar-interior)`; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no
+      re-render loop (#523); build exit 0; suite green without weakening an assertion (refreshed ones
+      named per G-125). Reference R-7/R-23/R-45/R-57/R-62.
+  - **Edge:** the fill layer adds no per-frame computation and no mount-time state write; the
+    pre-existing `motion() is deprecated` WARN is exempt.
