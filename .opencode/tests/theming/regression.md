@@ -216,3 +216,54 @@
 - **R-26 PASS.** `vitest run background` → 6 files / 96 tests: `isBoundedMotion` bounds hold (no `steps()`, duration ≥ 8000, opacity ≥ 0.35 swing ≤ 0.45, scale ∈ [0.85,1.2], translate ≤ 12, ≤ 3 layers) and the motion module has zero `requestAnimationFrame`/`setInterval`. Live durations 16–37 s; ≤ 3 layers all six.
 - **R-27 PASS.** build exit 0 (2577 modules); `test:run` 108 files / 1805 tests passed; the #2899 static-only clauses stay `G-136 SUPERSEDED (#2905)` (inverted, not deleted); no `var(--x)NN`; no raster added.
 - **R-28 PASS.** Heap +0.69 % over 100.3 s with constant animation/layer counts (3/3); rAF p95 16.8 ms / max 16.8 ms, 0 frames > 33 ms; interaction within ~1 ms of the None baseline (16.6/15.8/16.8 ms).
+
+---
+
+## #2915 extension — the Life background must not regress the desktop or the theme engine
+
+> Issue #2915 adds a **Life** (Conway's Game of Life) option beside None + the six recipes. These
+> invariants MUST hold; run alongside R-1..R-28 and the desktop-shell / settings suites. **This is
+> an ADD, not a supersession** — no prior row is contradicted. **Verification policy: live.**
+> The perceptibility/attribution rows themselves are F-57..F-72 in `functional.md`.
+
+- [ ] **R-29 (theming engine + existing background behavior unchanged):** preset selection, per-token
+      overrides, "Reset to theme defaults", the readout, and the `overrides ?? preset ?? base`
+      layering behave exactly as before; the chooser still offers None + the six named recipes and each
+      still selects/animates; **None** is still pixel-comparable with zero `[data-testid="desktop-backdrop"]`
+      DOM; a stale/unknown stored value still falls back safely to None; the backdrop stays z=0 /
+      `pointer-events:none` / `aria-hidden` / non-focusable. Reference F-1..F-19, R-21..R-25.
+  - **Edge:** theme/accent switch while the Life automaton runs; light + dark; upgrade from a persisted
+    recipe; Life → None → recipe cycling.
+
+- [ ] **R-30 (recipe motion invariants preserved — scope guard):** `backgroundMotion.ts` still introduces
+      **zero** `requestAnimationFrame`/`setInterval`; `isBoundedMotion`/`overscanCovers`/`MOTION_*` bounds
+      are unchanged; the six recipes' `data-motion` / animation signatures and layer counts are unchanged.
+      **The Life simulation loop is OUTSIDE `backgroundMotion.ts`** — Life is a discrete simulation, not a
+      recipe, and must not be implemented by weakening or inverting the recipe rows (F-35/F-50). The
+      `background.invariants.test.tsx` zero-rAF / ≥1-layer / exactly-6-descriptor pins (`:394-401, :538,
+      :623, :813-817`) must be **re-scoped to the CSS-recipe modules, not deleted**, and the Life engine
+      must carry its OWN bounded-loop pin (single rAF; cancelled on static/hidden/unmount; no unbounded
+      timers). A change that relaxes `isBoundedMotion`, moves the Life loop into the recipe module, or
+      deletes (rather than re-scopes) an existing invariant = FAIL. Reference F-35/F-50/R-26.
+  - **Edge:** a shared helper extracted from the recipe module must not change a recipe's computed motion;
+    the re-scoped pins still assert the six recipes' zero-rAF contract.
+
+- [ ] **R-31 (desktop shell / window styling / z-order / input unchanged):** the backdrop — Life included —
+      stays strictly below `WindowManager`, `pointer-events:none` + `aria-hidden` + non-focusable; no
+      window/card/surface styling change; feature windows still open, move, resize, minimize, focus, close;
+      input typed into a focused field lands while Life animates. Reference R-24, F-62.
+  - **Edge:** maximized / floating / minimized windows; window dragged over the animated region; two windows;
+    Life active during a cold-launch.
+
+- [ ] **R-32 (persistence + store contract unchanged):** `Fredo_desktop_background` keeps the string-only
+      value, lenient normalization, and idempotent/dirty-guarded hydration; adding `life` to the valid-id
+      set does not change None/recipe round-trips or the removed-id → None fallback. Reference F-23/F-36/F-59.
+  - **Edge:** upgrade from an install that never stored a value; value written by an older build; AppStore vs
+    localStorage divergence.
+
+- [ ] **R-33 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter
+      @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (the only permitted
+      supersession stays the explicit `#2899` static-only legs); zero color literals / `var(--x)NN` in the
+      Life slice; no raster asset added. Reference F-66/F-71.
+  - **Edge:** the recipe-module zero-rAF assertions stay green (Life excluded by construction); no dangling
+    import; overlap suites green.
