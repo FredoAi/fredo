@@ -226,7 +226,7 @@
 > an ADD, not a supersession** — no prior row is contradicted. **Verification policy: live.**
 > The perceptibility/attribution rows themselves are F-57..F-72 in `functional.md`.
 
-- [ ] **R-29 (theming engine + existing background behavior unchanged):** preset selection, per-token
+- [x] **R-29 (theming engine + existing background behavior unchanged):** preset selection, per-token
       overrides, "Reset to theme defaults", the readout, and the `overrides ?? preset ?? base`
       layering behave exactly as before; the chooser still offers None + the six named recipes and each
       still selects/animates; **None** is still pixel-comparable with zero `[data-testid="desktop-backdrop"]`
@@ -235,7 +235,7 @@
   - **Edge:** theme/accent switch while the Life automaton runs; light + dark; upgrade from a persisted
     recipe; Life → None → recipe cycling.
 
-- [ ] **R-30 (recipe motion invariants preserved — scope guard):** `backgroundMotion.ts` still introduces
+- [x] **R-30 (recipe motion invariants preserved — scope guard):** `backgroundMotion.ts` still introduces
       **zero** `requestAnimationFrame`/`setInterval`; `isBoundedMotion`/`overscanCovers`/`MOTION_*` bounds
       are unchanged; the six recipes' `data-motion` / animation signatures and layer counts are unchanged.
       **The Life simulation loop is OUTSIDE `backgroundMotion.ts`** — Life is a discrete simulation, not a
@@ -248,22 +248,30 @@
   - **Edge:** a shared helper extracted from the recipe module must not change a recipe's computed motion;
     the re-scoped pins still assert the six recipes' zero-rAF contract.
 
-- [ ] **R-31 (desktop shell / window styling / z-order / input unchanged):** the backdrop — Life included —
+- [x] **R-31 (desktop shell / window styling / z-order / input unchanged):** the backdrop — Life included —
       stays strictly below `WindowManager`, `pointer-events:none` + `aria-hidden` + non-focusable; no
       window/card/surface styling change; feature windows still open, move, resize, minimize, focus, close;
       input typed into a focused field lands while Life animates. Reference R-24, F-62.
   - **Edge:** maximized / floating / minimized windows; window dragged over the animated region; two windows;
     Life active during a cold-launch.
 
-- [ ] **R-32 (persistence + store contract unchanged):** `Fredo_desktop_background` keeps the string-only
+- [x] **R-32 (persistence + store contract unchanged):** `Fredo_desktop_background` keeps the string-only
       value, lenient normalization, and idempotent/dirty-guarded hydration; adding `life` to the valid-id
       set does not change None/recipe round-trips or the removed-id → None fallback. Reference F-23/F-36/F-59.
   - **Edge:** upgrade from an install that never stored a value; value written by an older build; AppStore vs
     localStorage divergence.
 
-- [ ] **R-33 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter
+- [x] **R-33 (gates + no test weakening):** `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter
       @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (the only permitted
       supersession stays the explicit `#2899` static-only legs); zero color literals / `var(--x)NN` in the
       Life slice; no raster asset added. Reference F-66/F-71.
   - **Edge:** the recipe-module zero-rAF assertions stay green (Life excluded by construction); no dangling
     import; overlap suites green.
+
+### #2915 testing round 1 (spec/2915 @ a3c7f245) — results
+
+- **R-29 PASS (live).** preset/accent overrides + "Reset to theme defaults" behave as before; the chooser still offers None + the six recipes and each selects/animates; None → zero `desktop-backdrop` DOM; stale `banana` → safe None; backdrop z=0 / `pointer-events:none` / `aria-hidden` / non-focusable.
+- **R-30 PASS.** `backgroundMotion.ts` untouched (0 rAF/`setInterval`); `background.invariants.test.tsx` **byte-identical** (`git diff` shows no change) — its zero-rAF / ≥1-layer / exactly-6 pins still green; Life ships its OWN bounded-loop pin (`lifeBounds.test.ts`, 8 tests: 1 rAF/frame, 0 on the static leg, cancel-while-hidden, destroy teardown, source grep).
+- **R-31 PASS (live).** backdrop strictly z=0 under the z=1 WindowManager; `elementFromPoint` inside the floating window rect never returns the backdrop; clicks (tile Halo→Life) + typing landed while Life animates.
+- **R-32 PASS (live).** `Fredo_desktop_background` string-only; `banana`/`''`/`null`/`123`/`{}`/`plasma` → None; `none`+`life` cold-restart round-trips exact.
+- **R-33 PASS (gates) with the F-63 caveat.** build exit 0; 115 files / 1700 tests; only the chooser 7→8 expectation updated; zero literals / `var(--x)NN` / raster in the slice. (The AC3 light-preset cell/ground contrast miss is tracked as F-63, not an R-33 gate failure.)
