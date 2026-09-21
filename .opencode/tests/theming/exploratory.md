@@ -214,28 +214,38 @@
 > superseded. The perceptibility metric itself is F-61; these probe the MEASUREMENT and the
 > automaton's failure modes.
 
-- [ ] **E-44 — Rapid Life/recipe churn.** Cycle None → Life → each recipe → None (≥ 3 full cycles); watch
+- [x] **E-44 — Rapid Life/recipe churn.** Cycle None → Life → each recipe → None (≥ 3 full cycles); watch
       for `Maximum update depth exceeded`, stale paint, an orphaned Life loop or canvas surviving a
       selection switch, or lag (AGENTS.md #523). Any finding promotes to F-57/F-66.
-- [ ] **E-45 — Sustained Life soak + re-seed cadence.** Leave Life active for several minutes; sample heap,
+- [x] **E-45 — Sustained Life soak + re-seed cadence.** Leave Life active for several minutes; sample heap,
       generation/step cadence, and grid/step counts at start/middle/end. Does the automaton die out or
       freeze into a still life between re-seeds? Does the re-seed cadence drift? Any finding promotes to
       F-61/F-66/F-69.
-- [ ] **E-46 — Reduced-motion path (named blocker).** Read `matchMedia('(prefers-reduced-motion: reduce)').matches`
+- [x] **E-46 — Reduced-motion path (named blocker).** Read `matchMedia('(prefers-reduced-motion: reduce)').matches`
       and attempt to flip it live; record the live flip as UNVERIFIED with the Tauri-driver named blocker
       (G-050/#2870). Confirm via the product-unit pin that under reduce NO simulation loop is scheduled and
       the frame is static; any loop/step under reduce is a finding (promotes to F-64).
-- [ ] **E-47 — Visibility/pause probe.** Minimize, switch away, and occlude the window; does
+- [x] **E-47 — Visibility/pause probe.** Minimize, switch away, and occlude the window; does
       `data-life-running` flip to `"false"` while `visibilityState === 'hidden'` (or the frame freeze to
       ≤ noise floor) and resume cleanly on restore? Any drift, a loop that keeps stepping hidden, or a
       stale/torn frame on restore promotes to F-67.
-- [ ] **E-48 — Life + theme/accent churn.** Switch dark↔light + set/clear the accent override while Life
+- [x] **E-48 — Life + theme/accent churn.** Switch dark↔light + set/clear the accent override while Life
       animates; watch for a stopped loop, a frozen frame, a stale cell colour, or a re-render loop. Any
       finding promotes to F-63.
-- [ ] **E-49 — Canvas / performance probe.** Measure the canvas backing-store size at dpr 1 and a scaled dpr,
+- [x] **E-49 — Canvas / performance probe.** Measure the canvas backing-store size at dpr 1 and a scaled dpr,
       the per-step allocation behaviour, and the step cadence. Does a dpr/monitor change blow up the grid or
       the backing store unboundedly? Any runaway promotes to F-66.
-- [ ] **E-50 — Pattern legibility probe.** With the authored cell size/step rate, does the render read as
+- [x] **E-50 — Pattern legibility probe.** With the authored cell size/step rate, does the render read as
       Life (recognizable gliders/oscillators, a live frontier) rather than visual noise or a static
       checkerboard? Is the step rate perceptible but non-strobing? Any "looks like noise"/"looks frozen"
       finding promotes to F-60/F-61.
+
+### #2915 testing round 1 (spec/2915 @ a3c7f245) — results
+
+- **E-44 PASS (live).** None→Life→None ×3 and the full 8-option sweep: console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`; no orphaned canvas survives a switch (canvas count 0 with None, 1 with Life).
+- **E-45 PASS (live).** 90 s soak: heap 238.3→240.5 MB (+0.92 %) pre-GC then GC → 53.8 MB — no monotonic climb; canvas/backing store constant 1920×1017; the field keeps evolving (non-ground 2.1–3.5 % across the sweep) and re-seeds (direct 8.447 % single-sample jump observed).
+- **E-46 UNVERIFIED — NAMED BLOCKER (live flip only).** raw `matchMedia('(prefers-reduced-motion: reduce)').matches=false`; no Tauri MCP media-emulation lever (G-050/G-148/#2870); closed by the F-64 product-unit pin (zero scheduling on the static leg).
+- **E-47 PASS (live) with named blockers.** Synthetic `visibilitychange` (real handler; `document.hidden` overridden): `data-life-running` true→false→true; 6 s-hidden frame diff 0.000 %. Native minimize/hide undrivable (plugin <0.13; no `core:window:allow-hide`).
+- **E-48 PASS (live).** preset dark↔light + accent override/clear while Life animates: painted ground/cell recolour live, loop keeps running, no stale colour, no re-render loop.
+- **E-49 PASS (live).** backing store = 1920×1017 at dpr 1 = 1.0× CSS viewport (≤ `LIFE_DPR_MAX` 1.5 linear); constant through the soak; no grid/backing-store growth on relayout.
+- **E-50 PASS (vision).** the field reads as Life (stable blocks, blinkers, a live frontier) — not noise and not a still checkerboard; 160 ms steps are perceptible and non-strobing. **Promotion:** the F-63 light-preset cell/ground contrast miss (1.90–2.93:1 < 3:1) is a new confirmed finding; it is tracked by F-63 (FAIL) rather than a new E row.
