@@ -755,3 +755,50 @@
       (refreshed ones named per G-125). Reference R-31/R-49/R-63 + launcher F-111.
   - **Edge:** open/close churn around the animating mascot; the pre-existing `motion() is deprecated`
     WARN is exempt.
+
+---
+
+## #2922 extension — the body-wide fill must NOT change the launcher (G-136)
+
+> Issue #2922 extends the ADDITIVE interior fill from the head to the WHOLE body. The launcher hosts
+> the RESTING figure (`.fredo-avatar-idle`, or the interactive companion seat when ON), so these
+> invariants MUST hold — any FAIL is a regression. Run alongside launcher R-1..R-66 + F-113..F-117 and
+> the companion #2922 rows (F-135..F-143 / R-66..R-69). Only the 58 BASE rects are pinned (the fill is
+> an ADDITIONAL layer). **Verification policy: live.**
+
+## R-67 — Launcher resting avatar: frozen 58 rects + ONE `<path>` fill drawn first
+
+- [ ] R-67: Read the seat mascot's 58 base rects and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm one `<path id="fredo-interior">` (never a
+      `<rect>`) drawn BEFORE the base rects; confirm no second base-rect table outside
+      `shared/components/fredo-avatar/`; confirm `idle` carries no expression overlay.
+  **Expected:** 58 base rects byte-identical to the shared source (and to the companion's); no
+      duplicate geometry table; `shapeRendering="crispEdges"`; single accent
+      `color="var(--accent-primary)"` + `fill="currentColor"`; `aria-hidden`. The fill is additive —
+      never a mutation of `FREDO_AVATAR_SOURCE_RECTS` or the expansion math; the geometry suite passes
+      UNMODIFIED. Reference R-22/R-27/R-30/R-64 + launcher F-115.
+
+## R-68 — Launcher shell layout / seat geometry unchanged (no CLS)
+
+- [ ] R-68: Measure the command-bar `getBoundingClientRect().y`, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom`, and `scrollHeight` vs `clientHeight` with the
+      companion OFF / ON-at-home / ON-away and after an idle auto-return, at the default size and
+      900×600.
+  **Expected:** the wrapper stays exactly 80×100 + 16 px; the command-bar `y` is constant within ±1 px
+      in every state; no new scrollbar/overflow/clip; the fill layer does not participate in the
+      launcher column's layout. Reference R-35/R-48/R-59/R-65 + launcher F-116.
+  - **Edge:** a resize mid-idle must not shift the bar or the seat; the resting DOM identity holds for
+    the idle frame (transform:0).
+
+## R-69 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-69: Static-grep the changed launcher + avatar files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the fill/state code for
+      effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); the seat body fill reads ONLY
+      `var(--fredo-avatar-interior)`; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no
+      re-render loop (#523); build exit 0; suite green without weakening an assertion (the interior
+      band-count refresh is the one expected named refresh, G-125). Reference R-31/R-49/R-63/R-66.
+  - **Edge:** open/close churn around the animating mascot; the pre-existing `motion() is deprecated`
+    WARN is exempt.
