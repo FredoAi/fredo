@@ -710,3 +710,48 @@
 
 - **R-62 PASS (live).** Model: dot + `launcher-command-model-listening-chip`(`Fredo is listening`) + Stop(`Stop listening`) + Cancel(`Cancel dictation`) + `release Space to finish` placeholder, hint chip suppressed (the #2904 REQ-3 relocation). Local: same dot + `launcher-command-listening-chip`(`Listening`) + Stop + Cancel + `Listening…` placeholder + `release Space to finish` hint chip (UNCHANGED). Search interaction intact: `zz` filtered `#fredo-launcher-grid` to 0 tiles, hint read `↵ send to Fredo` (the #2882 whole-query rule), `Escape` hid the grid while the bar stayed mounted/focused; `stt_stop` (local) → placeholder `search or command`, `listening:false`.
 - **R-63 PASS (live).** Static greps 0 literals / 0 alpha-append; console error-level empty across every leg; command-bar `y` stable per state (the only shift is the pre-existing below-bar status row); seat wrapper `offsetWidth 80`/`offsetHeight 100`/`margin-bottom 16px`; field 48px; no scrollbar/h-scroll at 900×600. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2917 extension — the additive fill must NOT change the launcher
+
+> Issue #2917 adds an additive interior fill layer to the shared avatar. The launcher hosts only the
+> RESTING figure, so these invariants MUST hold — any FAIL is a regression. Run alongside R-1..R-63 and
+> the launcher F-108..F-112. **Verification policy: live.** G-136 note: only the 58 base rects are pinned
+> (the fill is an ADDITIONAL layer), so the frozen-geometry rows stay in force unchanged.
+
+## R-64 — Launcher resting avatar: frozen 58 rects + no duplicate geometry
+
+- [ ] R-64: Read the launcher seat avatar's 58 base rects and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm no second base-rect table exists outside
+      `shared/components/fredo-avatar/`; confirm the resting render carries no expression overlay.
+  **Expected:** the 58 base rects are byte-identical to the shared source (and to the companion's); no
+      duplicate geometry table; `shapeRendering="crispEdges"`; single accent fill
+      `color="var(--accent-primary)"` + `fill="currentColor"`; `aria-hidden`. Reference R-22/R-27/R-30
+      + launcher F-110.
+  - **Edge:** the fill must be additive (a separate layer/group), never a mutation of
+    `FREDO_AVATAR_SOURCE_RECTS` or the expansion math; the geometry suite passes UNMODIFIED.
+
+## R-65 — Launcher shell layout / seat geometry unchanged (no CLS)
+
+- [ ] R-65: Measure the command-bar `getBoundingClientRect().y`, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom`, and `scrollHeight` vs `clientHeight` with the
+      companion OFF / ON-at-home / ON-away and after an idle auto-return, at the default size and
+      900×600.
+  **Expected:** the wrapper stays exactly 80×100 + 16 px; the command-bar `y` is constant within ±1 px
+      in every state; no new scrollbar/overflow/clip. The fill layer does not participate in the
+      launcher column's layout. Reference R-35/R-48/R-59 + launcher F-111.
+  - **Edge:** a resize mid-idle must not shift the bar or the seat; the resting DOM identity holds for
+    the idle frame (transform:0).
+
+## R-66 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-66: Static-grep the changed launcher + avatar files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the fill/state code for
+      effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); build exit 0; suite green without weakening any assertion
+      (refreshed ones named per G-125). Reference R-31/R-49/R-63 + launcher F-111.
+  - **Edge:** open/close churn around the animating mascot; the pre-existing `motion() is deprecated`
+    WARN is exempt.
