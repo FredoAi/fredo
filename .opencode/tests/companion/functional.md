@@ -2461,3 +2461,16 @@ clean.
       (AGENTS.md #523); ZERO hardcoded colour literals / no alpha-append.
   - **Edge:** a status forced mid-theme-switch; the pre-existing `motion() is deprecated` WARN is
     exempt; a retry path that must not add a per-frame computation.
+
+### #2918 testing round 1 (spec/2918 @ cb06fb24) — results
+
+Verdict: **FAIL** — F-126..F-133 pass except the R-63 skill-path regression (see `regression.md`). The `## Tests Runs (round 1)` comment on #2918 carries the per-Q table + user-attachment frames.
+
+- **F-126 PASS (live).** (a) Two real managed-server replies: celebratory → settle `happy`; deliberating → settle `thinking` — DIFFERENT `data-state`, each ∈ `FREDO_AVATAR_STATES`, dense 50 ms trace across the turn + ~5 s hold (frames Q-1 turn-A/turn-B). (b) Injected `llm-status happy`→`happy`, `joking`→`joking` (real channel). (c) No-status turn → default `happy`. (d) Request: `response_format.type==="json_schema"`, name `fredo_reply`, `required:[reply,status]`, `additionalProperties:false`, closed 7-enum; tools-free variant pinned; the live model emitted only in-vocabulary statuses. No status word as reply text.
+- **F-127 PASS (live + LV4).** Live generations: 12–16 `llm-token` frames concatenate EXACTLY to the reply; no frame's surface text contained `{`/`"reply"`/`"status"`; ≥3 distinct increasing progressive samples. Prose containing braces + the literal word `json` renders verbatim. Split-boundary withholding pinned at the parser layer (the frontend is not a parser — raw `llm-token` LV2 injection cannot exercise it).
+- **F-128 PASS (with the recorded bound).** `not json at all` (the backend's `Plain` emission) → plain reply + default `happy`, exactly one settle, next turn usable. `STATUS_EMPTY_RETRY_MAX = 1` recorded from source; empty/`{`-bearing verdicts unit-pinned; the backend retry itself is not IPC-observable (named).
+- **F-129 UNVERIFIED (cap-OFF render) — G-053.** Shipped server SUPPORTS `response_format` (`companion_status_capability` `{supported:true,…}`), so the capability-OFF render leg cannot be driven live; residual = the pure predicate unit pin + the recorded probe verdict.
+- **F-130 PASS (live + quoted lines).** `dancing`/`nonsense`/`""`/`"123"`/`null`/`talk`/`error`/`teleport-out`/`greeting`→`happy`; `success`→`happy`; `funny`→`joking`; `IDLE`→`idle`; `playful`→`playful`. Every sampled `data-state` ∈ the frozen 12. Prompt quote + `FREDO_AVATAR_STATES` quote in the verdict.
+- **F-131 PASS (one plan-wording observation).** Teleport wins over a model status; `error` beats an injected `joking`; `working`/`happy`/`joking` flow-owned beats fire. The status-free reply stream renders `thinking`→`joking`, NOT `talk`; `talk` is the unranked base pass-through (ambient-message path) and is never masked — the QA row's "talk while streaming" recipe does not match the shipped lifecycle (flagged, not silently re-scoped).
+- **F-132 PASS (live receipt).** `telemetry_spans` 22,498, `max(ingested_at)` 2026-09-21T04:54:33.491Z; `chat_rows` e2e-2918-chat = 1; `tool_use_rows` e2e-2918-tool (`read_file`) = 1.
+- **F-133 PASS.** CI PR #2920 `rust-validate` + `ui-validate` pass; `pnpm --filter @fredo/ui build` exit 0 / zero TS errors; `pnpm --filter @fredo/ui test:run` 112 files / 1652 passed; console error-level empty after every leg; zero colour literals / no `var(--x)NN` in the changed UI files.

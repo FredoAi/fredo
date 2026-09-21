@@ -858,6 +858,10 @@
   - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-generation; an auto-return at the
     idle deadline; a malformed object mid-generation (F-128) must not perturb the presence lifecycle.
 
-### #2918 testing round 1 — result
+### #2918 testing round 1 (spec/2918 @ cb06fb24) — result
 
-- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+Verdict: **FAIL** — one blocking defect (R-63, the plan's Top Risk materialised). Q-1/Q-2/Q-3/Q-5/Q-6/Q-7/Q-8 pass; Q-4 cap-OFF render UNVERIFIED (G-053 named blocker).
+
+- **R-63 FAIL (live).** Combining `tools` + `response_format: json_schema` on the pinned `llama-server` (Gemma-4 E2B IT QAT) **suppresses the native tool call**. `llm_chat_with_status(offerSkills:true)` with `open Mission Monitor` → `llm-token` "Opening Mission Monitor now." + `llm-status` `working` + `llm-done`, **NO `llm-skill-call`**, app not opened — 3/3 (incl. an explicit "Use the open_app tool…" prompt). Control: shipped `llm_chat_with_skills` with the same messages → `llm-skill-call {"skill":"open_app","arguments":{"app":"Mission Monitor"}}` + `Mission Monitor` opens — 2/2. Repro is in the `## Tests Runs (round 1)` comment on #2918. Route per plan: loop back to Phase 2 (Architect), do not ship a skills regression.
+- **R-64 PASS (live).** Per-state fingerprints for status-free states unchanged: `idle` (58 base rects, no `#fredo-expression`), `thinking` (streaming), `joking` (first token), `teleport-out`/`teleport-in`, `working` (10.5 s under a skill-pending beat). The `modelStatus` seam is only fed at the settle hold; the resolver priority order and `ANIM_DURATION` are unchanged.
+- **R-65 PASS (live + static).** Reply surface/chrome (`fredo-reply-surface`), the 240×120 base bubble, the 208×268 game card untouched; presence/persisted keys unchanged; no new persisted key (the status is ephemeral per-turn display state). `Fredo_companion_visible`/`Fredo_companion_idle_timeout` still read; teleport timing unchanged (`teleport-out` ~420 ms observed).
