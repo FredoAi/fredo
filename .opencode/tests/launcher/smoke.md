@@ -300,3 +300,23 @@
       pre-change baseline; wrapper exactly 80×100 + 16 px; no new scrollbar/overflow; screenshot succeeds;
       console clean.
 
+## #2922 extension — whole-body solid Fredo quick paths on the launcher
+
+> Issue #2922 extends the additive interior fill from the head to the WHOLE body. Quick paths only —
+> the full matrix lives in `functional.md` F-113..F-117 / `regression.md` R-67..R-69; the metric
+> definition is in `.opencode/tests/companion/functional.md` `#2922 extension`. **Verification
+> policy: live** — a property-existence check is never a PASS.
+
+- [ ] S-35: **Solid seat mascot in both themes.** Companion OFF so `.fredo-avatar-idle` renders at the
+      seat; capture dark base + `light-default` and sample the BODY region (viewBox `y 812–1234`) with
+      the frames-A/B open metric. **Expected:** `holeCount == 0` in BOTH themes (no backdrop shows
+      through the body) and `.fredo-companion-avatar` is absent; `tauri_webview_screenshot` succeeds;
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-36: **Open/close churn keeps the body solid.** Open and close the launcher several times with
+      the fill active. **Expected:** the mascot renders solid each time (no partial fill, no stuck
+      animation, no stale colour); screenshot succeeds; console clean.
+- [ ] S-37: **Seat geometry unchanged with the solid body.** Companion OFF / ON-at-home / ON-away:
+      measure the command-bar `y` and the seat-slot WRAPPER 80×100 + 16 px. **Expected:** `|Δy| ≤ 1 px`;
+      wrapper exactly 80×100 + 16 px; the inter-leg gap stays background (no leak); screenshot
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
