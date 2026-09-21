@@ -180,3 +180,22 @@ Overlapping suites to run alongside: `window-manager` (window lifecycle + rail F
   - **PASS/FAIL:** a second LED/status surface, a non-token colour, a control occluded by the
     band, a stray `F` cap node, or any lost aria attribute is a FAIL. Reference window-manager
     F-38..F-48.
+
+### #2924 round 1 — R-24 PASS (live, spec/2924 @ 33faafef, viewport 1920×1017)
+
+- **Desktop-chrome model unchanged — PASS.** While a full-bleed window owned the screen: exactly
+  ONE top-right status LED (`[data-testid=desktop-status-led]` count 1, `bottomDots` 0), clock
+  `16:03` == wall time with `aria-label="16:03, online"`; band z = `0` covered ↔ `1200`
+  uncovered (measured both states), band `pointerEvents:"none"`; the maximized window measured
+  `rect.left===0`, `rect.right===1920===viewport.w` with the band not re-indenting it;
+  `elementFromPoint` at the minimize control's centre returned the control (`line` inside
+  `button[aria-label="Minimize Sessions"]`) — no occlusion by the band or the dock.
+- **Header contract after the cap removal — PASS.** `.fredo-window__header` children =
+  `DIV`(24px icon tile, `aria-hidden=true`) + `P`(title) + `DIV`(controls),
+  `:scope > div` count = 2, structural leaf-`F` scan = **0**, `git grep ">F<"` in
+  `window-system/**` = 0. All `aria-label`s (`Minimize/Maximize/Restore/Close <title>`) and the
+  maximize control's `aria-expanded` (`true` maximized ↔ `false` floating) intact.
+- **Token-native / console — PASS.** Changed files carry zero true colour literals and zero
+  `var(--x)NN` alpha-append (window-manager F-47); `pnpm --filter @fredo/ui build` exit 0,
+  `test:run` 120 files / 1776 passed; console clean of `Error:`/`Uncaught`/
+  `Maximum update depth exceeded` after every leg.
