@@ -260,3 +260,26 @@
 ### #2892 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+## #2917 extension — solid-Fredo + status-vocabulary quick paths
+
+> Issue #2917 fills Fredo's hollow interior and audits/extends the status vocabulary. Quick paths only —
+> the full matrix lives in `functional.md` F-116..F-125 / `regression.md` R-58..R-62. **Verification
+> policy: live** — screenshot + the dense metric per state; a property-existence check is never a PASS.
+
+- [ ] S-38: **Solid interior in both themes.** Companion ON (and OFF for the decorative mascot); capture
+      dark base + `light-default`; sample the head-interior/mouth-void pixels inside the figure.
+      **Expected:** the interior resolves to the live accent (no background showing through) in BOTH
+      themes; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`.
+- [ ] S-39: **A state renders legibly over the fill.** Single-click the avatar → the joke streams.
+      **Expected:** `#fredo-expression[data-state=talk]` (and `joking` during the stream) renders its
+      shapes ON TOP of the fill, visible and distinguishable from idle; screenshot succeeds; console clean.
+- [ ] S-40: **No stuck state after a moment.** Complete a joke and a TicTacToe turn. **Expected:** the
+      avatar returns to `idle` (no lingering `thinking`/`joking`/`happy`), the fill stays intact;
+      screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-41: **Perceptibility quick check + reduced-motion static gate.** Capture a 3-frame filmstrip of
+      one new state at 100 ms cadence over 2400 ms and confirm a visible change; confirm the
+      reduced-motion rules keep every shape legible (named G-053 blocker for the live flip).
+      **Expected:** the dense filmstrip shows a perceptible change; no `opacity:0`/strobe rule; screenshot
+      succeeds; console clean.
