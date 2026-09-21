@@ -119,3 +119,24 @@
 - **S-17 PASS (live).** Chooser renders None + the six recipes (`desktop-background-option-{none,aurora,nebula,mesh,topography,constellation,halo}`); raw `matchMedia('(prefers-reduced-motion: reduce)').matches` = **false**; with a recipe selected `data-motion="animated"`, `data-background-id` = the recipe, 2–3 running backdrop animations; caption `Motion: on`; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 - **S-18 PASS (live).** Dense full-frame diff of paused seek 0 vs 3000 ms, all six recipes: aurora 64.7 %, nebula 2.93 %, mesh 18.3 %, topography 12.0 %, constellation 40.9 %, halo 13.0 % — every recipe additionally clears its floor on ≥ 2 of the 3 phase-spread intervals and the max pairwise interval (see F-39). Reselecting None → `desktop-backdrop` null; today's desktop returns; screenshot succeeds.
 - **S-19 PASS.** Reduced-motion pin passes (`resolveBackgroundMotion({true})` → `'static'`, static render zero `animation*`); build exit 0; `test:run` 108 files / 1805 tests; live OS flip recorded UNVERIFIED-with-named-blocker (no media-emulation API).
+
+## #2915 extension — Conway's Game of Life smoke
+
+> Issue #2915 adds a **Life** option beside None + the six recipes. Live policy — a rendered-webview
+> read (`tauri_webview_*`) + a **rendered-pixel** quick diff; F-70 in `functional.md` carries the
+> `telemetry_spans` leg. No prior smoke row is superseded.
+
+- [ ] **S-20:** Background selector reachable + Life present — Settings → Appearance → Desktop Background
+      renders **None + the six recipes + Life** (`[data-testid="desktop-background-option-life"]`); a fresh
+      profile shows **None**; `tauri_read_logs(source="console", lines=50)` clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] **S-21:** Quick Life switch + repaint — select Life; `[data-testid="desktop-backdrop"]` present with
+      `data-background-id="life"`; a dense quick diff of two frames ≈2 s apart (windows closed) is a
+      non-zero change (sanity — the full gate is F-61); open a feature window and confirm it renders above;
+      reselect **None** → backdrop DOM absent + today's desktop returns; screenshot succeeds; console clean.
+- [ ] **S-22:** Reduced-motion + gates — the Life reduced-motion product-unit pin exists and passes (static
+      render schedules no loop, `data-motion="static"`); `pnpm --filter @fredo/ui build` exit 0;
+      `pnpm --filter @fredo/ui test:run` green; the live OS flip is recorded
+      **UNVERIFIED-with-named-blocker** (Tauri MCP has no media-emulation API — G-050/G-148/#2870).
+- [ ] **S-23:** Attribution quick check — the **CC BY-SA 3.0** attribution + licence notice is present in the
+      Life pattern module (source) and in the docs; the curated pattern set is bounded (no full-lexicon dump).
