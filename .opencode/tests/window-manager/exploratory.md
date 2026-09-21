@@ -15,7 +15,7 @@
 - [ ] E-9 (OPEN — high window-count): Open many feature windows in sequence — does z-order/focus remain correct, does the stack stay manageable (no window unintentionally lost behind the toolbar or off-screen), does the open-window list (toolbar multi-window suffix) stay accurate?
 - [ ] E-10 (OPEN — a11y semantics): Snapshot the accessibility tree of a window — is the frame a non-modal group named by the window title (NOT a modal `role="dialog"`), are min/max/close exposed as labeled tabbable buttons, and is a maximized window's control announced via `aria-expanded`? Is a minimized window hidden from the a11y tree?
 - [ ] E-11 (OPEN — prefers-reduced-motion): With `prefers-reduced-motion` reduced, do the focus/z-order/halo transitions respect it (subtle opacity/inset only, no distracting motion)? Any jarring animation is a defect.
-- [ ] E-12 (OPEN — theme/accent override re-tint): Override the user accent and toggle light/dark — does the whole chrome re-tint from the theme tokens (frame border, halo, icon tile, brand cap, control hover), including the focused vs unfocused frame distinction? A fixed non-token color that ignores the accent is a defect (N-1/R-6).
+- [ ] E-12 (OPEN — theme/accent override re-tint): Override the user accent and toggle light/dark — does the whole chrome re-tint from the theme tokens (frame border, halo, icon tile, control hover), including the focused vs unfocused frame distinction? A fixed non-token color that ignores the accent is a defect (N-1/R-6). **#2924:** the header carries NO brand cap any more (`WindowChrome.tsx:163-180` removed) — re-assert the tile/title/border/control re-tint WITHOUT the cap; a reintroduced cap is a REQ-2 defect.
 
 ## Test run (round 1)
 
@@ -60,3 +60,34 @@
       DURING the transit (between out and in). Does the main companion recover to a sane state
       (idle, no pending-teleport ghost), and does the app stay console-clean? Any stuck
       hidden/never-arrives state is a finding.
+
+---
+
+## #2924 extension — full-bleed default-open / flush content probes
+
+> Probe for unforeseen interactions of the new default-open geometry + flush content. A confirmed
+> finding promotes to `functional.md` (F-38..F-48) as a new `F-` row. Live policy.
+
+## E-16 — Full-bleed at an extreme window count
+
+- [ ] E-16: Open >=5 distinct feature windows in sequence (all default-open full-bleed), then
+      re-focus each in turn. Does the default-open geometry ever cascade or drift (a later window
+      offset by 16px, a rect not flush to the viewport), does z-order stay correct, and does the
+      dock/open-window list stay accurate? Any window that opens inset/cascaded is a REQ-1 finding.
+
+## E-17 — Flush content vs feature-owned scroll containers
+
+- [ ] E-17: With a window open, inspect a feature whose content scrolls internally (list/table/
+      graph) and one that is intentionally edge-to-edge (canvas/terminal-like). After the blanket
+      `p="4"` removal, is the FIRST scrollbar flush against the frame edge (not clipped), does any
+      interactive control touch the frame border so it is hard to click, and does any feature's
+      first line of text sit directly against the header with no breathing room? A cramped feature
+      or an edge-clipped scrollbar is a REQ-3 finding (record the feature + measured gap).
+
+## E-18 — Restore-default geometry race
+
+- [ ] E-18: Open (arrives maximized) → click `Restore <title>` immediately, then re-open the same
+      feature from another entry point, then close. Is the restored float sensible and stable
+      (no 0-size / off-screen / half-cascade), does a second open re-focus rather than re-seed a
+      new float, and is the console clean? A restore landing off-screen or at a reset default
+      (rather than the plan's stated float) is a REQ-4 finding.
