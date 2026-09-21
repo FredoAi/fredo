@@ -113,7 +113,7 @@
 
 /* ── listening: a 3-bar level meter whose bars scale up/down about their base ─ */
 @keyframes fredo-listening-bar {
-  0%, 100% { transform: scaleY(0.45); }
+  0%, 100% { transform: scaleY(0.3); }
   50%      { transform: scaleY(1); }
 }
 

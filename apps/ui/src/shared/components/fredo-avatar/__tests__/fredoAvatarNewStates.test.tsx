@@ -78,11 +78,20 @@ describe('#2917 ST-5 — new-state overlay frames render in the DOM', () => {
 
     const bars = Array.from(overlay!.querySelectorAll('.fredo-listening-bar'));
     expect(bars).toHaveLength(3);
+    // #2917 r2 FIX-2a (G-125, NAMED refresh): the meter bars were grown from
+    // {740,448,48,120}/{792,428,48,168}/{844,464,48,88} to the 60-wide, 200 px²-
+    // clearing geometry below (bottoms all at y=578, right edge x=892).
     expect(bars.map((b) => [b.getAttribute('x'), b.getAttribute('y')])).toEqual([
-      ['740', '448'],
-      ['792', '428'],
-      ['844', '464'],
+      ['696', '388'],
+      ['764', '328'],
+      ['832', '433'],
     ]);
+    // Every bar keeps a ≥60-unit minimum dimension (2.5 px+ at sm).
+    for (const bar of bars) {
+      const width = Number(bar.getAttribute('width'));
+      const height = Number(bar.getAttribute('height'));
+      expect(Math.min(width, height), `bar ${bar.getAttribute('x')} min dimension`).toBeGreaterThanOrEqual(60);
+    }
     // Neutral face — no mouth shape can be confused with a mouth-void state.
     expect(overlay!.querySelectorAll('rect')).toHaveLength(3);
   });
@@ -210,5 +219,84 @@ describe('#2917 ST-5 — no new-state overlay strobes (STATIC, WCAG 2.3.1)', () 
     // overlay declares no animation for it.
     const css = readSource(AVATAR_CSS);
     expect(css).not.toMatch(/#fredo-expression\[data-state='error'\][^}]*animation/);
+  });
+});
+
+// ── #2917 round-2 FIX-2 coverage floors (G-125, NEW pins) ─────────────────────
+//
+// The round-1 tester measured `listening` at delta_frac 0.00765–0.00776 vs the
+// binding 0.008 floor (its 48-wide meter union was only ≈112 px² of the 18,944-px
+// dense crop). The bars and chevrons were grown (FIX-2a/FIX-2c). These pins lock
+// the authored-area floors so a later round cannot shrink them back below the
+// floor without a re-declared calibration.
+
+/** sm render scale: 80 CSS px / 1014 viewBox units (`fredoAvatarSizes.ts:15`). */
+const SM_UNIT_PX = 0.0789;
+
+interface AuthoredRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const readRects = (root: Element): AuthoredRect[] =>
+  Array.from(root.querySelectorAll('rect')).map((r) => ({
+    x: Number(r.getAttribute('x')),
+    y: Number(r.getAttribute('y')),
+    width: Number(r.getAttribute('width')),
+    height: Number(r.getAttribute('height')),
+  }));
+
+const mergedLength = (spans: ReadonlyArray<readonly [number, number]>): number => {
+  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+  let length = 0;
+  let start: number | null = null;
+  let end = 0;
+  for (const [spanStart, spanEnd] of sorted) {
+    if (start === null) {
+      start = spanStart;
+      end = spanEnd;
+    } else if (spanStart <= end) {
+      end = Math.max(end, spanEnd);
+    } else {
+      length += end - start;
+      start = spanStart;
+      end = spanEnd;
+    }
+  }
+  if (start !== null) length += end - start;
+  return length;
+};
+
+/** True union area (viewBox unit²) of authored rects, scan-line by integer row. */
+const unionAreaUnits = (rects: readonly AuthoredRect[]): number => {
+  const minY = Math.min(...rects.map((r) => r.y));
+  const maxY = Math.max(...rects.map((r) => r.y + r.height));
+  let area = 0;
+  for (let y = minY; y < maxY; y += 1) {
+    const spans = rects
+      .filter((r) => r.y <= y && y < r.y + r.height)
+      .map((r) => [r.x, r.x + r.width] as const);
+    area += mergedLength(spans);
+  }
+  return area;
+};
+
+describe('#2917 r2 FIX-2 — new-state coverage floors at sm (G-125, NEW pins)', () => {
+  it('listening meter union is ≥ 200 px²', () => {
+    const { container } = render(<FredoAvatar size="sm" state="listening" />);
+    const overlay = container.querySelector("#fredo-expression[data-state='listening']");
+    expect(overlay).not.toBeNull();
+    const areaPx2 = unionAreaUnits(readRects(overlay!)) * SM_UNIT_PX * SM_UNIT_PX;
+    expect(areaPx2, `listening meter union = ${areaPx2.toFixed(1)} px²`).toBeGreaterThanOrEqual(200);
+  });
+
+  it('working chevron union is ≥ 120 px²', () => {
+    const { container } = render(<FredoAvatar size="sm" state="working" />);
+    const overlay = container.querySelector("#fredo-expression[data-state='working']");
+    expect(overlay).not.toBeNull();
+    const areaPx2 = unionAreaUnits(readRects(overlay!)) * SM_UNIT_PX * SM_UNIT_PX;
+    expect(areaPx2, `working chevron union = ${areaPx2.toFixed(1)} px²`).toBeGreaterThanOrEqual(120);
   });
 });
