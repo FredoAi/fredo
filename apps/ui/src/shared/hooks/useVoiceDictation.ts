@@ -71,12 +71,6 @@ export interface SttStateEvent {
    */
   readyMs?: number | null;
   /**
-   * Spec #2887 ST-3 — did the session's engine come from the resident slot.
-   * `true` only for a genuine take (never optimistic): a launch-window hold that
-   * JOINED the in-flight warm reports `false`, as does every idle/error event.
-   */
-  engineResident?: boolean;
-  /**
    * Spec #2897 ST-2 — the model-audio phase (`capturing` while accumulating,
    * `processing` once a stop committed the clip). `null` on every path that is
    * not a model-audio session.
@@ -118,16 +112,6 @@ export interface VoiceDictation {
   /** Session origin of the active (or last) session. */
   origin: VoiceOrigin | null;
   /**
-   * Spec #2887 ST-7 (R-1/R-4) — the resident-engine observable the honest hold
-   * cue derives from. It mirrors the residency stamp of the most recent session
-   * START (`stt:state{listening:true}`), which is the truthful answer to "will
-   * the next hold pay a model load?". An idle event NEVER rewrites it (its
-   * `engineResident:false` means "no start happened", not "the resident is
-   * gone"); the typed `disabled` voice-off signal clears it. `false` while no
-   * session has started.
-   */
-  engineResident: boolean;
-  /**
    * Spec #2897 ST-2 — the model-audio phase the launcher indicator derives from:
    * `'capturing'` while the clip accumulates, `'processing'` once a stop
    * committed it, `null` outside a model-audio session.
@@ -160,9 +144,6 @@ export function useVoiceDictation(): VoiceDictation {
   const [detail, setDetail] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [origin, setOrigin] = useState<VoiceOrigin | null>(null);
-  // Spec #2887 ST-7 — fail-closed: unknown residency is NOT resident (the cue
-  // therefore says `warming` rather than claiming a warm engine it cannot see).
-  const [engineResident, setEngineResident] = useState(false);
   // Spec #2897 ST-2 — the model-audio phase + the at-ceiling signal the
   // launcher's model-audio indicator derives from. Both are `stt:state`-driven.
   const [modelAudioPhase, setModelAudioPhase] = useState<VoiceModelAudioPhase | null>(null);
@@ -204,16 +185,6 @@ export function useVoiceDictation(): VoiceDictation {
       // An error state clears as soon as a session is (re)started.
       setErrorCode(event.listening ? null : event.code ?? null);
       setDetail(event.listening ? null : event.detail ?? null);
-      // Spec #2887 ST-7 (R-1/R-4) — the residency stamp travels ONLY on a START.
-      // An idle event's `engineResident:false` means "no start happened", never
-      // "the resident engine is gone", so it must not clear the last stamp (that
-      // would mislabel every later hold as a launch-window `warming`). The typed
-      // `disabled` signal IS the voice-off/release edge, so it clears it.
-      if (event.listening) {
-        setEngineResident(event.engineResident === true);
-      } else if (event.code === 'disabled') {
-        setEngineResident(false);
-      }
       // Spec #2897 ST-2 — the model-audio phase travels on the event itself:
       // `capturing` on the start stamp, `processing` on a model-audio stop, and
       // `null` (cleared) on every other path. `limitReached` is a one-shot
@@ -301,7 +272,6 @@ export function useVoiceDictation(): VoiceDictation {
       detail,
       deviceName,
       origin,
-      engineResident,
       modelAudioPhase,
       limitReached,
       modelAudioLimitMs,
@@ -315,7 +285,6 @@ export function useVoiceDictation(): VoiceDictation {
       detail,
       deviceName,
       origin,
-      engineResident,
       modelAudioPhase,
       limitReached,
       modelAudioLimitMs,

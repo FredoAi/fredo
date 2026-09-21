@@ -81,9 +81,9 @@
  * #2882 ST-5 — the hold-Space cue (R-2.4); #2887 ST-5 — the cue is now HONEST (R-3):
  *   • `cue: HoldCue` is the binding contract. `'listening'` is reachable ONLY while
  *     `captureLive` (the `listening` prop); the armed window (`'acknowledge'`) and
- *     the bounded start window (`'starting'` / the launch-window `'warming'`) render
- *     the non-listening acknowledgement (`Hold to dictate…`) and never `Listening…`;
- *   • `'starting'`/`'warming'` add the bounded `starting voice input…` chip
+ *     the bounded start window (`'starting'`) render the non-listening
+ *     acknowledgement (`Hold to dictate…`) and never `Listening…`;
+ *   • `'starting'` adds the bounded `starting voice input…` chip
  *     (`launcher-command-listening-pending`) in the SAME slot as the Listening chip
  *     — the two are mutually exclusive, so exactly ONE indicator ever shows, and
  *     the reserved gutter accounts for whichever it is;
@@ -348,31 +348,25 @@ export const QUEUED_INDICATOR_ID = 'fredo-command-queued';
 export const QUEUED_DISPATCH_ANNOUNCEMENT = 'Sending your queued message to Fredo';
 
 /**
- * Spec #2887 ST-5 (R-3/AC3) — the BINDING honest hold-cue contract.
+ * Spec #2887 ST-5 (R-3/AC3) — the BINDING honest hold-cue contract. Spec #2914
+ * ST-9 — the residency-derived launch-window tier is GONE with the deleted
+ * resident engine, so the bounded start has ONE state (`'starting'`).
  *
  *   'none'        → no cue (idle / promise / non-empty field / voice unavailable)
  *   'acknowledge' → the non-listening acknowledgement (from the keydown edge):
  *                   `Hold to dictate…` in the field; no dot, no accent tint
- *   'starting'    → the bounded `starting voice input…` chip (engine-resident slow
- *                   start, bounded by `T_MAX_STARTING_STATE_MS`) + the acknowledgement
- *   'warming'     → the launch-window acknowledgement (engine NOT resident: the hold
- *                   joined — or started — the single-flight warm; bounded by
- *                   `T_LAUNCH_COLD_MAX_MS` = 5320 ms = `T_LAUNCH_WARM_MS.max`
- *                   + `T_FIRST_CAPTURE_BUDGET_MS.max`, i.e. ONE model load plus the
- *                   capture budget). It
- *                   shares the shipped bounded chip because that is the only honest
- *                   "what is actually happening" copy UI/UX specified for a
- *                   non-listening start — and it never says `Listening`.
+ *   'starting'    → the bounded `starting voice input…` chip (slow start, bounded
+ *                   by `T_MAX_STARTING_STATE_MS`) + the acknowledgement
  *   'listening'   → the ONLY state that may render the `Listening` chip, the
  *                   `Listening…` placeholder, the accent dot/border tint, the
  *                   Stop/`×` controls or the listening announcement
  *
  * Invariant (R-3): `'listening'` is reachable ONLY while `captureLive` (the
  * `listening` prop = `voice.listening && origin === 'launcher'`, `LauncherShell.tsx`).
- * `holdArmed`/`holdPending` alone MUST NOT claim listening, and `'warming'`/
+ * `holdArmed`/`holdPending` alone MUST NOT claim listening, and
  * `'starting'`/`'acknowledge'` are never rendered as the listening cue.
  */
-export type HoldCue = 'none' | 'acknowledge' | 'starting' | 'warming' | 'listening';
+export type HoldCue = 'none' | 'acknowledge' | 'starting' | 'listening';
 
 export interface LauncherCommandBarProps {
   /** Live query string (controlled by the host). */
@@ -424,7 +418,7 @@ export interface LauncherCommandBarProps {
    * Spec #2887 ST-5 (R-3) — the host-derived honest cue (see `HoldCue`). When
    * supplied it is authoritative; the bar clamps `'listening'` to a live capture
    * (`listening`), so no caller can make it claim listening early. The host gates
-   * the `'starting'`/`'warming'` windows (ST-7). Defaults to the legacy derivation
+   * the `'starting'` window (ST-7). Defaults to the legacy derivation
    * below so the shipped #2882 caller keeps working.
    */
   cue?: HoldCue;
@@ -972,11 +966,11 @@ export function LauncherCommandBar({
   // Spec #2887 ST-5 (R-3/AC3) — THE ONE CUE, and it may never lie.
   //
   // `holdCue` is the binding honesty contract. The armed window (`'acknowledge'`)
-  // and the bounded start window (`'starting'` / the launch-window `'warming'`) are
-  // non-listening acknowledgements; `'listening'` is reachable ONLY while
-  // `captureLive` (the `listening` prop). The clamp below is what fixes the shipped
-  // #2882 defect: `holdArmed` is true from the KEYDOWN (before any capture exists),
-  // so it can no longer select the `Listening…` placeholder.
+  // and the bounded start window (`'starting'`) are non-listening
+  // acknowledgements; `'listening'` is reachable ONLY while `captureLive` (the
+  // `listening` prop). The clamp below is what fixes the shipped #2882 defect:
+  // `holdArmed` is true from the KEYDOWN (before any capture exists), so it can no
+  // longer select the `Listening…` placeholder.
   const captureLive = listening;
   const requestedCue: HoldCue =
     cue ?? (holdPending ? 'starting' : holdArmed ? 'acknowledge' : 'none');
@@ -986,14 +980,11 @@ export function LauncherCommandBar({
       ? 'acknowledge' // an upstream `'listening'` without a live capture never claims listening
       : requestedCue;
   // The pre-capture acknowledgement states — no listening wording, no capture mark.
-  const cueReadying =
-    holdCue === 'acknowledge' || holdCue === 'starting' || holdCue === 'warming';
+  const cueReadying = holdCue === 'acknowledge' || holdCue === 'starting';
   // The CHIP slot holds at most one indicator: the bounded `starting voice input…`
-  // chip and the Listening chip are mutually exclusive (never both). The
-  // launch-window `warming` state shares the shipped chip — the only honest
-  // "what is actually happening" copy UI/UX specified for a non-listening start —
-  // and it never says `Listening`.
-  const startingChip = (holdCue === 'starting' || holdCue === 'warming') && !captureLive;
+  // chip and the Listening chip are mutually exclusive (never both), and it never
+  // says `Listening`.
+  const startingChip = holdCue === 'starting' && !captureLive;
 
   // Spec #2897 ST-4 (REQ-3/REQ-4); Spec #2914 ST-8 — the DERIVED model-audio
   // phase (the ONLY voice mode). Read off ST-2's signals (never re-derived):

@@ -229,12 +229,11 @@ describe('voiceStartErrorCopy — DR-11 curated start-failure copy', () => {
 
 // ── 3. The ONE honest cue derivation (R-3/AC3) ────────────────────────────────
 
-describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3)', () => {
+describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3; #2914 ST-9)', () => {
   const input = (over: Partial<Parameters<typeof deriveHoldCue>[0]>) => ({
     captureLive: false,
     armed: false,
     pending: false,
-    engineResident: false,
     ...over,
   });
 
@@ -242,14 +241,12 @@ describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3)', () => {
     for (const captureLive of [true, false]) {
       for (const armed of [true, false]) {
         for (const pending of [true, false]) {
-          for (const engineResident of [true, false]) {
-            const combo = { captureLive, armed, pending, engineResident };
-            const cue = deriveHoldCue(combo);
-            if (captureLive) {
-              expect(cue, JSON.stringify(combo)).toBe('listening');
-            } else {
-              expect(cue, JSON.stringify(combo)).not.toBe('listening');
-            }
+          const combo = { captureLive, armed, pending };
+          const cue = deriveHoldCue(combo);
+          if (captureLive) {
+            expect(cue, JSON.stringify(combo)).toBe('listening');
+          } else {
+            expect(cue, JSON.stringify(combo)).not.toBe('listening');
           }
         }
       }
@@ -258,27 +255,25 @@ describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3)', () => {
 
   it("the keydown edge acknowledges the user's own gesture — never a listening claim", () => {
     expect(deriveHoldCue(input({ armed: true }))).toBe('acknowledge');
-    expect(deriveHoldCue(input({ armed: true, engineResident: true }))).toBe('acknowledge');
   });
 
-  it('the bounded pending gate selects the chip state', () => {
-    expect(deriveHoldCue(input({ armed: true, pending: true, engineResident: false }))).toBe(
-      'warming',
-    );
-    expect(deriveHoldCue(input({ armed: true, pending: true, engineResident: true }))).toBe(
-      'starting',
-    );
+  // Spec #2914 ST-9 (G-125 re-point) — the old `engineResident:false ⇒ warming`
+  // leg pinned a residency stamp carried by the deleted wire field, so the
+  // launch-window pending case is re-pointed to the ONE surviving honest state,
+  // `'starting'` (the residency tier is gone — SA-11).
+  it('the bounded pending gate selects the chip state (`starting` in every case — no residency tier)', () => {
+    expect(deriveHoldCue(input({ armed: true, pending: true }))).toBe('starting');
+    expect(deriveHoldCue(input({ pending: true }))).toBe('starting');
   });
 
   it('idle resolves to `none` (no cue at all)', () => {
     expect(deriveHoldCue(input({}))).toBe('none');
-    expect(deriveHoldCue(input({ engineResident: true }))).toBe('none');
   });
 
   it('a live capture outranks every readying state (the clamp)', () => {
-    expect(
-      deriveHoldCue(input({ captureLive: true, armed: true, pending: true, engineResident: false })),
-    ).toBe('listening');
+    expect(deriveHoldCue(input({ captureLive: true, armed: true, pending: true }))).toBe(
+      'listening',
+    );
   });
 });
 

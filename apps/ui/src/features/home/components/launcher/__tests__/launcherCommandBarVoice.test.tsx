@@ -272,7 +272,7 @@ describe('LauncherCommandBar — the `cue` contract may never claim listening ea
     expect(fieldDeclarations(input)['border-color']).toBe('var(--border-color)');
   });
 
-  it('`starting` (engine-resident slow start) shows the bounded chip + the acknowledgement, never `Listening`', () => {
+  it('`starting` (the ONE bounded start window — no residency tier) shows the bounded chip + the acknowledgement, never `Listening`', () => {
     renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" />);
 
     expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
@@ -282,20 +282,9 @@ describe('LauncherCommandBar — the `cue` contract may never claim listening ea
     expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
-  });
-
-  it('`warming` (launch window, engine NOT resident) is a non-listening state — no listening wording at all', () => {
-    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="warming" />);
-
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
-    // The launch window has no capture and no resident engine: it answers with the
-    // same honest bounded text state UI/UX specified for a non-listening start.
-    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
-      'starting voice input…',
-    );
-    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
-    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
-    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    // Spec #2914 ST-9 (G-125 re-point) — the deleted residency-derived `warming`
+    // tier shared this exact non-listening state, so its "no listening wording at
+    // all" assertions fold into THIS pin (no assertion dropped).
     expect(screen.queryByText('Listening')).toBeNull();
     expect(screen.queryByText('Listening…')).toBeNull();
   });

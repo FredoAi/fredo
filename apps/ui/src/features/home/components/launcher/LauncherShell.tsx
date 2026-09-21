@@ -237,7 +237,8 @@ export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
 /**
  * Spec #2887 ST-7 (R-3/AC3) — THE ONE honest hold-cue derivation, pure and
  * unit-pinned so the shell can never hand the bar a cue that claims capture
- * before it exists:
+ * before it exists. Spec #2914 ST-9 — the engine-residency stamp is GONE with
+ * the deleted resident engine, so the pending window has ONE honest state:
  *
  *   captureLive (the `listening` prop = `voice.listening && origin === 'launcher'`)
  *       → `'listening'` — the ONLY state that may render `Listening`/`Listening…`
@@ -245,11 +246,8 @@ export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
  *   pending (`holdPending` — the shipped bounded gate, armed INSIDE the
  *   `HOLD_THRESHOLD_MS` timer's callback, so it is measured from
  *   THRESHOLD-CROSSED, never from the keydown)
- *       → `'starting'` when the engine is resident (the hold is paying only the
- *         capture-open), `'warming'` when it is NOT (`engineResident === false`:
- *         the launch window, where the hold joined the in-flight setup warm).
- *         Both render the SAME bounded `starting voice input…` chip — the
- *         distinction is the honest cause, never a longer "starting" affordance;
+ *       → `'starting'` — the bounded `starting voice input…` chip while the
+ *         capture opens;
  *   armed (the keydown edge, before the threshold cross)
  *       → `'acknowledge'` — `Hold to dictate…`, the user's own gesture, no
  *         capture mark and no listening wording;
@@ -267,11 +265,9 @@ export function deriveHoldCue(input: {
   armed: boolean;
   /** The bounded pending gate fired: threshold crossed + `HOLD_PENDING_CUE_MS`. */
   pending: boolean;
-  /** ST-3's `stt:state` stamp: the last start took the resident engine. */
-  engineResident: boolean;
 }): HoldCue {
   if (input.captureLive) return 'listening';
-  if (input.pending) return input.engineResident ? 'starting' : 'warming';
+  if (input.pending) return 'starting';
   if (input.armed) return 'acknowledge';
   return 'none';
 }
@@ -467,7 +463,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     captureLive,
     armed: holdArmed,
     pending: holdPending,
-    engineResident: voice.engineResident,
   });
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdPendingCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1677,10 +1672,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // Spec #2887 ST-7 (R-3/AC3) — the ONE derived honest cue replaces the
             // shipped `holdArmed`/`holdPending` pair: `'acknowledge'` at the
             // keydown edge, the bounded `starting voice input…` chip
-            // (`'starting'`/launch-window `'warming'`) once the pending window
-            // outlives `HOLD_PENDING_CUE_MS`, and `'listening'` ONLY while the
-            // capture is genuinely live. One indicator at a time (the bounded chip
-            // and the Listening chip share the slot).
+            // (`'starting'`) once the pending window outlives
+            // `HOLD_PENDING_CUE_MS`, and `'listening'` ONLY while the capture is
+            // genuinely live. One indicator at a time (the bounded chip and the
+            // Listening chip share the slot).
             cue={holdCue}
             holdAvailable={holdAvailable}
             // #2878 ST-2 (AC3 resolution) — the Stop control is the FINALIZE/commit

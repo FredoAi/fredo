@@ -7,8 +7,9 @@
  * lifecycle methods never throwing to the caller, and the unmount contract
  * (unlisten + no state update / no throw after unmount).
  *
- * Spec #2887 ST-7 adds the resident-engine observable (`engineResident`, the
- * `stt:state` start stamp) the launcher's honest hold cue derives from.
+ * Spec #2914 ST-9 — the resident-engine observable (`engineResident`) is GONE
+ * with the deleted engine (SA-11): the hook no longer exposes or mirrors it, and
+ * the launch-window hold cue derives from `holdPending` alone.
  *
  * Spec #2897 ST-2/ST-5 adds the model-audio phase + at-ceiling signal and the
  * pinned per-input ceiling (`limitMs`) the launcher indicator/countdown derive
@@ -105,8 +106,9 @@ describe('useVoiceDictation — control-plane subscription', () => {
     expect(result.current.detail).toBeNull();
     expect(result.current.deviceName).toBeNull();
     expect(result.current.origin).toBeNull();
-    // #2887 ST-7 — fail-closed: unknown residency is NOT resident.
-    expect(result.current.engineResident).toBe(false);
+    // Spec #2914 ST-9 (SA-11) — the removed residency observable never reappears
+    // in the state contract (its only source was the deleted wire field).
+    expect('engineResident' in result.current).toBe(false);
     // #2897 ST-2 — no model-audio phase and no ceiling signal while idle.
     expect(result.current.modelAudioPhase).toBeNull();
     expect(result.current.limitReached).toBe(false);
@@ -135,6 +137,8 @@ describe('useVoiceDictation — control-plane subscription', () => {
     // Production source — the spike header is gone (REQ-NF3).
     expect(rawSource).not.toContain('SPIKE #2876');
     expect(rawSource).not.toContain('THROWAWAY POC');
+    // Spec #2914 ST-9 (SA-11) — no resident-engine remnant survives in the hook.
+    expect(source).not.toMatch(/engineResident|ResidentEngine/);
   });
 });
 
@@ -184,41 +188,18 @@ describe('useVoiceDictation — stt:state', () => {
   });
 });
 
-// ── 3. The resident-engine observable (Spec #2887 ST-7) ─────────────────────
+// ── 3. Idle sweep / `disabled` lifecycle (#2887 ST-7; #2914 ST-9 re-point) ───
 //
-// The `stt:state` START-success stamp carries `engineResident` (and `readyMs`).
-// The launcher's honest hold cue derives from it: `false` = the engine was NOT
-// resident at the start ⇒ `warming`; `true` ⇒ `starting`. These pins fix the
-// mirror rule (a START writes it, an IDLE event must not clear it, the typed
-// voice-off signal does).
+// Spec #2914 ST-9 — the resident-engine observable (`engineResident`) is GONE
+// with the deleted engine: the hook no longer exposes or mirrors it, and the
+// launch-window hold cue derives from `holdPending` alone (pinned in
+// `launcherVoiceDictation.test.tsx`). The lifecycle assertions that surrounded
+// it are kept here (G-125 re-point): an idle sweep ends the capture without
+// fabricating an error, and the typed `disabled` voice-off signal surfaces its
+// error code.
 
-describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', () => {
-  it('mirrors the START stamp and is fail-closed while unknown', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 118,
-      engineResident: true,
-    });
-    expect(result.current.engineResident).toBe(true);
-
-    // A launch-window start JOINED the in-flight warm: never an optimistic stamp.
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 2_940,
-      engineResident: false,
-    });
-    expect(result.current.engineResident).toBe(false);
-  });
-
-  it('an idle state event never clears the last START stamp (its false means "no start happened")', () => {
+describe('useVoiceDictation — idle / `disabled` lifecycle (#2887 ST-7; #2914 ST-9)', () => {
+  it('an idle sweep ends the capture without fabricating an error', () => {
     const { result } = renderHook(() => useVoiceDictation());
 
     emit('stt:state', {
@@ -227,37 +208,24 @@ describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', ()
       detail: null,
       origin: 'launcher',
       readyMs: 90,
-      engineResident: true,
     });
-    expect(result.current.engineResident).toBe(true);
+    expect(result.current.listening).toBe(true);
 
-    // The session ended: the SWEEPING event clears `listening`/errors, but the
-    // engine stays parked — clearing residency here would mislabel every later
-    // hold as a launch-window `warming`.
+    // The session ended: the SWEEPING event clears `listening`/errors.
     emit('stt:state', {
       listening: false,
       code: null,
       detail: null,
       origin: 'launcher',
       readyMs: null,
-      engineResident: false,
     });
     expect(result.current.listening).toBe(false);
-    expect(result.current.engineResident).toBe(true);
+    expect(result.current.errorCode).toBeNull();
+    expect(result.current.detail).toBeNull();
   });
 
-  it('the typed `disabled` voice-off signal clears it (the voice-disabled edge)', () => {
+  it('the typed `disabled` voice-off signal surfaces its error code', () => {
     const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 90,
-      engineResident: true,
-    });
-    expect(result.current.engineResident).toBe(true);
 
     emit('stt:state', {
       listening: false,
@@ -266,7 +234,7 @@ describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', ()
       origin: 'launcher',
     });
     expect(result.current.errorCode).toBe('disabled');
-    expect(result.current.engineResident).toBe(false);
+    expect(result.current.detail).toBe('Voice input is disabled in Companion settings.');
   });
 });
 
