@@ -547,16 +547,18 @@
       partial fill / stale frame is a finding (promotes to launcher F-113).
 - [ ] E-75: **Worst-case accent vs the seat fill.** With the accent nearest the launcher page
       background, is the seat mascot's body still distinguishable as a filled region at the sm 80×100
-      scale (fill-vs-backdrop delta > `4×T_OPEN`) and does the figure read as one solid shape? Any
+      scale (fill-vs-backdrop delta > `4×T = 32`) and does the figure read as one solid shape? Any
       body region merging with the surface is a finding (promotes to launcher F-114 + the QA
       Discussion Q-2).
-- [ ] E-76: **Leak-boundary probe on the seat mascot.** Walk the seat mascot's silhouette boundary
-      (outer-arm/hip steps, neck band either side of the jaw bar, crotch) at 1-unit steps and record
-      any pixel where frame A differs from frame B inside a background box. Any single-pixel leak is a
-      finding (promotes to launcher F-115 / companion F-138); explicitly note the `x 460, y 1150`
-      false-positive (the left inner leg's own edge) so it is not re-filed.
+- [ ] E-76: **Leak probe on the seat mascot's negative-space boxes.** Evaluate `leakCount` over the
+      UI/UX-bound boxes `N` (frames A + C, `T = 8`), inset per box by the binding NON-UNIFORM tuck rule
+      `inset = min(6, floor(w/4), floor(h/4))` (every box 6 except the bow-tie notch 2); walk the
+      outer-arm/hip steps, the neck band either side of the jaw bar, and the crotch at 1-unit steps
+      for antialias bleed past the box edge. Any fill pixel inside `N` is a finding (promotes to
+      launcher F-115 / companion F-138); explicitly note the `x 460, y 1150` note (the left inner
+      leg's own edge, outside `N`) so it is not re-filed.
 - [ ] E-77: **The md 132×165 render leg (only if a surface ever renders it).** No surface renders
       `size="md"` today (`AVATAR_MD` is only exported). If one is wired, re-run the body metric at md
-      and check band joins at the larger scale (the 6-unit rim tuck is scale-independent in viewBox
+      and check band joins at the larger scale (the per-box rim tuck is scale-independent in viewBox
       units but the antialias width is not). Absent an md surface, record the shared-component RTL pin
       as the residual and do NOT claim a rendered md PASS (promotes to launcher F-113).
