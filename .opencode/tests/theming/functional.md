@@ -817,7 +817,7 @@
   - **Edge:** a maximized-only/absent window is VACUOUS → require the non-maximized resting rect;
     two windows; drag over the animated region; minimized; light + dark.
 
-- [ ] **F-63 (AC3 / token-pure + live recolour + light/dark legibility):** (a) static-grep the Life slice
+- [x] **F-63 (AC3 / token-pure + live recolour + light/dark legibility):** (a) static-grep the Life slice
       for hex/rgb/hsl literals + invalid `var(--x)NN`; (b) switch preset Dark→Light Default and set/clear
       an `accentPrimary` override, sampling cell + ground colours; (c) measure cells-vs-ground contrast on
       a light-based **and** a dark-based preset.
@@ -933,3 +933,26 @@
 - **F-70 PASS (live).** `fredo emit --event-type chat --session-id e2e-2915-chat` + `--event-type tool_use --session-id e2e-2915-tool --tool-name read_file`; `telemetry_spans` total **24 959**, `max(ingested_at) 2026-09-21T07:34:25.127Z` (recent); `chat_rows` e2e-2915-chat state=init ×2; `tool_use_rows` e2e-2915-tool tool_name read_file ×2.
 - **F-71 PASS.** `pnpm --filter @fredo/ui build` exit 0 (2582 modules, only the pre-existing chunk advisory); `pnpm --filter @fredo/ui test:run` **115 files / 1700 tests passed, 0 failed**; background suite 9 files / 140 tests; `git diff main spec/2915 --stat` shows the ONLY test-expectation edits are `BackgroundSettings.test.tsx` (7→8 radios, End→`life`) + purely additive `DesktopBackdrop.test.tsx`/new Life files — no assertion weakened/disabled/deleted; `background.invariants.test.tsx` byte-identical.
 - **F-72 PASS (live).** Each of the 8 tiles reaches exactly its state (None → zero backdrop; six recipes → their layers; Life → the canvas); exactly one selected/checked per click; `resolveBackgroundMotion` still exactly two states; no new control/motion status.
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+> Re-test after the round-1 F-63 FAIL fix (`79a80c1` — cell token `--accent-primary` → `--accent-strong`).
+> Live policy. Serving `spec/2915 @ 79a80c1b`; webview 1920×1017 dpr 1; raw
+> `matchMedia('(prefers-reduced-motion: reduce)').matches = false`. **Verdict: PASS (16/16 rows).**
+
+- **F-57 PASS (live).** 8 radios, exactly one `aria-checked="true"`; fresh profile (cleared AppStore + localStorage) → None + zero backdrop DOM/canvas; Life → `data-background-id="life"`, tile `data-selected`, `localStorage` `life`, canvas running; document canvas count 1.
+- **F-58 PASS (live).** Life → `dev-env.ps1 -Action Restart` → restored (new seed 1391331599, running true); None → restart → AppStore `none`, zero backdrop/canvas.
+- **F-59 PASS (live).** `banana`/`''`/`{}`/`123`/removed `plasma` → zero backdrop DOM, today's desktop, console clean; `life` round-trips (seed 1465378034). `null` rejected by the typed `save_setting` command (`invalid type: null, expected a string`).
+- **F-60 PASS (live+static).** seeds 3479934306 vs 4190341673; loaded-frame cell-grid diff 7.772 %; 10-pattern catalogue; thumbnail SPAN+SVG `data-life-preview="static"`, zero canvas in the settings tree.
+- **F-61 PASS (live, PRIMARY) with the disclosed calibration residual.** Dense full-frame Δ=12 s intervals 4.832 / 4.378 / 5.219 / 3.930 % (4/4 ≥ 2.0 %); union 4.578 %; no blank frame. **Residual:** the `≥1 interval ≥3× median` clause is harmonically locked at 12 s (24 s re-seed period = 2× multiple); observable at fine granularity — **120 ms consecutive dense-diff max 9.455 % vs 2.18 % median = 4.34×** (t=28.813 s), and painted-population step 0.419 pp vs 0.03 pp median = 13.97×.
+- **F-62 PASS (live, G-176).** Non-maximized 480×320 @ (48,48) window; backdrop z=0 / `pointer-events:none` / `aria-hidden` / no tabindex; `elementFromPoint` ×4 → window content; nav click + typed "inert-probe" landed while Life animated.
+- **F-63 PASS (live+static) — round-1 FAIL fixed.** (a) zero literals / `var(--x)NN`. (b) painted-canvas recolour live, no restart (light-default cell `#057b7d` → override `#ff00ff` → `#920897` 7.767:1; pale `#7dd3fc` → `#4a7c95` 4.557:1; reset → base 5.497:1; unused `cardBg` override no shift). (c) **painted cell-vs-ground non-text ratios: light-default 5.078, solarized 3.742, arctic 4.588, sunset 4.729, paper 5.051 (all ≥3:1); dark 11.508, coffee 10.172.** Full-canvas histogram proves the `color-mix`-derived cell was actually painted (no ground fallback).
+- **F-64 PASS (product pin) + UNVERIFIED (live flip) — NAMED BLOCKER.** `vitest run background` 9 files / 140 tests; `lifeBounds` 8/8 + `lifeEngine` 12/12 (static leg zero rAF/timers). No media-emulation API on the host (G-050/G-148/#2870); closed by the pin.
+- **F-65 PASS (live).** dark 11-frame max consecutive |ΔL| = 0.171 % FS; light-default 12-frame max = 0.219 % FS; zero inversions > 0.5 % FS; implied flash ≪ 3 Hz.
+- **F-66 PASS (live+static).** Zero raster; authored caps; clean 70.004 s soak heap start 36.97 → peak 37.29 MB (**+0.882 %**), end 37.16 MB, 6 GC decreases, no monotonic climb; canvas backing store constant 1920×1017 (1.0× CSS viewport).
+- **F-67 PASS (live) + NAMED BLOCKERS.** `data-life-running` true→**false**→true via `document.hidden` override + the real `visibilitychange` handler; hidden full-frame diff over **15.365 s = 0.000 %**; post-restore evolving 2.486 %/1.5 s. Native minimize/hide undrivable (plugin <0.13; no `core:window:allow-hide`); `document.visibilityState` stayed `visible` — disclosed.
+- **F-68 PASS (live+static).** `lifePatterns.ts:6-21` + `docs/features/desktop-background-life.md:17-41` + live `desktop-background-life-attribution`; 10 patterns.
+- **F-69 PASS (live, complex).** 4/4 intervals clear; re-seed discontinuity 9.455 % vs 2.18 % median = 4.34×; end frame ≠ initial; population never 0; vision (light-default frames apart): evolving yes, frozen/blank no.
+- **F-70 PASS (live).** `telemetry_spans` total **25 497**, `max(ingested_at) 2026-09-21T08:05:23.266Z`; `chat_rows` e2e-2915-chat init ×2; `tool_use_rows` e2e-2915-tool read_file ×2.
+- **F-71 PASS.** build exit 0 (2582 modules); `test:run` **115 files / 1700 tests**; `background.invariants.test.tsx` byte-identical; only chooser 7→8 + additive test edits.
+- **F-72 PASS (live).** All 8 options reach exactly their state; one selected per click; two motion states; no new control.
