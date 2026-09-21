@@ -249,3 +249,13 @@
 - **E-48 PASS (live).** preset dark↔light + accent override/clear while Life animates: painted ground/cell recolour live, loop keeps running, no stale colour, no re-render loop.
 - **E-49 PASS (live).** backing store = 1920×1017 at dpr 1 = 1.0× CSS viewport (≤ `LIFE_DPR_MAX` 1.5 linear); constant through the soak; no grid/backing-store growth on relayout.
 - **E-50 PASS (vision).** the field reads as Life (stable blocks, blinkers, a live frontier) — not noise and not a still checkerboard; 160 ms steps are perceptible and non-strobing. **Promotion:** the F-63 light-preset cell/ground contrast miss (1.90–2.93:1 < 3:1) is a new confirmed finding; it is tracked by F-63 (FAIL) rather than a new E row.
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+- **E-44 PASS (live).** 8-option sweep + None churn console-clean; no orphaned canvas.
+- **E-45 PASS (live).** clean 70 s soak: bounded sawtooth heap (start 36.97 → peak 37.29 MB = +0.882 %), canvas constant 1920×1017; field keeps evolving and re-seeds.
+- **E-46 UNVERIFIED — NAMED BLOCKER.** raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`; no Tauri MCP media-emulation lever (G-050/G-148/#2870); closed by the F-64 product-unit pin.
+- **E-47 PASS (live) with named blockers.** real `visibilitychange` + `document.hidden` override: true→false→true; hidden full-frame diff 0.000 % over 15.365 s. Native minimize/hide undrivable.
+- **E-48 PASS (live).** preset/accent churn while animating: live recolour, loop keeps running, no stale colour, no re-render loop.
+- **E-49 PASS (live).** backing store = 1920×1017 = 1.0× CSS viewport (≤ `LIFE_DPR_MAX` 1.5), constant through the soak.
+- **E-50 PASS (vision).** reads as Life; not noise, not a frozen checkerboard. **Resolution:** the round-1 E-50 promotion (F-63 light-preset contrast miss) is now **resolved** — the cell paints from `--accent-strong` and all five light presets clear ≥3:1 (5.078/3.742/4.588/4.729/5.051).
