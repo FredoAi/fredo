@@ -729,3 +729,76 @@
 ### #2892 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2917 extension — the solid interior + richer vocabulary must NOT change existing behavior
+
+> Issue #2917 adds an additive interior fill layer and audits/extends the status vocabulary. These
+> invariants MUST hold after the slice — any FAIL is a regression. Run alongside R-1..R-57 and the
+> companion F-116..F-125. **Verification policy: live.** G-136 note: the fill layer is ADDITIVE, so the
+> frozen-geometry rows stay in force unchanged (only the 58 base rects are pinned, not the total node
+> count).
+
+## R-58 — Existing state fingerprints + consumer timing unchanged
+
+- [ ] R-58: Drive `idle`/`talk`/`teleport-out`/`teleport-in`; probe the wrapper `data-state`,
+      `#fredo-expression` overlay rect set, computed `animationName`; timestamp a same-window teleport.
+  **Expected:** the pre-#2917 fingerprints for the four states are unchanged (same overlay rect sets +
+      same wrapper motion); teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `ANIM_DURATION`
+      unchanged; the 250 ms click discriminator, the joke, and TicTacToe still work. The fill layer
+      does not hijack an existing state's overlay selector or rect set. Reference R-19/R-33 + F-118.
+  - **Edge:** a new status must not shadow an existing `#fredo-expression[data-state=…]` selector; the
+    fill must not be inserted between the base rects and the overlay in paint order.
+
+## R-59 — Frozen 58-rect geometry + additive fill
+
+- [ ] R-59: Read the 58 base rects in every state (old + new) and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm the fill is a separate additive layer.
+  **Expected:** the 58 base rects are byte-identical across ALL states; the shared geometry suite
+      (`fredoAvatarGeometry.test.ts`) passes UNMODIFIED; the fill is additive (a separate layer/group),
+      never a geometry edit, and never removes a base rect. Reference R-20/#2850 R-10 + F-122.
+  - **Edge:** a fill implemented by mutating `FREDO_AVATAR_SOURCE_RECTS` or the expansion math is a
+    FAIL; the `fredoAvatarSizes.test.ts` suite passes unmodified.
+
+## R-60 — Joke / TicTacToe / bubble / presence / persisted keys untouched
+
+- [ ] R-60: Single-click joke; double-click TicTacToe (250 ms discriminator); Ctrl+right-click teleport
+      (same + cross-window); toggle the companion ON/OFF; let a short idle auto-return fire; drive the
+      reply surface; read `Fredo_companion_visible` / `Fredo_companion_idle_timeout` and confirm `isAway`
+      is not persisted.
+  **Expected:** R-1..R-5, R-13, R-21, R-33..R-49, R-53..R-57 still hold — the 240×120/grown reply,
+      the 208×268 game card, the `above > right > left` placement, the streaming cursor, the
+      joke/vision flows, the teleport timing, one-Fredo-at-home, the seat wrapper 80×100 + 16 px, and
+      the persisted keys/ranges are byte/behaviour-identical. The vocabulary change adds no new
+      persisted key and mutates none.
+  - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-status; an auto-return at the idle
+    deadline.
+
+## R-61 — Reduced-motion behavior preserved (no opacity:0, no strobe)
+
+- [ ] R-61: Inspect + assert the reduced-motion rules for the fill and every state; run the static-CSS
+      and product-unit pins (the live media-query flip is a named G-053 blocker). Confirm the launcher
+      idle mascot's reduced-motion rule still resolves to a static, fully-visible figure.
+  **Expected:** under `prefers-reduced-motion: reduce` motion is suppressed while the distinguishing
+      frame stays legible — never `opacity:0`, never a strobe (WCAG 2.3.1); the pre-existing idle
+      bob/glow suppression and teleport crossfade are unchanged; the figure stays 80×100 and fully
+      opaque. Reference R-19/#2850 F-19 + F-122.
+  - **Edge:** the fill must not introduce a new animated element that bypasses the reduced-motion
+    block; a `!important`-free rule that loses specificity to the fill is a FAIL.
+
+## R-62 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-62: Static-grep the changed avatar + companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the fill/state code for
+      effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); build exit 0; suite green without weakening any assertion
+      (refreshed ones owned per G-125). Reference R-23/R-45/R-57 + F-124.
+  - **Edge:** the fill layer must not add a per-frame computation or a mount-time state write; the
+    pre-existing `motion() is deprecated` WARN is exempt.
+
+### #2917 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
