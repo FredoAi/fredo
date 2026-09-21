@@ -11,6 +11,10 @@
  * pattern as the Theme Preset selector and `DockPositionSettings`
  * (`DockPositionSettings.tsx:15-16`).
  *
+ * Spec #2915 ST-4 adds the engine-backed Life tile (a STATIC SVG "founder frame"
+ * thumbnail — the automaton never runs in the chooser) and the always-visible
+ * CC BY-SA 3.0 licence notice under the grid.
+ *
  * Keyboard (standard radiogroup): roving tabindex — the selected tile is
  * `tabIndex={0}`, all others `-1`, so Tab enters/leaves the group as one stop.
  * Arrow Left/Right move by one, Arrow Up/Down by one grid row (columns are
@@ -31,15 +35,29 @@ import { Box, Text } from '@chakra-ui/react';
 import { LuCheck } from 'react-icons/lu';
 import {
   BACKGROUND_DESCRIPTORS,
+  LIFE_BACKGROUND,
   NONE_BACKGROUND,
   getBackgroundDescriptor,
   type BackgroundId,
 } from './backgroundRegistry';
 import { hydrateBackground, selectBackground, useBackgroundId } from './backgroundStore';
 import { layerBoxStyle, useBackgroundMotion } from './backgroundMotion';
+import { LIFE_ATTRIBUTION } from './life/lifeConstants';
+import { LifeThumbnail } from './life/LifeThumbnail';
 
-/** Chooser order: the shipped `None` first (the default), then the recipes. */
-const BACKGROUND_OPTIONS = [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS] as const;
+/**
+ * Chooser order: the shipped `None` first (the default), then the six procedural
+ * recipes, then the engine-backed Life surface (Spec #2915 ST-4). Life is
+ * appended HERE rather than into `BACKGROUND_DESCRIPTORS` so the six-recipe (≥1
+ * layer / descriptor) registry pins stay byte-identical.
+ */
+const BACKGROUND_OPTIONS = [NONE_BACKGROUND, ...BACKGROUND_DESCRIPTORS, LIFE_BACKGROUND] as const;
+
+/** The always-visible licence notice — also the Life tile's `aria-describedby` target. */
+const LIFE_ATTRIBUTION_ID = 'desktop-background-life-attribution';
+
+/** The Life tile's accessible description (its NAME stays `Life`). */
+const LIFE_DESCRIPTION = "Living Conway's Game of Life";
 
 /**
  * Number of rendered grid columns, measured from the live layout (the grid is
@@ -146,6 +164,7 @@ export const BackgroundSettings: React.FC = () => {
       >
         {BACKGROUND_OPTIONS.map((option, index) => {
           const selected = option.id === backgroundId;
+          const isLife = option.id === 'life';
           return (
             <Box
               key={option.id}
@@ -153,6 +172,8 @@ export const BackgroundSettings: React.FC = () => {
               role="radio"
               aria-checked={selected}
               aria-label={option.label}
+              aria-description={isLife ? LIFE_DESCRIPTION : undefined}
+              aria-describedby={isLife ? LIFE_ATTRIBUTION_ID : undefined}
               data-testid={`desktop-background-option-${option.id}`}
               data-selected={selected ? 'true' : 'false'}
               tabIndex={selected ? 0 : -1}
@@ -177,7 +198,9 @@ export const BackgroundSettings: React.FC = () => {
             >
               {/* Live preview — the tile IS the result: the descriptor's own
                   ground + layers at 16/10 scale, rendered STATICALLY (no
-                  animation on the thumbnail — ST-2), decorative + non-interactive. */}
+                  animation on the thumbnail — ST-2), decorative + non-interactive.
+                  The engine-backed Life kind paints its static SVG "founder frame"
+                  here instead: the automaton NEVER runs in the chooser. */}
               <Box
                 aria-hidden="true"
                 pointerEvents="none"
@@ -188,6 +211,7 @@ export const BackgroundSettings: React.FC = () => {
                 borderColor="var(--border-color)"
                 css={{ aspectRatio: '16 / 10', ...getBackgroundDescriptor(option.id).css }}
               >
+                {isLife && <LifeThumbnail />}
                 {getBackgroundDescriptor(option.id).layers.map((layer) => (
                   <Box
                     key={layer.id}
@@ -229,6 +253,21 @@ export const BackgroundSettings: React.FC = () => {
           );
         })}
       </Box>
+      {/* CC BY-SA 3.0 licence notice for the curated Life Lexicon pattern set
+          (Spec #2915). ALWAYS rendered — it accompanies the shipped patterns,
+          independent of the current selection — and it stays OUTSIDE the inert
+          backdrop so it is legible and AT-reachable. The Life tile references it
+          through `aria-describedby`. */}
+      <Text
+        id={LIFE_ATTRIBUTION_ID}
+        data-testid={LIFE_ATTRIBUTION_ID}
+        fontSize="xs"
+        color="var(--text-secondary)"
+        mt={3}
+        lineHeight="short"
+      >
+        {LIFE_ATTRIBUTION}
+      </Text>
       <Text fontSize="xs" color="var(--text-secondary)" mt={3} lineHeight="short">
         Renders behind your windows and never blocks clicks.
       </Text>
