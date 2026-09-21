@@ -506,3 +506,27 @@
 - **E-67 PASS (live).** Countdown copy `Fredo is listening · 7s left` (146.8×24, ONE line, whole countdown visible — no ellipsis of the bound) at default; processing copy `Fredo is processing your speech…` (212.2×24, ONE line). At the narrowest supported window (900×600, bar constant 560) both stayed one line with `fieldContentW ≥ 140`; no field displacement. No promotion.
 - **E-68 PASS (live, driven mid-capture).** While the model capture was live, switched the shipped `select[aria-label="Theme presets"]` `dark`→`light-default` in one in-page task: chip color `rgb(229,231,235)` → `rgb(12,17,23)`, card `#151a21` → `#f7f8fa`, chip rect **byte-identical** (`left 1037.2 / right 1143 / 105.8×24`), still `nowrap`/`horizontal-tb`; dot stayed `rgb(0,209,209)`, field border accent-30. No stale color, no geometry change, no console error. No promotion.
 - **E-69 PASS (resize churn) / 125% DPI sub-leg UNVERIFIED (named blocker).** Mid-capture churn 900×600 ↔ 1400×900 ↔ 700×900 ↔ 1936×1056: one line + clear of the field at every width; full-size restored cleanly. **NAMED BLOCKER:** no lever to force a fractional OS/webview scale — the MCP driver exposes only `tauri_manage_window resize` in logical px, and the observed scale is 1:1 (`window.innerWidth 1936 == window width 1936` ⇒ 100%); `execute_js` cannot set devicePixelRatio. Command attempted: `tauri_manage_window(action="resize", width=…)` + `window.innerWidth` probe. No promotion.
+
+---
+
+## #2917 extension — solid-fill edge probes on the launcher surface
+
+> Unscripted probes for issue #2917. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note); a confirmed regression-free probe is recorded here. Live policy; an undrivable
+> lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-70: **Worst-case accent contrast for the launcher fill.** Pick the shipped preset whose accent is
+      closest to the launcher background (or a near-background user accent). Is the filled interior still
+      distinguishable from the surface behind Fredo, and is the head rim still readable? Any interior
+      that merges with the background is a finding (promotes to F-108).
+- [ ] E-71: **Fractional-DPI / narrow-viewport fill integrity.** At a fractional OS scale and at the
+      shipped minimum 900×600 (and narrower, dev-advisory), does the fill stay inside the silhouette with
+      no seam-shifted/overflowing cells, and does the figure stay un-clipped? Any overflow, seam shift, or
+      subpixel smear is a finding (promotes to F-108).
+- [ ] E-72: **Theme/accent flip mid-open/close over the fill.** Switch presets while the launcher is
+      opening/closing and the mascot animates. Does the fill re-tint token-native with no stale colour and
+      no geometry jump? Any stale colour, layout jump, or console error is a finding (promotes to F-109).
+- [ ] E-73: **Dense-vs-sparse metric aliasing at the launcher size.** For a thin/periodic state captured
+      on the launcher leg, compare a dense full-frame diff with a sparse point-grid diff. Any state where
+      the sparse grid would pass while the dense diff fails must be recorded — the sparse grid is never
+      admissible (promotes to `companion` F-121).
