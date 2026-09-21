@@ -55,3 +55,30 @@ export const LIFE_PATTERN_COUNT = 10;
 
 /** The always-visible CC BY-SA 3.0 attribution notice (Life Lexicon, Stephen Silver). */
 export const LIFE_ATTRIBUTION = 'Patterns: Life Lexicon (Stephen Silver), CC BY-SA 3.0.';
+
+/* -------------------------------------------------------------------------- */
+/* Painted-dim contract (Spec #2925, ST-1)                                    */
+/* -------------------------------------------------------------------------- */
+/*
+ * The two authored weights below compose the derived `--life-cell` /
+ * `--life-dim` expressions registered ONCE in `ThemeProvider.tsx` (base pass,
+ * next to `--accent-strong`). They are the SINGLE authored-number home for the
+ * calmer/less-glaring field: the provider string-interpolates them into the
+ * two `color-mix()` custom properties, and `lifeEngine.ts` reads the resolved
+ * values at paint time. See `docs/features/desktop-background-life.md`.
+ */
+
+/** Cell blend toward `--text-primary` — the desaturation leg of the cell mix. */
+export const LIFE_CELL_MIX = 0.2;
+
+/** `--overlay-bg` weight in `--life-dim` (black alpha = 0.6 × 0.2 = 0.12). */
+export const LIFE_SCRIM_WEIGHT = 0.2;
+
+/**
+ * Contrast floor for the resolved dimmed cell-vs-ground pair. If the WCAG
+ * contrast ratio drops below this, the engine paints the untransformed pair
+ * (`--accent-strong` cells, no scrim) instead — a legibility safety net for
+ * arbitrary user accents, not a colour value. It is a fallback TRIGGER, not a
+ * colour, so it never participates in the pure CSS expression.
+ */
+export const LIFE_CONTRAST_MIN = 3;

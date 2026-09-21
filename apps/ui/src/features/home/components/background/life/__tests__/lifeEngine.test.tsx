@@ -185,7 +185,11 @@ describe('#2915 ST-3 — reduced motion: static frame, zero scheduling', () => {
 
     const engine = createLifeEngine({ canvas, reducedMotion: true, seed: 7 });
     engine.resize(240, 160);
-    engine.setTokens({ ground: 'var(--body-bg)', cell: 'var(--accent-strong)' });
+    engine.setTokens({
+      ground: 'var(--body-bg)',
+      cell: 'var(--accent-strong)',
+      dim: 'transparent',
+    });
     engine.start();
     engine.step();
 
@@ -225,7 +229,11 @@ describe('#2915 ST-3 — live token resolution', () => {
     const engine = createLifeEngine({ canvas, reducedMotion: false, seed: 5 });
     engine.start();
     const scheduled = rafSpy.mock.calls.length;
-    engine.setTokens({ ground: 'var(--body-bg)', cell: 'var(--accent-strong)' });
+    engine.setTokens({
+      ground: 'var(--body-bg)',
+      cell: 'var(--accent-strong)',
+      dim: 'transparent',
+    });
     expect(rafSpy.mock.calls.length).toBe(scheduled);
     engine.destroy();
   });
