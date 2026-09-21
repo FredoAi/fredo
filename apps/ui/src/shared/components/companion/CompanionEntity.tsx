@@ -62,6 +62,12 @@ const SAFETY_TIMEOUT_MS = 15000;
 // < ERROR_HOLD_MS (8000).
 export const WORKING_BEAT_MS = 900;
 
+// #2917 round 3 (FIX-4r3) — DISPLAY-ONLY BOUNDED welcome beat: exactly the UI/UX
+// greeting wave (fredo-avatar.css:163 — 500 ms x 3). After it, the ambient message
+// renders the base `talk` expression (the pre-#2917 behaviour). MUST stay < the
+// shortest ambient window (4000 ms).
+export const GREETING_BEAT_MS = 1500;
+
 const JOKE_TOPICS = [
   'recursion', 'null pointers', 'git', 'CSS', 'regex', 'merge conflicts',
   'JavaScript', 'TypeScript', 'Rust', 'Python', 'compilers', 'debugging',
@@ -366,6 +372,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [currentAnim, setCurrentAnim] = useState<FredoAvatarState>('idle');
     // animKey forces the wrapper to remount and restart the CSS animation cleanly
     const [animKey, setAnimKey] = useState(0);
+    // #2917 r3 (FIX-4r3) — the bounded ambient `greeting` beat. While TRUE the
+    // resolver's `ambientMessage` candidate is asserted; when the beat ends the
+    // SAME ambient message falls through to the base `talk` expression.
+    const [greetingBeatActive, setGreetingBeatActive] = useState(false);
 
     // #2854 — a status owned by the companion's local flow (thinking/joking/happy)
     // outranks the context `animState` sync. The flag is read inside effects/JSX
@@ -394,6 +404,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // it can never leak.
     const workingBeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const workingSinceRef = useRef<number | null>(null);
+    // #2917 r3 (FIX-4r3) — the message-scoped `greeting` beat timer. Owned by the
+    // message-keyed effect + the unmount cleanup (NEVER `clearTimer` — that is
+    // generation-scoped and would strand `greetingBeatActive === true`).
+    const greetingBeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // #2854 — resting cadence: while truly at rest (no stream / game / message)
     // the companion emits a bounded `playful` beat, then returns to idle, repeating.
     const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
@@ -411,7 +425,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       teleporting: isTeleportingRef.current,
       streaming: isStreaming,
       skillPending: skillPendingRef.current,
-      ambientMessage: message != null,
+      // #2917 r3 (FIX-4r3) — only the BOUNDED greeting beat asserts this
+      // candidate; after the beat the same message falls through to the base
+      // `talk` flow. The resolver stays pure/synchronous/time-free.
+      ambientMessage: message != null && greetingBeatActive,
       captureActive,
     });
 
@@ -609,6 +626,12 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
     }, []);
 
+    // #2917 r3 (FIX-4r3) — the greeting beat's single clear (same shape as
+    // `clearWatchdog`). The ref is nulled after clearing so a re-arm is clean.
+    const clearGreetingBeat = useCallback(() => {
+      if (greetingBeatTimerRef.current) { clearTimeout(greetingBeatTimerRef.current); greetingBeatTimerRef.current = null; }
+    }, []);
+
     const startWatchdog = useCallback(() => {
       clearWatchdog();
       watchdogRef.current = setTimeout(() => {
@@ -665,6 +688,27 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         }
       }
     }, [animState, message, resting, playAnim]);
+
+    // #2917 r3 (FIX-4r3) — the BOUNDED welcome beat (message-keyed, NEVER
+    // generation-scoped). A message OPEN or REPLACE (welcome → guide) re-arms the
+    // beat; the message-clear de-asserts it. The resolver stays pure/synchronous
+    // and time-free, so the timer lives here — the consumer that owns every other
+    // timer. `greeting` is still suppressed by a live generation via the
+    // resolver's own `streaming` rule, so this effect need not read `isStreaming`.
+    // `setGreetingBeatActive(false)` on an already-false value is a React no-op.
+    useEffect(() => {
+      clearGreetingBeat();
+      if (message == null) {
+        setGreetingBeatActive(false);
+        return;
+      }
+      setGreetingBeatActive(true);
+      greetingBeatTimerRef.current = setTimeout(() => {
+        greetingBeatTimerRef.current = null;
+        setGreetingBeatActive(false);
+      }, GREETING_BEAT_MS);
+      return clearGreetingBeat;
+    }, [message, clearGreetingBeat]);
 
     // Teleport sequence (fully timer-driven)
     const startTeleportIn = useCallback((dest: { x: number; y: number }) => {
@@ -1192,6 +1236,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     useEffect(() => () => {
       clearTimer();
       clearWatchdog();
+      clearGreetingBeat();
     }, [clearWatchdog]);
 
     // ── Click / double-click on avatar ─────────────────────────────────────────

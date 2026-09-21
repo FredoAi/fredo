@@ -26,7 +26,7 @@ import { act, cleanup, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion, WELCOME_TEXT } from '@/shared/contexts/CompanionContext';
-import { CompanionEntity, WORKING_BEAT_MS } from '@/shared/components/companion/CompanionEntity';
+import { CompanionEntity, GREETING_BEAT_MS, WORKING_BEAT_MS } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
 import { pushAppOpenReply } from '@/shared/components/companion/skillBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -292,21 +292,90 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('renders `greeting` for an ambient message while the context animState STAYS talk', async () => {
+  it('renders `greeting` as a BOUNDED welcome beat, then the base `talk`, for an ambient message (FIX-4r3)', async () => {
     const { container } = await mountEntity();
     vi.useFakeTimers();
 
     act(() => { api.showMessage(WELCOME_TEXT, 4000); });
 
+    // t=0 — the bounded greeting beat (the round-1 expectation, unchanged).
     expect(avatarState(container)).toBe('greeting');
     expect(overlayState(container)).toBe('greeting');
-    // The #2853 busy/presence marker is untouched.
+    // The #2853 busy/presence marker is untouched; it now doubles as the
+    // invariant across the beat (greeting → talk → idle all keep `animState` talk).
     expect(api.state.animState).toBe('talk');
     expect(screen.getByText(WELCOME_TEXT)).toBeInTheDocument();
 
-    // The existing 4000 ms welcome window returns to idle.
-    act(() => { vi.advanceTimersByTime(4000); });
+    // FIX-4r3 NAMED REFRESH: at GREETING_BEAT_MS the SAME ambient message yields
+    // to the base `talk` expression (the pre-#2917 reachability restored — the
+    // round-1 pin asserted `greeting` for the whole window, which masked `talk`).
+    act(() => { vi.advanceTimersByTime(GREETING_BEAT_MS); });
+    expect(avatarState(container)).toBe('talk');
+    expect(overlayState(container)).toBe('talk');
+    expect(api.state.animState).toBe('talk');
+
+    // AC2 static-frame expectation for the `talk` leg: the overlay group is
+    // present and painted LAST; the persistent closed-mouth rect renders; the
+    // streaming mark is ABSENT (so the open-mouth rect rests at opacity 0).
+    const expression = container.querySelector("#fredo-expression[data-state='talk']");
+    expect(expression).not.toBeNull();
+    expect(expression!.querySelector('.fredo-talk-mouth-closed')).not.toBeNull();
+    const wrapper = container.querySelector('.fredo-companion-avatar');
+    expect(wrapper?.hasAttribute('data-streaming')).toBe(false);
+    const svg = container.querySelector('svg') as SVGElement;
+    expect(svg.lastElementChild?.id).toBe('fredo-expression');
+
+    // Still `talk` immediately before the message clears…
+    act(() => { vi.advanceTimersByTime(3999 - GREETING_BEAT_MS); });
+    expect(avatarState(container)).toBe('talk');
+
+    // …and `idle` at the existing 4000 ms welcome window (message clear).
+    act(() => { vi.advanceTimersByTime(1); });
     expect(avatarState(container)).toBe('idle');
+    expect(overlayState(container)).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('keeps GREETING_BEAT_MS below the shortest shipped ambient window (FIX-4r3 invariant)', () => {
+    // The 4000 ms welcome / dev-mode message is the shortest ambient window
+    // (CompanionContext WELCOME_TEXT, Home.tsx dev-mode message); the bounded
+    // welcome beat must complete well inside it.
+    expect(GREETING_BEAT_MS).toBe(1500);
+    expect(GREETING_BEAT_MS).toBeLessThan(4000);
+  });
+
+  it('re-arms the greeting beat on a replaced ambient message (FIX-4r3)', async () => {
+    const { container } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { api.showMessage(WELCOME_TEXT, 4000); });
+    expect(avatarState(container)).toBe('greeting');
+    act(() => { vi.advanceTimersByTime(GREETING_BEAT_MS); });
+    expect(avatarState(container)).toBe('talk');
+
+    // A REPLACE message (different text) re-arms the beat: greeting → talk again.
+    act(() => { api.showMessage('Guide hello', 5000); });
+    expect(avatarState(container)).toBe('greeting');
+    act(() => { vi.advanceTimersByTime(GREETING_BEAT_MS); });
+    expect(avatarState(container)).toBe('talk');
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('leaks no greeting-beat timer: unmount during the active beat clears it (FIX-4r3)', async () => {
+    const { container } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { api.showMessage(WELCOME_TEXT, 4000); });
+    expect(avatarState(container)).toBe('greeting');
+
+    // The entity's unmount cleanup owns the greeting beat (`clearGreetingBeat`).
+    // The context-owned `showMessage` dismiss timer is a SEPARATE, pre-existing
+    // timer that is not part of the entity's cleanup contract, so pin the exact
+    // delta rather than a bare 0: exactly one pending timer (the greeting beat)
+    // is cleared on unmount.
+    const pendingBeforeUnmount = vi.getTimerCount();
+    expect(pendingBeforeUnmount).toBeGreaterThanOrEqual(1);
+    cleanup();
+    expect(vi.getTimerCount()).toBe(pendingBeforeUnmount - 1);
   });
 });
