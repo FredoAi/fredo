@@ -14,8 +14,9 @@
  *   5. AC1 (negative): none of the removed local affordances (handling selector,
  *      STT model row/download, autosend toggle, engine-status line) render.
  *
- * The wizard's `sttModel` step removal is ST-4's slice; this file asserts only
- * that the required-step summary is unchanged by the optional step.
+ * The wizard's `sttModel` step removal is ST-4's slice; this file also pins that
+ * the step is ABSENT and the required-step summary counts only the GGUF/server
+ * prerequisites.
  */
 
 import React from 'react';
@@ -82,6 +83,19 @@ function healthyServer(): LlamaServerStatus {
     pid: 1,
     configPath: 'C:\\data\\companion\\llama-server-launch.bat',
     logPath: 'C:\\data\\companion\\llama-server.log',
+    lastError: null,
+  };
+}
+
+/** Server present but not started — composes the third REQUIRED step. */
+function notRunningServer(): LlamaServerStatus {
+  return {
+    running: false,
+    healthy: false,
+    port: null,
+    pid: null,
+    configPath: '',
+    logPath: '',
     lastError: null,
   };
 }
@@ -203,11 +217,13 @@ describe('CompanionSettingsPanel voice input group (#2914 ST-3)', () => {
     expectNoLocalAffordances();
   });
 
-  it('excludes any optional step from the wizard installed/total summary', async () => {
-    adapterBridge.setInvoke(async (command: string) => {
+  it('drops the sttModel wizard step and keeps the required-step summary unchanged', async () => {
+    const invoke = vi.fn(async (command: string) => {
       if (command === 'check_companion_readiness') return partiallyReady;
-      return undefined; // get_llama_server_status unavailable → serverLaunch not composed
+      if (command === 'get_llama_server_status') return notRunningServer();
+      return undefined;
     });
+    adapterBridge.setInvoke(invoke);
     adapterBridge.setListen(async () => () => {});
 
     renderWithChakra(
@@ -220,14 +236,25 @@ describe('CompanionSettingsPanel voice input group (#2914 ST-3)', () => {
       expect(screen.getByTestId('companion-setup-wizard')).toBeInTheDocument();
     });
 
-    // The summary counts REQUIRED steps only: 1 of 2 (llamaServer installed,
-    // modelFiles missing) — an optional step must never inflate the total.
+    // The summary counts the THREE required steps only (llamaServer installed,
+    // modelFiles missing, serverLaunch not started) — the removed STT model step
+    // never inflates the total.
     await waitFor(() => {
       expect(screen.getByTestId('companion-setup-summary')).toHaveTextContent(
-        '1 of 2 prerequisites ready',
+        '1 of 3 prerequisites ready',
       );
     });
-    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('1 of 3');
+    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('1 of 4');
+
+    // #2914 ST-4 — the STT model step and its optional group are GONE.
+    expect(screen.queryByTestId('companion-step-stt-model')).toBeNull();
+    expect(screen.queryByTestId('companion-setup-optional')).toBeNull();
+    expect(screen.queryByText('Voice input model')).toBeNull();
+
+    // The removed STT-model commands are never invoked.
+    const commands = invoke.mock.calls.map((call) => call[0]);
+    expect(commands).not.toContain('stt_check_model');
+    expect(commands).not.toContain('download_stt_model');
 
     // The not-ready gate keeps rendering the wizard ONLY (no controls).
     expect(screen.queryByTestId('companion-controls')).toBeNull();

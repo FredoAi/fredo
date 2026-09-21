@@ -90,7 +90,7 @@ export const CompanionSettingsPanel: React.FC = () => {
   // while the first probe is still in flight — the wizard is the ONLY content.
   const {
     readiness, checking, refresh, runAction, runningActionId, actionError, modelFiles,
-    serverLaunch, sttModel, sttDevices, refreshSttDevices,
+    serverLaunch, sttDevices, refreshSttDevices,
   } = useCompanionReadiness();
 
   // ── Idle auto-return duration (#2853 ST-5) ─────────────────────────────────
@@ -235,7 +235,6 @@ export const CompanionSettingsPanel: React.FC = () => {
         actionError={actionError}
         modelFiles={modelFiles}
         serverLaunch={serverLaunch}
-        sttModel={sttModel}
         onRunAction={(id) => { void runAction(id); }}
         onRecheck={() => { void refresh(); }}
       />

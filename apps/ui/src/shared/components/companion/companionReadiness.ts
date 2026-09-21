@@ -5,12 +5,9 @@
  * The backend owns the prerequisite SET; these ids are the stable join key
  * between the backend reports and the ordered `COMPANION_SETUP_STEPS` registry.
  * #2857 appends `'serverLaunch'` here and to the registry.
- * #2876 ST-5 appends `'sttModel'` — an explicitly OPTIONAL step that NEVER gates
- * companion chat (it is excluded from the wizard's `installed/total` summary and
- * from `CompanionReadiness.ready`).
  */
 
-export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch' | 'sttModel';
+export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch';
 
 /** Determined states returned by the backend. */
 export type PrerequisiteState = 'missing' | 'installed' | 'error';
@@ -117,59 +114,6 @@ export interface ModelDownloadResult {
   output?: string;
   error?: string;
   files: ModelFileStatus[];
-}
-
-// ── STT (voice input) model — #2876 ST-2/ST-5 ────────────────────────────────
-//
-// `stt_check_model` probes the four pinned streaming-Zipformer files with the
-// SAME exact-size gate as the companion model set (`probe_files`). Acquisition
-// reuses the SAME streamed engine (`download_stt_model`). This step is OPTIONAL:
-// `ready` here NEVER contributes to `CompanionReadiness.ready` — installing or
-// removing the voice model can never block or unblock companion chat.
-
-/** `stt_check_model` result (camelCase, IPC). */
-export interface SttModelStatus {
-  /** true iff EVERY pinned STT file is present-and-complete. */
-  ready: boolean;
-  /** Per-file status, ordered tokens → encoder → decoder → joiner. */
-  files: ModelFileStatus[];
-}
-
-/**
- * #2877 ST-2 — the DERIVED `sttModel` readiness report consumed by the voice
- * settings UI. Distinct from the raw IPC shape (`SttModelStatus`): `location`
- * is the resolved on-disk model directory derived from the per-file `path`s
- * (`resolveSttModelDir`), so AC2's "model location" is displayable on BOTH
- * `ready` and `error` — null only until at least one pinned file is on disk.
- */
-export interface SttModelReadiness {
-  /** true iff EVERY pinned STT file is present-and-complete. */
-  ready: boolean;
-  /** Per-file status, ordered tokens → encoder → decoder → joiner. */
-  files: ModelFileStatus[];
-  /** Resolved on-disk model directory (from the per-file `path`s), or null. */
-  location: string | null;
-}
-
-/**
- * Resolve the model DIRECTORY from the backend's per-file absolute `path`s.
- * The first materialized file wins (every pinned STT file shares one directory);
- * a path with no parent separator contributes nothing. Pure + unit-testable;
- * `null` means "nothing on disk yet" — never a fabricated/assumed location.
- */
-export function resolveSttModelDir(files: readonly ModelFileStatus[]): string | null {
-  for (const file of files) {
-    const dir = parentDirectory(file.path);
-    if (dir) return dir;
-  }
-  return null;
-}
-
-/** Parent directory of an absolute path, or null when there is none. */
-function parentDirectory(path: string | null): string | null {
-  if (typeof path !== 'string' || path.length === 0) return null;
-  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  return separator >= 1 ? path.slice(0, separator) : null;
 }
 
 /** `setup:download-progress` payload for a model-file transfer (#2856). */
@@ -592,7 +536,6 @@ const STEP_ERROR_LABEL: Record<PrerequisiteId, string> = {
   llamaServer: 'the llama.cpp install',
   modelFiles: 'the model download',
   serverLaunch: 'the server launch',
-  sttModel: 'the voice input model download',
 };
 
 /** Curated install-failure copy keyed by the backend's typed install code. */
@@ -654,7 +597,7 @@ export function errorCopyFor(
     );
   } else if (id === 'llamaServer' && code && code in INSTALL_ERROR_COPY) {
     message = INSTALL_ERROR_COPY[code as LlamaCppInstallCode];
-  } else if ((id === 'modelFiles' || id === 'sttModel') && raw) {
+  } else if (id === 'modelFiles' && raw) {
     const cause = DOWNLOAD_CAUSE_COPY.find((entry) => entry.re.test(raw));
     message = cause?.message ?? genericErrorCopy(id);
   } else {

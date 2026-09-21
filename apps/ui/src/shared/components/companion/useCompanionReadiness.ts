@@ -24,7 +24,6 @@ import {
   deriveSttDeviceProbe,
   errorCopyFor,
   llamaServerEndpoint,
-  resolveSttModelDir,
   serverLaunchFailureCopy,
   STT_MODEL_FILE_IDS,
   type CompanionReadiness,
@@ -43,8 +42,6 @@ import {
   type PrerequisiteReport,
   type SttDeviceProbe,
   type SttDevicesResult,
-  type SttModelReadiness,
-  type SttModelStatus,
 } from './companionReadiness';
 
 export interface UseCompanionReadinessResult {
@@ -63,12 +60,6 @@ export interface UseCompanionReadinessResult {
    * unavailable (then the wizard just renders the backend's own prerequisite set).
    */
   serverLaunch: CompanionServerLaunchInfo | null;
-  /**
-   * #2876 ST-5 voice-input model status (merged with live progress, plus the
-   * #2877 ST-2 resolved `location`). null when `stt_check_model` is unavailable.
-   * NEVER contributes to `readiness.ready`.
-   */
-  sttModel: SttModelReadiness | null;
   /**
    * #2877 ST-2 — the input-device probe for the Companion voice settings row.
    * Fail-closed (`unavailable`) when the backend has no `stt_list_devices`
@@ -187,51 +178,6 @@ function filesFromResult(result: ModelDownloadResult): ModelFilesStatus | null {
   };
 }
 
-/**
- * #2876 ST-5 — merge live progress onto the STT per-file status. `ready` is
- * re-derived from the merged files so an in-flight set can never read ready.
- * Progress keys for companion files are ignored here (and vice versa), so one
- * shared progress map serves both downloads.
- *
- * #2877 ST-2 — the resolved `location` is re-derived from the merged files, so
- * it stays displayable on `ready` AND `error` (AC2) without ever being stale.
- */
-function mergeSttModel(
-  base: SttModelReadiness | null,
-  progress: Partial<Record<ModelFileId, ModelFileProgress>>,
-): SttModelReadiness | null {
-  if (!base) return null;
-  const files = base.files.map((file) => {
-    const live = progress[file.id];
-    if (!live) return file;
-    switch (live.state) {
-      case 'downloading':
-        return {
-          ...file,
-          state: 'downloading' as const,
-          downloadedBytes: live.downloadedBytes,
-          expectedBytes: live.expectedBytes > 0 ? live.expectedBytes : file.expectedBytes,
-        };
-      case 'present':
-        return {
-          ...file,
-          state: 'present' as const,
-          downloadedBytes: live.expectedBytes > 0 ? live.expectedBytes : file.expectedBytes,
-        };
-      case 'error':
-        return {
-          ...file,
-          state: 'error' as const,
-          detail: file.detail ?? 'Download failed — choose Retry.',
-        };
-      default:
-        return { ...file, state: 'present' as const };
-    }
-  });
-  const ready = files.length > 0 && files.every((file) => file.state === 'present');
-  return { ready, files, location: resolveSttModelDir(files) };
-}
-
 export function useCompanionReadiness(): UseCompanionReadinessResult {
   const [backendReadiness, setBackendReadiness] = useState<CompanionReadiness | null>(null);
   const [checking, setChecking] = useState(true);
@@ -241,8 +187,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
     {},
   );
   const [baseModelFiles, setBaseModelFiles] = useState<ModelFilesStatus | null>(null);
-  // #2876 ST-5 — the OPTIONAL voice-input model status (never a chat gate).
-  const [baseSttModel, setBaseSttModel] = useState<SttModelReadiness | null>(null);
   // #2877 ST-2 — the input-device probe (never a chat gate). `checking` starts
   // true so the first render is honest while the enumeration is in flight.
   const [sttDevicesResult, setSttDevicesResult] = useState<SttDevicesResult | null>(null);
@@ -359,31 +303,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   }, []);
 
   /**
-   * #2876 ST-5 — probe the OPTIONAL voice-input model. A missing/unknown-shaped
-   * result leaves `sttModel` null so the backend's own prerequisite set stays
-   * authoritative (no fabricated model state). This probe NEVER feeds the
-   * companion-chat `ready` gate.
-   */
-  const probeSttModel = useCallback(async () => {
-    try {
-      const status = await adapterBridge.invoke<SttModelStatus>('stt_check_model');
-      if (!mountedRef.current) return;
-      if (status && Array.isArray(status.files) && status.files.length > 0) {
-        setBaseSttModel({
-          ready: status.ready === true,
-          files: status.files,
-          // #2877 ST-2 — AC2's model location, derived from the per-file paths.
-          location: resolveSttModelDir(status.files),
-        });
-      } else {
-        setBaseSttModel(null);
-      }
-    } catch {
-      if (mountedRef.current) setBaseSttModel(null);
-    }
-  }, []);
-
-  /**
    * #2877 ST-2 — probe the cpal input devices (`stt_list_devices`). A missing /
    * unknown-shaped result leaves the probe `unavailable` (fail closed — never a
    * fabricated "no device"). Never feeds the companion-chat `ready` gate.
@@ -415,11 +334,10 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         probeReadiness(showChecking),
         probeModelFiles(),
         probeServerStatus(),
-        probeSttModel(),
         probeSttDevices(),
       ]);
     },
-    [probeReadiness, probeModelFiles, probeServerStatus, probeSttModel, probeSttDevices],
+    [probeReadiness, probeModelFiles, probeServerStatus, probeSttDevices],
   );
 
   const refresh = useCallback(() => refreshInternal(true), [refreshInternal]);
@@ -501,8 +419,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       });
 
       let modelResult: ModelDownloadResult | null = null;
-      // #2876 ST-5 — the optional voice-model download (never a chat gate).
-      let sttResult: ModelDownloadResult | null = null;
 
       try {
         if (step.action.command === 'install_llama_cpp') {
@@ -530,22 +446,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
               setActionError((prev) => ({
                 ...prev,
                 [id]: errorCopyFor(id, null, modelResult?.error ?? null).message,
-              }));
-            }
-          }
-          stopProgressListener();
-        } else if (step.action.command === 'download_stt_model') {
-          // #2876 ST-5 — the OPTIONAL voice model. Same streamed engine/engine
-          // progress channel; the shared listener records its fileIds too.
-          setProgressByFile({});
-          await startProgressListener();
-          sttResult =
-            (await adapterBridge.invoke<ModelDownloadResult>('download_stt_model')) ?? null;
-          if (!sttResult || sttResult.success !== true) {
-            if (mountedRef.current) {
-              setActionError((prev) => ({
-                ...prev,
-                [id]: errorCopyFor(id, null, sttResult?.error ?? null).message,
               }));
             }
           }
@@ -596,24 +496,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
           } else {
             await refreshInternal(false);
           }
-        } else if (sttResult) {
-          // #2876 ST-5 — the download result is authoritative for the STT files;
-          // it never touches the companion readiness gate. #2877 ST-2 carries the
-          // resolved location through from the per-file paths.
-          const nextStt = filesFromResult(sttResult);
-          if (mountedRef.current) {
-            setBaseSttModel(
-              nextStt
-                ? {
-                    ready: nextStt.complete,
-                    files: nextStt.files,
-                    location: resolveSttModelDir(nextStt.files),
-                  }
-                : null,
-            );
-            setProgressByFile({});
-          }
-          if (!nextStt) await probeSttModel();
         } else {
           // Re-probe in place (AC-3) while the row keeps its running state, so a
           // successful action flips state with no reload.
@@ -624,18 +506,12 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         if (mountedRef.current) setRunningActionId(null);
       }
     },
-    [refreshInternal, probeReadiness, probeSttModel, startProgressListener, stopProgressListener],
+    [refreshInternal, probeReadiness, startProgressListener, stopProgressListener],
   );
 
   const modelFiles = useMemo(
     () => mergeModelFiles(baseModelFiles, progressByFile),
     [baseModelFiles, progressByFile],
-  );
-
-  // #2876 ST-5 — the OPTIONAL voice-input model, merged with live progress.
-  const sttModel = useMemo(
-    () => mergeSttModel(baseSttModel, progressByFile),
-    [baseSttModel, progressByFile],
   );
 
   // #2877 ST-2 — the input-device probe (fail-closed when the backend is absent).
@@ -675,10 +551,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
   // `serverLaunch.state === 'starting'` (which is never `installed`).
   // When the status command is unavailable the backend's own set is authoritative
   // (no fabricated server health, no cross-feature import).
-  //
-  // #2876 ST-5 — the OPTIONAL `sttModel` step is appended to `prerequisites` but
-  // NEVER contributes to `ready`: installing/removing the voice model can never
-  // block or unblock companion chat.
   const readiness = useMemo<CompanionReadiness | null>(() => {
     if (!backendReadiness) return null;
     const settled = !checking;
@@ -700,20 +572,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         }
       : null;
 
-    const sttReport: PrerequisiteReport | null = sttModel
-      ? {
-          id: 'sttModel',
-          state: sttModel.ready ? 'installed' : 'missing',
-          detail: sttModel.ready
-            ? 'Voice input model files are present.'
-            : `${sttModel.files.filter((file) => file.state === 'present').length} of ${
-                sttModel.files.length
-              } voice input model files present.`,
-          // #2877 ST-2 — AC2's resolved model location, on ready AND error/missing.
-          resolvedPath: sttModel.location,
-        }
-      : null;
-
     let prerequisites = backendReadiness.prerequisites;
     if (serverReport) {
       prerequisites = [
@@ -721,16 +579,13 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
         serverReport,
       ];
     }
-    if (sttReport) {
-      prerequisites = [...prerequisites.filter((p) => p.id !== 'sttModel'), sttReport];
-    }
 
     const ready = serverLaunch
       ? settled && backendReadiness.ready && serverLaunch.state === 'healthy'
       : settled && backendReadiness.ready;
 
     return { ready, prerequisites };
-  }, [backendReadiness, serverLaunch, sttModel, checking]);
+  }, [backendReadiness, serverLaunch, checking]);
 
   // Auto-invoke ONCE when both provisioning steps are installed and the server is
   // not running. The module-scoped guard (survives wizard close/reopen) makes this
@@ -756,7 +611,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       actionError,
       modelFiles,
       serverLaunch,
-      sttModel,
       sttDevices,
       refreshSttDevices,
     }),
@@ -770,7 +624,6 @@ export function useCompanionReadiness(): UseCompanionReadinessResult {
       actionError,
       modelFiles,
       serverLaunch,
-      sttModel,
       sttDevices,
       refreshSttDevices,
     ],

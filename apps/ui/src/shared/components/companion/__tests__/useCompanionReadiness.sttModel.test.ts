@@ -1,19 +1,18 @@
 /**
- * useCompanionReadiness — #2876 ST-5 optional `sttModel` composition + #2877
- * ST-2 voice-preference/readiness contract.
+ * useCompanionReadiness — the input-device probe (#2877 ST-2) plus the #2914
+ * ST-4 pin that the wizard's OPTIONAL `sttModel` prerequisite/step is GONE.
  *
- * Proves, without a Tauri host:
- *   1. `stt_check_model` is probed and the OPTIONAL `sttModel` step is composed
- *      LAST, but NEVER contributes to `CompanionReadiness.ready` — the voice model
- *      can be missing while companion chat is ready;
- *   2. an unavailable probe leaves `sttModel` null and the prerequisite set
- *      unchanged (no fabricated model state);
- *   3. `download_stt_model` reuses the shared streamed-download path and flips
- *      `sttModel` ready from the authoritative result, still without gating chat;
- *   4. (#2877 ST-2) the resolved model `location` is derived from the per-file
- *      `path`s on ready AND on a partial/error set (AC2), and the device probe
- *      (`stt_list_devices`) derives checking/devices/no-device/vanished +
- *      permission-denied, failing closed when the backend is absent.
+ * Spec #2914 removed the on-device STT model, so this hook:
+ *   1. composes ONLY the GGUF + server prerequisites — there is no `sttModel`
+ *      entry, and `CompanionReadiness.ready` is unchanged (the ST-4 absence pin);
+ *   2. never invokes `stt_check_model` / `download_stt_model`;
+ *   3. still exposes the fail-closed input-device probe (`stt_list_devices`) —
+ *      `checking` / `devices` / `vanished` / `no-device` / `permissionDenied` /
+ *      `unavailable` — plus its pure derivation helper.
+ *
+ * (Renamed scope note: this file was the #2876 ST-5 `sttModel` composition suite;
+ * #2914 ST-4 replaced that composition with the absence pin below and kept the
+ * device-probe coverage verbatim.)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -24,19 +23,12 @@ import {
   useCompanionReadiness,
   resetCompanionAutoLaunchGuard,
 } from '@/shared/components/companion/useCompanionReadiness';
-import {
-  deriveSttDeviceProbe,
-  resolveSttModelDir,
-} from '@/shared/components/companion/companionReadiness';
+import { deriveSttDeviceProbe } from '@/shared/components/companion/companionReadiness';
 import type {
   CompanionReadiness,
   LlamaServerStatus,
-  ModelFileId,
-  ModelFileStatus,
-  ModelFileState,
   SttDeviceInfo,
   SttDevicesResult,
-  SttModelStatus,
 } from '@/shared/components/companion/companionReadiness';
 
 const bothInstalled: CompanionReadiness = {
@@ -69,36 +61,6 @@ function healthyServer(): LlamaServerStatus {
   };
 }
 
-const STT_IDS = ['sttTokens', 'sttEncoder', 'sttDecoder', 'sttJoiner'] as const;
-
-function sttFile(id: ModelFileId, state: ModelFileState): ModelFileStatus {
-  return {
-    id,
-    filename: `${id}.bin`,
-    relativePath: `${id}.bin`,
-    state,
-    downloadedBytes: state === 'present' ? 10 : 0,
-    expectedBytes: 10,
-    detail: null,
-    path: state === 'present' ? `C:\\models\\${id}` : null,
-  };
-}
-
-const sttPartial: SttModelStatus = {
-  ready: false,
-  files: [
-    sttFile('sttTokens', 'present'),
-    sttFile('sttEncoder', 'missing'),
-    sttFile('sttDecoder', 'missing'),
-    sttFile('sttJoiner', 'missing'),
-  ],
-};
-
-const sttReady: SttModelStatus = {
-  ready: true,
-  files: STT_IDS.map((id) => sttFile(id, 'present')),
-};
-
 beforeEach(() => {
   resetCompanionAutoLaunchGuard();
   localStorage.clear();
@@ -114,180 +76,48 @@ afterEach(() => {
   adapterBridge.setListen(undefined as never);
 });
 
-describe('useCompanionReadiness sttModel composition (#2876 ST-5)', () => {
-  it('composes the optional step last without ever gating readiness', async () => {
-    adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
-      if (command === 'get_llama_server_status') return healthyServer();
-      if (command === 'stt_check_model') return sttPartial;
-      return undefined;
-    });
-    adapterBridge.setListen(async () => () => {});
+// ── #2914 ST-4 — the `sttModel` prerequisite/step is ABSENT ──────────────────
 
-    const { result } = renderHook(() => useCompanionReadiness());
-
-    await waitFor(() => expect(result.current.sttModel).not.toBeNull());
-    await waitFor(() => expect(result.current.readiness?.ready).toBe(true));
-
-    expect(result.current.readiness?.prerequisites.map((p) => p.id)).toEqual([
-      'llamaServer',
-      'modelFiles',
-      'serverLaunch',
-      'sttModel',
-    ]);
-    // STT files are missing, yet companion chat is ready — STT is never a gate.
-    expect(result.current.sttModel?.ready).toBe(false);
-    expect(
-      result.current.readiness?.prerequisites.find((p) => p.id === 'sttModel')?.state,
-    ).toBe('missing');
-  });
-
-  it('leaves sttModel null and the prerequisite set unchanged when the probe is unavailable', async () => {
-    adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return bothInstalled;
-      if (command === 'get_llama_server_status') return healthyServer();
-      return undefined; // stt_check_model unavailable
-    });
-    adapterBridge.setListen(async () => () => {});
-
-    const { result } = renderHook(() => useCompanionReadiness());
-    await waitFor(() => expect(result.current.readiness?.ready).toBe(true));
-
-    expect(result.current.sttModel).toBeNull();
-    expect(result.current.readiness?.prerequisites.map((p) => p.id)).toEqual([
-      'llamaServer',
-      'modelFiles',
-      'serverLaunch',
-    ]);
-  });
-
-  it('downloads the voice model on demand and flips sttModel ready without touching the gate', async () => {
-    let current = sttPartial;
+describe('useCompanionReadiness — no sttModel prerequisite (#2914 ST-4)', () => {
+  it('composes only the GGUF + server prerequisites and never probes the removed STT model', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
-      if (command === 'stt_check_model') return current;
-      if (command === 'download_stt_model') {
-        current = sttReady;
-        return { success: true, files: sttReady.files };
-      }
       return undefined;
     });
     adapterBridge.setInvoke(invoke);
     adapterBridge.setListen(async () => () => {});
 
     const { result } = renderHook(() => useCompanionReadiness());
-    await waitFor(() => expect(result.current.sttModel).not.toBeNull());
+    await waitFor(() => expect(result.current.readiness?.ready).toBe(true));
 
-    await act(async () => {
-      await result.current.runAction('sttModel');
-    });
-
-    await waitFor(() => expect(result.current.sttModel?.ready).toBe(true));
-    expect(invoke).toHaveBeenCalledWith('download_stt_model', undefined);
+    // The gate is unchanged: the GGUF + server inputs only.
     expect(result.current.readiness?.ready).toBe(true);
-    expect(result.current.actionError.sttModel).toBeUndefined();
+    expect(result.current.readiness?.prerequisites.map((p) => p.id)).toEqual([
+      'llamaServer',
+      'modelFiles',
+      'serverLaunch',
+    ]);
+    // There is NO `sttModel` prerequisite in the composed set.
+    expect(result.current.readiness?.prerequisites.some((p) => p.id === 'sttModel')).toBe(false);
+    // ...and the removed STT-model commands are never invoked.
+    const commands = invoke.mock.calls.map((call) => call[0]);
+    expect(commands).not.toContain('stt_check_model');
+    expect(commands).not.toContain('download_stt_model');
   });
 
-  it('surfaces a curated (never raw) sentence when the voice-model download fails', async () => {
+  it('does not expose an sttModel report on the hook result', async () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
-      if (command === 'stt_check_model') return sttPartial;
-      if (command === 'download_stt_model') {
-        return { success: false, error: 'network connection reset', files: [] };
-      }
       return undefined;
     });
     adapterBridge.setListen(async () => () => {});
 
     const { result } = renderHook(() => useCompanionReadiness());
-    await waitFor(() => expect(result.current.sttModel).not.toBeNull());
+    await waitFor(() => expect(result.current.readiness?.ready).toBe(true));
 
-    await act(async () => {
-      await result.current.runAction('sttModel');
-    });
-
-    expect(result.current.actionError.sttModel).toMatch(/download lost its connection/i);
-    // The failure never drops the companion-chat gate.
-    expect(result.current.readiness?.ready).toBe(true);
-  });
-});
-
-// ── #2877 ST-2 — resolved model location (AC2) ───────────────────────────────
-
-describe('useCompanionReadiness sttModel location (#2877 ST-2)', () => {
-  const baseInvoke = (stt: SttModelStatus) => async (command: string) => {
-    if (command === 'check_companion_readiness') return bothInstalled;
-    if (command === 'get_llama_server_status') return healthyServer();
-    if (command === 'stt_check_model') return stt;
-    return undefined;
-  };
-
-  it('derives the resolved directory on a partial/error set and never gates chat', async () => {
-    const partialWithError: SttModelStatus = {
-      ready: false,
-      files: [
-        {
-          ...sttFile('sttTokens', 'present'),
-          path: 'C:\\fredo\\models\\sherpa\\tokens.txt',
-        },
-        {
-          ...sttFile('sttEncoder', 'error'),
-          detail: 'SHA-256 mismatch — choose Retry.',
-          path: 'C:\\fredo\\models\\sherpa\\encoder.onnx',
-        },
-        sttFile('sttDecoder', 'missing'),
-        sttFile('sttJoiner', 'missing'),
-      ],
-    };
-    adapterBridge.setInvoke(baseInvoke(partialWithError));
-    adapterBridge.setListen(async () => () => {});
-
-    const { result } = renderHook(() => useCompanionReadiness());
-    await waitFor(() => expect(result.current.sttModel).not.toBeNull());
-
-    expect(result.current.sttModel?.ready).toBe(false);
-    expect(result.current.sttModel?.location).toBe('C:\\fredo\\models\\sherpa');
-    // AC2 — the location is on the readiness report too (error/missing branch).
-    expect(
-      result.current.readiness?.prerequisites.find((p) => p.id === 'sttModel')?.resolvedPath,
-    ).toBe('C:\\fredo\\models\\sherpa');
-    // The optional step still never gates companion chat.
-    expect(result.current.readiness?.ready).toBe(true);
-  });
-
-  it('derives the resolved directory once every pinned file is ready', async () => {
-    adapterBridge.setInvoke(
-      baseInvoke({
-        ready: true,
-        files: STT_IDS.map((id) => ({
-          ...sttFile(id, 'present'),
-          path: `C:\\fredo\\models\\sherpa\\${id}.onnx`,
-        })),
-      }),
-    );
-    adapterBridge.setListen(async () => () => {});
-
-    const { result } = renderHook(() => useCompanionReadiness());
-    await waitFor(() => expect(result.current.sttModel?.ready).toBe(true));
-
-    expect(result.current.sttModel?.location).toBe('C:\\fredo\\models\\sherpa');
-  });
-
-  it('leaves the location null while nothing is materialized (never fabricated)', async () => {
-    adapterBridge.setInvoke(
-      baseInvoke({ ready: false, files: STT_IDS.map((id) => sttFile(id, 'missing')) }),
-    );
-    adapterBridge.setListen(async () => () => {});
-
-    const { result } = renderHook(() => useCompanionReadiness());
-    await waitFor(() => expect(result.current.sttModel).not.toBeNull());
-
-    expect(result.current.sttModel?.location).toBeNull();
-    expect(
-      result.current.readiness?.prerequisites.find((p) => p.id === 'sttModel')?.resolvedPath,
-    ).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(result.current, 'sttModel')).toBe(false);
   });
 });
 
@@ -386,9 +216,9 @@ describe('useCompanionReadiness sttDevices probe (#2877 ST-2)', () => {
   });
 });
 
-// ── #2877 ST-2 — pure derivation helpers ─────────────────────────────────────
+// ── #2877 ST-2 — pure derivation helper ──────────────────────────────────────
 
-describe('deriveSttDeviceProbe / resolveSttModelDir (#2877 ST-2)', () => {
+describe('deriveSttDeviceProbe (#2877 ST-2)', () => {
   it('checks the in-flight state first', () => {
     expect(
       deriveSttDeviceProbe({ checking: true, result: { devices: DEVICES, selectedId: null, code: null } })
@@ -407,15 +237,5 @@ describe('deriveSttDeviceProbe / resolveSttModelDir (#2877 ST-2)', () => {
         result: { devices: DEVICES, selectedId: '   ', code: null },
       }).selectedId,
     ).toBeNull();
-  });
-
-  it('derives the model dir from the first materialized file, else null', () => {
-    expect(
-      resolveSttModelDir([
-        sttFile('sttTokens', 'missing'),
-        { ...sttFile('sttEncoder', 'present'), path: 'C:\\models\\sherpa\\encoder.onnx' },
-      ]),
-    ).toBe('C:\\models\\sherpa');
-    expect(resolveSttModelDir([sttFile('sttTokens', 'missing')])).toBeNull();
   });
 });
