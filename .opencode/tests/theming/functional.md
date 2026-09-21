@@ -956,3 +956,216 @@
 - **F-70 PASS (live).** `telemetry_spans` total **25 497**, `max(ingested_at) 2026-09-21T08:05:23.266Z`; `chat_rows` e2e-2915-chat init ×2; `tool_use_rows` e2e-2915-tool read_file ×2.
 - **F-71 PASS.** build exit 0 (2582 modules); `test:run` **115 files / 1700 tests**; `background.invariants.test.tsx` byte-identical; only chooser 7→8 + additive test edits.
 - **F-72 PASS (live).** All 8 options reach exactly their state; one selected per click; two motion states; no new control.
+
+---
+
+## #2925 extension — a calmer, less glaring Life backdrop (revises #2915)
+
+> Issue #2925 revises #2915: the shipped Life field is **too bright and nearly monochrome**. It must be
+> rendered **materially dimmer** with **reduced single-hue dominance**, while staying **perceptibly
+> animated** and keeping foreground legibility. Rows map to the QA Plan `Q-1..Q-16` / AC1–AC5 in
+> `.opencode/tmp/2925/triage.md` (new rows `F-73..F-88`). No prior row is superseded.
+> **Verification policy: live** — rendered-pixel / DOM+computed-style / restart persistence /
+> visibility reads on the running app. F-87 carries the mandatory `telemetry_spans` receipt; F-88 the
+> gates. The reduced-motion live OS flip stays a **named blocker** (Tauri MCP has no media-emulation
+> API — G-050/G-148/#2870), closed by the F-81 product-unit pin.
+>
+> **G-136 — RE-BASELINE, NOT SUPERSESSION.** The historical `F-57..F-72` / `S-20..S-23` / `R-29..R-33`
+> records stand, unedited. This section **extends** their expected values for the dimmed field
+> (`F-61` → `F-75`; `F-63` → `F-76`; `S-20..S-23` → `S-24..S-27`; `R-29..R-33` → `R-34..R-38`) and adds
+> the new AC1 luminance/dominance audit `F-73`/`F-74`.
+>
+> **Measurement definitions (identical on BOTH legs).**
+> - **Field luminance** = arithmetic MEAN of per-pixel WCAG relative luminance
+>   `L = 0.2126·R' + 0.7152·G' + 0.0722·B'` (8-bit sRGB linearized: `c/255 > 0.04045` →
+>   `((c/255 + 0.055)/1.055)^2.4`, else `(c/255)/12.92`) over the **unmasked Life backdrop rect** of the
+>   **composited desktop capture** (windows closed — so an overlay-based dim is captured). Shell chrome
+>   (clock/status/launcher strip) masked per the F-46 recipe (max per-channel delta ≤ 2 outside the
+>   clock). Report mean / median / p95 / share of pixels with `L > 0.5`.
+> - **Dominance** = painted pixels are those with per-channel delta > 8 from the modal ground colour;
+>   the dominant band is the 30°-wide HSL hue band containing the most painted pixels (near-neutral
+>   painted pixels with `S < 0.10` excluded). **Dominance share** = painted pixels in that band / all
+>   painted pixels. **Dominant-hue saturation** = mean HSL `S = (max−min)/max` of those pixels.
+> - **Perceptibility** = coverage (changed backdrop px / total) at `PIXEL_DELTA_MIN = 8` per-channel max
+>   delta; the **gated quantity is the per-interval pairwise dense delta** (G-221); window/footprint
+>   union is corroboration only. Apply it to the **resolved (dimmed) tokens**, never the pre-dim render.
+> - **Materiality floors (QA-proposed; the Architect's declared dim target supersedes when stronger):**
+>   field luminance **≥ 10 % relative reduction**; dominance **≥ 25 % relative share reduction OR ≥ 0.10
+>   absolute saturation reduction**. Identical-frame repeats must read ≤ 1 % relative (E-51).
+>
+> **New expected baselines (open Q6).** #2915 recorded cell-vs-ground ratios
+> light-default 5.078:1, solarized 3.742:1, arctic 4.588:1, sunset 4.729:1, paper 5.051:1,
+> dark 11.508:1, coffee 10.172:1; perceptibility 3.913–5.674 % per 12 s interval against the
+> 2.0 %/interval floor. After #2925 the SAME metrics are expected to read: field luminance **≥ 10 %
+> relative lower**, dominance share **≥ 25 % relative lower OR** dominant-hue saturation **−0.10
+> absolute**, perceptibility **still ≥ 2.0 %/interval** (the floor is NOT traded away), cell-vs-ground
+> **still ≥ 3:1 on every preset**, foreground chrome **still ≥ 4.5:1 body / ≥ 3:1 non-text**. Record the
+> actuals; a metric that regresses below its #2915 value is a FAIL naming it.
+
+- [ ] **F-73 (AC1a / Q-1 — BEFORE→AFTER rendered-field luminance, the dimming leg):** Materialise the
+      BEFORE tip (`dev-env.ps1 -Action Up -Spec 2925 -At <pre-change-tip>` — the #2915 merge tip on
+      `main`; record the SHA), select **Life** with all feature windows closed, capture the composited
+      desktop; repeat on the tested tip. Compute mean field luminance per the definitions above.
+      **Expected:** AFTER mean field luminance is materially lower than BEFORE — QA hard floor **≥ 10 %
+      relative reduction** (UI/UX design direction **≥ 20 % relative** on light-based presets; the
+      Architect's declared target supersedes when stronger, recorded). On dark-based presets judge
+      primarily on the **painted-pixel luminance** leg (the frame mean is ground-dominated). Report
+      mean / median / p95 / glare share for BOTH legs. **Restore to the tested tip per G-163** (`git checkout -f <tested-tip>`,
+      verify `git status --porcelain` clean + every tip-deleted file absent, record the served commit)
+      BEFORE any AFTER leg.
+      **Edge:** no live BEFORE cycle reachable → the pre-authorized fallback column (removed-code diff +
+      arithmetic composite + durable #2915 recorded values), with the empirical numbers disclosed as
+      **UNVERIFIED**, never fabricated; identical-frame measurement noise ≤ 1 % relative (E-51);
+      shell-chrome mask; Life on both a light and a dark preset.
+- [ ] **F-74 (AC1b / Q-2 — reduced single-hue dominance):** On the same BEFORE/AFTER frames histogram
+      painted pixels (per-channel delta > 8 from the modal ground) by HSL hue; compute the dominant 30°
+      band share and its mean saturation.
+      **Expected:** dominance is **reduced** — **dominant-hue mean saturation/chroma reduction ≥ 0.10
+      absolute (PRIMARY)** — AND the field still carries ≥ 1 painted hue (not neutralised to a flat
+      grey). The **share** branch alone cannot fire under a uniform field-wide dim (lit-cell pixel share
+      is unchanged), so it is OR-only corroboration, never the sole gate (UI/UX Q4). Record band centre /
+      share / mean saturation on both legs.
+      **Edge:** a dim that lowers luminance only, with dominance unchanged, is a FAIL on this leg;
+      near-neutral painted pixels (S < 0.10) excluded identically on both legs; the mechanism
+      (accent-mix vs per-cell alpha vs darker ground) is the Architect's call — the row measures the
+      observable only.
+- [ ] **F-75 (AC2 / Q-3 — perceptibility on the RESOLVED dimmed tokens; extends F-61, G-216/G-221/G-228):**
+      Read the authored `LIFE_STEP_MS` / `LIFE_RESEED_MS` / grid caps / cell footprint and RECORD them;
+      set `PERCEPT_INTERVAL_MS = max(2000, 8 × LIFE_STEP_MS)`,
+      `PERCEPT_WINDOW_MS = max(4 × INTERVAL, 2 × LIFE_RESEED_MS)` (= 48 000 ms shipped),
+      `PIXEL_DELTA_MIN = 8`; sample at `PERCEPT_SAMPLE_MS = 10 000` ms — **off-harmonic** (re-seed
+      24 000 / 10 000 = 2.4; record the ratio). Capture **dense full-frame** diffs (every pixel, no grid
+      subsampling) of the rendered backdrop via an **in-page accumulator** (`window.__lifePerceptSamples`
+      — test-only sampler diffs each tick against the previous and pushes `{t, coveragePct, meanAbsDelta}`)
+      polled by the driver in **bounded calls each < 3 s** (G-229 — never one long in-page call).
+      **Expected:** **≥ 3 of 4** intervals clear the derived floor `LIFE_INTERVAL_FLOOR_PCT` (recompute
+      from the authored cell footprint — shipped `(1−2×0.14)² = 0.5184 × 5 % × 2/3 ≈ 1.73 %`, gated on
+      the stricter **2.0 %/interval**); window union **≥ 4.0 %**; **≥ 1 interval ≥ 3 × median** (the
+      re-seed discontinuity) OR the fine-granularity probe (consecutive dense diffs at ≈ 2 ×
+      `LIFE_STEP_MS`) reported raw; **no blank (0 %) / frozen frame**; the human read (two screenshots +
+      ≥ 6 s watch) confirms the field is **evolving**. **The gate is the per-interval pairwise dense
+      delta — `PIXEL_DELTA_MIN`, the interval, the window and the floor are FIXED.** A sub-floor reading
+      is the measured **dim-vs-perceptibility FAIL (dimmed into invisibility)** — never lower
+      `PIXEL_DELTA_MIN` to pass. Metric PASS + human "frozen" = FAIL.
+      **Edge:** thin margin (baseline 3.93–5.22 %/interval vs the 2.0 % floor) — a dim that scales
+      per-channel frame deltas below 8 collapses coverage; single-phase window; harmonic lock (G-228) →
+      report the raw series rather than looping; canvas-pixel vs composited read disclosed; slowness →
+      widen the interval; hard-edged cells → AA = 1.0.
+- [ ] **F-76 (AC3a / Q-4 — cell-vs-ground ≥ 3:1 on every preset, on the DIMMED field; extends F-63,
+      G-227):** Sample the painted cell colour vs ground on **all 20 shipped rows** — 18 built-ins
+      (`themePresets`, `app/types/theme.ts:233`) + `turbo` + `classic` — **re-baselining** the 7 #2915
+      presets (light-default, solarized, arctic, sunset, paper, dark, coffee); **solarized is the
+      acceptance-binding row** (~32 % field-wide dim headroom; ground-only darkening breaks it at ~10 %
+      sRGB).
+      **Expected:** painted cell-vs-ground non-text ratio **≥ 3:1 on EVERY of the 20 rows**; quote the
+      dimmed AFTER ratios beside the #2915 baselines (5.078 / 3.742 / 4.588 / 4.729 / 5.051 / 11.508 /
+      10.172). **A dim that trades any row below 3:1 = FAIL naming the preset + pair.** Arbitrary user
+      accents cannot be floor-guaranteed at baseline → gate them on **no regression vs the same accent
+      pre-dimming** and document the user's choice.
+      **Edge:** pre-validate the exact painted token pair per preset (G-227) — a token swap that
+      changes the painted pair must be re-measured; light vs dark `--body-bg`; unused-token override; a
+      mechanism that dims ground and cells unequally shrinks the ratio.
+- [ ] **F-77 (AC3b / Q-5 — foreground legibility vs the dimmed field; UI/UX sign-off):** Measure
+      shell-chrome text (command bar, clock, tiles, ticks) vs its effective backdrop containing the
+      dimmed field, and window content vs its opaque surface, on a **light** and a **dark**
+      preset/accent.
+      **Expected:** UI/UX validates body text **≥ 4.5:1**, large/bold **≥ 3:1**, non-text UI **≥ 3:1**
+      on BOTH; quote every ratio. UI/UX owns the sign-off; QA binds the rendered-pixel measurement and
+      the floors.
+      **Edge:** compare against a **None / Life-absent control** — the dim must not *reduce* chrome
+      contrast; window content is background-invariant (opaque surface); pale accent + light worst case;
+      window over the busiest field region; a dimming overlay must not sit above a window (F-85).
+- [ ] **F-78 (AC4a / Q-6 — zero literals + zero `var(--x)NN`, extends `lifeBounds.test.ts`):** Static
+      grep the Life slice for hex/rgb/hsl literals and the invalid `var(--x)NN` alpha-append pattern;
+      extend the `lifeBounds.test.ts` source pin to cover the new dim expression.
+      **Expected:** ZERO colour literals (comment issue-refs exempt) and ZERO `var(--x)NN` alpha-append
+      in the Life slice; the dim is a pure function of live theme CSS custom properties via
+      `tint()`/`color-mix`. A canvas `ctx.fillStyle` cannot consume `var()` — the dim expression must be
+      **browser-resolved** (derived CSS vars registered in `ThemeProvider` next to `--accent-strong`, or
+      `getComputedStyle` on a probe) and defined **ONCE as a shared paint-expression constant** consumed
+      by the live engine, the canvas style, and the thumbnail so they cannot drift. Any literal or
+      alpha-append = FAIL naming file:line.
+      **Edge:** distinguish a JS-concatenated 8-digit hex (OK); `transparent`/`inherit`/`currentColor`/
+      `none` allowed; an inline `rgba()` in the component = FAIL; the pre-existing stale
+      `--accent-primary` mention in `backgroundRegistry.ts` is a comment (not a literal) — but see F-86.
+- [ ] **F-79 (AC4b / Q-7 — live recolour, no restart):** Switch preset (light-default → dark) and
+      set/clear an `accentPrimary` override while Life runs; sample the rendered cell/ground before and
+      after each change.
+      **Expected:** the dimmed field recolours **live with no restart** and derives from the live tokens
+      (the dim expression re-resolves on the theme change); no stale colour; no
+      `Maximum update depth exceeded`.
+      **Edge:** rapid churn; chooser open during the switch; override set then cleared; the dim must not
+      double-apply/stack on a re-render.
+- [ ] **F-80 (AC4c / Q-8 — unused-token negative pin):** Override a token the Life field does **not**
+      consume (pick it from the authored `resolveLifeTokens` consumption list — e.g. `cardBg`) and
+      re-sample the rendered field; then revert.
+      **Expected:** the field paint does **NOT shift** beyond the noise floor (≤ 1 % relative mean
+      luminance / max per-channel delta ≤ 2); reverting restores the prior paint exactly.
+      **Edge:** a field that shifts on an unconsumed token = FAIL; use the authored consumption list,
+      not an assumed token set.
+- [ ] **F-81 (AC5a / Q-9 — reduced motion = one seeded static frame, zero rAF/timers):** (a) run the
+      product-unit/render pin with `resolveBackgroundMotion({ systemReducedMotion: true })`; (b) read
+      the raw live `matchMedia('(prefers-reduced-motion: reduce)').matches`.
+      **Expected:** pin PASSES — `data-life-motion="static"`, `data-life-running="false"`, ZERO
+      `requestAnimationFrame`/`setInterval` scheduled, generation counter constant, a full (non-blank)
+      seeded frame (motion REMOVED, not paused mid-frame). (b) live flip **UNVERIFIED — NAMED BLOCKER**
+      (Tauri MCP exposes no media-emulation API — G-050/G-148/#2870); record the raw flag.
+      **Edge:** reduce ON × presets; a theme switch during the static render stays static; a
+      paused-but-live loop still scheduled = FAIL; never blockerless.
+- [ ] **F-82 (AC5b / Q-10 — per-load seed + periodic re-randomize policy unchanged):** Two fresh loads
+      → read `data-life-seed`; watch ≥ 2 × `LIFE_RESEED_MS`.
+      **Expected:** per-load seed **differs** between loads; the automaton still re-randomizes on the
+      authored cadence (a discontinuity is observed); no freeze into a still life or blank grid; the
+      dimming must NOT alter the `lifeConstants.ts` seed/re-seed policy.
+      **Edge:** same-process reload vs cold restart; long re-seed period → extend the window; the seed
+      value itself is not asserted, only that it varies.
+- [ ] **F-83 (AC5c / Q-11 — pause-when-hidden: loop CANCELLED, not merely skipped):** Flip the real
+      `visibilitychange` handler with `document.hidden` overridden; read `data-life-running`;
+      dense-diff two frames ≥ 5 s apart while hidden; restore.
+      **Expected:** `data-life-running` flips `"true"` → **`"false"`** (the rAF loop is **cancelled**,
+      not merely skipped) → `"true"` on restore; the hidden-window dense diff ≤ the 0.2 % noise floor;
+      post-restore the field advances again.
+      **Edge:** native minimize/hide undrivable (plugin < 0.13; no `core:window:allow-hide`) — disclosed;
+      a `"true"`/advancing state while hidden = FAIL; restore latency; occluded vs switch-away.
+- [ ] **F-84 (AC5d / Q-12 — bounded grid/cadence/DPR/memory caps unchanged):** (a) read the authored
+      caps (`COLS × ROWS`, `LIFE_STEP_MS`, `LIFE_RESEED_MS`, `LIFE_DPR_MAX`, `LIFE_FILL_DENSITY` band);
+      (b) ≥ 60 s soak reading JS heap + canvas backing-store size.
+      **Expected:** caps byte-unchanged vs #2915; heap ≤ **+2 %** with no monotonic climb; canvas
+      backing store ≤ 1.5 × viewport (shipped = 1.0×) and constant; the dimming adds **no new unbounded
+      structure and no second rAF/timer**.
+      **Edge:** dpr scaling; minutes-long soak; a dim implemented as an extra render pass must not add a
+      loop; the dim must not allocate per frame (no churn); build + suite gates.
+- [ ] **F-85 (AC5e / Q-13 — inert backdrop, unchanged):** Open a non-maximized feature window over the
+      Life backdrop at its resting rect; read stacking / `pointer-events` / `aria-hidden` / `tabIndex`;
+      `elementFromPoint` inside the window rect; click + type into the focused field.
+      **Expected:** backdrop `zIndex: 0`, `pointer-events: none`, `aria-hidden="true"`, no `tabIndex`;
+      `elementFromPoint` returns **window content** (never the backdrop, never a dimming overlay);
+      clicks/typing land; the backdrop never paints above window content.
+      **Edge:** a dimming OVERLAY must sit on the same z=0 layer below `WindowManager` — an overlay
+      above a window = FAIL; maximized / floating / minimized; two windows; drag over the field; light
+      + dark.
+- [ ] **F-86 (AC5f / Q-14 — chooser-thumbnail consistency; open Q5):** Compare
+      `[data-testid="desktop-background-life-thumb"]` (`data-life-preview="static"`) against the live
+      dimmed field.
+      **Expected:** the thumbnail does not visibly contradict the live dimmed field (same cell/ground
+      token family, comparable dominance). Per the UI/UX disposition (**FIX IN-SLICE, Q5**):
+      `LifeThumbnail.tsx` must paint from the **same resolved dimmed cell/ground expression** as the live
+      engine (not raw `var(--accent-primary)`, stale vs the canvas's `--accent-strong`), mirror the dim
+      via the shared paint constant, and the stale `LIFE_BACKGROUND` comment in `backgroundRegistry.ts`
+      must be corrected. A thumbnail that still promises a brighter/different field = FAIL.
+      **Edge:** a bright thumbnail beside a dimmed field = contradiction → FAIL or a named disposition;
+      thumbnail stale after a token change; `data-life-preview="static"` preserved (no engine in the
+      chooser).
+- [ ] **F-87 (NF-live / Q-15 — receipt):** `fredo emit --event-type chat --session-id e2e-2925-chat` +
+      `--event-type tool_use --session-id e2e-2925-tool --tool-name read_file`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`; retain screenshot URLs + live `tauri_webview_*` receipts.
+      **Expected:** `telemetry_spans` **NON-ZERO** with a recent `max(ingested_at)`; both markers
+      classify. **A static-only PASS is a FALSE PASS.**
+      **Edge:** re-run on the tested tip; verbatim output; never fabricate a span query.
+- [ ] **F-88 (NF-gate / Q-16 — gates + no test weakening):** `pnpm --filter @fredo/ui build`;
+      `pnpm --filter @fredo/ui test:run`; run the theming + settings + desktop-shell regressions.
+      **Expected:** build exit 0 (zero TS errors/warnings); suites green; no existing assertion
+      weakened/disabled/deleted; the recipe-module zero-rAF pins and `background.invariants.test.tsx`
+      stay byte-identical; zero literals / `var(--x)NN` / raster in the slice.
+      **Edge:** no dangling import; the new `lifeBounds.test.ts` pins are order-independent/deterministic
+      (G-222); overlap suites green.
