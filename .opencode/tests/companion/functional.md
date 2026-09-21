@@ -2514,21 +2514,55 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 > FALSE NEGATIVE): `.opencode/wireframes/fredo-avatar.png`, `.opencode/wireframes/avatar-guide.png`,
 > `.opencode/wireframes/fredo-avatar.html`.
 >
-> **BINDING body-solidity metric (F-135 / F-138).** Per (state × theme) leg, capture with nothing
-> else changed: frame A = as rendered; frame B = the SAME node hidden (`svg.style.visibility='hidden'`,
-> never `display:none`) in the SAME `execute_js` task; lossless PNG crop = the element's
-> `offsetWidth × offsetHeight` rect (G-040) + 8 px halo. `open(x,y) := maxChannel |A−B| ≤ T_OPEN`,
-> `T_OPEN = 2` (8-bit lossless). BODY ROI = viewBox `y ∈ [812,1234]` mapped to rendered px
-> (`round(812·h/1264)…round(1234·h/1264)`; sm h=100 → rows 64–98), FULL width, EVERY pixel sampled
-> (no sparse grid — G-213). `hole := p ∈ open ∩ BODY ROI` with `p ∉ intendedOpenMask`.
-> **PASS iff `holeCount == 0`.** Report `bodyOpenTotal`, per-sub-band counts, and the fill-coverage
-> fraction (`|A−C| > T_OPEN` with C = the same frame with `#fredo-interior` `display:none`).
-> `intendedOpenMask` (viewBox; UI/UX to bind — QA Discussion Q-1): inter-leg gap `x 489–525,
-> y 1099–1198`; shoulder/neck notches `x 0–343` / `x 671–1013`, `y 765–820`; candidates thigh gaps
-> `x 362–459` / `x 555–652`, `y 1087–1198`; armpit notches `x 333–357` / `x 657–681`, `y 826–909`.
-> `leakCount := |{ p ∈ intendedOpenMask : |A(p) − B(p)| > T_OPEN }|` — PASS iff `== 0`.
-> **Do NOT probe the backlog's literal `x ≈ 460`** — that is the left inner leg's own left edge
-> (`{460,1097,28,103}`; mirror 526), and a hit there reads as a false leak.
+> **BINDING body-solidity oracle (F-135 / F-138) — backdrop-contrast `seeThrough` over a
+> geometry-derived mask. REPLACES the round-1 `open`/`T_OPEN`/flood-fill `hole` oracle, which was
+> non-discriminating (it reported `holeCount == 0` on the BEFORE tip too — Q-10(b) was
+> unsatisfiable).** Freeze motion first
+> (`document.getAnimations().forEach(a => { a.currentTime = 0; a.pause(); })`) so A/D differ only by
+> the backdrop, then in ONE `execute_js` task capture lossless PNGs of the avatar crop
+> (`offsetWidth × offsetHeight` + 8 px halo, G-040 — never a transform-scaled rect):
+> - **A** = as rendered (backdrop `B0`).
+> - **D** = the SAME DOM with a solid probe inserted BEHIND the figure in the SAME stacking context:
+>   `parent = svg.offsetParent ?? svg.parentElement`; force `parent.style.position='relative'` if
+>   static; `probe` = absolute `inset:-10px`, `z-index:0`, `background:B1`, `pointer-events:none`;
+>   `parent.insertBefore(probe, svg)`; `svg.style.position='relative'; svg.style.zIndex='1'` — all
+>   restored after. `B1` = `#ffffff` on dark presets, `#000000` on `light-default`. `--body-bg` is
+>   NOT touched (the probe is a local element, not a token edit).
+> - **C** (the leak reference) = the SAME DOM over `B0` with only `#fredo-interior` hidden
+>   (`display='none'`; no reflow).
+> - Assert **token invariance**: `getComputedStyle(document.documentElement).getPropertyValue('--fredo-avatar-interior')`
+>   AND `getComputedStyle(document.querySelector('#fredo-interior')).fill` are byte-identical across
+>   A and D.
+> - **Mask `M`** = canvas-2D rasterisation at the capture scale (`scale = cropWidth/1014`, the same
+>   transform as the crop) of `union(58 base rects) ∪ union(17 interior bands)`, then **eroded
+>   `E = 2 rendered px`** to drop the antialias rim. **`M` is bound to the FROZEN intended-region
+>   constants committed in the harness, NEVER imported from the running app's module** (the BEFORE
+>   checkout ships 9 bands — a live import would shrink the mask and silently re-break the negative
+>   control). The authored negative space (inter-leg slit, armpit seams, shoulder/neck + neck-yoke,
+>   between-feet gap) lies OUTSIDE `M` by construction, so it can never false-positive and needs no
+>   `intendedOpenMask` oracle.
+> - **`seeThrough := { p ∈ M : maxChannel |A(p) − D(p)| > T }`, `T = 8`** (8-bit; lossless PNG).
+>   **PASS iff `seeThroughCount == 0`** per state × surface × theme. Report the per-sub-band counts
+>   (viewBox bands: bow tie 812–868 / upper arms 824–911 / inner arms 856–916 / buttons 917–1027 /
+>   lower arms 916–1061 / hips 1009–1085 / legs 1085–1201 / feet 1201–1234).
+> - **Corroborating leg:** run the SAME see-through test on the #2917-validated in-webview
+>   high-scale rasterisation (serialise the live `<svg>` with computed styles → canvas 2D at
+>   1014×1264, drawn over `B0` and `B1`; `M` rasterised at 1014×1264, `E = 6 units`, same `T`).
+>   Both legs must report 0.
+> - **`leak := { p ∈ N : maxChannel |A(p) − C(p)| > T }`, `T = 8`**, where `N` = the UI/UX-bound
+>   negative-space boxes (inter-leg slit `488,1097,38,104`; bow-tie notch `479,824,56,10`; armpit
+>   `333,824,24,87` + mirror `657,824,24,87`; shoulder/neck `0,765,343,60` + mirror `671,765,342,60`;
+>   neck yoke `344,794,326,30`; between-feet `459,1201,97,33`), inset **per box** by the binding
+>   NON-UNIFORM tuck rule **`inset = min(6, floor(w/4), floor(h/4))`** (guarded so `floor(h/4) >= 1`
+>   and `2×inset < min(w, h)` — a uniform 6 collapsed the bow-tie notch: `56×10` → height `10 − 12 =
+>   −2`, zero cells). Applied per box: every box takes inset 6 EXCEPT the bow-tie notch (inset 2), so
+>   the evaluated boxes are inter-leg slit `494,1103,26,92`; bow-tie notch `481,826,52,6`; armpit
+>   `339,830,12,75` + mirror `663,830,12,75`; shoulder/neck `6,771,331,48` + mirror `677,771,330,48`;
+>   neck yoke `350,800,314,18`; between-feet `465,1207,85,21`. Frame C hides only the fill, so the
+>   frozen base rects/overlays cancel out and only the fill's own pixels register. **PASS iff
+>   `leakCount == 0`.** No silhouette, no enclosure, no flood fill.
+> - **Do NOT probe the backlog's literal `x ≈ 460`** — that is the left inner leg's own left edge
+>   (`{460,1097,28,103}`; mirror 526) and lies OUTSIDE `N` once the binding per-box inset is applied.
 > **Both shipped surfaces are `sm` 80×100** (no surface renders `size="md"`; `AVATAR_MD` is only
 > exported) — the md 132×165 leg is a shared-component RTL pin only.
 > **State recipes (validated; G-220/G-223):** `idle` = rest; `greeting` = companion switch OFF→ON
@@ -2547,19 +2581,21 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 ## F-135 (Q-1 / REQ-1 / AC1) — the companion body renders with no see-through interior in every state
 
 - [ ] F-135: Companion ON at the home seat. For EACH of the 12 states (recipes above; 50 ms in-page
-      recorder for `greeting`/`working`/`thinking`/`joking`) capture frames A + B and the lossless
-      crop of `.fredo-companion-avatar` in dark base and `light-default`; run the BINDING metric over
-      the BODY ROI and each sub-band. Repeat on the away-overlay surface (Ctrl+right-click) for
+      recorder for `greeting`/`working`/`thinking`/`joking`) freeze motion, capture frames A + D
+      (+ C for the leak leg) and the lossless crop of `.fredo-companion-avatar` in dark base and
+      `light-default`; run the BINDING `seeThrough` metric over the mask `M` and each sub-band, and
+      the corroborating 1014×1264 leg. Repeat on the away-overlay surface (Ctrl+right-click) for
       `idle`/`talk`. Screenshot every state.
-  **Expected:** `holeCount == 0` for EVERY state × theme (all 12 states + the away-overlay legs) — no
-      body pixel shows the identical backdrop outside an `intendedOpenMask` box; the R1 statement
-      ("no surface behind the figure is visible through the torso, arms, legs or feet") holds by the
-      metric, not by source inspection. Report `bodyOpenTotal`, the per-sub-band hole counts and the
-      fill-coverage fraction per sub-band.
+  **Expected:** `seeThroughCount == 0` for EVERY state × theme (all 12 states + the away-overlay
+      legs) — no mask pixel changes when the solid probe `B1` is inserted behind the figure; the R1
+      statement ("no surface behind the figure is visible through the torso, arms, legs or feet")
+      holds by the metric, not by source inspection. Report the per-sub-band `seeThroughCount` and
+      the token-invariance assertion (A vs D byte-identical). BOTH the native 80×100 leg AND the
+      1014×1264 corroborating leg must report 0.
   - **Edge:** `greeting` (1500 ms) / `working` (900 ms) are sub-second — recorder only, never a
-      serial driver round-trip; a state sampled mid-bob (the metric is frame-based); the accent
-      changed mid-state; the theme whose tint is nearest the background (report the sensitivity
-      margin — must exceed `4×T_OPEN`).
+      serial driver round-trip; a state sampled mid-bob is frozen first (`getAnimations` paused);
+      the accent changed mid-state; the theme whose tint is nearest the backdrop — report the
+      sensitivity margin `maxChannel |B1 − B0|`, which must be ≥ 180.
 
 ## F-136 (Q-3 / REQ-2 / AC4) — all 12 states fill the body and the expression stays legible over it; idle has none
 
@@ -2594,17 +2630,21 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 
 ## F-138 (Q-5 / REQ-4 / AC1 leak) — no fill leaks past the silhouette (leg gap + shoulder notches stay background)
 
-- [ ] F-138: For each state × surface, evaluate `leakCount` over the `intendedOpenMask` boxes
-      (inter-leg gap + shoulder/neck notches + the UI/UX-bound candidates) using the SAME frames A/B
-      as F-135; screenshot each probe box; explicitly probe the inter-leg gap centre (`x 507,
-      y 1150`) and `x 460, y 1150` separately.
-  **Expected:** `leakCount == 0` in EVERY state — the inter-leg gap and the shoulder/neck notches show
-      the PURE backdrop (the fill never paints outside the silhouette); the probe at `x 507, y 1150`
-      reads `open` (background, correct) while `x 460, y 1150` reads the LEFT INNER LEG (painted — a
-      legitimate hit, NOT a leak; record it as the stale-example note).
-  - **Edge:** antialias edge bleed inside a box (inset 2 viewBox units); a band tucked 1–6 units under
-    the rim (intended per the #2917 table rule); the boxes themselves must be quoted from the UI/UX
-    binding (QA Discussion Q-1) — a self-invented box set is not evidence.
+- [ ] F-138: For each state × surface, evaluate `leakCount` over `N` (the UI/UX-bound negative-space
+      boxes, inset per box by the binding NON-UNIFORM tuck rule `inset = min(6, floor(w/4), floor(h/4))`
+      — every box 6 except the bow-tie notch 2) using frames A + C (C = `#fredo-interior`
+      `display:none` in the SAME task); screenshot each probe box; explicitly probe the inter-leg slit
+      centre (`x 507, y 1150`).
+  **Expected:** `leakCount == 0` in EVERY state — the inter-leg slit, the bow-tie notch, the armpit
+      seams, the shoulder/neck + neck-yoke notches and the between-feet gap show the PURE backdrop
+      (the fill never paints inside `N`); the `x 507, y 1150` probe reads the backdrop (correct), and
+      the `x 460, y 1150` probe reads the LEFT INNER LEG (outside `N`; a legitimate painted pixel,
+      NOT a leak — record it as the stale-example note). The A↔C delta is the fill's own pixels only
+      (the frozen base rects/overlays cancel).
+  - **Edge:** antialias edge bleed is absorbed by the per-box inset (the tuck rule — 6 units for every
+      box except the bow-tie notch's 2); a band tucked 1–6 units under the rim is intended per the
+      #2917 table rule; the box set is the UI/UX binding — a self-invented box set is not evidence.
+      No silhouette, enclosure or flood-fill oracle is used.
 
 ## F-139 (Q-6 / REQ-5 / AC2) — frozen 58 base rects, ONE `<path>` fill drawn first, parity guard untouched
 
@@ -2669,16 +2709,20 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 
 ## F-143 (Q-10 / metric controls) — the harness must be able to fail: head positive control, BEFORE negative control, sensitivity
 
-- [ ] F-143: (a) run the metric over the already-solid HEAD ROI (`y 106–761`, #2917) in the same run;
-      (b) materialise the pre-change checkout (`dev-env.ps1 -Action Up -Spec 2922 -At <pre-fix SHA>`,
-      `<pre-fix SHA>` = the merge base of `spec/2922` = the current `main` tip) and run the SAME recipe
-      for the body ROI; (c) report `maxChannel |fill − backdrop|` for the tested theme.
-  **Expected:** (a) `holeCount == 0` on the head (a non-zero head count means the harness is broken →
-      not a product verdict); (b) the BEFORE tip shows a LARGE body `holeCount` in every body sub-band
-      (proves the metric detects transparency, i.e. it CAN fail); (c) the margin exceeds `4×T_OPEN`.
-      Produce a before→after `bodyOpenTotal`/`holeCount` table per sub-band with distinct `before-*` /
-      `after-*` frame names (G-134/G-135). The AFTER gate is an absolute "no holes" assertion — the
-      BEFORE column is the metric control, not a PASS/FAIL column.
+- [ ] F-143: (a) POSITIVE — run the oracle over the already-solid HEAD ROI (`M ∩ y 106–761`, #2917)
+      on the AFTER tip in the same run; (b) NEGATIVE — materialise the pre-change checkout
+      (`dev-env.ps1 -Action Up -Spec 2922 -At 34f69dc`, the merge base of `spec/2922`) and run the
+      SAME oracle/constants for the body; (c) SENSITIVITY — report `maxChannel |B1 − B0|`; (d)
+      SELF-CONTROL — on the AFTER tip run the oracle with `C` as the "A" frame (optionally clip one
+      band per repeat); (e) INVARIANCE — the token/computed-fill equality of the A/D assertion.
+  **Expected:** (a) head `seeThroughCount == 0` (a non-zero head count means the harness is broken →
+      not a product verdict); (b) the BEFORE tip reports body `seeThroughCount > 0` AND ≥ 50 % of the
+      authored body-band pixel area in `M` (a zero here is INADMISSIBLE → report it and loop, never
+      record a PASS); (c) `maxChannel |B1 − B0| ≥ 180` (≫ `4×T = 32`); (d) the `C`-as-A frame
+      reports body `> 0` (proves the oracle detects absent fill without a second app instance);
+      (e) the A/D token equality holds. Produce a before→after per-sub-band `seeThroughCount` table
+      with distinct `before-*` / `after-*` frame names (G-134/G-135). The AFTER gate is an absolute
+      "no see-through" assertion — the BEFORE column is the metric control, not a PASS/FAIL column.
   - **Edge:** a BEFORE capture that cannot be materialised ⇒ named blocker + the reported sensitivity
-    margin, never a fabricated before; a metric that reports 0 on the BEFORE tip is INADMISSIBLE —
-    report it and loop, never record a PASS.
+      margin, never a fabricated before; a metric that reports 0 on the BEFORE tip (or in (d)) is
+      INADMISSIBLE — report it and loop, never record a PASS.
