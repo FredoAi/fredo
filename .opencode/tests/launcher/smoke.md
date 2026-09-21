@@ -308,8 +308,12 @@
 > policy: live** — a property-existence check is never a PASS.
 
 - [ ] S-35: **Solid seat mascot in both themes.** Companion OFF so `.fredo-avatar-idle` renders at the
-      seat; capture dark base + `light-default` and sample the BODY region (viewBox `y 812–1234`) with
-      the frames-A/B open metric. **Expected:** `holeCount == 0` in BOTH themes (no backdrop shows
+      seat; freeze motion (`document.getAnimations().forEach(a => { a.currentTime = 0; a.pause(); })`);
+      capture dark base + `light-default` and evaluate the BINDING `seeThrough` metric over the mask
+      `M` (`union(58 base rects) ∪ union(17 interior bands)`, eroded `E = 2 rendered px`) — frame **A**
+      (as rendered, backdrop `B0`) vs frame **D** (the same DOM with a solid probe `B1` inserted BEHIND
+      the figure in the same stacking context; `B1` = `#ffffff` on dark presets, `#000000` on
+      `light-default`), `T = 8`. **Expected:** `seeThroughCount == 0` in BOTH themes (no backdrop shows
       through the body) and `.fredo-companion-avatar` is absent; `tauri_webview_screenshot` succeeds;
       console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 - [ ] S-36: **Open/close churn keeps the body solid.** Open and close the launcher several times with

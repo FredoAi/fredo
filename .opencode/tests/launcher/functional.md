@@ -1891,25 +1891,36 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 
 - [ ] F-113: Companion OFF (so `.fredo-avatar-idle` renders at the centre seat); per reachable state
       (`idle`; `thinking` = engage the bar / type a non-empty query; `happy` = open a feature tile;
-      `playful` = 12 s sustained rest) capture frames A/B of the `.fredo-avatar-idle` crop in dark base
-      + `light-default` and run the binding body metric over the body ROI. Screenshot each.
-  **Expected:** `holeCount == 0` in EVERY reachable state × both themes (no backdrop shows through the
-      body: bow tie, arms, buttons, legs, feet); the seat renders exactly one Fredo; the state set
-      reached is exactly `{idle, thinking, happy, playful}` (quote `data-state` per leg).
-  - **Edge:** open/close churn across captures (the mascot remounts); a capture mid-bob (frame-based);
-    the companion toggled ON mid-capture swaps the surface to `CompanionEntity` (record, do not score
-    the companion here); a 700-wide viewport is a dev-view advisory only.
+      `playful` = 12 s sustained rest) freeze motion and capture frames A + D (+ C for the leak leg)
+      of the `.fredo-avatar-idle` crop in dark base + `light-default` and run the binding `seeThrough`
+      metric (mask `M` = `union(58 base rects) ∪ union(17 interior bands)`, `E = 2 px`, `T = 8`;
+      probe `B1` = `#ffffff` dark / `#000000` light-default) plus the corroborating 1014×1264 leg; the
+      `C` leak leg evaluates `leakCount` over the UI/UX-bound negative-space boxes `N`, inset per box
+      by the binding NON-UNIFORM tuck rule `inset = min(6, floor(w/4), floor(h/4))` (every box 6
+      except the bow-tie notch 2). Screenshot each.
+  **Expected:** `seeThroughCount == 0` in EVERY reachable state × both themes — no mask pixel changes
+      when `B1` is inserted behind the figure (no backdrop shows through the body: bow tie, arms,
+      buttons, legs, feet); BOTH the native 80×100 leg AND the 1014×1264 leg report 0; the seat
+      renders exactly one Fredo; the state set reached is exactly `{idle, thinking, happy, playful}`
+      (quote `data-state` per leg).
+  - **Edge:** open/close churn across captures (the mascot remounts); a capture mid-bob is frozen
+    first (`getAnimations` paused); the companion toggled ON mid-capture swaps the surface to
+    `CompanionEntity` (record, do not score the companion here); a 700-wide viewport is a dev-view
+    advisory only.
 
 ## F-114 (Q-4 / R3 / AC3) — the launcher seat fill is token-native and re-tints live
 
 - [ ] F-114: Read `#fredo-interior`'s `fill` attribute + computed fill at the launcher seat, and
       `--fredo-avatar-interior` on `:root` before/after switching dark ↔ `light-default` and changing
-      the accent via `select[aria-label="Theme presets"]` (no reload); re-sample the seat body pixels.
+      the accent via `select[aria-label="Theme presets"]` (no reload); re-sample the seat body pixels
+      with the corrected BINDING oracle — frames A + D (probe `B1`) and the mask `M`, `T = 8`
+      unchanged across the re-theme.
   **Expected:** attribute `fill === "var(--fredo-avatar-interior)"`; computed fill resolved
       (non-empty); the seat body re-tints with the live token on every theme/accent change, no stale
-      colour, no restart; the launcher and the companion resolve the SAME token value in the same theme.
-  - **Edge:** re-theme mid-open/close and mid-animation; a near-background accent (report the
-    fill-vs-backdrop delta).
+      colour, no restart; the re-themed body still reports `seeThroughCount == 0`; the launcher and
+      the companion resolve the SAME token value in the same theme.
+  - **Edge:** re-theme mid-open/close and mid-animation; a near-background accent — report the
+    sensitivity margin `maxChannel |B1 − B0|`, which must be ≥ 180.
 
 ## F-115 (Q-6 / R5 / AC2) — launcher frozen geometry: 58 base rects + ONE `<path>` fill drawn first
 
