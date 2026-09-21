@@ -559,7 +559,7 @@ export const DevMode: React.FC = () => {
   const allStatesActive = activeStates.size === ALL_STATES.length;
 
   return (
-    <Box width="100%" height="100vh" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden">
+    <Box width="100%" height="100%" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden">
       {/* Header */}
       <Box px={3} py={2} background="var(--header-bg)" borderBottom="1px solid" borderColor="var(--border-color)" flexShrink={0}>
         <HStack justify="space-between" align="center">

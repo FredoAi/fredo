@@ -132,7 +132,7 @@ export const RunCliLaunchStatus: React.FC<RunCliLaunchStatusProps> = ({ renderTe
   const { icon: errorIcon, title: errorTitle } = getErrorMeta(status?.error ?? null);
 
   return (
-    <Flex direction="column" h="100vh" bg="bg.canvas">
+    <Flex direction="column" h="100%" bg="bg.canvas">
       {/* ── Toolbar (32px) ─────────────────────────────────────────────── */}
       <Flex
         h="32px"
