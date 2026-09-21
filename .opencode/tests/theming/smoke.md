@@ -147,3 +147,10 @@
 - **S-21 PASS (live).** Life selected → `data-background-id="life"` + Life canvas; dense diff of two fresh loads 11.974 %; Settings window renders above the field; reselect None → backdrop DOM absent + today's desktop returns.
 - **S-22 PASS (gates) + named blocker.** Life reduced-motion pin passes (lifeBounds 8/8, lifeEngine 12/12); build exit 0; `test:run` 115 files / 1700 tests; live OS flip UNVERIFIED-with-named-blocker (no media-emulation API).
 - **S-23 PASS.** CC BY-SA 3.0 notice in `lifePatterns.ts:6-21`, `docs/features/desktop-background-life.md`, and live at `desktop-background-life-attribution`; catalogue bounded at 10 patterns (module-load guard).
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+- **S-20 PASS (live).** chooser None + six recipes + Life; fresh profile → None; console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-21 PASS (live).** Life switch → `data-background-id="life"` + Life canvas; reselect None → backdrop DOM absent + today's desktop returns.
+- **S-22 PASS (gates) + named blocker.** reduced-motion pin green (`lifeBounds` 8/8, `lifeEngine` 12/12); build exit 0; `test:run` 115 files / 1700 tests; live OS flip UNVERIFIED-with-named-blocker (no media-emulation API).
+- **S-23 PASS.** attribution in source + docs + live notice; catalogue bounded at 10.
