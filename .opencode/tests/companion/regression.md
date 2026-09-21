@@ -802,3 +802,62 @@
 ### #2917 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2918 extension — the structured-reply slice must not disturb the companion (G-136)
+
+> Issue #2918 constrains the companion reply through `response_format` and adds a model-declared
+> status input. The reply SURFACE, the skill/tool path, the gesture set, the presence lifecycle and
+> the persisted keys are NON-GOALS. R-1..R-62 remain in force; the #2917 rows (R-58..R-62) and the
+> frozen-geometry pins stay in force. Run alongside `llama-setup` (the probe) and `fredo-cli`.
+> **Verification policy: live.** Sanctioned levers = LV1 (real managed `llama-server` via the MCP
+> bridge), LV2 (synthetic `llm-token`/`llm-error`/`llm-done` injection), LV3 (the existing probe),
+> LV4 (pure unit pins).
+
+## R-63 — The skill/tool path and its deterministic reply copy are unchanged
+
+- [ ] R-63: Drive a skill-aware generation (`open Mission Monitor` and `open NotARealApp`) from the
+      companion while the structured reply path is enabled; capture the real `llm-skill-call` payload
+      on its channel and read the settled reply copy + window counts; re-run the EXISTING
+      `probe_companion_skills` and read its `tools` sub-report.
+  **Expected:** the skill mechanism (the `tools` offer + `llm-skill-call`) still works and is NOT
+      replaced or bypassed by the structured reply contract; the exact copy matrix is unchanged
+      (`Opening Mission Monitor` / `I couldn't find "NotARealApp"`), zero spurious windows; the probe's
+      `tools` sub-report is unaffected. The skill path never renders raw JSON (reference #2893
+      F-99/F-100/F-105). A response_format change that disables or duplicates the tool offer is a FAIL.
+  - **Edge:** a skill selection in the same turn as a structured reply object; the probe re-run with
+    both sub-reports present; a skill turn while the reply object is malformed.
+
+## R-64 — Pinned per-state `data-state` behavior + the 58-rect/overlay invariants unchanged
+
+- [ ] R-64: Drive `idle`/`talk`/`teleport-out`/`teleport-in` + the #2917 states and read the wrapper
+      `data-state`, the `#fredo-expression[data-state=…]` overlay rect set, and the 58 base rects
+      (diff against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`); run the existing companion pins
+      (`FredoCompanion.devMode.test.tsx`, `FredoCompanion.seatTeleport.test.tsx`,
+      `FredoCompanion.crossWindow.test.tsx`, `skillSettle.test.tsx`, the resolver/geometry suites).
+  **Expected:** the pre-#2918 per-state fingerprints are unchanged for every state that carries no
+      model status; the 58 base rects stay byte-identical in every state; the existing pins pass
+      UNMODIFIED (a pin that must change for the new status input is named per G-125, never silently
+      weakened); teleport timing (`~400 ms` out / `~400 ms` + `~50 ms` settle) and `ANIM_DURATION`
+      are unchanged.
+  - **Edge:** a model status driven mid-status; a status-free turn after a status-bearing one; the
+    resolver's `modelStatus` seam must not reorder the existing priority comparison.
+
+## R-65 — Presence / persisted keys / gesture set / reply-surface contracts untouched
+
+- [ ] R-65: Toggle the companion ON/OFF and away; single-click joke; double-click TicTacToe (250 ms
+      discriminator); Ctrl+right-click teleport (same + cross-window); drive the #2883/#2886 reply
+      surface (growth/scroll/never-cover); read `Fredo_companion_visible` / `Fredo_companion_idle_timeout`
+      and confirm `isAway` is not persisted; let a short idle auto-return fire.
+  **Expected:** R-33..R-49 / R-53..R-62 still hold — the 240×120 base / grown+scroll reply,
+      the 208×268 game card, the `above > right > left` placement, the streaming cursor, the
+      joke/vision flows, the teleport timing, one-Fredo-at-home, the seat wrapper 80×100 + 16 px, and
+      the persisted keys/ranges are byte/behaviour-identical. The structured-reply slice adds NO
+      persisted key and mutates none; the reply surface renders only the reply text (no markup).
+  - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-generation; an auto-return at the
+    idle deadline; a malformed object mid-generation (F-128) must not perturb the presence lifecycle.
+
+### #2918 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
