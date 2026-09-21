@@ -419,3 +419,38 @@
 - [ ] **E-62 (send while the game bubble is open) — not driven.** Named blocker: TicTacToe double-click + bar send inside one window was not sequenced.
 - [x] **E-63 (disposition changed mid-stream) — observed.** Switching `queue` → `interrupt` (and back) via the Settings select updated the persisted value and the effective dispatch followed it on the next send (superseded vs queued). A flip between an enqueue and its drain was not isolated.
 - **Finding (harness technique, no product defect) — promoted to `launcher` F-93/F-94 round 2.** In-flight sends require an in-page single-script dual-send (or a real-keyboard second send against a long generation); serial driver round-trips (~6 s) always land after the local ~1–2 s generation.
+
+---
+
+## #2917 extension — solid-fill / vocabulary edge probes
+
+> Unscripted probes for issue #2917. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note); a confirmed regression-free probe is recorded here. Live policy; an undrivable
+> lever is a named blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-27: **Worst-case accent contrast for the fill.** Pick the shipped preset whose accent is closest
+      to the page/card background (or a user accent set near-background). Is the filled interior still
+      distinguishable from the surface behind Fredo (and is the head rim still readable against the
+      fill), or does the figure visually merge? Any interior that is indistinguishable from the
+      background in a shipped theme/accent is a finding (promotes to F-116).
+- [ ] E-28: **Fill vs overlay at a colour collision.** With the fill active, check each state's shapes
+      for a same-colour-on-same-colour collision (the #2850 E-25 class). Any distinguishing shape that
+      is invisible in principle on the fill is a finding (promotes to F-118).
+- [ ] E-29: **Rapid status churn over the fill.** Interleave `thinking → joking → happy → playful` and a
+      teleport in quick succession. Does every state settle with the correct overlay over the fill (no
+      stuck/merged state, no fill flash, no console error)? Any stuck/mislabeled state is a finding
+      (promotes to F-118/F-121).
+- [ ] E-30: **Reduced-motion flip while a new state is active.** If the environment can flip
+      `prefers-reduced-motion` reduce ↔ no-preference while a new state is mounted, does the motion stop
+      while the distinguishing shape stays legible (never `opacity:0`, no strobe)? If the lever is not
+      drivable, record the G-053 named blocker + the static-CSS/unit pin. Any invisible/strobing state is
+      a finding (promotes to F-122).
+- [ ] E-31: **Fractional-DPI / narrow-viewport fill integrity.** At a fractional OS scale and at a narrow
+      viewport, does the fill stay inside the silhouette (no seam-shifted/overflowing cells), and do the
+      overlays stay crisp over it? Any overflow, seam shift, or subpixel smear is a finding (promotes to
+      F-116/F-118).
+- [ ] E-32: **Dense-vs-sparse metric disagreement (aliasing check).** For a thin/periodic state (e.g.
+      `teleport-in` sparkles), compute both a dense full-frame diff and a sparse point-grid diff. Do they
+      disagree (the sparse grid reports ~zero where the dense diff shows real change)? Any state where the
+      sparse grid would pass but the dense diff fails must be recorded — the sparse grid is never
+      admissible (promotes to F-119/F-121).
