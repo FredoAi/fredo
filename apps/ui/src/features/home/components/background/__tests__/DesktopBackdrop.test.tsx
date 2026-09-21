@@ -61,6 +61,7 @@ describe('#2899 ST-3 / #2909 ST-1 — DesktopBackdrop', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -169,6 +170,44 @@ describe('#2899 ST-3 / #2909 ST-1 — DesktopBackdrop', () => {
     expect(animatedLayers).toBeGreaterThan(0);
     expect(css).toContain('@media (prefers-reduced-motion: reduce)');
     expect(css).toContain('[data-motion="static"]');
+  });
+
+  it('dispatches the engine-backed `life` descriptor to the Life canvas (root contract unchanged)', () => {
+    stubReducedMotion(false);
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => 1);
+    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+      () =>
+        ({
+          setTransform: vi.fn(),
+          clearRect: vi.fn(),
+          fillRect: vi.fn(),
+          fillStyle: '',
+          globalAlpha: 1,
+        }) as unknown as CanvasRenderingContext2D,
+    );
+
+    useBackgroundIdMock.mockReturnValue('life');
+    const { container } = renderWithChakra(<DesktopBackdrop />);
+
+    const root = container.querySelector('[data-testid="desktop-backdrop"]') as HTMLElement;
+    expect(root).not.toBeNull();
+    // The inert root contract is inherited, never re-declared for the engine kind.
+    expect(root.getAttribute('data-background-id')).toBe('life');
+    expect(root.getAttribute('data-motion')).toBe('animated');
+    expect(root.getAttribute('aria-hidden')).toBe('true');
+    expect(getComputedStyle(root).pointerEvents).toBe('none');
+    expect(getComputedStyle(root).zIndex).toBe('0');
+
+    // The motion stylesheet is a CSS-recipe concern — never injected for Life.
+    expect(
+      container.querySelector('[data-testid="desktop-backdrop-motion-styles"]'),
+    ).toBeNull();
+
+    // The generic layer loop maps zero children; the Life canvas is the paint.
+    expect(container.querySelector('[data-testid="desktop-backdrop-life-canvas"]')).not.toBeNull();
+    expect(root.querySelector('[data-background-layer="life-field"]')).not.toBeNull();
+    expect(root.querySelectorAll('[data-background-layer]')).toHaveLength(1);
   });
 
   it('static leg keeps the layered paint (with overscan) but removes all animation + the stylesheet', () => {

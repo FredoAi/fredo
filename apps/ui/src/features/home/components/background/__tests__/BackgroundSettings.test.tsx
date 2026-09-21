@@ -2,8 +2,9 @@
  * BackgroundSettings chooser tests (Spec #2899 ST-4).
  *
  * The Settings → Appearance "Desktop Background" gallery: it renders None + the
- * six procedural tiles, defaults to None, writes through the module store on
- * click and on keyboard selection, and exposes the documented test hooks.
+ * six procedural tiles + the engine-backed Life tile (Spec #2915), defaults to
+ * None, writes through the module store on click and on keyboard selection, and
+ * exposes the documented test hooks.
  *
  * `settingsService` is mocked (the established host-agnostic seam) so the real
  * store can run without a Tauri host. `selectBackground` is wrapped in a spy via
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 describe('BackgroundSettings — Desktop Background chooser (ST-4)', () => {
-  it('renders a Desktop Background radiogroup with None + six procedural tiles', () => {
+  it('renders a Desktop Background radiogroup with None + six procedural tiles + Life', () => {
     renderWithChakra(<BackgroundSettings />);
 
     const group = screen.getByTestId('desktop-background-chooser');
@@ -58,17 +59,62 @@ describe('BackgroundSettings — Desktop Background chooser (ST-4)', () => {
     // Accessible name comes from the visible "Desktop Background" label.
     expect(screen.getByRole('radiogroup', { name: 'Desktop Background' })).toBe(group);
 
-    expect(screen.getAllByRole('radio')).toHaveLength(7);
+    expect(screen.getAllByRole('radio')).toHaveLength(8);
     expect(screen.getByTestId('desktop-background-option-none')).toBeInTheDocument();
     // The singled-out None hook (alias of the None tile).
     expect(screen.getByTestId('desktop-background-none')).toHaveTextContent('None');
     for (const id of PROCEDURAL_IDS) {
       expect(screen.getByTestId(`desktop-background-option-${id}`)).toBeInTheDocument();
     }
+    // #2915: the engine-backed Life tile is the 8th option, appended after Halo.
+    expect(screen.getByTestId('desktop-background-option-life')).toBeInTheDocument();
 
     expect(
       screen.getByText('Renders behind your windows and never blocks clicks.'),
     ).toBeInTheDocument();
+  });
+
+  it('renders the Life tile with its accessible description + the always-visible licence notice', () => {
+    renderWithChakra(<BackgroundSettings />);
+
+    const life = screen.getByTestId('desktop-background-option-life');
+    expect(life).toHaveAttribute('aria-label', 'Life');
+    expect(life).toHaveAttribute('aria-description', "Living Conway's Game of Life");
+    expect(life).toHaveAttribute('aria-describedby', 'desktop-background-life-attribution');
+
+    // Not colour-only: the tile is a real radio button like the others.
+    expect(life).toHaveAttribute('role', 'radio');
+    expect(life).toHaveAttribute('aria-checked', 'false');
+
+    // The notice always renders (independent of the current selection) and its
+    // id IS the tile's aria-describedby target.
+    const notice = screen.getByTestId('desktop-background-life-attribution');
+    expect(notice).toHaveAttribute('id', 'desktop-background-life-attribution');
+    expect(notice).toHaveTextContent('Patterns: Life Lexicon (Stephen Silver), CC BY-SA 3.0.');
+
+    // No other tile gains a description (the radiogroup scan stays homogeneous).
+    expect(screen.getByTestId('desktop-background-option-halo')).not.toHaveAttribute(
+      'aria-description',
+    );
+  });
+
+  it('keeps the Life chooser thumbnail STATIC — the automaton never runs in the chooser', () => {
+    renderWithChakra(<BackgroundSettings />);
+
+    const thumb = screen.getByTestId('desktop-background-life-thumb');
+    expect(thumb).toHaveAttribute('data-life-preview', 'static');
+    expect(thumb).toHaveAttribute('aria-hidden', 'true');
+
+    // No engine, no canvas, no frame loop anywhere in the settings tree.
+    expect(screen.queryByTestId('desktop-backdrop-life-canvas')).toBeNull();
+    expect(document.querySelector('[data-background-layer="life-field"]')).toBeNull();
+
+    // Token-only founder frame: ground + cell tokens, never a colour literal.
+    expect(thumb.innerHTML).toContain('var(--body-bg)');
+    expect(thumb.innerHTML).toContain('var(--accent-primary)');
+    expect(thumb.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(thumb.innerHTML).not.toMatch(/\brgba?\s*\(/);
+    expect(thumb.innerHTML).not.toMatch(/\bhsla?\s*\(/);
   });
 
   it('defaults to None selected (aria-checked + data-selected + roving tabindex)', () => {
@@ -136,15 +182,16 @@ describe('BackgroundSettings — Desktop Background chooser (ST-4)', () => {
     expect(selectBackgroundMock).toHaveBeenLastCalledWith('none');
 
     fireEvent.keyDown(screen.getByTestId('desktop-background-option-none'), { key: 'End' });
-    expect(selectBackgroundMock).toHaveBeenLastCalledWith('halo');
+    // The last option is now the engine-backed Life tile (#2915).
+    expect(selectBackgroundMock).toHaveBeenLastCalledWith('life');
     await waitFor(() => {
-      expect(screen.getByTestId('desktop-background-option-halo')).toHaveAttribute(
+      expect(screen.getByTestId('desktop-background-option-life')).toHaveAttribute(
         'aria-checked',
         'true',
       );
     });
 
-    fireEvent.keyDown(screen.getByTestId('desktop-background-option-halo'), { key: 'Home' });
+    fireEvent.keyDown(screen.getByTestId('desktop-background-option-life'), { key: 'Home' });
     expect(selectBackgroundMock).toHaveBeenLastCalledWith('none');
   });
 

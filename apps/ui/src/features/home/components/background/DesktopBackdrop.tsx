@@ -21,7 +21,10 @@
  * with animations removed (not paused mid-frame); the overscan geometry stays.
  *
  * `none` renders `null` — ZERO new DOM — keeping the shipped default path
- * byte-identical to pre-#2899.
+ * byte-identical to pre-#2899. A descriptor whose `renderer` is `'life'`
+ * (Spec #2915) dispatches to the engine-backed `LifeBackgroundCanvas` INSIDE the
+ * same inert root, in place of the generic layer loop; the root contract is
+ * unchanged and no CSS motion stylesheet is injected for it.
  *
  * Mount-time hydration: the desktop shell owns this component unconditionally,
  * so its mount effect restores the persisted selection on boot (mirrors the
@@ -41,6 +44,7 @@ import {
   layerBoxStyle,
   useBackgroundMotion,
 } from './backgroundMotion';
+import { LifeBackgroundCanvas } from './life/LifeBackgroundCanvas';
 
 export const DesktopBackdrop: React.FC = () => {
   const backgroundId = useBackgroundId();
@@ -57,6 +61,12 @@ export const DesktopBackdrop: React.FC = () => {
 
   const descriptor = getBackgroundDescriptor(backgroundId);
   const animated = motion === 'animated';
+  // Engine-backed dispatch (Spec #2915): `renderer === 'life'` paints through the
+  // Life canvas engine instead of the declarative CSS-recipe layer loop. The root
+  // contract (testid / data-background-id / data-motion / z=0 / pointerEvents:none
+  // / aria-hidden / the descriptor ground) is IDENTICAL in both paths, and the
+  // motion stylesheet is a CSS-recipe concern only.
+  const isLife = descriptor.renderer === 'life';
 
   return (
     <Box
@@ -70,27 +80,31 @@ export const DesktopBackdrop: React.FC = () => {
       pointerEvents="none"
       css={descriptor.css}
     >
-      {animated && (
+      {!isLife && animated && (
         <style data-testid="desktop-backdrop-motion-styles">
           {buildBackgroundMotionCss(descriptor.layers)}
         </style>
       )}
-      {descriptor.layers.map((layer) => (
-        <Box
-          key={layer.id}
-          data-background-layer={layer.id}
-          data-motion-kind={layer.motion?.kind}
-          className={MOTION_LAYER_CLASS}
-          position="absolute"
-          pointerEvents="none"
-          css={{ ...layer.css, ...layerBoxStyle(layer) }}
-          style={
-            animated && layer.motion
-              ? layerAnimationStyle({ id: layer.id, motion: layer.motion })
-              : undefined
-          }
-        />
-      ))}
+      {isLife ? (
+        <LifeBackgroundCanvas animated={animated} />
+      ) : (
+        descriptor.layers.map((layer) => (
+          <Box
+            key={layer.id}
+            data-background-layer={layer.id}
+            data-motion-kind={layer.motion?.kind}
+            className={MOTION_LAYER_CLASS}
+            position="absolute"
+            pointerEvents="none"
+            css={{ ...layer.css, ...layerBoxStyle(layer) }}
+            style={
+              animated && layer.motion
+                ? layerAnimationStyle({ id: layer.id, motion: layer.motion })
+                : undefined
+            }
+          />
+        ))
+      )}
     </Box>
   );
 };
