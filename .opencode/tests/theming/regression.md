@@ -283,3 +283,55 @@
 - **R-31 PASS (live).** backdrop strictly z=0; `elementFromPoint` inside the floating window rect never returns the backdrop; input lands while Life animates.
 - **R-32 PASS (live).** `Fredo_desktop_background` string-only; stale/removed → None; `none`+`life` cold-restart round-trips exact.
 - **R-33 PASS (gates).** build exit 0; 115 files / 1700 tests; zero literals / `var(--x)NN` / raster in the slice. **The round-1 F-63 light-preset contrast caveat is RESOLVED** (F-63 PASS in round 2).
+
+---
+
+## #2925 extension — the Life dimming must not regress the desktop, the theme engine, or the Life invariants
+
+> Issue #2925 revises #2915: the Life backdrop is dimmed with reduced single-hue dominance. These
+> invariants MUST hold; run alongside R-1..R-33 and the desktop-shell / settings suites.
+> **G-136 — ADD/RE-BASELINE, not a supersession:** no prior row is contradicted. The dimming may not
+> change any of the #2915 invariants (reduced-motion static frame, per-load seed + periodic re-seed,
+> pause-when-hidden cancel, bounded caps, inert backdrop, chooser thumbnail). **Verification policy: live.**
+> The dimming/legibility rows themselves are `F-73..F-88` in `functional.md`.
+
+- [ ] **R-34 (theming engine + existing background behavior unchanged — extends R-29):** preset
+      selection, per-token overrides, "Reset to theme defaults", the readout, and the
+      `overrides ?? preset ?? base` layering behave exactly as before; the chooser still offers
+      None + the six recipes + Life and each still selects/animates; **None** is still pixel-comparable
+      with zero `[data-testid="desktop-backdrop"]` DOM; a stale/unknown stored value still falls back
+      safely to None. The dimming must not shift any existing theming computed color (compare
+      before/after on a sample: Settings chrome, launcher, mission-monitor node chrome).
+  - **Edge:** theme/accent switch while Life animates; light + dark; Life → None → recipe cycling; the
+    dim expression re-resolving on a theme change must not leave a stale dim.
+- [ ] **R-35 (recipe + Life motion invariants preserved — scope guard):** `backgroundMotion.ts` still
+      introduces **zero** `requestAnimationFrame`/`setInterval`; `isBoundedMotion`/`overscanCovers`/
+      `MOTION_*` bounds are unchanged; the six recipes' `data-motion` / animation signatures and layer
+      counts are unchanged. The Life simulation loop stays OUTSIDE `backgroundMotion.ts` and keeps its
+      OWN single bounded rAF loop (cancelled on static/hidden/unmount; no unbounded timers). The
+      dimming must not add a second loop, a second canvas, or a per-frame allocation.
+      `background.invariants.test.tsx` stays byte-identical.
+  - **Edge:** a dim implemented as a translucent overlay must not become an animated layer; the Life
+    bounded-loop pin (`lifeBounds.test.ts`) still passes; a shared helper extracted during the dim work
+    must not change a recipe's computed motion.
+- [ ] **R-36 (desktop shell / window styling / z-order / input unchanged — extends R-31):** the backdrop
+      — Life included, and any dimming overlay — stays strictly below `WindowManager`, `pointer-events:
+      none` + `aria-hidden` + non-focusable; no window/card/surface styling change; feature windows still
+      open, move, resize, minimize, focus, close; input typed into a focused field lands while Life
+      animates. **A dimming overlay must not sit above a window.**
+  - **Edge:** maximized / floating / minimized windows; window dragged over the field; two windows; Life
+    active during a cold launch; `elementFromPoint` inside a window rect never returns the backdrop or
+    the overlay.
+- [ ] **R-37 (persistence + store contract unchanged — extends R-32):** `Fredo_desktop_background`
+      keeps the string-only value, lenient normalization, and idempotent/dirty-guarded hydration;
+      None/recipe/Life round-trips and the removed-id → None fallback are unchanged.
+  - **Edge:** upgrade from an install that never stored a value; value written by an older build;
+    AppStore vs localStorage divergence; a dim preference (if any) must not add a new persistence key
+    that changes the store contract.
+- [ ] **R-38 (gates + no test weakening — extends R-33):** `pnpm --filter @fredo/ui build` exit 0;
+      `pnpm --filter @fredo/ui test:run` green; no existing assertion weakened/disabled/deleted (the only
+      permitted supersession stays the explicit `#2899` static-only legs); zero color literals /
+      `var(--x)NN` in the Life slice; no raster asset added; the recipe-module zero-rAF assertions stay
+      green (Life excluded by construction).
+  - **Edge:** the new `lifeBounds.test.ts` pins are deterministic/order-independent (G-222); no dangling
+    import; overlap suites green.
