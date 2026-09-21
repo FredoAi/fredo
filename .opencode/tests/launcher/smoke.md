@@ -280,3 +280,23 @@
 
 - **S-31 PASS (live).** Model capture: one-line indicator `launcher-command-model-listening-chip` (`Fredo is listening`), `fieldContentW 206 ≥ 140`, `verticalOrNarrow []`, probe `overlapField` = the end-slot chip only (border-box probe artifact; content-box intersection 0); screenshot succeeded; console clean. Local leg: `Listening` chip + `Listening…` + hint chip, one line. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
 
+## #2917 extension — solid-Fredo quick paths on the launcher
+
+> Issue #2917 fills Fredo's hollow interior additively. Quick paths only — the full matrix lives in
+> `functional.md` F-108..F-112 / `regression.md` R-64..R-66. **Verification policy: live** — screenshot +
+> console-clean per step; a property-existence check is never a PASS.
+
+- [ ] S-32: **Solid interior in both themes.** On the launcher surface with the companion OFF (decorative
+      seat mascot) and ON, capture dark base + `light-default`; sample the head-interior/mouth-void pixels
+      inside the figure. **Expected:** the interior resolves to the live accent (no background showing
+      through) in BOTH themes; `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-33: **Open/close churn keeps the figure intact.** Open and close the launcher several times with
+      the fill active. **Expected:** the mascot renders solid each time (no partial fill, no stuck
+      animation, no stale colour); screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum
+      update depth exceeded`.
+- [ ] S-34: **Launcher geometry unchanged.** Measure the command-bar `getBoundingClientRect().y` and the
+      seat-slot WRAPPER `offsetWidth`/`offsetHeight`/`margin-bottom`. **Expected:** `y` within ±1 px of the
+      pre-change baseline; wrapper exactly 80×100 + 16 px; no new scrollbar/overflow; screenshot succeeds;
+      console clean.
+
