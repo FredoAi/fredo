@@ -244,25 +244,31 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
             <>
               {/* 3-bar level meter on the RIGHT cheek hollow (right of the right
                   eye, inside the head). Height-coded bars — a complete static frame
-                  at rest. No mouth shape, so it can never read as a mouth state. */}
-              <rect className="fredo-listening-bar" x={740} y={448} width={48} height={120} fill="currentColor" />
-              <rect className="fredo-listening-bar" x={792} y={428} width={48} height={168} fill="currentColor" />
-              <rect className="fredo-listening-bar" x={844} y={464} width={48} height={88} fill="currentColor" />
+                  at rest. No mouth shape, so it can never read as a mouth state.
+                  #2917 r2 FIX-2a: grown from 48-wide to 60-wide and taller so the
+                  meter union (35,100 u² = 218.5 px² at sm) clears the rendered
+                  dense-delta floor with margin; bottoms all at y=578 and the right
+                  edge stays at x=892. */}
+              <rect className="fredo-listening-bar" x={696} y={388} width={60} height={190} fill="currentColor" />
+              <rect className="fredo-listening-bar" x={764} y={328} width={60} height={250} fill="currentColor" />
+              <rect className="fredo-listening-bar" x={832} y={433} width={60} height={145} fill="currentColor" />
             </>
           )}
           {state === 'working' && (
             <>
               {/* Two chunky conveyor chevrons `»` marching in the LEFT cheek hollow
-                  (a skill/tool is executing). Neutral face. */}
+                  (a skill/tool is executing). Neutral face. #2917 r2 FIX-2c: each
+                  rect grown 44×44 → 60×60 (union 20,952 u² = 130.4 px² at sm) so the
+                  marker clears the dense floor; glyph layout + grouping unchanged. */}
               <g className="fredo-working-chevron">
-                <rect x={172} y={612} width={44} height={44} fill="currentColor" />
-                <rect x={172} y={668} width={44} height={44} fill="currentColor" />
-                <rect x={216} y={640} width={44} height={44} fill="currentColor" />
+                <rect x={166} y={606} width={60} height={60} fill="currentColor" />
+                <rect x={166} y={672} width={60} height={60} fill="currentColor" />
+                <rect x={220} y={639} width={60} height={60} fill="currentColor" />
               </g>
               <g className="fredo-working-chevron">
-                <rect x={280} y={612} width={44} height={44} fill="currentColor" />
-                <rect x={280} y={668} width={44} height={44} fill="currentColor" />
-                <rect x={324} y={640} width={44} height={44} fill="currentColor" />
+                <rect x={292} y={606} width={60} height={60} fill="currentColor" />
+                <rect x={292} y={672} width={60} height={60} fill="currentColor" />
+                <rect x={346} y={639} width={60} height={60} fill="currentColor" />
               </g>
             </>
           )}
