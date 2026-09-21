@@ -2494,3 +2494,191 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 - **F-134 PASS (live).** Typed turn `askActiveCompanion('We shipped it — celebrate with me!')` → settle `happy` at 9529 ms; same-window teleport dispatched 1004 ms after the settle (teleportAt 10510). State trace `playful(4961) → thinking(6565) → joking(7761) → happy(9529) → teleport-out(10561) → idle(11010)`; a 20 ms trace confirmed `teleport-out → teleport-in → idle` (in-flight ~464/463 ms). Post-settle samples at +5 s / +13 s / +20 s / +27 s = `idle` throughout (∈ {idle, playful}); no `happy` after `teleport-in`; the reply bubble is cleared. Control (R2, no teleport): `happy(3625) → idle(8619)` = settle + ~5012 ms (the shipped `HAPPY_HOLD_MS`).
 - **R1 (teleport-after-settle release) / R2 (control) / R3 (skill-turn teleport) all PASS.** R3: `thinking → teleport-out → idle`; exactly one `llm-skill-call` + one `llm-done`, **zero `llm-status`**, reply bubble cleared.
 - **Re-confirmed green:** T1/R-63, T2/AC-1 (`happy` vs `working` distinct), T3, T4, T5(b-i) ambient `talk` (`greeting → talk` with no generation), T5(b-ii) `thinking → joking → settle`, T5(c) `error` beats an injected status, T5(d), T6, Q-1/Q-2/Q-3/Q-5/Q-7/Q-8. Q-4 keeps its named G-053 blocker; the T1 dictation-selection sub-leg keeps its named G-172/G-009 in-repo-fixture blocker.
+
+---
+
+## #2922 extension — the WHOLE body must render solid (revises #2917's head-only fill)
+
+> Issue #2922 revises #2917 (PR #2919): #2917 filled the head interior + mouth void ONLY
+> (`FREDO_AVATAR_INTERIOR_RECTS`, 9 bands, `y = 106…761`, `fredoAvatarGeometry.ts:184-194`); the BODY
+> (viewBox `y ≈ 812–1234`: bow tie 812–868, upper arms 824–911, inner arms 856–916, center buttons
+> 917–1027, lower arms 916–1061, hips 1009–1085, legs 1085–1201, feet 1201–1234) still renders
+> see-through. These rows own the companion surface (`.fredo-companion-avatar`); the launcher
+> decorative seat mascot lives in `.opencode/tests/launcher/` F-113..F-117 + R-67..R-69. Rows map 1:1
+> to the QA Plan `Q-1..Q-10` in `.opencode/tmp/2922/triage.md` `## QA Expert`.
+> **Verification policy: live** — every row is judged on RENDERED output; a source/attribute
+> assertion, a computed `animationName`, or a `data-state` presence is NEVER a PASS. The mandatory
+> live-policy receipt is **F-142**. **Serving checkout:** `spec/2922` on a running Fredo desktop app
+> (`dev-env.ps1 -Action Up -Spec 2922`, MCP driver `com.fredo.app`); screenshots →
+> `.opencode/tmp/2922/e2e/`. Reference images (read by EXACT path — a glob returning nothing is a
+> FALSE NEGATIVE): `.opencode/wireframes/fredo-avatar.png`, `.opencode/wireframes/avatar-guide.png`,
+> `.opencode/wireframes/fredo-avatar.html`.
+>
+> **BINDING body-solidity metric (F-135 / F-138).** Per (state × theme) leg, capture with nothing
+> else changed: frame A = as rendered; frame B = the SAME node hidden (`svg.style.visibility='hidden'`,
+> never `display:none`) in the SAME `execute_js` task; lossless PNG crop = the element's
+> `offsetWidth × offsetHeight` rect (G-040) + 8 px halo. `open(x,y) := maxChannel |A−B| ≤ T_OPEN`,
+> `T_OPEN = 2` (8-bit lossless). BODY ROI = viewBox `y ∈ [812,1234]` mapped to rendered px
+> (`round(812·h/1264)…round(1234·h/1264)`; sm h=100 → rows 64–98), FULL width, EVERY pixel sampled
+> (no sparse grid — G-213). `hole := p ∈ open ∩ BODY ROI` with `p ∉ intendedOpenMask`.
+> **PASS iff `holeCount == 0`.** Report `bodyOpenTotal`, per-sub-band counts, and the fill-coverage
+> fraction (`|A−C| > T_OPEN` with C = the same frame with `#fredo-interior` `display:none`).
+> `intendedOpenMask` (viewBox; UI/UX to bind — QA Discussion Q-1): inter-leg gap `x 489–525,
+> y 1099–1198`; shoulder/neck notches `x 0–343` / `x 671–1013`, `y 765–820`; candidates thigh gaps
+> `x 362–459` / `x 555–652`, `y 1087–1198`; armpit notches `x 333–357` / `x 657–681`, `y 826–909`.
+> `leakCount := |{ p ∈ intendedOpenMask : |A(p) − B(p)| > T_OPEN }|` — PASS iff `== 0`.
+> **Do NOT probe the backlog's literal `x ≈ 460`** — that is the left inner leg's own left edge
+> (`{460,1097,28,103}`; mirror 526), and a hit there reads as a false leak.
+> **Both shipped surfaces are `sm` 80×100** (no surface renders `size="md"`; `AVATAR_MD` is only
+> exported) — the md 132×165 leg is a shared-component RTL pin only.
+> **State recipes (validated; G-220/G-223):** `idle` = rest; `greeting` = companion switch OFF→ON
+> (welcome ambient message), sample `t < GREETING_BEAT_MS = 1500` (`CompanionEntity.tsx:70,760-763`);
+> `talk` = the same turn-on at `1500 ms ≤ t < ~4000 ms` (`TALK_HOLD_MS`); `thinking` = bar
+> send/joke before the first token; `joking` = first token of a joke stream; `happy` = the completion
+> settle (`HAPPY_HOLD_MS = 5000`); `playful` = 12 s sustained rest (`useFredoRestingCadence`
+> delayMs 12000/holdMs 1800); `listening` = hold Space on the focused EMPTY bar (held `down` →
+> ≥300 ms → `up`); `working` = bar send **`open Mission Monitor`** (live `llm-skill-call` →
+> `working` for `WORKING_BEAT_MS = 900`); `error` = bar send **`open NotARealApp`** (non-success
+> pushed reply → `error`, `ERROR_HOLD_MS = 8000`) OR `invoke('stop_llama_server')` + a bar send
+> (typed `llm-error`); `teleport-out` = Ctrl+right-click; `teleport-in` = Ctrl+right-click INSIDE
+> `run-cli-terminal` (arrival). **`open notepad` is a STALE recipe (G-223)** — it exists only as a
+> unit-test fixture (`FredoCompanion.newStates.test.tsx:93`) and fails closed live.
+
+## F-135 (Q-1 / REQ-1 / AC1) — the companion body renders with no see-through interior in every state
+
+- [ ] F-135: Companion ON at the home seat. For EACH of the 12 states (recipes above; 50 ms in-page
+      recorder for `greeting`/`working`/`thinking`/`joking`) capture frames A + B and the lossless
+      crop of `.fredo-companion-avatar` in dark base and `light-default`; run the BINDING metric over
+      the BODY ROI and each sub-band. Repeat on the away-overlay surface (Ctrl+right-click) for
+      `idle`/`talk`. Screenshot every state.
+  **Expected:** `holeCount == 0` for EVERY state × theme (all 12 states + the away-overlay legs) — no
+      body pixel shows the identical backdrop outside an `intendedOpenMask` box; the R1 statement
+      ("no surface behind the figure is visible through the torso, arms, legs or feet") holds by the
+      metric, not by source inspection. Report `bodyOpenTotal`, the per-sub-band hole counts and the
+      fill-coverage fraction per sub-band.
+  - **Edge:** `greeting` (1500 ms) / `working` (900 ms) are sub-second — recorder only, never a
+      serial driver round-trip; a state sampled mid-bob (the metric is frame-based); the accent
+      changed mid-state; the theme whose tint is nearest the background (report the sensitivity
+      margin — must exceed `4×T_OPEN`).
+
+## F-136 (Q-3 / REQ-2 / AC4) — all 12 states fill the body and the expression stays legible over it; idle has none
+
+- [ ] F-136: Force each of the 12 states; per state read `#fredo-expression[data-state=<s>]` (present
+      / absent), its rect x/y/width/height set, the DOM paint order (direct `<svg>` children), and
+      capture a still; also drive a teleport (out then in) mid-state.
+  **Expected:** the interior `<path>` is present (and covering the body — F-135) in EVERY state
+      including `idle`; every expression overlay renders LAST (after the fill and the base rects) and
+      stays legible over the filled body — the per-state overlay rect sets are UNCHANGED vs the
+      #2917/#2918 fingerprints (talk 2, teleport-out 3, teleport-in 2, thinking 6, joking 4, happy 8,
+      playful 4, listening 3, working 6, error 6, greeting 12); `idle` renders NO
+      `#fredo-expression`; the #2917 ink rule is unchanged (group `color="var(--accent-strong)"`, the
+      sole `error` override `var(--status.error)`, rects `fill="currentColor"`).
+  - **Edge (negative):** a distinguishing shape rendered same-colour-on-same-colour over the fill
+    (the #2850 E-25 / #2917 E-28 class) is a FAIL; a state whose overlay is drawn BENEATH the fill or
+    the base rects is a FAIL; a teleport mid-state must not merge two states in one sample.
+
+## F-137 (Q-4 / REQ-3 / AC3) — the body fill is token-native and re-tints live with no restart
+
+- [ ] F-137: Read `#fredo-interior`'s `fill` attribute + computed `fill`, and
+      `getComputedStyle(document.documentElement).getPropertyValue('--fredo-avatar-interior')` before
+      and after switching dark ↔ `light-default` and changing the accent via
+      `select[aria-label="Theme presets"]` (NO reload); re-sample the body pixels; static-grep the
+      changed files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` / `var\(--[a-z-]+\)[0-9a-fA-F]{2}`.
+  **Expected:** attribute `fill === "var(--fredo-avatar-interior)"`; the computed fill is a resolved
+      colour (never `none`/empty/transparent); the var AND the rendered body pixels re-tint on every
+      theme/accent change with zero code change and no reload (no stale colour, no flash of the old
+      token); ZERO hardcoded colour literals in the changed files (comment issue-refs exempt) and no
+      `var(--x)NN` alpha-append (#2770).
+  - **Edge:** the accent changed MID-state and MID-teleport; a near-background accent (report the
+    fill-vs-backdrop delta); the launcher surface must re-tint to the same token (launcher F-114).
+
+## F-138 (Q-5 / REQ-4 / AC1 leak) — no fill leaks past the silhouette (leg gap + shoulder notches stay background)
+
+- [ ] F-138: For each state × surface, evaluate `leakCount` over the `intendedOpenMask` boxes
+      (inter-leg gap + shoulder/neck notches + the UI/UX-bound candidates) using the SAME frames A/B
+      as F-135; screenshot each probe box; explicitly probe the inter-leg gap centre (`x 507,
+      y 1150`) and `x 460, y 1150` separately.
+  **Expected:** `leakCount == 0` in EVERY state — the inter-leg gap and the shoulder/neck notches show
+      the PURE backdrop (the fill never paints outside the silhouette); the probe at `x 507, y 1150`
+      reads `open` (background, correct) while `x 460, y 1150` reads the LEFT INNER LEG (painted — a
+      legitimate hit, NOT a leak; record it as the stale-example note).
+  - **Edge:** antialias edge bleed inside a box (inset 2 viewBox units); a band tucked 1–6 units under
+    the rim (intended per the #2917 table rule); the boxes themselves must be quoted from the UI/UX
+    binding (QA Discussion Q-1) — a self-invented box set is not evidence.
+
+## F-139 (Q-6 / REQ-5 / AC2) — frozen 58 base rects, ONE `<path>` fill drawn first, parity guard untouched
+
+- [ ] F-139: Per state read the direct `<svg>` `<rect>` children (base table) and diff x/y/width/height
+      against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; enumerate `#fredo-interior` (tag, its index
+      among the svg's direct children, `data-layer`, `d`); count `svg.querySelectorAll('rect')`; grep
+      for a second base-rect table outside `shared/components/fredo-avatar/`; run the shared geometry +
+      interior suites.
+  **Expected:** 58 base rects byte-identical (same values, same order) in EVERY state on BOTH surfaces;
+      the fill is exactly ONE `<path id="fredo-interior" data-layer="interior">` — never a `<rect>` —
+      and is drawn BEFORE the base rects (lower document order / first direct child); the base table and
+      its `expandFredoRects` count-parity guard are UNTOUCHED (keyed to the base table only); total
+      `querySelectorAll('rect')` == 58 + that state's overlay rect count (the AC's "58 rects" means the
+      BASE rects — the overlay legitimately adds rects inside `#fredo-expression`); no duplicate
+      geometry table; `fredoAvatarGeometry.test.ts` passes UNMODIFIED.
+  - **Edge:** a fill implemented by mutating `FREDO_AVATAR_SOURCE_RECTS` / the mirror math, a
+    `<rect>`-based fill, or a fill placed after the base rects = FAIL; the `toHaveLength(9)` interior
+    band pin (`fredoAvatarInterior.test.tsx:58`) is EXPECTED to be refreshed when body bands land —
+    the refreshed pin must be NAMED per G-125, never silently deleted or relaxed.
+
+## F-140 (Q-7 / AC5) — the fill is static; reduced motion keeps the figure legible; motion stays on the consumer wrapper
+
+- [ ] F-140: Across all 12 states read `getComputedStyle(#fredo-interior).animationName` / `transform`
+      and the consumer wrapper's computed `animationName`; grep `fredo-avatar.css` / `companion.css`
+      for a selector targeting `#fredo-interior` / `[data-layer="interior"]` and for the
+      `prefers-reduced-motion` block; run the reduced-motion static/unit pins.
+  **Expected:** the fill is STATIC in every state (`animation-name: none`, no transform transition on
+      the path) — the base figure never animates itself; whole-element motion stays on the CONSUMER
+      wrapper (`.fredo-companion-avatar[data-state=…]`, `companion.css:19-143`); under
+      `prefers-reduced-motion: reduce` every distinguishing frame stays legible — never `opacity:0`,
+      never a strobe (WCAG 2.3.1) — and any NEW keyframe is inside the existing reduced-motion block.
+  - **Edge (G-053):** the MCP driver CANNOT flip `matchMedia('(prefers-reduced-motion: reduce)')` live
+    (precedent #2850 F-19 / #2854 F-38 / #2870 r4 / #2917 F-122 / #2918 F-133). Record the live flip
+    as **UNVERIFIED-with-blocker** with the static-CSS read + the product-unit pins as the accepted
+    residual; NEVER present it as a live PASS.
+
+## F-141 (Q-8 / NF) — build, suite, console clean, no re-render loop, token purity
+
+- [ ] F-141: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; read
+      `tauri_read_logs(source="console")` after EVERY leg in `main` AND `run-cli-terminal`; inspect the
+      fill code for effect/memo deps on array `.length`/fresh objects; re-grep the changed files for
+      colour literals + `var(--x)NN`.
+  **Expected:** build exit 0 / zero TS errors; the full UI suite green with no assertion
+      weakened/deleted (the interior band-count refresh is the ONE expected named refresh, G-125);
+      no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any window (the pre-existing
+      `motion() is deprecated` WARN exempt); no re-render loop (AGENTS.md #523); ZERO hardcoded colour
+      literals / no alpha-append.
+  - **Edge:** console read AFTER the interaction, not only at boot; a state forced mid-theme-switch.
+
+## F-142 (Q-9 / LIVE) — mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-142: Same run as F-135..F-141: `fredo emit --event-type chat --session-id e2e-2922-chat` +
+      `--event-type tool_use --session-id e2e-2922-tool --tool-name read_file`; query `telemetry_spans`
+      + `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the per-state body frames via
+      `upload-evidence --issue 2922`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered-webview
+      receipt. **A static-only PASS with no live receipt is a FALSE PASS.** Never fabricate a query.
+  - **Edge:** re-run on the tested tip (the branch may move); keep the emit + query output verbatim in
+    `## Tests Runs`. Test data: running `spec/2922` tip + the managed `llama-server` + `run-cli-terminal`
+    for the `teleport-in` leg; the tester's `## Tests Runs` draft must end with `*Authored by Tester*`.
+
+## F-143 (Q-10 / metric controls) — the harness must be able to fail: head positive control, BEFORE negative control, sensitivity
+
+- [ ] F-143: (a) run the metric over the already-solid HEAD ROI (`y 106–761`, #2917) in the same run;
+      (b) materialise the pre-change checkout (`dev-env.ps1 -Action Up -Spec 2922 -At <pre-fix SHA>`,
+      `<pre-fix SHA>` = the merge base of `spec/2922` = the current `main` tip) and run the SAME recipe
+      for the body ROI; (c) report `maxChannel |fill − backdrop|` for the tested theme.
+  **Expected:** (a) `holeCount == 0` on the head (a non-zero head count means the harness is broken →
+      not a product verdict); (b) the BEFORE tip shows a LARGE body `holeCount` in every body sub-band
+      (proves the metric detects transparency, i.e. it CAN fail); (c) the margin exceeds `4×T_OPEN`.
+      Produce a before→after `bodyOpenTotal`/`holeCount` table per sub-band with distinct `before-*` /
+      `after-*` frame names (G-134/G-135). The AFTER gate is an absolute "no holes" assertion — the
+      BEFORE column is the metric control, not a PASS/FAIL column.
+  - **Edge:** a BEFORE capture that cannot be materialised ⇒ named blocker + the reported sensitivity
+    margin, never a fabricated before; a metric that reports 0 on the BEFORE tip is INADMISSIBLE —
+    report it and loop, never record a PASS.
