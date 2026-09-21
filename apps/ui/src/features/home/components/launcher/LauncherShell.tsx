@@ -32,7 +32,6 @@ import {
   askActiveCompanionWithAudio,
 } from '../../../../shared/components/companion';
 import {
-  isModelAudioFailureCode,
   modelAudioFailureCopy,
   MODEL_AUDIO_FAILURE_COPY,
   MODEL_AUDIO_GENERIC_FAILURE,
@@ -47,19 +46,10 @@ import {
   type ReplySurfaceBounds,
 } from '../../../../shared/components/companion/replySurfaceLayout';
 import { useFredoRestingCadence } from '../../../../shared/hooks/useFredoRestingCadence';
-// Spec #2877 ST-5 — live dictation into the existing bar input (the launcher-origin
-// listening cue). Spec #2882 ST-4 retires the context-dependent Ctrl+Space cascade.
+// Spec #2877 ST-5 — the launcher-origin capture cue. Spec #2882 ST-4 retires the
+// context-dependent Ctrl+Space cascade. Spec #2914 ST-5 — the model-audio path is
+// the ONE speech path, so this hook carries `stt:state` only (no transcript).
 import { useVoiceDictation } from '../../../../shared/hooks/useVoiceDictation';
-// Spec #2882 ST-3 — the fail-closed STT-model readiness probe. Mounted here so the
-// shell owns the arming gate (`voiceEnabled && sttModelReady`) ST-5 reads; the
-// probe is refreshed on the summon path (Ctrl+Space).
-import { useSttModelReady } from '../../../../shared/hooks/useSttModelReady';
-// Spec #2887 ST-6/ST-7 — the warm RETRY/re-arm path. The primary warm is the
-// backend's setup warm (ST-1 `ResidentEngine::warm_at_setup`); this hook only
-// re-attempts the idempotent, engine-only `stt_warm` on the voice-enabled edge,
-// the model-ready edge and the summon path. `stt_warm` is single-flight, so a
-// retry can never race the setup warm into a second model load.
-import { useSttWarm } from '../../../../shared/hooks/useSttWarm';
 // Spec #2882 ST-1 — THE ONE pure Enter decision. Both the hint memo and the commit
 // path consume it, so the chip can never promise a different action than Enter takes
 // (R-6.3). The rule is never re-derived locally.
@@ -67,7 +57,6 @@ import {
   enterHintLabel,
   findTopRankedMatch,
   resolveEnterAction,
-  type EnterTextOrigin,
 } from './launcherEnterAction';
 // Spec #2882 ST-2 — the PURE hold-Space gesture decision. The shell owns the
 // DOM/timer/mic wiring; the precedence stays in the tested module (a Space may
@@ -127,14 +116,6 @@ export interface LauncherShellProps {
 
 const clampIndex = (value: number, len: number): number =>
   Math.min(Math.max(0, value), len - 1);
-
-/** Space-join two bar-text fragments without a duplicate/trailing space (the
- *  same rule `useVoiceDictation` uses, so the bar's live text matches it). */
-const joinBarText = (lead: string, tail: string): string => {
-  if (!lead) return tail;
-  if (!tail) return lead;
-  return `${lead} ${tail}`;
-};
 
 /** The command-bar `role="searchbox"` field is the grid-navigation focus anchor.
  *  Spec #2883 ST-2: the field became a `Textarea`, so the anchor is the ROLE
@@ -256,7 +237,8 @@ export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
 /**
  * Spec #2887 ST-7 (R-3/AC3) — THE ONE honest hold-cue derivation, pure and
  * unit-pinned so the shell can never hand the bar a cue that claims capture
- * before it exists:
+ * before it exists. Spec #2914 ST-9 — the engine-residency stamp is GONE with
+ * the deleted resident engine, so the pending window has ONE honest state:
  *
  *   captureLive (the `listening` prop = `voice.listening && origin === 'launcher'`)
  *       → `'listening'` — the ONLY state that may render `Listening`/`Listening…`
@@ -264,11 +246,8 @@ export function selectCtrlSpaceAction(ctx: CtrlSpaceContext): CtrlSpaceAction {
  *   pending (`holdPending` — the shipped bounded gate, armed INSIDE the
  *   `HOLD_THRESHOLD_MS` timer's callback, so it is measured from
  *   THRESHOLD-CROSSED, never from the keydown)
- *       → `'starting'` when the engine is resident (the hold is paying only the
- *         capture-open), `'warming'` when it is NOT (`engineResident === false`:
- *         the launch window, where the hold joined the in-flight setup warm).
- *         Both render the SAME bounded `starting voice input…` chip — the
- *         distinction is the honest cause, never a longer "starting" affordance;
+ *       → `'starting'` — the bounded `starting voice input…` chip while the
+ *         capture opens;
  *   armed (the keydown edge, before the threshold cross)
  *       → `'acknowledge'` — `Hold to dictate…`, the user's own gesture, no
  *         capture mark and no listening wording;
@@ -286,11 +265,9 @@ export function deriveHoldCue(input: {
   armed: boolean;
   /** The bounded pending gate fired: threshold crossed + `HOLD_PENDING_CUE_MS`. */
   pending: boolean;
-  /** ST-3's `stt:state` stamp: the last start took the resident engine. */
-  engineResident: boolean;
 }): HoldCue {
   if (input.captureLive) return 'listening';
-  if (input.pending) return input.engineResident ? 'starting' : 'warming';
+  if (input.pending) return 'starting';
   if (input.armed) return 'acknowledge';
   return 'none';
 }
@@ -367,18 +344,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const {
     state: companion,
     voiceEnabled,
-    voiceAutosend,
     replyInFlight,
     queuedSendCount,
-    voiceHandling,
-    setVoiceHandling,
   } = useCompanion();
-  // Spec #2897 ST-4 (REQ-3/REQ-4) — the persisted speech-handling mode. In
-  // `'model'` mode the backend hands the captured audio to the model as the
-  // turn's input: there is NO transcript, so this shell suppresses every
-  // transcript write at its SOURCE (the bar keeps the pre-session typed text)
-  // and renders the model-audio indicator instead of the transcription cue.
-  const modelVoice = voiceHandling === 'model';
+  // Spec #2914 ST-5 — ONE speech path. The captured model audio IS the turn's
+  // input (delivered loopback to the local multimodal server); there is no
+  // transcript and no local transcription mode (`voiceHandling` is gone from
+  // CompanionContext — R-4), so the bar is rendered in model-audio mode.
 
   // #2870 ST-3: the home seat slot is ALWAYS reserved at a fixed 80×100 + 16px
   // band (the wrapper below owns the size + `mb="4"`), so the command bar's
@@ -417,16 +389,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // entry point (ST-4 retired every Ctrl+Space listening branch, ST-6 retired the
   // companion-origin path), so `start` is wired to the hold timer's arm path.
   const { start: startVoice, stop: stopVoice, cancel: cancelVoice } = voice;
-  // Spec #2882 ST-3 — the fail-closed model-readiness probe (R-3.3). Mounted here so
-  // the shell owns the arming gate ST-5 reads (`voiceEnabled && sttModelReady`);
-  // refreshed on the summon path. It probes ONLY while voice is enabled.
-  const sttModel = useSttModelReady(voiceEnabled);
-  // Spec #2887 ST-7 (R-1/R-4/R-6/R-7) — mount the warm retry/re-arm path. The
-  // backend setup warm is the PRIMARY trigger (never a second model load: the
-  // backend's `stt_warm` single-flight is authoritative); this only re-attempts
-  // it, so a missed or lost warm recovers. Residency is surfaced separately
-  // through `voice.engineResident` (ST-3's `stt:state` stamp) for the cue.
-  const sttWarm = useSttWarm(voiceEnabled, sttModel.ready);
+  // Spec #2914 ST-5 (R-3) — the arming gate is `voiceEnabled` ONLY. The deleted
+  // sherpa `stt_check_model`/`stt_warm` readiness probe no longer withholds the
+  // gesture; the backend's `model_audio_start_gate` / `stt_audio_capability`
+  // owns any start-time degradation, and a hold must always be able to arm.
   // Spec #2882 ST-5-fix (QA-10) — WHILE a launcher-origin capture is live, Enter is
   // a NO-OP and the chip reads exactly `release Space to finish`. This ONE primitive
   // is fed to the SAME `resolveEnterAction` on BOTH the hint path (the memo) and the
@@ -439,44 +405,18 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const listeningRef = useRef(voice.listening);
 
   // ── Spec #2878 ST-1 — commit-path support refs ─────────────────────────────
-  // All are mutable refs (never state) so they can be read/written synchronously
-  // inside effects in the SAME commit (a one-render-stale `query` read would
-  // commit the previous utterance's text). Deps stay primitives (AGENTS.md #523).
+  // Mutable refs (never state) so they can be read/written synchronously inside
+  // effects in the SAME commit. Deps stay primitives (AGENTS.md #523).
   //
-  // `barTextRef` mirrors the controlled bar query synchronously — the live-text
-  // effect and the finalize effect both run in one commit, so the commit reads
-  // the text the live-text effect just wrote.
+  // `barTextRef` mirrors the controlled bar query synchronously so the release
+  // owner's ordinary-space write reads the current text.
   const barTextRef = useRef('');
-  // R-3.2 restore target (the bar text present BEFORE the session started).
+  // Spec #2914 ST-5 — the discard target: the bar text present BEFORE the
+  // capture started, restored by a cancel/voice-disabled teardown. In the single
+  // model-audio path the bar is never transcript-written, so this is the
+  // shipped cancel behavior (a user edit during the capture is still restored).
   const preSessionTextRef = useRef('');
-  // The hook accumulates `committed` across sessions, so each utterance writes
-  // only its own segments (`committed` minus the baseline captured at start).
-  const sessionBaseCommittedRef = useRef('');
-  const prevCommittedRef = useRef('');
-  // UX-2 — after the first manual keystroke during a live segment, partial
-  // writes stop for the session (finals still append). Reset at session start.
-  const userEditedDuringSessionRef = useRef(false);
-  // R-3.1 — a cancel suppresses the autosend commit and restores the pre-session
-  // text. Reset at session start.
-  const cancelledRef = useRef(false);
-  // The exactly-once witness (R-2.5/4.2) plus the finalize bookkeeping that
-  // survives a final transcript landing just after the `listening:false` event.
-  const autosendFiredRef = useRef(false);
   const launcherActiveRef = useRef(false);
-  const finalizePendingRef = useRef(false);
-  // ST-1r — the no-produced finalize restores the pre-session bar text ONCE per
-  // session; the finalize effect then STAYS armed for a late final, so the
-  // once-guard is what stops a later manual keystroke being clobbered by a
-  // repeated restore. Reset at session start with the other per-session guards.
-  const restoredAfterSessionRef = useRef(false);
-  // Spec #2882 ST-4 (R-4.3, clarification #2) — the bar's content PROVENANCE.
-  // TRUE iff the bar's text originated from a launcher-origin dictation capture
-  // that produced a committed final. It is NEVER inferred from the text and NEVER
-  // cleared by a user edit; it clears only when the content stops existing (bar
-  // emptied, committed, minimized, or suppress-restored). This ref is the
-  // synchronous mirror the commit path reads — `commitBarQuery` may run in the
-  // same commit in which the finalize wrote the bar.
-  const dictationOriginRef = useRef(false);
 
   // #2819 FIXED: the shell surface is visible by default at launch (idle), so a
   // fresh launch shows the avatar + command bar instead of a blank desktop.
@@ -484,10 +424,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // query is present; returns to idle on ESC / focus-leaving-the-surface (empty query).
   const [engaged, setEngaged] = useState(false);
   const [query, setQuery] = useState('');
-  // Spec #2882 ST-4 (R-4.3/R-4.5) — render-time provenance, so the hint memo can
-  // derive the truthful chip (`↵ send transcript to Fredo`) for dictated content.
-  // The ref above is the synchronous mirror the commit path reads.
-  const [dictationOrigin, setDictationOrigin] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   // #2823: shortcut-opened overlay state — DISTINCT from the #2819 `engaged`
   // grid-reveal. `open` is TRUE only when the launcher was summoned by Ctrl+Space
@@ -513,9 +449,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const [holdArmed, setHoldArmed] = useState(false);
   const [holdPending, setHoldPending] = useState(false);
   // R-2.1 / contract 4c — the promise placeholder is offered only when the whole
-  // precondition is available (voice on + FAIL-CLOSED model readiness + not busy).
-  // Readiness unknown ⇒ no promise is made and Space stays natively ordinary.
-  const holdAvailable = voiceEnabled && sttModel.ready && !companionReplying;
+  // precondition is available (voice on + not busy). Spec #2914 ST-5 (R-3): the
+  // sherpa model-readiness term is gone — the gesture is gated on `voiceEnabled`
+  // alone and the backend owns start-time degradation.
+  const holdAvailable = voiceEnabled && !companionReplying;
   // Spec #2887 ST-7 (R-3/AC3) — the ONE honest cue, derived from the pure
   // `deriveHoldCue` rule (see its doc). It replaces the shipped
   // `holdArmed`/`holdPending` pair at the bar: `'listening'` is reachable ONLY
@@ -526,13 +463,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     captureLive,
     armed: holdArmed,
     pending: holdPending,
-    engineResident: voice.engineResident,
   });
-  // R-2.5.6 (AC3) — a hold-origin start failure is SILENT (no alert, no error
-  // text). Muted from the moment the hold starts the engine and re-armed when the
-  // next gesture arms, so a failure arriving with NO hold start in flight (the
-  // app-global `stt:state` channel — the DR-11 lever) still surfaces the copy.
-  const [holdFailureMuted, setHoldFailureMuted] = useState(false);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdPendingCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdArmedRef = useRef(false);
@@ -547,21 +478,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // on its rise edge. `stt_stop`/`stt_cancel` with NO active session is a silent
   // no-op (session.rs:357-388), so without this the microphone stays hot.
   const cancelOnLiveRef = useRef(false);
-  // R-2.5 — a blur stop keeps the words but must never trigger the autosend commit.
-  const suppressAutosendOnceRef = useRef(false);
   // R-2.5 — one blur stop per gesture (the input's focusout and a `window` blur
   // can both report the same gesture).
   const blurStopIssuedRef = useRef(false);
-  // Spec #2887 ST-7 (R-5e) — the session-scoped provenance of the END-of-session
-  // finalize. `holdSessionRef` records that THIS session rose from an armed hold
-  // (the threshold-crossed gesture — the only launcher capture entry point), and
-  // `releaseFinalizeRef` records that the session ended by the user's RELEASE
-  // (the finalize gesture) rather than a blur or a cancel. Together they let the
-  // no-produced-final branch tell a word-less HOLD apart from a programmatic /
-  // silent session: only the former lands the one ordinary space. Both are
-  // re-assigned at every session start, so they can never leak across sessions.
-  const holdSessionRef = useRef(false);
-  const releaseFinalizeRef = useRef(false);
 
   // The gesture's two bounded timers — always cleared together (no leaked timer).
   const clearHoldTimers = useCallback(() => {
@@ -600,8 +519,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     holdTimerRef.current = setTimeout(() => {
       holdTimerRef.current = null;
       thresholdCrossedRef.current = true;
-      // From here any failure belongs to this hold-origin start: silent (AC3).
-      setHoldFailureMuted(true);
       // S2 — the pending chip appears only if the engine start outlives the
       // bounded cue window (Doherty: the loop must never look dead).
       holdPendingCueTimerRef.current = setTimeout(() => {
@@ -614,10 +531,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   }, [startVoice]);
 
   // R-2.5 (QA-9 CLOSED) — a blur during a hold/capture is a STOP, never a
-  // discard: the capture stops, the microphone is released, the recognized words
-  // are KEPT in the bar as a dictated transcript, and the autosend commit is
-  // SUPPRESSED (a release is the send consent; a blur is not). Discard + restore
-  // applies ONLY to an explicit cancel (Escape / the visible `×`).
+  // discard: the capture stops and the microphone is released. Spec #2914 ST-5 —
+  // with no transcript there is nothing to keep or autosend; the bar text is
+  // never touched by a blur. Discard + restore applies ONLY to an explicit cancel
+  // (Escape / the visible `×`).
   const stopCaptureOnBlur = useCallback(() => {
     if (blurStopIssuedRef.current) return;
     const live = launcherActiveRef.current;
@@ -629,7 +546,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (live) {
       // The trailing keyup must not write a space or re-issue a stop.
       holdDisarmedRef.current = true;
-      suppressAutosendOnceRef.current = true;
       resetHoldGesture();
       void stopVoice();
       return;
@@ -708,13 +624,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     setEngaged(false);
   }, []);
 
-  // Spec #2882 ST-4 — the ONE provenance writer. The ref is assigned synchronously
-  // so a commit path running in the SAME commit as the write reads the new value.
-  const setBarOrigin = useCallback((dictated: boolean) => {
-    dictationOriginRef.current = dictated;
-    setDictationOrigin(dictated);
-  }, []);
-
   // #2854 ST-4: a feature-tile open fires the mascot's bounded `happy` beat. A
   // SINGLE cleared `setTimeout` (never doubled) — cleared on re-trigger and on
   // unmount, so no timer can leak (AGENTS.md #523 — no re-render loops). The
@@ -752,13 +661,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     openRef.current = true;
     setOpen(true);
     setEngaged(true);
-    // ST-3 contract — the summon path re-probes model readiness (bounded,
-    // coalesced, and a no-op while voice is disabled).
-    sttModel.refresh();
-    // Spec #2887 ST-7 (ST-6 contract) — and re-arms the engine residency on the
-    // same summon edge. Idempotent + single-flight + no-op while disabled or
-    // not-ready + silent on failure: it can never block or duplicate the load.
-    sttWarm.warmNow();
     window.requestAnimationFrame(() => {
       // Guard against a within-frame close (rapid double-press): only touch the
       // searchbox if the overlay is STILL open (openRef is read live, not captured).
@@ -776,7 +678,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         input.setSelectionRange(end, end);
       }
     });
-  }, [sttModel.refresh, sttWarm.warmNow]);
+  }, []);
 
   // #2823: close (ESC / toggle-off) — drop the overlay to resting (closeSurface) AND
   // restore focus to the pre-open element ONLY if focus was actually inside the
@@ -849,7 +751,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const action = resolveEnterAction({
       query,
       entries: filteredEntries,
-      textOrigin: dictationOrigin ? 'dictated' : 'typed',
+      // Spec #2914 ST-5 — with no dictation there is no dictated provenance: bar
+      // content is always typed (the resolver's `dictated` branch stays for its
+      // own contract tests, but the shell never produces it).
+      textOrigin: 'typed',
       companionActive,
       captureLive,
     });
@@ -859,14 +764,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const enterMode: LauncherEnterMode =
       action.kind === 'launch' ? 'launch' : action.kind === 'send' ? 'send' : 'none';
     return { enterMode, hintLabel };
-  }, [
-    query,
-    filteredEntries,
-    dictationOrigin,
-    companionActive,
-    companionReplying,
-    captureLive,
-  ]);
+  }, [query, filteredEntries, companionActive, companionReplying, captureLive]);
 
   // Spec #2882 ST-5-fix (UI/UX §7) — the accent-highlighted tile follows the
   // top-ranked rule match, so the tile the grid highlights is the SAME app the chip
@@ -988,13 +886,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     // stale-mirror phantom-dispatch class).
     barTextRef.current = '';
     setQuery('');
-    // Spec #2882 ST-4 — minimize clears the bar, so the content provenance is
-    // reset with it (declared data contract).
-    setBarOrigin(false);
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(NOTCH_SELECTOR)?.focus();
     });
-  }, [closeSurface, setBarOrigin]);
+  }, [closeSurface]);
 
   // #2871 ST-2 — the ONE tile-open path (close overlay → mascot happy beat →
   // full-lifecycle opener). Shared by the filtered selection, a grid click, and
@@ -1017,11 +912,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     launchFeature(feature);
   }, [filteredEntries, safeSelectedIndex, launchFeature]);
 
-  // Spec #2882 ST-4 — the ONE commit path, shared by the Enter handler and the
-  // autosend finalize effect (never a second dispatch route — G-149). It reads
-  // ST-1's `resolveEnterAction` — the SAME verdict the hint chip renders — so the
-  // promise and the act cannot disagree (R-6.3). The caller supplies the content
-  // PROVENANCE (`origin`), which decides whether a launch is even possible.
+  // Spec #2882 ST-4 — the ONE commit path (never a second dispatch route —
+  // G-149). It reads ST-1's `resolveEnterAction` — the SAME verdict the hint chip
+  // renders — so the promise and the act cannot disagree (R-6.3).
+  //
+  // Spec #2914 ST-5 — the shell has ONE speech path and no transcript, so bar
+  // content is always TYPED (`textOrigin: 'typed'`); the dictated-provenance
+  // branch is never produced here.
   //
   // Superseded by this spec (binding contract point 3):
   //   • the `companionBusy` GLOBAL no-op → retired in #2882 ST-4; #2892 ST-5
@@ -1029,17 +926,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   //     launches and a typed non-match with an active companion always sends —
   //     even while Fredo is replying (AC5/REQ-2);
   //   • the non-empty non-match `openSelected()` fall-through → retired (R-6.1):
-  //     unmatched typed text is sent or left alone, NEVER the substring tile;
-  //   • "a dictated exact tile name launches" (#2878) → retired (R-4.3): dictated
-  //     content is delivered or left alone, NEVER an app.
+  //     unmatched typed text is sent or left alone, NEVER the substring tile.
   // The EMPTY-query grid selection stays in the Enter handler (R-5.1) — it is not
   // a commit and never reaches here.
   const commitBarQuery = useCallback(
-    (raw: string, origin: EnterTextOrigin): 'launched' | 'sent' | 'queued' | 'none' => {
+    (raw: string): 'launched' | 'sent' | 'queued' | 'none' => {
       const action = resolveEnterAction({
         query: raw,
         entries: filteredEntries,
-        textOrigin: origin,
+        textOrigin: 'typed',
         companionActive,
       });
 
@@ -1058,7 +953,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         if (result && result.outcome !== 'rejected') {
           setQuery('');
           barTextRef.current = '';
-          setBarOrigin(false);
           setEngaged(false);
           return result.outcome === 'queued' ? 'queued' : 'sent';
         }
@@ -1068,12 +962,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // `none` (empty / no-match-no-companion): the bar keeps its content.
       return 'none';
     },
-    [
-      filteredEntries,
-      companionActive,
-      launchFeature,
-      setBarOrigin,
-    ],
+    [filteredEntries, companionActive, launchFeature],
   );
 
   const handleSelect = useCallback(
@@ -1085,48 +974,31 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [filteredEntries, launchFeature],
   );
 
-  const handleQueryChange = useCallback(
-    (q: string) => {
-      // #2878 ST-1 — synchronous mirror so the finalize commit reads the text the
-      // live-text effect wrote in this same commit (never a one-render-stale read).
-      barTextRef.current = q;
-      setQuery(q);
-      // A fresh filter restarts selection at the first tile.
-      setSelectedIndex(0);
-      // A present query reveals the grid (engaged) even without surface focus.
-      if (q.trim() !== '') setEngaged(true);
-      // Spec #2882 ST-4 (clarification #2) — the content stopped existing, so its
-      // provenance does too. A USER EDIT is not a reset (the text is still the
-      // dictated transcript); only a genuine emptying is.
-      if (q === '') setBarOrigin(false);
-    },
-    [setBarOrigin],
-  );
+  const handleQueryChange = useCallback((q: string) => {
+    // #2878 ST-1 — synchronous mirror so the release owner's ordinary-space write
+    // reads the current text in the same commit (never a one-render-stale read).
+    barTextRef.current = q;
+    setQuery(q);
+    // A fresh filter restarts selection at the first tile.
+    setSelectedIndex(0);
+    // A present query reveals the grid (engaged) even without surface focus.
+    if (q.trim() !== '') setEngaged(true);
+  }, []);
 
-  // Spec #2878 ST-1 (R-3.1/R-3.2) — the cancel/discard entry point: suppress the
-  // autosend commit for the ended session and restore the pre-session bar text.
-  // Called by the Escape branch, the bar's `×` cancel control, and the
-  // voice-disabled teardown BEFORE the session is stopped/cancelled. #2882 ST-4:
-  // a discard also resets the content PROVENANCE (declared data contract).
-  const suppressAutosendAndRestore = useCallback(() => {
-    cancelledRef.current = true;
-    setBarOrigin(false);
+  // Spec #2878 ST-1 (R-3.1/R-3.2) — the cancel/discard entry point: restore the
+  // pre-session bar text. Called by the Escape branch, the bar's `×` cancel
+  // control, and the voice-disabled teardown BEFORE the session is
+  // stopped/cancelled. Spec #2914 ST-5 — with no transcript the bar is never
+  // capture-written, so this is the shipped discard behaviour (a user edit made
+  // during the capture is restored with the rest).
+  const restorePreSessionBar = useCallback(() => {
     handleQueryChange(preSessionTextRef.current);
-  }, [handleQueryChange, setBarOrigin]);
+  }, [handleQueryChange]);
 
   // Spec #2882 ST-4 — keep the mounted-once listener's live-session mirror current.
   useEffect(() => {
     listeningRef.current = voice.listening;
   }, [voice.listening]);
-
-  // Spec #2882 ST-5 (R-2.5.6/AC3) — the failure mute lives exactly as long as the
-  // error it belongs to: it clears when the hook's error clears OUTSIDE a gesture
-  // (a new session / a successful start), so the NEXT start's failure can be muted
-  // again while a stale hold-origin error is never surfaced later. While a gesture
-  // is in flight the mute survives the start's optimistic error-clear.
-  useEffect(() => {
-    if (voice.errorCode === null && !holdArmedRef.current) setHoldFailureMuted(false);
-  }, [voice.errorCode]);
 
   // Spec #2877 ST-5 (DR-9) — disabling voice while a session is live stops it
   // immediately and releases the microphone (the backend's own `disabled` gate is
@@ -1134,45 +1006,26 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // state is read from the ref so this never re-fires per session tick.
   useEffect(() => {
     if (!voiceEnabled && listeningRef.current) {
-      // #2878 ST-1 — a voice-disabled teardown is a CANCEL: it suppresses the
-      // autosend commit and restores the pre-session bar text (R-3.1/R-3.2). It
-      // still STOPS the session (the #2877 behavior) and never autosends.
-      suppressAutosendAndRestore();
+      // #2878 ST-1 — a voice-disabled teardown is a DISCARD: it restores the
+      // pre-session bar text. It still STOPS the session (the #2877 behavior).
+      restorePreSessionBar();
       void stopVoice();
     }
-  }, [voiceEnabled, stopVoice, suppressAutosendAndRestore]);
+  }, [voiceEnabled, stopVoice, restorePreSessionBar]);
 
-  // Spec #2878 ST-1 — the launcher session lifecycle: the exactly-once guard's
-  // key (R-2.5/4.2). Declared BEFORE the live-text effect so the pre-session text
-  // and the committed baseline are captured before the transcript writer clears
-  // the bar. Primitive deps only (AGENTS.md #523 — never a raw render/identity).
+  // Spec #2878 ST-1 — the launcher session lifecycle: the gesture mirrors + the
+  // pre-session restore target. Primitive deps only (AGENTS.md #523 — never a raw
+  // render/identity). Spec #2914 ST-5 — the transcript bookkeeping and the
+  // autosend finalize are gone with the transcript path.
   useEffect(() => {
     const now = voice.listening && voice.origin === 'launcher';
     const was = launcherActiveRef.current;
     launcherActiveRef.current = now;
     if (now && !was) {
-      // Session start: reset every per-session guard and capture the restore
-      // target (R-3.2) + the committed baseline (the hook accumulates
-      // `committed` across sessions, so each utterance prints only its own text).
-      autosendFiredRef.current = false;
-      cancelledRef.current = false;
-      userEditedDuringSessionRef.current = false;
-      finalizePendingRef.current = false;
-      restoredAfterSessionRef.current = false;
-      // R-2.5 — a blur suppression is one-shot per session; a fresh session must
-      // never inherit a stale mute.
-      suppressAutosendOnceRef.current = false;
-      // R-5e — capture THIS session's provenance before the gesture refs are
-      // cleared by the release (the arm flag is still set while the capture is
-      // live; the release clears it in the same tick as the stop).
-      holdSessionRef.current = holdArmedRef.current;
-      releaseFinalizeRef.current = false;
+      // Session start: capture the restore target (R-3.2).
       preSessionTextRef.current = barTextRef.current;
-      sessionBaseCommittedRef.current = voice.committed;
-      prevCommittedRef.current = voice.committed;
       // Spec #2882 ST-5 — S2 → S3: the pending cue ends the moment the engine is
-      // live, and the gesture is now known to have gone live (so its release is a
-      // FINALIZE even if the session ends first).
+      // live, and the gesture is now known to have gone live.
       if (holdPendingCueTimerRef.current) {
         clearTimeout(holdPendingCueTimerRef.current);
         holdPendingCueTimerRef.current = null;
@@ -1183,194 +1036,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // Spec #2882 ST-5 (R-2.6) — the STALE-HOLD GUARD: the release landed BEFORE
       // the engine confirmed the start, so this late session is CANCELLED on its
       // rise edge (a no-op `stt_cancel` would leave the microphone hot — the
-      // privacy violation). The utterance is discarded (the hold never captured)
-      // and the one ordinary space the release already wrote is PRESERVED: the
-      // cancel suppresses the autosend commit AND the no-final restore.
+      // privacy violation). The one ordinary space the release already wrote is
+      // PRESERVED: the cancel never touches the bar.
       if (cancelOnLiveRef.current) {
         cancelOnLiveRef.current = false;
-        cancelledRef.current = true;
         void cancelVoice();
       }
-    } else if (was && !now) {
-      // Session end: arm the finalize commit. The commit effect below also runs
-      // on `voice.liveText` so a final transcript landing just after the
-      // `listening:false` state event still commits (the exactly-once witness
-      // lives in `autosendFiredRef`). ST-1r — the commit EVIDENCE is derived in
-      // the finalize effect from the session-scoped `committed` delta, never
-      // from the bar mirror.
-      finalizePendingRef.current = true;
     }
-  }, [voice.listening, voice.origin, voice.committed, cancelVoice]);
-
-  // Spec #2877 ST-5 / #2878 ST-1+ST-2 — live transcript → the EXISTING controlled
-  // bar input, LAUNCHER-origin sessions only. Writes the session-scoped
-  // `committed + partial` through the one `handleQueryChange` path (never a second
-  // input, never a submit, never grid navigation); a companion-origin session
-  // never writes into the bar. Two #2878 guards:
-  //   • R-3.1 — a cancelled session's late transcript never re-writes the bar
-  //     (the restore wins until the next session start).
-  //   • UX-2 — after the first manual keystroke during a live segment, partial
-  //     writes stop for the session; a later FINAL segment still appends.
-  // Spec #2882 ST-4 (R-4.3, clarification #2) — a write that carries a committed
-  // FINAL for this session marks the bar's content as DICTATED. The evidence rule
-  // is the #2878 one (`committed` grew past the session baseline); a partial-only
-  // session never flips provenance, and a LATER USER EDIT never clears it.
-  useEffect(() => {
-    // Spec #2897 ST-4 (REQ-3) — model-audio mode has NO transcript: this effect is
-    // the transcript → bar write path, so it is short-circuited at the SOURCE
-    // (BEFORE the `voice.origin` check) and the bar keeps the pre-session typed
-    // text. A model-audio session emits no `stt:transcript` at all (ST-2 opens no
-    // recogniser); this guard is the belt-and-braces that no transcript-shaped
-    // event can ever reach the bar while the method is `'model'`.
-    if (modelVoice) return;
-    if (voice.origin !== 'launcher') return;
-    if (cancelledRef.current) return;
-    const prevCommitted = prevCommittedRef.current;
-    prevCommittedRef.current = voice.committed;
-    const base = sessionBaseCommittedRef.current;
-    if (voice.committed.startsWith(base) && voice.committed.length > base.length) {
-      setBarOrigin(true);
-    }
-    if (userEditedDuringSessionRef.current) {
-      const grew =
-        voice.committed.startsWith(prevCommitted) &&
-        voice.committed.length > prevCommitted.length;
-      if (!grew) return; // suppress partial-only writes
-      const segment = voice.committed.slice(prevCommitted.length).trim();
-      if (segment) handleQueryChange(joinBarText(barTextRef.current, segment));
-      return;
-    }
-    const scoped =
-      base && voice.committed.startsWith(base)
-        ? voice.committed.slice(base.length).trimStart()
-        : voice.committed;
-    handleQueryChange(joinBarText(scoped, voice.partial));
-  }, [voice.origin, voice.liveText, voice.committed, handleQueryChange, setBarOrigin, modelVoice]);
-
-  // Spec #2877 ST-5 (DR-10) — the newest FINAL segment, derived from the hook's
-  // append-only `committed` text (a final APPENDS its segment; a partial only ever
-  // lives in `partial`, so it can never reach this). It feeds the transcript
-  // announcer, which must never announce a partial.
-  const [finalTranscript, setFinalTranscript] = useState('');
-  const committedRef = useRef('');
-  useEffect(() => {
-    const next = voice.committed;
-    const prev = committedRef.current;
-    committedRef.current = next;
-    if (next.length <= prev.length || !next.startsWith(prev)) return;
-    const segment = next.slice(prev.length).trim();
-    if (segment) setFinalTranscript(segment);
-  }, [voice.committed]);
-
-  // Spec #2878 ST-1r (R-2.5/R-2.6/R-4.2/R-5.1) — the autosend finalize commit.
-  // Fires once on the `launcher`-origin session's END transition (the
-  // `listening:false` state event), reads the CURRENT bar text, and is a one-shot
-  // per session. It depends on `voice.liveText` as well as `listening` so a final
-  // transcript landing just after the state event still commits. #2892 ST-5: a
-  // finalize while a reply generation is in flight is ACCEPTED like any other send
-  // (the entity queues or interrupts per the persisted disposition) — the old
-  // busy hard-drop is retired (R-2.4/R-4.2 superseded by REQ-2/REQ-5).
-  //
-  // The commit EVIDENCE is session-scoped, never the bar mirror: the session is
-  // committable iff its own `voice.committed` FINAL text grew past the baseline
-  // captured at session start. Guarding on a committed FINAL (never `partial`) is
-  // exactly what separates Stop from Cancel at the source, so any DOM↔mirror
-  // divergence can never become a phantom dispatch (the #2878 round-2 defect).
-  useEffect(() => {
-    // Spec #2897 ST-4 (REQ-3/REQ-4) — model-audio mode owns delivery in the BACKEND
-    // (the clip is the turn's input). This finalize/restore/autosend effect must do
-    // NOTHING there: no `spaceWriteForVerdict` space, no pre-session restore, no
-    // `commitBarQuery`. Clearing the pending flag keeps a mid-session mode switch
-    // from arming a stale finalize for a later local session.
-    if (modelVoice) {
-      finalizePendingRef.current = false;
-      return;
-    }
-    if (!finalizePendingRef.current) return;
-    if (voice.origin !== 'launcher' || voice.listening) return;
-    if (cancelledRef.current) {
-      // R-3.1 — a cancel suppresses the commit (the restore already happened).
-      finalizePendingRef.current = false;
-      return;
-    }
-    // ST-1r (E-1) — an end carrying a typed error (device loss / failure) is a
-    // CANCEL: restore the pre-session text once, never commit. The shipped wire
-    // cannot distinguish a backend cancel from a stop, so the committed-final
-    // evidence below closes the silent/partial gap while this guard covers the
-    // typed-error end.
-    if (voice.errorCode !== null) {
-      finalizePendingRef.current = false;
-      if (!restoredAfterSessionRef.current) {
-        restoredAfterSessionRef.current = true;
-        handleQueryChange(preSessionTextRef.current);
-      }
-      return;
-    }
-    // ST-1r — the append-only, session-scoped evidence rule (same as the
-    // live-text effect): only a FINAL that grew `committed` past this session's
-    // baseline is committable. A partial alone never commits.
-    const base = sessionBaseCommittedRef.current;
-    const hasCommittedFinal =
-      voice.committed.startsWith(base) && voice.committed.length > base.length;
-    if (!hasCommittedFinal) {
-      // R-3.2 — a finalize that produced no recognized text restores the
-      // pre-session text ONCE per session, then STAYS armed: a final may still be
-      // in flight (the effect re-runs on the `voice.committed`/`voice.liveText`
-      // deps). The once-guard stops a later manual edit being clobbered.
-      if (!restoredAfterSessionRef.current) {
-        restoredAfterSessionRef.current = true;
-        // Spec #2887 ST-7 (R-5e) — a threshold-crossed launcher HOLD that WENT
-        // LIVE and committed NO final transcript captured nothing instead of
-        // typing the character the user's press would have typed. Generalized
-        // from the shipped tap / never-live rules: exactly ONE ordinary space
-        // lands, through the ordinary typed path, ONCE per session (the same
-        // once-guard as the restore — a later manual edit is never clobbered).
-        // The now-instant resident engine is what makes this case real, so this
-        // is the guard that keeps an intended space from becoming a lost
-        // character. A BLUR is not a release (`releaseFinalizeRef`) and a cancel
-        // never reaches here, so both keep the shipped restore-only behaviour.
-        if (holdSessionRef.current && releaseFinalizeRef.current) {
-          handleQueryChange(preSessionTextRef.current + spaceWriteForVerdict('no-words-space'));
-          return;
-        }
-        handleQueryChange(preSessionTextRef.current);
-      }
-      return;
-    }
-    // The finalize decision is made from here on — never re-arm (including the
-    // empty-text branch below), so a post-session manual edit can never be
-    // auto-dispatched.
-    finalizePendingRef.current = false;
-    const text = barTextRef.current.trim();
-    if (text === '') return;
-    if (!voiceAutosend) return; // R-2.6 — autosend OFF: text stays, no dispatch.
-    // Spec #2882 ST-5 (R-2.5) — this is the ONLY addition to the finalize effect:
-    // a BLUR stop keeps the recognized words but must never dispatch them (a
-    // release is the send consent, a blur is not). One-shot, and it sits AFTER the
-    // session-scoped evidence rule (which is untouched) and BEFORE the commit, so
-    // a suppressed finalize can never be replayed or double-counted.
-    if (suppressAutosendOnceRef.current) {
-      suppressAutosendOnceRef.current = false;
-      return;
-    }
-    if (autosendFiredRef.current) return;
-    autosendFiredRef.current = true;
-    // Spec #2882 ST-4 (R-4.1/clarification #2) — a finalize commit is ALWAYS a
-    // capture's transcript, so its provenance is `dictated` by construction: the
-    // autosend path delivers to Fredo and can NEVER open an app, whatever the
-    // transcript spells.
-    commitBarQuery(text, 'dictated');
-  }, [
-    voice.listening,
-    voice.origin,
-    voice.liveText,
-    voice.committed,
-    voice.errorCode,
-    voiceAutosend,
-    commitBarQuery,
-    handleQueryChange,
-    modelVoice,
-  ]);
+  }, [voice.listening, voice.origin, cancelVoice]);
 
   // ── Spec #2897 ST-6 (REQ-5 end-to-end) — the model-audio delivery glue ──────
   // Nothing wired ST-2's clip command, ST-3's transport and ST-4's `processing`
@@ -1414,11 +1087,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   }, []);
 
   useEffect(() => {
-    if (!modelVoice) {
-      modelAudioDispatchRef.current = 'idle';
-      setModelAudioFailure(null);
-      return;
-    }
     if (voice.modelAudioPhase === 'capturing') {
       // A NEW capture began: re-arm the once-per-session guard and clear the
       // previous turn's failure.
@@ -1430,7 +1098,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     if (modelAudioDispatchRef.current === 'dispatched') return;
     modelAudioDispatchRef.current = 'dispatched';
     void dispatchModelAudioTurn();
-  }, [modelVoice, voice.modelAudioPhase, dispatchModelAudioTurn]);
+  }, [voice.modelAudioPhase, dispatchModelAudioTurn]);
 
   // ── Spec #2897 round 2 (R2-1, F-104) — the model-audio TURN-COMPLETION overlay ─
   // The STT plane is silent after the stop commits `processing` (`session.rs`
@@ -1447,9 +1115,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const [modelAudioTurnSettled, setModelAudioTurnSettled] = useState(false);
   const modelAudioReplyStartedRef = useRef(false);
   useEffect(() => {
-    if (!modelVoice || voice.modelAudioPhase !== 'processing') {
-      // A new `capturing` session, a cancel's `phase:null`, or mode-off re-arms:
-      // the next session is never pre-settled.
+    if (voice.modelAudioPhase !== 'processing') {
+      // A new `capturing` session or a cancel's `phase:null` re-arms: the next
+      // session is never pre-settled.
       modelAudioReplyStartedRef.current = false;
       setModelAudioTurnSettled(false);
       return;
@@ -1470,7 +1138,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // `llm-done` (or the `llm-error` / watchdog settle) — the turn completed.
       setModelAudioTurnSettled(true);
     }
-  }, [modelVoice, voice.modelAudioPhase, replyInFlight, modelAudioFailure]);
+  }, [voice.modelAudioPhase, replyInFlight, modelAudioFailure]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1488,9 +1156,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           resetHoldGesture();
           if (mayStart) cancelOnLiveRef.current = true;
           // A session that raced in before/at the Escape still takes the existing
-          // cancel path (suppress the autosend commit, restore the draft).
+          // cancel path (restore the draft).
           if (listeningRef.current) {
-            suppressAutosendAndRestore();
+            restorePreSessionBar();
             // S4 — a genuinely live discard announces `Dictation cancelled`.
             signalCancel();
           }
@@ -1501,10 +1169,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // FIRST (the launcher stays open, the text is kept); otherwise Escape
         // keeps today's exact behavior (shortcut-open → closeOverlay with
         // focus-origin restore; non-shortcut → idle collapse).
-        // #2878 ST-1 — set the cancel guard BEFORE `cancel()` so the autosend
-        // commit is suppressed and the pre-session text is restored (R-3.1/3.2).
+        // #2878 ST-1 — restore the pre-session text before `cancel()` (R-3.2).
         if (listeningRef.current) {
-          suppressAutosendAndRestore();
+          restorePreSessionBar();
           // S4 — Escape while live: announce `Dictation cancelled`, never the
           // S3 `Stopped listening` (UI/UX §4).
           signalCancel();
@@ -1550,8 +1217,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       // in ST-1's `resolveEnterAction` (the SAME verdict the chip renders):
       //   empty query          → today's launch of the selected tile (never a send);
       //   live capture         → NOTHING (ST-5-fix QA-10 — no launch, no send, no
-      //                          mutation of the bar: the live text is provisional);
-      //   dictated content     → deliver to Fredo or nothing — NEVER an app (R-4.3);
+      //                          mutation of the bar: the capture is provisional);
       //   typed + app match    → open it, INDEPENDENT of the companion / busy (AC5);
       //   typed, no match      → send when an active companion accepts, else nothing
       //                          (R-6.1 — the retired `openSelected()` fall-through).
@@ -1576,7 +1242,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         const verdict = resolveEnterAction({
           query,
           entries: filteredEntries,
-          textOrigin: dictationOriginRef.current ? 'dictated' : 'typed',
+          textOrigin: 'typed',
           companionActive,
           captureLive,
         });
@@ -1593,11 +1259,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           openSelected();
           return;
         }
-        // #2878 ST-1 — the SAME commit path the autosend finalize uses (one
-        // dispatch route — G-149). The content PROVENANCE comes from the
-        // synchronous ref, so a transcript written earlier in this commit is
-        // already `dictated` (clarification #2).
-        commitBarQuery(q, dictationOriginRef.current ? 'dictated' : 'typed');
+        // #2878 ST-1 — the ONE commit path (one dispatch route — G-149). Spec
+        // #2914 ST-5 — bar content is always typed (there is no dictation).
+        commitBarQuery(q);
         return;
       }
 
@@ -1627,9 +1291,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           isBarInputTarget:
             isBarFieldTag(spaceTarget) && spaceTarget.getAttribute('role') === 'searchbox',
           queryIsEmpty: query === '',
-          // The persisted enablement + ST-3's fail-closed readiness probe: unknown
-          // readiness ⇒ NOT armed ⇒ Space stays natively ordinary (contract 4c).
-          voiceUsable: voiceEnabled && sttModel.ready,
+          // Spec #2914 ST-5 (R-3) — the persisted enablement is the WHOLE arming
+          // gate. The deleted sherpa readiness probe no longer withholds the
+          // gesture; the backend capability gate owns start-time degradation.
+          voiceUsable: voiceEnabled,
           // #2892 ST-5 — the hold precondition uses the SAME `replyInFlight`
           // primitive as `holdAvailable` (the promise placeholder), so the offer
           // and the actual arm can never disagree.
@@ -1701,12 +1366,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       open,
       closeOverlay,
       cancelVoice,
-      suppressAutosendAndRestore,
+      restorePreSessionBar,
       armHold,
       resetHoldGesture,
       signalCancel,
       voiceEnabled,
-      sttModel.ready,
     ],
   );
 
@@ -1780,14 +1444,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       resetHoldGesture();
 
       if (verdict === 'finalize') {
-        // R-2.3 — stop listening. The backend emits the final, the existing
-        // live-text effect lands it as ordinary editable text, and the existing
-        // finalize effect decides delivery (R-4.1/R-4.2). NO space is inserted.
-        // Spec #2887 ST-7 (R-5e) — the RELEASE is the finalize gesture: mark it
-        // so a word-less hold lands exactly one ordinary space when the finalize
-        // effect finds no committed final. A blur/cancel never sets this (it is
-        // not a release), so their shipped behaviour is untouched.
-        releaseFinalizeRef.current = true;
+        // R-2.3 — stop listening. Spec #2914 ST-5 — the model-audio turn is
+        // delivered by the backend-owned clip glue on the resulting `processing`
+        // phase; the bar is never transcript-written, so NO space is inserted.
         void stopVoice();
         return;
       }
@@ -1892,25 +1551,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   }, []);
 
   // ── Spec #2897 ST-6 (REQ-7) — the degradation surface ──────────────────────
-  // In model mode a failed start / failed delivery surfaces the curated
-  // model-audio copy. It is deliberately NOT muted by the hold-origin silence
-  // rule: there is no typed word to lose and REQ-7 requires the user be told.
-  // The inline `Use local transcription` action is offered ONLY for a
-  // model-audio failure, so every other voice error keeps the shipped text-only
-  // alert. Switching modes clears the client-side failure (the persisted setting
-  // flip is the user's explicit consent).
-  const isModelAudioWireCode = isModelAudioFailureCode(voice.errorCode);
-  const voiceErrorMessage = modelVoice
-    ? (modelAudioFailureCopy(modelAudioFailure) ?? voiceStartErrorCopy(voice.errorCode))
-    : holdFailureMuted || isModelAudioWireCode
-      ? null
-      : voiceStartErrorCopy(voice.errorCode);
-  const modelAudioAlert =
-    modelVoice && (modelAudioFailure !== null || isModelAudioWireCode);
-  const handleUseLocalTranscription = useCallback(() => {
-    setModelAudioFailure(null);
-    setVoiceHandling('local');
-  }, [setVoiceHandling]);
+  // A failed start / failed delivery surfaces the curated model-audio copy. It
+  // is deliberately NOT muted: there is no typed word to lose and REQ-7 requires
+  // the user be told. Spec #2914 ST-5 — the inline `Use local transcription`
+  // fallback is GONE (there is no local path to switch to), so this is a
+  // text-only `role="alert"`.
+  const voiceErrorMessage =
+    modelAudioFailureCopy(modelAudioFailure) ?? voiceStartErrorCopy(voice.errorCode);
 
   return (
     <>
@@ -2025,10 +1672,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // Spec #2887 ST-7 (R-3/AC3) — the ONE derived honest cue replaces the
             // shipped `holdArmed`/`holdPending` pair: `'acknowledge'` at the
             // keydown edge, the bounded `starting voice input…` chip
-            // (`'starting'`/launch-window `'warming'`) once the pending window
-            // outlives `HOLD_PENDING_CUE_MS`, and `'listening'` ONLY while the
-            // capture is genuinely live. One indicator at a time (the bounded chip
-            // and the Listening chip share the slot).
+            // (`'starting'`) once the pending window outlives
+            // `HOLD_PENDING_CUE_MS`, and `'listening'` ONLY while the capture is
+            // genuinely live. One indicator at a time (the bounded chip and the
+            // Listening chip share the slot).
             cue={holdCue}
             holdAvailable={holdAvailable}
             // #2878 ST-2 (AC3 resolution) — the Stop control is the FINALIZE/commit
@@ -2040,7 +1687,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
               holdDisarmedRef.current = true;
               blurStopIssuedRef.current = true;
               resetHoldGesture();
-              suppressAutosendAndRestore();
+              restorePreSessionBar();
               // S4 — the visible `×` discards a LIVE session: the bar announces
               // `Dictation cancelled` and suppresses `Stopped listening`.
               signalCancel();
@@ -2049,28 +1696,13 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // Spec #2887 follow-up (UI/UX §4) — the S4 cancel transition (Escape /
             // `×`) the bar's live region consumes. Bumped only for a live cancel.
             cancelSignal={cancelSignal}
-            // #2878 ST-2 (UX-2) — the user corrected the bar during a live
-            // segment: stop partial writes for the session (finals still append).
-            onUserEdit={() => {
-              userEditedDuringSessionRef.current = true;
-            }}
-            // Spec #2882 ST-5 (R-2.5.6/AC3) — a HOLD-origin start failure is
-            // SILENT: no alert, no error text (exactly one ordinary space lands on
-            // the release). A failure that arrives with no hold start in flight —
-            // the app-global `stt:state` channel — still surfaces the curated copy.
+            // Spec #2897 ST-6 (REQ-7) — a failed start / failed delivery surfaces
+            // the curated model-audio copy. Spec #2914 ST-5 — the inline
+            // `Use local transcription` action is GONE: there is no local path.
             voiceErrorMessage={voiceErrorMessage}
-            // Spec #2897 ST-6 (REQ-7) — the inline one-click fallback to local
-            // transcription; supplied only for a model-audio failure alert.
-            voiceErrorAction={
-              modelAudioAlert
-                ? { label: 'Use local transcription', onClick: handleUseLocalTranscription }
-                : null
-            }
-            // Spec #2897 ST-4 (REQ-3) — model-audio mode renders the model indicator
-            // (via `deriveModelAudioPhase`) and NEVER feeds the transcript announcer
-            // a segment: `''` is passed explicitly (the source effect is also gated),
-            // so `voice-transcript-announcer` stays mounted but empty.
-            voiceMode={voiceHandling}
+            // Spec #2914 ST-5 (R-4) — ONE speech path: the bar renders the
+            // model-audio indicator and NEVER feeds the transcript announcer —
+            // `voice-transcript-announcer` stays mounted but empty.
             modelAudioPhase={voice.modelAudioPhase}
             // Spec #2897 round 2 (R2-1, F-104) — the derived turn-completion
             // overlay: once the dispatched audio turn's generation settles the
@@ -2084,7 +1716,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // notice; `limitReached` is the auto-stop's warning signal.
             modelAudioLimitMs={voice.modelAudioLimitMs}
             limitReached={voice.limitReached}
-            finalTranscript={modelVoice ? '' : finalTranscript}
             voiceEnabled={voiceEnabled}
             ariaLabel={companionActive ? 'Search, launch, or message Fredo' : 'Search or command'}
             ariaDescribedBy="fredo-command-hint"

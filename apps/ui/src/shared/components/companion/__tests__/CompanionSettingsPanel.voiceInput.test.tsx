@@ -1,26 +1,22 @@
 /**
- * CompanionSettingsPanel — #2876 ST-5 voice input group + optional STT setup step,
- * refreshed for #2877 ST-4 (the extracted `VoiceInputSettings` group).
+ * CompanionSettingsPanel — the voice input group host (refreshed by #2914 ST-3).
  *
  * Proves the observable contract without a Tauri host:
- *   1. the READY branch renders a "Voice input" group with an opt-in toggle that
- *      DEFAULTS to false and persists `Fredo_companion_voice_enabled` on change;
- *   2. the STT model NEVER gates companion chat — the controls still render when
- *      `stt_check_model` is unavailable (the readiness gate keeps exactly today's
- *      inputs: backend readiness + a healthy managed server);
- *   3. the optional `sttModel` step is rendered in a separate OPTIONAL group and is
- *      EXCLUDED from the wizard's `installed/total` summary.
- *
- * #2877 ST-4 extensions (added, never weakening the pins above):
- *   4. the voice group renders INSIDE the existing Companion section — no new
+ *   1. the READY branch renders the reduced "Voice input" group with the opt-in
+ *      toggle DEFAULTING to false and persisting `Fredo_companion_voice_enabled`;
+ *   2. the voice group renders INSIDE the existing Companion section — no new
  *      settings nav item and no dedicated Voice section;
- *   5. the model row shows the resolved location on ready, the engine status line
- *      and the one persistent settings live region;
- *   6. the device selector + autosend switch render under the same group and
- *      persist their values (`Fredo_companion_voice_device_id`,
- *      `Fredo_companion_voice_autosend`);
- *   7. #2882 ST-7 re-points the enable label/help onto the hold-Space gesture —
- *      the retired Ctrl+Space dictation shortcut is gone from the copy.
+ *   3. the model-audio capability row + the device selector + the one persistent
+ *      settings live region render under that group, and the device choice
+ *      persists (`Fredo_companion_voice_device_id`);
+ *   4. the STT model never gates companion chat — the controls still render when
+ *      the probe is unavailable;
+ *   5. AC1 (negative): none of the removed local affordances (handling selector,
+ *      STT model row/download, autosend toggle, engine-status line) render.
+ *
+ * The wizard's `sttModel` step removal is ST-4's slice; this file also pins that
+ * the step is ABSENT and the required-step summary counts only the GGUF/server
+ * prerequisites.
  */
 
 import React from 'react';
@@ -32,7 +28,6 @@ import {
   CompanionProvider,
   useCompanion,
   VOICE_ENABLED_SETTING_KEY,
-  VOICE_AUTOSEND_SETTING_KEY,
   VOICE_DEVICE_ID_SETTING_KEY,
 } from '@/shared/contexts/CompanionContext';
 import { CompanionSettingsPanel } from '@/shared/components/companion/CompanionSettingsPanel';
@@ -40,11 +35,7 @@ import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type {
   CompanionReadiness,
   LlamaServerStatus,
-  ModelFileId,
-  ModelFileStatus,
-  ModelFileState,
   SttDevicesResult,
-  SttModelStatus,
 } from '@/shared/components/companion/companionReadiness';
 
 const bothInstalled: CompanionReadiness = {
@@ -96,25 +87,18 @@ function healthyServer(): LlamaServerStatus {
   };
 }
 
-const STT_IDS = ['sttTokens', 'sttEncoder', 'sttDecoder', 'sttJoiner'] as const;
-
-function sttFile(id: ModelFileId, state: ModelFileState): ModelFileStatus {
+/** Server present but not started — composes the third REQUIRED step. */
+function notRunningServer(): LlamaServerStatus {
   return {
-    id,
-    filename: `${id}.bin`,
-    relativePath: `${id}.bin`,
-    state,
-    downloadedBytes: state === 'present' ? 10 : 0,
-    expectedBytes: 10,
-    detail: null,
-    path: state === 'present' ? `C:\\models\\${id}` : null,
+    running: false,
+    healthy: false,
+    port: null,
+    pid: null,
+    configPath: '',
+    logPath: '',
+    lastError: null,
   };
 }
-
-const sttReady: SttModelStatus = {
-  ready: true,
-  files: STT_IDS.map((id) => sttFile(id, 'present')),
-};
 
 const sttDevices: SttDevicesResult = {
   devices: [
@@ -131,6 +115,28 @@ function VoiceProbe() {
   return <div data-testid="voice-probe" data-enabled={String(voiceEnabled)} />;
 }
 
+/** The removed local affordances that must NEVER render (AC1, G-187). */
+const REMOVED_VOICE_TESTIDS = [
+  'companion-voice-handling-row',
+  'companion-voice-handling-select',
+  'companion-voice-model-row',
+  'companion-voice-model-status',
+  'companion-voice-model-download',
+  'companion-voice-model-recheck',
+  'companion-voice-model-progress',
+  'companion-voice-model-location',
+  'companion-voice-model-audio-use-local',
+  'companion-voice-engine-status',
+  'companion-voice-autosend',
+] as const;
+
+function expectNoLocalAffordances(): void {
+  for (const testid of REMOVED_VOICE_TESTIDS) {
+    expect(screen.queryByTestId(testid)).toBeNull();
+  }
+  expect(screen.queryByRole('option', { name: 'Local transcription' })).toBeNull();
+}
+
 beforeEach(() => {
   localStorage.clear();
   delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
@@ -145,12 +151,11 @@ afterEach(() => {
   adapterBridge.setListen(undefined as never);
 });
 
-describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
-  it('renders the group in the ready branch with the toggle OFF by default and persists ON', async () => {
+describe('CompanionSettingsPanel voice input group (#2914 ST-3)', () => {
+  it('renders the reduced group in the ready branch with the toggle OFF by default and persists ON', async () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
-      if (command === 'stt_check_model') return sttReady;
       if (command === 'stt_list_devices') return sttDevices;
       return undefined;
     });
@@ -167,15 +172,18 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
       expect(screen.getByTestId('companion-controls')).toBeInTheDocument();
     });
 
-    // #2882 ST-7 re-pinned (G-125): the enable label teaches hold-Space, not the
-    // retired Ctrl+Space dictation shortcut.
+    // The enable label teaches hold-Space, not the retired Ctrl+Space shortcut.
     expect(screen.getByText('Hold Space to dictate')).toBeInTheDocument();
     expect(screen.queryByText('Dictate with Ctrl+Space')).toBeNull();
     // Opt-in / privacy-first: OFF until the user turns it on, nothing persisted.
     expect(screen.getByTestId('voice-probe').getAttribute('data-enabled')).toBe('false');
     expect(localStorage.getItem(VOICE_ENABLED_SETTING_KEY)).toBeNull();
-    // The model row shows the installed state.
-    expect(screen.getByTestId('companion-voice-model-download')).toHaveTextContent('Installed');
+
+    // The retained controls render; the removed local affordances do NOT.
+    expect(screen.getByTestId('companion-voice-model-audio-row')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-voice-device-select')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-voice-settings-announcer')).toBeInTheDocument();
+    expectNoLocalAffordances();
 
     fireEvent.click(screen.getByLabelText('Enable voice input'));
 
@@ -189,7 +197,7 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
-      return undefined; // stt_check_model unavailable
+      return undefined; // every STT probe unavailable
     });
     adapterBridge.setListen(async () => () => {});
 
@@ -203,15 +211,19 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
       expect(screen.getByTestId('companion-controls')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('companion-setup-wizard')).toBeNull();
-    expect(screen.getByTestId('companion-voice-model-download')).toHaveTextContent('Download');
+    // Voice still works: the retained group renders with a fail-closed verdict.
+    expect(screen.getByLabelText('Enable voice input')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-voice-model-audio-row')).toBeInTheDocument();
+    expectNoLocalAffordances();
   });
 
-  it('excludes the optional sttModel step from the wizard installed/total summary', async () => {
-    adapterBridge.setInvoke(async (command: string) => {
+  it('drops the sttModel wizard step and keeps the required-step summary unchanged', async () => {
+    const invoke = vi.fn(async (command: string) => {
       if (command === 'check_companion_readiness') return partiallyReady;
-      if (command === 'stt_check_model') return sttReady;
-      return undefined; // get_llama_server_status unavailable → serverLaunch not composed
+      if (command === 'get_llama_server_status') return notRunningServer();
+      return undefined;
     });
+    adapterBridge.setInvoke(invoke);
     adapterBridge.setListen(async () => () => {});
 
     renderWithChakra(
@@ -224,36 +236,38 @@ describe('CompanionSettingsPanel voice input group (#2876 ST-5)', () => {
       expect(screen.getByTestId('companion-setup-wizard')).toBeInTheDocument();
     });
 
-    // The summary counts REQUIRED steps only: 1 of 2 (llamaServer installed,
-    // modelFiles missing) — the installed optional sttModel must not appear.
+    // The summary counts the THREE required steps only (llamaServer installed,
+    // modelFiles missing, serverLaunch not started) — the removed STT model step
+    // never inflates the total.
     await waitFor(() => {
       expect(screen.getByTestId('companion-setup-summary')).toHaveTextContent(
-        '1 of 2 prerequisites ready',
+        '1 of 3 prerequisites ready',
       );
     });
-    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('1 of 3');
+    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('1 of 4');
 
-    // The optional step is rendered in its own explicitly-optional group.
-    expect(screen.getByTestId('companion-setup-optional')).toBeInTheDocument();
-    expect(screen.getByTestId('companion-step-stt-model')).toBeInTheDocument();
-    expect(screen.getByTestId('companion-step-stt-model')).toHaveAttribute(
-      'data-state',
-      'installed',
-    );
+    // #2914 ST-4 — the STT model step and its optional group are GONE.
+    expect(screen.queryByTestId('companion-step-stt-model')).toBeNull();
+    expect(screen.queryByTestId('companion-setup-optional')).toBeNull();
+    expect(screen.queryByText('Voice input model')).toBeNull();
+
+    // The removed STT-model commands are never invoked.
+    const commands = invoke.mock.calls.map((call) => call[0]);
+    expect(commands).not.toContain('stt_check_model');
+    expect(commands).not.toContain('download_stt_model');
 
     // The not-ready gate keeps rendering the wizard ONLY (no controls).
     expect(screen.queryByTestId('companion-controls')).toBeNull();
   });
 });
 
-// ── #2877 ST-4 — the extracted VoiceInputSettings group ──────────────────────
+// ── #2877 ST-4 / #2914 ST-3 — the extracted VoiceInputSettings group ─────────
 
-describe('CompanionSettingsPanel voice group placement + status (#2877 ST-4)', () => {
+describe('CompanionSettingsPanel voice group placement + status (#2914 ST-3)', () => {
   function renderReady() {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
       if (command === 'get_llama_server_status') return healthyServer();
-      if (command === 'stt_check_model') return sttReady;
       if (command === 'stt_list_devices') return sttDevices;
       return undefined;
     });
@@ -271,41 +285,30 @@ describe('CompanionSettingsPanel voice group placement + status (#2877 ST-4)', (
     const section = await screen.findByTestId('companion-controls');
     // The voice group lives in the existing Companion section.
     expect(within(section).getByText('Voice input')).toBeInTheDocument();
-    // #2882 ST-7 re-pinned (G-125) — the group still lives in the Companion section.
     expect(within(section).getByText('Hold Space to dictate')).toBeInTheDocument();
     // No dedicated Voice section heading was added anywhere.
     expect(screen.queryByRole('heading', { name: 'Voice' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Voice input' })).toBeNull();
   });
 
-  it('shows the resolved model location on ready + the engine status + settings live region', async () => {
+  it('shows the model-audio row + the settings live region (no model row / engine status)', async () => {
     renderReady();
 
     await screen.findByTestId('companion-controls');
     await waitFor(() => {
-      expect(screen.getByTestId('companion-voice-model-row')).toHaveAttribute(
-        'data-state',
-        'installed',
-      );
+      expect(screen.getByTestId('companion-voice-model-audio-row')).toBeInTheDocument();
     });
-    // AC2 — the resolved on-disk location (derived from the per-file paths).
-    await waitFor(() => {
-      expect(screen.getByTestId('companion-voice-model-location')).toHaveTextContent(
-        'C:\\models',
-      );
-    });
-    // R-1.3 — the engine status line is present and idle by default.
-    expect(screen.getByTestId('companion-voice-engine-status')).toHaveAttribute(
-      'data-state',
-      'idle',
-    );
+    // The removed local affordances are absent.
+    expect(screen.queryByTestId('companion-voice-model-row')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-model-location')).toBeNull();
+    expect(screen.queryByTestId('companion-voice-engine-status')).toBeNull();
     // DR-10 — one persistent polite live region for settings changes.
     const announcer = screen.getByTestId('companion-voice-settings-announcer');
     expect(announcer).toHaveAttribute('role', 'status');
     expect(announcer).toHaveAttribute('aria-live', 'polite');
   });
 
-  it('renders the device selector + autosend switch and persists their values', async () => {
+  it('renders the device selector and persists its value (autosend removed)', async () => {
     renderReady();
 
     const select = (await screen.findByTestId(
@@ -319,16 +322,9 @@ describe('CompanionSettingsPanel voice group placement + status (#2877 ST-4)', (
       expect(localStorage.getItem(VOICE_DEVICE_ID_SETTING_KEY)).toBe('Iriun Webcam');
     });
 
-    // Autosend defaults OFF and persists ON.
-    const autosend = screen.getByLabelText('Send voice transcripts automatically');
-    expect(autosend).not.toBeChecked();
-    expect(localStorage.getItem(VOICE_AUTOSEND_SETTING_KEY)).toBeNull();
-    fireEvent.click(autosend);
-    await waitFor(() => {
-      expect(localStorage.getItem(VOICE_AUTOSEND_SETTING_KEY)).toBe('true');
-    });
-    expect(
-      screen.getByText('Transcripts are sent as soon as you stop — no review.'),
-    ).toBeInTheDocument();
+    // #2914 ST-3 (R-1) — the transcript-only autosend switch is gone.
+    expect(screen.queryByTestId('companion-voice-autosend')).toBeNull();
+    expect(screen.queryByLabelText('Send voice transcripts automatically')).toBeNull();
+    expectNoLocalAffordances();
   });
 });

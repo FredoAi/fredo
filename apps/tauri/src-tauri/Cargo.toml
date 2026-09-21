@@ -56,14 +56,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-mcp-bridge = "0.12"
-# Voice input / STT — local, on-device transcription (see infrastructure/voice).
-# cpal 0.18 (native WASAPI capture) and sherpa-onnx 1.13.8 (pinned via `=`,
-# streaming zipformer decode) are the shipped production dependencies.
-# On Windows, sherpa-onnx-sys fetches its prebuilt static win-x64 archive at
-# build time; set SHERPA_ONNX_LIB_DIR to point at a local library directory
-# instead (offline/CI builds).
+# Voice input — local, on-device capture (see infrastructure/voice). The
+# captured clip is handed to the managed multimodal model over IPC; there is no
+# native speech engine dependency.
 cpal = "0.18"
-sherpa-onnx = "=1.13.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -45,11 +45,11 @@ vi.mock('@/shared/contexts/StreamContext', () => ({
 // and this file's dedupe/nav assertions are unaffected.
 // #2882 ST-4: the shell also reads `voiceEnabled` (it mounts the ST-3
 // `useSttModelReady` probe) — supplied here so the harness state is complete.
+// Spec #2914 ST-8: the removed `voiceAutosend` member is dropped from the stub.
 vi.mock('@/shared/contexts/CompanionContext', () => ({
   useCompanion: () => ({
     state: { isVisible: false, isAway: false, isAutoHidden: false, isInUse: false },
     voiceEnabled: true,
-    voiceAutosend: false,
   }),
 }));
 

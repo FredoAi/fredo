@@ -112,19 +112,22 @@ describe('computeEndPaddingPx — the reserved end gutter (#2883 ST-1 re-point: 
     expect(computeEndPaddingPx({ showHint: true, listening: false, hasText: true })).toBe(220 + 44);
   });
 
-  it('reserves the listening chip + cancel + stop + minimize while listening', () => {
-    // 72 (chip) + 30 (cancel) + 30 (stop) + 44 (minimize)
-    expect(computeEndPaddingPx({ showHint: false, listening: true })).toBe(72 + 30 + 30 + 44);
+  it('reserves the MODEL listening chip + cancel + stop + minimize while listening', () => {
+    // 208 (model chip) + 30 (cancel) + 30 (stop) + 44 (minimize). Spec #2914 ST-8:
+    // the removed `'local'` 72px chip reservation is gone.
+    expect(
+      computeEndPaddingPx({ showHint: false, listening: true, modelPhase: 'listening' }),
+    ).toBe(208 + 30 + 30 + 44);
   });
 
   it('#2883 ST-1 — live listening with text stays at the same single reservation', () => {
-    expect(computeEndPaddingPx({ showHint: false, listening: true, hasText: true })).toBe(
-      72 + 30 + 30 + 44,
-    );
+    expect(
+      computeEndPaddingPx({ showHint: false, listening: true, hasText: true, modelPhase: 'listening' }),
+    ).toBe(208 + 30 + 30 + 44);
   });
 
-  // Spec #2882 ST-5 (UI/UX §9) — the S2 pending chip occupies the SAME slot and
-  // the SAME width as the Listening chip, so typed text never runs under it.
+  // Spec #2882 ST-5 (UI/UX §9) — the S2 pending chip occupies the SAME slot as
+  // the capture chips, so typed text never runs under it.
   it('reserves the pending chip gutter while the hold is pending (S2)', () => {
     expect(computeEndPaddingPx({ showHint: false, listening: false, holdPending: true })).toBe(
       72 + 44,
@@ -132,9 +135,9 @@ describe('computeEndPaddingPx — the reserved end gutter (#2883 ST-1 re-point: 
   });
 
   it('never double-counts the chip slot: pending is not reserved while live', () => {
-    expect(computeEndPaddingPx({ showHint: false, listening: true, holdPending: true })).toBe(
-      72 + 30 + 30 + 44,
-    );
+    expect(
+      computeEndPaddingPx({ showHint: false, listening: true, holdPending: true, modelPhase: 'listening' }),
+    ).toBe(208 + 30 + 30 + 44);
   });
 });
 
@@ -199,7 +202,7 @@ describe('LauncherCommandBar — the honest hold-Space cue (#2887 ST-5)', () => 
     expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
   });
 
-  it('R-3: never renders the pending chip and the Listening chip together (one slot)', () => {
+  it('R-3: never renders the pending chip and a capture chip together (one slot)', () => {
     renderWithChakra(
       <LauncherCommandBar
         query=""
@@ -210,7 +213,9 @@ describe('LauncherCommandBar — the honest hold-Space cue (#2887 ST-5)', () => 
       />,
     );
 
-    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(screen.getByTestId('launcher-command-model-listening-chip')).toHaveTextContent(
+      'Fredo is listening',
+    );
     expect(screen.queryByTestId('launcher-command-listening-pending')).toBeNull();
   });
 
@@ -267,7 +272,7 @@ describe('LauncherCommandBar — the `cue` contract may never claim listening ea
     expect(fieldDeclarations(input)['border-color']).toBe('var(--border-color)');
   });
 
-  it('`starting` (engine-resident slow start) shows the bounded chip + the acknowledgement, never `Listening`', () => {
+  it('`starting` (the ONE bounded start window — no residency tier) shows the bounded chip + the acknowledgement, never `Listening`', () => {
     renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="starting" />);
 
     expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
@@ -277,25 +282,14 @@ describe('LauncherCommandBar — the `cue` contract may never claim listening ea
     expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
     expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
-  });
-
-  it('`warming` (launch window, engine NOT resident) is a non-listening state — no listening wording at all', () => {
-    renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="warming" />);
-
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Hold to dictate…');
-    // The launch window has no capture and no resident engine: it answers with the
-    // same honest bounded text state UI/UX specified for a non-listening start.
-    expect(screen.getByTestId('launcher-command-listening-pending')).toHaveTextContent(
-      'starting voice input…',
-    );
-    expect(screen.queryByTestId('launcher-command-listening-chip')).toBeNull();
-    expect(screen.queryByTestId('launcher-command-listening')).toBeNull();
-    expect(screen.queryByTestId('launcher-command-listening-stop')).toBeNull();
+    // Spec #2914 ST-9 (G-125 re-point) — the deleted residency-derived `warming`
+    // tier shared this exact non-listening state, so its "no listening wording at
+    // all" assertions fold into THIS pin (no assertion dropped).
     expect(screen.queryByText('Listening')).toBeNull();
     expect(screen.queryByText('Listening…')).toBeNull();
   });
 
-  it('`listening` renders the listening cue ONLY with a live capture', () => {
+  it('`listening` renders the capture cue ONLY with a live capture', () => {
     renderWithChakra(
       <LauncherCommandBar
         query="live"
@@ -305,8 +299,11 @@ describe('LauncherCommandBar — the `cue` contract may never claim listening ea
         onStopListening={vi.fn()}
       />,
     );
-    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Listening…');
-    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    // Spec #2914 ST-8 — one mode: the model-audio cue is the only capture cue.
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'release Space to finish');
+    expect(screen.getByTestId('launcher-command-model-listening-chip')).toHaveTextContent(
+      'Fredo is listening',
+    );
     expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
   });
 
@@ -434,7 +431,7 @@ describe('LauncherCommandBar — label-driven hint chip (G-125 re-point of the #
 // ── WHILE listening contracts ─────────────────────────────────────────────────
 
 describe('LauncherCommandBar — continuous listening state', () => {
-  it('renders live partial text in the input and keeps it editable', () => {
+  it('renders the host text in the input and keeps it editable while capture is live', () => {
     renderWithChakra(
       <LauncherCommandBar query="hello wor" onQueryChange={vi.fn()} listening onStopListening={vi.fn()} />,
     );
@@ -442,7 +439,8 @@ describe('LauncherCommandBar — continuous listening state', () => {
     const input = screen.getByRole('searchbox') as HTMLTextAreaElement;
     expect(input.value).toBe('hello wor');
     expect(input).not.toHaveAttribute('readonly');
-    expect(input).toHaveAttribute('placeholder', 'Listening…');
+    // Spec #2914 ST-8 — one mode: the model-audio capture placeholder.
+    expect(input).toHaveAttribute('placeholder', 'release Space to finish');
   });
 
   it('ST-5 REFRESHED PIN: `busy` sets aria-busy + the replying placeholder but NEVER readOnly', () => {
@@ -463,7 +461,7 @@ describe('LauncherCommandBar — continuous listening state', () => {
     expect(onQueryChange).toHaveBeenCalledWith('hello again');
   });
 
-  it('renders the frozen dot + Listening chip + the cancel and Stop controls while listening', () => {
+  it('renders the frozen dot + model chip + the cancel and Stop controls while listening', () => {
     renderWithChakra(
       <LauncherCommandBar
         query="x"
@@ -474,7 +472,9 @@ describe('LauncherCommandBar — continuous listening state', () => {
       />,
     );
     expect(screen.getByTestId('launcher-command-listening')).toBeInTheDocument();
-    expect(screen.getByTestId('launcher-command-listening-chip')).toHaveTextContent('Listening');
+    expect(screen.getByTestId('launcher-command-model-listening-chip')).toHaveTextContent(
+      'Fredo is listening',
+    );
     expect(screen.getByTestId('launcher-command-listening-stop')).toHaveAttribute(
       'aria-label',
       'Stop listening',
@@ -1039,11 +1039,11 @@ describe('LauncherCommandBar — announcers', () => {
     expect(announcer).toHaveTextContent('');
 
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} listening />);
-    expect(announcer).toHaveTextContent('Listening');
+    expect(announcer).toHaveTextContent('Fredo is listening');
 
-    // A partial-only re-render (same `listening`) must NOT re-announce.
+    // A same-`listening` re-render must NOT re-announce.
     rerender(<LauncherCommandBar query="partial text" onQueryChange={vi.fn()} listening />);
-    expect(announcer).toHaveTextContent('Listening');
+    expect(announcer).toHaveTextContent('Fredo is listening');
 
     rerender(<LauncherCommandBar query="partial text" onQueryChange={vi.fn()} />);
     expect(announcer).toHaveTextContent('Stopped listening');
@@ -1078,7 +1078,7 @@ describe('LauncherCommandBar — announcers', () => {
 // transition-driven; the WARM path announces exactly one `Listening`.
 
 describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, UI/UX §4)', () => {
-  it('COLD path: announces `Starting voice input` when the bounded chip renders, then `Listening`', () => {
+  it('COLD path: announces `Starting voice input` when the bounded chip renders, then `Fredo is listening`', () => {
     const { rerender } = renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
     const announcer = screen.getByTestId('voice-listening-announcer');
     expect(announcer).toHaveTextContent('');
@@ -1102,10 +1102,10 @@ describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, U
         onStopListening={vi.fn()}
       />,
     );
-    expect(announcer).toHaveTextContent('Listening');
+    expect(announcer).toHaveTextContent('Fredo is listening');
   });
 
-  it('WARM path: exactly ONE announcement (`Listening`) — the armed window / S1 acknowledgement are NOT announced', () => {
+  it('WARM path: exactly ONE announcement (`Fredo is listening`) — the armed window / S1 acknowledgement are NOT announced', () => {
     const { rerender } = renderWithChakra(<LauncherCommandBar query="" onQueryChange={vi.fn()} />);
     const announcer = screen.getByTestId('voice-listening-announcer');
     expect(announcer).toHaveTextContent('');
@@ -1119,7 +1119,7 @@ describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, U
 
     // Capture is live — the one and only announcement.
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" listening />);
-    expect(announcer).toHaveTextContent('Listening');
+    expect(announcer).toHaveTextContent('Fredo is listening');
 
     // An ordinary release (a stop) reads the S3 line.
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" />);
@@ -1134,7 +1134,7 @@ describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, U
       <LauncherCommandBar query="x" onQueryChange={vi.fn()} cue="listening" listening />,
     );
     const announcer = screen.getByTestId('voice-listening-announcer');
-    expect(announcer).toHaveTextContent('Listening');
+    expect(announcer).toHaveTextContent('Fredo is listening');
 
     // The host bumps `cancelSignal` on the live discard; `listening` may drop in
     // the SAME commit (the backend confirm) — the cancel still wins.
@@ -1176,11 +1176,11 @@ describe('LauncherCommandBar — the cold/cancel announcer transitions (#2887, U
     rerender(<LauncherCommandBar query="" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
     expect(announcer).toHaveTextContent('Dictation cancelled');
 
-    // A NEW hold goes live: `Listening` again…
+    // A NEW hold goes live: `Fredo is listening` again…
     rerender(
       <LauncherCommandBar query="" onQueryChange={vi.fn()} cue="listening" listening cancelSignal={1} />,
     );
-    expect(announcer).toHaveTextContent('Listening');
+    expect(announcer).toHaveTextContent('Fredo is listening');
     // …and its release is an ordinary stop (the stale cancel flag was cleared).
     rerender(<LauncherCommandBar query="hello" onQueryChange={vi.fn()} cue="none" cancelSignal={1} />);
     expect(announcer).toHaveTextContent('Stopped listening');

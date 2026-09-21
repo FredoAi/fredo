@@ -26,14 +26,12 @@ import { tint } from '../../utils/colorTint';
 import { SetupStepCard, type SetupStepUiState } from './SetupStepCard';
 import { ModelFilesStepCard } from './ModelFilesStepCard';
 import { ServerLaunchStepCard } from './ServerLaunchStepCard';
-import { VoiceModelStepCard } from './VoiceModelStepCard';
 import { COMPANION_SETUP_STEPS, type CompanionSetupStepMeta } from './companionSetupSteps';
 import type {
   CompanionServerLaunchInfo,
   ModelFilesStatus,
   PrerequisiteId,
   PrerequisiteUiState,
-  SttModelReadiness,
 } from './companionReadiness';
 
 export interface CompanionSetupWizardPrerequisite {
@@ -49,8 +47,6 @@ export interface CompanionSetupWizardProps {
   actionError: Partial<Record<PrerequisiteId, string>>;
   /** Per-file model status from `check_model_files` (#2856). */
   modelFiles?: ModelFilesStatus | null;
-  /** Per-file OPTIONAL STT model status (#2877 ST-2/ST-7) — non-gating. */
-  sttModel?: SttModelReadiness | null;
   /** Frontend-composed server launch snapshot (#2857). */
   serverLaunch?: CompanionServerLaunchInfo | null;
   onRunAction: (id: PrerequisiteId) => void;
@@ -70,7 +66,6 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
   runningActionId,
   actionError,
   modelFiles,
-  sttModel,
   serverLaunch,
   onRunAction,
   onRecheck,
@@ -145,22 +140,6 @@ export const CompanionSetupWizard: React.FC<CompanionSetupWizardProps> = ({
           detail={prerequisite.detail}
           errorText={errorText}
           modelFiles={modelFiles ?? null}
-          onRunAction={onRunAction}
-          onRecheck={onRecheck}
-        />
-      );
-    }
-    if (prerequisite.id === 'sttModel') {
-      // #2877 ST-7 (DR-4) — the OPTIONAL voice-input model gets the per-file
-      // repair surface. It stays non-gating: it is never counted in
-      // `installed/total` and never contributes to `CompanionReadiness.ready`.
-      return (
-        <VoiceModelStepCard
-          step={meta}
-          uiState={uiState}
-          detail={prerequisite.detail}
-          errorText={errorText}
-          sttModel={sttModel ?? null}
           onRunAction={onRunAction}
           onRecheck={onRecheck}
         />

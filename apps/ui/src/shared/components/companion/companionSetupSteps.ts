@@ -10,7 +10,7 @@
  */
 
 import type React from 'react';
-import { LuCpu, LuFileArchive, LuMic, LuServer } from 'react-icons/lu';
+import { LuCpu, LuFileArchive, LuServer } from 'react-icons/lu';
 
 import type { PrerequisiteId } from './companionReadiness';
 
@@ -18,8 +18,7 @@ export interface CompanionSetupStepAction {
   command:
     | 'install_llama_cpp'
     | 'download_model'
-    | 'launch_llama_server'
-    | 'download_stt_model';
+    | 'launch_llama_server';
   label: string;
   runningLabel: string;
   kind: 'install' | 'download' | 'launch';
@@ -85,25 +84,6 @@ export const COMPANION_SETUP_STEPS: CompanionSetupStepMeta[] = [
       label: 'Start companion server',
       runningLabel: 'Starting server…',
       kind: 'launch',
-    },
-  },
-  {
-    // #2876 ST-5 — the OPTIONAL voice-input model, appended LAST. Its state is
-    // composed in `useCompanionReadiness` from `stt_check_model`; acquisition
-    // reuses the SAME streamed download + SHA-256 verify engine. It is excluded
-    // from the `installed/total` summary and NEVER gates companion chat.
-    id: 'sttModel',
-    testId: 'stt-model',
-    label: 'Voice input model',
-    description:
-      'Optional — on-device speech-to-text for voice dictation. Four files run locally and no audio leaves this machine. Not required for companion chat.',
-    icon: LuMic,
-    optional: true,
-    action: {
-      command: 'download_stt_model',
-      label: 'Download voice model',
-      runningLabel: 'Downloading voice model…',
-      kind: 'download',
     },
   },
 ];

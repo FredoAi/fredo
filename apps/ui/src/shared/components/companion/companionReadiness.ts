@@ -5,12 +5,9 @@
  * The backend owns the prerequisite SET; these ids are the stable join key
  * between the backend reports and the ordered `COMPANION_SETUP_STEPS` registry.
  * #2857 appends `'serverLaunch'` here and to the registry.
- * #2876 ST-5 appends `'sttModel'` — an explicitly OPTIONAL step that NEVER gates
- * companion chat (it is excluded from the wizard's `installed/total` summary and
- * from `CompanionReadiness.ready`).
  */
 
-export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch' | 'sttModel';
+export type PrerequisiteId = 'llamaServer' | 'modelFiles' | 'serverLaunch';
 
 /** Determined states returned by the backend. */
 export type PrerequisiteState = 'missing' | 'installed' | 'error';
@@ -54,29 +51,14 @@ export interface LlamaCppInstallResult {
 // `fileId` + `state` pair joined to each per-file row.
 
 /**
- * The companion's three required model files (fixed display/acquisition order),
- * plus the four OPTIONAL STT (voice input) files appended by #2876 ST-5. The id
- * is the join key between the backend reports and the live
+ * The companion's three required model files (fixed display/acquisition order).
+ * The id is the join key between the backend reports and the live
  * `setup:download-progress` stream; widening the union is additive — the
- * companion ids never change.
+ * companion ids never change. (The four OPTIONAL STT (voice input) ids were
+ * removed with the on-device engine in Spec #2914 — the backend no longer
+ * reports them, so they are not part of the vocabulary.)
  */
-export type ModelFileId =
-  | 'model'
-  | 'vision'
-  | 'mtp'
-  | 'sttTokens'
-  | 'sttEncoder'
-  | 'sttDecoder'
-  | 'sttJoiner';
-
-/** The four STT (voice input) model file ids, in fixed order (#2876 ST-2/ST-5). */
-export const STT_MODEL_FILE_IDS: readonly ModelFileId[] = [
-  'sttTokens',
-  'sttEncoder',
-  'sttDecoder',
-  'sttJoiner',
-];
-
+export type ModelFileId = 'model' | 'vision' | 'mtp';
 /**
  * Per-file state vocabulary. A truncated/partial file stays `missing` (with a
  * shortfall `detail`) — there is deliberately no fifth state.
@@ -117,59 +99,6 @@ export interface ModelDownloadResult {
   output?: string;
   error?: string;
   files: ModelFileStatus[];
-}
-
-// ── STT (voice input) model — #2876 ST-2/ST-5 ────────────────────────────────
-//
-// `stt_check_model` probes the four pinned streaming-Zipformer files with the
-// SAME exact-size gate as the companion model set (`probe_files`). Acquisition
-// reuses the SAME streamed engine (`download_stt_model`). This step is OPTIONAL:
-// `ready` here NEVER contributes to `CompanionReadiness.ready` — installing or
-// removing the voice model can never block or unblock companion chat.
-
-/** `stt_check_model` result (camelCase, IPC). */
-export interface SttModelStatus {
-  /** true iff EVERY pinned STT file is present-and-complete. */
-  ready: boolean;
-  /** Per-file status, ordered tokens → encoder → decoder → joiner. */
-  files: ModelFileStatus[];
-}
-
-/**
- * #2877 ST-2 — the DERIVED `sttModel` readiness report consumed by the voice
- * settings UI. Distinct from the raw IPC shape (`SttModelStatus`): `location`
- * is the resolved on-disk model directory derived from the per-file `path`s
- * (`resolveSttModelDir`), so AC2's "model location" is displayable on BOTH
- * `ready` and `error` — null only until at least one pinned file is on disk.
- */
-export interface SttModelReadiness {
-  /** true iff EVERY pinned STT file is present-and-complete. */
-  ready: boolean;
-  /** Per-file status, ordered tokens → encoder → decoder → joiner. */
-  files: ModelFileStatus[];
-  /** Resolved on-disk model directory (from the per-file `path`s), or null. */
-  location: string | null;
-}
-
-/**
- * Resolve the model DIRECTORY from the backend's per-file absolute `path`s.
- * The first materialized file wins (every pinned STT file shares one directory);
- * a path with no parent separator contributes nothing. Pure + unit-testable;
- * `null` means "nothing on disk yet" — never a fabricated/assumed location.
- */
-export function resolveSttModelDir(files: readonly ModelFileStatus[]): string | null {
-  for (const file of files) {
-    const dir = parentDirectory(file.path);
-    if (dir) return dir;
-  }
-  return null;
-}
-
-/** Parent directory of an absolute path, or null when there is none. */
-function parentDirectory(path: string | null): string | null {
-  if (typeof path !== 'string' || path.length === 0) return null;
-  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  return separator >= 1 ? path.slice(0, separator) : null;
 }
 
 /** `setup:download-progress` payload for a model-file transfer (#2856). */
@@ -336,15 +265,18 @@ export type ModelAudioFailureCode =
 
 /**
  * The curated fallback sentences (UI/UX §7). NEVER the raw IPC string; each names
- * the cause and the next step, and every one offers the explicit local switch.
+ * the cause and the next step. Spec #2914 ST-3 (R-3): the local fallback is gone
+ * (there is exactly ONE voice path), so every sentence names a REACHABLE
+ * remediation — install an audio-capable model / start the companion server /
+ * try again — and none offers or names the removed local transcription.
  */
 export const MODEL_AUDIO_FAILURE_COPY: Record<ModelAudioFailureCode, string> = {
   modelAudioUnsupported:
-    "The companion model can't interpret audio — your recording wasn't sent. Switch to Local transcription to dictate with words, or install a model with audio support.",
+    "The companion model can't interpret audio — your recording wasn't sent. Install a model with audio support from Companion setup, or choose Change model.",
   modelAudioUnavailable:
-    "The local model server isn't running, so Fredo couldn't interpret that. Start it, or switch to Local transcription.",
+    "The local model server isn't running, so Fredo couldn't interpret that. Start the companion server, then try again.",
   modelAudioFailed:
-    "Fredo couldn't interpret that recording. Try again, or switch to Local transcription.",
+    "Fredo couldn't interpret that recording. Try again.",
 };
 
 /** The distinct cause of the fallback's generic copy (a null clip / dispatch error). */
@@ -376,12 +308,10 @@ export type ModelAudioReadinessState =
   | 'server-unavailable'
   | 'unknown';
 
-/** The derived C0r row: state + sentence + which actions it offers. */
+/** The derived row: state + sentence + which actions it offers. */
 export interface ModelAudioReadinessRow {
   state: ModelAudioReadinessState;
   sentence: string;
-  /** Offer the explicit one-click switch to Local transcription. */
-  offerLocal: boolean;
   /** Offer `Change model` (unsupported only — install an audio-capable model). */
   offerChangeModel: boolean;
   /** Offer `Try again` (re-probe). */
@@ -389,10 +319,11 @@ export interface ModelAudioReadinessRow {
 }
 
 /**
- * Derive the C0r `Model audio status` row from the backend capability. Pure and
- * fail-closed: a missing capability (no probe / rejected invoke) is `unknown`
- * ("can't check"), never a fabricated `ready`. `checking` is the UI-side
- * probe-in-flight value.
+ * Derive the model-audio `Model audio status` row from the backend capability.
+ * Pure and fail-closed: a missing capability (no probe / rejected invoke) is
+ * `unknown` ("can't check"), never a fabricated `ready`. `checking` is the
+ * UI-side probe-in-flight value. Spec #2914 ST-3 (R-3): the row NEVER offers a
+ * local-transcription fallback — every offered action is a reachable remediation.
  */
 export function deriveModelAudioReadinessRow(
   capability: SttAudioCapability | null,
@@ -402,7 +333,6 @@ export function deriveModelAudioReadinessRow(
     return {
       state: 'checking',
       sentence: "Checking the companion model's audio support…",
-      offerLocal: false,
       offerChangeModel: false,
       offerRetry: false,
     };
@@ -416,7 +346,6 @@ export function deriveModelAudioReadinessRow(
       return {
         state: 'ready',
         sentence: `${subject} can interpret audio. Recordings stay on this machine.`,
-        offerLocal: false,
         offerChangeModel: false,
         offerRetry: false,
       };
@@ -426,7 +355,6 @@ export function deriveModelAudioReadinessRow(
         state: 'unsupported',
         sentence:
           "The installed companion model can't interpret audio. Recordings won't be sent.",
-        offerLocal: true,
         offerChangeModel: true,
         offerRetry: false,
       };
@@ -435,7 +363,6 @@ export function deriveModelAudioReadinessRow(
         state: 'server-unavailable',
         sentence:
           "The local model server isn't running, so Fredo can't interpret audio.",
-        offerLocal: true,
         offerChangeModel: false,
         offerRetry: true,
       };
@@ -443,7 +370,6 @@ export function deriveModelAudioReadinessRow(
       return {
         state: 'unknown',
         sentence: "Can't check audio support right now.",
-        offerLocal: false,
         offerChangeModel: false,
         offerRetry: true,
       };
@@ -595,7 +521,6 @@ const STEP_ERROR_LABEL: Record<PrerequisiteId, string> = {
   llamaServer: 'the llama.cpp install',
   modelFiles: 'the model download',
   serverLaunch: 'the server launch',
-  sttModel: 'the voice input model download',
 };
 
 /** Curated install-failure copy keyed by the backend's typed install code. */
@@ -657,7 +582,7 @@ export function errorCopyFor(
     );
   } else if (id === 'llamaServer' && code && code in INSTALL_ERROR_COPY) {
     message = INSTALL_ERROR_COPY[code as LlamaCppInstallCode];
-  } else if ((id === 'modelFiles' || id === 'sttModel') && raw) {
+  } else if (id === 'modelFiles' && raw) {
     const cause = DOWNLOAD_CAUSE_COPY.find((entry) => entry.re.test(raw));
     message = cause?.message ?? genericErrorCopy(id);
   } else {

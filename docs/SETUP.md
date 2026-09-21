@@ -83,14 +83,9 @@ The companion's runtime prerequisites are checked in-app. Open **Settings → Co
 
 Each prerequisite reports its own honest state (`checking` / `missing` / `installed` / `error`); the wizard is never shown as complete while a prerequisite is missing. Once all prerequisites are satisfied, the normal Companion controls (Show Fredo Companion, idle auto-return, Teleport tip) replace the wizard. If `winget` is unavailable or the install fails, the wizard shows an actionable error and stays in the not-set-up state.
 
-A separate **Voice input model** step is **optional and non-gating** — it is rendered under an explicit *Optional / Not required for companion chat* group, excluded from the wizard's `installed/total` summary, and installing or removing it never changes Companion readiness. It downloads the four-file sherpa-onnx English model (`tokens.txt` / `encoder` / `decoder` / `joiner`, ~72.7 MB) through the same streamed download + per-file SHA-256 verification path as the GGUF set, into `<models_dir>/sherpa-onnx-streaming-zipformer-en-2023-06-26/`, where `<models_dir>` is the models directory the backend reports. Voice input is a **shipped, opt-in** feature (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the model setup/repair row (with a re-check action and the resolved model location), the input-device selection, and the autosend toggle. All transcription runs on-device — audio never leaves the machine.
+Voice input is a **shipped, opt-in** feature (default off): **Settings → Companion → Voice input** holds the enable/disable switch, the input-device selection, and the model-audio capability row. There is **no separate voice model to download or set up** — enabling voice and choosing an input device is all the setup it needs. It has exactly **one speech path**: the captured utterance is handed to the locally-managed companion model itself (the same model the Companion setup installs) and **no transcript is shown**. All capture and understanding run on-device — audio never leaves the machine.
 
-**Speech handling.** The same group holds a **Speech handling** selector (persisted per user as `Fredo_companion_voice_handling`) with two methods:
-
-- **Local transcription** (default) — today's behaviour: speech is transcribed on-device by the sherpa-onnx engine and the recognized words appear in the launcher bar as you speak.
-- **Model audio** — the captured utterance is handed to the locally-managed companion model as that turn's input, and **no transcript is shown**. The recording is bounded (about 30 s) with a visible auto-stop at the limit that keeps the whole clip, and it is delivered only to the loopback `llama-server` — nothing leaves the machine.
-
-Model audio is available only when the installed companion model supports audio; when it does not, or the local model server is not running, Fredo says so (nothing is sent) and offers a one-click switch back to **Local transcription**. The change applies to the next dictation without an app restart.
+**How it works.** A captured utterance is handed to the locally-managed companion model as that turn's input, and **no transcript is shown** — the model's reply appears in the normal conversation surface. Model audio is available only when the installed companion model supports audio; when it does not, or the local model server is not running, Fredo says so (nothing is sent). The recording is bounded (about 30 s) with a visible auto-stop at the limit that keeps the whole clip, and it is delivered only to the loopback `llama-server` — nothing leaves the machine.
 
 ## OTLP Configuration
 
@@ -156,8 +151,6 @@ window.__devAdapter.emit({
 ```bash
 pnpm build:tauri
 ```
-
-> **Native STT dependency:** the Rust workspace carries pinned `cpal` (0.18) and `sherpa-onnx` (1.13.8) dependencies backing the shipped on-device voice-input feature. On Windows, `sherpa-onnx-sys` fetches a prebuilt static x64 archive during `cargo build`; set `SHERPA_ONNX_LIB_DIR` to point at a local library directory for offline or CI builds.
 
 A local build produces an installer for your current OS in `apps/tauri/src-tauri/target/release/bundle/`:
 

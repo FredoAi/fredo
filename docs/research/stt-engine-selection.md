@@ -1,9 +1,9 @@
-# Local-First Streaming STT Engine Selection — Binding Recommendation
+# Local-First Streaming STT Engine Selection — Superseded Spike Record
 
 > **Issue:** #2876 — `[Spike] Select a local-first streaming STT engine and prove live transcription in Fredo`.
 > **Sub-task:** ST-1 of the #2876 Implementation Plan (`## Triage Plan`).
-> **Status:** **BINDING.** The implementation specs **#2877** (local STT foundation) and **#2878** (live STT input surfaces) plan against this document; it does not re-open the decision and contains no "it depends" hedging.
-> **SUPERSEDED IN PART (Spec #2882, 2026-09-16):** #2882 retired the **contextual Ctrl+Space / 3-priority cascade** (§5.1), the Ctrl+Space constraints that followed from it (§5.2, §6's Ctrl+Space rows) and the two-surface transcript routing sketched in §3.1 — see the banner in §5.1. The **engine, capture-path and provisioning decisions (§0–§4) remain binding**; the superseded text below is preserved verbatim as the spike's historical record.
+> **Status: SUPERSEDED (Spec #2914).** The whole decision in this document was reverted: **#2914 removed the `sherpa-onnx` on-device engine, its model manifest and resident engine, the STT model download/setup surface, and the `local` transcription mode.** There is exactly ONE speech path today — the captured clip is understood by the locally-managed multimodal model as an `input_audio` content part over loopback (see [`model-audio-feasibility.md`](model-audio-feasibility.md)). Nothing below describes shipped behaviour: there is no `sherpa-onnx` dependency, no `SHERPA_ONNX_LIB_DIR`, no STT model to download, and no `stt:transcript` event. The text is retained verbatim as the spike's historical record.
+> **Also superseded earlier (Spec #2882, 2026-09-16):** #2882 retired the **contextual Ctrl+Space / 3-priority cascade** (§5.1), the Ctrl+Space constraints that followed from it (§5.2, §6's Ctrl+Space rows) and the two-surface transcript routing sketched in §3.1 — see the banner in §5.1.
 > **Scope:** engine + capture path + provisioning path for the **English**, **local-first**, **streaming** use case on **Windows x64** with **Tauri v2** / **WebView2**.
 > **Citation convention:** every external claim carries a URL; every in-repo claim carries `path:line` (spot-verified against the `spec/2876` tip).
 
@@ -322,5 +322,5 @@ Note for completeness: the rejected Moonshine path uses **MIT (English models)**
 ## 8. What #2877 / #2878 inherit
 
 - `docs/research/stt-engine-selection.md` (this file) is the **committed** artifact on `spec/2876` that AC1 is verified against; the path is pinned in the plan's Deployment Notes.
-- The build-time native dependency (`sherpa-onnx-sys` fetching the prebuilt Windows x64 archive unless `SHERPA_ONNX_LIB_DIR` points at a local lib) is inherited by any spec that keeps the POC's engine — or deliberately reverted by #2877.
+- **Superseded by #2914:** the build-time native dependency (`sherpa-onnx-sys` fetching the prebuilt Windows x64 archive unless `SHERPA_ONNX_LIB_DIR` points at a local lib) is **gone** — no `sherpa-onnx` dependency remains and a default `cargo build` needs no `SHERPA_ONNX_LIB_DIR`. The paragraph above records what #2877/#2878 originally inherited, not a current requirement.
 - The POC itself is **throwaway** and is expected to be replaced by #2877/#2878. The durable outputs of the spike are this document and the hermetic session pins (ST-6).

@@ -1,5 +1,7 @@
 /**
  * #2897 ST-6 (REQ-7) — the model-audio readiness row + the curated fallback copy.
+ * Re-pointed by #2914 ST-3 (R-3): the local fallback is gone, so the row offers
+ * no local switch and every fallback sentence names a REACHABLE remediation.
  *
  * The UI NEVER infers capability from a model name: `deriveModelAudioReadinessRow`
  * maps the BACKEND's typed verdict onto the frozen `data-state` vocabulary and
@@ -34,7 +36,6 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
     expect(row).toEqual({
       state: 'checking',
       sentence: "Checking the companion model's audio support…",
-      offerLocal: false,
       offerChangeModel: false,
       offerRetry: false,
     });
@@ -49,7 +50,6 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
     expect(row.sentence).toBe(
       'Gemma-4-E2B can interpret audio. Recordings stay on this machine.',
     );
-    expect(row.offerLocal).toBe(false);
     expect(row.offerChangeModel).toBe(false);
     expect(row.offerRetry).toBe(false);
 
@@ -60,18 +60,17 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
     );
   });
 
-  it('unsupported: says recordings will not be sent + offers local / change model', () => {
+  it('unsupported: says recordings will not be sent + offers change model only', () => {
     const row = deriveModelAudioReadinessRow(capability({ state: 'unsupported' }), false);
     expect(row).toEqual({
       state: 'unsupported',
       sentence: "The installed companion model can't interpret audio. Recordings won't be sent.",
-      offerLocal: true,
       offerChangeModel: true,
       offerRetry: false,
     });
   });
 
-  it('serverUnavailable maps to `server-unavailable` + offers local / try again', () => {
+  it('serverUnavailable maps to `server-unavailable` + offers try again', () => {
     const row = deriveModelAudioReadinessRow(
       capability({ state: 'serverUnavailable' }),
       false,
@@ -79,7 +78,6 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
     expect(row).toEqual({
       state: 'server-unavailable',
       sentence: "The local model server isn't running, so Fredo can't interpret audio.",
-      offerLocal: true,
       offerChangeModel: false,
       offerRetry: true,
     });
@@ -90,7 +88,6 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
     expect(unknown).toEqual({
       state: 'unknown',
       sentence: "Can't check audio support right now.",
-      offerLocal: false,
       offerChangeModel: false,
       offerRetry: true,
     });
@@ -101,23 +98,44 @@ describe('#2897 ST-6 — model-audio readiness row', () => {
       unknown,
     );
   });
+
+  it('never offers the removed local fallback for any verdict (R-3)', () => {
+    const states: Array<SttAudioCapability['state']> = [
+      'checking',
+      'ready',
+      'unsupported',
+      'serverUnavailable',
+      'unknown',
+    ];
+    for (const state of states) {
+      const row = deriveModelAudioReadinessRow(capability({ state }), false);
+      expect(row).not.toHaveProperty('offerLocal');
+      expect(Object.keys(row).sort()).toEqual(
+        ['offerChangeModel', 'offerRetry', 'sentence', 'state'],
+      );
+    }
+  });
 });
 
 describe('#2897 ST-6 — curated model-audio fallback copy', () => {
-  it('pins the three curated sentences (never the raw IPC string)', () => {
+  it('pins the three curated sentences (never the raw IPC string, never local)', () => {
     expect(MODEL_AUDIO_FAILURE_COPY.modelAudioUnsupported).toBe(
-      "The companion model can't interpret audio — your recording wasn't sent. Switch to Local transcription to dictate with words, or install a model with audio support.",
+      "The companion model can't interpret audio — your recording wasn't sent. Install a model with audio support from Companion setup, or choose Change model.",
     );
     expect(MODEL_AUDIO_FAILURE_COPY.modelAudioUnavailable).toBe(
-      "The local model server isn't running, so Fredo couldn't interpret that. Start it, or switch to Local transcription.",
+      "The local model server isn't running, so Fredo couldn't interpret that. Start the companion server, then try again.",
     );
     expect(MODEL_AUDIO_FAILURE_COPY.modelAudioFailed).toBe(
-      "Fredo couldn't interpret that recording. Try again, or switch to Local transcription.",
+      "Fredo couldn't interpret that recording. Try again.",
     );
-    // Every sentence offers the explicit local switch.
+    // #2914 ST-3 (R-3) — the removed local fallback is never offered by name.
     for (const sentence of Object.values(MODEL_AUDIO_FAILURE_COPY)) {
-      expect(sentence).toContain('Local transcription');
+      expect(sentence).not.toContain('Local transcription');
     }
+    // The still-valid half is kept: name the audio-capable model remedy.
+    expect(MODEL_AUDIO_FAILURE_COPY.modelAudioUnsupported).toMatch(
+      /install a model with audio support/i,
+    );
   });
 
   it('classifies the three causes and returns null for an unrelated code', () => {

@@ -105,7 +105,6 @@ function hookValue(
     actionError: {},
     modelFiles: null,
     serverLaunch: null,
-    sttModel: null,
     sttDevices: unavailableDevices,
     refreshSttDevices: noopAsync,
     ...overrides,
