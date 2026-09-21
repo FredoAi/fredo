@@ -5,9 +5,10 @@ import { SpeechBubble } from './SpeechBubble';
 import { completeAvatarRect } from './replySurfaceLayout';
 import type { ReplyAvatarRect, ReplySurfaceBounds } from './replySurfaceLayout';
 import { TicTacToe } from './features/tictactoe';
-import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
+import { AVATAR_SM, FredoAvatar, resolveCompanionAvatarState } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
 import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
+import { useVoiceDictation } from '../../hooks/useVoiceDictation';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
 import type { LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
@@ -368,17 +369,38 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // #2854 — the joke's first REAL token promotes thinking -> joking exactly once.
     const firstTokenRef = useRef(false);
 
-    // #2854 — resting cadence: while truly at rest (no stream / game / message)
-    // the companion emits a bounded `playful` beat, then returns to idle, repeating.
-    const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
-    // The playful beat is a DERIVED display layer — it never mutates `currentAnim`,
-    // so a flow-owned thinking/joking/happy always wins and playful only tints idle.
-    const displayAnim: FredoAvatarState =
-      currentAnim === 'idle' && resting === 'playful' ? 'playful' : currentAnim;
-
+    // #2917 ST-4 — the live voice-capture signal (`useVoiceDictation().listening`
+    // / the #2877·#2897 capture session). It is app-global (the backend names the
+    // active capture session) and is a control-plane `stt:state` event — never an
+    // RTDB row — so it is the ONE additive signal the avatar selector needs for
+    // `listening`. Nothing else in the voice path changes.
+    const { listening: captureActive } = useVoiceDictation();
+    // Teleport ownership (declared above the resolver because the resolver reads
+    // it as the always-wins signal below).
     const isTeleportingRef = useRef(false);
     const pendingDestRef = useRef<{ x: number; y: number } | null>(null);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // #2854 — resting cadence: while truly at rest (no stream / game / message)
+    // the companion emits a bounded `playful` beat, then returns to idle, repeating.
+    const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
+    // #2917 ST-4 — the ONE mapping seam (`fredoAvatarResolver`): the flow-owned
+    // expression + the product signals resolve to the single expression state.
+    // The resting `playful` beat is a DERIVED display layer — it never mutates
+    // `currentAnim`, so a flow-owned working/error/happy/joking/thinking always
+    // wins and playful only tints idle. A teleport (`isTeleportingRef`) always
+    // wins. `errored` is deliberately NOT signalled here: `onError`/the non-success
+    // settle drive the flow to `error` directly, and the sticky
+    // `generationErroredRef` would otherwise latch the expression past the hold.
+    const displayAnim: FredoAvatarState = resolveCompanionAvatarState({
+      flow: currentAnim,
+      resting,
+      teleporting: isTeleportingRef.current,
+      streaming: isStreaming,
+      skillPending: skillPendingRef.current,
+      ambientMessage: message != null,
+      captureActive,
+    });
+
     // The interactive avatar wrapper — its live layout box (offsetWidth/offsetHeight,
     // immune to CSS transforms) is the runtime source of truth for the click-target,
     // the teleport clamp, and the SpeechBubble anchor. Falls back to AVATAR_SM before
@@ -848,13 +870,22 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           generationTextRef.current = readable;
           setStreamingMessage(readable);
           if (announceGenerationRef.current) setA11yAnnouncement(readable);
-          flowOwnsExpressionRef.current = false;
-          playFlowAnim('idle');
+          // #2917 ST-4 — the typed error channel renders `error` (the V frown +
+          // down-brows in `--status.error` ink), flow-owned so the idle sync can
+          // never clobber it, and held for the UNCHANGED `ERROR_HOLD_MS`. The hold
+          // timer releases the flow ownership and returns the expression to idle.
+          flowOwnsExpressionRef.current = true;
+          playFlowAnim('error');
           setState('idle');
           timerRef.current = setTimeout(() => {
             // A newer generation (a subsequent send) owns the bubble now — the
             // stale error hold must never clear it.
             if (gen !== generationRef.current) return;
+            // #2917 ST-4 — release the error expression on the UNCHANGED hold.
+            // A teleport in flight owns the expression, so release ownership only
+            // (the teleport's own settle already returns to idle).
+            flowOwnsExpressionRef.current = false;
+            if (!isTeleportingRef.current) playAnim('idle');
             // #2883 ST-6 (R-4.1, the ONE hide gate) — the shipped 8 s error hold is
             // unchanged in VALUE; a reply being read when it comes due is kept, and
             // the clear runs when protection ends (fresh grace — R-4.2).
@@ -876,6 +907,11 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           if (gen !== generationRef.current) return;
           if (generationSettledRef.current) return;
           skillPendingRef.current = true;
+          // #2917 ST-4 — a validated skill selection renders `working` (Fredo is
+          // DOING something) until a settle path or the watchdog supersedes it:
+          // `onDone`/the pushed reply set `happy`, `onError` sets `error`, and the
+          // watchdog returns to idle — each replaces this flow-owned expression.
+          playFlowAnim('working');
           // #2893 ST-9 (R-1.4) — the watchdog backstop MUST be armed while this
           // generation waits for the pushed deterministic reply. A content /
           // reasoning token that preceded the tool call already cleared the
@@ -961,10 +997,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           });
         }, HAPPY_HOLD_MS);
       } else {
-        flowOwnsExpressionRef.current = false;
-        playFlowAnim('idle');
+        // #2917 ST-4 — a non-success pushed reply renders `error` (flow-owned,
+        // held for the UNCHANGED `ERROR_HOLD_MS`), exactly like the typed error
+        // channel — never a bare `idle` that reads as "nothing happened".
+        flowOwnsExpressionRef.current = true;
+        playFlowAnim('error');
         timerRef.current = setTimeout(() => {
           if (gen !== generationRef.current) return;
+          flowOwnsExpressionRef.current = false;
+          if (!isTeleportingRef.current) playAnim('idle');
           clearReplyOrDefer(() => {
             setStreamingMessage(null);
             hideMessage();
