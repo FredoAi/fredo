@@ -109,9 +109,13 @@ describe('BackgroundSettings — Desktop Background chooser (ST-4)', () => {
     expect(screen.queryByTestId('desktop-backdrop-life-canvas')).toBeNull();
     expect(document.querySelector('[data-background-layer="life-field"]')).toBeNull();
 
-    // Token-only founder frame: ground + cell tokens, never a colour literal.
+    // Token-only founder frame: the SHARED dimmed expression (ground + cell +
+    // scrim) the live field paints — never a colour literal and never the stale
+    // raw `--accent-primary` this preview used to carry.
     expect(thumb.innerHTML).toContain('var(--body-bg)');
-    expect(thumb.innerHTML).toContain('var(--accent-primary)');
+    expect(thumb.innerHTML).toContain('var(--life-cell)');
+    expect(thumb.innerHTML).toContain('var(--life-dim)');
+    expect(thumb.innerHTML).not.toContain('var(--accent-primary)');
     expect(thumb.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(thumb.innerHTML).not.toMatch(/\brgba?\s*\(/);
     expect(thumb.innerHTML).not.toMatch(/\bhsla?\s*\(/);

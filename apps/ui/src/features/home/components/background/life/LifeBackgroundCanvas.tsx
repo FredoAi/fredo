@@ -1,6 +1,6 @@
 /**
  * LifeBackgroundCanvas — the React binding for the Life canvas engine
- * (Spec #2915, ST-3).
+ * (Spec #2915, ST-3; shared dimmed paint expression Spec #2925, ST-3).
  *
  * Renders ONE inert `<canvas>` INSIDE the existing backdrop root: the root keeps
  * `pointerEvents:none`, `aria-hidden` and `zIndex 0`, and this canvas inherits
@@ -13,6 +13,14 @@
  *   - `data-life-running` — engine-mirrored; flips to `false` while the document
  *     is hidden (the rAF is CANCELLED, not merely skipped) and back on restore;
  *   - `data-life-seed`    — the per-load random seed (a determinism seam).
+ *
+ * Paint contract (Spec #2925): the element style carries the SAME shared dimmed
+ * paint expression the engine resolves and the chooser thumbnail mirrors —
+ * `color: var(--life-cell)` over `backgroundColor: var(--body-bg)`, with the
+ * field-wide `--life-dim` scrim composited by `lifeEngine` after ground + cells.
+ * All three consumers name the tokens only; the mix arithmetic lives once in
+ * `ThemeProvider.tsx` and the authored weights in `lifeConstants.ts`. No colour
+ * literal, no `var(--x)NN` alpha-append.
  *
  * The engine never runs in the settings tree: only the desktop backdrop mounts
  * this component. The chooser thumbnail is a static SVG (ST-4).
@@ -115,7 +123,7 @@ export const LifeBackgroundCanvas: React.FC<LifeBackgroundCanvasProps> = ({ anim
         position: 'absolute',
         inset: 0,
         pointerEvents: 'none',
-        color: 'var(--accent-strong)',
+        color: 'var(--life-cell)',
         backgroundColor: 'var(--body-bg)',
       }}
     />
