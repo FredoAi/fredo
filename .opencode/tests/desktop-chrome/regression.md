@@ -4,7 +4,7 @@ The "must not change" baseline for the desktop-chrome / window-chrome z-order su
 No-change invariants from #2825's non-goals; the fix must alter ONLY the desktop-chrome →
 window-chrome stacking relationship.
 
-- [x] R-1 (no restyle): the window titlebar is NOT restyled — `WindowChrome` header layout (brand cap, icon tile, title, control cluster) and its colors stay token-native (no hardcoded hex/rgba, no `var(--x)NN` alpha-append). No regression to Spec #2807 ST-3.
+- [x] R-1 (no restyle): the window titlebar is NOT restyled — `WindowChrome` header layout (brand cap, icon tile, title, control cluster) and its colors stay token-native (no hardcoded hex/rgba, no `var(--x)NN` alpha-append). No regression to Spec #2807 ST-3. **SUPERSEDED CLAUSE (#2924):** the "brand cap" element is intentionally REMOVED by #2924 — the header contract is now icon tile + title + control cluster (no `F` cap). R-1's "no restyle" still holds for everything else (tile/title/controls/tokens); the cap removal is the AC, not a restyle regression. See R-24.
 - [x] R-2 (no data-flow change): the LED/clock data flow is UNCHANGED — LED-1 still derives from `useConnectionStatus()`, LED-2 still derives from a monotonic row-mutation activity epoch (#2821 / #2788 P5.1); no re-introduction of the deleted v1 delivery-queue path.
 - [x] R-3 (no top-right LED reintroduction): the #2821 bottom LED pair stays at bottom-center; the pre-#2821 single top-right LED that overlapped the clock/ONLINE readout is NOT reintroduced.
 - [x] R-4 (passive chrome): the decorative desktop-chrome overlays (`LauncherChrome`, `StreamStatus`) stay `pointer-events:none` — the fix must not make them `pointer-events:auto` (NFR-5).
@@ -154,3 +154,29 @@ Overlapping suites to run alongside: `window-manager` (window lifecycle + rail F
   - **PASS (spec/2872 @ a4074073, round 1, LIVE).** Rendered 20/24 on the clean desktop; EXACTLY ONE status LED trigger (the only other `role="status"` is the unrelated 1×1 `fredo-companion-live-region`); clock advanced 16:32→16:34; band z 1200 uncovered → 0 covered; dock (bottom pill `[data-testid="app-dock"]`, `region "Open applications"`) DISJOINT from the cluster in both resting-visible (`disjoint:true`, gapX 873.67) and covered/peek (`disjoint:true`) states; G-106 maximized probe returned the window controls, never the cluster — `windows-buttons-time-overlap.png` / `led-overlay.png` did NOT recur. Evidence: `https://github.com/FredoAi/fredo/raw/spec/2872/.opencode/evidence/2872/after-maximized-controls-light.jpeg`.
 - [x] R-23: No layout shift — the FREDO notch, `>` command bar, side-tick rulers, dot-grid, keyboard-hints row and the dock rail rects are unchanged (±1px); ONLY the cluster box moves. Changed files token-native (zero colour literals / zero `var(--x)NN`); `pnpm --filter @fredo/ui build` exit 0 + `test:run` green; console clean.
   - **PASS (spec/2872 @ a4074073, round 1).** Live BEFORE→AFTER rect diff (same viewport 1920×1017): FREDO notch `{x:872,y:0,w:176,h:58}` → identical; notch text `{x:929.44,y:25,w:61.11,h:13}` → identical; `>` command bar `{x:680,y:485.77,w:560,h:48}` → identical (Δ 0); ONLY the cluster box moved (+4 top / +8 right, by design). Static grep → zero colour literals / zero `var(--x)NN`; build exit 0; `test:run` 72 files / 905 tests passed; console zero errors. `git diff --name-only main spec/2872 -- apps/ui/src` = only `LauncherChrome.tsx`.
+
+---
+
+## #2924 extension — full-bleed windows + icon/title-only header: no desktop-chrome regression
+
+> Issue #2924 changes the window presentation (full-bleed default-open, `F` cap removed, flush
+> content). The desktop-chrome model and the chrome↔window stacking relationship must hold. The
+> brand-cap clause of R-1 is SUPERSEDED (the cap is intentionally removed). Map 1:1 to
+> `.opencode/tmp/2924/triage.md` `## QA Expert` (REQ-1..REQ-5). Live policy.
+
+- [ ] R-24 (#2924): the desktop-chrome band and its z-model are UNCHANGED while a full-bleed
+      window owns the screen, and the removed cap does not disturb the header contract.
+      EXPECTED: FREDO notch / `>` command bar / side-tick rulers / dot-grid / keyboard-hints
+      geometry unchanged (±1px); exactly ONE top-right status LED + advancing clock + band z
+      1200 uncovered ↔ 0 covered (R-9/R-17); the maximized window is full-bleed (`rect.left===0`,
+      `rect.right===viewport.w`) with the band not re-indenting it; window min/max/close controls
+      stay unoccluded (`elementFromPoint` returns the control — G-106 method a; R-9/R-20 hold);
+      `.fredo-window__header` has exactly one 24px icon tile + one title node and ZERO `F`
+      monogram nodes (the removed cap leaves no orphan/placeholder); all `aria-label`s
+      (`Minimize/Maximize/Restore/Close <title>`) and the maximize control's `aria-expanded`
+      remain; changed files token-native (zero colour literals, zero `var(--x)NN`); console clean.
+  - Edge: window opened from launcher + dock + app-open request; maximize→restore; window
+    dragged under the corner cluster; dock revealed vs hidden; light + dark; narrow viewport.
+  - **PASS/FAIL:** a second LED/status surface, a non-token colour, a control occluded by the
+    band, a stray `F` cap node, or any lost aria attribute is a FAIL. Reference window-manager
+    F-38..F-48.
