@@ -91,3 +91,28 @@
       (no 0-size / off-screen / half-cascade), does a second open re-focus rather than re-seed a
       new float, and is the console clean? A restore landing off-screen or at a reset default
       (rather than the plan's stated float) is a REQ-4 finding.
+
+### #2924 round 1 — E-16/E-17/E-18 results (live)
+
+- **E-16 (>=5 windows, no cascade/drift) — PASS.** Opened 5 distinct feature windows
+  (Mission Monitor/Sessions, Query Viewer, Stepper Probe, Dev Mode, Settings) in sequence —
+  every one measured `{left:0, top:0, right:1920, bottom:1017}`, `radius 0px`, `grips 0`,
+  **no 16px offset on any later window** (no cascade), z-order correct (last-opened focused,
+  `elementFromPoint` + border colors), and the dock/open-window list stayed accurate (dock
+  listed exactly the open set incl. `Query Viewer (minimized)`). Re-focusing each in turn never
+  changed a rect.
+- **E-17 (flush content vs feature scroll containers) — PASS.** Content region `padding:0px` on
+  every window; the first-level feature root is flush to the surface's inner edges (content
+  `left=1/right=1919/bottom=1016`, the surface's own 1px border) and no feature's first line of
+  text sits against the header. Feature-owned insets preserved: Query Viewer 12px, Stepper Probe
+  16px, Settings sidebar 20px / panes 24px, Dev Mode sections 12px, mission-monitor token bar +
+  canvas edge-to-edge. `scrollHeight == clientHeight` (975) on each → no clipped/flush
+  scrollbar, no interactive control touching the border.
+- **E-18 (restore-default geometry race) — PASS.** Opened (maximized) → `Restore` immediately →
+  the float lands at the container-derived centered geometry (`720,348.5,480,320`) — never
+  `0,0` / off-screen / half-cascade. Re-opened the same feature from another entry point
+  (`fredo open-app "stepper-probe"`) → still exactly ONE window for that id, re-focused
+  (spawn semantics re-maximize it), no duplicate float seeded. Close → clean workspace,
+  console clean. Extra probe: after an OS-window resize, maximize→restore returns the SAVED
+  (edited) float `210,140,480,320`, not a re-derived one — the saved-geometry path is live.
+  No promoted findings (no confirmed defect).
