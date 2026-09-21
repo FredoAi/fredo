@@ -70,6 +70,7 @@
       2914`, the raw URL resolves, and it is embedded in `## Tests Runs` with a textual description; the
       body also references `telemetry_spans` (non-zero, recent `max(ingested_at)`).
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
+- **S-5 PASS.** Feed quick path: `{deviceName:"stt-feed", sampleRate:16000}`, no `cpal` device; app booted/rendered; console clean.
+- **S-6 PASS.** Captures uploaded via `upload-evidence --issue 2914`; `telemetry_spans` 19,620 rows, newest `2026-09-21T00:59:35Z`.
