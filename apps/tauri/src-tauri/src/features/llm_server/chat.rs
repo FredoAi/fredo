@@ -360,9 +360,11 @@ pub fn build_tools_request_body(
 
 /// Build a streaming body constrained to a JSON Schema via `response_format`
 /// (the documented fallback mechanism). Pure — the ST-1 probe uses this to test
-/// the schema-constrained path.
+/// the schema-constrained path with the `fredo_probe` name, and the structured
+/// reply contract (#2918) passes `fredo_reply`.
 pub fn build_response_format_request_body(
     messages: &[LlmMessage],
+    schema_name: &str,
     schema: &serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -371,7 +373,7 @@ pub fn build_response_format_request_body(
         "max_tokens": MAX_TOKENS,
         "response_format": {
             "type": "json_schema",
-            "json_schema": { "name": "fredo_probe", "schema": schema },
+            "json_schema": { "name": schema_name, "schema": schema },
         },
     })
 }
@@ -754,6 +756,27 @@ mod tests {
         let messages = vec![text_message("user", "hello")];
         let body = build_request_body(&messages, None);
         assert_eq!(body["messages"][0]["content"], "hello");
+    }
+
+    /// #2918 ST-1 — the schema name is a parameter: the probe's `fredo_probe`
+    /// name is forwarded verbatim and the schema-constrained body still offers
+    /// NO tools (it is the fallback mechanism).
+    #[test]
+    fn build_response_format_request_body_forwards_the_schema_name() {
+        let messages = vec![text_message("user", "hi")];
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "app": { "type": "string" } },
+            "required": ["app"],
+        });
+        let body = build_response_format_request_body(&messages, "fredo_probe", &schema);
+
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], MAX_TOKENS);
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["name"], "fredo_probe");
+        assert_eq!(body["response_format"]["json_schema"]["schema"], schema);
+        assert!(body.get("tools").is_none());
     }
 
     // ── #2897 ST-3: model-audio delivery (REQ-5; no-transcript REQ-3) ─────────

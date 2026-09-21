@@ -135,7 +135,11 @@ pub fn build_tools_probe_body() -> serde_json::Value {
 /// Build the streaming `response_format` probe body: the `open_app` argument
 /// schema as schema-constrained JSON (the documented fallback mechanism).
 pub fn build_response_format_probe_body() -> serde_json::Value {
-    chat::build_response_format_request_body(&probe_messages(), &open_app_parameters_schema())
+    chat::build_response_format_request_body(
+        &probe_messages(),
+        "fredo_probe",
+        &open_app_parameters_schema(),
+    )
 }
 
 // ── Pure transcript / log observation (unit-tested seam) ──────────────────────
