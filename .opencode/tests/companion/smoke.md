@@ -302,3 +302,25 @@
       the surface shows exactly `Hello there` (no raw fragment) and the wrapper `data-state` heals to
       the safe default (never `dancing`); the companion returns to rest; screenshot succeeds; console
       clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2922 extension — whole-body solid Fredo quick paths
+
+> Issue #2922 extends the additive interior fill from the head to the WHOLE body. Quick paths only —
+> the full matrix lives in `functional.md` F-135..F-143 / `regression.md` R-66..R-69; the metric
+> definition is in the companion functional `#2922 extension` block. **Verification policy: live** —
+> a property-existence check is never a PASS.
+
+- [ ] S-44: **Solid body in both themes.** Companion ON at the seat; capture dark base + `light-default`
+      and sample the BODY region (viewBox `y 812–1234`: bow tie, arms, buttons, legs, feet) with the
+      frames-A/B open metric. **Expected:** `holeCount == 0` (no backdrop shows through the body) in
+      BOTH themes; `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-45: **A state renders legibly over the solid body.** Single-click the avatar → the joke streams
+      (`thinking` → `joking` → `happy`). **Expected:** the expression overlay renders ON TOP of the
+      filled body and is distinguishable from `idle`; the body stays solid across the states;
+      screenshot succeeds; console clean.
+- [ ] S-46: **No leak + no stuck state.** Ctrl+right-click (teleport-out → in → idle) and drive
+      `open NotARealApp` (`error`). **Expected:** the inter-leg gap and shoulder notches stay
+      background (no fill leak), the avatar returns to `idle` (no lingering `error`/`joking`), the body
+      stays solid; screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`.
