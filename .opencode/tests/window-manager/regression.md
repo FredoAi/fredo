@@ -135,3 +135,29 @@
       the main companion recoverable; `tauri_read_logs(source="console")` on BOTH windows shows no
       `Error:`/`Uncaught`/`Maximum update depth exceeded`. Reference companion R-4/R-8.
   - **PASS (live, spec/2850).** After the main↔terminal round-trips, the companion existed in EXACTLY ONE window at every settle (main `present:false` when in the terminal window and vice-versa — never a ghost/double-mount). The main↔terminal round-trips each settled to the destination with no duplicate frame. `tauri_read_logs(source="console", level="error")` on BOTH main AND run-cli-terminal → zero `Error:`/`Uncaught`/`Maximum update depth exceeded`. (The close-terminal-mid-transit edge was not independently driven — no evidence of a crash; the round-trips completed cleanly with the companion recoverable.)
+
+---
+
+## #2924 extension — full-bleed default-open + header/content change: no-regression invariants
+
+> Issue #2924 changes DEFAULT-OPEN geometry (full-bleed, no gutter/cascade), REMOVES the header
+> brand cap, and removes the blanket frame padding. The presentation change must NOT disturb the
+> #2807 kernel contract or the desktop-chrome model. Map 1:1 to `.opencode/tmp/2924/triage.md`
+> `## QA Expert` (REQ-1..REQ-5). Live policy. Run R-1..R-14 alongside.
+
+- [ ] R-15 (#2924): the window-kernel contract and desktop-chrome model are UNCHANGED by the
+      presentation change — same store lifecycle (open/close/update/focus/re-entrancy), one window
+      per feature id, no focus steal, close idempotent; desktop-chrome (#2830 R-7..R-14: single
+      top-right LED, advancing clock, band z 1200↔0, passive band) holds; changed files
+      token-native (zero colour literals, zero `var(--x)NN`); `pnpm --filter @fredo/ui build`
+      exit 0; `pnpm --filter @fredo/ui test:run` green; console clean; `telemetry_spans` live
+      reference present.
+  - EXPECTED: `windowStore.ts` semantics unchanged (any default-open change is additive, not a
+    lifecycle rewrite); exactly one top-right status LED + advancing clock; the maximized window
+    stays full-bleed with the dock/band not re-indenting it; the `__tests__/windowStore.test.ts`
+    invariants (close re-entrancy/idempotency, spread-merge, open/focus) still pass.
+  - Edge: default-open change made at the `Home.tsx` call site vs the kernel default (record
+    where; a raw `openWindow` caller must not open inset); maximize→restore after the change; open
+    from the dock/CLI/app-open request; light + dark.
+  - **PASS/FAIL:** any lifecycle regression, a second LED/status surface, a non-token colour, a
+    red build/test, or a static-only PASS on this live-policy spec is a FAIL.
