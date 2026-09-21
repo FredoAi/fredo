@@ -67,6 +67,7 @@
       hold-length virtual-mic clip). A non-1.6 s clip while the env is set is a finding (the lever is
       vacuous or the seam is dead) — promotes to `voice-input` F-133.
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends probe findings; do not pre-fill)_
+- **E-6 UNVERIFIED (named blocker).** The malformed-feed leg needs another `dev-env` Down→Up with `FREDO_STT_FEED_WAV` pointed at a truncated/wrong-format in-repo copy; time-boxed out after 4 feed/boot cycles. Residual: `capture.rs` unit pins `a_feed_wav_that_is_not_16k_mono_pcm_is_rejected_with_a_typed_error` + `a_missing_feed_is_a_typed_error_and_never_falls_back_to_a_device` (green in CI `rust-validate`).
+- **E-7 PASS.** Fed clip `durationMs:1600` == the fixture (NOT a hold-length virtual-mic clip) ⇒ the 1.6 s lever is real and the sample-0 liveness path is exercised.
