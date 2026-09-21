@@ -335,3 +335,11 @@
       green (Life excluded by construction).
   - **Edge:** the new `lifeBounds.test.ts` pins are deterministic/order-independent (G-222); no dangling
     import; overlap suites green.
+
+### #2925 testing round 1 (spec/2925 @ 446ac18a) — results
+
+- **R-34 PASS (live).** preset select / per-token override / reset and the `override ?? preset ?? base` layering behave as before; None → zero `[data-testid="desktop-backdrop"]` DOM; Life → None → Life cycling console-clean. The diff touches no theming-store/base-theme/preset file — only the two `--life-*` derived vars were appended to the base pass; `--accent-strong` and every existing token are byte-identical.
+- **R-35 PASS (static+live).** `backgroundMotion.ts` is not in the diff (zero rAF/setInterval contract untouched); `background.invariants.test.tsx` is not in the diff (byte-identical) and green; the Life engine keeps its own single bounded rAF; the dim adds exactly one `fillRect`, no second loop/canvas/allocation.
+- **R-36 PASS (live).** backdrop stays strictly z=0 below `WindowManager`, `pointer-events:none` + `aria-hidden` + non-focusable; `elementFromPoint` inside a floating window never returns the backdrop; a real click + typing land while Life animates. The dim is canvas-baked — no overlay exists to sit above a window.
+- **R-37 PASS (live).** `Fredo_desktop_background` stays a string key; `life` persisted across the baseline-leg cold start (restored with a fresh seed); None → zero backdrop DOM; no new persistence key from the dim.
+- **R-38 PASS (live).** build exit 0; 1786/1786 tests; zero literals / `var(--x)NN`; no raster; recipe-module zero-rAF assertions green. `BackgroundSettings.test.tsx` is the only non-Life test touched and its change is additive/strengthening.
