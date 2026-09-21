@@ -161,3 +161,30 @@
     from the dock/CLI/app-open request; light + dark.
   - **PASS/FAIL:** any lifecycle regression, a second LED/status surface, a non-token colour, a
     red build/test, or a static-only PASS on this live-policy spec is a FAIL.
+
+### #2924 round 1 — R-15 PASS (live)
+
+- **Kernel contract unchanged — PASS.** `windowStore.ts` diff on `spec/2924` is the NEW-entry
+  default line only (`isMaximized: params.isMaximized ?? (params.canMaximize ?? true)`); the
+  existing-id branch, `updateWindow` spread-merge, `focusWindow` toggle and the close
+  re-entrancy guard are untouched (`git diff main spec/2924 -- windowStore.ts`). Live: one
+  window per feature id (rapid re-open → 1 surface), close removes frame + entry and is
+  idempotent (focused + backgrounded + last-window closes all clean, final count 0), open #2
+  focuses it and drops #1 to unfocused, minimize keeps the entry + dock marks it minimized.
+  Update-while-minimized is pinned by `windowStore.test.ts` (`minimize survives a content-only
+  patch`). Unit pin: `windowStore.test.ts` 18/18.
+- **Default-open record — PASS.** The full-bleed default lives in the KERNEL (`windowStore.ts`
+  NEW-entry branch), not at the `Home.tsx` call site (`Home.tsx:103` still passes the explicit
+  `isMaximized:true`); a raw `openWindow` consumer therefore also opens full-bleed
+  (`windowStore.test.ts`: absent `isMaximized` + absent/true `canMaximize` → full-bleed;
+  `canMaximize:false` → float). Edge re-check: maximize→restore after the change, open from the
+  dock/CLI/app-open request — all full-bleed (see `functional.md` F-38/F-39/F-43).
+- **Desktop chrome — PASS.** `leds = 1` (`[data-testid=desktop-status-led]`), `bottomDots = 0`,
+  clock `16:03` == wall time, `aria-label="16:03, online"`; band z = `1200` uncovered ↔ `0`
+  covered, band `pointerEvents:"none"`; `elementFromPoint` at the minimize control's centre
+  returns that control's SVG (the band does not occlude window controls); the maximized window
+  stays `0,0,1920,1017` with the dock/band not re-indenting it.
+- **Token-native / build / console / live — PASS.** Changed files token-native (see F-47);
+  `pnpm --filter @fredo/ui build` exit 0; `test:run` 120 files / 1776 passed; console clean;
+  `telemetry_spans` 27422 live (see F-48). Any failure listed in the row's PASS/FAIL clause was
+  absent.
