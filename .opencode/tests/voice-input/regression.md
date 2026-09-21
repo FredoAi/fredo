@@ -737,6 +737,11 @@ resident-idle cost) plus a regression sweep, all live on the repo-root-served ap
   - **Edge:** the sherpa dependency's removal introduces no new network dependency; a stopped server
       yields the typed `modelAudioUnavailable` state, not a remote retry.
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends the regression results; do not pre-fill)_
+- **R-42 PASS (with lever disclosure).** Ctrl+Space (Control+Space) left `stt_status.listening:false` + no new `stt:state`, bar focused; a real Space keydown on a NON-empty bar → `defaultPrevented:false` (never converted to capture). Native text insertion is not observable with the synthetic key lever (#2882 note) so the non-empty-space leg is asserted via `defaultPrevented`; the voice-disabled hold leg was not separately driven (voice enabled all round) — shipped F-68 record stands.
+- **R-43 PASS (live).** Scratch in-repo `models_dir` + a half-downloaded sherpa dir + `handling='local'` → booted to a working model-audio state (ready voice group, hold arms, STT dir removed); no blocked/dead banner.
+- **R-44 PASS (live).** No sherpa model: ready branch renders, wizard `n of 3`, companion chat usable (replies streamed), no `sttModel` prerequisite.
+- **R-45 PASS (live).** `capturing → processing`, limit notice warning treatment, chip clears on `llm-done`, `readyMs` 4–58 ms, ZERO transcript.
+- **R-46 PASS.** `git diff --name-only main HEAD` shows no companion model-download/GGUF change; no orphan Voice nav; UI build/tests green; CI green.
+- **R-47 PASS (static) / live outbound block BLOCKED (named).** Zero remote clients on the audio→model path; managed server `127.0.0.1:8080`.
