@@ -181,3 +181,10 @@
 - [ ] **S-27:** Token purity + live recolour quick path — grep the Life slice for hex/rgb/hsl literals
       and `var(--x)NN` (zero); switch preset dark↔light and set/clear an `accentPrimary` override while
       Life runs; confirm the dimmed field recolours live with no restart and no stale dim; console clean.
+
+### #2925 testing round 1 (spec/2925 @ 446ac18a) — results
+
+- **S-24 PASS (live).** chooser renders None + the six recipes + Life; selecting Life → `data-background-id="life"` + the dimmed canvas; the field is visibly darker than the #2915 baseline (before/after pair in the verdict); console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-25 PASS (live).** two frames ≈6 s apart differ densely; reselecting None removes the backdrop DOM and returns today's desktop; `PIXEL_DELTA_MIN` never lowered.
+- **S-26 PASS (pin) + named blocker.** reduced-motion product pin green (lifeBounds 11/11); build exit 0; suite green; live OS flip UNVERIFIED-with-named-blocker (no Tauri MCP media-emulation API).
+- **S-27 PASS (live).** zero literals / `var(--x)NN`; dark↔light + accent override/clear recolour the dimmed field live with no stale dim; console clean.

@@ -299,3 +299,14 @@
 - [ ] **E-58 — doc/comment drift (open Q8).** Check `backgroundRegistry.ts`'s `LIFE_BACKGROUND` comment
       (still names `--accent-primary` after #2915 round 2) and `docs/features/desktop-background-life.md`
       for a stale token name or a missing dimming note. Stale doc text is a finding (promotes to F-86).
+
+### #2925 testing round 1 (spec/2925 @ 446ac18a) — results
+
+- **E-51 PASS.** identical-frame (Δt=0) repeat of the AC1 harness: `relDeltaPct = 0.000000`, `changedPct = 0.000` — no invented dim from capture noise.
+- **E-52 UNVERIFIED — NAMED BLOCKER.** only light-default received a full 55 s coverage run (F-75); the dim-vs-perceptibility margin was not swept across the lightest/dimmest presets (round time-box after the BEFORE-leg dev-env cycle; the F-75 in-page accumulator takes ~55 s per preset). No preset measured falls below the 2.0 % floor; the floor was never lowered.
+- **E-53 PASS (vision).** BEFORE vs AFTER light-default: the field still reads as Life (recognizable oscillators, a live frontier), not a flat neutral wash; the dim removed glare without destroying the pattern.
+- **E-54 PASS with raw series disclosed.** the declared 10 000 ms cadence (24 000/10 000 = 2.4) did not capture a ≥3× re-seed discontinuity (max 6.5964 % vs median 5.62 % = 1.17× at 10 s; 1.98× at 2 s) — raw per-interval series reported under F-75 (same residual class #2915 disclosed).
+- **E-55 PASS.** the dim is canvas-baked (no overlay element); the backdrop stays at the z=0 layer below `WindowManager`; `elementFromPoint` over a floating window returns window content.
+- **E-56 PASS.** after the dim + a preset/accent change the thumbnail paints the same resolved dimmed expression as the canvas (computed ground/cell fills + the `color(srgb 0 0 0 / 0.12)` scrim rect; no `var(--accent-primary)`); no bright-vs-dim contradiction.
+- **E-57 PASS.** after 20 preset switches + accent set/reset the light-default paint returned identical (ground `rgb(224,224,224)`, cell `rgb(6,88,92)`, mean L 0.73387 vs the initial 0.73136) — no accumulation, no stale dim.
+- **E-58 PASS.** the `LIFE_BACKGROUND` comment now names `--life-cell` / the dimmed `--accent-strong` expression (`backgroundRegistry.ts:416-418`) and the docs carry the new "Dimming and legibility (#2925)" section (tokens, scrim/`paint()` contract, guard, 20-row pre-validation, thumbnail alignment); the stale `--accent-primary` claim is gone.
