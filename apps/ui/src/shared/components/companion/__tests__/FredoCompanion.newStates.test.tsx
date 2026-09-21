@@ -361,21 +361,44 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('leaks no greeting-beat timer: unmount during the active beat clears it (FIX-4r3)', async () => {
+  it('leaks no greeting-beat timer: unmount clears the ENTITY-owned beat timer (FIX-4r3)', async () => {
     const { container } = await mountEntity();
     vi.useFakeTimers();
+
+    // FIX-4r3 flake fix (G-156 order-independence): assert the ENTITY-OWNED
+    // greeting-beat timer BY IDENTITY, never a global `vi.getTimerCount()`. The
+    // global count is order/timing-dependent: it also counts the provider's own
+    // 4000 ms `showMessage` dismiss timer AND `useFredoRestingCadence`'s 12000 ms
+    // timer, and whether the latter is armed as a fake or a real timer depends on
+    // when React flushes that passive effect relative to `vi.useFakeTimers()`
+    // (observed: `pendingBeforeUnmount` = 2 or 3 across runs → flaky delta). The
+    // beat is the ONLY timer armed with `GREETING_BEAT_MS`; capture its id and
+    // prove the entity's unmount cleanup clears exactly that id.
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
 
     act(() => { api.showMessage(WELCOME_TEXT, 4000); });
     expect(avatarState(container)).toBe('greeting');
 
-    // The entity's unmount cleanup owns the greeting beat (`clearGreetingBeat`).
-    // The context-owned `showMessage` dismiss timer is a SEPARATE, pre-existing
-    // timer that is not part of the entity's cleanup contract, so pin the exact
-    // delta rather than a bare 0: exactly one pending timer (the greeting beat)
-    // is cleared on unmount.
-    const pendingBeforeUnmount = vi.getTimerCount();
-    expect(pendingBeforeUnmount).toBeGreaterThanOrEqual(1);
+    const beatIndex = setTimeoutSpy.mock.calls.findIndex(
+      (call) => (call as unknown[])[1] === GREETING_BEAT_MS,
+    );
+    expect(
+      beatIndex,
+      'the greeting beat must be armed with GREETING_BEAT_MS',
+    ).toBeGreaterThanOrEqual(0);
+    const beatTimerId = setTimeoutSpy.mock.results[beatIndex]?.value;
+
     cleanup();
-    expect(vi.getTimerCount()).toBe(pendingBeforeUnmount - 1);
+
+    // The entity's unmount cleanup (`clearGreetingBeat`) cleared THAT timer — no
+    // leak, independent of every other pending timer in the test process.
+    expect(
+      clearTimeoutSpy.mock.calls.some((call) => (call as unknown[])[0] === beatTimerId),
+      'the greeting-beat timer must be cleared on unmount',
+    ).toBe(true);
+
+    clearTimeoutSpy.mockRestore();
+    setTimeoutSpy.mockRestore();
   });
 });
