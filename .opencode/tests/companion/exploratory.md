@@ -494,7 +494,7 @@
 - [ ] E-67: **Worst-case accent vs the body fill.** Pick the shipped preset whose accent is closest to
       the page/card background (or set a near-background accent) and re-run the F-135 metric on the
       body ROI. Is the body still distinguishable as a FILLED region (the fill-vs-backdrop delta above
-      `4×T_OPEN`) and does the silhouette read as one solid figure at the sm 80×100 scale — or does the
+      `4×T = 32`) and does the figure read as one solid shape at the sm 80×100 scale — or does the
       body visually merge with the surface? Any body region where the fill is indistinguishable from
       the background is a finding (promotes to F-137; raises QA Discussion Q-2).
 - [ ] E-68: **Fill vs expression ink on the new body bands.** With the fill active, check every
@@ -508,11 +508,13 @@
       admissible (promotes to F-135/F-143).
 - [ ] E-70: **Fractional-DPI / narrow-viewport body integrity.** At a fractional OS scale and at the
       shipped minimum 900×600 (narrower is dev-advisory), check the body bands for seam-shifted /
-      overflowing / antialiased gaps at band joins (the 6-unit tuck under the rim), and that the figure
+      overflowing / antialiased gaps at band joins (the per-box tuck under the rim), and that the figure
       stays un-clipped. Any overflow, seam gap, or subpixel smear is a finding (promotes to F-135).
-- [ ] E-71: **Leak-boundary probe at the silhouette edge.** Walk the body silhouette boundary (the
-      outer-arm/hip steps, the jaw→arm neck band, the crotch) at 1-unit steps and record every pixel
-      where frame A differs from frame B inside a background box — i.e. a fill pixel outside the
-      silhouette. Any single-pixel leak (including antialias bleed beyond an inset of 2 units) is a
-      finding (promotes to F-138); explicitly re-check the `x 460, y 1150` false-positive note so a
-      future round does not re-file it as a product defect.
+- [ ] E-71: **Leak probe at the negative-space boxes.** Evaluate `leakCount` (`{ p ∈ N : maxChannel
+      |A(p) − C(p)| > T }`, `T = 8`; frames A + C in one task) over each of the UI/UX-bound boxes `N`,
+      inset per box by the binding NON-UNIFORM tuck rule `inset = min(6, floor(w/4), floor(h/4))`
+      (every box 6 except the bow-tie notch 2); walk the outer-arm/hip steps, the jaw→arm neck band
+      and the crotch at 1-unit steps for antialias bleed past the box edge. Any fill pixel inside `N`
+      is a finding (promotes to F-138); explicitly re-check the `x 460, y 1150` note (the left inner
+      leg's own edge, outside `N` once the per-box inset is applied) so a future round does not
+      re-file it as a product defect.
