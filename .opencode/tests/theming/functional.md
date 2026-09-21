@@ -710,3 +710,200 @@
 - **F-54 PASS.** build exit 0 (2577 modules); `test:run` 108 files / 1805 tests; background 96 tests.
 - **F-55 PASS.** 0 raster elements in the backdrop; every animated layer carries `data-motion-kind`.
 - **F-56 PASS.** Envelope/overscan pins; live non-identity frame — all three mesh layers' rects extend beyond all four viewport edges (computed inset −305/−576 px), no seam.
+
+---
+
+## #2915 extension — living Conway's Game of Life desktop background
+
+> Issue #2915 adds a **"Life"** option (Conway's Game of Life, B3/S23) to the Appearance
+> Desktop Background chooser alongside **None** (default) and the six procedural recipes.
+> Rows map to the QA Plan `F-57..F-72` / AC1–AC5 + the complex scenario in
+> `.opencode/tmp/2915/triage.md`.
+> **Verification policy: live** — rendered-pixel / DOM+computed-style / restart persistence /
+> OS-window-visibility reads on the running app. F-70 carries the mandatory `telemetry_spans`
+> receipt; F-71 the gates. The reduced-motion **live OS flip** is undrivable on this host
+> (Tauri MCP has no media-emulation API) and is carried as a **named blocker** closed by the
+> F-64 product-unit pin (G-050/G-131).
+>
+> **Relations to the recipe rows (G-136/G-220):** Life is a NEW, separate surface — it does
+> NOT supersede any recipe row. The #2905/#2909 signature/perceptibility machinery stays as
+> the recipe contract. The "zero `rAF`/`setInterval`" invariant in F-35/F-50/R-26 is scoped to
+> `backgroundMotion.ts`; the Life simulation loop must live OUTSIDE it (F-71 scope note).
+> `resolveBackgroundMotion` keeps exactly two states; Life adds no new motion status or control.
+>
+> **G-216/G-221 constant set (TEST-HARNESS constants — QA-owned; the floor is a floor, the
+> human read is authoritative):** read the authored `LIFE_STEP_MS` / `LIFE_RESEED_MS` / grid
+> `COLS`×`ROWS` / cell footprint from the Life module and RECORD them.
+> `PERCEPT_INTERVAL_MS = max(2000, 8 × LIFE_STEP_MS)`;
+> `PERCEPT_WINDOW_MS = max(4 × PERCEPT_INTERVAL_MS, 2 × LIFE_RESEED_MS)`; `PIXEL_DELTA_MIN=8`
+> (per-channel max |Δ|); coverage = changed backdrop px / backdrop px.
+> **Declared gate = the per-interval pairwise dense delta** (window/footprint union = corroboration
+> only). **Derived floor:** `LIFE_INTERVAL_FLOOR_PCT = changedCellFractionMin (5 %) × AA (0.6,
+> soft edge) × margin (2/3) = 2.0 % per interval` — cells tile the backdrop, so coverage ≈ the
+> changed-cell fraction; hard-edged cells → AA = 1.0 and recompute. Noise floor ≤ 0.2 %.
+> **G-213:** always pair the dense diff with (never replace it by) any point sampler.
+>
+> **Evidence mechanics (G-104/G-223):** name evidence frames WITHOUT image extensions in prose;
+> `.png`/`.jpeg` tokens only on lines that also carry an `https://` URL; descriptive link labels.
+> The `## Tests Runs` draft must carry a literal `Verdict:` line + the footer `*Authored by Tester*`.
+> Contract names (UI/UX §0 / Architect API Contracts): `[data-testid="desktop-background-chooser"]`,
+> `[data-testid="desktop-background-option-life"]`, `[data-testid="desktop-background-life-thumb"]`
+> (+ `data-life-preview="static"`), `[data-testid="desktop-background-life-attribution"]`,
+> `[data-testid="desktop-backdrop"]`, `[data-testid="desktop-backdrop-life-canvas"]`
+> (+ `data-background-layer="life-field"`, `data-life-motion`, `data-life-running`, `data-life-seed`),
+> `[data-testid="desktop-background-motion-status"]`, key `Fredo_desktop_background`.
+
+- [ ] **F-57 (AC1a / chooser + fresh default + Life select):** Open Settings → Appearance →
+      Desktop Background (`[data-testid="desktop-background-chooser"]`). List the `role="radio"`
+      tiles; on a fresh profile (cleared `Fredo_desktop_background`) read the selected tile; click
+      `[data-testid="desktop-background-option-life"]`.
+  **Expected:** **8** tiles — None + aurora/nebula/mesh/topography/constellation/halo + **Life**
+      (`aria-label="Life"`, `data-selected`/`aria-checked` consistent, exactly ONE selected).
+      Fresh profile → **None** selected. Selecting Life stamps `[data-testid="desktop-backdrop"]`
+      with `data-background-id="life"`; every thumbnail pairwise distinct.
+  - **Edge:** re-select the active option (idempotent); rapid None→Life→None churn console-clean
+    (no `Maximum update depth exceeded`); G-220 — Life's own tile does not mask None/recipe triggers.
+
+- [ ] **F-58 (AC1b / persistence):** Select Life; cold-restart (`dev-env.ps1 -Action Restart`);
+      re-open Appearance and read the backdrop + AppStore value. Repeat for None, then Life again.
+  **Expected:** Life persists **exactly** across a full restart (tile selected, `data-background-id="life"`
+      restored); `Fredo_desktop_background` reads `life`; None persists/restores as None (today's desktop).
+  - **Edge:** restart immediately after a change; upgrade from a persisted recipe; a value written by an
+    older build; restart while the automaton runs.
+
+- [ ] **F-59 (AC1c / stale id — negative/edge):** Inject `banana`, `''`, `null`, `123`, `{}`, and a
+      removed id into `Fredo_desktop_background` (AppStore + localStorage); restart each. Then confirm
+      `life` round-trips (not treated as stale).
+  **Expected:** every stale/unknown value resolves safely to **None** — zero backdrop DOM, today's
+      desktop, no throw / no console error / no blank/broken backdrop; `life` restores as Life.
+  - **Edge:** absent key vs present-but-empty; AppStore vs localStorage divergence; lenient resolver
+    unchanged in spirit.
+
+- [ ] **F-60 (AC2a / running B3/S23 + randomized Lexicon seed + random fill):** (a) capture the Life
+      canvas (`[data-testid="desktop-backdrop-life-canvas"]`, `data-background-layer="life-field"`) initial
+      frame on two fresh loads and read `data-life-seed`; (b) static-read the Life pattern module; (c) confirm
+      the chooser thumbnail is static (`[data-testid="desktop-background-life-thumb"]`, `data-life-preview="static"`
+      — the engine must not run in the chooser).
+  **Expected:** (a) the two initial frames differ densely AND `data-life-seed` differs (per-load
+      randomization); (b) a bounded catalogue of **2–4 named Life Lexicon patterns** (record the names) with
+      explicit coordinates/RLE, placed at random position/orientation per load, **plus bounded random fill**
+      — not uniform noise alone; initial population density inside a stated band (not 0, not 100 %);
+      (c) the thumbnail is static (no loop / no canvas engine).
+  - **Edge:** no fixed seed; same-process reload vs cold restart; rotation/reflection applied; record the
+    density band; both seeded clusters and scattered fill visible; the chooser never runs the engine.
+
+- [ ] **F-61 (AC2b / PRIMARY perceptibility, G-216/G-221/G-213):** With Life selected, read the
+      authored `LIFE_STEP_MS`/`LIFE_RESEED_MS`/grid caps; set `PERCEPT_INTERVAL_MS = max(2000,
+      8 × LIFE_STEP_MS)` and `PERCEPT_WINDOW_MS = max(4 × INTERVAL, 2 × LIFE_RESEED_MS)`; capture
+      **dense full-frame renders** (every pixel, no grid subsampling) at 0/¼/½/¾/1 of the window;
+      diff each consecutive interval (`PIXEL_DELTA_MIN=8` per channel).
+  **Expected:** **≥ 3 of 4** intervals clear the derived floor `LIFE_INTERVAL_FLOOR_PCT` =
+      changedCellFractionMin (5 %) × AA (0.6) × margin (2/3) = **2.0 %** (recompute + record from the
+      authored cell footprint/grid); window-union ≥ **4.0 %**; **≥ 1 interval ≥ 3 × the median interval
+      coverage** (the re-seed discontinuity) inside a window ≥ 2 × `LIFE_RESEED_MS`; no blank (0 %)
+      frame. **The gate is the per-interval pairwise dense delta** — the window union is corroboration
+      only. A computed-style / `getAnimations()` / `data-motion="animated"` read is **INSUFFICIENT**.
+  - **Edge:** G-213 — a sparse fixed-point grid can read near 0 for a coarse pattern; judge the dense
+    diff and never conclude "not running" from sparse points; the ≥3-of-4 rule tolerates one lull;
+    slow step → widen the interval; hard-edged cells → AA = 1.0; record the actual Δt.
+
+- [ ] **F-62 (AC2c / inert behind a present, non-maximized window, G-176):** Open a floating
+      (non-maximized) feature window over the Life backdrop at its resting rect; read the backdrop's
+      stacking/`pointer-events`/`aria-hidden`; `elementFromPoint` at a point inside the window rect;
+      click + type into the focused field.
+  **Expected:** backdrop `zIndex:0`, `pointer-events:none`, `aria-hidden="true"`, no `tabIndex`;
+      `elementFromPoint` inside the window returns **window content** (never the backdrop); clicks/typing
+      land; the backdrop never paints above window content.
+  - **Edge:** a maximized-only/absent window is VACUOUS → require the non-maximized resting rect;
+    two windows; drag over the animated region; minimized; light + dark.
+
+- [ ] **F-63 (AC3 / token-pure + live recolour + light/dark legibility):** (a) static-grep the Life slice
+      for hex/rgb/hsl literals + invalid `var(--x)NN`; (b) switch preset Dark→Light Default and set/clear
+      an `accentPrimary` override, sampling cell + ground colours; (c) measure cells-vs-ground contrast on
+      a light-based **and** a dark-based preset.
+  **Expected:** (a) zero literals / `var(--x)NN`; colours pure functions of live theme CSS custom
+      properties (translucency via `tint()`/`color-mix`); (b) live recolour **no restart** from live
+      tokens, unused-token override does not shift; (c) cells distinguishable from ground (≥ 3:1
+      non-text) on both; quote ratios.
+  - **Edge:** G-050 — no mode flag; use **presets** (light-default/solarized/arctic/sunset/paper vs
+    dark/tokyo-night/nord/matrix/coffee); override set/cleared mid-run; no `Maximum update depth exceeded`.
+
+- [ ] **F-64 (AC4a / reduced motion → static, no loop):** (a) run the product-unit/render pin:
+      `resolveBackgroundMotion({ systemReducedMotion: true })` → `'static'`; assert ZERO
+      `requestAnimationFrame`/`setInterval` scheduled, generation counter constant, `data-motion="static"`,
+      no motion `<style>`, a full (non-blank) static frame. (b) read the raw live
+      `matchMedia('(prefers-reduced-motion: reduce)').matches`.
+  **Expected:** (a) pin PASSES — animation **removed, not paused mid-frame**: the loop is never started,
+      `data-life-running="false"` + `data-life-motion="static"`, zero rAF/timers; (b) live flip
+      **UNVERIFIED — NAMED BLOCKER** (Tauri MCP exposes no media-emulation API — G-050/G-148/#2870);
+      record the raw flag.
+  - **Edge:** reduce ON × each preset; re-render after a theme switch stays static; a loop still
+    scheduled (paused but live) = FAIL; never blockerless.
+
+- [ ] **F-65 (AC4b / animated leg — no strobe):** With Life animating (reduce OFF) capture ≥ 8
+      consecutive dense frames; compute per-frame **full-frame mean luminance**.
+  **Expected:** no interval shows a full-frame mean-luminance inversion > **0.5 %** full scale; implied
+      flash rate **< 3 Hz** (WCAG 2.3.1); quote the raw luminance series per preset. `data-motion="animated"`
+      / a non-empty canvas alone is INSUFFICIENT (G-216; perceptibility is judged by F-61).
+  - **Edge:** a re-seed must not produce ≥ 3 consecutive full-frame inversions; local cell toggling is
+    not a full-frame flash — the metric is the full frame.
+
+- [ ] **F-66 (AC5a / procedural-only + bounded grid/step/memory):** (a) static — no `<img>`/raster
+      `url(...)`/`data:` image URI, no new binary asset, bounded curated pattern catalogue; (b) record the
+      authored named caps (`COLS × ROWS`, `LIFE_STEP_MS`, `LIFE_RESEED_MS`, buffer use); (c) ≥ 60 s soak.
+  **Expected:** zero raster; caps named + bounded; heap growth ≤ **+2 %** (a monotonic climb = FAIL);
+      grid/step/buffer counts constant; canvas backing-store ≤ ≈1.5 × viewport; no unbounded growth.
+  - **Edge:** dpr scaling; minutes-long soak; build + suite gates; no full-lexicon dump.
+
+- [ ] **F-67 (AC5b / pause when not visible, G-123 WHILE):** With Life animating read the canvas
+      `data-life-running` + `data-life-seed`; minimize/switch away (`document.visibilityState === 'hidden'`);
+      wait ≥ 5 s; re-read; restore.
+  **Expected:** `data-life-running` flips to **`"false"`** while hidden (loop **cancelled**, not merely
+      skipped) and back to `"true"` on restore; a dense diff of two frames captured ≥ 5 s apart while hidden
+      reads ≤ the 0.2 % noise floor (frame frozen). A `"true"`/advancing state while hidden = FAIL.
+  - **Edge:** **named blocker (G-053)** if the runtime hook is absent on the tested build → mark UNVERIFIED
+    with that blocker and fall back to `visibilityState` + the frozen-frame dense diff; minimize vs
+    switch-away vs occluded; restore latency.
+
+- [ ] **F-68 (AC5c / CC BY-SA 3.0 attribution — static + live):** Read the Life pattern-definition module +
+      docs; live-read `[data-testid="desktop-background-life-attribution"]` under the chooser.
+  **Expected:** a **CC BY-SA 3.0** attribution + licence notice at the pattern definitions (source
+      header/comment naming the Life Lexicon + the licence) **and** a docs note **and** the always-visible
+      in-app notice (`Patterns: Life Lexicon (Stephen Silver), CC BY-SA 3.0.`); bounded curated subset
+      (no verbatim full-lexicon dump).
+  - **Edge:** a notice only in a commit message / external URL (not in-repo) = FAIL; full-lexicon bundle = FAIL.
+
+- [ ] **F-69 (CX / complex scenario — still evolving + re-randomizes):** Given Life selected and motion not
+      reduced, when the backdrop has run ≥ the F-61 window and ≥ 2 × `LIFE_RESEED_MS`, then the automaton
+      is still visibly evolving and re-randomizes rather than freezing into a still life or blank grid.
+  **Expected:** per-interval dense delta clears the floor in ≥ 3 of 4 intervals; ≥ 1 re-seed discontinuity;
+      the end-of-window frame ≠ the initial frame; population never 0 / never a whole-window freeze.
+      Human/vision corroboration (watch ≥ 6 s: evolving? yes; frozen/blank? no) — metric PASS + human
+      "frozen" = FAIL.
+  - **Edge:** long re-seed period → extend the window; slow step → widen the interval; record timestamps;
+    a single-phase window must not be read as a one-shot settle.
+
+- [ ] **F-70 (NF-live / receipt):** `fredo emit --event-type chat --session-id e2e-2915-chat` +
+      `--event-type tool_use --session-id e2e-2915-tool --tool-name read_file`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`; retain screenshot URLs + live `tauri_webview_*` receipts.
+  **Expected:** `telemetry_spans` **NON-ZERO** with a recent `max(ingested_at)`; both markers classify.
+      **A static-only PASS is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; verbatim output; never fabricate a span query.
+
+- [ ] **F-71 (NF-gate / gates + no test weakening):** `pnpm --filter @fredo/ui build`;
+      `pnpm --filter @fredo/ui test:run`; run the theming + settings + desktop-shell regressions.
+  **Expected:** build exit 0 (zero TS errors/warnings); suites green; existing assertions not
+      weakened/disabled/deleted. **Scope note:** the Life rAF loop must NOT trip F-35/F-50/R-26 (scoped to
+      `backgroundMotion.ts`) — those plus `background.invariants.test.tsx`'s zero-rAF / ≥1-layer /
+      exactly-6-descriptor pins must be **re-scoped to the CSS-recipe modules**, with a NEW bounded-loop pin
+      for the Life engine (single rAF; cancelled on static/hidden/unmount; no unbounded timers). The only
+      permitted supersession remains the explicit #2899 static-only legs.
+  - **Edge:** no dangling import; overlap suites green.
+
+- [ ] **F-72 (G-220 / resolver + forcing recipes):** Validate each state's forcing recipe against the
+      shipped mapping (`BackgroundSettings.tsx:162` — each tile `<button role="radio">`
+      `onClick={() => select(id)}`): `none` / the 6 recipes / `life` each have their own tile.
+  **Expected:** selecting each of the 8 options reaches **exactly** that state; `life` masks no existing
+      state's only trigger; `resolveBackgroundMotion` still has exactly two states and Life adds no new
+      motion status or extra control.
+  - **Edge:** keyboard roving-tabindex walk reaches Life; the motion-caption contract is unchanged.
