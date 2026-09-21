@@ -23,6 +23,11 @@ export interface OpenWindowParams {
   canClose?: boolean;
   canMaximize?: boolean;
   canMinimize?: boolean;
+  /**
+   * Default-open state (Spec #2924): omitted ⇒ full-bleed when `canMaximize`
+   * resolves true, floating when it resolves false. An explicit `false` always
+   * means float (restore); an explicit `true` always means full-bleed.
+   */
   isMaximized?: boolean;
 }
 
