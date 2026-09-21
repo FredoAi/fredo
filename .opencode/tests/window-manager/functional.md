@@ -373,3 +373,153 @@
 - [ ] F-48 (T-LIVE / live gate): `telemetry_spans` + one classified row.
   - EXPECTED: `.opencode/skills/telemetry-query/telemetry-query.ps1` → `SELECT COUNT(*), MAX(timestamp) FROM telemetry_spans` non-zero with a recent timestamp; one injected `fredo emit` event classifies into `chat_rows`/`tool_use_rows`. REQUIRED for the live-policy exit gate.
   - Edge: telemetry DB absent/empty → NAMED BLOCKER; never substitute a static PASS.
+
+## Test run (#2924 round 1) — Verdict: **PASS** (F-6 / F-38..F-48)
+
+> Live-driven via `pnpm dev:tauri` (served root on `spec/2924 @ 33faafef`; dev-env Status:
+> `running (repo root on spec/2924 @ 33faafef)`). Viewport `view = {w:1920, h:1017}`.
+> `surface = .fredo-window__surface[role="group"]`; all rects from `getBoundingClientRect()`.
+> DOM snapshot + screenshot per AC; console read after every leg. Full per-AC evidence in the
+> `## Tests Runs (round 1)` comment on #2924.
+
+- **F-38 (T-R1a / REQ-1) — PASS.** Every DRIVEN entry point yields the identical full-bleed rect
+  `{left:0, top:0, right:1920, bottom:1017}`, `borderRadius:0px`, `boxShadow:none`, 0 grips,
+  control `Restore <title>` + `aria-expanded="true"`:
+  (1) launcher grid tile (Mission Monitor → Sessions); (2) APPS search (typed `stepper` in
+  `[data-testid=launcher-command-input]` → grid filtered to exactly one tile → Stepper Probe);
+  (3) app-dock restore (Query Viewer minimized → bottom dock revealed via document `pointermove`
+  at `clientY=1015` → entry `Query Viewer (minimized)` clicked); (4) companion/CLI app-open
+  (`fredo open-app "mission-monitor"` / `"Query Viewer"` / `"stepper-probe"`); (5) Settings
+  launcher tile; (6) Dev Mode auto-open (konami `↑↑↓↓←→←→ba` dispatched to `document`).
+  Feature window TYPES measured identically (5 concurrent + Settings + Dev Mode): Sessions,
+  Query Viewer, Stepper Probe, Dev Mode, Settings. Container reconciliation: the
+  `WindowManager` container rect == `#root` rect == `body` rect == the viewport rect
+  `0,0,1920,1017`; `body` margin `0px`; `documentElement.scrollWidth/Height = 1920/1017` →
+  ZERO gutter anywhere in the chain. ZERO cascade fingerprint (`r.left` observed 0 / 720 / 210,
+  never `48 + 16·stackIndex`). Narrow viewport (OS-window resize to 900×600): surface
+  `0,0,900,600` full-bleed.
+  - **NOT DRIVEN (named blockers, G-053):** (a) *Setup-wizard auto-open* — `Home.tsx:79-86`
+    auto-opens only when `settingsService.get('plugin_installed','')` is falsy; the dev instance
+    has the plugin installed, and the Setup feature is `showable=false` (no grid tile, no
+    `resolveAppIdentity` identity for `fredo open-app`), so the trigger is unreachable without
+    wiping app state (attempted the only in-repo routes; neither exists). (b) *feature
+    `openSelf()`* — `FredoFeatureClass.openSelf()`
+    (`FredoFeatureClass.ts:175`) has no in-repo caller (`git grep openSelf apps/ui/src` = the
+    definition + a comment only); the callback it dispatches is the SAME
+    `openFeatureWindow` the CLI/app-open path drives above, so the open contract is covered
+    transitively. Neither is a FAIL — both are entry-point reachability gaps in the fixture, not
+    product defects.
+- **F-39 (T-R1b / REQ-1 edge) — PASS.** Opened A (Sessions) + B (Query Viewer); re-invoked A via
+  `fredo open-app "mission-monitor"`: still exactly 2 `.fredo-window__surface` (one per feature
+  id), both rects byte-identical `0,0,1920,1017` before and after; A re-focused
+  (`borderColor rgb(0,209,209)` accent), B dropped to unfocused (`rgb(43,52,64)`). No second
+  cascade offset. Re-open of a MINIMIZED A = the dock-restore leg above → full-bleed again.
+  Rapid double-invoke (`fredo open-app` ×2 while focused) → one surface, no duplicate.
+- **F-40 (T-R2a / REQ-2) — PASS.** `header.querySelectorAll(':scope > div').length === 2`;
+  header children = `DIV` (icon tile) + `P` (title) + `DIV` (control cluster); tile 24×24 px,
+  `aria-hidden="true"`; title `<p>` text `Sessions`; structural leaf-`F` scan over
+  `.fredo-window__header *` = **0**; `git grep ">F<" apps/ui/src/shared/window-system` = **0**
+  (the `F` brand-cap Box is absent; `git show main:...WindowChrome.tsx` confirms the removed
+  `accent.default` 16×16 cap with the literal `F`). Edge (title containing "F" / no icon / long
+  title) pinned at unit level (`WindowChrome.test.tsx` `does not mistake a title containing “F”`,
+  `keeps the tile … when the feature has no icon`).
+- **F-41 (T-R2b / REQ-2) — PASS.** Real `<button>`s: `Minimize Sessions` /
+  `Restore Sessions` (`aria-expanded="true"` maximized → `Maximize Sessions` /
+  `aria-expanded="false"` floating) / `Close Sessions`, all 28×28, `tabIndex=0`, glyphs
+  `aria-hidden="true"`, DOM order minimize → max/restore → close; frame `role="group"`
+  `aria-label="Sessions"`; content region `tabIndex=-1`. `aria-expanded` flip observed live on
+  the restore/maximize round-trip.
+- **F-42 (T-R3 / REQ-3) — PASS.** Content region (surface `children[1]`) computed `padding:0px`
+  all sides, `margin:0px`; content rect `left=1, right=1919, bottom=1016` vs surface
+  `0/1920/1017` — the 1px difference IS the surface's `1px solid` border (no padding beyond it);
+  `p="4"` absent from `WindowFrame.tsx` (grep = 0; the ST-5 source guard pins it). Per-feature
+  first-level audit (live): Settings content root `padding 0px` (sidebar `px=5 pt=5` = 20px,
+  right panes `p=6` = 24px) → `ok-feature-padded`; Dev Mode root `padding 0px` (sections
+  `px={3}`) → `ok-edge-to-edge`; Query Viewer `p={3}` = 12px → `ok-feature-padded`; Stepper
+  Probe `p={4}` = 16px → `ok-feature-padded`; mission-monitor root `0` (token bar + canvas
+  edge-to-edge) → `ok-edge-to-edge`. No feature `cramped` (0 gap) and none `edge-clipped`;
+  `scrollHeight == clientHeight (975)` on each → no viewport-unit overflow/scrollbar.
+  **BEFORE (reference-not-re-measured):** the pre-change `main` checkout was NOT re-materialized
+  (the environment lever for a second env cycle was unavailable in this dispatch — the repo is
+  served from the single spec-2924 root and `git worktree` is outside the tester sandbox);
+  independent BEFORE receipts: `git show main:apps/ui/src/shared/window-system/WindowFrame.tsx`
+  ships `p="4"` on the content Box + `BASE 48`/`CASCADE 16` (`x: BASE + stackIndex*CASCADE`) +
+  an unread `savedGeomRef` restore, and `git show main:...WindowChrome.tsx` ships the `F` cap —
+  the removed-code diff. Durable suite recorded BEFORE: #2807 round-2/3 F-6 restore
+  `480×320 @ 48,48` (cascade), maximized `1920×1017`; #2838 F-22 maximized `{0,0,1920,1017}`.
+  Per the plan's procedure these are the BEFORE column, explicitly marked
+  reference-not-re-measured.
+- **F-43 (T-R4a / REQ-4) — PASS.** Default-open is full-bleed; `Restore` → float
+  `{left:720, top:348.5, width:480, height:320}`, `borderRadius:8px`, exactly 8 grips — this
+  EQUALS the Architect's binding `resolveFloatGeometry(1920×1017)`:
+  `x=(1920−480)/2=720`, `y=(1017−320)/2=348.5`, size `min(480,1920−48)=480 × min(320,1017−48)=320`.
+  Second `Maximize` → full-bleed `0,0,1920,1017, radius 0, shadow none, 0 grips`; over 2 cycles
+  the restored rect is byte-identical (no drift). Narrow-viewport leg (900×600): restore =
+  `{210,140,480,320}` = the same formula. Edge: maximize→restore after the OS window was
+  resized returns the EDITED (saved) float, not a re-derived one.
+- **F-44 (T-R4b / REQ-4) — PASS.** Minimize → surface `display:none` (`0×0`), the entry STAYS in
+  `useWindows()` (surface count unchanged), dock entry reads `Query Viewer (minimized)`; dock
+  activation restores the SAME id at full-bleed. Close removes frame + entry: closing a focused
+  and a backgrounded window both succeed; closing the only window → 0 surfaces, clean workspace,
+  no stray frame; close idempotent/re-entrancy-guarded. Opening a 2nd window focuses it (accent
+  `rgb(0,209,209)`) and drops the 1st to unfocused (neutral `rgb(43,52,64)` + muted title).
+  Update-while-minimized is pinned by `windowStore.test.ts` (`never full-replaces — control
+  state (minimize) survives a content-only patch`).
+- **F-45 (T-R4c / REQ-4) — PASS (real `PointerEvent` dispatch).** Drag by header: dispatched
+  `pointerdown` on `.fredo-window__header` + `pointermove`/`pointerup` on `window` moved the
+  float `720→840` (+120) / `348.5→408.5` (+60) exactly. Clamps: drag past the right edge →
+  `x=1896` (`=1920−24`, ≥24px stays inside); past the left edge → `x=−456` (`=24−480`,
+  `right=24`); drag up past the top → `y=0`. Exactly 8
+  `.fredo-window__grip--{n,s,e,w,ne,nw,se,sw}` present while floating, **0** while maximized,
+  0 while minimized; EACH of the 8 grips driven individually with the expected edge-only delta
+  (n: top+30/height−30; s: height+30; e: width+40; w: left+40/width−40; ne: top+30/width+40/
+  height−30; nw: left+40/top+30/width−40/height−30; se: width+40/height+30; sw: left+40/width−40/
+  height+30); shrink past MIN clamps at exactly `320×200`; drag while maximized is a no-op
+  (rect unchanged); `stopPropagation` on the controls keeps a control pointerdown from starting
+  a drag.
+- **F-46 (T-R4d / REQ-4) — PASS (tab order, DOM) / driver-limited on activation.** Static DOM:
+  the cluster holds 3 real `<button>`s in the order minimize → max/restore → close, all
+  `tabIndex=0`, no focus trap, frame non-modal, content `tabIndex=-1` (minimized window is
+  `display:none` → out of the tab order). Live key activation was NOT drivable: injected `Tab`
+  did not move `document.activeElement` (stayed on `Minimize Sessions`) and injected `Enter` /
+  `Space` on the focused `Restore Sessions` button did not dispatch the click — the MCP bridge's
+  synthetic keys do not reach WebView2's trusted input pipeline (same driver class as the
+  documented synthetic-pointer limitation). Named blocker, not a product defect. Global window
+  shortcuts (`CmdOrCtrl+W/M/Shift+M`, `Ctrl+Tab`) are **deferred per the #2807 baseline — not a
+  FAIL**.
+- **F-47 (T-R5 / REQ-5) — PASS.** Static grep over `apps/ui/src/shared/window-system/**`:
+  `#[0-9a-fA-F]{3,8}` matches ONLY issue-ref comments/prose (`#2924`, `#2807`, `#431`, `#2770`);
+  `rgba(|rgb(|hsla(|hsl(` = 0 in code (2 matches are test description strings);
+  `var\(--[a-z0-9-]+\)[0-9]` alpha-append = **0**; `tint(` present and used
+  (`WindowFrame.tsx:239-240,294`; `WindowChrome.tsx:227`). Live re-tint with a window open
+  (Settings, Appearance pane → `select[aria-label="Theme presets"]`, presets switched via the
+  real change event): Dark → header `rgb(12,17,23)` = `var(--header-bg) #0c1117`; Terminal Green →
+  header `rgb(10,10,10)` = `#0a0a0a`, border `rgb(31,60,31)` = `var(--border-color)`, accent
+  `#3fbf7f`, title `rgb(90,138,90)` on `#0a0a0a` ≈5.1:1; Light Default → header
+  `rgb(238,238,238)` = `#eeeeee`, title `rgb(95,107,122)` ≈6.5:1 (dark-on-light). Icon tile =
+  `rgb(58,58,58)` = `var(--card-hover-bg) #3a3a3a` in every preset. Chrome re-tints with the
+  theme; title stays readable in every preset.
+- **F-48 (T-LIVE / live gate) — PASS.** `telemetry-query.ps1`:
+  `SELECT COUNT(*), MAX(ingested_at) FROM telemetry_spans` → `spans: 27422`,
+  `newest_ingest: 2026-09-21T22:01:03.441408600+00:00` (seconds before the query), and
+  `chat_rows: 31690 / tool_use_rows: 40515 / agent_session_rows: 439`. One injected
+  `fredo emit --event-type chat --state response --session-id e2e-2924-tlive
+  --correlation-id e2e-2924-tlive-1` classified into `chat_rows` (row present,
+  `updated_at 2026-09-21T22:01:42Z`), and one
+  `fredo emit --event-type tool_use --tool-name e2e_probe_2924 --session-id e2e-2924-tlive
+  --correlation-id e2e-2924-tlive-2` classified into `tool_use_rows` (`tool_name: e2e_probe_2924`).
+  The classifier/row pipeline flows while the window default changed.
+- **F-6 (AC2, #2924 re-point) — PASS.** Default-open arrives full-bleed (`0,0,1920,1017`,
+  radius 0, shadow none, 0 grips, `Restore Sessions` + `aria-expanded="true"`); Restore yields
+  the sensible centered float (recorded exactly `720,348.5,480,320`, radius 8px, 8 grips);
+  Maximize returns full-bleed. The pre-#2924 cascade expectation is superseded; no cascade
+  fingerprint anywhere.
+- **Build/test gates — PASS.** `pnpm --filter @fredo/ui test:run` → **120 files / 1776 tests
+  passed, 0 failed** (includes the new `windowGeometry` 11, `WindowChrome` 11,
+  `WindowFrame` 17, `featureRoots.contentRegionSizing` 6, +8 store cases); `pnpm --filter
+  @fredo/ui build` (`tsc && vite build`) exit 0, 2583 modules transformed (only the pre-existing
+  `>500 kB` chunk advisory).
+- **Console hygiene — PASS.** `tauri_read_logs(source="console")` after each leg: no `Error:` /
+  `Uncaught` / `Maximum update depth exceeded` (only the pre-existing `motion() is deprecated`
+  warn and benign `[mission-monitor] auto-fit` debug lines). `prefers-reduced-motion: reduce` =
+  false; no new animation introduced by this presentation change.
