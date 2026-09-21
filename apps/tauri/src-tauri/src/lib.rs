@@ -433,6 +433,23 @@ pub fn run() {
             // there is no resident engine: the captured clip is the ONE path).
             app.manage(infrastructure::voice::session::VoiceState::new());
 
+            // Legacy STT on-disk cleanup (Spec #2914 SA-12/SA-13, NFR-3). The
+            // on-device sherpa engine was deleted with the local speech path, so
+            // an upgraded machine's previously downloaded model directory under
+            // `<models_dir>/sherpa-onnx-streaming-zipformer-en-2023-06-26` is
+            // dead weight. FIRE-AND-FORGET, exactly like the retired
+            // `ResidentEngine::warm_at_setup`: nothing on the setup path awaits
+            // it, so startup is never blocked or delayed. Un-gated and
+            // idempotent (no completion marker) — a restart on an upgraded
+            // machine is the live trigger. The cleanup is scoped to that ONE
+            // path; a missing path or a failure is silent (logged, never panics).
+            let legacy_stt_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let models_dir =
+                    infrastructure::companion::models::resolve_models_dir(&legacy_stt_handle);
+                features::setup::legacy_stt::remove_legacy_stt_model_dir(&models_dir);
+            });
+
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
             tauri::async_runtime::spawn(async move {
