@@ -1871,3 +1871,81 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
       injected markers classify under their session ids; every row carries a rendered receipt.
       **A static-only PASS is a FALSE PASS.**
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+---
+
+## #2922 extension — solid Fredo on the launcher seat, whole body (revises #2917)
+
+> Issue #2922 revises #2917: the interior fill covered the head + mouth void only; the BODY
+> (viewBox `y ≈ 812–1234`) is still see-through. This file owns the LAUNCHER surface — the decorative
+> seat mascot `.fredo-avatar-idle` (`LauncherShell.tsx:1638-1639`) and the seat geometry. The
+> companion surface + the BINDING body-solidity metric live in `.opencode/tests/companion/`
+> `functional.md` F-135..F-143 (`#2922 extension`) — run these rows with the SAME metric/constants.
+> Rows map 1:1 to the QA Plan `Q-2/Q-4/Q-6/Q-8/Q-9` in `.opencode/tmp/2922/triage.md` `## QA Expert`.
+> **Verification policy: live** — a property-existence check is never a PASS. **Launcher reachable
+> states:** the seat mascot renders only `idle` / `thinking` (bar engaged or a non-empty query) /
+> `happy` (a feature-tile-open beat) / `playful` (the 12 s rest cadence) — `LauncherShell.tsx:582-585`
+> + `fredoAvatarResolver`; all other states are companion-only.
+
+## F-113 (Q-2 / R1 / AC1) — the launcher seat mascot's body renders solid in every reachable state
+
+- [ ] F-113: Companion OFF (so `.fredo-avatar-idle` renders at the centre seat); per reachable state
+      (`idle`; `thinking` = engage the bar / type a non-empty query; `happy` = open a feature tile;
+      `playful` = 12 s sustained rest) capture frames A/B of the `.fredo-avatar-idle` crop in dark base
+      + `light-default` and run the binding body metric over the body ROI. Screenshot each.
+  **Expected:** `holeCount == 0` in EVERY reachable state × both themes (no backdrop shows through the
+      body: bow tie, arms, buttons, legs, feet); the seat renders exactly one Fredo; the state set
+      reached is exactly `{idle, thinking, happy, playful}` (quote `data-state` per leg).
+  - **Edge:** open/close churn across captures (the mascot remounts); a capture mid-bob (frame-based);
+    the companion toggled ON mid-capture swaps the surface to `CompanionEntity` (record, do not score
+    the companion here); a 700-wide viewport is a dev-view advisory only.
+
+## F-114 (Q-4 / R3 / AC3) — the launcher seat fill is token-native and re-tints live
+
+- [ ] F-114: Read `#fredo-interior`'s `fill` attribute + computed fill at the launcher seat, and
+      `--fredo-avatar-interior` on `:root` before/after switching dark ↔ `light-default` and changing
+      the accent via `select[aria-label="Theme presets"]` (no reload); re-sample the seat body pixels.
+  **Expected:** attribute `fill === "var(--fredo-avatar-interior)"`; computed fill resolved
+      (non-empty); the seat body re-tints with the live token on every theme/accent change, no stale
+      colour, no restart; the launcher and the companion resolve the SAME token value in the same theme.
+  - **Edge:** re-theme mid-open/close and mid-animation; a near-background accent (report the
+    fill-vs-backdrop delta).
+
+## F-115 (Q-6 / R5 / AC2) — launcher frozen geometry: 58 base rects + ONE `<path>` fill drawn first
+
+- [ ] F-115: Read the seat mascot's direct `<svg>` `<rect>` children and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; enumerate `#fredo-interior` (tag, order,
+      `data-layer`); count `querySelectorAll('rect')`; grep for a duplicate base-rect table under the
+      launcher feature; confirm the resting render carries no unexpected overlay beyond the state's own.
+  **Expected:** 58 base rects byte-identical to the shared source (and to the companion's) in every
+      reachable state; ONE `<path id="fredo-interior">` (never a `<rect>`) drawn before the base rects;
+      `shapeRendering="crispEdges"`, single accent `color="var(--accent-primary)"`, `aria-hidden`; no
+      duplicate geometry table; `fredoAvatarGeometry.test.ts` + `fredoAvatarSizes.test.ts` pass
+      UNMODIFIED.
+  - **Edge:** the fill must be additive (a separate layer/group), never a mutation of
+    `FREDO_AVATAR_SOURCE_RECTS`/the mirror math; `idle` is asserted on the resting frame (the `idle`
+    overlay-free leg).
+
+## F-116 (Q-8 / NF) — no CLS, console clean, no re-render loop, build gates
+
+- [ ] F-116: Measure the command-bar `getBoundingClientRect().y` and the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom` with the companion OFF / ON-at-home / ON-away and
+      after an idle auto-return, at the default size and the shipped minimum 900×600; read the console
+      after every leg; run `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** the wrapper stays exactly 80×100 + `margin-bottom: 16px`; `|Δy| ≤ 1 px` in every state;
+      no new scrollbar/overflow/clip; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no
+      re-render loop (#523); build exit 0; suite green without weakening an assertion (the
+      band-count refresh is the one named refresh, G-125).
+  - **Edge:** the fill layer must not participate in the launcher column's layout; open/close churn
+    around the animating mascot; the pre-existing `motion() is deprecated` WARN is exempt.
+
+## F-117 (Q-9 / LIVE) — live receipt from the launcher run
+
+- [ ] F-117: Same run as F-113..F-116: `fredo emit --event-type chat --session-id e2e-2922-launcher-chat`
+      + `--event-type tool_use --session-id e2e-2922-launcher-tool`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`; upload the launcher body frames via `upload-evidence --issue 2922`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      markers classify under their session ids; every row carries a rendered receipt. **A static-only
+      PASS is a FALSE PASS.** Never fabricate a query.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; the tester's
+    `## Tests Runs` draft must end with `*Authored by Tester*`.
