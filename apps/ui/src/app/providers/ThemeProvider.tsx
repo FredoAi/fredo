@@ -244,6 +244,11 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     root.style.setProperty('--scrollbar-thumb', 'color-mix(in srgb, var(--text-secondary) 45%, transparent)'); // T3
     root.style.setProperty('--scrollbar-thumb-hover', 'color-mix(in srgb, var(--text-secondary) 70%, transparent)'); // T4
     root.style.setProperty('--accent-strong', 'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)'); // T6
+    // #2917 ST-1 (T9): the FREDO avatar interior fill — accent mixed into the
+    // OPAQUE body surface (NOT --card-bg, which is rgba(0,0,0,0.3) in the classic
+    // dark preset and would re-open the hollow-figure defect). Opaque in every
+    // preset; re-resolves live on any preset/accent change with no remount.
+    root.style.setProperty('--fredo-avatar-interior', 'color-mix(in srgb, var(--accent-primary) 20%, var(--body-bg))');
     // T7/T8 — base-record-only presentation values (never part of the override contract).
     root.style.setProperty('--overlay-bg', theme.colors.overlayBg);
     root.style.setProperty('--shadow-dialog', theme.colors.shadowDialog);

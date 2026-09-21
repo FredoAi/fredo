@@ -155,3 +155,54 @@ export function expandFredoRects(src: readonly FredoAvatarSourceRect[]): FredoRe
 
   return expanded;
 }
+
+/**
+ * #2917 ST-1 — ADDITIVE interior-fill geometry (head interior + mouth void).
+ *
+ * This table is SEPARATE from `FREDO_AVATAR_SOURCE_RECTS`: the 58 base rects stay
+ * byte-identical (the canonical count-parity guard is keyed off the base table
+ * only — `expandFredoRects`), and the fill is rendered as ONE `<path>` (never a
+ * `<rect>`), so `svg.querySelectorAll('rect')` stays exactly 58.
+ *
+ * The bands tile the head cavity only — the body stays deliberately fragmented.
+ * Rows 1–5 cover the head interior (the eyes sit on top of the fill), rows 6–9
+ * cover the mouth void down to the jaw bar (y=761; no fill below). x-ranges are
+ * the cavity's inner faces expanded 6 units outward so each band tucks UNDER the
+ * opaque accent rim (invisible there) and every band is symmetric about X=507.
+ *
+ * Bands 6 and 7 are trimmed 1 unit at their bottom edge (h=58 / h=41) versus the
+ * triage table (h=59 / h=42): the head rim steps INWARD at y=644 (the inner face
+ * jumps x166 → x215 on the left and x848 → x799 on the right) and again at
+ * y=686 (x215 → x276 / x799 → x738). A band that extends across those step lines
+ * would expose the fill outside the head silhouette (9–15 units horizontally
+ * over 1 unit of height), exceeding the plan's own ≤8-unit tolerance. Band 6's
+ * width is 694 (not 700) so it tucks exactly 6 units under both rim faces, per
+ * the table's stated "inner faces expanded 6 units outward" rule.
+ *
+ * @see C:\Code\fredo\.opencode\wireframes\fredo-avatar.html
+ */
+export const FREDO_AVATAR_INTERIOR_RECTS: readonly FredoAvatarSourceRect[] = [
+  { x: 364, y: 106, width: 286, height: 43, src: 'interior-1', mirrored: false }, // crown under forehead band
+  { x: 270, y: 150, width: 474, height: 44, src: 'interior-2', mirrored: false }, // crown
+  { x: 210, y: 194, width: 594, height: 76, src: 'interior-3', mirrored: false }, // crown
+  { x: 161, y: 270, width: 692, height: 47, src: 'interior-4', mirrored: false }, // crown → temples
+  { x: 122, y: 317, width: 770, height: 268, src: 'interior-5', mirrored: false }, // face (eyes on top)
+  { x: 160, y: 585, width: 694, height: 58, src: 'interior-6', mirrored: false }, // lower face
+  { x: 209, y: 644, width: 596, height: 41, src: 'interior-7', mirrored: false }, // mouth void
+  { x: 270, y: 686, width: 474, height: 42, src: 'interior-8', mirrored: false }, // mouth void
+  { x: 337, y: 727, width: 340, height: 34, src: 'interior-9', mirrored: false }, // mouth void → jaw
+];
+
+/**
+ * #2917 ST-1 — builds the single `<path>` `d` for the interior fill from
+ * expanded interior rects (pure; unit-tested).
+ *
+ * Each rect becomes the relative subpath `M x y h w v h h -w Z` (clockwise in
+ * SVG space); every subpath shares one winding direction, so the non-zero fill
+ * rule unions them with no seams. Overlaps between adjacent bands are harmless.
+ */
+export function buildInteriorPathD(rects: readonly FredoRect[]): string {
+  return rects
+    .map((rect) => `M ${rect.x} ${rect.y} h ${rect.width} v ${rect.height} h ${-rect.width} Z`)
+    .join(' ');
+}

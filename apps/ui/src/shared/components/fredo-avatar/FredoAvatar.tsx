@@ -1,13 +1,18 @@
 import React from 'react';
 
 import {
+  buildInteriorPathD,
   expandFredoRects,
+  FREDO_AVATAR_INTERIOR_RECTS,
   FREDO_AVATAR_SOURCE_RECTS,
   FREDO_AVATAR_VIEWBOX,
 } from './fredoAvatarGeometry';
 import { AVATAR_SIZE, type FredoAvatarSize } from './fredoAvatarSizes';
+import type { FredoAvatarState } from './fredoAvatarStates';
 import './fredo-avatar.css';
 import './fredoAvatarIdle.css';
+
+export type { FredoAvatarState } from './fredoAvatarStates';
 
 /**
  * Shared FREDO avatar — the ONE canonical brand mascot for every surface.
@@ -21,22 +26,28 @@ import './fredoAvatarIdle.css';
  * rim with a hollow interior — the eyes are the only interior content and the
  * jaw is the broad lower-face bar (NO base mouth).
  *
+ * #2917 ST-1 — the head interior + mouth void are no longer transparent: ONE
+ * unconditional `<path id="fredo-interior">` (NEVER a `<rect>` — the shipped pin
+ * asserts `svg.querySelectorAll('rect') === 58`) is drawn BEFORE the 58 base
+ * rects and filled with the opaque derived token `--fredo-avatar-interior`. The
+ * base table and its mirror/count-parity guard are untouched.
+ *
  * FROZEN-GEOMETRY INVARIANT (AC-2): the 58 base rects are byte-identical in
  * EVERY state. State expression is a SEPARATE conditional overlay `<g>` (this
  * component) plus whole-element motion on the CONSUMER's own wrapper (never
  * here — the launcher's idle DOM must stay byte-identical to today's
  * `PixelButler`, and that component must never animate the base figure).
  *
- *   idle         — no overlay; exactly the 58 base rects.
- *   talk         — mouth overlay in the hollow lower-face region (~y692-713):
- *                  closed frame {440,692,134,14} / open frame {440,675,134,38},
+ *   idle         — no overlay; exactly the 58 base rects + the interior fill.
+ *   talk         — mouth overlay in the hollow lower-face region (~y672-736):
+ *                  closed frame {440,700,134,36} / open frame {440,672,134,64},
  *                  toggled by the `fredo-talk-mouth` keyframe (steps(2) loop).
  *   teleport-out — closed-eyes line rects across each eye column near its bottom
- *                  {323,564,68,14} + mirror {623,564,68,14}, plus a vertical
- *                  energy streak {499,180,16,520} that flashes ≤ 1 frame.
+ *                  {323,556,68,32} + mirror {623,556,68,32}, plus a vertical
+ *                  energy streak {491,180,32,520} that flashes ≤ 1 frame.
  *   teleport-in  — sparkle highlight rects near each eye's top-inner edge
- *                  {340,452,16,16} + mirror {658,452,16,16}, fading over the
- *                  first ~120ms.
+ *                  {332,444,32,32} + mirror {650,444,32,32}, fading over ~200 ms
+ *                  (under reduced motion they HOLD at opacity 1 — never erased).
  *   thinking     — 3-dot ellipsis in the hollow mouth void plus a thought-bubble
  *                  trail rising into the empty upper-right canvas (no mouth flap).
  *   joking       — a wide open laugh in the mouth void, a half-tone tongue, and
@@ -45,26 +56,24 @@ import './fredoAvatarIdle.css';
  *                  around the head.
  *   playful      — an asymmetric smirk + cocked brow above the right eye + a cheek
  *                  star (the one deliberately off-symmetry expression).
+ *   listening    — a 3-bar level meter on the right cheek hollow (voice capture).
+ *   working      — two conveyor chevrons `»` marching in the left cheek hollow.
+ *   error        — a V frown + slanted brows in `--status.error` ink.
+ *   greeting     — a waving hand + raised brows + a 3-bar upward smile arc.
  *
- * ADDITIVE-INTO-EMPTY-REGIONS: the base figure is solid `fill="currentColor"`, so
- * a new `currentColor` shape drawn OVER a base rect is invisible. Every new delta
- * is placed in an EMPTY region — the mouth void (x≈276-738, y≈590-755), the hollow
- * head interior beside the eyes, or the empty canvas around the head.
+ * EXPRESSION-INK RULE (supersedes the old additive-into-empty-regions rule):
+ * the interior is now FILLED, so an overlay drawn over it in the base accent
+ * would blend away. The whole overlay `<g>` therefore carries a group-level ink
+ * `color="var(--accent-strong)"` (a deepened/lightened accent that contrasts the
+ * accent-tinted fill in both light and dark), and its rects keep
+ * `fill="currentColor"`. `error` is the sole override (`var(--status.error)`).
+ * The 58 base rects' own `currentColor` (accent) is unchanged.
  *
- * Token-native: the SVG carries NO color of its own. Every rect uses
- * `fill="currentColor"` and the root SVG sets `color="var(--accent-primary)"`,
- * so theme/accent changes restyle the avatar with zero hardcoded hex/rgba.
+ * Token-native: the SVG carries NO colour literal of its own — the interior fill
+ * reads `var(--fredo-avatar-interior)` and every expression rect uses
+ * `currentColor`, so theme/accent changes restyle the avatar with zero hardcoded
+ * hex/rgba.
  */
-
-export type FredoAvatarState =
-  | 'idle'
-  | 'talk'
-  | 'teleport-out'
-  | 'teleport-in'
-  | 'thinking'
-  | 'happy'
-  | 'playful'
-  | 'joking';
 
 export interface FredoAvatarProps {
   /** sm → AVATAR_SM (companion ~80x100); md → AVATAR_MD (launcher 132x165). */
@@ -77,6 +86,11 @@ export interface FredoAvatarProps {
 
 // Expanded once at module scope — no per-mount rebuild (58 rects).
 const RECTS = expandFredoRects(FREDO_AVATAR_SOURCE_RECTS);
+
+// #2917 ST-1 — the additive interior fill, expanded + flattened to ONE path `d`.
+// The expansion uses the SAME helper as the base table; the count-parity guard is
+// keyed off the base table only, so this additive table cannot move the 58 count.
+const INTERIOR_PATH_D = buildInteriorPathD(expandFredoRects(FREDO_AVATAR_INTERIOR_RECTS));
 
 export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', className }) => {
   const { width, height } = AVATAR_SIZE[size];
@@ -93,6 +107,16 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
       color="var(--accent-primary)"
       className={className}
     >
+      {/* 1. Interior fill — additive, present in EVERY state (idle included),
+          opaque + theme-derived. One <path>, never a <rect> (58-rect pin). */}
+      <path
+        id="fredo-interior"
+        data-layer="interior"
+        d={INTERIOR_PATH_D}
+        fill="var(--fredo-avatar-interior)"
+        pointerEvents="none"
+      />
+      {/* 2. The 58 frozen base rects (byte-identical in every state). */}
       {RECTS.map((rect, index) => (
         <rect
           key={index}
@@ -103,27 +127,33 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
           fill="currentColor"
         />
       ))}
+      {/* 3. Expression overlay — ALWAYS last, so expressions draw over the fill
+          and the base figure. Group-level ink; `error` overrides to status.error. */}
       {state !== 'idle' && (
-        <g id="fredo-expression" data-state={state}>
+        <g
+          id="fredo-expression"
+          data-state={state}
+          color={state === 'error' ? 'var(--status.error)' : 'var(--accent-strong)'}
+        >
           {state === 'talk' && (
             <>
-              {/* Closed mouth frame — hollow lower-face region between the eyes'
-                  bottom (y≈584) and the lower-face jaw bar (y=761), center X=507. */}
+              {/* Closed mouth frame — mouth void between the eyes' bottom and the
+                  jaw bar (y=761), center X=507. */}
               <rect
                 className="fredo-talk-mouth-closed"
                 x={440}
-                y={692}
+                y={700}
                 width={134}
-                height={14}
+                height={36}
                 fill="currentColor"
               />
               {/* Open mouth frame — same x/w, taller, y shifted up. */}
               <rect
                 className="fredo-talk-mouth-open"
                 x={440}
-                y={675}
+                y={672}
                 width={134}
-                height={38}
+                height={64}
                 fill="currentColor"
               />
             </>
@@ -131,19 +161,20 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
           {state === 'teleport-out' && (
             <>
               {/* Closed-eyes lines across each eye column near its bottom (mirror
-                  x' = 1014 − 323 − 68 = 623). */}
-              <rect x={323} y={564} width={68} height={14} fill="currentColor" />
-              <rect x={623} y={564} width={68} height={14} fill="currentColor" />
+                  x' = 1014 − 323 − 68 = 623). Ink is accent-strong → visible over
+                  the accent eye rect. */}
+              <rect x={323} y={556} width={68} height={32} fill="currentColor" />
+              <rect x={623} y={556} width={68} height={32} fill="currentColor" />
               {/* Energy-gather streak on the vertical center axis (x=507 ± 8). */}
-              <rect className="fredo-teleport-streak" x={499} y={180} width={16} height={520} fill="currentColor" />
+              <rect className="fredo-teleport-streak" x={491} y={180} width={32} height={520} fill="currentColor" />
             </>
           )}
           {state === 'teleport-in' && (
             <>
               {/* Surprise/wide-eye sparkle highlights near each eye's top-inner
-                  edge (mirror x' = 1014 − 340 − 16 = 658). */}
-              <rect className="fredo-teleport-sparkle" x={340} y={452} width={16} height={16} fill="currentColor" />
-              <rect className="fredo-teleport-sparkle" x={658} y={452} width={16} height={16} fill="currentColor" />
+                  edge (mirror x' = 1014 − 332 − 32 = 650). */}
+              <rect className="fredo-teleport-sparkle" x={332} y={444} width={32} height={32} fill="currentColor" />
+              <rect className="fredo-teleport-sparkle" x={650} y={444} width={32} height={32} fill="currentColor" />
             </>
           )}
           {state === 'thinking' && (
@@ -151,13 +182,13 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
               {/* 3-dot ellipsis in the hollow mouth void — pondering, no mouth flap
                   (echoes the `💭 Thinking...` placeholder). Outer dots mirror the
                   center X=507: x=470 / 528, mid x=499. */}
-              <rect className="fredo-thinking-dot" x={470} y={700} width={16} height={16} fill="currentColor" />
-              <rect className="fredo-thinking-dot" x={499} y={700} width={16} height={16} fill="currentColor" />
-              <rect className="fredo-thinking-dot" x={528} y={700} width={16} height={16} fill="currentColor" />
+              <rect className="fredo-thinking-dot" x={470} y={688} width={32} height={32} fill="currentColor" />
+              <rect className="fredo-thinking-dot" x={499} y={688} width={32} height={32} fill="currentColor" />
+              <rect className="fredo-thinking-dot" x={528} y={688} width={32} height={32} fill="currentColor" />
               {/* Thought-bubble trail rising into the empty upper-right canvas. */}
-              <rect className="fredo-thinking-bubble" x={846} y={150} width={20} height={20} fill="currentColor" />
-              <rect className="fredo-thinking-bubble" x={884} y={110} width={28} height={28} fill="currentColor" />
-              <rect className="fredo-thinking-bubble" x={930} y={58} width={40} height={40} fill="currentColor" />
+              <rect className="fredo-thinking-bubble" x={846} y={150} width={40} height={40} fill="currentColor" />
+              <rect className="fredo-thinking-bubble" x={884} y={110} width={56} height={56} fill="currentColor" />
+              <rect className="fredo-thinking-bubble" x={930} y={58} width={72} height={72} fill="currentColor" />
             </>
           )}
           {state === 'joking' && (
@@ -176,9 +207,9 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
                 opacity={0.5}
                 fill="currentColor"
               />
-              {/* Laugh lines beside each outer eye corner (hollow interior). */}
-              <rect className="fredo-joking-laugh" x={300} y={468} width={14} height={22} fill="currentColor" />
-              <rect className="fredo-joking-laugh" x={700} y={468} width={14} height={22} fill="currentColor" />
+              {/* Laugh lines beside each outer eye corner (mirror x' = 1014 − 296 − 24 = 694). */}
+              <rect className="fredo-joking-laugh" x={296} y={456} width={24} height={44} fill="currentColor" />
+              <rect className="fredo-joking-laugh" x={694} y={456} width={24} height={44} fill="currentColor" />
             </>
           )}
           {state === 'happy' && (
@@ -191,9 +222,9 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
               <rect className="fredo-happy-mouth" x={512} y={714} width={36} height={16} fill="currentColor" />
               <rect className="fredo-happy-mouth" x={489} y={730} width={36} height={12} fill="currentColor" />
               {/* 3-star burst — two outside the head, one in the left cheek hollow. */}
-              <rect className="fredo-happy-star" x={150} y={150} width={22} height={22} fill="currentColor" />
-              <rect className="fredo-happy-star" x={862} y={180} width={20} height={20} fill="currentColor" />
-              <rect className="fredo-happy-star" x={330} y={700} width={18} height={18} fill="currentColor" />
+              <rect className="fredo-happy-star" x={150} y={150} width={36} height={36} fill="currentColor" />
+              <rect className="fredo-happy-star" x={862} y={180} width={32} height={32} fill="currentColor" />
+              <rect className="fredo-happy-star" x={330} y={700} width={40} height={40} fill="currentColor" />
             </>
           )}
           {state === 'playful' && (
@@ -202,11 +233,75 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({ size, state = 'idle', 
                   deliberately off-symmetry expression). */}
               <rect className="fredo-playful-smirk" x={464} y={716} width={72} height={16} fill="currentColor" />
               <rect className="fredo-playful-smirk" x={536} y={704} width={18} height={12} fill="currentColor" />
-              {/* Cocked brow above the right eye (hollow band y430-444, above the
+              {/* Cocked brow above the right eye (hollow band y420-452, above the
                   eye top y453). */}
-              <rect className="fredo-playful-brow" x={600} y={430} width={64} height={14} fill="currentColor" />
+              <rect className="fredo-playful-brow" x={592} y={420} width={72} height={32} fill="currentColor" />
               {/* Cheek star in the hollow interior right of the eye. */}
-              <rect className="fredo-playful-star" x={700} y={600} width={20} height={20} fill="currentColor" />
+              <rect className="fredo-playful-star" x={696} y={592} width={36} height={36} fill="currentColor" />
+            </>
+          )}
+          {state === 'listening' && (
+            <>
+              {/* 3-bar level meter on the RIGHT cheek hollow (right of the right
+                  eye, inside the head). Height-coded bars — a complete static frame
+                  at rest. No mouth shape, so it can never read as a mouth state. */}
+              <rect className="fredo-listening-bar" x={740} y={448} width={48} height={120} fill="currentColor" />
+              <rect className="fredo-listening-bar" x={792} y={428} width={48} height={168} fill="currentColor" />
+              <rect className="fredo-listening-bar" x={844} y={464} width={48} height={88} fill="currentColor" />
+            </>
+          )}
+          {state === 'working' && (
+            <>
+              {/* Two chunky conveyor chevrons `»` marching in the LEFT cheek hollow
+                  (a skill/tool is executing). Neutral face. */}
+              <g className="fredo-working-chevron">
+                <rect x={172} y={612} width={44} height={44} fill="currentColor" />
+                <rect x={172} y={668} width={44} height={44} fill="currentColor" />
+                <rect x={216} y={640} width={44} height={44} fill="currentColor" />
+              </g>
+              <g className="fredo-working-chevron">
+                <rect x={280} y={612} width={44} height={44} fill="currentColor" />
+                <rect x={280} y={668} width={44} height={44} fill="currentColor" />
+                <rect x={324} y={640} width={44} height={44} fill="currentColor" />
+              </g>
+            </>
+          )}
+          {state === 'error' && (
+            <>
+              {/* Downward V frown in the mouth void (ink = --status.error via the
+                  group colour override). */}
+              <rect x={455} y={700} width={56} height={40} fill="currentColor" />
+              <rect x={503} y={724} width={56} height={40} fill="currentColor" />
+              {/* Down-slanted brows (outer high, inner low). */}
+              <rect x={310} y={424} width={44} height={28} fill="currentColor" />
+              <rect x={352} y={444} width={44} height={28} fill="currentColor" />
+              <rect x={660} y={444} width={44} height={28} fill="currentColor" />
+              <rect x={618} y={424} width={44} height={28} fill="currentColor" />
+            </>
+          )}
+          {state === 'greeting' && (
+            <>
+              {/* Waving hand in the upper-left empty canvas (a region no other
+                  state uses) — the hand rotates about its wrist. */}
+              <g className="fredo-greeting-hand">
+                <rect x={132} y={246} width={84} height={72} fill="currentColor" />
+                <rect x={140} y={182} width={28} height={64} fill="currentColor" />
+                <rect x={176} y={166} width={28} height={80} fill="currentColor" />
+                <rect x={212} y={182} width={28} height={64} fill="currentColor" />
+                <rect x={116} y={262} width={32} height={44} fill="currentColor" />
+              </g>
+              {/* Motion arcs (static — never part of the rotating hand). */}
+              <rect className="fredo-greeting-arc" x={84} y={196} width={28} height={60} fill="currentColor" />
+              <rect className="fredo-greeting-arc" x={84} y={258} width={28} height={60} fill="currentColor" />
+              {/* Raised brows (outer low, inner high — the mirror image of error). */}
+              <rect x={314} y={420} width={44} height={28} fill="currentColor" />
+              <rect x={356} y={404} width={44} height={28} fill="currentColor" />
+              <rect x={656} y={404} width={44} height={28} fill="currentColor" />
+              <rect x={614} y={420} width={44} height={28} fill="currentColor" />
+              {/* 3-bar upward smile arc in the mouth void. */}
+              <rect x={451} y={704} width={52} height={26} fill="currentColor" />
+              <rect x={503} y={704} width={52} height={26} fill="currentColor" />
+              <rect x={483} y={730} width={64} height={22} fill="currentColor" />
             </>
           )}
         </g>
