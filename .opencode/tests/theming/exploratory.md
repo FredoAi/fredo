@@ -206,3 +206,36 @@
 - **E-38 (emulation lever hunt) — no lever.** raw `matchMedia('(prefers-reduced-motion: reduce)').matches` = false; no CDP `Emulation.setEmulatedMedia` port reachable through the Tauri MCP driver. F-45's named blocker reaffirmed (G-050/G-148/#2870); assertion not weakened.
 - **E-43 (paused-but-declared-animated) — metric cannot be gamed.** The Δt=0 control (animations at an identical `currentTime`) reads 0.02–0.05 % despite `data-motion="animated"` and 3 present animations — a present-but-frozen animation reads far below every floor.
 - **Not exercised this round (no AC depends on them):** E-37 (theme-change-between-captures anti-pattern), E-39 (minutes-long F-39 re-measure — the 100.3 s soak kept counts constant and the strobe series shows continuous motion), E-40 (dpr 1.25/1.5 — measured at dpr 1 only), E-41 (small/heavily-occluded viewport), E-42 (high-refresh display).
+
+## #2915 extension — Conway's Game of Life background probes
+
+> Unscripted probes for issue #2915 (a NEW Life option beside None + the six recipes). A confirmed
+> finding PROMOTES to `functional.md` as a new `F-` row (keep the origin note). No prior probe is
+> superseded. The perceptibility metric itself is F-61; these probe the MEASUREMENT and the
+> automaton's failure modes.
+
+- [ ] **E-44 — Rapid Life/recipe churn.** Cycle None → Life → each recipe → None (≥ 3 full cycles); watch
+      for `Maximum update depth exceeded`, stale paint, an orphaned Life loop or canvas surviving a
+      selection switch, or lag (AGENTS.md #523). Any finding promotes to F-57/F-66.
+- [ ] **E-45 — Sustained Life soak + re-seed cadence.** Leave Life active for several minutes; sample heap,
+      generation/step cadence, and grid/step counts at start/middle/end. Does the automaton die out or
+      freeze into a still life between re-seeds? Does the re-seed cadence drift? Any finding promotes to
+      F-61/F-66/F-69.
+- [ ] **E-46 — Reduced-motion path (named blocker).** Read `matchMedia('(prefers-reduced-motion: reduce)').matches`
+      and attempt to flip it live; record the live flip as UNVERIFIED with the Tauri-driver named blocker
+      (G-050/#2870). Confirm via the product-unit pin that under reduce NO simulation loop is scheduled and
+      the frame is static; any loop/step under reduce is a finding (promotes to F-64).
+- [ ] **E-47 — Visibility/pause probe.** Minimize, switch away, and occlude the window; does
+      `data-life-running` flip to `"false"` while `visibilityState === 'hidden'` (or the frame freeze to
+      ≤ noise floor) and resume cleanly on restore? Any drift, a loop that keeps stepping hidden, or a
+      stale/torn frame on restore promotes to F-67.
+- [ ] **E-48 — Life + theme/accent churn.** Switch dark↔light + set/clear the accent override while Life
+      animates; watch for a stopped loop, a frozen frame, a stale cell colour, or a re-render loop. Any
+      finding promotes to F-63.
+- [ ] **E-49 — Canvas / performance probe.** Measure the canvas backing-store size at dpr 1 and a scaled dpr,
+      the per-step allocation behaviour, and the step cadence. Does a dpr/monitor change blow up the grid or
+      the backing store unboundedly? Any runaway promotes to F-66.
+- [ ] **E-50 — Pattern legibility probe.** With the authored cell size/step rate, does the render read as
+      Life (recognizable gliders/oscillators, a live frontier) rather than visual noise or a static
+      checkerboard? Is the step rate perceptible but non-strobing? Any "looks like noise"/"looks frozen"
+      finding promotes to F-60/F-61.
