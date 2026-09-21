@@ -480,4 +480,39 @@
       object (LV2) while a skill selection is pending, and again while a teleport is in flight. Does
       the status compose through the resolver without masking `working` / the teleport base state, and
       does it apply to the correct turn (not a stale one)? Any masked `working`, status leaking across
-      a teleport, or a status applied to the wrong turn is a finding (promotes to F-131).
+      a teleport, or a       status applied to the wrong turn is a finding (promotes to F-131).
+
+---
+
+## #2922 extension — body-solidity edge probes (see the metric in `functional.md` F-135)
+
+> Unscripted probes for issue #2922 (the body-wide interior fill). A confirmed finding PROMOTES to
+> `functional.md` as a new `F-` row (keep the origin note); a confirmed regression-free probe is
+> recorded here. Live policy; an undrivable lever is a named blocker (G-053) with a static/unit pin —
+> never fabricated.
+
+- [ ] E-67: **Worst-case accent vs the body fill.** Pick the shipped preset whose accent is closest to
+      the page/card background (or set a near-background accent) and re-run the F-135 metric on the
+      body ROI. Is the body still distinguishable as a FILLED region (the fill-vs-backdrop delta above
+      `4×T_OPEN`) and does the silhouette read as one solid figure at the sm 80×100 scale — or does the
+      body visually merge with the surface? Any body region where the fill is indistinguishable from
+      the background is a finding (promotes to F-137; raises QA Discussion Q-2).
+- [ ] E-68: **Fill vs expression ink on the new body bands.** With the fill active, check every
+      state's shapes for a same-colour-on-same-colour collision on or near a body band (the #2850 E-25
+      / #2917 E-28 class) — `working` chevrons, `happy` cheek star, `playful` cheek star/brow. Any
+      distinguishing shape invisible in principle over the fill is a finding (promotes to F-136).
+- [ ] E-69: **Dense-vs-sparse metric disagreement (aliasing check).** For a thin/periodic state
+      (`teleport-in` sparkles, `working` chevrons) compute BOTH the dense per-pixel body metric and a
+      sparse point grid over the same ROI. Any state where the sparse grid reports 0 holes while the
+      dense metric reports holes (or the reverse) must be recorded — the sparse grid is NEVER
+      admissible (promotes to F-135/F-143).
+- [ ] E-70: **Fractional-DPI / narrow-viewport body integrity.** At a fractional OS scale and at the
+      shipped minimum 900×600 (narrower is dev-advisory), check the body bands for seam-shifted /
+      overflowing / antialiased gaps at band joins (the 6-unit tuck under the rim), and that the figure
+      stays un-clipped. Any overflow, seam gap, or subpixel smear is a finding (promotes to F-135).
+- [ ] E-71: **Leak-boundary probe at the silhouette edge.** Walk the body silhouette boundary (the
+      outer-arm/hip steps, the jaw→arm neck band, the crotch) at 1-unit steps and record every pixel
+      where frame A differs from frame B inside a background box — i.e. a fill pixel outside the
+      silhouette. Any single-pixel leak (including antialias bleed beyond an inset of 2 units) is a
+      finding (promotes to F-138); explicitly re-check the `x 460, y 1150` false-positive note so a
+      future round does not re-file it as a product defect.
