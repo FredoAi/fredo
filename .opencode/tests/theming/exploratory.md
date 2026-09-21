@@ -259,3 +259,43 @@
 - **E-48 PASS (live).** preset/accent churn while animating: live recolour, loop keeps running, no stale colour, no re-render loop.
 - **E-49 PASS (live).** backing store = 1920×1017 = 1.0× CSS viewport (≤ `LIFE_DPR_MAX` 1.5), constant through the soak.
 - **E-50 PASS (vision).** reads as Life; not noise, not a frozen checkerboard. **Resolution:** the round-1 E-50 promotion (F-63 light-preset contrast miss) is now **resolved** — the cell paints from `--accent-strong` and all five light presets clear ≥3:1 (5.078/3.742/4.588/4.729/5.051).
+
+## #2925 extension — dimmed-Life measurement + failure-mode probes
+
+> Unscripted probes for issue #2925 (a calmer, less glaring Life backdrop). A confirmed finding
+> PROMOTES to `functional.md` as a new `F-` row (keep the origin note). The dimming/legibility rows
+> themselves are F-73..F-88; these probe the MEASUREMENT (noise, aliasing, mechanism interaction) and
+> the dim-vs-perceptibility failure modes.
+
+- [ ] **E-51 — AC1 measurement-noise floor.** Capture the SAME frame twice (Δt = 0) at the tested tip and
+      run the AC1 luminance + dominance harness on both. Isolate the backdrop rect from shell chrome
+      (clock/status/launcher strip) if the residual exceeds 1 % relative. A metric that reads a dim on
+      an identical frame is a finding (promotes to F-73).
+- [ ] **E-52 — dim-vs-perceptibility margin sweep.** Across the lightest and dimmest presets/accents (and
+      across the full day/night range the dim control can reach, if it is adjustable), measure both the
+      AC1 field luminance and the AC2 per-interval coverage. Is there any preset where the dim pushes
+      coverage below the 2.0 % floor? Any such preset is a finding — record the raw pair (promotes to
+      F-73/F-75); the floor is never lowered.
+- [ ] **E-53 — "less same-colour" reads as muddy?** With the dim applied, does the field still read as
+      Life (live frontier, recognizable motion) rather than a flat neutral wash? A vision read of the
+      BEFORE vs AFTER frames. "Less one colour" that becomes "no colour/no readable field" is a finding
+      (promotes to F-74/F-75).
+- [ ] **E-54 — off-harmonic cadence stress (G-228).** Verify the re-seed discontinuity is actually
+      captured at the declared 10 000 ms cadence (24 000/10 000 = 2.4, off-harmonic). If the plan's
+      cadence lands harmonically (e.g. the authored re-seed period changes), report the raw per-interval
+      series + the fine-granularity (per-step) max/median ratio rather than looping (promotes to F-75).
+- [ ] **E-55 — dimming-mechanism / stacking interaction.** If the dim is implemented as a translucent
+      overlay, read its stacking context vs the Life canvas and vs `WindowManager`; `elementFromPoint`
+      at a point inside a floating window rect. An overlay that paints above a window, intercepts input,
+      or shifts z-order is a finding (promotes to F-85/R-36).
+- [ ] **E-56 — thumbnail vs live-field divergence (open Q5).** Compare the chooser thumbnail
+      (`data-life-preview="static"`) with the live dimmed canvas after the dim + a theme/accent change.
+      Does the thumbnail visibly contradict the field (bright vs dim; `--accent-primary` vs
+      `--accent-strong`)? Any visible contradiction is a finding (promotes to F-86).
+- [ ] **E-57 — theme/accent churn under the dim (double-apply probe).** Rapidly switch preset/accent
+      (≥ 5 switches) while Life runs; re-read the field luminance after returning to the starting preset.
+      Does the dim accumulate (each switch darkening further) or leave a stale dim? Any drift is a
+      finding (promotes to F-79/F-80).
+- [ ] **E-58 — doc/comment drift (open Q8).** Check `backgroundRegistry.ts`'s `LIFE_BACKGROUND` comment
+      (still names `--accent-primary` after #2915 round 2) and `docs/features/desktop-background-life.md`
+      for a stale token name or a missing dimming note. Stale doc text is a finding (promotes to F-86).
