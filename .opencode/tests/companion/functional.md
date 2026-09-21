@@ -2167,3 +2167,141 @@ clean.
 - **F-111 PASS (live, decisive).** Under `interrupt`, a real-keyboard send during a >1 s in-flight generation superseded it: the bubble settled EXACTLY `INTERRUPTED`, no queued indicator at any sample, and the superseded count tokens never appended. Screenshot `r2-ac6-interrupted.png`.
 - **F-112 PASS (live).** Full cold app restart (`dev-env.ps1 -Action Restart -Spec 2892`): Settings → Companion re-read `Interrupt and send now` + grace `10`; `localStorage`/`get_setting` both `interrupt`/`10000`.
 - **F-115 PASS (static/console).** Zero colour literals in the changed companion/launcher TSX; console clean (pre-existing `motion() is deprecated` WARN only).
+
+---
+
+## #2917 extension — solid Fredo + richer status vocabulary (companion seat)
+
+> Issue #2917 fills the avatar's hollow head interior + mouth void (additively) and audits/extends the
+> status vocabulary. Rows map 1:1 to the QA Plan in `.opencode/tmp/2917/triage.md` `## QA Expert`
+> (Q-1..Q-9). **Verification policy: live** — every row is judged on RENDERED output. A PASS built only
+> from source inspection, computed `animationName`, `data-state` presence or a keyframe existing is a
+> **FALSE PASS**. The mandatory live receipt is **F-125**.
+>
+> **Serving checkout:** `spec/2917` on a running Fredo desktop app (dev-env `Up -Spec 2917`, MCP driver
+> `com.fredo.app`). Screenshots → `.opencode/tmp/2917/e2e/`.
+>
+> **Rendered-delta metric (binding for F-119/F-121).** Crop the avatar to `offsetWidth × offsetHeight`
+> + 24 px halo; capture at `SAMPLE_CADENCE_MS = 100 ms` over `CAPTURE_WINDOW_MS = 2400 ms`; compute the
+> **DENSE full-frame per-pixel diff** (`T_CH = 8/255`, every pixel — no sparse grid); report
+> `delta_frac` / `delta_mean` + a 3-frame filmstrip (t0 / t0+1200 / t0+2400). Animation-property
+> presence is NEVER sufficient.
+
+## F-116 (Q-1 / REQ-1 / AC1) — Solid, theme-native interior on the companion seat
+
+- [ ] F-116: Companion ON at the home seat; in dark base, the `light-default` preset, and a changed
+      accent (Matrix), sample the head-interior + mouth-void pixels INSIDE the figure plus a same-frame
+      empty-surface control; read the fill layer's computed `fill`/`color`. Repeat on the launcher md
+      render.
+  **Expected:** the interior no longer shows the surface behind Fredo in ALL THREE conditions (the
+      sampled interior pixels resolve to the live accent, not the page/card background; contrast vs the
+      same-frame background ≥ 3:1 in both themes); the fill is an ADDITIVE layer (the 58 base rects stay
+      byte-identical); only `var(--accent-primary)`/`currentColor`/`tint()`.
+  - **Edge:** accent changed WHILE a state is active and mid-teleport; the fill must not extend outside
+    the head/mouth void; check sm 80×100 AND md 132×165.
+
+## F-117 (Q-1 / REQ-7 / NF) — Live fill recolor with no restart
+
+- [ ] F-117: With the avatar mounted (idle AND a non-idle state), switch dark → `light-default` and
+      change the accent via `select[aria-label="Theme presets"]` with NO reload; read the fill +
+      overlay computed colours before/after.
+  **Expected:** the filled interior AND every overlay re-tint to the live `--accent-primary` with no
+      restart and no stale colour; zero `var(--x)NN` alpha-append (#2770); the figure stays legible
+      against its background in both themes.
+  - **Edge:** change the accent MID-teleport and MID-stream; the fill must not flash the old token.
+
+## F-118 (Q-2 / REQ-2 / AC2) — Every existing expression stays legible over the fill
+
+- [ ] F-118: Force `talk`, `teleport-out`, `teleport-in`, `thinking`, `happy`, `playful`, `joking` and
+      `idle`; per state capture a still, probe `#fredo-expression[data-state=<s>]` rects and the fill
+      layer, and read the DOM paint order.
+  **Expected:** every distinguishing shape renders ON TOP of the fill and is visible (talk mouth toggle;
+      teleport-out closed-eye lines + streak; teleport-in sparkles; thinking dots + bubble trail; happy
+      arc + stars; playful smirk/brow/cheek star); each state is distinguishable at a glance from
+      `idle`, `talk` and every other state (vision/human filmstrip read at sm); the overlay `<g
+      id="fredo-expression">` is a SEPARATE conditional sibling painted AFTER the fill.
+  - **Edge (negative):** a `currentColor`-over-`currentColor` overlay invisible in principle (#2850
+    E-25 pattern) is a FAIL; no expression hidden, blended away, or drawn beneath the fill; probe at
+    80×100 sm.
+
+## F-119 (Q-3 / REQ-3 / AC3) — Per-state before→after audit table (dense metric)
+
+- [ ] F-119: For each of the 8 states capture the dense rendered-delta metric BEFORE (pre-change
+      checkout or the implementer's checked-in `before-*` artifacts) and AFTER (spec branch) with the
+      SAME recipe/constants; record a per-state audit row (legibility / perceptibility / distinctness /
+      reduced-motion correctness / shortfall / change).
+  **Expected:** the table is COMPLETE (8/8) and evidence-backed; each shortfalling state is named with
+      `delta_frac`/`delta_mean` before→after; every state clears its declared per-state floor AFTER; no
+      animation-property-only claim. Consumer behaviour/timing is unchanged (teleport out ≈400 ms /
+      in ≈400 ms + ~50 ms settle; joke/think/happy holds; resting cadence; idle watchdog bounds;
+      launcher idle DOM).
+  - **Edge:** a BEFORE capture unavailable ⇒ a checked-in `before-*` artifact + a named blocker (never a
+    fabricated before); a state left unchanged still carries an explicit "audited, no change needed"
+    verdict with its metric.
+
+## F-120 (Q-4 / REQ-4 / AC4a) — New states exposed via REAL triggers; static legibility
+
+- [ ] F-120: The FROZEN new-state set is `listening | working | error | greeting`. Force each via its
+      real product trigger (hold-Space on the bar → `listening`; a bar send selecting the `open_app`
+      skill, e.g. `open notepad` → `working`; `invoke('stop_llama_server')` + send → `error`; toggle the
+      companion ON → `greeting`). `success` is the audited `happy`; `waiting` is NOT a state (the #2892
+      queue indicator owns it).
+  **Expected:** `FredoAvatar` exposes the frozen set on the companion seat; each new state is (a)
+      visually distinct from `idle`, `talk` and every other state, (b) legible as a STATIC frame, (c)
+      theme-token-only, (d) clears its per-state dense-delta floor (F-121).
+  - **Edge:** a declared state with NO live trigger ⇒ BLOCKED-harness (a deterministic dev affordance is
+    required); never a static PASS. Distinctness re-checked at sm AND md.
+
+## F-121 (Q-5 / REQ-5 / AC4b) — New states perceptible on rendered output over time
+
+- [ ] F-121: Per new state capture the frame sequence (100 ms cadence / 2400 ms window / 24 px halo) and
+      compute the DENSE full-frame per-pixel diff; report `delta_frac`/`delta_mean` + a 3-frame
+      filmstrip per state.
+  **Expected:** each new state's `delta_frac` ≥ its declared floor (new-state floor ≥ 0.008) — i.e.
+      perceptible on RENDERED output over time; the filmstrip corroborates the vision/human read.
+  - **Edge (anti-patterns, never sufficient):** computed `animationName`/keyframe presence; `data-state`
+    being set; a static single frame; a sparse point-grid diff (aliases on thin/periodic paint).
+
+## F-122 (Q-6 / REQ-6 / AC5) — Frozen geometry + overlay separation + reduced-motion legibility
+
+- [ ] F-122: In EVERY state (existing + new) read the 58 base rects and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; read where whole-element motion lives; drive the
+      reduced-motion pass; probe `#fredo-expression` presence per state.
+  **Expected:** 58 base rects byte-identical in every state; the expression is a separate conditional
+      overlay `<g>`; whole-element motion stays on the CONSUMER wrapper (never inside `FredoAvatar`);
+      under reduced motion every distinguishing frame stays legible with NO `opacity:0` and NO strobe
+      (WCAG 2.3.1 — motion suppressed, shape retained).
+  - **Edge:** the driver cannot flip `prefers-reduced-motion` live (G-053) ⇒ named blocker + a
+    static-CSS/unit pin; a strobe (>3 flashes/s) or an `opacity:0` state is a FAIL; the geometry/sizes
+    suites pass UNMODIFIED.
+
+## F-123 (Q-6 / REQ-6 / AC5) — Existing per-state pins still pass
+
+- [ ] F-123: Run the companion pins — `FredoCompanion.devMode.test.tsx`,
+      `FredoCompanion.seatTeleport.test.tsx`, `FredoCompanion.crossWindow.test.tsx`,
+      `skillSettle.test.tsx` — and the launcher pins; confirm each still pins `data-state` per scenario.
+  **Expected:** all pass without weakening/deleting an assertion; `data-state` per scenario unchanged;
+      any intentionally refreshed pin is named per G-125.
+  - **Edge:** the fill layer must not add a node that breaks a `querySelector` pin; the overlay rect sets
+    asserted by the pins are unchanged for the pre-existing states.
+
+## F-124 (Q-8 / REQ-8 / NF) — Token purity, build, suite, console
+
+- [ ] F-124: Static-grep `apps/ui/src/shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{3,8}` /
+      `rgba(` / `rgb(` / `hsla(` / `var(--x)NN`; read the console after EVERY leg; run
+      `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO true colour literals (comment issue-refs exempt) and no alpha-append; no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (#523); build exit 0 with
+      zero TS errors; the full suite green.
+  - **Edge:** a state forced mid-theme-switch; the pre-existing `motion() is deprecated` WARN is exempt.
+
+## F-125 (Q-9 / REQ-9 / LIVE) — Mandatory live telemetry + rendered-webview receipt
+
+- [ ] F-125: Same run as F-116..F-124: `fredo emit --event-type chat --session-id e2e-2917-chat` +
+      `--event-type tool_use --session-id e2e-2917-tool --tool-name read_file`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the per-state screenshots via
+      `upload-evidence --issue 2917`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered receipt.
+      **A static-only PASS with no live receipt is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
