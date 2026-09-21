@@ -454,3 +454,30 @@
       disagree (the sparse grid reports ~zero where the dense diff shows real change)? Any state where the
       sparse grid would pass but the dense diff fails must be recorded — the sparse grid is never
       admissible (promotes to F-119/F-121).
+
+---
+
+## #2918 extension — structured-reply / model-status edge probes
+
+> Unscripted probes for issue #2918. A confirmed finding PROMOTES to `functional.md` as a new `F-` row
+> (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a static/unit
+> pin — never fabricated. Levers: LV1 real managed `llama-server`, LV2 synthetic `llm-*` injection,
+> LV3 the existing probe, LV4 pure pins.
+
+- [ ] E-64: **Prose that LOOKS like markup (parser false-positive).** Ask the model (LV1) for a reply
+      whose text legitimately contains braces / quotes / the word `json` (e.g. "Reply with exactly:
+      Use the set notation {a, b} and mention json.") and separately inject such a reply as the
+      `reply` field (LV2). Does the surface render the prose verbatim, or does a naive
+      stripping/parsing path eat the `{`/quote or leak the object fragment? Any eaten/leaked
+      character is a finding (promotes to F-127). A JSON-shaped reply whose prose is truncated is
+      also a finding.
+- [ ] E-65: **Retry storm / double-settle under the watchdog.** Drive repeated empty content (LV2)
+      back-to-back and, in one leg, an `llm-error` immediately followed by `llm-done` at the retry
+      boundary. Count the re-requests and the settles. Does the retry stay BOUNDED (never unbounded,
+      never a second settled reply), and does the turn always settle exactly once? Any unbounded
+      retry, double-settle, or hung turn is a finding (promotes to F-128).
+- [ ] E-66: **Model status racing a skill selection / a teleport.** Inject a status-bearing reply
+      object (LV2) while a skill selection is pending, and again while a teleport is in flight. Does
+      the status compose through the resolver without masking `working` / the teleport base state, and
+      does it apply to the correct turn (not a stale one)? Any masked `working`, status leaking across
+      a teleport, or a status applied to the wrong turn is a finding (promotes to F-131).
