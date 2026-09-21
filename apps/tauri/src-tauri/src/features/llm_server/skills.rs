@@ -392,6 +392,28 @@ pub(crate) async fn run_skill_stream(
     Ok(())
 }
 
+/// Stream a content-only generation body (NO tools offered): each content delta
+/// is forwarded on the SHIPPED `llm-token` channel and the turn settles with
+/// exactly one `llm-done`.
+///
+/// The content-turn entry shared by the status path's bounded plain retry
+/// (Spec #2918, R-5/R-6). [`run_skill_stream`] is unchanged — a content turn and
+/// a tool-call turn remain disjoint.
+pub(crate) async fn run_plain_stream(app: &AppHandle, body: &Value) -> Result<(), String> {
+    chat::run_stream(app, body, |frame: ChatSseFrame| {
+        for event in frame.events {
+            if let ChatStreamEvent::Delta(delta) = event {
+                let _ = app.emit("llm-token", delta);
+            }
+        }
+        // The turn always settles after the stream, never mid-frame.
+        false
+    })
+    .await?;
+    let _ = app.emit("llm-done", ());
+    Ok(())
+}
+
 /// Stream one skill-aware generation: content deltas → `llm-token`; tool-call
 /// fragments buffered; at the finish the selection is validated and routed.
 async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {

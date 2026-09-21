@@ -1,4 +1,16 @@
-import type { HostAdapter, LlmMessage, LlmSkillCall } from './HostAdapter';
+import type {
+  HostAdapter,
+  LlmChatWithStatusOptions,
+  LlmMessage,
+  LlmSkillCall,
+} from './HostAdapter';
+
+/**
+ * #2918 ST-3 — the FIXED status the dev twin emits on every structured turn. It is
+ * the converged default (`happy`), so the dev experience matches today's success
+ * settle while still exercising the additive `llm-status` channel.
+ */
+export const DEV_REPLY_STATUS = 'happy';
 
 /**
  * DevAdapter — HostAdapter implementation for the standalone Vite dev server.
@@ -115,5 +127,29 @@ export class DevAdapter implements HostAdapter {
     onError?: (message: string) => void,
   ): Promise<void> {
     return this.llmChat(messages, onToken, onDone, onError);
+  }
+
+  /**
+   * #2918 ST-3 — the deterministic status-producing twin (the G-172 in-repo
+   * fixture). The dev server has no managed model server, so it streams the
+   * ordinary mock reply through the unchanged `llmChat` and then emits the FIXED
+   * {@link DEV_REPLY_STATUS} on `onStatus` BEFORE `onDone`, matching the backend's
+   * `llm-status`-before-`llm-done` order. The skill channel is accepted for
+   * interface parity and never selected (no backend tools path in dev).
+   */
+  async llmChatWithStatus(
+    messages: LlmMessage[],
+    _options: LlmChatWithStatusOptions,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onStatus: (status: string) => void,
+    _onSkillCall?: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    // Hold the settle so the fixed status is always emitted BEFORE completion
+    // (the same order the backend guarantees).
+    await this.llmChat(messages, onToken, () => {}, onError);
+    onStatus(DEV_REPLY_STATUS);
+    onDone();
   }
 }

@@ -11,7 +11,8 @@ import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
-import type { LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
+import type { LlmChatWithStatusOptions, LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
+import { resolveReplyStatus } from './fredoReplyStatus';
 import { registerAppOpenReplyPusher } from './skillBridge';
 import type { AppOpenReply } from './appOpenReply';
 import { companionReplyErrorCopy } from './companionReadiness';
@@ -381,6 +382,19 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // outranks the context `animState` sync. The flag is read inside effects/JSX
     // and never triggers a render, so it can not participate in a render loop.
     const flowOwnsExpressionRef = useRef(false);
+    // #2918 ST-5 — the raw model-declared status captured from the structured
+    // transport's `onStatus` channel for the CURRENT generation (the backend emits
+    // it BEFORE `llm-done`, and never on the skill / plain-fallback paths). It is
+    // turn-scoped display state: captured live, asserted ONLY at the success settle
+    // (never during the stream), and reset at the start of every generation so a
+    // previous turn's status can never leak into a fallback / skill / error turn
+    // (R-9).
+    const modelStatusRef = useRef<string | undefined>(undefined);
+    // The ASSERTED status — a member of the frozen `FREDO_AVATAR_STATES` (resolved
+    // through `resolveReplyStatus`), or `undefined` outside the success hold. A
+    // STATE (not just the ref) so the resolver's existing `modelStatus` input
+    // re-renders the expression at the settle and releases it on the hold.
+    const [settledModelStatus, setSettledModelStatus] = useState<FredoAvatarState | undefined>(undefined);
     // #2854 AC4 — bounded fallback to idle for LLM-bound statuses (watchdog).
     const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // #2854 — the joke's first REAL token promotes thinking -> joking exactly once.
@@ -411,6 +425,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // #2854 — resting cadence: while truly at rest (no stream / game / message)
     // the companion emits a bounded `playful` beat, then returns to idle, repeating.
     const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
+    // #2918 ST-5 (R-9) — the model status is admitted to the resolver ONLY while
+    // no lifecycle/transient trigger owns the expression: it is `undefined` during
+    // streaming, a teleport, a pending skill call, and live voice capture, and the
+    // error path never asserts it (it is only ever set at the success settle below).
+    // Pure render-time derivation — no effect, no timer, no fresh object.
+    const modelStatusForDisplay =
+      isStreaming || isTeleportingRef.current || skillPendingRef.current || captureActive
+        ? undefined
+        : settledModelStatus;
     // #2917 ST-4 — the ONE mapping seam (`fredoAvatarResolver`): the flow-owned
     // expression + the product signals resolve to the single expression state.
     // The resting `playful` beat is a DERIVED display layer — it never mutates
@@ -419,6 +442,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // wins. `errored` is deliberately NOT signalled here: `onError`/the non-success
     // settle drive the flow to `error` directly, and the sticky
     // `generationErroredRef` would otherwise latch the expression past the hold.
+    // #2918 ST-5 — `modelStatus` carries the model-declared status asserted at the
+    // success settle (default `happy`), allowlisted by `resolveReplyStatus` BEFORE
+    // this input so no non-emittable value can ever reach the DOM.
     const displayAnim: FredoAvatarState = resolveCompanionAvatarState({
       flow: currentAnim,
       resting,
@@ -430,6 +456,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       // `talk` flow. The resolver stays pure/synchronous/time-free.
       ambientMessage: message != null && greetingBeatActive,
       captureActive,
+      modelStatus: modelStatusForDisplay,
     });
 
     // The interactive avatar wrapper — its live layout box (offsetWidth/offsetHeight,
@@ -603,7 +630,31 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       // would collapse the beat to zero length).
       if (workingBeatTimerRef.current) { clearTimeout(workingBeatTimerRef.current); workingBeatTimerRef.current = null; }
       workingSinceRef.current = null;
+      // #2918 ST-8 (R-9) — `clearTimer` is the ONE shared hold canceller (called by
+      // the teleport, leaveWindow, the interrupt, a new generation, unmount and the
+      // game). The hold owns BOTH the turn-scoped status release and the reply
+      // clear, so a canceller that cleared only the timer handles leaves a stale
+      // `settledModelStatus` the render gate re-admits with no timer left to
+      // release it (the round-2 post-teleport stick). Release the status and the
+      // flow ownership here. The deps stay `[]`: a `useState` setter + ref writes
+      // are stable, so there is no callback-identity churn / re-render-loop
+      // surface (AGENTS.md #523).
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
+      flowOwnsExpressionRef.current = false;
     }, []);
+
+    // #2918 ST-8 (R-9) — the ONE shipped hold REPLY clear (the exact block the
+    // success/error/watchdog holds run), extracted so every hold-cancelling path
+    // runs the SAME gate: `clearReplyOrDefer` keeps a reply that is being read
+    // until protection ends (the unchanged R-4 contract). A teleport calls it too,
+    // so a cancelled hold's bubble is never stranded on screen.
+    const clearHeldReply = useCallback(() => {
+      clearReplyOrDefer(() => {
+        setStreamingMessage(null);
+        hideMessage();
+      });
+    }, [clearReplyOrDefer, hideMessage]);
 
     const playAnim = useCallback((anim: FredoAvatarState) => {
       setCurrentAnim(anim);
@@ -645,6 +696,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         skillPendingRef.current = false;
         setIsStreaming(false);
         flowOwnsExpressionRef.current = false;
+        // #2918 ST-5 (R-9) — the watchdog is a terminal path: release the
+        // turn-scoped model status so a stale hold can never survive it.
+        setSettledModelStatus(undefined);
         playAnim('idle');
         setState('idle');
         // #2883 ST-6 (R-4.1, the ONE hide gate) — a watchdog that comes due while
@@ -712,6 +766,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
     // Teleport sequence (fully timer-driven)
     const startTeleportIn = useCallback((dest: { x: number; y: number }) => {
+      // #2918 ST-8 (R-9) — cancel any pending/orphaned hold BEFORE `timerRef` is
+      // overwritten below: the cross-window `arrive` entry never called
+      // `clearTimer`, so a pending reply hold would be orphaned (its release never
+      // runs) — this releases the turn-scoped status so the teleport is
+      // status-free. On the same-window out→in path this is an idempotent second
+      // call (the out timer has already fired).
+      clearTimer();
       teleport(dest.x, dest.y);
       setDisplayPos(dest);
       playAnim('teleport-in');
@@ -722,10 +783,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         playAnim('idle');
         setState('idle');
       }, ANIM_DURATION['teleport-in'] + 50);
-    }, [teleport, playAnim, setState]);
+    }, [clearTimer, teleport, playAnim, setState]);
 
     const startTeleportOut = useCallback((dest: { x: number; y: number }) => {
       clearTimer();
+      // #2918 ST-8 (R-9) — the cancelled hold's REPLY clear must still happen: the
+      // hold owns both the status release (`clearTimer`) and the bubble clear, so
+      // the teleport runs the ONE hide gate too (otherwise the reply is stranded
+      // on screen after the teleport).
+      clearHeldReply();
       isTeleportingRef.current = true;
       pendingDestRef.current = dest;
       playAnim('teleport-out');
@@ -734,7 +800,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       timerRef.current = setTimeout(() => {
         startTeleportIn(dest);
       }, ANIM_DURATION['teleport-out'] + 50);
-    }, [playAnim, setState, startTeleportIn]);
+    }, [clearTimer, clearHeldReply, playAnim, setState, startTeleportIn]);
 
     // Cross-window arrival: the host queued the destination once this window
     // became active — play the in motion here.
@@ -809,6 +875,11 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       generationTextRef.current = '';
       streamingTextRef.current = '💭 Thinking...';
       generationErroredRef.current = false;
+      // #2918 ST-5 — a NEW generation owns the turn-scoped model status: drop the
+      // previous turn's captured/asserted value (and release a hold whose timer
+      // `clearTimer()` just cancelled) so it can never leak into this turn (R-9).
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
       // #2893 ST-7 — reset the skill bookkeeping for THIS generation.
       generationUsesSkillsRef.current = withSkills;
       skillPendingRef.current = false;
@@ -855,6 +926,17 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           setStreamingMessage(next);
       };
 
+      // #2918 ST-5 — capture the model-declared status. It is deliberately NOT
+      // asserted here: the stream window stays scripted (`thinking` → first-token
+      // `joking`), and the raw string is applied only at the success settle below,
+      // allowlisted through `resolveReplyStatus`. The backend emits it BEFORE
+      // `llm-done`; on the skill / plain-fallback paths it never arrives, so the
+      // ref stays `undefined` (the default `happy`).
+      const onStatus = (status: string) => {
+          if (gen !== generationRef.current) return;
+          modelStatusRef.current = status;
+      };
+
       const onDone = () => {
           // #2871 R-5.1 — a superseded generation's completion must not settle
           // the current one.
@@ -887,17 +969,29 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           // completion rather than ~5 s later at the end of the happy hold. The
           // expression stays flow-owned, so the idle sync cannot clobber `happy`.
           setState('idle');
-          // #2854 R-3a — completion renders `happy` through the EXISTING 5 s hold
-          // (HAPPY_HOLD_MS; timing unchanged — only the expression changes), then
-          // returns to idle. `flowOwns` is released on that return.
+          // #2854 R-3a — completion renders the settled status through the EXISTING
+          // 5 s hold (HAPPY_HOLD_MS; timing unchanged), then returns to idle.
+          // `flowOwns` is released on that return.
+          // #2918 ST-5 — the success settle asserts the model-declared status
+          // (default `happy`, resolved + allowlisted by `resolveReplyStatus`) via
+          // the resolver's `modelStatus` input, with the FLOW at base `idle`. The
+          // resolver ranks a `happy` FLOW above `joking`/`thinking`/`playful`, so a
+          // `happy` flow would mask a lower-ranked model status; base `idle` lets
+          // the asserted status win. `resolveReplyStatus(undefined) === 'happy'`,
+          // so a turn with no `llm-status` renders byte-identically to the shipped
+          // `happy` settle.
           flowOwnsExpressionRef.current = true;
-          playFlowAnim('happy');
+          playFlowAnim('idle');
+          setSettledModelStatus(resolveReplyStatus(modelStatusRef.current));
           timerRef.current = setTimeout(() => {
             // #2892 ST-4 declared defect fix (REQ-7) — the same generation guard
             // the error hold below already has: a superseded generation's 5 s
             // timer must NEVER clear the NEW reply (interrupt / queue drain).
             if (gen !== generationRef.current) return;
             flowOwnsExpressionRef.current = false;
+            // #2918 ST-5 — release the asserted model status on the SAME shipped
+            // hold (no new timer): `undefined` → idle.
+            setSettledModelStatus(undefined);
             playAnim('idle');
             setState('idle');
             // #2883 ST-6 (R-4.1, the ONE hide gate) — the shipped 5 s happy hold is
@@ -926,6 +1020,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           const readable = companionReplyErrorCopy(raw);
           isGeneratingRef.current = false;
           generationErroredRef.current = true;
+          // #2918 ST-5 (R-9) — the error path NEVER asserts a model status: drop
+          // any captured/asserted value so `error` can never be masked.
+          modelStatusRef.current = undefined;
+          setSettledModelStatus(undefined);
           clearWatchdog();
           setIsStreaming(false);
           // Both refs are assigned synchronously so the (follow-up) `onDone` and
@@ -993,24 +1091,20 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           if (watchdogRef.current === null) startWatchdog();
       };
 
-      if (audioBase64 !== undefined) {
-        // #2897 ST-3 (REQ-5) — the clip IS the turn's input: the last user
-        // message's content is replaced by the backend renderer with the single
-        // `input_audio` part. No transcript text is sent for this turn.
-        // #2903 ST-2 — the audio turn is SKILL-AWARE: the same validated
-        // `onSkillCall` channel the typed path uses is threaded through the
-        // additive trailing parameter, so a spoken selection marks this
-        // generation skill-pending and its settle is deferred to the pushed
-        // deterministic reply (raw tool-call JSON is never rendered).
-        console.log('[companion] calling adapterBridge.llmChatWithAudio');
-        adapterBridge.llmChatWithAudio(messages, audioBase64, onToken, onDone, onError, onSkillCall);
-      } else if (withSkills) {
-        console.log('[companion] calling adapterBridge.llmChatWithSkills');
-        adapterBridge.llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
-      } else {
-        console.log('[companion] calling adapterBridge.llmChat');
-        adapterBridge.llmChat(messages, onToken, onDone, onError);
-      }
+      // #2918 ST-5 — ALL THREE entry points (the avatar-click joke, the bar's
+      // typed `ask`, and the dictation/audio turn) route through the ONE structured
+      // transport (`llmChatWithStatus`), which adds the `onStatus` channel on top of
+      // the shipped token/done/error/skill channels. `options.offerSkills` selects
+      // the shipped request shape (false for the joke, true for the skill-aware
+      // typed/audio turns) and `options.audioBase64` attaches the captured clip.
+      // The backend emits `llm-status` only on the structured path; on the skill and
+      // plain-capability-fallback paths `onStatus` is never called, so the captured
+      // status stays `undefined` (the default `happy`).
+      const options: LlmChatWithStatusOptions = audioBase64 !== undefined
+        ? { offerSkills: true, audioBase64 }
+        : { offerSkills: withSkills };
+      console.log('[companion] calling adapterBridge.llmChatWithStatus');
+      adapterBridge.llmChatWithStatus(messages, options, onToken, onDone, onStatus, onSkillCall, onError);
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection, clearTimer]);
 
     // #2892 ST-4 (REQ-5/REQ-6) — dequeue-then-dispatch, exactly once. Whatever
@@ -1044,6 +1138,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       generationSettledRef.current = true;
       skillPendingRef.current = false;
       isGeneratingRef.current = false;
+      // #2918 ST-5 — the pushed-skill settle is a terminal path (the skill path
+      // never emits `llm-status`): release any turn-scoped model status.
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
       clearWatchdog();
       setIsStreaming(false);
       // Both refs assigned synchronously (same contract as the stream path).
@@ -1376,6 +1474,14 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
                   notifyInteraction();
                   setIsStreaming(false);
                   clearWatchdog();
+                  // #2918 ST-8 (R-9) — cancel any pending reply hold before arming
+                  // the game's TALK_HOLD (the `timerRef` overwrite would otherwise
+                  // orphan a reply hold's release)…
+                  clearTimer();
+                  // …then re-assert the game's flow ownership, which `clearTimer`
+                  // just released, so the preserved game expression still owns the
+                  // wrapper. No other game behavior changes.
+                  flowOwnsExpressionRef.current = true;
                   // Preserved 4 s hold; the expression is whatever the flow set (a
                   // terminal outcome replaces this hold with `happy` via onOutcome).
                   timerRef.current = setTimeout(() => {

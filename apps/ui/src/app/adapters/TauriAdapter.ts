@@ -1,4 +1,9 @@
-import type { HostAdapter, LlmMessage, LlmSkillCall } from './HostAdapter';
+import type {
+  HostAdapter,
+  LlmChatWithStatusOptions,
+  LlmMessage,
+  LlmSkillCall,
+} from './HostAdapter';
 
 /**
  * TauriAdapter — HostAdapter implementation for the Tauri desktop app.
@@ -307,6 +312,116 @@ export class TauriAdapter implements HostAdapter {
       console.error('[TauriAdapter] llm_chat_with_audio error:', err);
       onError?.(String(err));
       finish();
+    }
+  }
+
+  /**
+   * #2918 ST-3 — the structured-status streaming path. Same listener lifecycle and
+   * single `finish()` guard as `llmChatWithSkills` / `llmChatWithAudio`, plus the
+   * ADDITIVE `llm-status` listener registered BEFORE the invoke (the backend emits
+   * it BEFORE `llm-done`) so a fast parsed status is never missed. The listener is
+   * bound only when the caller supplies `onSkillCall`, mirroring the audio path.
+   * The adapter forwards only what the backend emits — it never synthesizes a
+   * status, so the plain/capability-fallback path calls no `onStatus` (R-7).
+   */
+  async llmChatWithStatus(
+    messages: LlmMessage[],
+    options: LlmChatWithStatusOptions,
+    onToken: (token: string) => void,
+    onDone: () => void,
+    onStatus: (status: string) => void,
+    onSkillCall?: (call: LlmSkillCall) => void,
+    onError?: (message: string) => void,
+  ): Promise<void> {
+    const { listen } = await import('@tauri-apps/api/event');
+    const { invoke } = await import('@tauri-apps/api/core');
+
+    let unlistenToken: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenSkill: (() => void) | undefined;
+    let settled = false;
+
+    // Complete exactly once (see `llmChat`): a server failure emits `llm-error`
+    // followed by `llm-done`, so a double `onDone` is impossible.
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      unlistenToken?.();
+      unlistenDone?.();
+      unlistenError?.();
+      unlistenStatus?.();
+      unlistenSkill?.();
+      onDone();
+    };
+
+    unlistenToken = await listen<string>('llm-token', (event) => {
+      onToken(event.payload);
+    });
+
+    // Additive server-error channel: route ONE raw failure line through the typed
+    // `onError` channel when the caller provides it, then complete — never hang.
+    // Callers without `onError` keep the legacy behavior (the line arrives via
+    // `onToken`).
+    unlistenError = await listen<string>('llm-error', (event) => {
+      if (onError) onError(event.payload);
+      else onToken(event.payload);
+      finish();
+    });
+
+    // The parsed model status (raw string) — emitted by the backend BEFORE
+    // `llm-done`. Registered before the invoke so it is never missed.
+    unlistenStatus = await listen<string>('llm-status', (event) => {
+      onStatus(event.payload);
+    });
+
+    // The validated selection channel (registered BEFORE the invoke, exactly as
+    // `llmChatWithSkills` / `llmChatWithAudio` do). Never a token.
+    if (onSkillCall) {
+      unlistenSkill = await listen<LlmSkillCall>('llm-skill-call', (event) => {
+        onSkillCall(event.payload);
+      });
+    }
+
+    unlistenDone = await listen<void>('llm-done', () => {
+      finish();
+    });
+
+    try {
+      await invoke('llm_chat_with_status', {
+        messages,
+        offerSkills: options.offerSkills,
+        audioBase64: options.audioBase64,
+      });
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes('still loading')) {
+        unlistenToken?.();
+        unlistenDone?.();
+        unlistenError?.();
+        unlistenStatus?.();
+        unlistenSkill?.();
+        console.warn('[TauriAdapter] model still loading, retrying in 3s...');
+        onToken('⏳ Loading model...');
+        setTimeout(
+          () =>
+            this.llmChatWithStatus(
+              messages,
+              options,
+              onToken,
+              onDone,
+              onStatus,
+              onSkillCall,
+              onError,
+            ),
+          3000,
+        );
+      } else {
+        console.error('[TauriAdapter] llm_chat_with_status error:', err);
+        onError?.(msg);
+        finish();
+      }
     }
   }
 }

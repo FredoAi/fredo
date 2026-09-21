@@ -596,6 +596,18 @@ pub fn run() {
             // registry, validates a selection, emits `llm-skill-call` then
             // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.
             features::llm_server::skills::llm_chat_with_skills,
+            // Structured per-reply status (Spec #2918, ST-1): the reply is
+            // obtained under a JSON-Schema `response_format` contract
+            // (`{reply,status}`); ONLY decoded reply characters cross as
+            // `llm-token` and the parsed status rides the ADDITIVE `llm-status`
+            // before the shipped `llm-done`. ADDITIVE — `llm_chat` /
+            // `llm_chat_with_skills` unchanged.
+            features::llm_server::status::llm_chat_with_status,
+            // #2918 ST-2 — the cached read-only `response_format` capability gate.
+            // REUSES the existing `probe_companion_skills` mechanism (no new
+            // detector); the chat gate reads this cache, so the capability is
+            // never probed per turn.
+            features::llm_server::probe::companion_status_capability,
             features::screenshot::commands::capture_screen_region,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,

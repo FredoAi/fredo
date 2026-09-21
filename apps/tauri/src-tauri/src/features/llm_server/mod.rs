@@ -15,6 +15,7 @@ pub mod process;
 pub mod probe;
 pub mod skills;
 pub mod state;
+pub mod status;
 
 // ── AppStore keys (AppStore remains the single source of truth) ────────────────
 //
