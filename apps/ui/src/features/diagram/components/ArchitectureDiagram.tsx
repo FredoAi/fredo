@@ -603,7 +603,7 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
         display="flex" 
         alignItems="center" 
         justifyContent="center" 
-        height="100vh"
+        height="100%"
         background="var(--body-bg)"
       >
         <VStack gap={4}>
@@ -619,7 +619,7 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
         display="flex" 
         alignItems="center" 
         justifyContent="center" 
-        height="100vh"
+        height="100%"
         background="var(--body-bg)"
       >
         <VStack gap={4} p={8} background="var(--card-bg)" borderRadius="lg" backdropFilter="blur(10px)" border="2px solid" borderColor="var(--border-color)">
@@ -749,7 +749,7 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
             backdropFilter="blur(10px)"
             p={4}
             zIndex={9}
-            maxHeight="calc(100vh - 150px)"
+            maxHeight="calc(100% - 90px)"
             overflowY="auto"
           >
             <HStack gap={6} align="flex-start" wrap="wrap">

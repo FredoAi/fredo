@@ -202,3 +202,60 @@ describe('windowStore — open / focus (R-3, R-6)', () => {
     expect(snap().find((w) => w.id === 'mission-monitor')!.isMaximized).toBe(false);
   });
 });
+
+describe('windowStore — kernel full-bleed default (Spec #2924 REQ-2, REQ-3)', () => {
+  beforeEach(() => resetWindowStoreForTests());
+
+  /** Params with `isMaximized` OMITTED — the default-resolution path. */
+  function paramsWithoutMax(overrides: Partial<OpenWindowParams> = {}): OpenWindowParams {
+    const { isMaximized: _omitted, ...rest } = params();
+    return { ...rest, ...overrides };
+  }
+
+  it('a NEW entry with isMaximized absent defaults to full-bleed when canMaximize is true', () => {
+    openWindow(paramsWithoutMax({ canMaximize: true }));
+    expect(snap()[0].isMaximized).toBe(true);
+  });
+
+  it('a NEW entry with isMaximized absent defaults to full-bleed when canMaximize is absent (default true)', () => {
+    const { canMaximize: _omitted, ...rest } = paramsWithoutMax();
+    openWindow(rest);
+    const entry = snap()[0];
+    expect(entry.canMaximize).toBe(true, 'canMaximize resolves true by default');
+    expect(entry.isMaximized).toBe(true, 'full-bleed default follows the resolved canMaximize');
+  });
+
+  it('a NEW entry with isMaximized absent defaults to float when canMaximize is false', () => {
+    openWindow(paramsWithoutMax({ canMaximize: false }));
+    const entry = snap()[0];
+    expect(entry.canMaximize).toBe(false);
+    expect(entry.isMaximized).toBe(false, 'non-maximizable windows are born floating with a restore affordance');
+  });
+
+  it('an explicit isMaximized:false is honored even when canMaximize is true', () => {
+    openWindow(paramsWithoutMax({ canMaximize: true, isMaximized: false }));
+    expect(snap()[0].isMaximized).toBe(false);
+  });
+
+  it('an explicit isMaximized:true wins over canMaximize:false', () => {
+    openWindow(paramsWithoutMax({ canMaximize: false, isMaximized: true }));
+    expect(snap()[0].isMaximized).toBe(true);
+  });
+
+  it('re-opening an EXISTING id still honors spawn semantics (isMaximized absent keeps the live state)', () => {
+    // Open floating, then re-invoke with `isMaximized` absent — the existing
+    // branch is UNCHANGED (`params.isMaximized ?? w.isMaximized`), so the
+    // currently-floated state must survive (no forced re-maximize).
+    openWindow(paramsWithoutMax({ isMaximized: false }));
+    expect(snap()[0].isMaximized).toBe(false);
+
+    openWindow(paramsWithoutMax());
+    expect(snap()[0].isMaximized).toBe(false, 'existing-id branch never re-applies the new-entry default');
+  });
+
+  it('re-opening an EXISTING id with an explicit isMaximized:true re-maximizes it (Home spawn semantics)', () => {
+    openWindow(paramsWithoutMax({ isMaximized: false }));
+    openWindow(paramsWithoutMax({ isMaximized: true }));
+    expect(snap()[0].isMaximized).toBe(true);
+  });
+});

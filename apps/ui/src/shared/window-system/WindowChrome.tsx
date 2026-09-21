@@ -1,8 +1,10 @@
 /**
  * Fredo brand window chrome — header (Spec #2807 ST-3).
  *
- * The single brand-guidelines chrome header: brand cap (accent), window icon
- * tile, title, and the min/max/close control cluster. Pure presentational —
+ * The single brand-guidelines chrome header: window icon tile, title, and the
+ * min/max/close control cluster. The icon tile is the header's first child and
+ * carries the per-app identity glyph (the LOCKUP pattern of the brand manual —
+ * PRIMARY/WORDMARK/LOCKUP; there is no `F` monogram). Pure presentational —
  * every interaction dispatches to the passed-in callbacks (which the owning
  * `WindowFrame` routes to the kernel store). Cross-feature imports are
  * forbidden, so this lives in `shared/window-system/` and reads only theme
@@ -10,9 +12,9 @@
  *
  * Token-native contract (AC3): every color is a theme CSS var referenced
  * DIRECTLY (`var(--header-bg)`, `var(--card-hover-bg)`, `var(--border-color)`),
- * a Chakra semantic token (`fg.default`, `fg.muted`, `accent.default`,
- * `bg.canvas`), or a `tint()` color-mix hover. There is NO hardcoded hex/rgba
- * and NO `var(--x)NN` alpha-append anywhere in this file.
+ * a Chakra semantic token (`fg.default`, `fg.muted`), or a `tint()` color-mix
+ * hover. There is NO hardcoded hex/rgba and NO `var(--x)NN` alpha-append
+ * anywhere in this file.
  *
  * NOTE (round-3 fix, AC3): the header bar and icon tile reference the theme
  * vars directly rather than the `bg.subtle` / `bg.muted` semantic tokens.
@@ -159,27 +161,7 @@ export function WindowChrome(props: WindowChromeProps) {
       onPointerDown={onHeaderPointerDown}
       onDoubleClick={onHeaderDoubleClick}
     >
-      {/* Brand cap — low-key accent square with the monogram. */}
-      <Box
-        aria-hidden="true"
-        display="flex"
-        alignItems="center"
-        justifyContent="center"
-        w="16px"
-        h="16px"
-        flexShrink="0"
-        borderRadius="4px"
-        bg="accent.default"
-        color="bg.canvas"
-        fontFamily="var(--font-primary)"
-        fontSize="10px"
-        fontWeight="700"
-        lineHeight="1"
-      >
-        F
-      </Box>
-
-      {/* Window icon tile. */}
+      {/* Window icon tile — the header's FIRST child since the `F` brand cap was removed (Spec #2924). */}
       <Box
         aria-hidden="true"
         display="flex"
