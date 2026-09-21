@@ -51,29 +51,14 @@ export interface LlamaCppInstallResult {
 // `fileId` + `state` pair joined to each per-file row.
 
 /**
- * The companion's three required model files (fixed display/acquisition order),
- * plus the four OPTIONAL STT (voice input) files appended by #2876 ST-5. The id
- * is the join key between the backend reports and the live
+ * The companion's three required model files (fixed display/acquisition order).
+ * The id is the join key between the backend reports and the live
  * `setup:download-progress` stream; widening the union is additive — the
- * companion ids never change.
+ * companion ids never change. (The four OPTIONAL STT (voice input) ids were
+ * removed with the on-device engine in Spec #2914 — the backend no longer
+ * reports them, so they are not part of the vocabulary.)
  */
-export type ModelFileId =
-  | 'model'
-  | 'vision'
-  | 'mtp'
-  | 'sttTokens'
-  | 'sttEncoder'
-  | 'sttDecoder'
-  | 'sttJoiner';
-
-/** The four STT (voice input) model file ids, in fixed order (#2876 ST-2/ST-5). */
-export const STT_MODEL_FILE_IDS: readonly ModelFileId[] = [
-  'sttTokens',
-  'sttEncoder',
-  'sttDecoder',
-  'sttJoiner',
-];
-
+export type ModelFileId = 'model' | 'vision' | 'mtp';
 /**
  * Per-file state vocabulary. A truncated/partial file stays `missing` (with a
  * shortfall `detail`) — there is deliberately no fifth state.

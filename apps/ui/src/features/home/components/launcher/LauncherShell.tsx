@@ -1705,11 +1705,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // the curated model-audio copy. Spec #2914 ST-5 — the inline
             // `Use local transcription` action is GONE: there is no local path.
             voiceErrorMessage={voiceErrorMessage}
-            // Spec #2914 ST-5 (R-4) — ONE speech path. The launcher's mode is the
-            // constant `'model'` (never read from `voiceHandling`): the bar renders
-            // the model-audio indicator and NEVER feeds the transcript announcer —
+            // Spec #2914 ST-5 (R-4) — ONE speech path: the bar renders the
+            // model-audio indicator and NEVER feeds the transcript announcer —
             // `voice-transcript-announcer` stays mounted but empty.
-            voiceMode="model"
             modelAudioPhase={voice.modelAudioPhase}
             // Spec #2897 round 2 (R2-1, F-104) — the derived turn-completion
             // overlay: once the dispatched audio turn's generation settles the

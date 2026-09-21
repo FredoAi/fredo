@@ -188,6 +188,45 @@ fn ui_source(relative: &str) -> String {
     read_source(&path)
 }
 
+/// `(path relative to apps/ui/src, raw source)` for every `.ts`/`.tsx` file,
+/// path-sorted. The #2914 UI absence pins (G-183 rows 14/16) scan the WHOLE
+/// frontend tree so a residual consumer cannot hide in a file the Rust pin did
+/// not name.
+fn ui_sources() -> Vec<(String, String)> {
+    let root = crate_root()
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("apps")
+        .join("ui")
+        .join("src");
+    let mut out = Vec::new();
+    collect_ui_sources(&root, &root, &mut out);
+    out.sort_by_key(|(name, _)| name.clone());
+    out
+}
+
+fn collect_ui_sources(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("cannot list {}: {error}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("readable ui source dir entry").path();
+        if path.is_dir() {
+            collect_ui_sources(root, &path, out);
+        } else if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("ts") | Some("tsx")
+        ) {
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((relative, read_source(&path)));
+        }
+    }
+}
+
 /// `(file name, shipped source)` for every Rust file in `infrastructure/voice`.
 fn voice_production_sources() -> Vec<(String, String)> {
     let dir = voice_dir();
@@ -402,9 +441,10 @@ fn voice_production_region_has_no_panic_capable_calls() {
 }
 
 /// #2914 (G-183 row 7 replacement) — no STT model manifest pin survives: the
-/// crate declares no sherpa/ONNX engine and references no manifest symbol. A
-/// green scan of ALL shipped crate sources proves the removal is confined and
-/// complete.
+/// crate declares no sherpa/ONNX engine and references no engine/manifest
+/// symbol (SA-10/SA-11). A green scan of ALL shipped crate sources proves the
+/// removal is confined and complete; the manifest + lockfile are checked too so
+/// a lingering dependency entry cannot hide there.
 #[test]
 fn no_stt_manifest_pin_survives() {
     for (file, production) in crate_production_sources() {
@@ -417,13 +457,15 @@ fn no_stt_manifest_pin_survives() {
             "STT_TOTAL_BYTES",
             "resolve_stt_manifest",
             "sherpa",
+            "sherpa_onnx",
             "SherpaRecognizer",
             "OnlineRecognizer",
             "Recognizer",
+            "ResidentEngine",
         ] {
             assert!(
                 !code.contains(symbol),
-                "{file} must not reference `{symbol}` — no STT model pin survives (#2914)"
+                "{file} must not reference `{symbol}` — no STT model pin survives (#2914 / SA-11)"
             );
         }
     }
@@ -432,6 +474,14 @@ fn no_stt_manifest_pin_survives() {
     assert!(
         !cargo.contains("sherpa"),
         "Cargo.toml must not declare the sherpa-onnx dependency (#2914 / SA-10/SA-11)"
+    );
+
+    // The lockfile is the dependency-closure record: a stale entry here would
+    // make `--locked` fetch/retain the native archive (SA-10/SA-11).
+    let lock = read_source(&crate_root().join("Cargo.lock"));
+    assert!(
+        !lock.contains("sherpa"),
+        "Cargo.lock must not retain any sherpa-onnx entry (#2914 / SA-10/SA-11)"
     );
 }
 
@@ -615,7 +665,9 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
 
 /// #2914 (G-183 row 10 replacement) — the handling key is never read: there is
 /// exactly ONE speech path, so no code path consults a persisted handling mode.
-/// The ONE per-input ceiling that bounds the surviving path is pinned here too.
+/// The UI leg (achievable once the launcher/context shim landed) pins the same
+/// absence in `CompanionContext.tsx`. The ONE per-input ceiling that bounds the
+/// surviving path is pinned here too.
 #[test]
 fn the_voice_handling_key_is_never_read_and_the_clip_ceiling_is_pinned() {
     for (file, production) in crate_production_sources() {
@@ -633,6 +685,21 @@ fn the_voice_handling_key_is_never_read_and_the_clip_ceiling_is_pinned() {
                 "{file} must not read `{symbol}` — the handling key is never read (#2914 / SA-14)"
             );
         }
+    }
+
+    // UI leg (G-183 row 10): the settings context no longer carries or reads a
+    // speech-handling mode — `voiceHandling`/`DEFAULT_VOICE_HANDLING`/
+    // `VOICE_HANDLING_SETTING_KEY` were deleted with the local path (SA-14).
+    let context = ui_source("shared/contexts/CompanionContext.tsx");
+    for symbol in [
+        "voiceHandling",
+        "DEFAULT_VOICE_HANDLING",
+        "VOICE_HANDLING_SETTING_KEY",
+    ] {
+        assert!(
+            !context.contains(symbol),
+            "CompanionContext.tsx must not carry `{symbol}` — one speech path (#2914 / SA-14)"
+        );
     }
 
     // The ONE pinned ceiling bounding the surviving model-audio path.
@@ -751,7 +818,9 @@ fn only_the_model_audio_session_can_commit_a_clip() {
 
 /// #2914 (G-183 row 14 replacement) — no local transcription path remains: the
 /// recognition loop, the transcript sink and the transcript wire type are all
-/// gone from the shipped crate (SA-2/SA-11).
+/// gone from the shipped crate (SA-2/SA-11), and the launcher sources carry no
+/// `voiceMode` gate, no dictated-transcript write into the bar and no
+/// `modelVoice` transcript suppression.
 #[test]
 fn no_local_transcription_path_remains() {
     for (file, production) in crate_production_sources() {
@@ -769,6 +838,34 @@ fn no_local_transcription_path_remains() {
             );
         }
     }
+
+    // UI leg (G-183 row 14): the launcher has ONE model-audio path. Comments are
+    // masked, so a doc reference to the FORMER local path cannot satisfy the pin.
+    let shell = mask(&ui_source("features/home/components/launcher/LauncherShell.tsx"));
+    let bar = mask(&ui_source(
+        "features/home/components/launcher/LauncherCommandBar.tsx",
+    ));
+    for (name, code) in [
+        ("LauncherShell.tsx", shell.as_str()),
+        ("LauncherCommandBar.tsx", bar.as_str()),
+    ] {
+        assert!(
+            !code.contains("voiceMode"),
+            "{name} must not carry a `voiceMode` gate — there is no local mode (#2914)"
+        );
+        assert!(
+            !code.contains("modelVoice"),
+            "{name} must not carry `modelVoice` transcript suppression (#2914)"
+        );
+    }
+    assert!(
+        !shell.contains("finalTranscript"),
+        "LauncherShell.tsx must not write a dictated transcript into the bar (#2914)"
+    );
+    assert!(
+        !shell.contains("dictated"),
+        "LauncherShell.tsx must not carry dictated-transcript provenance (#2914)"
+    );
 }
 
 /// #2914 — the #2887 `readyMs` observable is untouched by the removal: the
@@ -797,8 +894,9 @@ fn local_start_still_stamps_the_receipt_based_ready_ms_and_residency() {
     );
 }
 
-/// #2914 (G-183 row 16 replacement) — `stt:transcript` is never emitted: there
-/// is no recognizer, hence no transcript producer anywhere in the shipped crate.
+/// #2914 (G-183 row 16 replacement) — `stt:transcript` is never emitted (no
+/// recognizer in the shipped crate) and never consumed (no UI registration
+/// anywhere under `apps/ui/src`).
 #[test]
 fn stt_transcript_is_never_emitted() {
     for (file, production) in crate_production_sources() {
@@ -811,5 +909,24 @@ fn stt_transcript_is_never_emitted() {
             !code.contains("transcript"),
             "{file} must not carry a transcript symbol — the transcript path is deleted (#2914)"
         );
+    }
+
+    // UI leg (G-183 row 16): no consumer registers the retired event. Scanning
+    // the WHOLE frontend tree means a residual consumer cannot hide in a file
+    // the pin did not name.
+    let sources = ui_sources();
+    assert!(
+        sources
+            .iter()
+            .any(|(name, _)| name == "shared/hooks/useVoiceDictation.ts"),
+        "the UI source walk must see the voice hook (the scan is not vacuous)"
+    );
+    for (name, source) in &sources {
+        for registration in ["register('stt:transcript'", "register(\"stt:transcript\""] {
+            assert!(
+                !source.contains(registration),
+                "{name} must not register the retired `stt:transcript` event (#2914 / G-183 row 16)"
+            );
+        }
     }
 }

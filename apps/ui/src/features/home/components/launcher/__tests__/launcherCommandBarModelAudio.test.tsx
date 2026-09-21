@@ -108,7 +108,6 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
       <LauncherCommandBar
         query="draft"
         onQueryChange={vi.fn()}
-        voiceMode="model"
         listening
         modelAudioPhase="capturing"
         onStopListening={vi.fn()}
@@ -137,7 +136,6 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
         onStopListening={vi.fn()}
         onCancelListening={vi.fn()}
@@ -169,7 +167,6 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
       />,
     );
@@ -179,7 +176,6 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
         modelAudioTurnSettled
       />,
@@ -192,7 +188,7 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
 
   it('stopped/idle: the chip and indicator are removed and the resting placeholder returns', () => {
     renderWithChakra(
-      <LauncherCommandBar query="" onQueryChange={vi.fn()} voiceMode="model" />,
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} />,
     );
 
     expect(screen.queryByTestId('launcher-command-model-listening-chip')).toBeNull();
@@ -206,7 +202,6 @@ describe('LauncherCommandBar — the model-audio chips (#2897 ST-4)', () => {
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         voiceErrorMessage="Model audio is unavailable."
       />,
     );
@@ -319,7 +314,6 @@ describe('LauncherCommandBar — the model-audio composition (#2904 ST-2, REQ-3/
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         listening
         modelAudioPhase="capturing"
         hintLabel="release Space to finish"
@@ -347,7 +341,6 @@ describe('LauncherCommandBar — the model-audio composition (#2904 ST-2, REQ-3/
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
         hintLabel="release Space to finish"
       />,
@@ -367,14 +360,14 @@ describe('LauncherCommandBar — the model-audio composition (#2904 ST-2, REQ-3/
 describe('LauncherCommandBar — the model-audio announcements (#2897 ST-4)', () => {
   it('announces `Fredo is listening` on the capture rise and `Fredo is processing your speech` on the processing rise', () => {
     const { rerender } = renderWithChakra(
-      <LauncherCommandBar query="" onQueryChange={vi.fn()} voiceMode="model" />,
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} />,
     );
 
     const announcer = screen.getByTestId('voice-listening-announcer');
     expect(announcer.textContent).toBe('');
 
     rerender(
-      <LauncherCommandBar query="" onQueryChange={vi.fn()} voiceMode="model" listening />,
+      <LauncherCommandBar query="" onQueryChange={vi.fn()} listening />,
     );
     expect(announcer).toHaveTextContent(MODEL_AUDIO_LISTENING_ANNOUNCEMENT);
 
@@ -383,7 +376,6 @@ describe('LauncherCommandBar — the model-audio announcements (#2897 ST-4)', ()
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
       />,
     );

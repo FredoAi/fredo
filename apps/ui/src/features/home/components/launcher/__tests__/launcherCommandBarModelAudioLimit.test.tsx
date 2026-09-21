@@ -92,7 +92,6 @@ describe('LauncherCommandBar — the last-N-seconds countdown (#2897 ST-5)', () 
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         listening
         modelAudioPhase="capturing"
         modelAudioLimitMs={LIMIT_MS}
@@ -128,7 +127,6 @@ describe('LauncherCommandBar — the last-N-seconds countdown (#2897 ST-5)', () 
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         listening
         modelAudioPhase="capturing"
       />,
@@ -147,7 +145,6 @@ describe('LauncherCommandBar — the auto-stop limit notice (#2897 ST-5)', () =>
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioLimitMs={LIMIT_MS}
       />,
     );
@@ -160,7 +157,6 @@ describe('LauncherCommandBar — the auto-stop limit notice (#2897 ST-5)', () =>
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
         modelAudioLimitMs={LIMIT_MS}
         limitReached
@@ -185,7 +181,6 @@ describe('LauncherCommandBar — the auto-stop limit notice (#2897 ST-5)', () =>
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
         modelAudioLimitMs={LIMIT_MS}
         limitReached
@@ -199,7 +194,6 @@ describe('LauncherCommandBar — the auto-stop limit notice (#2897 ST-5)', () =>
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioPhase="processing"
         modelAudioLimitMs={45_000}
         limitReached
@@ -227,7 +221,6 @@ describe('LauncherCommandBar — the auto-stop limit notice (#2897 ST-5)', () =>
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioLimitMs={LIMIT_MS}
       />,
     );
@@ -243,7 +236,6 @@ describe('LauncherCommandBar — below-bar slot precedence (#2897 ST-5)', () => 
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioLimitMs={LIMIT_MS}
         limitReached
         voiceErrorMessage="Model audio is unavailable."
@@ -261,7 +253,6 @@ describe('LauncherCommandBar — below-bar slot precedence (#2897 ST-5)', () => 
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioLimitMs={LIMIT_MS}
         limitReached
         queuedCount={1}
@@ -277,7 +268,6 @@ describe('LauncherCommandBar — below-bar slot precedence (#2897 ST-5)', () => 
       <LauncherCommandBar
         query=""
         onQueryChange={vi.fn()}
-        voiceMode="model"
         modelAudioLimitMs={LIMIT_MS}
         queuedCount={1}
       />,

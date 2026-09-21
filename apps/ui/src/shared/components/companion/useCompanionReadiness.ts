@@ -25,7 +25,6 @@ import {
   errorCopyFor,
   llamaServerEndpoint,
   serverLaunchFailureCopy,
-  STT_MODEL_FILE_IDS,
   type CompanionReadiness,
   type CompanionServerLaunchInfo,
   type LlamaCppInstallResult,
@@ -99,12 +98,7 @@ function failClosedReadiness(detail: string): CompanionReadiness {
   };
 }
 
-const MODEL_FILE_IDS: readonly ModelFileId[] = [
-  'model',
-  'vision',
-  'mtp',
-  ...STT_MODEL_FILE_IDS,
-];
+const MODEL_FILE_IDS: readonly ModelFileId[] = ['model', 'vision', 'mtp'];
 
 function isModelFileId(value: unknown): value is ModelFileId {
   return typeof value === 'string' && (MODEL_FILE_IDS as readonly string[]).includes(value);

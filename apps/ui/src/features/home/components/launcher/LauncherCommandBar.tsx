@@ -526,15 +526,6 @@ export interface LauncherCommandBarProps {
    */
   containerRef?: React.Ref<HTMLDivElement>;
   /**
-   * Spec #2897 ST-4; Spec #2914 ST-8 — voice input has exactly ONE mode (model
-   * audio), so this member collapsed to the single `'model'` value. It is
-   * retained ONLY as an accepted (unread) prop so the ST-5 launcher call site
-   * keeps compiling; the bar ALWAYS renders the model-audio indicator
-   * (`deriveModelAudioPhase`) with ZERO transcript text. Deleting it outright
-   * would require editing `LauncherShell.tsx`, which is outside ST-8's scope.
-   */
-  voiceMode?: 'model';
-  /**
    * Spec #2897 ST-4 — ST-2's `voice.modelAudioPhase` (the backend
    * `stt:state.phase`): `'capturing'` while the clip accumulates, `'processing'`
    * once a stop committed it, `null` on every legacy/local path. It is consumed
