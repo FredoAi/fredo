@@ -57,6 +57,8 @@ nothing in the Life domain hardcodes a limit inline.
 | Population band | `LIFE_DENSITY_MIN..MAX = 0.04..0.3` (never empty, never saturated) |
 | Stagnation | unchanged population for `LIFE_STAGNATION_GENERATIONS = 3` generations at/below `LIFE_STAGNATION_MIN_DENSITY = 0.04` |
 | Backing store | `LIFE_DPR_MAX = 1.5` × the CSS viewport on each axis (linear) |
+| Dim weights | `LIFE_CELL_MIX = 0.2` (cell blend toward `--text-primary`), `LIFE_SCRIM_WEIGHT = 0.2` (`--overlay-bg` weight in the scrim) |
+| Contrast floor | `LIFE_CONTRAST_MIN = 3` (dimmed cell-vs-ground WCAG ratio; below it the untransformed pair is painted) |
 
 ### Re-seed policy
 
@@ -73,6 +75,73 @@ never dies out.
 Exactly **one** bounded `requestAnimationFrame` handle drives generations at the step
 cadence; the loop is cancelled (not merely skipped) while the document is hidden and
 resumes on restore. `destroy()` cancels the handle and releases the canvas.
+
+## Dimming and legibility (#2925)
+
+The field is deliberately **calmer and less single-hue-dominant** than the first Life
+ship (#2915) — a comfort/polish refinement, not a rule change. The changes are
+**paint-only**: the automaton, the pattern catalogue, the grid/density caps and the
+re-seed policy are byte-unchanged.
+
+Two derived CSS custom properties carry the work. They are registered **once** in
+`app/providers/ThemeProvider.tsx` (base pass, next to `--accent-strong`) as live
+`color-mix()` expressions, so they re-resolve on any preset/accent change with no
+restart and no per-preset values:
+
+| Token | Expression | Meaning |
+| --- | --- | --- |
+| `--life-cell` | `color-mix(in srgb, var(--accent-strong) 80%, var(--text-primary) 20%)` | Live-cell colour: the accent-strong cell blended 20 % toward the text colour (lowers chroma). |
+| `--life-dim` | `color-mix(in srgb, transparent 80%, var(--overlay-bg) 20%)` → `rgba(0, 0, 0, 0.12)` | Field-wide 12 % black scrim composited over ground **and** cells. |
+
+`paint()` stays ground fill → cell pass, then adds **exactly one** final
+`ctx.fillRect(0, 0, w, h)` with `tokens.dim` — constant cost, no per-cell alpha, no
+second pass, no new allocation, no second rAF/timer. Because the scrim is
+field-wide it dims both sides together and preserves the cell-vs-ground ratio,
+while the cell mix (M2) lowers chroma and is contrast-safe or contrast-enhancing on
+every theme (dark `--text-primary` darkens cells on light presets; light
+`--text-primary` lightens them on dark presets).
+
+The two numeric weights are the single authored home in
+`lifeConstants.ts` (`LIFE_CELL_MIX`, `LIFE_SCRIM_WEIGHT`); `ThemeProvider` interpolates
+them into the expressions, and `lifeEngine.resolveLifeTokens` reads the resolved
+values. The canvas element style (`LifeBackgroundCanvas.tsx`: `color:
+var(--life-cell)` over `var(--body-bg)`) and the static chooser thumbnail
+(`LifeThumbnail.tsx`: ground `var(--body-bg)`, cells `var(--life-cell)`, a final
+`var(--life-dim)` SVG rect) consume the **same** expressions, so the preview cannot
+promise a brighter field than the desktop delivers. Zero colour literal, zero
+`var(--x)NN` alpha-append.
+
+### Contrast guard
+
+`lifeEngine.resolveLifeTokens` runs a cheap legibility guard at **token-resolution
+time** (never per frame). It resolves the painted cell/ground pair and, if their WCAG
+contrast ratio is below `LIFE_CONTRAST_MIN = 3`, returns the **untransformed** pair —
+`--accent-strong` cells and no scrim (`dim = 'transparent'`). It is a safety net for
+arbitrary user accents; if either colour is unparseable the authored dimmed pair is
+kept (fail-safe — the engine never guesses a breach). `ctx.fillStyle` consumes the
+`getComputedStyle`-resolved value, never `var()` directly.
+
+### Pre-implementation contrast pre-validation (G-227)
+
+Before implementation the exact painted pair was pre-validated offline over **all 18
+built-in presets plus the `turbo` and `classic` bases (20 rows)**, using the same
+sRGB `color-mix` + WCAG relative-luminance arithmetic the guard uses. Solarized is the
+acceptance-binding row:
+
+| Preset | `--accent-strong` baseline | `--life-cell` (dimmed) |
+| --- | --- | --- |
+| solarized (binding) | 3.741 | **3.970** |
+| arctic | 4.616 | 5.440 |
+| sunset | 4.754 | 5.635 |
+| paper | 5.060 | 5.918 |
+| light-default | 5.100 | 6.791 |
+| dark | 11.497 | 12.064 |
+| coffee | 10.145 | 10.981 |
+
+**No shipped preset trips `LIFE_CONTRAST_MIN`** — every row sits at ≥ 3.97 : 1, the
+cell mix raises the ratio on every preset, and the guard is therefore inert on the
+shipped palette (it only fires on arbitrary user accents). The full 20-row sweep is
+re-measured against **rendered pixels** by the tester (live leg).
 
 ## Reduced motion
 

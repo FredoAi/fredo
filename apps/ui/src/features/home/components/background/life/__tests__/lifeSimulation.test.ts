@@ -9,6 +9,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
   LIFE_DENSITY_MAX,
@@ -307,5 +309,23 @@ describe('#2915 ST-2 — re-seed policy (pure)', () => {
         rows: 100,
       }),
     ).toBe(false);
+  });
+});
+
+describe('#2925 ST-4 — the dim is paint-only (simulation slice untouched)', () => {
+  it('keeps the pure simulation/pattern code free of theme, canvas and frame-loop coupling', () => {
+    const PURE_PATHS = [
+      'src/features/home/components/background/life/lifeSimulation.ts',
+      'src/features/home/components/background/life/lifePatterns.ts',
+    ];
+    for (const path of PURE_PATHS) {
+      const code = readFileSync(resolve(process.cwd(), path), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/[^\n]*/g, '');
+      expect(code, `${path}: theme token`).not.toMatch(/--life-/);
+      expect(code, `${path}: computed style`).not.toMatch(/getComputedStyle/);
+      expect(code, `${path}: canvas 2D`).not.toMatch(/getContext/);
+      expect(code, `${path}: frame loop`).not.toMatch(/requestAnimationFrame/);
+    }
   });
 });
