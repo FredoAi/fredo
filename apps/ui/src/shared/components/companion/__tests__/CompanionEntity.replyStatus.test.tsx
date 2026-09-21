@@ -1,6 +1,8 @@
 /**
  * #2918 ST-5 — the Companion entity's continuous held display state:
  * model-declared reply status routing + the bounded settle hold.
+ * #2918 ST-8/ST-9 — the R-9 release matrix: EVERY path that cancels or overrides
+ * the hold timer releases the turn-scoped status (and a teleport ends the reply).
  *
  * PRODUCT-UNIT PINS for the entity seam (`CompanionEntity.tsx`):
  *
@@ -14,7 +16,10 @@
  *          `happy` (byte-identical to the shipped settle).
  *   R-9  — the status is NEVER asserted while streaming, nor on the error path; a
  *          non-emittable value (`talk`) heals to the default `happy` (the closed-7
- *          allowlist in `fredoReplyStatus` runs BEFORE the resolver input).
+ *          allowlist in `fredoReplyStatus` runs BEFORE the resolver input). The
+ *          status is released by EVERY hold-cancelling path: a teleport
+ *          (`teleportTo`/`arrive`), a superseding generation, and the shipped
+ *          bounded hold itself — never left stuck with no timer to release it.
  *
  * The single-in-flight guard, the scripted `thinking` → first-token `joking`
  * window, the a11y live region, the watchdog and `clearReplyOrDefer` are the
@@ -274,5 +279,132 @@ describe('#2918 ST-5 — reply-status assertion at the success settle', () => {
     act(() => { ref.current?.askWithAudio('QUJD'); });
     expect(generations).toHaveLength(3);
     expect(lastGen().options).toEqual({ offerSkills: true, audioBase64: 'QUJD' });
+  });
+});
+
+/**
+ * #2918 ST-8/ST-9 — the R-9 release matrix at the entity seam.
+ *
+ * The round-2 defect: `clearTimer()` cancelled only the hold TIMER, so a teleport
+ * (or any other hold-cancelling path) left `settledModelStatus` asserted with no
+ * timer left to release it — the render gate re-admitted it the instant the
+ * teleport ended and the status stuck indefinitely (and the bubble stayed on
+ * screen). These pins lock every release path: a same-window teleport, a
+ * cross-window `arrive`, and a superseding generation. The shipped control (no
+ * teleport) releasing at exactly settle + `HAPPY_HOLD_MS` stays pinned by the
+ * first `it` in this file, unchanged.
+ */
+describe('#2918 ST-8 — every hold-cancelling path releases the turn-scoped status', () => {
+  const settledStatus = 'thinking';
+
+  it('releases the status when a same-window teleport cancels the hold', async () => {
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { ref.current?.ask('tell me something'); });
+    act(() => { lastGen().onToken('Hello there'); });
+    act(() => { lastGen().onStatus(settledStatus); });
+    act(() => { lastGen().onDone(); });
+    expect(avatarState(container)).toBe(settledStatus);
+
+    // 1 s into the HAPPY_HOLD_MS window — the hold is still armed and asserted.
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(avatarState(container)).toBe(settledStatus);
+
+    // The teleport cancels the hold — the out/in choreography wins…
+    act(() => { ref.current?.teleportTo({ x: 10, y: 10 }); });
+    expect(avatarState(container)).toBe('teleport-out');
+    act(() => { vi.advanceTimersByTime(450); });
+    expect(avatarState(container)).toBe('teleport-in');
+
+    // …and the cancelled hold's status RELEASES (never re-asserts after the
+    // teleport ends): the wrapper returns to the shipped `idle`.
+    act(() => { vi.advanceTimersByTime(450); });
+    expect(avatarState(container)).toBe('idle');
+    expect(overlayState(container)).toBeNull();
+
+    // The settled status must NEVER come back. Past the 12 s rest delay the
+    // shipped resting cadence may tint `idle` with its bounded `playful` beat
+    // (`useFredoRestingCadence.ts:27`), so only those two are admissible.
+    for (let i = 0; i < 20; i += 1) {
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(avatarState(container)).not.toBe(settledStatus);
+      expect(['idle', 'playful']).toContain(avatarState(container) as string);
+    }
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('clears the held reply bubble when the teleport cancels the hold', async () => {
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { ref.current?.ask('tell me something'); });
+    act(() => { lastGen().onToken('Hello there'); });
+    act(() => { lastGen().onStatus(settledStatus); });
+    act(() => { lastGen().onDone(); });
+
+    const surfaceText = () =>
+      container.querySelector('[data-testid="fredo-companion-surface"]')?.textContent ?? '';
+    expect(surfaceText()).toContain('Hello there');
+
+    act(() => { vi.advanceTimersByTime(1000); });
+    act(() => { ref.current?.teleportTo({ x: 10, y: 10 }); });
+    // The cancelled hold's ONE hide gate ran: the reply is not stranded.
+    expect(surfaceText()).not.toContain('Hello there');
+
+    act(() => { vi.advanceTimersByTime(450); });
+    act(() => { vi.advanceTimersByTime(450); });
+    expect(avatarState(container)).toBe('idle');
+    expect(surfaceText()).not.toContain('Hello there');
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('releases the status when a cross-window arrival cancels the hold', async () => {
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => { ref.current?.ask('tell me something'); });
+    act(() => { lastGen().onStatus(settledStatus); });
+    act(() => { lastGen().onDone(); });
+    expect(avatarState(container)).toBe(settledStatus);
+
+    // `arrive` is the cross-window entry that never cancelled the hold before.
+    act(() => { vi.advanceTimersByTime(1000); });
+    act(() => { ref.current?.arrive({ x: 20, y: 20 }); });
+    expect(avatarState(container)).toBe('teleport-in');
+
+    act(() => { vi.advanceTimersByTime(450); });
+    expect(avatarState(container)).toBe('idle');
+    expect(overlayState(container)).toBeNull();
+
+    act(() => { vi.advanceTimersByTime(20000); });
+    expect(avatarState(container)).not.toBe(settledStatus);
+    expect(['idle', 'playful']).toContain(avatarState(container) as string);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('never lets a superseding generation inherit an already-released status', async () => {
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+    act(() => { api.setSendDuringReply('interrupt'); });
+
+    // Turn 1 settles a NON-default status.
+    act(() => { ref.current?.ask('first'); });
+    act(() => { lastGen().onStatus(settledStatus); });
+    act(() => { lastGen().onDone(); });
+    expect(avatarState(container)).toBe(settledStatus);
+
+    // Turn 2 supersedes turn 1's still-pending hold and settles with NO
+    // `llm-status` — it renders the default `happy`, never turn 1's status.
+    act(() => { ref.current?.ask('second'); });
+    expect(generations).toHaveLength(2);
+    act(() => { lastGen().onToken('second reply'); });
+    act(() => { lastGen().onDone(); });
+    expect(avatarState(container)).toBe('happy');
+    expect(avatarState(container)).not.toBe(settledStatus);
+
+    act(() => { vi.advanceTimersByTime(5000); });
+    expect(avatarState(container)).toBe('idle');
+    expect(consoleError).not.toHaveBeenCalled();
   });
 });

@@ -630,7 +630,31 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       // would collapse the beat to zero length).
       if (workingBeatTimerRef.current) { clearTimeout(workingBeatTimerRef.current); workingBeatTimerRef.current = null; }
       workingSinceRef.current = null;
+      // #2918 ST-8 (R-9) — `clearTimer` is the ONE shared hold canceller (called by
+      // the teleport, leaveWindow, the interrupt, a new generation, unmount and the
+      // game). The hold owns BOTH the turn-scoped status release and the reply
+      // clear, so a canceller that cleared only the timer handles leaves a stale
+      // `settledModelStatus` the render gate re-admits with no timer left to
+      // release it (the round-2 post-teleport stick). Release the status and the
+      // flow ownership here. The deps stay `[]`: a `useState` setter + ref writes
+      // are stable, so there is no callback-identity churn / re-render-loop
+      // surface (AGENTS.md #523).
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
+      flowOwnsExpressionRef.current = false;
     }, []);
+
+    // #2918 ST-8 (R-9) — the ONE shipped hold REPLY clear (the exact block the
+    // success/error/watchdog holds run), extracted so every hold-cancelling path
+    // runs the SAME gate: `clearReplyOrDefer` keeps a reply that is being read
+    // until protection ends (the unchanged R-4 contract). A teleport calls it too,
+    // so a cancelled hold's bubble is never stranded on screen.
+    const clearHeldReply = useCallback(() => {
+      clearReplyOrDefer(() => {
+        setStreamingMessage(null);
+        hideMessage();
+      });
+    }, [clearReplyOrDefer, hideMessage]);
 
     const playAnim = useCallback((anim: FredoAvatarState) => {
       setCurrentAnim(anim);
@@ -742,6 +766,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
     // Teleport sequence (fully timer-driven)
     const startTeleportIn = useCallback((dest: { x: number; y: number }) => {
+      // #2918 ST-8 (R-9) — cancel any pending/orphaned hold BEFORE `timerRef` is
+      // overwritten below: the cross-window `arrive` entry never called
+      // `clearTimer`, so a pending reply hold would be orphaned (its release never
+      // runs) — this releases the turn-scoped status so the teleport is
+      // status-free. On the same-window out→in path this is an idempotent second
+      // call (the out timer has already fired).
+      clearTimer();
       teleport(dest.x, dest.y);
       setDisplayPos(dest);
       playAnim('teleport-in');
@@ -752,10 +783,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         playAnim('idle');
         setState('idle');
       }, ANIM_DURATION['teleport-in'] + 50);
-    }, [teleport, playAnim, setState]);
+    }, [clearTimer, teleport, playAnim, setState]);
 
     const startTeleportOut = useCallback((dest: { x: number; y: number }) => {
       clearTimer();
+      // #2918 ST-8 (R-9) — the cancelled hold's REPLY clear must still happen: the
+      // hold owns both the status release (`clearTimer`) and the bubble clear, so
+      // the teleport runs the ONE hide gate too (otherwise the reply is stranded
+      // on screen after the teleport).
+      clearHeldReply();
       isTeleportingRef.current = true;
       pendingDestRef.current = dest;
       playAnim('teleport-out');
@@ -764,7 +800,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       timerRef.current = setTimeout(() => {
         startTeleportIn(dest);
       }, ANIM_DURATION['teleport-out'] + 50);
-    }, [playAnim, setState, startTeleportIn]);
+    }, [clearTimer, clearHeldReply, playAnim, setState, startTeleportIn]);
 
     // Cross-window arrival: the host queued the destination once this window
     // became active — play the in motion here.
@@ -1438,6 +1474,14 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
                   notifyInteraction();
                   setIsStreaming(false);
                   clearWatchdog();
+                  // #2918 ST-8 (R-9) — cancel any pending reply hold before arming
+                  // the game's TALK_HOLD (the `timerRef` overwrite would otherwise
+                  // orphan a reply hold's release)…
+                  clearTimer();
+                  // …then re-assert the game's flow ownership, which `clearTimer`
+                  // just released, so the preserved game expression still owns the
+                  // wrapper. No other game behavior changes.
+                  flowOwnsExpressionRef.current = true;
                   // Preserved 4 s hold; the expression is whatever the flow set (a
                   // terminal outcome replaces this hold with `happy` via onOutcome).
                   timerRef.current = setTimeout(() => {
