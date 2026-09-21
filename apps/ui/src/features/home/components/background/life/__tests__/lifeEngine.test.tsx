@@ -185,7 +185,7 @@ describe('#2915 ST-3 — reduced motion: static frame, zero scheduling', () => {
 
     const engine = createLifeEngine({ canvas, reducedMotion: true, seed: 7 });
     engine.resize(240, 160);
-    engine.setTokens({ ground: 'var(--body-bg)', cell: 'var(--accent-primary)' });
+    engine.setTokens({ ground: 'var(--body-bg)', cell: 'var(--accent-strong)' });
     engine.start();
     engine.step();
 
@@ -203,7 +203,7 @@ describe('#2915 ST-3 — live token resolution', () => {
     const tokens = resolveLifeTokens(canvas);
 
     expect(tokens.ground).toContain('var(--body-bg)');
-    expect(tokens.cell).toContain('var(--accent-primary)');
+    expect(tokens.cell).toContain('var(--accent-strong)');
     for (const value of [tokens.ground, tokens.cell]) {
       expect(value).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
       expect(value).not.toMatch(/\brgba?\s*\(/);
@@ -214,7 +214,7 @@ describe('#2915 ST-3 — live token resolution', () => {
 
   it('reads the LIVE custom property when the host provides one', () => {
     const canvas = document.createElement('canvas');
-    canvas.style.setProperty('--accent-primary', 'var(--test-accent)');
+    canvas.style.setProperty('--accent-strong', 'var(--test-accent)');
     expect(resolveLifeTokens(canvas).cell).toBe('var(--test-accent)');
   });
 
@@ -225,7 +225,7 @@ describe('#2915 ST-3 — live token resolution', () => {
     const engine = createLifeEngine({ canvas, reducedMotion: false, seed: 5 });
     engine.start();
     const scheduled = rafSpy.mock.calls.length;
-    engine.setTokens({ ground: 'var(--body-bg)', cell: 'var(--accent-primary)' });
+    engine.setTokens({ ground: 'var(--body-bg)', cell: 'var(--accent-strong)' });
     expect(rafSpy.mock.calls.length).toBe(scheduled);
     engine.destroy();
   });

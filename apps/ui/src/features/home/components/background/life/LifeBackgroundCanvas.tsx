@@ -115,7 +115,7 @@ export const LifeBackgroundCanvas: React.FC<LifeBackgroundCanvasProps> = ({ anim
         position: 'absolute',
         inset: 0,
         pointerEvents: 'none',
-        color: 'var(--accent-primary)',
+        color: 'var(--accent-strong)',
         backgroundColor: 'var(--body-bg)',
       }}
     />

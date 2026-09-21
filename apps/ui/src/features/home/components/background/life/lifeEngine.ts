@@ -7,7 +7,7 @@
  *   - own the simulation + the canvas backing store, sized device-pixel-ratio
  *     aware but bounded to `LIFE_DPR_MAX` × the CSS viewport (a LINEAR ratio);
  *   - resolve the two paint colours from the LIVE theme CSS custom properties
- *     (`--body-bg` ground, `--accent-primary` cell) — never a colour literal and
+ *     (`--body-bg` ground, `--accent-strong` cell) — never a colour literal and
  *     never a `var(--x)NN` alpha-append;
  *   - drive generations at `LIFE_STEP_MS` through EXACTLY ONE rAF handle, with
  *     the policy re-seed on the same grid (no blank frame);
@@ -35,7 +35,7 @@ import { createLifeSimulation, type LifeSimulation } from './lifeSimulation';
 export interface LifeTokens {
   /** Backdrop ground — `--body-bg`. */
   ground: string;
-  /** Live-cell colour — `--accent-primary`. */
+  /** Live-cell colour — `--accent-strong`. */
   cell: string;
 }
 
@@ -101,7 +101,7 @@ function readToken(
 
 /**
  * Resolve the two paint colours from the LIVE computed theme custom properties
- * inherited by `canvas` (`--body-bg` / `--accent-primary`). In a themed host the
+ * inherited by `canvas` (`--body-bg` / `--accent-strong`). In a themed host the
  * values are the resolved theme colours; if the properties are unavailable the
  * token REFERENCE is returned (never a hardcoded colour literal), so the engine
  * source carries zero hex/rgb/hsl and zero `var(--x)NN`.
@@ -115,7 +115,7 @@ export function resolveLifeTokens(canvas: HTMLCanvasElement): LifeTokens {
   }
   return {
     ground: readToken(computed, '--body-bg', 'var(--body-bg)'),
-    cell: readToken(computed, '--accent-primary', 'var(--accent-primary)'),
+    cell: readToken(computed, '--accent-strong', 'var(--accent-strong)'),
   };
 }
 
