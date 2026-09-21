@@ -5,15 +5,19 @@
  * pins the consumer wrapper's `data-state` + the shared overlay's rendered
  * `#fredo-expression[data-state]`:
  *   - `listening` ← the live voice-capture signal (`stt:state { listening: true }`)
- *   - `working`   ← a validated skill selection (`onSkillCall`), then superseded
- *                   by the pushed settle (`happy`)
+ *   - `working`   ← a validated skill selection (`onSkillCall`) OR the deterministic
+ *                   push itself (FIX-1 `WORKING_BEAT_MS`), then superseded by the
+ *                   pushed settle (`happy`)
  *   - `error`     ← the typed `onError` channel AND the non-success app-open
- *                   reply, held for the UNCHANGED `ERROR_HOLD_MS`
+ *                   reply, held for the UNCHANGED `ERROR_HOLD_MS` (from the settle)
  *   - `greeting`  ← an ambient context message with no generation in flight,
  *                   while the context `animState` STAYS `talk`
  *
- * The existing per-state `data-state` pins (devMode / seatTeleport / crossWindow /
- * skillSettle) are NOT modified by this file.
+ * Round-2 FIX-1 refreshed this file's `working`/non-success sequencing and added
+ * the RC-1 same-dispatch race pin, the beat-vs-holds invariant and the timer-leak
+ * pins. Every refreshed assertion is NAMED with the reason (G-125) — none deleted
+ * or weakened. The existing per-state `data-state` pins (devMode / seatTeleport /
+ * crossWindow) are NOT modified by this file.
  */
 
 import React, { createRef } from 'react';
@@ -22,7 +26,7 @@ import { act, cleanup, screen, waitFor } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { CompanionProvider, useCompanion, WELCOME_TEXT } from '@/shared/contexts/CompanionContext';
-import { CompanionEntity } from '@/shared/components/companion/CompanionEntity';
+import { CompanionEntity, WORKING_BEAT_MS } from '@/shared/components/companion/CompanionEntity';
 import type { CompanionEntityHandle } from '@/shared/components/companion/CompanionEntity';
 import { pushAppOpenReply } from '@/shared/components/companion/skillBridge';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
@@ -168,10 +172,49 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(avatarState(container)).toBe('working');
     expect(overlayState(container)).toBe('working');
 
-    // The settle path supersedes the pending-skill expression.
+    // FIX-1 (r2): the pushed settle first completes the bounded `working` beat,
+    // THEN runs the shipped `happy` settle. (Refreshed from the round-1 assertion
+    // that `happy` appeared in the same commit as the push — that sequencing is
+    // exactly the RC-1 defect this fix removes. G-125.)
     act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Notepad' }); });
+    expect(avatarState(container)).toBe('working');
+    act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
+    expect(avatarState(container)).toBe('happy');
+    expect(overlayState(container)).toBe('happy');
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('renders `working` when the pushed reply arrives in the SAME dispatch as the selection (RC-1 race)', async () => {
+    // Production ordering (RC-1): the app-open reply listener runs BEFORE the
+    // per-generation `onSkillCall` listener, so the deterministic push can land
+    // with NO prior `onSkillCall`. The push itself is the evidence a skill ran.
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+
+    act(() => {
+      ref.current?.ask('open notepad');
+      // Same act()/dispatch as the selection — no onSkillCall call at all.
+      pushAppOpenReply({ kind: 'success', text: 'Opening Notepad' });
+    });
+
+    expect(skills).not.toBeNull();
+    // The zero-length window is gone: `working` commits before the settle.
+    expect(avatarState(container)).toBe('working');
+    expect(overlayState(container)).toBe('working');
+
+    act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
     expect(avatarState(container)).toBe('happy');
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('keeps WORKING_BEAT_MS strictly below both settle holds (FIX-1 invariant)', () => {
+    // HAPPY_HOLD_MS (5000) and ERROR_HOLD_MS (8000) are the shipped
+    // module-private holds (CompanionEntity.tsx:49/:53); the display-only beat
+    // must never outlast them, and it must exceed the app-open reply beat (800).
+    expect(WORKING_BEAT_MS).toBe(900);
+    expect(WORKING_BEAT_MS).toBeLessThan(5000);
+    expect(WORKING_BEAT_MS).toBeLessThan(8000);
+    expect(WORKING_BEAT_MS).toBeGreaterThan(800);
   });
 
   it('renders `error` on the typed error channel, held for the UNCHANGED ERROR_HOLD_MS', async () => {
@@ -184,7 +227,8 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(avatarState(container)).toBe('error');
     expect(overlayState(container)).toBe('error');
 
-    // The shipped 8 s hold is unchanged: still `error` at 7999 ms, idle at 8000.
+    // The typed error leg is UNCHANGED by FIX-1 (no beat): the shipped 8 s hold
+    // is still measured from the error event — 7999 ms error, 8000 ms idle.
     act(() => { vi.advanceTimersByTime(7999); });
     expect(avatarState(container)).toBe('error');
     act(() => { vi.advanceTimersByTime(1); });
@@ -204,11 +248,48 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
       pushAppOpenReply({ kind: 'unknown', text: `I couldn't find "Narnia"` });
     });
 
+    // FIX-1 (r2): the bounded `working` beat precedes the settle expression…
+    expect(avatarState(container)).toBe('working');
+    act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
     expect(avatarState(container)).toBe('error');
     expect(overlayState(container)).toBe('error');
 
-    act(() => { vi.advanceTimersByTime(8000); });
+    // …and the shipped ERROR_HOLD_MS is measured FROM THE SETTLE.
+    act(() => { vi.advanceTimersByTime(7999); });
+    expect(avatarState(container)).toBe('error');
+    act(() => { vi.advanceTimersByTime(1); });
     expect(avatarState(container)).toBe('idle');
+  });
+
+  it('leaks no working-beat timer: a superseding generation clears it', async () => {
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+    act(() => { ref.current?.ask('open notepad'); });
+    act(() => { (skills as unknown as SkillDriver).onSkillCall(OPEN_APP_CALL); });
+    act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Notepad' }); });
+    expect(avatarState(container)).toBe('working');
+
+    // A new generation supersedes the beat (clearTimer)…
+    skills = null;
+    act(() => { ref.current?.ask('hello again'); });
+    expect(skills).not.toBeNull();
+    // …so advancing past the beat + hold never plays the stale `happy` settle.
+    act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS + 5000); });
+    expect(avatarState(container)).not.toBe('happy');
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('leaks no working-beat timer: unmount clears it (no callback after cleanup)', async () => {
+    const { ref, container } = await mountEntity();
+    vi.useFakeTimers();
+    act(() => { ref.current?.ask('open notepad'); });
+    act(() => { (skills as unknown as SkillDriver).onSkillCall(OPEN_APP_CALL); });
+    act(() => { pushAppOpenReply({ kind: 'success', text: 'Opening Notepad' }); });
+    expect(avatarState(container)).toBe('working');
+
+    // The unmount cleanup calls `clearTimer`, which owns the beat timer.
+    cleanup();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('renders `greeting` for an ambient message while the context animState STAYS talk', async () => {
