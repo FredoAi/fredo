@@ -296,6 +296,11 @@
       textual description; the body also references `telemetry_spans` (non-zero, recent
       `max(ingested_at)`).
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends the smoke results; do not pre-fill)_
+- **S-29 PASS.** Settings → Companion: only enable toggle + `companion-voice-device-select` + model-audio controls; every removed testid absent; no "Voice"/"Local transcription"/"sherpa" text.
+- **S-30 PASS.** Hold Space → `Fredo is listening` chip present, ZERO dictated words; release → processing → chip clears on `llm-done`; `stt_status.listening` true → false.
+- **S-31 PASS.** `companion-setup-wizard` (not-ready) = 3 steps, `1 of 3`; no `companion-step-stt-model`.
+- **S-32 PASS.** `Cargo.toml`/`Cargo.lock` sherpa-free; CI `rust-validate` recorded (pass).
+- **S-33 PASS.** Absent case silent no-op; present case removes only the STT dir (siblings byte-unchanged).
+- **S-34 PASS.** Seven captures uploaded via `upload-evidence --issue 2914`; `telemetry_spans` 19,620 rows newest `2026-09-21T00:59:35Z`.
