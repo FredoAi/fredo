@@ -23,8 +23,8 @@ export function WindowManager() {
 
   return (
     <Box position="absolute" inset="0" overflow="hidden" zIndex={1} bg="transparent">
-      {ordered.map((win, idx) => (
-        <WindowFrame key={win.id} window={win} stackIndex={idx} />
+      {ordered.map((win) => (
+        <WindowFrame key={win.id} window={win} />
       ))}
     </Box>
   );
