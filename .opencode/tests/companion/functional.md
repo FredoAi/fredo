@@ -2486,3 +2486,11 @@ Verdict: **FAIL** — F-126..F-133 pass except the R-63 skill-path regression (s
 ### #2918 testing round 2 (spec/2918 @ c94dd722) — results
 
 Verdict: **FAIL** — the ST-6 fix clears **R-63** (skills restored: `llm_chat_with_status({offerSkills:true})` now emits `llm-skill-call` and opens the app; exactly one `llm-done`, no `llm-status`). T1..T4, T5(b/c/d), T6 and Q-1/Q-2/Q-3/Q-5/Q-7/Q-8 re-pass; Q-4 keeps its named G-053 blocker. **F-134 (promoted, above) FAILS**: a teleport during the status hold leaves the settled model status stuck indefinitely (`happy → teleport-out → teleport-in → happy`, no `idle` at ≥27 s; control releases at settle + 5 s). The round-2 `## Tests Runs (round 2)` comment on #2918 carries the per-row table + user-attachment frames.
+
+### #2918 testing round 3 (spec/2918 @ 15e1be50) — results
+
+Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-cancelling path. **F-134 PASSES (was the round-2 blocker):**
+
+- **F-134 PASS (live).** Typed turn `askActiveCompanion('We shipped it — celebrate with me!')` → settle `happy` at 9529 ms; same-window teleport dispatched 1004 ms after the settle (teleportAt 10510). State trace `playful(4961) → thinking(6565) → joking(7761) → happy(9529) → teleport-out(10561) → idle(11010)`; a 20 ms trace confirmed `teleport-out → teleport-in → idle` (in-flight ~464/463 ms). Post-settle samples at +5 s / +13 s / +20 s / +27 s = `idle` throughout (∈ {idle, playful}); no `happy` after `teleport-in`; the reply bubble is cleared. Control (R2, no teleport): `happy(3625) → idle(8619)` = settle + ~5012 ms (the shipped `HAPPY_HOLD_MS`).
+- **R1 (teleport-after-settle release) / R2 (control) / R3 (skill-turn teleport) all PASS.** R3: `thinking → teleport-out → idle`; exactly one `llm-skill-call` + one `llm-done`, **zero `llm-status`**, reply bubble cleared.
+- **Re-confirmed green:** T1/R-63, T2/AC-1 (`happy` vs `working` distinct), T3, T4, T5(b-i) ambient `talk` (`greeting → talk` with no generation), T5(b-ii) `thinking → joking → settle`, T5(c) `error` beats an injected status, T5(d), T6, Q-1/Q-2/Q-3/Q-5/Q-7/Q-8. Q-4 keeps its named G-053 blocker; the T1 dictation-selection sub-leg keeps its named G-172/G-009 in-repo-fixture blocker.
