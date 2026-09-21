@@ -188,3 +188,12 @@
 - **S-25 PASS (live).** two frames ≈6 s apart differ densely; reselecting None removes the backdrop DOM and returns today's desktop; `PIXEL_DELTA_MIN` never lowered.
 - **S-26 PASS (pin) + named blocker.** reduced-motion product pin green (lifeBounds 11/11); build exit 0; suite green; live OS flip UNVERIFIED-with-named-blocker (no Tauri MCP media-emulation API).
 - **S-27 PASS (live).** zero literals / `var(--x)NN`; dark↔light + accent override/clear recolour the dimmed field live with no stale dim; console clean.
+
+### #2925 testing round 2 (spec/2925 @ 897ce4cc) — results
+
+> Re-test after the round-1 fix. Live policy; raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`.
+
+- **S-24 PASS (live).** chooser renders None + the six recipes + Life; selecting Life → `data-background-id="life"` + the dimmed canvas; the field is visibly darker than the #2915 baseline (F-73 before/after pair) and not a flat grey; console clean (only the pre-existing `motion() is deprecated` WARN).
+- **S-25 PASS (live).** two frames ≈10 s apart differ densely (3.36–6.15 % coverage); reselecting None removes the backdrop DOM and returns today's desktop; `PIXEL_DELTA_MIN` never lowered.
+- **S-26 PASS (pin) + named blocker.** reduced-motion product pin green (`vitest run background/life` 52/52); build exit 0; suite 1787/1787; live OS flip UNVERIFIED-with-named-blocker (no Tauri MCP media-emulation API).
+- **S-27 PASS (live).** zero literals / `var(--x)NN`; dark↔light + accent override/clear recolour the dimmed field live (cell `rgb(30,103,105) → rgb(115,33,120)` and back) with no stale dim; console clean.
