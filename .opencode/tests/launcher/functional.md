@@ -1803,3 +1803,71 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 - **F-106 PASS (live + static).** Changed file `LauncherCommandBar.tsx`: 0 true color literals (`#[0-9a-fA-F]{6,8}`/`rgba(`/`rgb(`/`hsla(`) and 0 `var(--x)NN` alpha-appends; console error-level EMPTY across all legs; re-theme live while capturing re-tinted token-native with a byte-identical chip rect (`left 1037.2 / right 1143 / 105.8×24`); no re-render loop; seat wrapper 80×100 + 16px, no new scrollbar.
 - **F-107 PASS (live).** `telemetry_spans` = **17154 rows**, `max(ingested_at) 2026-09-20T02:37:09.279…Z`; recent `fredo.llm` 115 / `fredo.tool.*` all `status_code=OK`. Dictating-state screenshot `aef1bfe1` uploaded. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
 - **Not injected:** `FREDO_STT_FEED_WAV` (the legs used the real device capture — the UNSET-env control, `deviceName:"Micrófono (Iriun Webcam)"`).
+
+---
+
+## #2917 extension — solid Fredo on the launcher seat
+
+> Issue #2917 fills the avatar's hollow interior additively and audits/extends the status vocabulary. The
+> launcher hosts only the RESTING figure (decorative `.fredo-avatar-idle` at the centre seat, or the
+> interactive companion seat when ON) — the expression rows are proxied on the companion surface
+> (`companion` F-116..F-125). Rows map 1:1 to `.opencode/tmp/2917/triage.md` `## QA Expert` (Q-1/Q-6/Q-8).
+> **Verification policy: live** — a PASS built only from source inspection or computed styles is a FALSE
+> PASS. **Serving checkout:** `spec/2917`, screenshots → `.opencode/tmp/2917/e2e/`.
+
+## F-108 (Q-1 / REQ-1 / AC1) — Launcher seat shows a solid, theme-native interior
+
+- [ ] F-108: On the launcher surface, capture the centre seat with the companion OFF (decorative
+      `.fredo-avatar-idle`) and ON, in dark base, the `light-default` preset, and a changed accent
+      (Matrix); sample the head-interior + mouth-void pixels INSIDE the figure plus a same-frame
+      empty-surface control.
+  **Expected:** the interior no longer shows the surface behind Fredo in ALL THREE conditions (interior
+      pixels resolve to the live accent; contrast vs the same-frame background ≥ 3:1 in both themes); the
+      fill is ADDITIVE (the 58 base rects stay byte-identical); only
+      `var(--accent-primary)`/`currentColor`/`tint()`; no overlay in the resting render.
+  - **Edge:** the md render leg (if the launcher still renders md anywhere) and the sm seat leg; the fill
+    must not extend outside the silhouette; the figure stays fully on-screen/un-clipped.
+
+## F-109 (Q-1 / REQ-7 / NF) — Launcher fill re-tints live, no restart
+
+- [ ] F-109: With the launcher open, switch dark → `light-default` and change the accent via
+      `select[aria-label="Theme presets"]` with NO reload; read the seat fill's computed `color`/`fill`
+      before/after.
+  **Expected:** the filled interior re-tints to the live `--accent-primary` with no restart and no stale
+      colour; zero `var(--x)NN` alpha-append (#2770); the figure stays legible in both themes.
+  - **Edge:** re-theme mid-open/close and mid-animation; the fill must not flash the old token.
+
+## F-110 (Q-6 / REQ-6 / AC5) — Launcher resting DOM identity + frozen geometry
+
+- [ ] F-110: Diff the launcher's resting avatar DOM before/after the change; read the 58 base rects and
+      diff against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm the resting render carries NO
+      `#fredo-expression` overlay.
+  **Expected:** the 58 base rects are byte-identical; the resting render has no expression overlay; the
+      launcher's resting DOM is unchanged apart from the additive fill (documented; a PO-sanctioned
+      additive change is acceptable, a silent structural change is a FAIL); whole-element motion stays on
+      the consumer wrapper.
+  - **Edge:** idle DOM identity is asserted with the transform:0 frame, never a mid-animation frame
+    (the idle bob is whole-element transform only).
+
+## F-111 (Q-8 / NF) — No CLS, console clean, no re-render loop from the fill
+
+- [ ] F-111: Measure the command-bar `getBoundingClientRect().y`, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom`, and `scrollHeight` vs `clientHeight` at the default
+      size and the shipped minimum 900×600; read the console after every leg; run
+      `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** `|Δy| ≤ 1 px` vs the pre-change baseline; the wrapper exactly 80×100 + 16 px; no new
+      scrollbar/overflow/clip; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop
+      (#523); build exit 0 with zero TS errors; suite green.
+  - **Edge:** the fill layer must not add a per-frame computation or a mount-time state write; the
+    pre-existing `motion() is deprecated` WARN is exempt.
+
+## F-112 (Q-9 / REQ-9 / LIVE) — Live receipt from the launcher run
+
+- [ ] F-112: Same run as F-108..F-111: `fredo emit --event-type chat --session-id e2e-2917-launcher-chat`
+      + `--event-type tool_use --session-id e2e-2917-launcher-tool`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the launcher screenshots via
+      `upload-evidence --issue 2917`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every row carries a rendered receipt.
+      **A static-only PASS is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
