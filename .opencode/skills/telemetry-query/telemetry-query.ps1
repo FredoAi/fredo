@@ -34,7 +34,10 @@ function Write-ErrorMsg {
 }
 
 # -- Guardrail 1: Reject DDL/DML keywords --
-$forbiddenKeywords = @("CREATE ", "ALTER ", "DROP ", "INSERT ", "UPDATE ", "DELETE ")
+# Match each keyword as a WHOLE word (\b...\b) so column names such as
+# `updated_at` / `created_at` / `alternate` do not trip the DML scan on a
+# substring (e.g. \bUPDATE matched the "update" inside "updated_at").
+$forbiddenKeywords = @("CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE")
 
 if ($Query -match '(?i)\bPRAGMA\b') {
   if ($Query -notmatch '(?i)\bPRAGMA\s+(table_info|page_count|page_size|index_list|index_info)\b') {
@@ -44,8 +47,8 @@ if ($Query -match '(?i)\bPRAGMA\b') {
 }
 
 foreach ($keyword in $forbiddenKeywords) {
-  if ($Query -match "(?i)\b$($keyword.TrimEnd())") {
-    Write-ErrorMsg "Query rejected: contains forbidden keyword '$($keyword.Trim())'. Only SELECT and allowed PRAGMA permitted."
+  if ($Query -match "(?i)\b$keyword\b") {
+    Write-ErrorMsg "Query rejected: contains forbidden keyword '$keyword'. Only SELECT and allowed PRAGMA permitted."
     exit 121
   }
 }
