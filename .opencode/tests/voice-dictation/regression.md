@@ -88,6 +88,7 @@
   - **Edge:** a row that requires the deleted sherpa model dir to reproduce is a FAIL of this row; a leg
       that hunts for recorded speech is a FALSE PASS.
 
-### #2914 run log
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
 
-- [ ] _(pending — the Tester appends R-5/R-6 results; do not pre-fill)_
+- **R-5 PASS.** Fixture byte-identical (`33c2f129…`), 16 kHz mono 16-bit, 25,600 samples / 1.6 s; deterministic regeneration confirmed; `capture.rs` SURVIVED with its feed + format validation intact.
+- **R-6 PASS.** The only audio source named is the in-repo fixture + its deterministic generator; no `~`/`%USERPROFILE%`/`node_modules`/`~\.cargo`/`C:\Windows\Media`/STT-model-dir reference; `stt:transcript` retired.
