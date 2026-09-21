@@ -25,7 +25,7 @@ import { publishLauncherRegion } from '../../../../shared/components/companion/c
 import { LauncherCommandBar } from './LauncherCommandBar';
 import type { HoldCue, LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
-import { AVATAR_SM_CSS, FredoAvatar, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
+import { AVATAR_SM_CSS, FredoAvatar, resolveCompanionAvatarState, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import {
   CompanionEntity,
   askActiveCompanion,
@@ -574,8 +574,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const desktopMomentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commandActive = engaged || query.trim() !== '';
   const restingPhase = useFredoRestingCadence(commandActive, { delayMs: 12000, holdMs: 1800 });
-  const desktopState: FredoAvatarState =
-    desktopMoment === 'happy' ? 'happy' : commandActive ? 'thinking' : restingPhase;
+  // #2917 ST-4 — route the mascot's 4-state mapping through the ONE shared
+  // resolver (captureActive/modelStatus unset, teleporting unset). The output is
+  // identical to the former inline ternary — happy moment > thinking while the
+  // bar is engaged > the resting beat > idle — so the launcher's resting
+  // markup/props/`data-state` wiring gains no state churn.
+  const desktopState: FredoAvatarState = resolveCompanionAvatarState({
+    flow: desktopMoment === 'happy' ? 'happy' : commandActive ? 'thinking' : 'idle',
+    resting: restingPhase,
+  });
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
   // ── Spec #2883 ST-2 — the launcher-measured reply band ─────────────────────

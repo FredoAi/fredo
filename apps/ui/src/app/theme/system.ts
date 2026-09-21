@@ -97,6 +97,11 @@ const config = defineConfig({
         // — depth ≥ 2 cards; hue/luminance-distinct from accent.subagent (L1).
         'accent.nestedSubagent': { value: 'var(--accent-nested-subagent)' },
 
+        // #2917 ST-1: the FREDO avatar interior fill. An OPAQUE derived token
+        // (accent mixed into the opaque body surface) so the figure reads solid
+        // instead of hollow; the value is derived live in ThemeProvider.
+        'avatar.interior': { value: 'var(--fredo-avatar-interior)' },
+
         // Status
         'status.success': { value: 'var(--status-success)' },
         'status.warning': { value: 'var(--status-warning)' },
