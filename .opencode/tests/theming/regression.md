@@ -275,3 +275,11 @@
 - **R-31 PASS (live).** backdrop strictly z=0 under the z=1 WindowManager; `elementFromPoint` inside the floating window rect never returns the backdrop; clicks (tile Halo→Life) + typing landed while Life animates.
 - **R-32 PASS (live).** `Fredo_desktop_background` string-only; `banana`/`''`/`null`/`123`/`{}`/`plasma` → None; `none`+`life` cold-restart round-trips exact.
 - **R-33 PASS (gates) with the F-63 caveat.** build exit 0; 115 files / 1700 tests; only the chooser 7→8 expectation updated; zero literals / `var(--x)NN` / raster in the slice. (The AC3 light-preset cell/ground contrast miss is tracked as F-63, not an R-33 gate failure.)
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+- **R-29 PASS (live).** overrides + "Reset to theme defaults" behave as before; None → zero backdrop DOM; stale `banana` → safe None; backdrop z=0 / `pointer-events:none` / `aria-hidden` / non-focusable.
+- **R-30 PASS.** `backgroundMotion.ts` untouched (0 rAF/`setInterval`); `background.invariants.test.tsx` byte-identical and green; Life bounded-loop pin green (`lifeBounds.test.ts` 8/8).
+- **R-31 PASS (live).** backdrop strictly z=0; `elementFromPoint` inside the floating window rect never returns the backdrop; input lands while Life animates.
+- **R-32 PASS (live).** `Fredo_desktop_background` string-only; stale/removed → None; `none`+`life` cold-restart round-trips exact.
+- **R-33 PASS (gates).** build exit 0; 115 files / 1700 tests; zero literals / `var(--x)NN` / raster in the slice. **The round-1 F-63 light-preset contrast caveat is RESOLVED** (F-63 PASS in round 2).
