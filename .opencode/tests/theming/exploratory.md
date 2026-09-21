@@ -310,3 +310,16 @@
 - **E-56 PASS.** after the dim + a preset/accent change the thumbnail paints the same resolved dimmed expression as the canvas (computed ground/cell fills + the `color(srgb 0 0 0 / 0.12)` scrim rect; no `var(--accent-primary)`); no bright-vs-dim contradiction.
 - **E-57 PASS.** after 20 preset switches + accent set/reset the light-default paint returned identical (ground `rgb(224,224,224)`, cell `rgb(6,88,92)`, mean L 0.73387 vs the initial 0.73136) — no accumulation, no stale dim.
 - **E-58 PASS.** the `LIFE_BACKGROUND` comment now names `--life-cell` / the dimmed `--accent-strong` expression (`backgroundRegistry.ts:416-418`) and the docs carry the new "Dimming and legibility (#2925)" section (tokens, scrim/`paint()` contract, guard, 20-row pre-validation, thumbnail alignment); the stale `--accent-primary` claim is gone.
+
+### #2925 testing round 2 (spec/2925 @ 897ce4cc) — results
+
+> Exploratory re-probe after the round-1 fix (mid-neutral chroma leg + 7.2 % scrim). Live policy.
+
+- **E-51 PASS.** identical-frame repeat of the F-74 harness invents no dim/chroma; the deterministic modal-cell S is `0.7075` (light) / `0.3915` (dark).
+- **E-52 PASS (round-1 UNVERIFIED resolved).** coverage sweep extended to **solarized**: per-interval dense coverage **4.6561 / 4.8288 / 7.1099 / 4.7061 %** (4/4 ≥ 2.0 %), further samples 5.3125 / 4.2722 %. Every measured preset clears the floor — the smaller scrim widened the margin; floor never lowered.
+- **E-53 PASS (vision).** BEFORE vs AFTER light-default: the field still reads as Life (recognizable oscillators, live frontier) with a muted teal-green palette, not a flat neutral wash.
+- **E-54 PASS with raw series disclosed.** the 10 000 ms cadence (24 000/10 000 = 2.4) did not capture a ≥3× re-seed discontinuity (max 6.1454 % vs 5.20 % median = 1.18×); raw fine 320 ms series 2.4441–3.4206 % (median 2.8562, max/median 1.20×) reported rather than looping.
+- **E-55 PASS.** the dim is canvas-baked (no overlay); the backdrop stays at z=0 below `WindowManager`; `elementFromPoint` over the floating window returns window content (F-85).
+- **E-56 PASS.** the thumbnail paints the same resolved dimmed expression as the canvas (ground `--body-bg`, cells `--life-cell` = the canvas's computed `color`, final `color(srgb 0 0 0 / 0.072)` scrim); no `var(--accent-primary)`.
+- **E-57 PASS.** after the round-2 preset/accent churn the light-default paint returned exactly (ground `rgb(237,237,237)`, cell `rgb(30,103,105)`); the smaller scrim does not accumulate or leave a stale dim.
+- **E-58 PASS.** docs carry the round-2 weights, the mid-neutral rationale, both G-227 tables, the declared targets and the two-tier AC3b gate; the stale `--accent-primary` claim is gone.
