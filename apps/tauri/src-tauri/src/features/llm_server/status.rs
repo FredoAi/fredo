@@ -1,29 +1,40 @@
-//! Structured per-reply status (Spec #2918, ST-1; EARS R-1, R-3–R-6, R-8, R-10).
+//! Companion reply status (Spec #2918, ST-1; ST-6 separation; EARS R-1, R-3–R-10).
 //!
-//! The companion's reply is obtained under ONE JSON-Schema-constrained
-//! `response_format` object (`{ reply, status }`) instead of plain text. This
-//! module is the ONE canonical parse seam (AGENTS.md contract-trust rule):
+//! The reply and its status are obtained WITHOUT ever putting the tool offer and
+//! the structured status in one request (ST-6 — on the pinned managed server the
+//! `json_schema` grammar displaces the native tool-call path when both coexist):
 //!
-//! * the request layers the `response_format` block onto the SHIPPED bodies —
-//!   the skill body when skills are offered (`tools` / `tool_choice:"auto"` /
-//!   `parallel_tool_calls:false` untouched) or the probe-proven no-tools
-//!   `response_format` body otherwise ([`chat::build_response_format_request_body`]);
-//! * [`ReplyEnvelopeExtractor`] forwards ONLY decoded `reply` characters as the
-//!   existing `llm-token` deltas (progressive rendering preserved), withholding
-//!   every incomplete fragment (the `{"reply":"` prefix, a split escape, a split
-//!   multi-byte character) so no raw JSON can surface;
+//! * a SKILL-CAPABLE turn (`offer_skills = true`) runs the SHIPPED tools body
+//!   byte-identically (`tools` / `tool_choice:"auto"` /
+//!   `parallel_tool_calls:false`, NO `response_format`) through
+//!   [`run_tools_attempt`], so native tool calling keeps working; a tool-call or
+//!   failed turn settles through the SHIPPED
+//!   [`super::skills::plan_terminal_events`], and ONLY a content-only prose turn
+//!   obtains its status from ONE bounded status-only pass
+//!   ([`build_status_only_request_body`]) whose `{status}` object is
+//!   schema-constrained by [`fredo_status_only_schema`];
+//! * a TOOLS-FREE turn (`offer_skills = false`, e.g. the avatar joke) keeps the
+//!   shipped single-object `{ reply, status }` contract
+//!   ([`build_structured_status_request_body`]) — [`ReplyEnvelopeExtractor`]
+//!   forwards ONLY decoded `reply` characters as `llm-token` (progressive
+//!   rendering preserved) and withholds every incomplete fragment (the
+//!   `{"reply":"` prefix, a split escape, a split multi-byte character) so no
+//!   raw JSON can surface;
 //! * the parsed status travels on the ADDITIVE `llm-status` event, emitted
-//!   BEFORE the shipped `llm-done`; the reply/skill terminal vocabulary is the
-//!   SHIPPED [`super::skills::plan_terminal_events`];
-//! * empty (R-5) or `{`-bearing non-conforming (R-6) content takes the bounded
-//!   retry ([`STATUS_EMPTY_RETRY_MAX`]) through the shipped plain path, so the
-//!   turn always settles with exactly one `llm-done` and never hangs.
+//!   BEFORE the shipped `llm-done` and NEVER on a skill/error turn;
+//! * on the tools-free path, empty (R-5) or `{`-bearing non-conforming (R-6)
+//!   content takes the bounded retry ([`STATUS_EMPTY_RETRY_MAX`]) through the
+//!   shipped plain path, so the turn always settles with exactly one `llm-done`
+//!   and never hangs.
 //!
 //! Regression invariants: `llm_chat` / `llm_chat_with_image` request bodies stay
-//! byte-identical; the `open_app` / `close_app` / `llm-skill-call` contract is
-//! untouched; a content turn and a tool-call turn stay disjoint
-//! ([`super::skills::ToolCallAccumulator`] is unchanged); the frontend never
-//! parses JSON.
+//! byte-identical; `build_tools_request_body` / `build_skill_request_body` /
+//! `build_audio_skill_request_body` are untouched; the `open_app` / `close_app` /
+//! `llm-skill-call` contract is untouched; a content turn and a tool-call turn
+//! stay disjoint ([`super::skills::ToolCallAccumulator`] is unchanged); the
+//! frontend never parses JSON.
+
+use std::time::Duration;
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
@@ -41,6 +52,9 @@ use super::skills::{
 /// The `response_format` JSON-Schema name for the structured reply contract.
 pub const FREDO_STATUS_SCHEMA_NAME: &str = "fredo_reply";
 
+/// The `response_format` JSON-Schema name for the ST-6 status-only pass.
+pub const FREDO_STATUS_ONLY_SCHEMA_NAME: &str = "fredo_status";
+
 /// The model-emittable status vocabulary — the closed set the schema's `enum`
 /// admits. Every value outside it heals to [`DEFAULT_FREDO_STATUS`] in the
 /// frontend's lenient resolver (R-8), never in the backend parse.
@@ -57,6 +71,11 @@ pub const DEFAULT_FREDO_STATUS: &str = "happy";
 /// would add visible latency.
 pub const STATUS_EMPTY_RETRY_MAX: usize = 1;
 
+/// The bounded budget (seconds) for the ST-6 status-only pass, so it can never
+/// outlive the turn envelope. One attempt; no retry (a missing status is the
+/// safe default).
+pub const STATUS_PASS_TIMEOUT_S: u64 = 10;
+
 /// The ADDITIVE wire event carrying the parsed status (payload `string`).
 pub const LLM_STATUS_EVENT: &str = "llm-status";
 
@@ -67,6 +86,14 @@ pub const STATUS_INSTRUCTION: &str =
     "Respond with a single json object and nothing else, in exactly this shape:\n\
 {\"reply\": \"<your reply to the user>\", \"status\": \"<one of: happy, playful, joking, thinking, working, listening, idle>\"}\n\
 Example: {\"reply\": \"Settings is open — anything else?\", \"status\": \"happy\"}";
+
+/// The ST-6 status-only prompt fragment, sent as a user turn AFTER the
+/// just-streamed prose reply. Contains the literal word `json` and a concrete
+/// example, states the closed 7-value set, and never instructs free-text JSON.
+pub const STATUS_ONLY_INSTRUCTION: &str =
+    "Given your reply above, respond with a single json object and nothing else, in exactly this shape:\n\
+{\"status\": \"<one of: happy, playful, joking, thinking, working, listening, idle>\"}\n\
+Example: {\"status\": \"happy\"}";
 
 /// The readable detail for the (unreachable with the shipped bound of 1) case
 /// where the structured path yields nothing and no retry budget remains.
@@ -97,9 +124,27 @@ pub fn fredo_status_schema() -> Value {
     })
 }
 
-/// The `response_format` wrapper for the status schema — the ONE block inserted
-/// into the tools-aware bodies (the no-tools body reaches it through
-/// [`chat::build_response_format_request_body`]).
+/// The ST-6 status-only schema (name [`FREDO_STATUS_ONLY_SCHEMA_NAME`]): closed
+/// over the SAME [`FREDO_STATUS_VALUES`] and `additionalProperties: false`, with
+/// `status` required and NO `reply` property.
+pub fn fredo_status_only_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": FREDO_STATUS_VALUES,
+                "description": "How Fredo should present himself for this turn."
+            }
+        },
+        "required": ["status"],
+        "additionalProperties": false
+    })
+}
+
+/// The `response_format` wrapper for the reply schema — the ONE block inserted
+/// into the structured audio body; the text body reaches it through
+/// [`chat::build_response_format_request_body`].
 fn status_response_format() -> Value {
     serde_json::json!({
         "type": "json_schema",
@@ -136,47 +181,62 @@ pub fn with_status_instruction(messages: &mut Vec<LlmMessage>) {
 
 // ── Request body (pure) ───────────────────────────────────────────────────────
 
-/// Build the structured request body for one companion turn.
+/// Build the STRUCTURED, tools-free request body for one companion turn.
 ///
-/// `offer_skills = true` (typed ask / dictation): the SHIPPED
-/// [`build_skill_request_body`] / [`build_audio_skill_request_body`] output plus
-/// the `response_format` block — the tools contract is untouched.
+/// This is the single-object `{ reply, status }` contract, used ONLY for a
+/// tools-free turn (`offer_skills = false`, e.g. the avatar joke). A
+/// skill-capable turn runs the SHIPPED tools body with NO `response_format`
+/// ([`run_tools_attempt`]) — the tool offer and the structured status never
+/// coexist in one request (ST-6).
 ///
-/// `offer_skills = false` (joke): the probe-proven no-tools
-/// [`chat::build_response_format_request_body`] with the `fredo_reply` schema
-/// name (audio, when present, rides the shipped audio body + the same block).
+/// The probe-proven no-tools [`chat::build_response_format_request_body`] with
+/// the `fredo_reply` schema name; audio, when present, rides the shipped audio
+/// body plus the same block.
 ///
 /// The [`with_status_instruction`] fragment is appended to the FIRST `system`
 /// message of the supplied conversation.
-pub fn build_status_request_body(
+pub fn build_structured_status_request_body(
     messages: &mut Vec<LlmMessage>,
-    offer_skills: bool,
     audio_base64: Option<&str>,
 ) -> Value {
     with_status_instruction(messages);
 
-    if offer_skills {
-        let registry = SkillRegistry::with_app_control();
-        let mut body = match audio_base64 {
-            Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
-            None => build_skill_request_body(messages, &registry),
-        };
-        body["response_format"] = status_response_format();
-        body
-    } else {
-        match audio_base64 {
-            Some(audio) => {
-                let mut body = chat::build_audio_request_body(messages, audio);
-                body["response_format"] = status_response_format();
-                body
-            }
-            None => chat::build_response_format_request_body(
-                messages,
-                FREDO_STATUS_SCHEMA_NAME,
-                &fredo_status_schema(),
-            ),
+    match audio_base64 {
+        Some(audio) => {
+            let mut body = chat::build_audio_request_body(messages, audio);
+            body["response_format"] = status_response_format();
+            body
         }
+        None => chat::build_response_format_request_body(
+            messages,
+            FREDO_STATUS_SCHEMA_NAME,
+            &fredo_status_schema(),
+        ),
     }
+}
+
+/// Build the ST-6 status-only request body: the turn's original conversation,
+/// the just-streamed reply as an `assistant` turn, and
+/// [`STATUS_ONLY_INSTRUCTION`] as the next `user` turn — constrained to the
+/// [`fredo_status_only_schema`] `{status}` object.
+///
+/// It never offers `tools` (the status pass is a second, tools-free request over
+/// the tools-path reply), and its own content is never forwarded as a token.
+pub fn build_status_only_request_body(messages: &[LlmMessage], streamed_reply: &str) -> Value {
+    let mut conversation: Vec<LlmMessage> = messages.to_vec();
+    conversation.push(LlmMessage {
+        role: "assistant".to_string(),
+        content: streamed_reply.to_string(),
+    });
+    conversation.push(LlmMessage {
+        role: "user".to_string(),
+        content: STATUS_ONLY_INSTRUCTION.to_string(),
+    });
+    chat::build_response_format_request_body(
+        &conversation,
+        FREDO_STATUS_ONLY_SCHEMA_NAME,
+        &fredo_status_only_schema(),
+    )
 }
 
 // ── Incremental reply-only extraction (pure; R-3/R-4) ─────────────────────────
@@ -480,15 +540,16 @@ fn emit_status(app: &AppHandle, status: &str) {
 /// Run ONE structured stream: reply-only tokens, the shipped terminal plan for a
 /// tool-call turn, and `llm-status` + `llm-done` for a content turn.
 ///
-/// `Err` is a transport/launch failure (the caller retries the plain path).
+/// The body is the TOOLS-FREE `{ reply, status }` contract (ST-6) — a
+/// skill-capable turn never reaches here. `Err` is a transport/launch failure
+/// (the caller retries the plain path).
 async fn run_structured_attempt(
     app: &AppHandle,
     messages: &[LlmMessage],
-    offer_skills: bool,
     audio_base64: Option<&str>,
 ) -> Result<StructuredAttempt, String> {
     let mut structured_messages = messages.to_vec();
-    let body = build_status_request_body(&mut structured_messages, offer_skills, audio_base64);
+    let body = build_structured_status_request_body(&mut structured_messages, audio_base64);
 
     let registry = SkillRegistry::with_app_control();
     let mut accumulator = ToolCallAccumulator::new();
@@ -571,6 +632,117 @@ fn reply_tail(reply: &str, forwarded: &str) -> String {
     }
 }
 
+/// Run ONE bounded status-only pass over the just-streamed prose reply (ST-6).
+///
+/// Returns the declared status when the pass produced a non-empty `status`
+/// string, or `None` — the safe default — on a transport failure, malformed
+/// output, an empty value, or the [`STATUS_PASS_TIMEOUT_S`] budget. The pass's
+/// own content is accumulated for parsing only and is NEVER forwarded as
+/// `llm-token`.
+async fn run_status_pass(
+    app: &AppHandle,
+    messages: &[LlmMessage],
+    streamed_reply: &str,
+) -> Option<String> {
+    let body = build_status_only_request_body(messages, streamed_reply);
+
+    let mut content = String::new();
+    let stream = chat::run_stream(app, &body, |frame: ChatSseFrame| {
+        for event in frame.events {
+            if let ChatStreamEvent::Delta(delta) = event {
+                content.push_str(&delta);
+            }
+        }
+        // The turn always settles after the stream, never mid-frame.
+        false
+    });
+
+    // One attempt, bounded so it can never outlive the turn envelope.
+    let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(STATUS_PASS_TIMEOUT_S), stream).await
+    else {
+        return None;
+    };
+
+    serde_json::from_str::<Value>(content.trim())
+        .ok()?
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .map(str::to_string)
+}
+
+/// Run ONE skill-capable turn through the SHIPPED tools path (ST-6).
+///
+/// The body is the SHIPPED [`build_skill_request_body`] /
+/// [`build_audio_skill_request_body`] output with NO `response_format`, so the
+/// native tool call is never displaced by the schema grammar. Content deltas are
+/// forwarded VERBATIM as `llm-token` while tool-call fragments buffer in the
+/// SHIPPED [`ToolCallAccumulator`]. A tool-call or failed turn settles through
+/// the SHIPPED [`plan_terminal_events`] and NEVER emits `llm-status`; only a
+/// content-only prose turn obtains its status from ONE bounded status-only pass.
+async fn run_tools_attempt(
+    app: &AppHandle,
+    messages: &[LlmMessage],
+    audio_base64: Option<&str>,
+) -> Result<(), String> {
+    let registry = SkillRegistry::with_app_control();
+    let body = match audio_base64 {
+        Some(audio) => build_audio_skill_request_body(messages, audio, &registry),
+        None => build_skill_request_body(messages, &registry),
+    };
+
+    let mut accumulator = ToolCallAccumulator::new();
+    let mut prose = String::new();
+
+    chat::run_stream(app, &body, |frame: ChatSseFrame| {
+        for event in frame.events {
+            match event {
+                // The prose streams exactly as the shipped tools path does.
+                ChatStreamEvent::Delta(delta) => {
+                    prose.push_str(&delta);
+                    let _ = app.emit("llm-token", delta);
+                }
+                // Tool-call fragments buffer VERBATIM in the shipped accumulator.
+                other => {
+                    let _ = accumulator.push(other);
+                }
+            }
+        }
+        if let Some(reason) = frame.finish_reason {
+            accumulator.set_finish_reason(reason);
+        }
+        // The turn always settles after the stream, never mid-frame.
+        false
+    })
+    .await?;
+
+    // A tool-call (or failed) turn is disjoint from a content turn: it settles
+    // through the SHIPPED terminal plan (`llm-skill-call` / readable `llm-error`
+    // / one `llm-done`) and NEVER emits `llm-status`.
+    let planned = plan_terminal_events(&registry, &accumulator);
+    if planned
+        .iter()
+        .any(|event| !matches!(event, TerminalEvent::Done))
+    {
+        for event in planned {
+            emit_terminal_event(app, event);
+        }
+        return Ok(());
+    }
+
+    // Content-only prose turn: the status comes from ONE bounded status-only
+    // pass (never from the tools body). An empty prose, a false gate, a failed
+    // pass, or a timeout emits NO `llm-status` — the frontend's default applies.
+    if should_use_structured_status(app) && !prose.trim().is_empty() {
+        if let Some(status) = run_status_pass(app, messages, &prose).await {
+            emit_status(app, &status);
+        }
+    }
+    emit_terminal_event(app, TerminalEvent::Done);
+    Ok(())
+}
+
 /// Re-run the SHIPPED plain path for the SAME turn (R-5/R-6).
 ///
 /// A skill-offered turn reuses the skill stream (tools offered, no
@@ -598,20 +770,27 @@ async fn run_plain_retry(
     }
 }
 
-/// The turn orchestrator: the structured attempt first (when enabled), then the
-/// bounded plain retry for the same turn.
+/// The turn orchestrator (ST-6 split).
+///
+/// * `offer_skills = true` — the SHIPPED tools path (NO `response_format`),
+///   never gated by the capability verdict, so skills always work; a
+///   content-only turn then takes ONE bounded status-only pass.
+/// * `offer_skills = false` — the tools-free structured attempt (when the
+///   capability gate allows it), then the bounded plain retry for the same turn.
 async fn run_status_chat(
     app: &AppHandle,
     messages: Vec<LlmMessage>,
     offer_skills: bool,
     audio_base64: Option<String>,
 ) -> Result<(), String> {
+    if offer_skills {
+        return run_tools_attempt(app, &messages, audio_base64.as_deref()).await;
+    }
+
     let mut attempt = 0usize;
     loop {
         if attempt == 0 && should_use_structured_status(app) {
-            match run_structured_attempt(app, &messages, offer_skills, audio_base64.as_deref())
-                .await
-            {
+            match run_structured_attempt(app, &messages, audio_base64.as_deref()).await {
                 Ok(StructuredAttempt::Settled) => return Ok(()),
                 Ok(StructuredAttempt::Retry) | Err(_) => {}
             }
@@ -650,13 +829,15 @@ pub fn spawn_chat_with_status(
 }
 
 /// Stream a companion reply under the JSON-Schema status contract (Spec #2918,
-/// ST-1).
+/// ST-1; ST-6 separation).
 ///
-/// Additive to `llm_chat` / `llm_chat_with_skills`, which stay unchanged: the
-/// reply is obtained as `{ reply, status }`, ONLY decoded reply characters cross
-/// IPC as `llm-token`, the parsed status is emitted on `llm-status` before the
-/// shipped `llm-done`, and empty/non-conforming content degrades to the shipped
-/// plain path.
+/// Additive to `llm_chat` / `llm_chat_with_skills`, which stay unchanged. A
+/// skill-capable turn (`offer_skills = true`) runs the SHIPPED tools path with
+/// NO `response_format` (skills keep working) and, on a content-only turn,
+/// derives the status from ONE bounded status-only pass; a tools-free turn
+/// (`offer_skills = false`) obtains `{ reply, status }` in one object. In both
+/// cases the parsed status is emitted on `llm-status` before the shipped
+/// `llm-done`, never on a skill/error turn.
 #[tauri::command]
 pub async fn llm_chat_with_status(
     messages: Vec<LlmMessage>,
@@ -898,21 +1079,133 @@ mod tests {
         assert_eq!(messages[1].content, "second");
     }
 
-    // ── R-1: the request bodies (tools contract untouched) ────────────────────
+    // ── #2918 ST-6: the request bodies (the tool offer and the structured
+    //    status never coexist in one request) ─────────────────────────────────
 
+    /// (i) The tools bodies the status path uses carry **NO `response_format`
+    /// key** — the combined body that displaced the native tool call is gone.
     #[test]
-    fn the_status_body_keeps_the_skill_tools_contract_and_adds_the_schema() {
+    fn the_tools_bodies_on_the_status_path_carry_no_response_format() {
         let registry = SkillRegistry::with_app_control();
-        let mut messages = vec![message("system", "be terse"), message("user", "joke")];
-        let body = build_status_request_body(&mut messages, true, None);
+        let messages = vec![
+            message("system", "be terse"),
+            message("user", "open Mission Monitor"),
+        ];
 
-        // The shipped tools contract is untouched and shared verbatim.
-        assert_eq!(body["tools"], skills::render_tools(&registry));
-        assert_eq!(body["tool_choice"], "auto");
-        assert_eq!(body["parallel_tool_calls"], false);
+        let skill = build_skill_request_body(&messages, &registry);
+        let audio_skill = build_audio_skill_request_body(&messages, "UklGRg==", &registry);
+        let tools = chat::build_tools_request_body(
+            &messages,
+            &skills::render_tools(&registry),
+            "auto",
+            false,
+        );
+
+        for (label, body) in [
+            ("skill", &skill),
+            ("audio skill", &audio_skill),
+            ("tools", &tools),
+        ] {
+            assert!(
+                body.get("response_format").is_none(),
+                "{label} body must carry NO response_format: {body}"
+            );
+            assert_eq!(body["tools"], skills::render_tools(&registry), "{label} tools");
+            assert_eq!(body["tool_choice"], "auto", "{label} tool_choice");
+            assert_eq!(body["parallel_tool_calls"], false, "{label}");
+            assert_eq!(body["stream"], true, "{label}");
+            assert_eq!(body["max_tokens"], 1024, "{label}");
+        }
+
+        // The tools-free structured contract is a DIFFERENT body entirely: it
+        // carries the `response_format` block and NO tools.
+        let mut structured_messages = vec![message("user", "tell me a joke")];
+        let structured = build_structured_status_request_body(&mut structured_messages, None);
+        assert!(structured.get("tools").is_none());
+        assert!(structured.get("response_format").is_some());
+    }
+
+    /// (ii) The status-only schema is closed over the SAME 7 values with
+    /// `additionalProperties: false` and carries NO `reply` property.
+    #[test]
+    fn the_status_only_schema_is_closed_over_the_same_seven_statuses() {
+        let schema = fredo_status_only_schema();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], json!(["status"]));
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"]["status"]["type"], "string");
+        assert!(schema["properties"].get("reply").is_none());
+
+        let values = schema["properties"]["status"]["enum"]
+            .as_array()
+            .expect("the status enum must be an array");
+        let values: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
+        assert_eq!(values, FREDO_STATUS_VALUES.to_vec());
+        assert_eq!(values.len(), 7);
+        assert!(values.contains(&DEFAULT_FREDO_STATUS));
+    }
+
+    /// (iii) `STATUS_ONLY_INSTRUCTION` contains the literal `json` word + a
+    /// concrete example + the closed 7-value set, and never instructs free-text
+    /// JSON.
+    #[test]
+    fn the_status_only_instruction_has_the_literal_json_word_and_an_example() {
+        assert!(
+            STATUS_ONLY_INSTRUCTION.contains("json"),
+            "must contain the literal word json: {STATUS_ONLY_INSTRUCTION}"
+        );
+        assert!(STATUS_ONLY_INSTRUCTION.contains("Example"));
+        assert!(STATUS_ONLY_INSTRUCTION.contains("\"status\""));
+        assert!(STATUS_ONLY_INSTRUCTION.contains("nothing else"));
+        for value in FREDO_STATUS_VALUES {
+            assert!(
+                STATUS_ONLY_INSTRUCTION.contains(value),
+                "the closed set must be stated: {value}"
+            );
+        }
+        // Never instruct free-text JSON.
+        assert!(!STATUS_ONLY_INSTRUCTION.to_lowercase().contains("free"));
+    }
+
+    /// The status-only body is tools-free, constrained to the status-only
+    /// schema, and appends the streamed reply as an assistant turn plus the
+    /// status instruction as the next user turn.
+    #[test]
+    fn the_status_only_body_is_tools_free_and_carries_the_reply_and_instruction() {
+        let messages = vec![message("system", "be terse"), message("user", "hi")];
+        let body = build_status_only_request_body(&messages, "Hello there");
+
+        assert!(body.get("tools").is_none());
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 1024);
-        // `response_format` is only ADDED.
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            FREDO_STATUS_ONLY_SCHEMA_NAME
+        );
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"],
+            fredo_status_only_schema()
+        );
+
+        let rendered = body["messages"].as_array().expect("messages array");
+        assert_eq!(rendered.len(), 4);
+        assert_eq!(rendered[0]["role"], "system");
+        assert_eq!(rendered[1]["role"], "user");
+        assert_eq!(rendered[1]["content"], "hi");
+        assert_eq!(rendered[2]["role"], "assistant");
+        assert_eq!(rendered[2]["content"], "Hello there");
+        assert_eq!(rendered[3]["role"], "user");
+        assert_eq!(rendered[3]["content"], STATUS_ONLY_INSTRUCTION);
+    }
+
+    #[test]
+    fn the_tools_free_status_body_is_the_probe_proven_no_tools_variant() {
+        let mut messages = vec![message("user", "tell me a joke")];
+        let body = build_structured_status_request_body(&mut messages, None);
+        assert!(body.get("tools").is_none());
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 1024);
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
             body["response_format"]["json_schema"]["name"],
@@ -930,22 +1223,58 @@ mod tests {
     }
 
     #[test]
-    fn the_tools_free_status_body_is_the_probe_proven_no_tools_variant() {
-        let mut messages = vec![message("user", "tell me a joke")];
-        let body = build_status_request_body(&mut messages, false, None);
-        assert!(body.get("tools").is_none());
-        assert_eq!(body["stream"], true);
-        assert_eq!(body["max_tokens"], 1024);
-        assert_eq!(body["response_format"]["type"], "json_schema");
-        assert_eq!(
-            body["response_format"]["json_schema"]["name"],
-            FREDO_STATUS_SCHEMA_NAME
-        );
+    fn the_status_schema_name_is_fredo_reply() {
+        assert_eq!(FREDO_STATUS_SCHEMA_NAME, "fredo_reply");
     }
 
     #[test]
-    fn the_status_schema_name_is_fredo_reply() {
-        assert_eq!(FREDO_STATUS_SCHEMA_NAME, "fredo_reply");
+    fn the_status_only_schema_name_is_fredo_status() {
+        assert_eq!(FREDO_STATUS_ONLY_SCHEMA_NAME, "fredo_status");
+        assert_ne!(FREDO_STATUS_ONLY_SCHEMA_NAME, FREDO_STATUS_SCHEMA_NAME);
+    }
+
+    /// (iv) The shipped `plan_terminal_events` still routes a buffered `open_app`
+    /// call to `[SkillCall, Done]` through the new orchestration's accumulator
+    /// path: content deltas are forwarded, tool-call fragments buffer VERBATIM,
+    /// and the raw tool-call JSON is never a token.
+    #[test]
+    fn the_tools_attempt_accumulator_path_still_routes_an_open_app_call() {
+        let registry = SkillRegistry::with_app_control();
+        let mut accumulator = ToolCallAccumulator::new();
+
+        assert_eq!(
+            accumulator.push(ChatStreamEvent::Delta("Opening…".to_string())),
+            Some("Opening…".to_string())
+        );
+        assert_eq!(
+            accumulator.push(ChatStreamEvent::ToolCallDelta {
+                index: 0,
+                name: Some("open_app".to_string()),
+                arguments_fragment: Some("{\"app\":\"Miss".to_string()),
+            }),
+            None
+        );
+        assert_eq!(
+            accumulator.push(ChatStreamEvent::ToolCallDelta {
+                index: 0,
+                name: None,
+                arguments_fragment: Some("ion Monitor\"}".to_string()),
+            }),
+            None,
+            "raw tool-call fragments are never forwarded as tokens"
+        );
+        accumulator.set_finish_reason("tool_calls");
+
+        assert_eq!(
+            plan_terminal_events(&registry, &accumulator),
+            vec![
+                TerminalEvent::SkillCall(skills::SkillCall {
+                    skill: "open_app".to_string(),
+                    arguments: json!({ "app": "Mission Monitor" }),
+                }),
+                TerminalEvent::Done,
+            ]
+        );
     }
 
     // ── #2918 ST-2: the capability gate (R-7) ─────────────────────────────────
