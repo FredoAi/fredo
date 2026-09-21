@@ -154,3 +154,30 @@
 - **S-21 PASS (live).** Life switch → `data-background-id="life"` + Life canvas; reselect None → backdrop DOM absent + today's desktop returns.
 - **S-22 PASS (gates) + named blocker.** reduced-motion pin green (`lifeBounds` 8/8, `lifeEngine` 12/12); build exit 0; `test:run` 115 files / 1700 tests; live OS flip UNVERIFIED-with-named-blocker (no media-emulation API).
 - **S-23 PASS.** attribution in source + docs + live notice; catalogue bounded at 10.
+
+## #2925 extension — dimmed Life backdrop smoke
+
+> Issue #2925 revises #2915: the Life field must be **materially dimmer, less single-hue** and still
+> alive. Live policy — a rendered-webview read (`tauri_webview_*`) + a **rendered-pixel** screenshot;
+> F-87 in `functional.md` carries the `telemetry_spans` leg. **This extends S-20..S-23** (their mechanics
+> are unchanged; the new rows re-baseline the expected dimmed render). No prior smoke row is superseded.
+
+- [ ] **S-24:** Selector + Life renders, dimmed — Settings → Appearance → Desktop Background renders
+      **None + the six recipes + Life**; select Life; `[data-testid="desktop-backdrop"]` carries
+      `data-background-id="life"` and the Life canvas paints; screenshot the desktop.
+      **Expected:** the rendered field is **materially dimmer than the #2915 baseline screenshot** (a
+      side-by-side pair is visibly darker, not merely present) and is not a uniform flat grey;
+      `tauri_read_logs(source="console", lines=50)` clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`.
+- [ ] **S-25:** Quick perceptibility sanity — with all windows closed, capture two rendered frames
+      `PERCEPT_SAMPLE_MS = 10 000` ms apart and run a **dense full-frame diff** of the backdrop rect.
+      **Expected:** non-zero change consistent with **≥ 2.0 %/interval** (the full gate is F-75; a
+      present-but-frozen field reads ≈ 0 %). Do **not** lower `PIXEL_DELTA_MIN` to pass. Then reselect
+      **None** and confirm the backdrop DOM is absent and today's desktop returns; screenshot succeeds.
+- [ ] **S-26:** Reduced-motion + gates — the Life reduced-motion product-unit pin exists and passes
+      (static render schedules no loop, `data-life-motion="static"`); `pnpm --filter @fredo/ui build`
+      exit 0; `pnpm --filter @fredo/ui test:run` green; the live OS flip is recorded
+      **UNVERIFIED-with-named-blocker** (Tauri MCP has no media-emulation API — G-050/G-148/#2870).
+- [ ] **S-27:** Token purity + live recolour quick path — grep the Life slice for hex/rgb/hsl literals
+      and `var(--x)NN` (zero); switch preset dark↔light and set/clear an `accentPrimary` override while
+      Life runs; confirm the dimmed field recolours live with no restart and no stale dim; console clean.
