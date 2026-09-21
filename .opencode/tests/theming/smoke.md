@@ -126,17 +126,24 @@
 > read (`tauri_webview_*`) + a **rendered-pixel** quick diff; F-70 in `functional.md` carries the
 > `telemetry_spans` leg. No prior smoke row is superseded.
 
-- [ ] **S-20:** Background selector reachable + Life present — Settings → Appearance → Desktop Background
+- [x] **S-20:** Background selector reachable + Life present — Settings → Appearance → Desktop Background
       renders **None + the six recipes + Life** (`[data-testid="desktop-background-option-life"]`); a fresh
       profile shows **None**; `tauri_read_logs(source="console", lines=50)` clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
-- [ ] **S-21:** Quick Life switch + repaint — select Life; `[data-testid="desktop-backdrop"]` present with
+- [x] **S-21:** Quick Life switch + repaint — select Life; `[data-testid="desktop-backdrop"]` present with
       `data-background-id="life"`; a dense quick diff of two frames ≈2 s apart (windows closed) is a
       non-zero change (sanity — the full gate is F-61); open a feature window and confirm it renders above;
       reselect **None** → backdrop DOM absent + today's desktop returns; screenshot succeeds; console clean.
-- [ ] **S-22:** Reduced-motion + gates — the Life reduced-motion product-unit pin exists and passes (static
+- [x] **S-22:** Reduced-motion + gates — the Life reduced-motion product-unit pin exists and passes (static
       render schedules no loop, `data-motion="static"`); `pnpm --filter @fredo/ui build` exit 0;
       `pnpm --filter @fredo/ui test:run` green; the live OS flip is recorded
       **UNVERIFIED-with-named-blocker** (Tauri MCP has no media-emulation API — G-050/G-148/#2870).
-- [ ] **S-23:** Attribution quick check — the **CC BY-SA 3.0** attribution + licence notice is present in the
+- [x] **S-23:** Attribution quick check — the **CC BY-SA 3.0** attribution + licence notice is present in the
       Life pattern module (source) and in the docs; the curated pattern set is bounded (no full-lexicon dump).
+
+### #2915 testing round 1 (spec/2915 @ a3c7f245) — results
+
+- **S-20 PASS (live).** Chooser renders None + six recipes + Life (`desktop-background-option-life`, `aria-label="Life"`, `aria-description="Living Conway's Game of Life"`); fresh profile → None; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded` (only the pre-existing `motion() is deprecated` WARN).
+- **S-21 PASS (live).** Life selected → `data-background-id="life"` + Life canvas; dense diff of two fresh loads 11.974 %; Settings window renders above the field; reselect None → backdrop DOM absent + today's desktop returns.
+- **S-22 PASS (gates) + named blocker.** Life reduced-motion pin passes (lifeBounds 8/8, lifeEngine 12/12); build exit 0; `test:run` 115 files / 1700 tests; live OS flip UNVERIFIED-with-named-blocker (no media-emulation API).
+- **S-23 PASS.** CC BY-SA 3.0 notice in `lifePatterns.ts:6-21`, `docs/features/desktop-background-life.md`, and live at `desktop-background-life-attribution`; catalogue bounded at 10 patterns (module-load guard).
