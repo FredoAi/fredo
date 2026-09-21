@@ -283,3 +283,22 @@
       reduced-motion rules keep every shape legible (named G-053 blocker for the live flip).
       **Expected:** the dense filmstrip shows a perceptible change; no `opacity:0`/strobe rule; screenshot
       succeeds; console clean.
+
+## #2918 extension — structured-reply quick paths
+
+> Issue #2918 delivers the whole reply as a JSON-Schema-constrained object + a model-declared status.
+> Quick paths only — the full matrix lives in `functional.md` F-126..F-133 / `regression.md`
+> R-63..R-65. **Verification policy: live** — the real managed `llama-server`, the rendered reply
+> surface, and the mandatory F-132 receipt. A static-only PASS is a FALSE PASS.
+
+- [ ] S-42: **Structured reply quick path (no raw JSON).** Companion ON at the seat; send
+      `Reply with exactly: Hi there!`. **Expected:** the reply streams into
+      `[data-testid="fredo-reply-surface"]` and the settled text is EXACTLY `Hi there!` — never any
+      `{`, `}` or `"reply"`/`"status"` fragment at any frame; the wrapper `data-state` is a member of
+      `FREDO_AVATAR_STATES`; the companion returns to rest; `tauri_webview_screenshot` succeeds;
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-43: **Unknown status heals quick path.** Companion ON; inject `{"reply":"Hello
+      there","status":"dancing"}` on `llm-token` then `llm-done` (`tauri_ipc_emit_event`). **Expected:**
+      the surface shows exactly `Hello there` (no raw fragment) and the wrapper `data-state` heals to
+      the safe default (never `dancing`); the companion returns to rest; screenshot succeeds; console
+      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
