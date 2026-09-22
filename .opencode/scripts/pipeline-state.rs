@@ -3443,7 +3443,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                         // during testing, so a re-entry has nothing new to add.
                         if prior_phase_entries(issue, "implementation") == 0 {
                             let a2a = std::fs::read_to_string(triage_a2a_path(issue)?).unwrap_or_default();
-                            for feat in parse_feature_names(&a2a) {
+                            let features = parse_feature_names(&a2a);
+                            // G-240: the QA marker line must carry ONLY bare comma-separated
+                            // lowercase-kebab feature names. A marker embedded in a comma-rich
+                            // sentence parses to ZERO valid tokens, and the suites would be
+                            // silently skipped — the parser is lenient about POSITION but
+                            // strict about TOKEN SHAPE (same family as #2877/#2897, whose
+                            // fixes only covered position). Surface it loudly instead.
+                            if features.is_empty() && a2a.contains(FEATURE_TESTS_PREFIX) {
+                                let msg = "QA `**Feature tests:**` marker present but no valid feature names parsed — no suites persisted (write `**Feature tests:** <lowercase-kebab>[, <name>]` and put any prose on a following line)";
+                                notes.push(format!("WARNING: {}", msg));
+                                let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped")]);
+                            }
+                            for feat in features {
                                 match persist_tests(&feat) {
                                     Ok(n) => { if n > 0 { notes.push(format!("tests for '{}' → main", feat)); } }
                                     // A declared-but-unseeded suite must surface, not vanish:

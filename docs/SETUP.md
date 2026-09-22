@@ -169,11 +169,11 @@ A local build produces an installer for your current OS in `apps/tauri/src-tauri
 ### App icons
 
 The shipped OS icon set under `apps/tauri/src-tauri/icons/` is generated from the canonical Fredo
-avatar — do not hand-edit it. Regenerate the whole set from the committed SVG masters, or verify the
+avatar — do not hand-edit it. Regenerate the whole set from the committed SVG master, or verify the
 committed set is complete and byte-reproducible:
 
 ```bash
-pnpm icons:generate   # regenerate every shipped icon from the committed masters
+pnpm icons:generate   # regenerate every shipped icon from the one committed SVG master
 pnpm icons:check      # verify config + inventory + sizes + determinism
 ```
 
