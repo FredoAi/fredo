@@ -52,13 +52,37 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-237: orchestrator_cannot_manage_worktrees_blocking_the_testing_handoff
+- **activation_date:** 2026-09-21
+- **observed:** #2925 — the `create-worktree`/`remove-worktree` state-machine actions are developer-gated; the Self-Improver was refused. At the implementation→testing handoff the repo root must check out `spec/<N>` (the tester serves the app from the root checkout), but a developer's worktree still held the branch, so the root checkout failed and the SI had to dispatch a developer purely to remove the finished worktrees before the transition could pass.
+- **target_failure:** the orchestrator's testing handoff (root checkout of the spec branch for the tester) is blocked by a developer worktree still holding the branch, because the worktree lifecycle actions are developer-only while the SI playbook implies the SI creates/removes them.
+- **guardrail:** Have each developer create and remove its OWN worktree (the actions are developer-gated — the SI cannot). Before the implementation→testing transition, ensure every developer worktree is removed (or detached) so the repo root can check out the spec branch; if one still holds it, dispatch a developer to remove it rather than improvising a raw git command.
+- **home:** playbooks/self-improver.md (staffing + testing handoff) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-236: desaturation_mix_targeted_at_a_luminance_extreme
+- **activation_date:** 2026-09-21
+- **observed:** #2925 round 1 — to make the Life field "less uniformly one colour", the cell colour was mixed 20 percent toward the theme's text token. On light presets that token is near-black, so the mix behaved as a plain darken; HSL saturation (chroma/max) is scale-invariant under a multiplicative darken, so the light leg's saturation barely moved (minus 0.016 absolute against a 0.10 gate) and the round FAILed. Mixing toward a MID-LUMINANCE neutral (a text/background blend) delivered minus 0.19 light / minus 0.14 dark on the retry.
+- **target_failure:** a desaturation/chroma-reduction leg mixes a colour toward a luminance-extreme token (near-black or near-white), so on the presets where that extreme matches the ground it acts only as a darken/brighten and the perceived chroma does not drop, failing the "less monochrome" observable.
+- **guardrail:** When a requirement is to reduce perceived chroma or hue dominance, mix the colour toward a MID-LUMINANCE neutral derived from existing tokens (a text/background blend), never toward a near-black or near-white extreme, and verify the chosen target reduces saturation on BOTH light- and dark-based presets before implementation.
+- **home:** playbooks/software-architect.md (design arithmetic) + playbooks/ui-ux-expert.md (design intent) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-235: foreground_contrast_floor_not_prevalidated_against_the_none_control
+- **activation_date:** 2026-09-21
+- **observed:** #2925 round 1 — the plan declared a numeric foreground/shell-chrome contrast floor (normal text at or above 4.5:1 over the dimmed field) but the architect's pre-validation covered only the cell-vs-ground pair. Dimming the ground pushed light-default's clock from 5.425:1 to 4.110:1 (a new sub-floor pair) and the tester FAILed — yet several other light presets' pre-change (None) controls were already below 4.5 (solarized 2.479, paper 3.473), making the absolute floor unsatisfiable for them under any dim. The UI/UX disposition replaced it with a two-tier gate (absolute where the control clears; no-worse-than-control by a declared tolerance otherwise), but only after a rework round.
+- **target_failure:** a plan declares a numeric foreground/chrome contrast floor for a new surface but pre-validates only the primary painted pair, so the change lands below the floor and burns a round; or the floor is set without checking the pre-change (None) control, making the criterion unsatisfiable on presets whose control is already below it.
+- **guardrail:** When a plan declares a numeric foreground/contrast floor, pre-validate BOTH the primary painted pair AND the foreground-on-surface pair on EVERY shipped preset against the pre-change (None) control before implementation. If the control is already below the absolute floor the criterion is unsatisfiable as written — resolve it at convergence as a two-tier gate (absolute where the control clears it; no-worse-than-control by a declared tolerance otherwise) with an owner amendment, and have the QA row state which tier governs when they conflict. Never leave the gate to be adjudicated after a FAIL.
+- **home:** playbooks/software-architect.md (token arithmetic) + playbooks/ui-ux-expert.md (floor + preset matrix) + playbooks/qa-expert.md (numeric floor row) + playbooks/self-improver.md (convergence review) + references.md (this record)
+- **effectiveness:** Pending
+
 ### G-234: verdict_run_total_not_derived_from_the_enumerated_case_rows
 - **activation_date:** 2026-09-21
 - **observed:** #2924 round 1 — the `## Tests Runs` verdict header declared "19/19 driven suite cases PASS" while the enumerated driven set the same comment listed was 17 (F-6 + F-38..F-48 = 12, R-15 = 1, E-16..E-18 = 3, R-24 = 1). Every per-case row and the per-AC table were correct, and the tester disclosed the miscount in its report and correctly did NOT repost (one verdict per run is the rule), so no verdict was wrong — but a reader auditing the record sees two different totals for one run.
 - **target_failure:** a verdict comment's headline total is written from memory instead of being counted from the enumerated per-case rows it contains, so the record carries two different counts for the same run and the audit must reconcile them by hand.
 - **guardrail:** The `## Tests Runs` headline total MUST be counted from the enumerated case rows in the same comment (count the IDs, do not recall them). When a miscount is found after the verdict has posted, do NOT repost (one verdict per run); disclose it in the final report and let the SI record it in the audit — the per-case rows and the per-AC table are the authoritative content.
 - **home:** playbooks/tester.md (Tests Runs drafting) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-21, #2925) — both rounds' `## Tests Runs` headlines were counted from the enumerated rows (round 1: 2 of 33; round 2: 33 of 33) and matched the per-case and per-AC content; no reconciliation was needed at audit.
 
 ### G-233: planner_subagent_returns_empty_on_a_substantive_brief
 - **activation_date:** 2026-09-21
@@ -67,6 +91,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When a planner returns an empty report on a substantive brief, probe the role with a trivial dispatch FIRST to separate role availability from brief complexity (see G-048), then decompose the work into one shallow question per dispatch and assemble the returned verbatim deliverables yourself (the tool-exposure fallback applied to a returned deliverable, not only to a failed write). Do not re-dispatch an identical large brief more than twice. Record the decomposition in the observations log so the audit can trend it.
 - **home:** playbooks/self-improver.md (dispatch decomposition) + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-21, #2922) — the decomposition recovered all three planner sections after six empty dispatches, with no testing round lost.
+- **re-validated:** 2026-09-21, #2925 — the architect returned EMPTY on the first substantive planning brief; a trivial probe succeeded (role available), and decomposing into shallow single-question dispatches (domain model, token values, baseline ratios, mechanism arithmetic, EARS requirements, sub-task decomposition) recovered every section verbatim with no testing round lost. The pattern remains live for this role; the probe-then-decompose recipe held.
 
 ### G-232: rendered_output_ac_over_a_state_matrix_measured_on_fewer_states
 - **activation_date:** 2026-09-21
@@ -99,7 +124,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a plan declares a numeric legibility/contrast floor for a new painted surface but does not verify that the token the surface actually paints from clears that floor on every shipped preset, so a compliant implementation lands below it and burns a rework round.
 - **guardrail:** When a QA row binds a qualitative legibility/contrast criterion to a numeric floor, the plan must name the exact token(s) the new painted surface consumes AND pre-validate their measured ratio against that floor on every shipped preset (light- and dark-based), preferring an existing token that already clears it. If none does, resolve the gap at convergence — a stronger existing token or a bounded token addition — before implementation; never leave the token choice to the implementer. This extends the accent-contrast family (see G-137): the check is on the new surface's painted token pair, not only on control thumbs/tracks.
 - **home:** playbooks/qa-expert.md (numeric floor + preset matrix) + playbooks/software-architect.md (token-choice arithmetic) + playbooks/self-improver.md (plan review) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-21, #2925) — the PAINTED-CELL-PAIR half held across two rounds (pre-validated 20/20, solarized binding, guard inert), but the declared FOREGROUND/chrome floor was not pre-validated against the pre-change control, so the dim landed a new sub-floor pair and burned a rework round (see G-235 for the corrected rule).
 
 ### G-228: periodic_event_sampled_at_an_exact_harmonic_of_its_period
 - **activation_date:** 2026-09-21
@@ -107,7 +132,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a periodic or repeating event is sampled at a cadence that is an exact integer multiple of its period, so the event always lands on a sample boundary and a spike-versus-baseline clause is unsatisfiable (or trivially satisfied) regardless of the product.
 - **guardrail:** When a row gates a periodic or repeating event's discontinuity, the sampling cadence must not be an exact harmonic of the event period — choose an off-harmonic interval, or judge the discontinuity at the event's own granularity. State the cadence-to-period relationship in the row so a harmonic lock is visible at plan review, and when one is found report the raw per-interval series plus the finer-granularity reading rather than looping a round.
 - **home:** playbooks/qa-expert.md (cadence design) + playbooks/tester.md (metric reporting) + playbooks/self-improver.md (plan review) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Partial (2026-09-21, #2925) — the row stated the cadence-to-period relationship (10 s cadence vs the 24 s re-seed = 2.4x, off-harmonic) and no round was lost; the re-seed discontinuity still was not captured at the declared cadence (harmonic-lock residual), so the raw fine series was disclosed rather than looped. The relationship was declared, the clause remained hard to satisfy.
 
 ### G-229: single_long_webview_script_call_exceeds_the_driver_cap
 - **activation_date:** 2026-09-21
@@ -115,7 +140,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** a QA row plans one long-running in-page script (a multi-second sampling/capture loop) against the desktop driver, whose per-call script-execution cap is a few seconds, so the row cannot run as written and the round loses time to a workaround or a false blocker.
 - **guardrail:** Plan rendered-sampling legs as an in-page sampler/timer that accumulates results in the page, with the driver polling in bounded calls each comfortably under the per-call script-execution cap — never as one long-running call. Record the cap and this pattern in the tester/QA recipes alongside the existing in-page-script and no-JS-busy-wait rules (G-188, G-152).
 - **home:** playbooks/qa-expert.md (sampling design) + playbooks/tester.md (driver limits) + skills/dev-environment/SKILL.md (driver fidelity) + references.md (this record)
-- **effectiveness:** Pending
+- **effectiveness:** Confirmed (2026-09-21, #2925) — the perceptibility and coverage legs were planned and executed as in-page accumulators with bounded driver polling; across two rounds no leg lost time to a long-call timeout (the tester did note the ~5 s in-page transport cap, and chunked accordingly).
 
 ### G-224: composed_provider_request_mechanisms_never_exercised_together
 - **activation_date:** 2026-09-21
@@ -168,6 +193,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md (floor declaration + metric definition) + playbooks/software-architect.md (design arithmetic) + playbooks/tester.md (metric reporting) + references.md (this record)
 - **re-validated:** 2026-09-21, #2915 — the derivation was propagated into the plan at convergence (footprint fraction × antialias factor × margin, with the gate declared as the per-interval pairwise delta), and the tester recomputed it from the authored cell/grid constants before applying it (a derived 1.73 % against the plan's 2.0 % reference, gated on 2.0 %/interval); every interval cleared. No round was lost to a floor ambiguity or a pairwise-vs-window flip.
 - **effectiveness:** Confirmed (2026-09-21, #2915) — the derived floor plus the declared gate quantity let the tester recompute and apply it directly, with no definitional flip. **Boundary note (2026-09-21, #2922 round 1):** this record's derivation lesson did not reach the ABSENCE-oracle class — a metric can declare its gated quantity and still be unable to express the defect (see G-231).
+- **re-validated:** 2026-09-21, #2925 — the QA row declared the gated quantity (the per-interval pairwise dense delta) and the derived Life floor; across two rounds the tester recomputed and applied it without a pairwise-versus-window flip, and the round-2 fix's smaller scrim was shown to widen the margin rather than spend it.
 
 ### G-220: new_resolver_state_masks_an_existing_states_only_trigger
 - **activation_date:** 2026-09-20
@@ -210,6 +236,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md (QA plan design) + playbooks/tester.md (motion evidence) + playbooks/self-improver.md (plan review + audit) + references.md (this record)
 - **effectiveness:** Confirmed — 2026-09-20, #2917 rounds 1–3: the dense/full-frame rendered delta over a defined interval was the load-bearing evidence for every state. It caught a real shortfall the property-only view would have missed (a new state measured just under its declared floor and was returned for enlargement) and then substantiated every PASS across three re-test rounds, including the round-3 fix, with per-state numbers and a human/vision filmstrip read.
 - **re-validated:** 2026-09-21, #2915 — the canvas/JS-loop Life backdrop carries no CSS animation, so the animation-property view was impossible by construction and the dense full-frame delta over time was the only perceptibility oracle; the tester recorded raw per-interval deltas plus a human/vision read and never offered a computed-style as evidence.
+- **re-validated:** 2026-09-21, #2925 — the perceptibility AC was gated on the per-interval dense delta over a full window on the resolved dimmed tokens across two rounds (round 2: 4/4 intervals at or above 2.0 percent on light-default and on solarized), with the raw series and a human/vision read; no property-only evidence was offered and the floor was never lowered.
 
 ### G-212: geometry_overlap_probe_measures_the_border_box
 - **activation_date:** 2026-09-20
