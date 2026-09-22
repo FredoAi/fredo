@@ -51,7 +51,10 @@
                 "task": {
                     "*": "deny",
                     "self-improver": "allow"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         },
         "software-architect": {
@@ -95,7 +98,10 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         },
         "ui-ux-expert": {
@@ -144,7 +150,10 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         },
         "qa-expert": {
@@ -190,7 +199,10 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         },
         "developer": {
@@ -311,7 +323,10 @@
                     "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
                     "sqlite3 -readonly*": "allow",
                     "git checkout -- *": "allow"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         },
         "tester": {
@@ -402,7 +417,10 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
                     "git checkout -- *": "allow"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         },
         "self-improver": {
@@ -526,7 +544,10 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny"
+            }
             }
         }
     },
