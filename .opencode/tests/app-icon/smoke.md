@@ -14,11 +14,13 @@ webview. Verification policy is **static** (no telemetry reference required).
 - [ ] S-2: `tauri_read_logs(source="console", lines=50)` shows no `Error:` / `Uncaught` /
       `Maximum update depth exceeded`. EXPECT: console clean.
 
-## S-3 — Icon set present and decodable
+## S-3 — Icon set present and decodable (single master, revised by #2930)
 
-- [ ] S-3: All 17 files under `apps/tauri/src-tauri/icons/` exist and decode (PNG signature, ICO
-      signature, ICNS signature). EXPECT: 17/17 present + decodable; the 5 `bundle.icon` paths are a
-      subset.
+- [ ] S-3: All 17 shipped artifacts under `apps/tauri/src-tauri/icons/` exist and decode (PNG
+      signature, ICO signature, ICNS signature), **exactly one** SVG master
+      (`fredo-icon-large.svg`) is present, `fredo-icon-small.svg` is **absent**, and
+      `manifest.sha256` exists. EXPECT: 17/17 artifacts present + decodable; 1 master; the 5
+      `bundle.icon` paths are a subset.
 
 ## S-4 — Config + Rust build sanity
 
