@@ -6,9 +6,18 @@
  * Responsibilities:
  *   - own the simulation + the canvas backing store, sized device-pixel-ratio
  *     aware but bounded to `LIFE_DPR_MAX` × the CSS viewport (a LINEAR ratio);
- *   - resolve the two paint colours from the LIVE theme CSS custom properties
- *     (`--body-bg` ground, `--accent-strong` cell) — never a colour literal and
- *     never a `var(--x)NN` alpha-append;
+ *   - resolve the THREE paint tokens from the LIVE theme CSS custom properties
+ *     (`--body-bg` ground, `--life-cell` dimmed cell, `--life-dim` scrim) —
+ *     never a colour literal and never a `var(--x)NN` alpha-append. The
+ *     `--life-cell` expression embeds the derived `--life-neutral`
+ *     mid-luminance chroma leg, so its resolved text is a THIRD-level nested
+ *     `color-mix()`; the guard's recursive parser resolves any nesting depth;
+ *   - paint ground → cells → EXACTLY ONE field-wide `--life-dim` scrim
+ *     (`fillRect` over the finished frame), so the ground and the cells dim
+ *     together and the cell-vs-ground ratio is preserved;
+ *   - enforce the `LIFE_CONTRAST_MIN` legibility guard at token-resolution time
+ *     (never per frame): if the resolved dimmed cell-vs-ground WCAG ratio falls
+ *     below 3, paint the untransformed pair (`--accent-strong` cells, no scrim);
  *   - drive generations at `LIFE_STEP_MS` through EXACTLY ONE rAF handle, with
  *     the policy re-seed on the same grid (no blank frame);
  *   - tear down completely: `destroy()` cancels the rAF and releases the canvas.
@@ -25,18 +34,24 @@
 import {
   LIFE_CELL_PX,
   LIFE_COLS_MAX,
+  LIFE_CONTRAST_MIN,
   LIFE_DPR_MAX,
   LIFE_ROWS_MAX,
   LIFE_STEP_MS,
 } from './lifeConstants';
 import { createLifeSimulation, type LifeSimulation } from './lifeSimulation';
 
-/** The two theme colours the paint consumes, resolved live (never literals). */
+/** The three theme tokens the paint consumes, resolved live (never literals). */
 export interface LifeTokens {
   /** Backdrop ground — `--body-bg`. */
   ground: string;
-  /** Live-cell colour — `--accent-strong`. */
+  /**
+   * Live-cell colour — `--life-cell`: the dimmed `--accent-strong` expression
+   * blended toward the `--life-neutral` mid-luminance chroma leg.
+   */
   cell: string;
+  /** Field-wide scrim painted once over ground+cells — `--life-dim`. */
+  dim: string;
 }
 
 export interface LifeEngineOptions {
@@ -99,12 +114,177 @@ function readToken(
   return reference;
 }
 
+/* -------------------------------------------------------------------------- */
+/* #2925 ST-2 — WCAG contrast guard (token-resolution time only, never per     */
+/* frame). It parses only the colour shapes the live theme can produce: hex,   */
+/* rgb()/rgba(), `transparent`, and the `color-mix(in srgb, …)` expressions    */
+/* the provider registers. `splitTopLevel` + `parseColorMix` recurse, so the   */
+/* nested `--accent-strong` / `--life-neutral` legs of `--life-cell` resolve   */
+/* at ANY nesting depth (the third-level `--life-neutral` leg included).       */
+/* Anything unrecognised yields null → the guard is skipped and the authored   */
+/* dimmed pair is kept (fail-safe).                                            */
+/* -------------------------------------------------------------------------- */
+
+interface LifeRgb {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+function clampChannel(value: number): number {
+  return Math.min(255, Math.max(0, value));
+}
+
+function parseHexColor(value: string): LifeRgb | null {
+  const hex = value.slice(1);
+  let r: number;
+  let g: number;
+  let b: number;
+  let a = 1;
+  if (hex.length === 3 || hex.length === 4) {
+    r = parseInt(hex[0] + hex[0], 16);
+    g = parseInt(hex[1] + hex[1], 16);
+    b = parseInt(hex[2] + hex[2], 16);
+    if (hex.length === 4) a = parseInt(hex[3] + hex[3], 16) / 255;
+  } else if (hex.length === 6 || hex.length === 8) {
+    r = parseInt(hex.slice(0, 2), 16);
+    g = parseInt(hex.slice(2, 4), 16);
+    b = parseInt(hex.slice(4, 6), 16);
+    if (hex.length === 8) a = parseInt(hex.slice(6, 8), 16) / 255;
+  } else {
+    return null;
+  }
+  if (![r, g, b, a].every(Number.isFinite)) return null;
+  return { r, g, b, a };
+}
+
+function parseRgbFunction(value: string): LifeRgb | null {
+  const open = value.indexOf('(');
+  const close = value.lastIndexOf(')');
+  if (open < 0 || close <= open) return null;
+  const parts = value.slice(open + 1, close).split(/[\s,/]+/).filter(Boolean);
+  const channels = parts.slice(0, 3).map(Number);
+  if (channels.length !== 3 || channels.some((channel) => !Number.isFinite(channel))) {
+    return null;
+  }
+  let alpha = parts.length >= 4 ? Number(parts[3]) : 1;
+  if (!Number.isFinite(alpha)) alpha = 1;
+  return {
+    r: clampChannel(channels[0]),
+    g: clampChannel(channels[1]),
+    b: clampChannel(channels[2]),
+    a: alpha,
+  };
+}
+
+/** Split a comma list at parenthesis depth 0 (so nested `color-mix()` survives). */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === '(') depth += 1;
+    else if (char === ')') depth -= 1;
+    else if (char === ',' && depth === 0) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/** Resolve any supported CSS colour string to sRGB channels (+ alpha). */
+function resolveLifeColor(value: string): LifeRgb | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
+  if (trimmed.startsWith('#')) return parseHexColor(trimmed);
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith('rgb')) return parseRgbFunction(trimmed);
+  if (lower.startsWith('color-mix')) return parseColorMix(trimmed);
+  return null;
+}
+
+/** A `color-mix(in srgb, …)` stop: a resolved colour plus its optional weight. */
+function parseMixStop(text: string): { color: LifeRgb; pct: number | null } | null {
+  const trimmed = text.trim();
+  const weightMatch = /(\d+(?:\.\d+)?)%\s*$/.exec(trimmed);
+  const pct = weightMatch ? Number(weightMatch[1]) : null;
+  const colorText = (weightMatch ? trimmed.slice(0, weightMatch.index) : trimmed).trim();
+  const color = resolveLifeColor(colorText);
+  return color ? { color, pct } : null;
+}
+
+/** Evaluate the exact `color-mix(in srgb, A p%, B q%)` form the provider emits. */
+function parseColorMix(value: string): LifeRgb | null {
+  const open = value.indexOf('(');
+  const close = value.lastIndexOf(')');
+  if (open < 0 || close <= open) return null;
+  const inner = value.slice(open + 1, close).trim();
+  if (!inner.startsWith('in srgb')) return null;
+  const comma = inner.indexOf(',');
+  if (comma < 0) return null;
+  const stops = splitTopLevel(inner.slice(comma + 1));
+  if (stops.length !== 2) return null;
+  const first = parseMixStop(stops[0]);
+  const second = parseMixStop(stops[1]);
+  if (!first || !second) return null;
+  // A missing weight defaults to "the remaining share"; both missing = 50/50.
+  const firstPct = first.pct ?? (second.pct === null ? 50 : 100 - second.pct);
+  const secondPct = second.pct ?? (first.pct === null ? 50 : 100 - first.pct);
+  const total = firstPct + secondPct;
+  if (!(total > 0)) return null;
+  const firstWeight = firstPct / total;
+  const secondWeight = secondPct / total;
+  return {
+    r: first.color.r * firstWeight + second.color.r * secondWeight,
+    g: first.color.g * firstWeight + second.color.g * secondWeight,
+    b: first.color.b * firstWeight + second.color.b * secondWeight,
+    a: first.color.a * firstWeight + second.color.a * secondWeight,
+  };
+}
+
+/** sRGB gamma-decode (WCAG 2.x). */
+function lifeSrgbToLinear(channel: number): number {
+  const scaled = channel / 255;
+  return scaled <= 0.03928 ? scaled / 12.92 : Math.pow((scaled + 0.055) / 1.055, 2.4);
+}
+
+/** WCAG relative luminance of an sRGB triple. */
+function lifeRelativeLuminance(color: LifeRgb): number {
+  return (
+    0.2126 * lifeSrgbToLinear(color.r) +
+    0.7152 * lifeSrgbToLinear(color.g) +
+    0.0722 * lifeSrgbToLinear(color.b)
+  );
+}
+
+/** WCAG contrast ratio between two colours. */
+function lifeContrastRatio(a: LifeRgb, b: LifeRgb): number {
+  const luminanceA = lifeRelativeLuminance(a);
+  const luminanceB = lifeRelativeLuminance(b);
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 /**
- * Resolve the two paint colours from the LIVE computed theme custom properties
- * inherited by `canvas` (`--body-bg` / `--accent-strong`). In a themed host the
- * values are the resolved theme colours; if the properties are unavailable the
- * token REFERENCE is returned (never a hardcoded colour literal), so the engine
- * source carries zero hex/rgb/hsl and zero `var(--x)NN`.
+ * Resolve the THREE paint tokens from the LIVE computed theme custom properties
+ * inherited by `canvas` (`--body-bg` ground, `--life-cell` dimmed cell,
+ * `--life-dim` scrim). In a themed host the values are the resolved theme
+ * colours; if a property is unavailable the token REFERENCE is returned (never a
+ * hardcoded colour literal), so the engine source carries zero hex/rgb/hsl and
+ * zero `var(--x)NN`.
+ *
+ * The `--life-cell` fallback is the resolved `--accent-strong` value — exactly
+ * the "untransformed cell" the guard reverts to. The `LIFE_CONTRAST_MIN` guard
+ * runs HERE (token resolution, never per frame): if the resolved cell-vs-ground
+ * WCAG ratio falls below the floor, the untransformed pair is returned
+ * (`--accent-strong` cell, no scrim). If either colour is unparseable the
+ * authored dimmed pair is kept (fail-safe — never guess a breach).
  */
 export function resolveLifeTokens(canvas: HTMLCanvasElement): LifeTokens {
   let computed: CSSStyleDeclaration | null = null;
@@ -113,10 +293,26 @@ export function resolveLifeTokens(canvas: HTMLCanvasElement): LifeTokens {
   } catch {
     computed = null;
   }
-  return {
-    ground: readToken(computed, '--body-bg', 'var(--body-bg)'),
-    cell: readToken(computed, '--accent-strong', 'var(--accent-strong)'),
-  };
+  const ground = readToken(computed, '--body-bg', 'var(--body-bg)');
+  const accentStrong = readToken(computed, '--accent-strong', 'var(--accent-strong)');
+  const lifeCell = readToken(computed, '--life-cell', '');
+  const dim = readToken(computed, '--life-dim', 'transparent');
+  // No derived cell token registered (a host/tests without the provider pass):
+  // behave exactly like #2915 — untransformed cells, no contrast guard.
+  if (!lifeCell) return { ground, cell: accentStrong, dim };
+
+  const groundRgb = resolveLifeColor(ground);
+  const cellRgb = resolveLifeColor(lifeCell);
+  if (
+    groundRgb &&
+    cellRgb &&
+    groundRgb.a > 0 &&
+    cellRgb.a > 0 &&
+    lifeContrastRatio(cellRgb, groundRgb) < LIFE_CONTRAST_MIN
+  ) {
+    return { ground, cell: accentStrong, dim: 'transparent' };
+  }
+  return { ground, cell: lifeCell, dim };
 }
 
 /** The fraction of a cell left blank on each edge (a visual grid seam). */
@@ -190,6 +386,14 @@ export function createLifeEngine(options: LifeEngineOptions): LifeEngine {
         );
       }
     }
+
+    // #2925 ST-2 (M1) — EXACTLY ONE field-wide scrim over the finished frame.
+    // `--life-dim` is a translucent black, so ground AND cells dim together and
+    // the cell-vs-ground ratio is preserved. Constant cost: one extra fillRect,
+    // no per-cell alpha, no second pass, no allocation. When the contrast guard
+    // falls back it resolves to the `transparent` keyword — a no-op fill here.
+    ctx.fillStyle = tokens.dim;
+    ctx.fillRect(0, 0, width, height);
   }
 
   function nextReseedSeed(): number {

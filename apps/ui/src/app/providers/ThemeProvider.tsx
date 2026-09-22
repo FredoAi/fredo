@@ -2,6 +2,15 @@ import React, { createContext, useContext, useEffect, useMemo, type ReactNode } 
 import type { ThemeMode, Theme, ThemeOverrides, ThemePreset } from '../types/theme';
 import { themes, themePresets, USER_PRESET_PREFIX } from '../types/theme';
 import { usePersistedSetting } from '../../shared/hooks/usePersistedSetting';
+// #2925 ST-1 — the three authored Life dim weights are the SINGLE number home.
+// This is a legal DOWNWARD import (app → feature); feature → feature would be
+// the forbidden edge. The provider composes the live `color-mix()` tokens from
+// these so the engine's contrast guard and the paint expression cannot drift.
+import {
+  LIFE_CELL_MIX,
+  LIFE_NEUTRAL_BG_MIX,
+  LIFE_SCRIM_WEIGHT,
+} from '../../features/home/components/background/life/lifeConstants';
 
 export interface ThemeContextType {
   currentTheme: ThemeMode;
@@ -52,6 +61,23 @@ export const useTheme = () => {
 const ACCENT_CONTRAST_LIGHT = '#ffffff';
 const ACCENT_CONTRAST_DARK = '#0c1117';
 const ACCENT_CONTRAST_DARK_RGB: [number, number, number] = [12, 17, 23];
+
+/**
+ * #2925 ST-1 — the derived Life `color-mix()` percentages, computed from the
+ * authored weights in `lifeConstants.ts`. The cell mix targets a DERIVED
+ * mid-neutral rather than `--text-primary` directly (HSL saturation is
+ * scale-invariant under a multiplicative darken, so a near-black target did not
+ * reduce chroma on light presets): `LIFE_NEUTRAL_BG_MIX = 0.3` ⇒
+ * `--life-neutral: text-primary 70%, body-bg 30%`; `LIFE_CELL_MIX = 0.35` ⇒
+ * `--life-cell: accent-strong 65%, life-neutral 35%`; `LIFE_SCRIM_WEIGHT = 0.12`
+ * ⇒ `--life-dim: transparent 88%, overlay-bg 12%` (0.6 × 0.12 = 7.2% black).
+ */
+const LIFE_NEUTRAL_BG_PCT = LIFE_NEUTRAL_BG_MIX * 100;
+const LIFE_NEUTRAL_TEXT_PCT = 100 - LIFE_NEUTRAL_BG_PCT;
+const LIFE_CELL_MIX_PCT = LIFE_CELL_MIX * 100;
+const LIFE_CELL_BASE_PCT = 100 - LIFE_CELL_MIX_PCT;
+const LIFE_SCRIM_PCT = LIFE_SCRIM_WEIGHT * 100;
+const LIFE_SCRIM_BASE_PCT = 100 - LIFE_SCRIM_PCT;
 
 /**
  * Parse a CSS color (hex or rgb/rgba) into 0-255 RGB channels. Returns null for
@@ -244,6 +270,30 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     root.style.setProperty('--scrollbar-thumb', 'color-mix(in srgb, var(--text-secondary) 45%, transparent)'); // T3
     root.style.setProperty('--scrollbar-thumb-hover', 'color-mix(in srgb, var(--text-secondary) 70%, transparent)'); // T4
     root.style.setProperty('--accent-strong', 'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)'); // T6
+    // #2925 ST-1 — the Life field's three dimmed paint tokens. Set ONCE here,
+    // like `--accent-strong`, as live `color-mix()` expressions so they
+    // re-resolve against whatever the preset/override passes put on
+    // `--accent-strong`/`--text-primary`/`--body-bg`/`--overlay-bg` (live
+    // recolour, no remount). The three numeric weights are the single authored
+    // home in `lifeConstants.ts` (`LIFE_NEUTRAL_BG_MIX` / `LIFE_CELL_MIX` /
+    // `LIFE_SCRIM_WEIGHT`) — imported downward (app → feature) so the
+    // expression cannot drift from the constants the engine's contrast guard
+    // reads. `--life-neutral` is the mid-luminance chroma-reducing target
+    // (`--text-primary` toward `--body-bg`); `--life-cell` blends the
+    // accent-strong cell 35% toward it; `--life-dim` is the field-wide
+    // translucent-black scrim (0.6 × 0.12 = 0.072 black).
+    root.style.setProperty(
+      '--life-neutral',
+      `color-mix(in srgb, var(--text-primary) ${LIFE_NEUTRAL_TEXT_PCT}%, var(--body-bg) ${LIFE_NEUTRAL_BG_PCT}%)`,
+    );
+    root.style.setProperty(
+      '--life-cell',
+      `color-mix(in srgb, var(--accent-strong) ${LIFE_CELL_BASE_PCT}%, var(--life-neutral) ${LIFE_CELL_MIX_PCT}%)`,
+    );
+    root.style.setProperty(
+      '--life-dim',
+      `color-mix(in srgb, transparent ${LIFE_SCRIM_BASE_PCT}%, var(--overlay-bg) ${LIFE_SCRIM_PCT}%)`,
+    );
     // #2917 ST-1 (T9): the FREDO avatar interior fill — accent mixed into the
     // OPAQUE body surface (NOT --card-bg, which is rgba(0,0,0,0.3) in the classic
     // dark preset and would re-open the hollow-figure defect). Opaque in every

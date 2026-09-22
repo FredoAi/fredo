@@ -1,6 +1,6 @@
 /**
  * LifeThumbnail — the STATIC chooser thumbnail for the Life background
- * (Spec #2915, ST-4).
+ * (Spec #2915, ST-4; shared dimmed paint expression Spec #2925, ST-3).
  *
  * A deterministic, hand-authored "founder frame": a glider, a blinker and a
  * block drawn as a token-only inline SVG. It is STRUCTURALLY incapable of
@@ -9,9 +9,16 @@
  * mounts the engine is the desktop backdrop, through
  * `LifeBackgroundCanvas` (which this component deliberately does NOT import).
  *
- * Colours are pure theme tokens: the ground is `var(--body-bg)` and the cells
- * are `var(--accent-primary)`. Alpha is expressed ONLY through the numeric SVG
- * `opacity` attribute — never a colour alpha-append and never a literal.
+ * Paint contract (Spec #2925, R-5f): the preview mirrors the SAME shared dimmed
+ * expression the live field paints — ground `var(--body-bg)`, cells
+ * `var(--life-cell)` (the accent-strong cell blended toward the `--life-neutral`
+ * mid-luminance chroma leg, itself `--text-primary` toward `--body-bg`), and a
+ * final `var(--life-dim)` scrim rect composited over both so the tile can never
+ * promise a brighter field than the desktop delivers. All three consumers name
+ * the tokens only; the mix arithmetic lives once in `ThemeProvider.tsx` and the
+ * authored weights in `lifeConstants.ts`. Alpha is expressed ONLY through the
+ * numeric SVG `opacity` attribute — never a colour alpha-append and never a
+ * literal.
  */
 
 import React from 'react';
@@ -73,14 +80,16 @@ export const LifeThumbnail: React.FC = () => (
       style={{ display: 'block', width: '100%', height: '100%' }}
     >
       <rect x={0} y={0} width={16} height={10} fill="var(--body-bg)" />
-      <g fill="var(--accent-primary)">
+      <g fill="var(--life-cell)">
         {renderCells(GLIDER_CELLS, 'glider')}
         {renderCells(BLINKER_CELLS, 'blinker')}
       </g>
       {/* The still life sits a shade quieter — numeric SVG alpha only. */}
-      <g fill="var(--accent-primary)" opacity={0.72}>
+      <g fill="var(--life-cell)" opacity={0.72}>
         {renderCells(BLOCK_CELLS, 'block')}
       </g>
+      {/* The field-wide dim, mirrored so the preview matches the live paint. */}
+      <rect x={0} y={0} width={16} height={10} fill="var(--life-dim)" />
     </svg>
   </span>
 );
