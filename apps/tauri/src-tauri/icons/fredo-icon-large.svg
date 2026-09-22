@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" shape-rendering="crispEdges">
+  <!-- Container: full-bleed rounded tile (r = 12.5% of canvas), transparent corners. -->
+  <rect data-part="tile" x="0" y="0" width="1024" height="1024" rx="128" fill="#0c1117"/>
+  <!-- Canonical figure: ONE uniform scale inside the 86% content box. -->
+  <g data-part="figure" transform="translate(129.408329 21.120548) scale(0.754619)">
+    <!-- Interior fill (#0A373C) — ONE path, mirrors fredoAvatarGeometry.buildInteriorPathD. -->
+    <path data-part="interior" d="M 364 106 h 286 v 43 h -286 Z M 270 150 h 474 v 44 h -474 Z M 210 194 h 594 v 76 h -594 Z M 161 270 h 692 v 47 h -692 Z M 122 317 h 770 v 268 h -770 Z M 160 585 h 694 v 58 h -694 Z M 209 644 h 596 v 41 h -596 Z M 270 686 h 474 v 42 h -474 Z M 337 727 h 340 v 34 h -340 Z M 382 824 h 51 v 10 h -51 Z M 581 824 h 51 v 10 h -51 Z M 382 834 h 250 v 82 h -250 Z M 414 916 h 186 v 93 h -186 Z M 327 1009 h 360 v 52 h -360 Z M 327 1061 h 360 v 24 h -360 Z M 355 1085 h 133 v 115 h -133 Z M 526 1085 h 133 v 115 h -133 Z" fill="#0A373C"/>
+    <!-- 58 frozen base rects — byte-identical to expandFredoRects(FREDO_AVATAR_SOURCE_RECTS). -->
+    <rect x="373" y="67" width="268" height="38" fill="#00D1D1"/>
+    <rect x="320" y="106" width="50" height="43" fill="#00D1D1"/>
+    <rect x="644" y="106" width="50" height="43" fill="#00D1D1"/>
+    <rect x="277" y="107" width="42" height="41" fill="#00D1D1"/>
+    <rect x="695" y="107" width="42" height="41" fill="#00D1D1"/>
+    <rect x="218" y="150" width="58" height="43" fill="#00D1D1"/>
+    <rect x="738" y="150" width="58" height="43" fill="#00D1D1"/>
+    <rect x="168" y="194" width="48" height="75" fill="#00D1D1"/>
+    <rect x="798" y="194" width="48" height="75" fill="#00D1D1"/>
+    <rect x="123" y="271" width="44" height="46" fill="#00D1D1"/>
+    <rect x="847" y="271" width="44" height="46" fill="#00D1D1"/>
+    <rect x="87" y="317" width="41" height="267" fill="#00D1D1"/>
+    <rect x="886" y="317" width="41" height="267" fill="#00D1D1"/>
+    <rect x="126" y="585" width="40" height="58" fill="#00D1D1"/>
+    <rect x="848" y="585" width="40" height="58" fill="#00D1D1"/>
+    <rect x="169" y="644" width="46" height="41" fill="#00D1D1"/>
+    <rect x="799" y="644" width="46" height="41" fill="#00D1D1"/>
+    <rect x="218" y="686" width="58" height="41" fill="#00D1D1"/>
+    <rect x="738" y="686" width="58" height="41" fill="#00D1D1"/>
+    <rect x="276" y="727" width="67" height="33" fill="#00D1D1"/>
+    <rect x="671" y="727" width="67" height="33" fill="#00D1D1"/>
+    <rect x="344" y="761" width="326" height="33" fill="#00D1D1"/>
+    <rect x="323" y="453" width="68" height="131" fill="#00D1D1"/>
+    <rect x="623" y="453" width="68" height="131" fill="#00D1D1"/>
+    <rect x="427" y="812" width="26" height="10" fill="#00D1D1"/>
+    <rect x="561" y="812" width="26" height="10" fill="#00D1D1"/>
+    <rect x="455" y="812" width="23" height="10" fill="#00D1D1"/>
+    <rect x="536" y="812" width="23" height="10" fill="#00D1D1"/>
+    <rect x="427" y="823" width="52" height="69" fill="#00D1D1"/>
+    <rect x="535" y="823" width="52" height="69" fill="#00D1D1"/>
+    <rect x="479" y="834" width="28" height="34" fill="#00D1D1"/>
+    <rect x="507" y="834" width="28" height="34" fill="#00D1D1"/>
+    <rect x="274" y="824" width="58" height="87" fill="#00D1D1"/>
+    <rect x="682" y="824" width="58" height="87" fill="#00D1D1"/>
+    <rect x="358" y="824" width="30" height="31" fill="#00D1D1"/>
+    <rect x="626" y="824" width="30" height="31" fill="#00D1D1"/>
+    <rect x="358" y="857" width="30" height="26" fill="#00D1D1"/>
+    <rect x="626" y="857" width="30" height="26" fill="#00D1D1"/>
+    <rect x="426" y="858" width="26" height="33" fill="#00D1D1"/>
+    <rect x="562" y="858" width="26" height="33" fill="#00D1D1"/>
+    <rect x="358" y="885" width="30" height="29" fill="#00D1D1"/>
+    <rect x="626" y="885" width="30" height="29" fill="#00D1D1"/>
+    <rect x="492" y="917" width="30" height="32" fill="#00D1D1"/>
+    <rect x="491" y="991" width="31" height="36" fill="#00D1D1"/>
+    <rect x="241" y="916" width="31" height="75" fill="#00D1D1"/>
+    <rect x="742" y="916" width="31" height="75" fill="#00D1D1"/>
+    <rect x="390" y="916" width="30" height="33" fill="#00D1D1"/>
+    <rect x="594" y="916" width="30" height="33" fill="#00D1D1"/>
+    <rect x="241" y="993" width="31" height="36" fill="#00D1D1"/>
+    <rect x="742" y="993" width="31" height="36" fill="#00D1D1"/>
+    <rect x="274" y="1009" width="59" height="52" fill="#00D1D1"/>
+    <rect x="681" y="1009" width="59" height="52" fill="#00D1D1"/>
+    <rect x="327" y="1085" width="34" height="115" fill="#00D1D1"/>
+    <rect x="653" y="1085" width="34" height="115" fill="#00D1D1"/>
+    <rect x="460" y="1097" width="28" height="103" fill="#00D1D1"/>
+    <rect x="526" y="1097" width="28" height="103" fill="#00D1D1"/>
+    <rect x="339" y="1201" width="119" height="33" fill="#00D1D1"/>
+    <rect x="556" y="1201" width="119" height="33" fill="#00D1D1"/>
+  </g>
+</svg>
