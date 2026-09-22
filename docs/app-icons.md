@@ -1,4 +1,4 @@
-# App Icons — Source of Truth and Regeneration (Spec #2926)
+# App Icons — Source of Truth and Regeneration (Spec #2926, revised by #2930)
 
 This document is the reproducibility record (AC5 / R-5) for Fredo's **shipped OS-level app icon
 set** under `apps/tauri/src-tauri/icons/`. It exists so a future brand tweak can regenerate the whole
@@ -20,18 +20,20 @@ surface renders:
   (`FREDO_AVATAR_INTERIOR_RECTS`, flattened by `buildInteriorPathD`), in the `1014 × 1264`
   reference space (`FREDO_AVATAR_SPACE` / `FREDO_AVATAR_VIEWBOX`).
 - `apps/ui/src/shared/components/fredo-avatar/FredoAvatar.tsx` — the canonical in-app SVG that the
-  icon masters transcribe (one interior `<path>` drawn under the 58 rects,
+  icon master transcribes (one interior `<path>` drawn under the 58 rects,
   `shapeRendering="crispEdges"`).
 
-Two **committed SVG masters** are the raster generator's only inputs:
+One **committed SVG master** is the raster generator's only input:
 
 | Master | Path | Used for |
 |---|---|---|
-| Large (full bust) | `apps/tauri/src-tauri/icons/fredo-icon-large.svg` | target sizes **≥ 30 px** |
-| Small (head-only) | `apps/tauri/src-tauri/icons/fredo-icon-small.svg` | target sizes **16 px and 24 px** |
+| Full bust | `apps/tauri/src-tauri/icons/fredo-icon-large.svg` | **every** target size — all PNG artifacts, every ICO frame including 16 and 24, every ICNS element, and the Square/Store logos |
 
-Both masters are pure SVG (no external references), `shape-rendering="crispEdges"`, integer
-coordinates, and carry **no colour outside the baked palette** (section 3).
+The former 16/24 px head-only master `apps/tauri/src-tauri/icons/fredo-icon-small.svg` is **removed**
+(spec #2930): the file no longer exists, and no generator, test or doc path selects a second master.
+
+The master is pure SVG (no external references), `shape-rendering="crispEdges"`, integer coordinates,
+and carries **no colour outside the baked palette** (section 3).
 
 ### Not the source
 
@@ -52,7 +54,7 @@ the icon's source of truth cannot silently be a stale pre-#2850 duplicate.
 
 ## 2. Composition
 
-Everything is pre-composed inside each square master, then rasterised with a single uniform scale —
+Everything is pre-composed inside the square master, then rasterised with a single uniform scale —
 **no stretch, ever** (brand misuse rule).
 
 - **Tile:** a full-bleed, opaque, rounded **`#0c1117`** tile (brand dark), with **corner radius =
@@ -63,15 +65,17 @@ Everything is pre-composed inside each square master, then rasterised with a sin
 - **Uniform scale only:** the `1014:1264` figure is letterboxed/centred inside that content box with
   **one** uniform `scale(S)` about its bbox. A non-uniform `scale(sx, sy)` is forbidden and is
   mechanically rejected by the parity guard (section 5).
-- **Size routing:**
-  - **16 px / 24 px → the small master** — a `viewBox="0 0 16 16"`, grid-aligned **head-only**
-    transcription of the canonical head (dome + two mirror-symmetric eyes), rim raised to the
-    1-unit grid minimum. Every feature is ≥ 1 grid unit, i.e. ≥ 1 px at a 16 px render. The body /
-    bow-tie / smile are deliberately omitted there because they would be sub-unit noise. 24 px uses
-    the same master rasterised at 1.5× (no re-authoring).
-  - **≥ 30 px → the large master** — the faithful full bust (dome, eyes, bow-tie, body) with the
-    canonical rim. This keeps **32 px** (the most-seen small size — taskbar / Start menu) full-bust
-    and removes any "swapped mascot" discontinuity across the 32→44 band.
+- **Size routing:** **every** target derives from the one full-bust master — the 16/24/32/48/64/128/
+  256 px ICO frames, every ICNS element, every PNG artifact and the Square/Store logos. There is no
+  per-size master choice.
+  - **Targets ≥ 32 px** rasterise the master directly with the shared normalisation. 32 px — the
+    most-seen small size (taskbar / Start menu) — is the faithful full bust (dome, eyes, bow-tie,
+    body) and is byte-identical to the pre-#2930 render.
+  - **Targets below 32 px (16 px and 24 px)** apply one **deterministic raster post-process** to the
+    same master render: a 16× supersample, a block-average downsample and an accent-ink coverage
+    snap (floor **`0.20` at 16 px, `0.15` at 24 px**) that resolves weak sub-pixel ink to solid
+    pixels. This is a raster treatment of the **single** master — not a second master and not a
+    per-size geometry change. Its documented residual is in section 7.
 
 **Why the opaque tile:** the avatar is a cyan *outline*. A transparent mark would vanish on one of
 the two taskbar grounds; the opaque tile supplies its own ground, so the mark reads on both light and
@@ -112,7 +116,7 @@ pnpm icons:generate     # -> node scripts/generate-app-icons.mjs
 pnpm icons:check        # -> node scripts/check-app-icons.mjs
 ```
 
-- `scripts/generate-app-icons.mjs` reads the two committed SVG masters and rasterises every manifest
+- `scripts/generate-app-icons.mjs` reads the one committed SVG master and rasterises every manifest
   row with the already-present root `sharp` dependency (no new packages, no network), packs
   `icon.ico` / `icon.icns`, and writes `apps/tauri/src-tauri/icons/manifest.sha256`.
   `--out <dir>` regenerates into an alternate directory (used by the determinism check).
@@ -121,10 +125,10 @@ pnpm icons:check        # -> node scripts/check-app-icons.mjs
   and frame set; every artifact's sha256 matches `manifest.sha256`; and a fresh `--out` regeneration
   reproduces those hashes **byte-for-byte**. It exits non-zero with a named failure otherwise.
 
-`tauri icon` is deliberately **not** used: it derives every frame from a single source (no per-size
-treatment) and its internals are an untraceable prebuilt binary.
+`tauri icon` is deliberately **not** used: it offers no deterministic small-size raster treatment and
+its internals are an untraceable prebuilt binary.
 
-Regeneration is a pure function of the committed masters + the pinned palette: two consecutive runs
+Regeneration is a pure function of the committed master + the pinned palette: two consecutive runs
 are byte-identical, and `tauri.conf.json` is untouched (`bundle.icon` keeps its 5 exact paths).
 
 ---
@@ -134,13 +138,12 @@ are byte-identical, and `tauri.conf.json` is untouched (`bundle.icon` keeps its 
 `apps/ui/src/shared/components/fredo-avatar/__tests__/iconSourceParity.test.ts` pins the raster
 source to the frozen geometry so drift fails CI:
 
-- the large master's `<rect>` multiset equals `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`, and its
+- the master's `<rect>` multiset equals `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`, and its
   interior `<path d>` equals `buildInteriorPathD(expandFredoRects(FREDO_AVATAR_INTERIOR_RECTS))`;
-- exactly one **uniform** `scale(...)` in the large master's transform (no `scale(sx, sy)`);
-- the small master's `viewBox` is `0 0 16 16`, every rect is integer within `[0,16]`, every `w`/`h`
-  is ≥ 1 unit, the two eyes are mirror-symmetric about the centre and in the upper half, and the tile
-  is the only full-canvas rect;
-- neither master contains a colour outside `{#0c1117, #00D1D1, #0A373C}`.
+- exactly one **uniform** `scale(...)` in the master's transform (no `scale(sx, sy)`);
+- the master contains no colour outside `{#0c1117, #00D1D1, #0A373C}`;
+- a second master cannot return: `fredo-icon-small.svg` must be **absent**, and
+  `scripts/generate-app-icons.mjs` must contain no `SMALL_MASTER` / `master: 'small'` selection.
 
 ---
 
@@ -156,8 +159,8 @@ source to the frozen geometry so drift fails CI:
 
 `icon.ico` is the sole source of the built `.exe` / taskbar / Start-menu / window-chrome / NSIS
 installer icon (the Windows bundle config declares no separate Windows icon path). Its frame set is
-unchanged (`16, 24, 32, 48, 64, 128, 256`); only which master each frame derives from is routed —
-16/24 from the small head-only master, 32+ from the large full-bust master.
+unchanged (`16, 24, 32, 48, 64, 128, 256`) and **every** frame derives from the one full-bust master —
+the 16 px and 24 px frames carry its small-size raster snap (section 7).
 
 **Explicitly scoped out:**
 
@@ -168,16 +171,36 @@ unchanged (`16, 24, 32, 48, 64, 128, 256`); only which master each frame derives
 
 ---
 
-## 7. Documented small-size deviation (16 px, below the 24 px brand floor)
+## 7. 16 / 24 px treatment and its documented residual (below the 24 px brand floor)
 
-The brand guide sets a **24 px minimum digital size**, while AC3 requires a **16 px** render because
-Windows genuinely renders taskbar icons at 16 px. This is an acknowledged, documented deviation:
-16 / 24 px are handled by the deliberate **grid-aligned head-only small master** with a derived
-**≥ 1-grid-unit presence floor** (nothing vanishes to resampling), instead of a naive downscale of
-the `1014 × 1264` figure (whose canonical rim would be ~0.6 px at 16 px — a provable blur).
+The brand guide sets a **24 px minimum digital size**, while Windows genuinely renders taskbar icons
+at **16 px**. One master must serve every size, so the master geometry stays **unchanged at every
+size** — tile radius 12.5%, the **86% content box**, one uniform `scale(0.754619)`, no source stroke.
+Neither geometry lever can lift the smallest features above a pixel: the canonical rim is 0.48 px at
+16 px, and changing the content box from 86% to 96% would move it only to 0.54 px — still sub-pixel —
+while breaking the frozen composition.
 
-This deviation is **gated to the small renders only** and is **not a general licence** to render the
-brand below 24 px elsewhere.
+The mitigation is therefore at the **raster layer**, for targets **< 32 px** only (16 px and 24 px):
+a **raster coverage snap** — a 16× supersample, a block-average downsample, then an accent-ink
+coverage floor (**`0.20` at 16 px, `0.15` at 24 px**) that resolves any pixel at or above the floor to
+solid ink, so nothing dissolves to grey. It is a deterministic post-process on the **single** master's
+render: no second master, no authored small artwork, no per-size geometry, and every artifact at
+≥ 32 px stays byte-identical.
+
+**Residual versus the retired head-only control.** The snap restores a crisp full-bust *silhouette* —
+a continuous dome outline, two distinct eye bars and body/limb ink — but the sub-pixel features the
+retired head-only master resolved are lost:
+
+- **head width ≈ 9.90 px vs the control's 14 px (≈ −29%)** — a one-master icon must carry the body in
+  the same canvas, so the head cannot fill the tile the way a head-only master did;
+- **eye separation ≈ 3.54 px vs 5 px (≈ −29%)** — both eyes stay distinct, but the face reads tighter;
+- the **bow-tie / smile / interior fill bands** (0.11–0.18 px features) fall below the snap floor and
+  drop to the tile / interior ground tone at 16 px — the "butler" identity cue is gone at that size;
+- 16 px **remains below the brand's documented 24 px minimum**.
+
+At 24 px the rim and most of the interior detail recover; 32 px and larger are unchanged and fully
+detailed. This deviation is **gated to the smallest renders only** and is **not a general licence** to
+render the brand below 24 px elsewhere.
 
 ---
 
