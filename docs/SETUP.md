@@ -166,6 +166,20 @@ A local build produces an installer for your current OS in `apps/tauri/src-tauri
 > the maintainer must review before it's public — see [release-process.md](release-process.md).
 > Local `pnpm build:tauri` is for development and works on any host OS.
 
+### App icons
+
+The shipped OS icon set under `apps/tauri/src-tauri/icons/` is generated from the canonical Fredo
+avatar — do not hand-edit it. Regenerate the whole set from the committed SVG masters, or verify the
+committed set is complete and byte-reproducible:
+
+```bash
+pnpm icons:generate   # regenerate every shipped icon from the committed masters
+pnpm icons:check      # verify config + inventory + sizes + determinism
+```
+
+See [app-icons.md](app-icons.md) for the source of truth, the composition and baked-palette
+contract, and which platform sets are shipped vs explicitly scoped out.
+
 ## After Installation
 
 The installer adds the `fredo` binary to your system PATH. Verify:

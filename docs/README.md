@@ -23,6 +23,7 @@
 | [CLI Guide](CLI_GUIDE.md) | All `fredo` CLI subcommands with examples |
 | [Security](SECURITY.md) | IPC socket security, OTLP, Tauri capabilities, input handling, process isolation |
 | [FAQ](FAQ.md) | Common questions and troubleshooting |
+| [App Icons](app-icons.md) | Shipped OS icon set: source of truth (the canonical avatar geometry), composition + baked palette, regeneration commands, platform scope |
 | [STT Engine Selection (research, superseded)](research/stt-engine-selection.md) | Historical #2876 spike — **superseded by #2914**: the local-first streaming STT engine decision (candidate comparison, 6 engines × 8 criteria, cited) and its capture + provisioning recommendation, kept as a record after the on-device engine was removed and model audio became the only voice path |
 
 ### Archived
