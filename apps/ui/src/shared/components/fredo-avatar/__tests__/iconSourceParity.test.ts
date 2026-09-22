@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -11,26 +11,24 @@ import {
 } from '../fredoAvatarGeometry';
 
 /**
- * #2926 ST-1 — parity + legibility guard for the committed icon source masters.
+ * #2926 ST-1 / #2930 ST-4 — parity + legibility guard for the committed icon source.
  *
- * The shipped OS icon set is rasterised from exactly TWO committed SVG masters
- * (`apps/tauri/src-tauri/icons/fredo-icon-large.svg` for target sizes >= 30 px,
- * `fredo-icon-small.svg` for 16/24 px). Nothing else is an input. This suite is
- * the drift guard:
+ * The shipped OS icon set is rasterised from exactly ONE committed SVG source
+ * (`apps/tauri/src-tauri/icons/fredo-icon-large.svg` — the full bust) for every
+ * target size, including the 16 px and 24 px ICO/ICNS frames. Nothing else is an
+ * input. This suite is the drift guard:
  *
- *  - the large master is PROVABLY the frozen canonical geometry — its 58 `<rect>`
+ *  - the source is PROVABLY the frozen canonical geometry — its 58 `<rect>`
  *    values equal `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)` as a multiset and
  *    its single interior `<path d>` equals `buildInteriorPathD(expandFredoRects(
  *    FREDO_AVATAR_INTERIOR_RECTS))`, so a geometry change that the icon was not
  *    re-derived from fails CI;
- *  - the large transform is ONE uniform `scale(S)` about the figure bbox inside
- *    the 86% content box — `scale(sx, sy)` is forbidden (no-stretch, R-3);
- *  - the small master (a deliberate 16-unit grid-aligned head-only variant, not a
- *    downscale) keeps every feature on the integer grid at >= 1 unit, is mirror
- *    symmetric about x = 8, and its rim encloses the interior on all four sides so
- *    neither the tile nor the interior can leak through a step (R-3 legibility);
- *  - both masters bake only the three explicitly scoped palette literals and carry
- *    no effects (no gradient/filter/shadow/bevel).
+ *  - the transform is ONE uniform `scale(S)` about the figure bbox inside the
+ *    86% content box — `scale(sx, sy)` is forbidden (no-stretch, R-3);
+ *  - the source bakes only the three explicitly scoped palette literals and
+ *    carries no effects (no gradient/filter/shadow/bevel);
+ *  - the retired head-only master is gone and the generator selects no second
+ *    source (the single-master guards below).
  *
  * Files are read with `readFileSync(resolve(process.cwd(), ...))` — vitest runs
  * with cwd = `apps/ui`, matching the established convention in this workspace
@@ -39,17 +37,18 @@ import {
 
 const ICONS_DIR = resolve(process.cwd(), '../tauri/src-tauri/icons');
 const readIcon = (name: string): string => readFileSync(resolve(ICONS_DIR, name), 'utf8');
+const GENERATOR_SOURCE = readFileSync(
+  resolve(process.cwd(), '../../scripts/generate-app-icons.mjs'),
+  'utf8',
+);
 
 const LARGE = readIcon('fredo-icon-large.svg');
-const SMALL = readIcon('fredo-icon-small.svg');
 
 /** The baked palette — the explicit, narrow static-raster token-rule exception. */
 const BAKED_PALETTE = ['#0c1117', '#00d1d1', '#0a373c'];
 
 const LARGE_CANVAS = 1024;
 const CONTENT_BOX_RATIO = 0.86;
-/** Small master content box: 14 x 12 units centred in the 16 x 16 canvas. */
-const SMALL_CONTENT = { x: 1, y: 2, width: 14, height: 12 };
 
 interface SvgRect {
   x: number;
@@ -134,7 +133,7 @@ function assertNoEffects(svg: string): void {
   }
 }
 
-describe('#2926 icon source masters — large master is the frozen canonical geometry', () => {
+describe('#2930 icon source — the one master is the frozen canonical geometry', () => {
   it('declares the 1024 square canvas with crisp edges', () => {
     expect(LARGE).toContain('viewBox="0 0 1024 1024"');
     expect(LARGE).toContain('width="1024"');
@@ -207,98 +206,18 @@ describe('#2926 icon source masters — large master is the frozen canonical geo
   });
 });
 
-describe('#2926 icon source masters — small master legibility on the 16-unit grid', () => {
-  it('declares the 16-unit square canvas with crisp edges', () => {
-    expect(SMALL).toContain('viewBox="0 0 16 16"');
-    expect(SMALL).toContain('width="16"');
-    expect(SMALL).toContain('height="16"');
-    expect(SMALL).toContain('shape-rendering="crispEdges"');
+describe('#2930 icon source — exactly one master drives every artifact', () => {
+  it('does not ship the retired head-only master', () => {
+    expect(existsSync(resolve(ICONS_DIR, 'fredo-icon-small.svg'))).toBe(false);
   });
 
-  it('places every rect on the integer grid with every feature >= 1 unit', () => {
-    const rects = parseRects(SMALL);
-    expect(rects.length).toBeGreaterThan(0);
-    for (const rect of rects) {
-      for (const value of [rect.x, rect.y, rect.width, rect.height]) {
-        expect(Number.isInteger(value)).toBe(true);
-      }
-      expect(rect.width).toBeGreaterThanOrEqual(1);
-      expect(rect.height).toBeGreaterThanOrEqual(1);
-      expect(rect.x).toBeGreaterThanOrEqual(0);
-      expect(rect.y).toBeGreaterThanOrEqual(0);
-      expect(rect.x + rect.width).toBeLessThanOrEqual(16);
-      expect(rect.y + rect.height).toBeLessThanOrEqual(16);
-    }
+  it('generator selects no second source', () => {
+    expect(GENERATOR_SOURCE).not.toContain('SMALL_MASTER');
+    expect(GENERATOR_SOURCE).not.toMatch(/master\s*:\s*'small'/);
+    expect(GENERATOR_SOURCE).not.toMatch(/\bmaster\s*:/);
   });
 
-  it('uses the tile as the only full-canvas rect', () => {
-    const rects = parseRects(SMALL);
-    const fullCanvas = rects.filter((r) => r.width === 16 && r.height === 16);
-    expect(fullCanvas).toHaveLength(1);
-    expect(fullCanvas[0]).toMatchObject({ x: 0, y: 0, rx: '2', fill: '#0c1117', part: 'tile' });
-  });
-
-  it('keeps the head-only silhouette inside the 14 x 12-unit content box', () => {
-    const head = parseRects(SMALL).filter((r) => r.part !== 'tile');
-    const minX = Math.min(...head.map((r) => r.x));
-    const minY = Math.min(...head.map((r) => r.y));
-    const maxX = Math.max(...head.map((r) => r.x + r.width));
-    const maxY = Math.max(...head.map((r) => r.y + r.height));
-    expect(minX).toBeGreaterThanOrEqual(SMALL_CONTENT.x);
-    expect(minY).toBeGreaterThanOrEqual(SMALL_CONTENT.y);
-    expect(maxX).toBeLessThanOrEqual(SMALL_CONTENT.x + SMALL_CONTENT.width);
-    expect(maxY).toBeLessThanOrEqual(SMALL_CONTENT.y + SMALL_CONTENT.height);
-    // The deliberate head-only variant must actually use the box it was given.
-    expect(maxX - minX).toBeGreaterThanOrEqual(12);
-    expect(maxY - minY).toBeGreaterThanOrEqual(10);
-  });
-
-  it('draws two eyes that are mirror-symmetric about x = 8 in the upper half', () => {
-    const eyes = parseRects(SMALL).filter((r) => r.part === 'eye');
-    expect(eyes).toHaveLength(2);
-    const [left, right] = [...eyes].sort((a, b) => a.x - b.x);
-    expect(left.width).toBe(1);
-    expect(left.height).toBe(2);
-    expect(16 - left.x - left.width).toBe(right.x);
-    expect(right.y).toBe(left.y);
-    expect(right.fill).toBe('#00D1D1');
-    // Both eyes sit in the upper half of the canvas (centre y < 8).
-    expect(left.y + left.height / 2).toBeLessThan(8);
-    // A legible gap stays between them.
-    expect(right.x - (left.x + left.width)).toBeGreaterThanOrEqual(1);
-  });
-
-  it('encloses the interior with rim on all four sides (nothing leaks through a step)', () => {
-    const grid = new Array<string>(16 * 16).fill('empty');
-    for (const rect of parseRects(SMALL)) {
-      for (let y = rect.y; y < rect.y + rect.height; y += 1) {
-        for (let x = rect.x; x < rect.x + rect.width; x += 1) {
-          grid[y * 16 + x] = rect.part ?? 'unknown';
-        }
-      }
-    }
-    const neighbours: ReadonlyArray<readonly [number, number]> = [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-    ];
-    for (let y = 0; y < 16; y += 1) {
-      for (let x = 0; x < 16; x += 1) {
-        const part = grid[y * 16 + x];
-        if (part !== 'interior' && part !== 'eye') continue;
-        for (const [dx, dy] of neighbours) {
-          const nx = x + dx;
-          const ny = y + dy;
-          expect(nx >= 0 && nx < 16 && ny >= 0 && ny < 16).toBe(true);
-          expect(grid[ny * 16 + nx]).not.toBe('tile');
-        }
-      }
-    }
-  });
-
-  it('bakes only the scoped palette and carries no effects', () => {
-    assertPaletteOnly(SMALL);
-    assertNoEffects(SMALL);
+  it('generator derives every target from the one large master', () => {
+    expect(GENERATOR_SOURCE).toContain('fredo-icon-large.svg');
   });
 });
