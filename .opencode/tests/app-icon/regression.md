@@ -52,5 +52,21 @@ policy is **static** (asset + config + build domain).
       `apps/tauri/src-tauri/icons/`; UI assets are not reintroduced as an icon source). EXPECT: no
       new unreferenced bitmap dropped into UI assets.
 
+## R-5 — Single-master icon source (revised by #2930)
+
+- [ ] R-11: `apps/tauri/src-tauri/icons/fredo-icon-small.svg` is **deleted** and no generator, test,
+      or doc path selects a second master: grep `scripts/`, `apps/ui/src/`, `docs/` for
+      `fredo-icon-small`, `SMALL_MASTER`, `master: 'small'` returns **zero code/selection sites**;
+      `scripts/generate-app-icons.mjs` `masterFile()` has no small branch; the ICO frame set still
+      packs `{16,24,32,48,64,128,256}` — from the one master. EXPECT: one master, no dead two-master
+      machinery (a bare historical/prose mention in `docs/` is not a selection site).
+- [ ] R-12: `apps/tauri/src-tauri/icons/manifest.sha256` is regenerated and lists the ONE master
+      (`fredo-icon-large.svg`) + the 17 artifacts, and does **not** list `fredo-icon-small.svg`.
+      EXPECT: manifest ↔ shipped bytes match; `pnpm icons:check` exit 0.
+- [ ] R-13: `apps/ui/src/shared/components/fredo-avatar/__tests__/iconSourceParity.test.ts` is
+      rewritten for the single master (no two-master / head-only expectation) and passes. EXPECT:
+      `vitest run …/iconSourceParity.test.ts` green; exactly one uniform `scale(S)`; no
+      `scale(sx, sy)`.
+
 _Evidence convention: pass cases keep `- [x]` + append the observed file/line/receipt; fail cases
 leave `- [ ]` marked `FAIL` with expected-vs-actual + repro._
