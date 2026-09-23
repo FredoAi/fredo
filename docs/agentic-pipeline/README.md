@@ -38,7 +38,7 @@ flowchart TD
 |------|------|----------|------------|---------|
 | **Business (You)** | Human | What matters? | Product Owner | Goals, priorities, major tradeoffs |
 | **Product Owner** | Primary agent | What are we building? | Self-Improver | Backlog, acceptance criteria, prioritization |
-| **Self-Improver** | Subagent (×1) | Who does what, when, and did it complete? | Triage cluster, Developer pool, Tester | Orchestration, staffing, dependencies, status; audits completion; documentation owner (pipeline + product docs); improves prompts/skills/scripts/references/observability; restart decision |
+| **Self-Improver** | Subagent (×1) | Who does what, when, and did it complete? | Triage cluster, Developer pool, Tester | Orchestration, staffing, dependencies, status; audits completion; documentation owner (pipeline + product docs); improves playbooks/skills/scripts/references; restart decision |
 | **Triage cluster** | Subagents (×3) | How should we build and prove it? | — | Implementation Plan, Staffing Plan, design, QA Plan |
 | **Developer pool** | Subagents (×N) | Can I implement this plan item? | — | Implementation, verification, CI gates |
 | **Tester** | Subagent (×1) | Does it work? | — | Executes QA Plan, evidence, verdict |

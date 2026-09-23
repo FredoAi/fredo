@@ -1263,7 +1263,7 @@ Test-Script "improvement action reports acceptance with interval and raw counts"
   $out = & rust-script $ps --action improvement --json 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($LASTEXITCODE -ne 0) { throw "improvement --json failed: $outStr" }
-  foreach ($f in @("acceptance", "posterior_mean", "ci95", "decision", "link_coverage", "specs_created", "integrity")) {
+  foreach ($f in @("acceptance", "posterior_mean", "ci95", "decision", "link_coverage", "specs_created", "integrity", "root_cause_mix_on_restarts", "rework_cause_mix_on_rounds", "dominant_root_cause_class")) {
     if ($outStr -notmatch $f) { throw "improvement json missing field: $f" }
   }
   return "improvement report shape OK"

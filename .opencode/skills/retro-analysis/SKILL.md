@@ -214,6 +214,8 @@ Persists a run's observations as a structured guardrail record in `references.md
 
 **Trigger:** at every audit (after the verdict is derived from the record, before doc-sync), consolidate `.opencode/tmp/<issue>/observations.md` + this run's blockers/rework/verdict into guardrail candidates, then persist the durable ones here.
 
+**Lever selection (do this first).** Read the round's recorded `Root cause class` (the Architect's fix-plan line; aggregate via `--action improvement` → `root_cause_mix_on_restarts` / `rework_cause_mix_on_rounds` / `dominant_root_cause_class`) and pick each guardrail's `home` from the **Class → Lever** table in `playbooks/self-improver.md` (defect/technique/environment/scope + tooling/model/machine/doc-drift). Choose the lever by class, not by habit; the dominant class is the one the audit must answer for. Boundary: `principles.md`, `AGENTS.md`, non-permission `opencode.json`, and agent identity are proposed to the human, never applied.
+
 **Guardrail record format** (append under `## Known Failure Modes` in `docs/agentic-pipeline/playbooks/references.md`):
 
 ```

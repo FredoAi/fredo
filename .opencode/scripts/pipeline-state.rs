@@ -5725,6 +5725,37 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
         ordered.len() as f64 / span_h
     } else { 0.0 };
 
+    // Root-cause mix — the SI's routing input for which lever to strengthen
+    // (playbooks/self-improver.md: Class → Lever). Restarts carry `audit.verdict`
+    // rootCause; the per-round loop carries `rework.rootcause` (the Architect's fix-plan
+    // class). Most rounds burn in the rework loop, so the round mix is the primary source
+    // and the restart mix is the fallback.
+    let mut restart_causes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut rework_causes: BTreeMap<String, usize> = BTreeMap::new();
+    for e in &all {
+        match e.event_name.as_str() {
+            "audit.verdict" if e.outcome == "failed" => {
+                if let Some(rc) = e.attributes.get("rootCause") {
+                    *restart_causes.entry(rc.clone()).or_insert(0) += 1;
+                }
+            }
+            "rework.rootcause" => {
+                if let Some(rc) = e.attributes.get("rootCause") {
+                    *rework_causes.entry(rc.clone()).or_insert(0) += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let (dominant_root_cause_class, dominant_source, dominant_n, dominant_total): (Option<String>, Option<&'static str>, usize, usize) =
+        if !rework_causes.is_empty() {
+            (rework_causes.iter().max_by_key(|(_, v)| **v).map(|(k, _)| k.clone()), Some("per-round rework"), rework_causes.values().copied().max().unwrap_or(0), rework_causes.values().sum())
+        } else if !restart_causes.is_empty() {
+            (restart_causes.iter().max_by_key(|(_, v)| **v).map(|(k, _)| k.clone()), Some("restarts"), restart_causes.values().copied().max().unwrap_or(0), restart_causes.values().sum())
+        } else {
+            (None, None, 0, 0)
+        };
+
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "acceptance": {
@@ -5734,6 +5765,9 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
             },
             "revise_growth_amsaa_beta": beta_amsaa,
             "link_coverage": if created > 0 { Some(linked as f64 / created as f64) } else { None },
+            "root_cause_mix_on_restarts": restart_causes,
+            "rework_cause_mix_on_rounds": rework_causes,
+            "dominant_root_cause_class": dominant_root_cause_class,
             "raw": {
                 "specs_created": created, "accepted": accepted, "revised": revised,
                 "canceled": canceled, "in_flight": in_flight,
@@ -5757,6 +5791,12 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
     }
     println!("Link coverage: {}/{} specs declared a revision (raw: {} revised, {} canceled, {} in flight, {} rework loops)",
         linked, created, revised, canceled, in_flight, spec_rework);
+    if let (Some(dc), Some(src)) = (&dominant_root_cause_class, dominant_source) {
+        println!("Dominant root-cause class: {} ({} of {} {} classifications) — strengthen this class's lever per the Class → Lever table",
+            dc, dominant_n, dominant_total, src);
+    } else {
+        println!("Dominant root-cause class: none recorded yet");
+    }
     println!("Raw: {} created, {} accepted, {} revised, {} canceled, {} in flight; throughput {:.3}/hr",
         created, accepted, revised, canceled, in_flight, throughput);
     Ok(())

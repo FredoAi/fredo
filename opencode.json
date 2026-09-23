@@ -451,7 +451,8 @@
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
-                    "retro-analysis": "allow"
+                    "retro-analysis": "allow",
+                    "dev-environment": "allow"
                 },
                 "bash": {
                     "*": "deny",
