@@ -322,7 +322,8 @@
                     "git rm*": "allow",
                     "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
                     "sqlite3 -readonly*": "allow",
-                    "git checkout -- *": "allow"
+                    "git checkout -- *": "allow",
+                    "copilot*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
@@ -419,7 +420,8 @@
                     "git checkout -- *": "allow",
                     "cargo check*": "allow",
                     "cargo clippy*": "allow",
-                    "cargo test*": "allow"
+                    "cargo test*": "allow",
+                    "copilot*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
