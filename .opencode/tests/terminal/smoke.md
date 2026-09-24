@@ -88,3 +88,52 @@ uninstall a binary or edit the OS PATH.
 - **S-16 PASS.** `fredo open-terminal --cli opencode --dir …\workdir-b` → exit **0**
   `{"cli":"opencode","outcome":"started","workDir":"…\\workdir-b"}`, the `terminal` window opens,
   a session with that cli+workDir spawns and is auto-selected (no dialog).
+
+## #2940 — full-height composition + fixture isolation (quick paths)
+
+> Seeded at triage for Spec #2940. Quick smoke paths; full assertions live in the named
+> `functional.md`/`regression.md` rows. Evidence is LIVE + MEASURED (window list / geometry
+> probe / DOM / PTY buffer / process inventory). AC1/AC2 need the measured numbers — a quick
+> smoke frame alone never clears them.
+
+- [ ] S-17: **Terminal window opens full-height (quick path)** — open the `terminal` window
+      at the default size; run the geometry recipe from `functional.md`.
+      EXPECTED: the pane's `bottom`/`right` are within ~2 px of the window edges and there is
+      no dead band ≥8 px below/beside the canvas (no scrollbar). Full assertions in F-37.
+- [ ] S-18: **Workspace reads coherently (quick path)** — screenshot the window at the default
+      size with ≥1 session (save under `.opencode/tmp/2940/e2e/`).
+      EXPECTED: the terminal is the dominant surface; the session nav + status are subordinate
+      and legible. Full assertions in F-42/F-44.
+- [ ] S-19: **Every state surface still reachable (quick path)** — force `empty`, `error`
+      (`invalid-cli`), and `resume` in turn and confirm each testid renders inside the pane.
+      Full assertions in F-45/F-48/F-50 (the full AC3 matrix).
+- [ ] S-20: **Suites leave no fixture record (quick path)** — snapshot
+      `list_persisted_terminal_sessions`, run one terminal suite row that spawns a session,
+      re-read.
+      EXPECTED: the record set is unchanged (no fixture workdir/title). Full assertions in
+      F-51/F-52.
+
+## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
+
+> Suite-side, no product change. Run in the `terminal` window via `tauri_webview_execute_js`
+> after every run; then restore the four settings keys. Deletes every persisted record whose
+> `workDir` is under the in-repo fixtures root. Full detail: `functional.md` →
+> "C-5 teardown / snapshot / settings-restore".
+
+```js
+(async () => {
+  const FIX = String.raw`.opencode\tests\terminal\fixtures`.toLowerCase();
+  const recs = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  const doomed = recs.filter(r => String(r.workDir || '').toLowerCase().includes(FIX));
+  for (const r of doomed) {
+    await window.__TAURI__.core.invoke('delete_terminal_session_record', { sessionId: r.id });
+  }
+  const left = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  return { deleted: doomed.map(r => [r.id, r.title, r.workDir]), remaining: left.map(r => r.id) };
+})()
+```
+
+- Pre-run snapshot: the record id set + the four settings keys (`terminal_work_dir`,
+  `terminal_default_cli`, `terminal_copilot_path`, `terminal_pwsh_path`); compare AFTER.
+- Settings restore (binding): restore those four keys to their captured pre-run values.
+- Cross-suite repeat: `.opencode/tests/run-cli/regression.md`.
