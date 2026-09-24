@@ -25,6 +25,11 @@ append evidence; on fail mark `FAIL`.
 
 ## No-change baseline (#2934 non-goals / inherited contract)
 
+> **#2935 supersedes two bullets below:** persistence/resume across window close/reopen and the
+> `fredo` CLI open command are no longer non-goals (they are the #2935 scope). The Ghostty renderer,
+> the OTLP/RTDB ingest path, and the other toolbar items remain no-change and are re-run by R-1..R-7,
+> R-13/R-14.
+
 - **Non-goals:** persistence/resume across window close/reopen; the `fredo` CLI open
   command; Copilot telemetry capture; changing the Ghostty terminal renderer.
 - The Ghostty renderer (`RunCliTerminalWindow.tsx`'s `GHOSTTY_THEME` + `ghostty-web`
@@ -81,6 +86,9 @@ append evidence; on fail mark `FAIL`.
 
 - [ ] R-8: **No persistence (non-goal guard).** Restart the app after using Terminal.
   EXPECTED: the sidebar is empty; no session rows are persisted; no resume across restart.
+  > **SUPERSEDED by #2935** (do NOT run as written): persistence/resume + the `fredo` CLI open
+  > command are now REQUIRED, not non-goals. Retained as the historical #2934 record; the live
+  > assertions are the `#2935 no-change baseline` R-11..R-14 below + `functional.md` F-22..F-36.
 
 - [ ] R-9: **Telemetry path untouched.** The OpenCode session launched from Terminal still
   emits `fredo.*` spans.
@@ -91,6 +99,40 @@ append evidence; on fail mark `FAIL`.
 - [ ] R-10: **Copilot capture unaffected.** Copilot telemetry capture (prior ticket)
   continues to work; Terminal's launch does not write to or alter the capture path.
   EXPECTED: no change to `infrastructure/rtdb/` or the OTLP receivers in the #2934 diff.
+
+## #2935 no-change baseline (AC5) — persistence + CLI must not regress the #2934 surface
+
+> These run on every testing phase of the persistence/resume slice. The CLI path and the
+> persistence layer introduce no regression to the launcher, the settings flow, or live multi-session
+> behavior.
+
+- [ ] R-11: **Launcher still opens Terminal (one window).** Click the `Terminal` desktop toolbar item
+      (and the Settings entry) against the running app.
+      EXPECTED: exactly ONE `terminal` window (main + 1); re-invoke focuses it (no duplicate);
+      persisted + live lists render; sibling toolbar items (Mission Monitor, Query Viewer, Settings,
+      Stepper Probe) unchanged.
+      Edge: re-invoke during a resume; invoke from the empty-records state.
+
+- [ ] R-12: **Settings → Terminal unchanged + keys still govern.** Open Settings → Terminal; save a
+      work dir + default CLI; restart; reopen.
+      EXPECTED: `terminal_work_dir` / `terminal_default_cli` still persist and preselect/govern a new
+      session; the legacy `run_cli_work_dir` migration (F-4/F-5) still behaves; no other settings
+      key/section added, removed or renamed.
+      Edge: unset keys → documented fallbacks; both legacy + new keys set (new wins).
+
+- [ ] R-13: **Live multi-session contract (#2934 core).** Add OpenCode + Copilot sessions; per-session
+      sentinel I/O; switch sessions; resize the active session; close one (other survives); let a
+      session self-exit.
+      EXPECTED: session-keyed `write_pty_input`/`get_pty_buffer`/`resize_pty` still correct; buffers
+      isolated; `id`/pid/`startedAt` unchanged on switch; the window survives a self-exit; exactly one
+      `terminal` window throughout.
+      Edge: two same-CLI sessions; switch during heavy output; self-exit while unselected.
+
+- [ ] R-14: **Telemetry/ingest path untouched.** The OpenCode session launched/resumed from Terminal
+      still emits `fredo.*` spans.
+      EXPECTED: `git diff --stat main origin/spec/<N>` shows no `infrastructure/rtdb/**` or
+      `infrastructure/otlp/**`; a live `telemetry_spans` query records the Terminal-launched session.
+      Edge: a resumed session's spans carry the resumed CLI session's identity (no fresh duplicate).
 
 ## Round notes
 
