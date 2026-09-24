@@ -200,3 +200,34 @@
 - **F-5 PASS (re-confirmed).** Repeated invocations (same + display-name identities, plus the round's
   CLI opens) produced no duplicate window, consistent exit codes, and no console
   `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+### #2935 testing round 1 (spec/2935 @ 9ad0b360) — results
+
+> Raw exit codes captured with the `shell:false` `spawnSync` helper (`.opencode/tmp/2935/cli-probe.cjs`)
+> run via `bun`. Commands are quoted verbatim with their literal stdout.
+
+- **F-6 PASS.** `fredo open-terminal --cli opencode --dir …\workdir-b` → exit **0**, stdout
+  `{"cli":"opencode","outcome":"started","workDir":"C:\\Code\\fredo\\.opencode\\tests\\terminal\\fixtures\\workdir-b"}`;
+  a live session with that `cli`+`workDir` spawned and was auto-selected (no dialog). A second
+  invocation with a different `--dir` spawned a second session in the same single window.
+- **F-7 PASS (structural).** `--dir` only → `terminal_default_cli` fallback; `--cli` only →
+  `terminal_work_dir` fallback (ST-5 UI pins); no-args → `opened` (the no-intent path). Not re-driven
+  end-to-end for the no-arg leg this round.
+- **F-8 PASS.** App DOWN (`dev-env -Action Down`): `fredo open-terminal --cli opencode --dir …\workdir-a`
+  → exit **2**, 21 ms, nothing opened, no hang; `fredo open-terminal` → exit **2**. **Observation:**
+  stdout is EMPTY (not `{"outcome":"unavailable"}`) — the not-running fallback message is TTY-gated
+  (`cli/mod.rs:77-83`) and no machine JSON is emitted on the `None` path; exit 2 is the bound
+  observable (same pre-existing behaviour as #2893 F-4). Not a product defect.
+- **F-9 PASS.** `fredo open-terminal --cli` (missing value) → exit **1** + clap usage on stderr;
+  `--bogus-flag` → exit **1** + usage; `fredo open-terminal --help` → exit **0**, lists `--cli`/
+  `--dir`; `fredo --help` → exit **0** lists `emit`/`setup`/`open-app`/`open-terminal` (additive).
+  The malformed exit is **1**, not clap's default 2.
+- **F-10 PASS.** `fredo open-terminal --cli bogus` → exit **1**, stdout
+  `{"message":"Unknown CLI `bogus` — use `opencode` or `copilot`","outcome":"invalid-cli"}`;
+  `--cli opencode --dir …\no-such-dir` → exit **1**, stdout
+  `{"message":"Working directory not found: …\\no-such-dir","outcome":"invalid-directory"}`;
+  whitespace-only `--cli "   "` → exit **1** `invalid-argument`. ZERO side effects: window count stayed
+  main-only and `list_persisted_terminal_sessions` stayed `[]`.
+- **F-11 PASS.** `--cli bogus` never starts a session: session list unchanged, no process; the IPC
+  sibling (`spawn_terminal_session{cli:'bogus'}`) creates a typed `invalid-cli` error row with
+  `pid:null`.
