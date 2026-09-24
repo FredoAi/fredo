@@ -107,3 +107,20 @@
 - N1 (R6): **FAIL** (strict leg) — `provider TEXT NOT NULL DEFAULT 'unknown'` on all three tables and 0 NULL/empty, but pre-existing span-matched rows do not transition (same evidence as F-8/F-11).
 - N2 (latency): **UNVERIFIED** — named blocker: no batch-loop lever in the sandbox (pipes/loops denied), `cargo` not in the tester allowlist, no pre-fix baseline binary without a heavyweight rebuild.
 - N3 (NFR-6): PASS (source pins) — one `resolve_provider_token` (`attrs.rs:295`), consumed at `ingest.rs:350`; `provider` = `KeepFirstAttributed` in all three merge tables; schema + `*_FIELDS` + SQLite column all present. Named gap: `cargo test` not runnable in-sandbox.
+
+### Round 2 — 2026-09-24 (`spec/2932` @ `182fec5`) — Verdict: PASS
+
+- F-1 (R1 live OTLP): PASS — live `open_code` rows streaming; `NULL/empty = 0/0/0`; 0 model-provider rows.
+- F-2 (R1 resource mapping): PASS — row token from resource `service.name`, ≠ `telemetry_spans.provider`.
+- F-3 (R10/R3): PASS — `copilot_cli` triplet on `e2e-2932r2-r3` (chat/tool/agent).
+- F-4 (R2): PASS — provider selectable/filterable; legacy + hard-named errors unchanged (live IPC).
+- F-5 (R2/R9): PASS — scoped `chat(provider = "copilot_cli")` registers live; providers remain distinguishable.
+- F-6 (R2 typed wire): PASS — unchanged by the fix (round-2 delta is `rtdb/ingest.rs` + `rtdb/backfill.rs` + tooling).
+- F-7 (R4): PASS — `copilot_cli` survived update(no provider) + response(`open_code`).
+- **F-8 (R5): PASS** — `ses_f358…`: `50 joined / 50 open_code / 50 span-plugin / 0 mismatches`; v2 marker `06:12:48` proves the corrected pass ran.
+- F-9 (R8): PASS — legacy queries + Mission Monitor unchanged; counts identical across launch.
+- F-10 (R7): PASS — injector → row + span `unknown` (non-empty), `otlp_grpc`.
+- **F-11 (promoted round 1) now RESOLVED** — `ses_f358…_3` was `unknown` seq 2 at `started_at_ns 1790102823906000000`; now `open_code` seq 3 at the SAME key/ns (in-place upgrade, no parallel row). **PASS.**
+- N1 (R6): **PASS (primary)** — `span_matched_unresolved = 0/0/0`, `parallel_rows = 0`; ambiguous + forced re-run sub-clauses named-blocked (broken `--reset-marker` lever; no ambiguous-match lever).
+- N2 (latency): PASS (methodology-limited, pre-authorized) — static bound + absolute spot-check (`--count 100` → 100/100 spans → 100/100 rows).
+- N3 (NFR-6): PASS — one shared rule; parity 0 mismatches. `cargo` still not in the tester allowlist.
