@@ -100,3 +100,55 @@ is wrong.
       cleanly and the resume land on F-32's `invalid-cwd` path (not a wrong dir)?
 - [ ] E-24: **Restart mid-resume.** Kill the app during a resume; on restart, is the record still
       listed and resumable (no half-record, no orphan)?
+
+## #2940 probes — full-height composition + fixture isolation
+
+- [ ] E-25: **Rapid resize churn.** Drag/resize the `terminal` window through many intermediate
+      sizes (including past the min bound) while a session streams. Does the pane stay flush
+      (no dead band) at every size, does the canvas thrash/reflow, and does the ACTIVE PTY
+      receive exactly one `resize_pty` per settled size (no per-event churn)? A pane that
+      detaches from the window edge mid-drag promotes to F-38/F-39.
+- [ ] E-26: **State crossings during a resize.** Resize while `starting`, while an error
+      surface shows, and while `resume-blocked` shows. Does the pane keep filling the window
+      (F-41) or does a state surface pin a stale height? A surface that shrinks the pane
+      promotes to F-41.
+- [ ] E-27: **Tab-rail stress at min size.** At 560×360, populate many sessions (10+) and long
+      work dirs/titles. Does the `SessionBar` tab rail stay subordinate and scroll
+      (`overflow-x:auto` — never push the pane to 0 width, never clip the terminal to a dead
+      band)? Promotes to F-42/F-43.
+- [ ] E-28: **Real vs fixture record coexist.** With a real pre-existing record present, run a
+      terminal suite and check whether the suite's fixtures interleave with the real record
+      (ordering, auto-selected newest, delete focus-fall). A fixture record outranking the
+      developer's real record promotes to F-51.
+- [ ] E-29: **Teardown ordering / crash mid-suite.** Abort the terminal suite mid-run (kill the
+      dev instance) and re-check the record list. Does a partial run leave fixture records
+      that a clean run would have torn down? Promotes to F-52 (teardown must be
+      crash-tolerant or the run must record the residual).
+- [ ] E-30: **Theme switch at min size.** Toggle light↔dark while at 560×360 with sessions
+      running. Any canvas/ghostty surface or sidebar chrome that fails to re-tint, or any
+      text that loses contrast against the new background, promotes to N-18/F-43.
+
+## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
+
+> Suite-side, no product change. Run in the `terminal` window via `tauri_webview_execute_js`
+> after every run; then restore the four settings keys. Deletes every persisted record whose
+> `workDir` is under the in-repo fixtures root. Full detail: `functional.md` →
+> "C-5 teardown / snapshot / settings-restore".
+
+```js
+(async () => {
+  const FIX = String.raw`.opencode\tests\terminal\fixtures`.toLowerCase();
+  const recs = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  const doomed = recs.filter(r => String(r.workDir || '').toLowerCase().includes(FIX));
+  for (const r of doomed) {
+    await window.__TAURI__.core.invoke('delete_terminal_session_record', { sessionId: r.id });
+  }
+  const left = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  return { deleted: doomed.map(r => [r.id, r.title, r.workDir]), remaining: left.map(r => r.id) };
+})()
+```
+
+- Pre-run snapshot: the record id set + the four settings keys (`terminal_work_dir`,
+  `terminal_default_cli`, `terminal_copilot_path`, `terminal_pwsh_path`); compare AFTER.
+- Settings restore (binding): restore those four keys to their captured pre-run values.
+- Cross-suite repeat: `.opencode/tests/run-cli/regression.md`.
