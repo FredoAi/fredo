@@ -56,11 +56,16 @@ impl EventType {
 }
 
 /// The provider that originated the event per REQ-1.3.
+///
+/// Spec #2932 ST-1: `CopilotCli` extends the provider vocabulary so canonical
+/// RTDB rows can distinguish the GitHub Copilot CLI from OpenCode. The token
+/// is the bound snake_case literal `copilot_cli` (serde `rename_all`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventProvider {
     OpenCode,
     ClaudeCode,
+    CopilotCli,
     Internal,
 }
 
@@ -71,6 +76,7 @@ impl EventProvider {
         match self {
             EventProvider::OpenCode => "open_code",
             EventProvider::ClaudeCode => "claude_code",
+            EventProvider::CopilotCli => "copilot_cli",
             EventProvider::Internal => "internal",
         }
     }
