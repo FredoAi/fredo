@@ -649,6 +649,46 @@ impl IngestClassifier {
         // v1 applies) and the preserved verbatim flat attrs.
         let mut payload = otlp_attrs_to_payload(merged, derived);
         self.inject_instruction_if_needed(is_subagent, &session_id, &mut payload);
+
+        // Spec #2933 ST-3R (R-2.1): Copilot splits ONE user turn across TWO
+        // `chat` spans — the dispatch span carries the user text (plus a
+        // tool_call output), the continuation span (after `execute_tool`)
+        // carries only the tool result plus the assistant text. OpenCode
+        // re-carries the exchange's user prompt on EVERY chat span of a turn
+        // (`message.ts:702,716-719`), and Mission Monitor's same-exchange
+        // tool anchoring depends on that canonical row contract. When a
+        // Copilot continuation span's own `gen_ai.input.messages` has no
+        // `user` role, its projected payload loses `userMessage`; carry the
+        // session's cached prompt forward so `userMessage`, `rawJson`, the
+        // typed column and the delivery all agree (one layer, consumer
+        // untouched).
+        //
+        // Provider-scoped by construction (a `copilot_cli` data-mapping rule):
+        // no `open_code` row can take this branch, so the R-5.1/AC5
+        // byte-identity bar holds. A miss (content off, or the dispatch span
+        // not yet ingested) is a no-op — `userMessage` stays absent, exactly
+        // the R-3 documented degradation. The carried text is the exchange's
+        // own captured prompt, never fabricated.
+        if op_name == OP_CHAT_CANON
+            && provider == PROVIDER_COPILOT_CLI
+            && payload
+                .get(ATTR_INPUT_MESSAGES)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| extract_messages_text(s, "user").is_none())
+            && payload
+                .get("userMessage")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.trim().is_empty())
+        {
+            if let Ok(map) = self.parent_prompts.lock() {
+                if let Some(prompt) = parent_prompt_cache::req_3_cached_prompt(&map, &session_id) {
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("userMessage".to_string(), Value::String(prompt.to_string()));
+                    }
+                }
+            }
+        }
+
         let raw_json = payload.to_string();
         let empty_map = serde_json::Map::new();
         let payload_map = payload.as_object().unwrap_or(&empty_map);

@@ -83,12 +83,28 @@ const CONTENT_ON: &str = include_str!("fixtures/copilot_cli/content-on.json");
 const CONTENT_OFF: &str = include_str!("fixtures/copilot_cli/content-off.json");
 const TOOL_FAILURE: &str = include_str!("fixtures/copilot_cli/tool-failure.json");
 const SESSION_ONLY: &str = include_str!("fixtures/copilot_cli/session-only.json");
+/// Spec #2933 ST-4R: the REAL split-turn shape — one user turn across TWO
+/// `chat` spans (dispatch: user text + `tool_call` output; continuation:
+/// `tool`-role input + assistant text) with an `execute_tool` span inside the
+/// dispatch span's window. Ids/timing recorded from the real Copilot CLI turn.
+const TURN_SPLIT: &str = include_str!("fixtures/copilot_cli/turn-split.json");
 
 /// Fixture session ids (from `gen_ai.conversation.id`).
 const SESSION_CONTENT_ON: &str = "ses_copilot_fixture_1";
 const SESSION_CONTENT_OFF: &str = "ses_copilot_fixture_2";
 const SESSION_TOOL_FAILURE: &str = "ses_copilot_fixture_3";
 const SESSION_SESSION_ONLY: &str = "ses_copilot_fixture_4";
+/// Split-turn fixture session id.
+const SESSION_TURN_SPLIT: &str = "e2e-copilotsplit2933";
+/// The exchange's user prompt — carried on BOTH chat rows of the split turn.
+const TURN_SPLIT_PROMPT: &str = "Read hello.txt and reply with its exact contents.";
+/// The continuation row's assistant text.
+const TURN_SPLIT_REPLY: &str = "fredo-copilot-2933-sentinel";
+/// Correlation ids for the split-turn fixture spans (root → chat#1 → tool → chat#2).
+const TURN_SPLIT_ROOT_CORR: &str = "e2e-copilotsplit2933_1";
+const TURN_SPLIT_DISPATCH_CORR: &str = "e2e-copilotsplit2933_2";
+const TURN_SPLIT_TOOL_CORR: &str = "e2e-copilotsplit2933_3";
+const TURN_SPLIT_CONTINUATION_CORR: &str = "e2e-copilotsplit2933_4";
 
 // ── Harness — the SAME composition the live classifier is built with ────────
 
@@ -204,61 +220,87 @@ fn attr_num(key: &str, value: i64) -> Value {
 /// control. Mirrors the plugin's real attribute shapes.
 fn opencode_envelope() -> Value {
     let session = "ses_opencode_baseline";
+    opencode_envelope_spans(vec![
+        json!({
+            "name": "run_agent",
+            "traceId": "aaf7651916cd43dd8448eb211c803100",
+            "spanId": "aaad6b7169203001",
+            "startTimeUnixNano": "1000000000",
+            "endTimeUnixNano": "9000000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "run_agent"),
+                attr("session.id", session),
+                attr("gen_ai.agent.name", "opencode"),
+                attr_num("total_tokens", 59_200),
+                attr_num("total_messages", 12),
+                json!({ "key": "total_cost_usd", "value": { "doubleValue": 0.42 } })
+            ]
+        }),
+        json!({
+            "name": "llm",
+            "traceId": "aaf7651916cd43dd8448eb211c803100",
+            "spanId": "aaad6b7169203002",
+            "startTimeUnixNano": "1100000000",
+            "endTimeUnixNano": "4000000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "chat"),
+                attr("session.id", session),
+                attr("gen_ai.input.messages",
+                     "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather?\"}]}]"),
+                attr("gen_ai.output.messages",
+                     "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The weather is sunny.\"}]}]"),
+                attr("gen_ai.response.model", "claude-sonnet-4"),
+                attr_num("gen_ai.usage.input_tokens", 100),
+                attr_num("gen_ai.usage.output_tokens", 50),
+                attr_num("gen_ai.usage.cache_read.input_tokens", 512_000)
+            ]
+        }),
+        json!({
+            "name": "execute_tool bash",
+            "traceId": "aaf7651916cd43dd8448eb211c803100",
+            "spanId": "aaad6b7169203003",
+            "startTimeUnixNano": "4100000000",
+            "endTimeUnixNano": "4220000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "execute_tool"),
+                attr("session.id", session),
+                attr("gen_ai.tool.name", "bash"),
+                attr("gen_ai.tool.call.arguments", "{\"command\":\"ls\"}"),
+                attr("gen_ai.tool.call.result", "file1 file2"),
+                json!({ "key": "tool.success", "value": { "boolValue": true } }),
+                attr_num("duration_ms", 120)
+            ]
+        }),
+    ])
+}
+
+/// Build an OpenCode-resource (`fredo-opencode-plugin` → `open_code`) OTLP
+/// envelope around spans — the provider-isolation control's envelope builder.
+fn opencode_envelope_spans(spans: Vec<Value>) -> Value {
     json!({
         "resourceSpans": [{
             "resource": { "attributes": [ attr("service.name", "fredo-opencode-plugin") ] },
-            "scopeSpans": [{ "spans": [
-                {
-                    "name": "run_agent",
-                    "traceId": "aaf7651916cd43dd8448eb211c803100",
-                    "spanId": "aaad6b7169203001",
-                    "startTimeUnixNano": "1000000000",
-                    "endTimeUnixNano": "9000000000",
-                    "attributes": [
-                        attr("gen_ai.operation.name", "run_agent"),
-                        attr("session.id", session),
-                        attr("gen_ai.agent.name", "opencode"),
-                        attr_num("total_tokens", 59_200),
-                        attr_num("total_messages", 12),
-                        json!({ "key": "total_cost_usd", "value": { "doubleValue": 0.42 } })
-                    ]
-                },
-                {
-                    "name": "llm",
-                    "traceId": "aaf7651916cd43dd8448eb211c803100",
-                    "spanId": "aaad6b7169203002",
-                    "startTimeUnixNano": "1100000000",
-                    "endTimeUnixNano": "4000000000",
-                    "attributes": [
-                        attr("gen_ai.operation.name", "chat"),
-                        attr("session.id", session),
-                        attr("gen_ai.input.messages",
-                             "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather?\"}]}]"),
-                        attr("gen_ai.output.messages",
-                             "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The weather is sunny.\"}]}]"),
-                        attr("gen_ai.response.model", "claude-sonnet-4"),
-                        attr_num("gen_ai.usage.input_tokens", 100),
-                        attr_num("gen_ai.usage.output_tokens", 50),
-                        attr_num("gen_ai.usage.cache_read.input_tokens", 512_000)
-                    ]
-                },
-                {
-                    "name": "execute_tool bash",
-                    "traceId": "aaf7651916cd43dd8448eb211c803100",
-                    "spanId": "aaad6b7169203003",
-                    "startTimeUnixNano": "4100000000",
-                    "endTimeUnixNano": "4220000000",
-                    "attributes": [
-                        attr("gen_ai.operation.name", "execute_tool"),
-                        attr("session.id", session),
-                        attr("gen_ai.tool.name", "bash"),
-                        attr("gen_ai.tool.call.arguments", "{\"command\":\"ls\"}"),
-                        attr("gen_ai.tool.call.result", "file1 file2"),
-                        json!({ "key": "tool.success", "value": { "boolValue": true } }),
-                        attr_num("duration_ms", 120)
-                    ]
-                }
-            ]}]
+            "scopeSpans": [{ "spans": spans }]
+        }]
+    })
+}
+
+/// The four spans of the committed split-turn fixture (root, chat#1, tool,
+/// chat#2), in fixture order — for the two-POST ordering leg.
+fn turn_split_spans() -> Vec<Value> {
+    let raw: Value = serde_json::from_str(TURN_SPLIT).expect("turn-split fixture is valid JSON");
+    raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        .as_array()
+        .expect("turn-split fixture carries a span array")
+        .clone()
+}
+
+/// Build a Copilot-resource envelope around spans (fixture resource identity).
+fn copilot_envelope(spans: Vec<Value>) -> Value {
+    json!({
+        "resourceSpans": [{
+            "resource": { "attributes": [ attr("service.name", "copilot-cli") ] },
+            "scopeSpans": [{ "spans": spans }]
         }]
     })
 }
@@ -498,16 +540,6 @@ fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
         "the earlier chat row is byte-identical after the late session root"
     );
     assert_eq!(session_keys(&rtdb, session).len(), 1, "exactly one session row");
-}
-
-/// Build a Copilot-resource envelope around spans (fixture resource identity).
-fn copilot_envelope(spans: Vec<Value>) -> Value {
-    json!({
-        "resourceSpans": [{
-            "resource": { "attributes": [ attr("service.name", "copilot-cli") ] },
-            "scopeSpans": [{ "spans": spans }]
-        }]
-    })
 }
 
 // ── R-5.1 / R-5.2: OpenCode unchanged + no cross-provider contamination ──────
@@ -805,3 +837,249 @@ fn degraded_export_writes_no_rows_and_preserves_existing_rows() {
         "existing rows are byte-identical after a degraded export"
     );
 }
+
+// ── R-2.1 / R-4.1 (ST-4R): the REAL split-turn shape ─────────────────────────
+//
+// The round-1 failure class was invisible to this harness because no committed
+// fixture contained the real two-span turn (one user turn across a dispatch
+// `chat` + a continuation `chat`). These pins encode it durably.
+
+/// R-2.1 the split-continuation invariant (the ST-3R fix): the exchange's user
+/// prompt is re-carried onto the Copilot continuation chat row, while per-call
+/// tokens, the tool row, and the canonical field sets stay exactly as captured.
+#[test]
+fn turn_split_fixture_carries_exchange_prompt_onto_continuation_row() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier();
+    let ingested = ingest_fixture(&classifier, TURN_SPLIT);
+    assert!(ingested >= 4, "session + two chat + tool rows must classify");
+
+    // ── session root (`invoke_agent` → AgentSessionRow, provider-scoped) ────
+    let session = session_row(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_ROOT_CORR);
+    assert_eq!(session.provider.as_deref(), Some("copilot_cli"));
+    assert_field_set(&session, AGENT_SESSION_FIELDS, "turn-split agent_session row");
+
+    // ── dispatch row (`chat` #1: user text + tool_call output) ──────────────
+    let dispatch = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_DISPATCH_CORR);
+    assert_eq!(dispatch.provider.as_deref(), Some("copilot_cli"));
+    assert_eq!(
+        dispatch.user_message.as_deref(),
+        Some(TURN_SPLIT_PROMPT),
+        "the dispatch row carries the exchange's user prompt"
+    );
+    assert_eq!(
+        dispatch.agent_reply, None,
+        "a tool_call output is not assistant text → agentReply absent"
+    );
+    assert_eq!(
+        dispatch.prompt_tokens,
+        Some(10_184),
+        "Copilot chat input stays the PER-CALL absolute value, never a delta"
+    );
+    assert_eq!(dispatch.completion_tokens, Some(39));
+    assert_eq!(
+        dispatch.cache_read_tokens, None,
+        "the cumulative-delta path stays bypassed for copilot_cli"
+    );
+    assert_field_set(&dispatch, CHAT_FIELDS, "turn-split dispatch chat row");
+
+    // ── continuation row (`chat` #2: tool-role input + assistant text) ──────
+    let continuation = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_CONTINUATION_CORR);
+    assert_eq!(continuation.provider.as_deref(), Some("copilot_cli"));
+    assert_eq!(
+        continuation.user_message.as_deref(),
+        Some(TURN_SPLIT_PROMPT),
+        "ST-3R: the continuation row re-carries the exchange's user prompt"
+    );
+    assert_eq!(
+        continuation.agent_reply.as_deref(),
+        Some(TURN_SPLIT_REPLY),
+        "the continuation row keeps its own assistant text"
+    );
+    assert_eq!(
+        continuation.prompt_tokens,
+        Some(10_241),
+        "the continuation row keeps its PER-CALL prompt tokens"
+    );
+    assert_eq!(continuation.completion_tokens, Some(14));
+    assert_eq!(continuation.cache_read_tokens, None);
+    assert_field_set(&continuation, CHAT_FIELDS, "turn-split continuation chat row");
+
+    // The carry lands in `rawJson` too — the payload, the typed column and the
+    // delivered row all agree (one projection path).
+    assert!(continuation.raw_json.contains("userMessage"));
+    assert!(continuation.raw_json.contains(TURN_SPLIT_PROMPT));
+
+    // ── the tool row sits between the two chat rows, outcome intact ─────────
+    let tool_row = tool(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_TOOL_CORR);
+    assert_eq!(tool_row.provider.as_deref(), Some("copilot_cli"));
+    assert_eq!(tool_row.tool_name.as_deref(), Some("view"));
+    assert_eq!(tool_row.tool_success, Some(true));
+    assert_eq!(
+        tool_row.tool_input_json.as_deref(),
+        Some("{\"path\":\"hello.txt\"}")
+    );
+    assert_field_set(&tool_row, TOOL_USE_FIELDS, "turn-split tool-use row");
+}
+
+/// R-4.1 two-POST ordering: the dispatch export (root + `chat` #1 + tool) and
+/// the reply export (`chat` #2) delivered as SEPARATE POSTs still carry — the
+/// prompt is already cached for the session when the continuation lands.
+#[test]
+fn turn_split_two_post_ordering_still_carries() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier();
+    let spans = turn_split_spans();
+    assert_eq!(spans.len(), 4, "fixture shape: root + chat#1 + tool + chat#2");
+
+    // POST 1 — the dispatch export (the tool executes inside chat#1's window).
+    let dispatch_post = copilot_envelope(spans[..3].to_vec());
+    assert!(feed(&classifier, &dispatch_post) >= 3);
+    assert_eq!(
+        chat_keys(&rtdb, SESSION_TURN_SPLIT).len(),
+        1,
+        "only the dispatch chat row exists after POST 1"
+    );
+    assert_eq!(
+        chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_DISPATCH_CORR)
+            .user_message
+            .as_deref(),
+        Some(TURN_SPLIT_PROMPT)
+    );
+
+    // POST 2 — the reply export (chat#2), delivered on its own.
+    let reply_post = copilot_envelope(spans[3..].to_vec());
+    assert!(feed(&classifier, &reply_post) >= 1);
+
+    let continuation = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_CONTINUATION_CORR);
+    assert_eq!(
+        continuation.user_message.as_deref(),
+        Some(TURN_SPLIT_PROMPT),
+        "the prompt cached by POST 1 is carried onto the POST-2 continuation row"
+    );
+    assert_eq!(continuation.agent_reply.as_deref(), Some(TURN_SPLIT_REPLY));
+    assert_eq!(chat_keys(&rtdb, SESSION_TURN_SPLIT).len(), 2, "two distinct chat rows");
+}
+
+/// R-3.1/R-3.2 degradation boundary: the carry requires a captured
+/// `gen_ai.input.messages`. A content-off continuation row in a session whose
+/// prompt IS cached must stay absent — no fabricated content.
+#[test]
+fn turn_split_content_off_continuation_stays_absent() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier();
+    let session = "ses_copilot_degraded_split";
+
+    // A content-captured dispatch (root + chat#1) caches the exchange prompt.
+    let dispatch = copilot_envelope(vec![
+        json!({
+            "name": "invoke_agent",
+            "spanId": "ddad6b7169206001",
+            "startTimeUnixNano": "2000000000",
+            "endTimeUnixNano": "9000000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "invoke_agent"),
+                attr("gen_ai.conversation.id", session),
+                attr_num("gen_ai.usage.input_tokens", 500),
+                attr_num("gen_ai.usage.output_tokens", 20)
+            ]
+        }),
+        json!({
+            "name": "chat auto",
+            "spanId": "ddad6b7169206002",
+            "startTimeUnixNano": "2100000000",
+            "endTimeUnixNano": "3000000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "chat"),
+                attr("gen_ai.conversation.id", session),
+                attr("gen_ai.response.model", "gpt-4o"),
+                attr_num("gen_ai.usage.input_tokens", 500),
+                attr_num("gen_ai.usage.output_tokens", 20),
+                attr("gen_ai.input.messages",
+                     "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Carry me\"}]}]"),
+                attr("gen_ai.output.messages",
+                     "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"c1\",\"name\":\"view\"}]}]")
+            ]
+        }),
+    ]);
+    feed(&classifier, &dispatch);
+    assert_eq!(
+        chat(&rtdb, session, "ses_copilot_degraded_split_2")
+            .user_message
+            .as_deref(),
+        Some("Carry me"),
+        "the dispatch row caches the exchange's prompt for the session"
+    );
+
+    // A content-off continuation (NO `gen_ai.input.messages`) must NOT be carried.
+    let content_off = copilot_envelope(vec![json!({
+        "name": "chat auto",
+        "spanId": "ddad6b7169206003",
+        "startTimeUnixNano": "3100000000",
+        "endTimeUnixNano": "4000000000",
+        "attributes": [
+            attr("gen_ai.operation.name", "chat"),
+            attr("gen_ai.conversation.id", session),
+            attr("gen_ai.response.model", "gpt-4o"),
+            attr_num("gen_ai.usage.input_tokens", 520),
+            attr_num("gen_ai.usage.output_tokens", 10)
+        ]
+    })]);
+    feed(&classifier, &content_off);
+
+    let continuation = chat(&rtdb, session, "ses_copilot_degraded_split_3");
+    assert_eq!(continuation.prompt_tokens, Some(520), "the structural row still lands");
+    assert_eq!(
+        continuation.user_message, None,
+        "content-off continuation stays absent — the carry requires captured input.messages (R-3 degradation)"
+    );
+    assert_eq!(continuation.agent_reply, None);
+}
+
+/// R-5.1 isolation: the carry branch is `copilot_cli`-scoped. An OpenCode-shaped
+/// continuation span (tool-role input, cached session prompt) must stay absent —
+/// the fallback can never fire on an `open_code` row.
+#[test]
+fn turn_split_branch_never_fires_on_opencode_shaped_rows() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier();
+    feed(&classifier, &opencode_envelope());
+    ingest_fixture(&classifier, TURN_SPLIT);
+
+    // The OpenCode baseline keeps its exact content and field set.
+    let oc_chat = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_2");
+    assert_eq!(oc_chat.provider.as_deref(), Some("open_code"));
+    assert_eq!(
+        oc_chat.user_message.as_deref(),
+        Some("What is the weather?"),
+        "the OpenCode chat row's userMessage is unchanged"
+    );
+    assert_eq!(oc_chat.agent_reply.as_deref(), Some("The weather is sunny."));
+    assert_field_set(&oc_chat, CHAT_FIELDS, "OpenCode chat row unchanged");
+
+    // An OpenCode continuation (tool-role input, no user text) in the SAME
+    // session — whose prompt IS cached — must still stay absent: the carry is
+    // provider-scoped, not span-shape-scoped.
+    let oc_continuation = json!({
+        "name": "llm",
+        "traceId": "aaf7651916cd43dd8448eb211c803100",
+        "spanId": "aaad6b7169203099",
+        "startTimeUnixNano": "4300000000",
+        "endTimeUnixNano": "4400000000",
+        "attributes": [
+            attr("gen_ai.operation.name", "chat"),
+            attr("session.id", "ses_opencode_baseline"),
+            attr("gen_ai.response.model", "claude-sonnet-4"),
+            attr_num("gen_ai.usage.input_tokens", 130),
+            attr_num("gen_ai.usage.output_tokens", 10),
+            attr("gen_ai.input.messages",
+                 "[{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"c1\",\"response\":\"file1 file2\"}]}]")
+        ]
+    });
+    feed(&classifier, &opencode_envelope_spans(vec![oc_continuation]));
+
+    let oc_continuation_row = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_4");
+    assert_eq!(oc_continuation_row.provider.as_deref(), Some("open_code"));
+    assert_eq!(
+        oc_continuation_row.user_message, None,
+        "an open_code continuation must never be carried (R-5.1 byte-identity)"
+    );
+    assert_eq!(oc_continuation_row.agent_reply, None);
+}
+
