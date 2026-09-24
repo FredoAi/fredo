@@ -85,6 +85,8 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
     let dataDisposable: { dispose(): void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let resizeFrame = 0;
 
     const fireFirstOutput = () => {
       if (firstOutputFiredRef.current) return;
@@ -94,7 +96,8 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
 
     init()
       .then(() => {
-        if (disposed || !containerRef.current) return;
+        const container = containerRef.current;
+        if (disposed || !container) return;
 
         term = new Terminal({
           cursorBlink: true,
@@ -106,7 +109,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
         });
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
-        term.open(containerRef.current);
+        term.open(container);
         termRef.current = term;
         fitRef.current = fitAddon;
 
@@ -119,6 +122,34 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
         dataDisposable = term.onData((data: string) => {
           adapterBridge.invoke('write_pty_input', { sessionId, data }).catch(() => {});
         });
+
+        // A window/pane resize must re-fit the ACTIVE terminal so its
+        // `term.onResize` pushes a fresh `resize_pty` (the activation effect
+        // only covers a deselect→select transition, not a live window resize).
+        // Coalesce through a frame (one fit per frame, never per-event IPC
+        // churn) and gate on two conditions:
+        //   - ACTIVE only: an inactive terminal's `onResize` is suppressed, so a
+        //     silent fit would leave its PTY at a stale size and make the later
+        //     activation fit a no-op.
+        //   - real box only: a not-yet-laid-out mount reports 0×0, and a
+        //     0×0 fit would push a bogus size.
+        if (typeof ResizeObserver !== 'undefined') {
+          resizeObserver = new ResizeObserver(() => {
+            if (disposed) return;
+            cancelAnimationFrame(resizeFrame);
+            resizeFrame = requestAnimationFrame(() => {
+              if (disposed || !activeRef.current) return;
+              const el = containerRef.current;
+              if (!el || el.clientWidth <= 0 || el.clientHeight <= 0) return;
+              try {
+                fitAddon?.fit();
+              } catch {
+                /* not laid out yet */
+              }
+            });
+          });
+          resizeObserver.observe(container);
+        }
 
         // Fit after layout settles (hidden-canvas fit yields 0×0).
         requestAnimationFrame(() => {
@@ -168,6 +199,8 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
 
     return () => {
       disposed = true;
+      cancelAnimationFrame(resizeFrame);
+      resizeObserver?.disconnect();
       unlistenOutput?.();
       unlistenExit?.();
       resizeDisposable?.dispose();
