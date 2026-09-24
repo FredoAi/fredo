@@ -40,3 +40,16 @@
 - R-8 (layer/theming): PASS — changes confined to `infrastructure/rtdb/` + shared classes; no new visible surface.
 - R-9 (`fredo emit` defaults unchanged): PASS — bare emit → `internal`; existing wire names stable.
 - Overlap observation (R8 concern, raised for the Architect): the startup re-derivation creates PARALLEL rows for pre-existing sessions (`ses_f358…`: 16 `unknown` rows each with a matching `open_code` row at the same `started_at_ns`), i.e. row-count growth on upgrade.
+
+### Round 2 — 2026-09-24 (`spec/2932` @ `182fec5`) — Verdict: PASS
+
+- R-1 (merge semantics unchanged): PASS — `provider` still the only new field; first-resolved token immutable.
+- R-2 (additive migration, no data loss): **PASS — strict upgrade leg now PASS** — pre-existing span-matched rows transition in place (`ses_f358…_3` `unknown` seq 2 → `open_code` seq 3, same key/ns); `provider TEXT NOT NULL DEFAULT 'unknown'` on all three; `NULL/empty = 0/0/0`.
+- R-3 (single shared extract rule): PASS — `resolve_provider_token` sole path; live parity 0 mismatches.
+- R-4 (query backwards compatibility): PASS — legacy + hard-named errors unchanged (live IPC).
+- R-5 (existing ingest unchanged): PASS — rows stream + render; Mission Monitor unchanged.
+- R-6 (no contract-trust regression): PASS — single direct `provider` field.
+- R-7 (frontend wire stability): PASS — console clean across all interactions.
+- R-8 (layer/theming): PASS — changes confined to `infrastructure/rtdb/` + tooling.
+- R-9 (`fredo emit` defaults unchanged): PASS — bare emit → `internal`; `bogus` rejected.
+- **Round-1 overlap observation RESOLVED**: the corrected pass creates NO parallel rows and NO row-count growth (`ses_f358…` 50 → 50; `parallel_rows = 0`).
