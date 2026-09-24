@@ -82,3 +82,18 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   window's life; a restart yields an empty sidebar and no persisted session rows.
   EXPECTED: no `terminal` session rows in `fredo.db`; no resume.
   Full assertions: `terminal/functional.md` N-5 / `regression.md` R-8.
+
+## Round notes
+
+### Round 1 — 2026-09-24, spec/2934 @ 1fd60694
+
+- R-13 PASS — one `terminal` window (main+1) at every sample with 6 sessions / 2 running.
+- R-14 PASS — legacy `run_cli_work_dir` migrated onto `terminal_work_dir`; rewriting only
+  the legacy key does not move Terminal's dir; blank → home-fallback semantics retained.
+- R-15 PASS — no orphan after close-one (wrapper + opencode child gone, other survives),
+  self-exit (only that session `exited`), or window-close (all reaped); `-List` = 0 orphans.
+- R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the diff; other
+  settings panes unchanged.
+- R-17 PASS — empty sidebar after restart; no `%terminal%` table in `fredo.db`.
+- Legacy single-session note: the old auto-close-on-exit (`commands.rs:362-364`) is
+  deliberately removed — a session self-exit keeps the window open (verified live).
