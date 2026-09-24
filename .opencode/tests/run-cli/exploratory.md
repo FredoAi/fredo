@@ -44,3 +44,25 @@ Conventions: ID prefix `E-`. Record expected vs actual; mark `FAIL` with repro i
 - [ ] E-17: **Keyboard-only activation.** Focus the Run CLI toolbar desktop item and press Enter/Space. Does the single terminal window launch (accessibility parity with mouse click)? Any focus-trap or missing-ARIA finding is a FAIL.
 
 - [x] E-18: **Floating-button absence persistence.** After a launch → session close → relaunch cycle, and after a full app restart, the #2728 floating "RUN CLI" button never reappears and the toolbar desktop item remains the sole Run CLI affordance. Any re-appearance of the button or of a duplicate launch surface is a FAIL (promotes to F-12). **CONFIRMED** — After multiple launch/close cycles and app restart, no floating button appeared. Only toolbar item exists. Evidence: JS check at 2026-08-13T21:01:04Z, DOM snapshots throughout testing.
+
+## Probe prompts (added for #2934 — rename + multi-session)
+
+- [ ] E-19: **Stale legacy identifier in a generated artifact.** After the rename, regenerate
+  the Tauri capability schemas and re-scan
+  `apps/tauri/src-tauri/gen/schemas/capabilities.json` for an old window label. A stale
+  generated label is a FAIL (promotes to `terminal/functional.md` F-1).
+
+- [ ] E-20: **Legacy window label reachable.** Try to open/close a window by the OLD label
+  `run-cli-terminal` (e.g. from a leftover test or the window list). It must not exist;
+  an old-label window appearing is a FAIL (promotes to F-2).
+
+- [ ] E-21: **Migration with no legacy key.** Fresh store (no `run_cli_work_dir`): does the
+  migration no-op cleanly, and does the session fall back to home? A crash or a stuck
+  migration marker is a FINDING (promotes to `terminal/functional.md` F-4).
+
+- [ ] E-22: **Double migration.** Restart twice in a row after the first migration; confirm
+  the value is stable and no second migration write/duplicate key appears.
+
+- [ ] E-23: **Sidebar item for a `starting` session.** Add a GitHub session; while it is
+  still `starting`, inspect the sidebar item's state/label. Mislabeled, duplicated, or
+  missing state is a FAIL (promotes to F-6/F-7).
