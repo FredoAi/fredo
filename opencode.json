@@ -419,7 +419,11 @@
                     "git checkout -- *": "allow"
                 },
                 "external_directory": {
-                "~/.local/share/opencode/**": "deny"
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny",
+                "~/AppData/Roaming/com.fredo.app/**": "allow",
+                "~/AppData/Local/com.fredo.app/**": "allow",
+                "~/.config/opencode/plugins/**": "allow"
             }
             }
         },
