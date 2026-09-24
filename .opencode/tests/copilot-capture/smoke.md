@@ -33,3 +33,18 @@
 - **S-10 PASS** — OpenCode-origin rows are `open_code`; **0** model-provider rows (`openai`/`anthropic`); the `unknown` rows are pre-existing non-Copilot debris.
 - **S-11 PASS** — credential scan = 0 (token-shaped patterns).
 - **S-12 PASS** — `copilot --version` → `GitHub Copilot CLI 1.0.88.`
+
+### Round 2 — 2026-09-24, `spec/2933 @ c96ab4dd` — ALL PASS (fixed surface: ST-3R classifier carry)
+
+- **S-1 PASS** — non-empty DOM (accessibility snapshot, 99 elements) after `dev-env.ps1 -Action Up -Spec 2933` then `-Action Restart -Spec 2933`.
+- **S-2 PASS** — console clean (see CR-7).
+- **S-3 PASS** — Mission Monitor opened and listed sessions incl. the split Copilot fixture; `useEventRows` delivery alive (live `fredo-stream-event` capture on the Chat query).
+- **S-4 PASS (inherited)** — the round-2 diff contains **no UI/settings file** (`git diff --stat origin/main HEAD`); the Settings surface is untouched since round 1's live PASS (Telemetry section deliberately not opened — G-145 wedge).
+- **S-5 PASS** — screenshots captured under `.opencode/tmp/2933/e2e/`.
+- **S-6 PASS** — `pragma_table_info` lists `provider TEXT NOT NULL DEFAULT 'unknown'` on `chat_rows` / `tool_use_rows` / `agent_session_rows`.
+- **S-7 PASS** — `fredo::otlp` logged `HTTP receiver listening` + `gRPC receiver listening` post-restart (16:45:51); `telemetry_spans` = 2627 rows.
+- **S-8 PASS** — `inject-otlp-fixture.ts --copilot --fixture <path>` accepts both committed fixtures; each exits 0 with a non-silent per-span trace/span receipt and `EXPORT 1/1 -> OK (http 200)`.
+- **S-9 PASS** — `e2e-copilotsplit2933` / `e2e-copilot2933` / `e2e-copilotoff2933r2` rows appear under exactly `copilot_cli`.
+- **S-10 PASS** — `open_code` **2607** chats; 0 model-provider rows.
+- **S-11 PASS** — credential scan = 0 (refined patterns; self-reference residual disclosed).
+- **S-12 PASS** — `copilot --version` → `GitHub Copilot CLI 1.0.88.`
