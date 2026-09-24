@@ -2,7 +2,7 @@ import type { IconType } from 'react-icons';
 import { LuFolderOpen, LuTerminal, LuTriangleAlert } from 'react-icons/lu';
 
 /**
- * Canonical wire types for the Terminal multi-session model (Spec #2934 ST-3).
+ * Canonical wire types for the Terminal multi-session model (Spec 2934 ST-3).
  *
  * These mirror the ST-2 backend contract byte-for-byte — `TerminalSessionInfo`
  * is `#[serde(rename_all = "camelCase")]` and the enums are lowercase /

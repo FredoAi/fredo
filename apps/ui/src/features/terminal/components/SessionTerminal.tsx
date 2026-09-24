@@ -6,7 +6,7 @@ import { adapterBridge } from '../../../shared/utils/adapterBridge';
 /**
  * Ghostty palette (data palette literal — ghostty-web owns the canvas colours;
  * all window chrome reads Fredo theme tokens). Unchanged from the shipped
- * renderer (Spec #2934 ST-3 N-4 allowlist).
+ * renderer (Spec 2934 ST-3 N-4 allowlist).
  */
 const GHOSTTY_THEME = {
   background:    '#0d0d0d',
@@ -40,7 +40,7 @@ interface SessionTerminalProps {
 }
 
 /**
- * One mounted Ghostty terminal per session (Spec #2934 ST-3 rendering
+ * One mounted Ghostty terminal per session (Spec 2934 ST-3 rendering
  * contract).
  *
  * Mounted ONCE per session and toggled with `visibility` (never `display:none`)

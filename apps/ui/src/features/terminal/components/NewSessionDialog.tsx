@@ -20,7 +20,7 @@ interface NewSessionDialogProps {
 }
 
 /**
- * NewSessionDialog — the required OpenCode-vs-GitHub prompt (Spec #2934 ST-3,
+ * NewSessionDialog — the required OpenCode-vs-GitHub prompt (Spec 2934 ST-3,
  * AC2/AC3).
  *
  * A deliberate two-input flow (CLI + working directory), so it is a Chakra v3

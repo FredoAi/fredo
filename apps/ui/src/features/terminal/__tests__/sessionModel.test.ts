@@ -25,7 +25,7 @@ function session(overrides: Partial<TerminalSessionInfo>): TerminalSessionInfo {
   };
 }
 
-describe('#2934 ST-3 — sessionModel (titles, paths, typed error states)', () => {
+describe('Spec 2934 ST-3 — sessionModel (titles, paths, typed error states)', () => {
   it('titles a lone session with its CLI label and adds an ordinal only when >1 of that CLI', () => {
     const a = session({ id: 'a', cli: 'opencode' });
     const b = session({ id: 'b', cli: 'copilot' });

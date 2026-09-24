@@ -35,7 +35,7 @@ interface DialogInit {
 }
 
 /**
- * TerminalWindow — the root of the single `terminal` window (Spec #2934 ST-3).
+ * TerminalWindow — the root of the single `terminal` window (Spec 2934 ST-3).
  *
  * Owns the session list (mount-time `list_terminal_sessions` + live
  * `terminal-sessions-changed`/`terminal-exited`), the selection, and the

@@ -1,5 +1,5 @@
 /**
- * #2934 ST-3 — the Terminal window UI (session sidebar, add-session prompt,
+ * Spec 2934 ST-3 — the Terminal window UI (session sidebar, add-session prompt,
  * per-session terminals, typed error states).
  *
  * Drives the REAL `TerminalWindow` against a mocked Tauri command surface
@@ -126,7 +126,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('#2934 ST-3 — Terminal window', () => {
+describe('Spec 2934 ST-3 — Terminal window', () => {
   it('empty window renders the empty state and auto-opens the add-session prompt', async () => {
     renderWindow();
 

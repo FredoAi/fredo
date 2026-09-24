@@ -1,5 +1,5 @@
 /**
- * #2934 ST-3 — Settings → Terminal (default CLI + working directory).
+ * Spec 2934 ST-3 — Settings → Terminal (default CLI + working directory).
  *
  * The panel registers its save function via `useSettingsSave`; the test harness
  * renders the real `SettingsSaveProvider` and a footer button that calls the
@@ -62,7 +62,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('#2934 ST-3 — TerminalSettings', () => {
+describe('Spec 2934 ST-3 — TerminalSettings', () => {
   it('loads the working directory and the default CLI, then saves both on the unified Save', async () => {
     settings = { terminal_work_dir: 'C:\\repo', terminal_default_cli: 'copilot' };
     renderSettings();
