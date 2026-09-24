@@ -83,6 +83,32 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   EXPECTED: no `terminal` session rows in `fredo.db`; no resume.
   Full assertions: `terminal/functional.md` N-5 / `regression.md` R-8.
 
+## #2940 C-5 teardown (MANDATORY — run after this suite)
+
+> This pre-rename suite also spawns sessions against the running dev instance, so it leaks
+> persisted Terminal records the same way `.opencode/tests/terminal/` does. Spec #2940's
+> binding C-5 fix repeats the mandatory teardown here. Run it in the `terminal` window via
+> `tauri_webview_execute_js` after every run of these rows, then restore the four settings keys.
+
+```js
+(async () => {
+  const FIX = String.raw`.opencode\tests\terminal\fixtures`.toLowerCase();
+  const recs = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  const doomed = recs.filter(r => String(r.workDir || '').toLowerCase().includes(FIX));
+  for (const r of doomed) {
+    await window.__TAURI__.core.invoke('delete_terminal_session_record', { sessionId: r.id });
+  }
+  const left = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  return { deleted: doomed.map(r => [r.id, r.title, r.workDir]), remaining: left.map(r => r.id) };
+})()
+```
+
+- Pre-run snapshot: the record id set + the four settings keys (`terminal_work_dir`,
+  `terminal_default_cli`, `terminal_copilot_path`, `terminal_pwsh_path`); compare AFTER.
+- Settings restore (binding): restore those four keys to their captured pre-run values.
+- Full detail: `.opencode/tests/terminal/functional.md` → "C-5 teardown / snapshot /
+  settings-restore"; ST-5 adds `fixtures/purge-fixture-records.js` for the one-time purge.
+
 ## Round notes
 
 ### Round 1 — 2026-09-24, spec/2934 @ 1fd60694
