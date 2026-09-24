@@ -217,6 +217,19 @@ attribute — in real telemetry those carry the **model** provider
   `totalTokens` (fallback when the flat `total_tokens` key is absent).
 - **Tool outcome:** `error.type` on a failed span → `toolSuccess = false` +
   `toolError`; a completed span with no error indication → `toolSuccess = true`.
+- **Split-turn continuation carry-forward:** Copilot emits **two `chat` spans
+  per tool exchange** — the first carries the user text plus a `tool_call`
+  output (no assistant text ⇒ empty reply), the second carries only the
+  `tool`-role result plus the final assistant text. A `copilot_cli` `chat` span
+  is therefore **projected with the exchange's user prompt carried forward**:
+  when the span's own `gen_ai.input.messages` has no `user`-role text (the
+  continuation case), `userMessage` is taken from the session's already-captured
+  prompt. The result is the invariant Fredo's row consumers depend on — **every
+  chat row of an exchange carries that exchange's user prompt** (Mission
+  Monitor's exchange anchoring joins a tool span to the reply chat row by
+  identical, non-empty `userMessage`). The carried text is the exchange's own
+  captured prompt, never fabricated. OpenCode re-emits the full accumulated
+  input on every chat span, so its rows are unaffected by this rule.
 
 ### 4.4 The precise, non-silent degradation (content capture off — the default)
 
@@ -242,6 +255,13 @@ field is NULL — a defect, not the documented degradation. Enabling content
 (`COPILOT_OTEL_CAPTURE_CONTENT=true`) populates `userMessage`/`agentReply` (from
 `gen_ai.input.messages`/`gen_ai.output.messages`) and
 `toolInputJson`/`toolOutputJson` (from `gen_ai.tool.call.arguments`/`result`).
+
+**Carry-forward boundary (content off).** The continuation carry-forward in
+§4.3 reads the session's **captured** prompt. With content off no prompt is
+captured, so there is nothing to carry and `userMessage` / `agentReply` stay
+absent on every chat row — the documented degradation above, not a fabrication
+and not a defect. The carry-forward fires only when the span actually carries
+`gen_ai.input.messages` (content on).
 
 **Not claimed as parity (known limitations):** no cost (`costUsd`) and no
 parent/child compositing / SubagentNode for Copilot — its spans carry no cost

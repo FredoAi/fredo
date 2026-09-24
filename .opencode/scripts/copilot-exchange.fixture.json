@@ -1,5 +1,5 @@
 {
-  "_comment": "Spec #2933 ST-5 deterministic Copilot producer. A canonical OTLP/HTTP JSON envelope (Resource service.name=copilot-cli, session via gen_ai.conversation.id) sent by `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` to the real receiver. Fixed trace/span ids and a stable e2e- session id make repeat runs upsert the SAME row keys (idempotent). int64 values are decimal strings per the OTLP/JSON spec.",
+  "_comment": "Spec #2933 ST-5R canonical Copilot producer fixture. A canonical OTLP/HTTP JSON envelope (Resource service.name=copilot-cli, session via gen_ai.conversation.id) sent by `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` to the real receiver (:4318/v1/traces). It encodes the REAL Copilot split turn (Copilot CLI 1.0.88 emits TWO `chat` spans per tool exchange): chat #1 carries the user text plus a `tool_call` output (no assistant text), the `execute_tool` span sits inside #1's window, and chat #2 carries only the `tool`-role input plus the final assistant text. The session root's tokens are the session total (sum of the two per-call chat values). Fixed trace/span ids and the stable e2e-copilot2933 session id make repeat runs upsert the SAME (sessionId, correlationId) row keys (idempotent, seq = 1). int64 values are decimal strings per the OTLP/JSON spec.",
   "resourceSpans": [
     {
       "resource": {
@@ -48,7 +48,7 @@
                 {
                   "key": "gen_ai.output.messages",
                   "value": {
-                    "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"I will read src/main.rs first.\"}]}]"
+                    "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call_fixture_1\",\"name\":\"readFile\",\"arguments\":{\"path\":\"src/main.rs\"}}]}]"
                   }
                 }
               ]
@@ -68,6 +68,32 @@
                   "value": { "stringValue": "{\"path\":\"src/main.rs\"}" }
                 },
                 { "key": "gen_ai.tool.call.result", "value": { "stringValue": "fn main() {}" } }
+              ]
+            },
+            {
+              "name": "chat gpt-4o",
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "33f067aa0ba902ea",
+              "startTimeUnixNano": "1700000000470000000",
+              "endTimeUnixNano": "1700000000700000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "e2e-copilot2933" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "12159" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "547" } },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"call_fixture_1\",\"response\":\"fn main() {}\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"fredo-copilot-2933-sentinel\"}]}]"
+                  }
+                }
               ]
             }
           ]
