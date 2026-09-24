@@ -726,9 +726,9 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     name: 'Query Viewer',
     icon: () => null,
   } as unknown as FredoFeatureClass;
-  const RUN_CLI = {
-    id: 'run-cli',
-    name: 'Run CLI',
+  const TERMINAL = {
+    id: 'terminal',
+    name: 'Terminal',
     icon: () => null,
   } as unknown as FredoFeatureClass;
   const STEPPER_PROBE = {
@@ -737,7 +737,7 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
     icon: () => null,
   } as unknown as FredoFeatureClass;
 
-  const renderShell = (features: FredoFeatureClass[] = [QUERY_VIEWER, RUN_CLI, STEPPER_PROBE]) => {
+  const renderShell = (features: FredoFeatureClass[] = [QUERY_VIEWER, TERMINAL, STEPPER_PROBE]) => {
     const onOpenFeature = vi.fn();
     renderWithChakra(<LauncherShell showableFeatures={features} onOpenFeature={onOpenFeature} />);
     return onOpenFeature;
@@ -830,26 +830,26 @@ describe('LauncherShell — the live-capture Enter guard (QA-10) + the §7 selec
 
   it('UI/UX §7: the accent-highlighted tile follows the top-ranked match and agrees with what Enter opens', () => {
     const onOpenFeature = renderShell();
-    type('r');
+    type('t');
 
-    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(/^↵ open Run CLI$/);
-    expect(highlightedTiles()).toEqual(['Run CLI']);
+    expect(screen.getByTestId('launcher-command-hint')).toHaveTextContent(/^↵ open Terminal$/);
+    expect(highlightedTiles()).toEqual(['Terminal']);
 
     pressEnter();
     expect(onOpenFeature).toHaveBeenCalledTimes(1);
-    expect(onOpenFeature.mock.calls[0][0]).toBe('run-cli');
+    expect(onOpenFeature.mock.calls[0][0]).toBe('terminal');
   });
 
   it('UI/UX §7: arrow-key navigation still wins within a query and is never snapped back', () => {
     renderShell();
-    type('r');
-    expect(highlightedTiles()).toEqual(['Run CLI']);
+    type('t');
+    expect(highlightedTiles()).toEqual(['Terminal']);
 
     pressArrow('ArrowRight');
     expect(highlightedTiles()).toEqual(['Stepper Probe']);
 
     pressArrow('ArrowLeft');
-    expect(highlightedTiles()).toEqual(['Run CLI']);
+    expect(highlightedTiles()).toEqual(['Terminal']);
   });
 
   it('the empty-grid and empty-query Enter behaviours do not move (the §7 effect is selection-only)', () => {

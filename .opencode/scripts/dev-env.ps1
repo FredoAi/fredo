@@ -452,9 +452,9 @@ switch ($Action) {
         Write-Log "dev:tauri already running (Vite :$VitePort OK, MCP :$McpPort OK) -- serving spec/$Spec @ $($tip.Substring(0, [Math]::Min(8, $tip.Length)))"
         # Fast-path env warning (fix round 4): the OPENCODE_* OTEL vars are
         # injected only on the cold-start path below (G-046 block) -- this
-        # fast-path exit skips the injection, so a Run CLI child may inherit
+        # fast-path exit skips the injection, so a Terminal child may inherit
         # a stale env and emit zero telemetry spans.
-        Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Run CLI sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
+        Write-Log "WARNING: OPENCODE_* OTEL vars (telemetry env injection) are guaranteed only on a COLD start -- this fast-path exit does NOT inject them. If Terminal sessions emit zero telemetry spans, run: dev-env.ps1 -Action Down, then dev-env.ps1 -Action Up -Spec $Spec." -Level WARN
         exit 0
       }
     }
@@ -503,7 +503,7 @@ switch ($Action) {
 
     # Telemetry prerequisites (G-046): force the OPENCODE_* OTEL vars into the
     # dev instance's environment so fredo.exe AND every opencode session it
-    # spawns via Run CLI inherit them -- independent of the launching agent's
+    # spawns via Terminal inherit them -- independent of the launching agent's
     # shell state (User-level `setx` vars do NOT propagate into an already-
     # running parent chain). Values mirror setup::configure_opencode_otel.
     $env:OPENCODE_ENABLE_TELEMETRY = "1"

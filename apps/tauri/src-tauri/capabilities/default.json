@@ -3,7 +3,7 @@
   "identifier": "default",
   "description": "Default capabilities for the Fredo desktop app",
   "platforms": ["linux", "macOS", "windows"],
-  "windows": ["main", "run-cli-terminal"],
+  "windows": ["main", "terminal"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",

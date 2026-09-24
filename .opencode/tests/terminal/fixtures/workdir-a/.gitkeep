@@ -1,0 +1,3 @@
+# Committed fixture working directory (Terminal suite, Spec #2934).
+# Used as: (1) the migration target for the legacy pre-rename work-dir key (R-1),
+# and (2) session A's per-session working directory in the concurrency cases (R-2).

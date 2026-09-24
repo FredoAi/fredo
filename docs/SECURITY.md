@@ -86,9 +86,9 @@ Tauri v2 uses a capability system (`capabilities/default.json`) to declare the m
 | Permission | Why required |
 |-----------|-------------|
 | `core:default` | Standard window management (resize, minimize, etc.) |
-| `core:event:allow-listen` | Webview subscribes to `fredo-stream-event` and `run-cli-output` Tauri events |
+| `core:event:allow-listen` | Webview subscribes to `fredo-stream-event` and `terminal-output` Tauri events |
 | `core:event:allow-emit` | Rust backend emits events to the webview |
-| `core:window:allow-create` | Backend opens the `run-cli-terminal` WebviewWindow for PTY output |
+| `core:window:allow-create` | Backend opens the `terminal` WebviewWindow for PTY output |
 | `core:window:allow-close` | Backend closes the terminal window when the PTY process exits |
 | `core:window:allow-start-dragging` | Webview supports native window drag (title bar region) |
 | `core:window:allow-set-title` | Backend updates window title dynamically (agent session name) |

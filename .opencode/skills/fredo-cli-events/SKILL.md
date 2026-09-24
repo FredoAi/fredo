@@ -20,7 +20,7 @@ Same row path real OTLP spans take. Only works when the dev:tauri instance is ru
 - Testing span attribute extraction (the `rtdb/attrs.rs` extract rules against real plugin shapes)
 - End-to-end OTLP transport validation (gRPC/HTTP legs, cross-transport dedupe)
 
-**For real pipeline verification, drive a live opencode session through Fredo's Run CLI feature instead** (maomaolabs toolbar → Run CLI; see the "Feature usage: Run CLI" section of the feature's `smoke.md` for the full method — `write_pty_input` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is appropriate for row-classification testing, Mission Monitor row rendering from canonical mock shapes, and IPC-socket testing.
+**For real pipeline verification, drive a live opencode session through Fredo's Terminal feature instead** (maomaolabs toolbar → Terminal; see the "Feature usage: launching sessions in the Terminal window" section of `.opencode/tests/terminal/smoke.md` for the full method — `write_pty_input{sessionId,data}` with trailing `\r`, wait through `Starting OpenCode…`, never `opencode run` from a shell). `fredo emit` is appropriate for row-classification testing, Mission Monitor row rendering from canonical mock shapes, and IPC-socket testing.
 
 ## Finding the Binary
 
