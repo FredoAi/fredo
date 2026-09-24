@@ -16,7 +16,7 @@ import {
   type TerminalCli,
   type TerminalSessionInfo,
 } from '../sessionModel';
-import { SessionSidebar } from './SessionSidebar';
+import { SessionBar } from './SessionBar';
 import { TerminalPane } from './TerminalPane';
 import { NewSessionDialog } from './NewSessionDialog';
 import { DeleteSessionDialog } from './ResumableSessions';
@@ -363,10 +363,6 @@ export const TerminalWindow: React.FC = () => {
       setLoaded(true);
     };
 
-    void ensureTerminalSettingsMigrated()
-      .catch(() => {})
-      .then(refresh);
-
     unlisteners.push(
       adapterBridge.listen<{ sessions: TerminalSessionInfo[] }>(
         'terminal-sessions-changed',
@@ -394,6 +390,17 @@ export const TerminalWindow: React.FC = () => {
         void spawnSession(normalizeCli(ev.cli), ev.workDir ?? '');
       }),
     );
+
+    // Spec #2940 ST-9: register EVERY listener BEFORE the mount refresh, so
+    // `refresh`'s `list_terminal_sessions` — the backend mount handshake that
+    // drains a cold-launch intent — provably runs after the listener is live.
+    // Each `adapterBridge.listen` promise resolves only once the Rust
+    // `plugin:event|listen` completes, so this ordering is a guarantee, not a
+    // timing hope (a cold intent delivered before the listener is registered
+    // would be dropped).
+    void Promise.all(unlisteners)
+      .then(() => ensureTerminalSettingsMigrated().catch(() => {}))
+      .then(refresh);
 
     return () => {
       cancelled = true;
@@ -486,8 +493,8 @@ export const TerminalWindow: React.FC = () => {
   const announcement = actionAnnouncement || statusAnnouncement;
 
   return (
-    <Flex direction="row" h="100%" bg="bg.canvas">
-      <SessionSidebar
+    <Flex direction="column" h="100%" minH={0} w="100%" bg="bg.canvas">
+      <SessionBar
         sessions={allSessions}
         previous={previous}
         selectedId={selectedId}

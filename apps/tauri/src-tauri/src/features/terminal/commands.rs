@@ -443,6 +443,39 @@ pub struct TerminalOpenRequestPayload {
     pub work_dir: String,
 }
 
+/// One-shot cold-launch handshake (Spec #2940 ST-8).
+///
+/// A freshly created `terminal` window ARMS the validated `fredo
+/// open-terminal` intent here BEFORE `build()`; the window's own mount
+/// handshake — its first `list_terminal_sessions` call, which runs only after
+/// its `terminal-open-request` listener is registered — DRAINS it and emits
+/// the event. The intent is therefore pulled, never pushed on a page-load
+/// timer: Tauri delivers an event only to listeners already in its map, so a
+/// `PageLoadEvent`-timed emit races (and loses to) the webview's async
+/// listener registration. `take` is destructive, so a window reload or a
+/// second list call cannot re-spawn (one-shot by construction).
+///
+/// Never armed while a window already exists — the warm path emits directly.
+#[derive(Default)]
+pub struct PendingTerminalOpen(pub Mutex<Option<TerminalOpenRequestPayload>>);
+
+impl PendingTerminalOpen {
+    /// Arm the one-shot intent (called before the window is built).
+    pub fn arm(&self, payload: TerminalOpenRequestPayload) {
+        *self.0.lock().unwrap() = Some(payload);
+    }
+
+    /// Destructively drain the intent; every later call yields `None`.
+    pub fn take(&self) -> Option<TerminalOpenRequestPayload> {
+        self.0.lock().unwrap().take()
+    }
+
+    /// Drop any armed intent (build failure / window `CloseRequested`).
+    pub fn clear(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
 /// Per-session wire record. `pid` + `startedAt` let the QA prove that switching
 /// or replaying a session never re-spawns it; `errorKind` is typed so the UI
 /// selects a distinct error state without parsing `error`.
@@ -971,6 +1004,10 @@ fn window_close_handler(
     move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event {
             tracing::debug!(target: "fredo::terminal", "CloseRequested: tree-killing every session");
+            // Bound the pending intent's lifetime to the window instance: a
+            // window that never mounted must not leak a stale launch into a
+            // later window (Spec #2940 ST-8).
+            app.state::<PendingTerminalOpen>().clear();
             let drained = {
                 let s = app.state::<Mutex<TerminalState>>();
                 let mut guard = s.lock().unwrap();
@@ -999,9 +1036,10 @@ fn window_close_handler(
 /// carries the VALIDATED `{ cli, workDir }` and the webview consumes it to spawn
 /// the session. Delivery mirrors `APP_OPEN_REQUEST_EVENT`:
 /// - the window already exists → its listener is mounted, so emit immediately;
-/// - the window is freshly created → emit ONCE the page has loaded (the webview
-///   registers its listener on mount; an earlier emit would be lost). The
-///   one-shot guard means a dev reload cannot re-spawn.
+/// - the window is freshly created → ARM the intent in [`PendingTerminalOpen`]
+///   before `build()`; the window's mount handshake drains + emits it once its
+///   listener is registered (Spec #2940 ST-8 — a page-load-timed emit is a race
+///   the webview loses). `take` is destructive, so a dev reload cannot re-spawn.
 pub async fn open_terminal_window_with_intent(
     app: &AppHandle,
     intent: Option<TerminalOpenRequestPayload>,
@@ -1018,7 +1056,7 @@ pub async fn open_terminal_window_with_intent(
         }
         None => {
             tracing::debug!(target: "fredo::terminal", "building WebviewWindow");
-            let mut builder = WebviewWindowBuilder::new(
+            let builder = WebviewWindowBuilder::new(
                 app,
                 WINDOW_LABEL,
                 WebviewUrl::App("index.html?view=terminal".into()),
@@ -1028,21 +1066,23 @@ pub async fn open_terminal_window_with_intent(
             .min_inner_size(560.0, 360.0)
             .resizable(true);
 
+            // Spec #2940 ST-8: hold the validated intent in managed state —
+            // NEVER a page-load-timed emit — until the freshly built window's
+            // mount handshake drains it (its first `list_terminal_sessions`,
+            // after its `terminal-open-request` listener is registered).
             if let Some(payload) = intent {
-                let delivered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let app_for_load = app.clone();
-                builder = builder.on_page_load(move |_window, _event| {
-                    if delivered.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        return;
-                    }
-                    emit_terminal_open_request(&app_for_load, payload.clone());
-                });
+                app.state::<PendingTerminalOpen>().arm(payload);
             }
 
-            let window = builder.build().map_err(|e| {
-                tracing::error!(target: "fredo::terminal", error = %e, "WebviewWindow creation failed");
-                format!("Failed to open terminal window: {e}")
-            })?;
+            let window = match builder.build() {
+                Ok(window) => window,
+                Err(e) => {
+                    // A failed window must never leave a stale intent behind.
+                    app.state::<PendingTerminalOpen>().clear();
+                    tracing::error!(target: "fredo::terminal", error = %e, "WebviewWindow creation failed");
+                    return Err(format!("Failed to open terminal window: {e}"));
+                }
+            };
             // Wire CloseRequested → tree-kill every session (no orphans).
             window.on_window_event(window_close_handler(app.clone()));
         }
@@ -1168,8 +1208,27 @@ pub async fn spawn_terminal_session(
 
 /// Session list — the mount-time source of truth for the window (and the QA's
 /// per-session read of status / errorKind / pid / startedAt).
+///
+/// Also the cold-launch MOUNT HANDSHAKE (Spec #2940 ST-8): a freshly created
+/// window's first list call drains the armed `fredo open-terminal` intent and
+/// emits it over the now-registered listener. One-shot by construction, so a
+/// reload or a later list call cannot re-spawn. The return value is unchanged,
+/// so the frontend invoke contract does not change.
 #[tauri::command]
-pub fn list_terminal_sessions(state: tauri::State<'_, Mutex<TerminalState>>) -> Vec<TerminalSessionInfo> {
+pub fn list_terminal_sessions(
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+    pending: tauri::State<'_, PendingTerminalOpen>,
+) -> Vec<TerminalSessionInfo> {
+    if let Some(payload) = pending.take() {
+        tracing::debug!(
+            target: "fredo::terminal",
+            cli = %payload.cli,
+            work_dir = %payload.work_dir,
+            "mount handshake: drained pending terminal-open intent"
+        );
+        emit_terminal_open_request(&app, payload);
+    }
     let guard = state.lock().unwrap();
     snapshot(&guard)
 }
@@ -1905,5 +1964,42 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert_eq!(argv, vec!["/C".to_string(), r"C:\nvm4w\nodejs\copilot.cmd".to_string()]);
+    }
+
+    // ── PendingTerminalOpen: cold-launch one-shot handshake (Spec #2940 ST-8) ─
+
+    fn intent(cli: &str, work_dir: &str) -> TerminalOpenRequestPayload {
+        TerminalOpenRequestPayload {
+            cli: cli.to_string(),
+            work_dir: work_dir.to_string(),
+        }
+    }
+
+    #[test]
+    fn pending_terminal_open_is_unarmed_by_default() {
+        let pending = PendingTerminalOpen::default();
+        assert!(pending.take().is_none(), "an unarmed intent must yield nothing");
+    }
+
+    #[test]
+    fn pending_terminal_open_drains_once_then_yields_nothing() {
+        let pending = PendingTerminalOpen::default();
+        pending.arm(intent("opencode", r"C:\repo"));
+
+        let drained = pending.take().expect("first take drains the armed intent");
+        assert_eq!(drained.cli, "opencode");
+        assert_eq!(drained.work_dir, r"C:\repo");
+        assert!(
+            pending.take().is_none(),
+            "a second take must yield nothing (reload / re-list safety)"
+        );
+    }
+
+    #[test]
+    fn pending_terminal_open_clear_drops_the_armed_intent() {
+        let pending = PendingTerminalOpen::default();
+        pending.arm(intent("copilot", "~"));
+        pending.clear();
+        assert!(pending.take().is_none(), "clear must drop the intent");
     }
 }

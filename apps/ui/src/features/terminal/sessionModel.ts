@@ -1,5 +1,5 @@
 import type { IconType } from 'react-icons';
-import { LuFolderOpen, LuTerminal, LuTriangleAlert } from 'react-icons/lu';
+import { LuFolderOpen, LuRotateCcw, LuTerminal, LuTriangleAlert } from 'react-icons/lu';
 
 /**
  * Canonical wire types for the Terminal multi-session model (Spec 2934 ST-3).
@@ -24,6 +24,12 @@ export type TerminalErrorKind =
   // Spec 2935 R-4.1 — an unknown CLI name was refused before any process started.
   // Renders through the EXISTING `SessionErrorState` (UI/UX §2), not a new surface.
   | 'invalid-cli'
+  // Spec 2940 ST-4 (R-3.4) — the exit watcher sets this when a RESUMED session's
+  // CLI exits non-zero before it reconnects (`state.rs` `ResumeFailed`, wire
+  // `"resume-failed"`, `commands.rs` `finalize_resume_failed`). It is a typed
+  // wire kind, so the UI union carries it and `errorStateMeta` renders distinct
+  // copy (never the generic "Could not start session" fallback). Additive only.
+  | 'resume-failed'
   | 'launch'
   | 'generic';
 
@@ -294,6 +300,20 @@ export function errorStateMeta(session: TerminalSessionInfo): ErrorStateMeta {
         body: "That isn't a supported CLI. Choose OpenCode or GitHub Copilot.",
         showRawMessage: true,
         actions: ['close'],
+      };
+    case 'resume-failed':
+      // Spec 2940 ST-4 — a RESUMED session died before it could settle. Distinct
+      // from the generic launch copy so the typed wire kind is never mislabelled.
+      // The backend's own message (`RESUME_FAILED_MESSAGE`, "Nothing was started;
+      // the saved session is unchanged") is the readable cause copy.
+      return {
+        icon: LuRotateCcw,
+        title: 'Could not resume session',
+        body:
+          session.error ??
+          'The resumed session exited before it could reconnect. Nothing was started; the saved session is unchanged.',
+        showRawMessage: false,
+        actions: ['retry', 'close'],
       };
     case 'launch':
     case 'generic':

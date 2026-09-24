@@ -168,6 +168,10 @@ pub fn run() {
 
             // -- Terminal state ------------------------------------------------
             app.manage(Mutex::new(TerminalState::new()));
+            // Cold-launch one-shot handshake (Spec #2940 ST-8): the armed
+            // `fredo open-terminal` intent a freshly created window drains on
+            // its first `list_terminal_sessions`.
+            app.manage(features::terminal::commands::PendingTerminalOpen::default());
 
             // -- EventBus (RTDB row-batch emitter for "fredo-stream-event") ----
             // The ONLY sanctioned emission path to the webview: RTDB row

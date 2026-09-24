@@ -69,6 +69,13 @@ export const NewSessionDialog: React.FC<NewSessionDialogProps> = ({
       <Dialog.Positioner>
         <Dialog.Content
           maxW="lg"
+          // Spec 2940 ST-4 (R-3.7 parity): at the 560×360 window minimum the two
+          // radio cards + work-dir field exceed the viewport, which used to clip
+          // the footer. Cap to the positioner height and scroll so "Add session"
+          // stays reachable. No viewport unit — the fixed Positioner is the
+          // definite containing block.
+          maxH="calc(100% - 32px)"
+          overflowY="auto"
           background="var(--card-bg)"
           borderColor="var(--border-color)"
           borderWidth="1px"

@@ -28,24 +28,28 @@ export const StartingState: React.FC<{
       zIndex={2}
       direction="column"
       align="center"
-      justify="center"
-      gap={3}
+      overflowY="auto"
       bg="bg.canvas"
       transition="opacity 180ms ease"
       pointerEvents={blocking ? 'auto' : 'none'}
       data-testid="terminal-starting-state"
     >
-      <Spinner size="md" color="var(--accent-primary)" aria-label={`Starting ${cliLabel} session`} />
-      <Text fontSize="sm" color="fg.muted">{`Starting ${cliLabel}…`}</Text>
-      {showSlowHint && (
-        <Text fontSize="xs" color="fg.muted">
-          Still starting… (check the CLI is installed)
-        </Text>
-      )}
-      <Button variant="ghost" size="xs" onClick={onClose}>
-        <LuCircleX size={14} />
-        Close session
-      </Button>
+      {/* `m="auto"` centres the block when it fits and top-aligns it when the
+          content is taller than the pane, so a small pane scrolls (R-3.7)
+          instead of clipping the controls. */}
+      <VStack m="auto" maxW="100%" align="center" gap={3}>
+        <Spinner size="md" color="var(--accent-primary)" aria-label={`Starting ${cliLabel} session`} />
+        <Text fontSize="sm" color="fg.muted">{`Starting ${cliLabel}…`}</Text>
+        {showSlowHint && (
+          <Text fontSize="xs" color="fg.muted">
+            Still starting… (check the CLI is installed)
+          </Text>
+        )}
+        <Button variant="ghost" size="xs" onClick={onClose}>
+          <LuCircleX size={14} />
+          Close session
+        </Button>
+      </VStack>
     </Flex>
   );
 };
@@ -93,39 +97,46 @@ export const SessionErrorState: React.FC<{
       zIndex={3}
       direction="column"
       align="center"
-      justify="center"
-      gap={4}
+      overflowY="auto"
       p={8}
       textAlign="center"
       bg="bg.canvas"
       data-testid="terminal-error-state"
       data-error-kind={session.errorKind ?? 'generic'}
     >
-      <Icon as={meta.icon} boxSize="48px" color="var(--status-error)" />
-      <VStack gap={1}>
-        <Text fontSize="lg" fontWeight="600" color="fg.default">{meta.title}</Text>
-        {meta.body && (
-          <Text fontSize="sm" color="fg.muted" maxW="520px">{meta.body}</Text>
-        )}
-        {meta.showRawMessage && (
-          <Text fontSize="xs" color="fg.muted" maxW="520px">{session.error}</Text>
-        )}
-      </VStack>
-      <HStack gap={3}>
-        {meta.actions.map((action) => (
-          <Button
-            key={action}
-            variant={action === 'retry' ? 'solid' : 'ghost'}
-            size="sm"
-            bg={action === 'retry' ? 'var(--accent-primary)' : undefined}
-            color={action === 'retry' ? 'var(--accent-contrast)' : undefined}
-            onClick={handlers[ACTION_HANDLERS[action]]}
-          >
-            {React.createElement(ACTION_ICONS[action], { size: 14 })}
-            {ACTION_LABELS[action]}
-          </Button>
-        ))}
-      </HStack>
+      <Flex
+        direction="column"
+        align="center"
+        m="auto"
+        maxW="100%"
+        gap={4}
+      >
+        <Icon as={meta.icon} boxSize="48px" color="var(--status-error)" />
+        <VStack gap={1}>
+          <Text fontSize="lg" fontWeight="600" color="fg.default">{meta.title}</Text>
+          {meta.body && (
+            <Text fontSize="sm" color="fg.muted" maxW="520px">{meta.body}</Text>
+          )}
+          {meta.showRawMessage && (
+            <Text fontSize="xs" color="fg.muted" maxW="520px">{session.error}</Text>
+          )}
+        </VStack>
+        <HStack gap={3}>
+          {meta.actions.map((action) => (
+            <Button
+              key={action}
+              variant={action === 'retry' ? 'solid' : 'ghost'}
+              size="sm"
+              bg={action === 'retry' ? 'var(--accent-primary)' : undefined}
+              color={action === 'retry' ? 'var(--accent-contrast)' : undefined}
+              onClick={handlers[ACTION_HANDLERS[action]]}
+            >
+              {React.createElement(ACTION_ICONS[action], { size: 14 })}
+              {ACTION_LABELS[action]}
+            </Button>
+          ))}
+        </HStack>
+      </Flex>
     </Flex>
   );
 };
@@ -184,24 +195,25 @@ const EmptyShell: React.FC<{
     inset={0}
     direction="column"
     align="center"
-    justify="center"
-    gap={3}
+    overflowY="auto"
     p={8}
     textAlign="center"
     data-testid={testId}
   >
-    <Icon as={icon} boxSize="48px" color={iconColor} />
-    <Text fontSize="lg" fontWeight="600" color="fg.default">{title}</Text>
-    <Text fontSize="sm" color="fg.muted" maxW="420px">{body}</Text>
-    <Button
-      size="sm"
-      background="var(--accent-primary)"
-      color="var(--accent-contrast)"
-      onClick={onAdd}
-      _hover={{ opacity: 0.9 }}
-    >
-      Add session
-    </Button>
+    <VStack m="auto" maxW="100%" align="center" gap={3}>
+      <Icon as={icon} boxSize="48px" color={iconColor} />
+      <Text fontSize="lg" fontWeight="600" color="fg.default">{title}</Text>
+      <Text fontSize="sm" color="fg.muted" maxW="420px">{body}</Text>
+      <Button
+        size="sm"
+        background="var(--accent-primary)"
+        color="var(--accent-contrast)"
+        onClick={onAdd}
+        _hover={{ opacity: 0.9 }}
+      >
+        Add session
+      </Button>
+    </VStack>
   </Flex>
 );
 

@@ -1,11 +1,18 @@
 /**
- * Spec 2934 ST-3 — the Terminal window UI (session sidebar, add-session prompt,
- * per-session terminals, typed error states).
+ * Spec 2934 ST-3 — the Terminal window UI (session navigation, add-session
+ * prompt, per-session terminals, typed error states).
  *
- * Spec 2935 ST-4 extends the same suite: the two labelled groups, the persisted
- * "Previous sessions" rows, resume / start-fresh / delete, and the typed resume
- * surfaces — plus the two re-gated rules ("All sessions ended" must not mask
- * resumable records; the add-session prompt must not fire when records exist).
+ * Spec 2935 ST-4 extends the same suite: the persisted "Previous sessions" rows,
+ * resume / start-fresh / delete, and the typed resume surfaces — plus the two
+ * re-gated rules ("All sessions ended" must not mask resumable records; the
+ * add-session prompt must not fire when records exist).
+ *
+ * Spec 2940 ST-3 reworks the composition (AC2): the 240 px sidebar + 32 px
+ * toolbar become ONE 44 px `SessionBar` rail over the dominant `terminal-pane`,
+ * and the persisted records move into a NON-modal History popover. The suite
+ * asserts the C-3 canonical DOM contract (`terminal-session-bar`,
+ * `terminal-previous-toggle`/`-panel`, `terminal-pane` + `data-surface`/`data-cols`
+ * /`data-rows`, `terminal-canvas-host-<id>`) alongside every preserved testid.
  *
  * Drives the REAL `TerminalWindow` against a mocked Tauri command surface
  * (`adapterBridge`) and a mocked `ghostty-web` renderer, so the contracts are
@@ -24,7 +31,13 @@ import type {
   TerminalSessionInfo,
 } from '../../sessionModel';
 
-const ghostty = vi.hoisted(() => ({ constructed: 0, focused: 0, fit: 0 }));
+const ghostty = vi.hoisted(() => ({
+  constructed: 0,
+  focused: 0,
+  fit: 0,
+  // Per-construction fit dims the mock Terminal reports (index = build order).
+  dims: [] as Array<{ cols: number; rows: number }>,
+}));
 
 vi.mock('ghostty-web', () => {
   class FitAddon {
@@ -35,8 +48,13 @@ vi.mock('ghostty-web', () => {
     dispose() {}
   }
   class Terminal {
+    cols: number;
+    rows: number;
     constructor(_opts: unknown) {
       ghostty.constructed++;
+      const dims = ghostty.dims[ghostty.constructed - 1] ?? { cols: 80, rows: 24 };
+      this.cols = dims.cols;
+      this.rows = dims.rows;
     }
     loadAddon() {}
     open() {}
@@ -57,6 +75,18 @@ vi.mock('ghostty-web', () => {
 });
 
 import { TerminalWindow } from '../TerminalWindow';
+
+// jsdom 24 has no ResizeObserver, but the Chakra Popover's floating-ui autoUpdate
+// reaches for it (Spec 2940 ST-3 History panel). A no-op stub keeps the popover
+// mountable under test without changing the production component.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub;
+}
 
 let sessions: TerminalSessionInfo[] = [];
 let persisted: PersistedTerminalSession[] = [];
@@ -126,14 +156,16 @@ function renderWindow() {
   return renderWithChakra(<TerminalWindow />);
 }
 
-function rowButton(title: string, status: string) {
-  return screen.getByRole('button', { name: `${title}, ${title}, ${status}` });
+/** A live session's rail tab (composed `sessionAriaLabel`). */
+function tabButton(title: string, status: string) {
+  return screen.getByRole('tab', { name: `${title}, ${title}, ${status}` });
 }
 
 beforeEach(() => {
   ghostty.constructed = 0;
   ghostty.focused = 0;
   ghostty.fit = 0;
+  ghostty.dims = [];
   sessions = [];
   persisted = [];
   settings = {};
@@ -164,33 +196,73 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
 
     expect(await screen.findByText('No sessions yet')).toBeInTheDocument();
     expect(screen.getByText('Add a session to run OpenCode or GitHub Copilot.')).toBeInTheDocument();
-    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'New session' })).toBeInTheDocument();
     expect(screen.getByText('New session')).toBeInTheDocument();
   });
 
-  it('renders the sidebar list with a row per session, composed aria-labels and status text', async () => {
+  it('renders the session bar with one tab per session, composed aria-labels and status text', async () => {
     sessions = [
       session({ id: 'a', cli: 'opencode', status: 'running' }),
       session({ id: 'b', cli: 'copilot', status: 'starting' }),
     ];
     renderWindow();
 
-    const nav = await screen.findByRole('navigation', { name: 'Terminal sessions' });
-    const list = within(nav).getByRole('list', { name: 'Active sessions' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    const bar = await screen.findByTestId('terminal-session-bar');
+    const tablist = within(bar).getByRole('tablist', { name: 'Terminal sessions' });
+    expect(tablist).toBeInTheDocument();
+    expect(within(tablist).getAllByRole('tab')).toHaveLength(2);
+    // The old live-row testids are preserved (still containing a `button`).
+    expect(
+      screen.getByTestId('terminal-session-row-a').querySelector('button'),
+    ).toBeInTheDocument();
 
     // Status is a dot PLUS a text label (never colour alone).
     expect(screen.getByText('running')).toBeInTheDocument();
     expect(screen.getByText('starting')).toBeInTheDocument();
 
-    // The selected row carries aria-current="true".
-    await waitFor(() =>
-      expect(rowButton('OpenCode', 'running')).toHaveAttribute('aria-current', 'true'),
-    );
-    expect(rowButton('GitHub Copilot', 'starting')).not.toHaveAttribute('aria-current');
+    // The selected tab carries aria-selected + aria-current="true".
+    await waitFor(() => expect(tabButton('OpenCode', 'running')).toHaveAttribute('aria-current', 'true'));
+    expect(tabButton('OpenCode', 'running')).toHaveAttribute('aria-selected', 'true');
+    expect(tabButton('GitHub Copilot', 'starting')).not.toHaveAttribute('aria-current');
   });
 
-  it('reacts to terminal-sessions-changed by adding rows', async () => {
+  it('exposes the C-3 pane hooks: region label, data-surface and the canvas host', async () => {
+    sessions = [session({ id: 'a', cli: 'opencode', status: 'running' })];
+    renderWindow();
+
+    const pane = await screen.findByTestId('terminal-pane');
+    expect(pane).toHaveAttribute('role', 'region');
+    // The pane label tracks the selection (the selection effect runs post-mount).
+    await waitFor(() => expect(pane).toHaveAttribute('aria-label', 'OpenCode terminal'));
+    // A `running` session before its first byte still paints the starting overlay.
+    await waitFor(() => expect(pane).toHaveAttribute('data-surface', 'starting'));
+    // First byte → the overlay clears and the terminal surface is painted.
+    listeners['terminal-output']?.({ sessionId: 'a', data: [65] });
+    await waitFor(() => expect(pane).toHaveAttribute('data-surface', 'terminal'));
+    expect(await screen.findByTestId('terminal-canvas-host-a')).toBeInTheDocument();
+  });
+
+  it('paints the deterministic data-surface for each state', async () => {
+    sessions = [session({ id: 'e', cli: 'opencode', status: 'error', errorKind: 'prereq', error: 'x' })];
+    renderWindow();
+    await waitFor(() => expect(screen.getByTestId('terminal-pane')).toHaveAttribute('data-surface', 'error'));
+
+    cleanup();
+    sessions = [session({ id: 'x', status: 'exited' })];
+    renderWindow();
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-pane')).toHaveAttribute('data-surface', 'all-ended'),
+    );
+
+    cleanup();
+    sessions = [session({ id: 's', status: 'starting' })];
+    renderWindow();
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-pane')).toHaveAttribute('data-surface', 'starting'),
+    );
+  });
+
+  it('reacts to terminal-sessions-changed by adding tabs', async () => {
     renderWindow();
     await screen.findByText('No sessions yet');
 
@@ -211,7 +283,7 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     await waitFor(() => expect(ghostty.constructed).toBe(2));
     const before = ghostty.constructed;
 
-    fireEvent.click(rowButton('GitHub Copilot', 'running'));
+    fireEvent.click(tabButton('GitHub Copilot', 'running'));
 
     await waitFor(() =>
       expect(screen.getByTestId('terminal-surface-b')).toHaveAttribute('data-active', 'true'),
@@ -222,11 +294,39 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     await waitFor(() => expect(ghostty.focused).toBeGreaterThan(0), { timeout: 2000 });
   });
 
+  it('supports roving-tabindex keyboard navigation across the tabs', async () => {
+    sessions = [
+      session({ id: 'a', cli: 'opencode' }),
+      session({ id: 'b', cli: 'copilot' }),
+    ];
+    renderWindow();
+
+    const tablist = await screen.findByRole('tablist', { name: 'Terminal sessions' });
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-surface-a')).toHaveAttribute('data-active', 'true'),
+    );
+
+    fireEvent.keyDown(tablist, { key: 'ArrowRight' });
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-surface-b')).toHaveAttribute('data-active', 'true'),
+    );
+
+    fireEvent.keyDown(tablist, { key: 'Home' });
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-surface-a')).toHaveAttribute('data-active', 'true'),
+    );
+
+    fireEvent.keyDown(tablist, { key: 'End' });
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-surface-b')).toHaveAttribute('data-active', 'true'),
+    );
+  });
+
   it('adds a session: the prompt preselects the default CLI and prefills the migrated work dir', async () => {
     settings = { terminal_default_cli: 'copilot', terminal_work_dir: 'C:\\repo' };
     renderWindow();
 
-    const dialog = await screen.findByRole('dialog');
+    const dialog = await screen.findByRole('dialog', { name: 'New session' });
     const copilotRadio = dialog.querySelector<HTMLInputElement>('input[type="radio"][value="copilot"]');
     const opencodeRadio = dialog.querySelector<HTMLInputElement>('input[type="radio"][value="opencode"]');
     expect(copilotRadio).not.toBeNull();
@@ -317,7 +417,7 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     renderWindow();
 
     await screen.findByTestId('terminal-surface-b');
-    fireEvent.click(rowButton('OpenCode', 'exited'));
+    fireEvent.click(tabButton('OpenCode', 'exited'));
 
     expect(await screen.findByText('This session has ended')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restart session' })).toBeInTheDocument();
@@ -333,16 +433,20 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
 });
 
 describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () => {
-  it('lists persisted records in "Previous sessions" and auto-selects the newest with zero clicks', async () => {
+  it('surfaces persisted records behind the History toggle and auto-selects the newest with zero clicks', async () => {
     persisted = [
       record({ id: 'p-old', title: 'OpenCode', lastActiveAt: 1_000 }),
       record({ id: 'p-new', title: 'OpenCode 2', lastActiveAt: 9_000_000_000_000 }),
     ];
     renderWindow();
 
-    // Both groups labelled; no empty state (records exist).
-    await screen.findByRole('group', { name: 'Previous sessions' });
+    // No empty state (records exist); the History toggle is count-badged.
+    await screen.findByTestId('terminal-previous-toggle');
     expect(screen.queryByText('No sessions yet')).toBeNull();
+    expect(screen.getByTestId('terminal-previous-toggle')).toHaveAttribute(
+      'aria-label',
+      'Previous sessions (2)',
+    );
 
     // The newest record is the default selection → the Resume card is immediate.
     expect(await screen.findByTestId('terminal-resume-state')).toBeInTheDocument();
@@ -351,7 +455,29 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     ).toHaveAttribute('aria-current', 'true');
 
     // A record with no process must NOT auto-open the add-session prompt.
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'New session' })).toBeNull();
+  });
+
+  it('exposes a non-modal History panel (role=dialog) whose rows stay queryable while collapsed', async () => {
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    const toggle = await screen.findByTestId('terminal-previous-toggle');
+    expect(toggle).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(toggle).toHaveAttribute('aria-controls', 'terminal-previous-panel');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    const panel = screen.getByTestId('terminal-previous-panel');
+    expect(panel).toHaveAttribute('role', 'dialog');
+    expect(panel).toHaveAttribute('aria-label', 'Previous sessions');
+    // lazyMount/unmountOnExit off: the row is in the DOM while collapsed (C-3).
+    expect(screen.getByTestId('terminal-previous-session-row-p1')).toBeInTheDocument();
+
+    // The popover is NON-modal (no focus trap): it is a Popover, not a Dialog.
+    expect(toggle).not.toHaveAttribute('aria-modal');
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'));
   });
 
   it('does not let "All sessions ended" mask resumable records (live exited + previous record)', async () => {
@@ -365,8 +491,9 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     // The live exited session shows its per-session banner instead.
     fireEvent.click(screen.getByTestId('terminal-session-row-live-1').querySelector('button')!);
     expect(await screen.findByText('This session has ended')).toBeInTheDocument();
-    // And the Previous group stays present/actionable.
-    expect(screen.getByRole('group', { name: 'Previous sessions' })).toBeInTheDocument();
+    // And the Previous record stays present/actionable behind the toggle.
+    expect(screen.getByTestId('terminal-previous-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('terminal-previous-session-row-p1')).toBeInTheDocument();
   });
 
   it('renders a previous row with title, state label, relative last-active and work-dir basename', async () => {
@@ -381,7 +508,7 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     expect(row.getAttribute('aria-label')).toContain('last active 3h ago');
   });
 
-  it('resumes a record: the live session reuses the record id and leaves the Previous group', async () => {
+  it('resumes a record: the live session reuses the record id and leaves the History panel', async () => {
     persisted = [record({ id: 'p1', cli: 'opencode' })];
     renderWindow();
 
@@ -464,7 +591,7 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     await screen.findByTestId('terminal-resume-state');
     fireEvent.click(within(screen.getByTestId('terminal-resume-state')).getByRole('button', { name: 'Start fresh' }));
 
-    const dialog = await screen.findByRole('dialog');
+    const dialog = await screen.findByRole('dialog', { name: 'New session' });
     const workDirInput = screen.getByLabelText('Working directory') as HTMLInputElement;
     await waitFor(() => expect(workDirInput.value).toBe('C:\\repo'));
     const copilotRadio = dialog.querySelector<HTMLInputElement>('input[type="radio"][value="copilot"]');
@@ -513,7 +640,7 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
         workDir: 'C:\\repo',
       }),
     );
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'New session' })).toBeNull();
   });
 });
 
@@ -538,7 +665,7 @@ describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states
         workDir: 'C:\\repo',
       }),
     );
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'New session' })).toBeNull();
   });
 
   it('spawns with no explicit dir when the launch intent carries a blank work dir (--cli only)', async () => {
@@ -553,7 +680,7 @@ describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states
         workDir: undefined,
       }),
     );
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'New session' })).toBeNull();
   });
 
   it('renders the invalid-cwd error state the CLI path can surface (never a partial session)', async () => {
@@ -573,5 +700,54 @@ describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states
     expect(state).toHaveAttribute('data-error-kind', 'invalid-cwd');
     expect(screen.getByText('Working directory not found')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Choose directory/ })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Spec 2940 ST-3 — the C-2 canvas-host ↔ pane fit receipt. The pane stamps
+ * `data-cols`/`data-rows` from the ACTIVE session's last applied fit, and the
+ * values follow the active session when the selection switches. jsdom reports a
+ * 0×0 box, so the two geometry reads the fit path guards on are stubbed for this
+ * test only (the real fit path is exercised in SessionTerminal.resize.test.tsx).
+ */
+describe('Spec 2940 ST-3 — pane fit receipt (C-2)', () => {
+  it('stamps data-cols/data-rows from the ACTIVE session and follows a switch', async () => {
+    const origWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+    const origHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 800,
+    });
+    Object.defineProperty(Element.prototype, 'clientHeight', {
+      configurable: true,
+      get: () => 600,
+    });
+    try {
+      sessions = [
+        session({ id: 'a', cli: 'opencode' }),
+        session({ id: 'b', cli: 'copilot', pid: 202 }),
+      ];
+      // Build order = mount order: a → 100×30, b → 140×40.
+      ghostty.dims = [
+        { cols: 100, rows: 30 },
+        { cols: 140, rows: 40 },
+      ];
+      renderWindow();
+
+      // Switch to session b → the pane receipt must be b's fit, not a's.
+      fireEvent.click(await screen.findByRole('tab', { name: /GitHub Copilot/ }));
+
+      const pane = screen.getByTestId('terminal-pane');
+      await waitFor(() => expect(pane).toHaveAttribute('data-cols', '140'));
+      expect(pane).toHaveAttribute('data-rows', '40');
+
+      // Switch back to a → the receipt follows the newly ACTIVE session.
+      fireEvent.click(screen.getByRole('tab', { name: /OpenCode/ }));
+      await waitFor(() => expect(pane).toHaveAttribute('data-cols', '100'));
+      expect(pane).toHaveAttribute('data-rows', '30');
+    } finally {
+      if (origWidth) Object.defineProperty(Element.prototype, 'clientWidth', origWidth);
+      if (origHeight) Object.defineProperty(Element.prototype, 'clientHeight', origHeight);
+    }
   });
 });
