@@ -215,3 +215,26 @@ only F-1's static half).
 > (Tester appends per-round results here — keep `- [ ]` on FAIL/UNVERIFIED, mark PASS with
 > live evidence, promote confirmed exploratory probes to a new `F-` row keeping the origin
 > note.)
+
+### Round 1 — 2026-09-24, spec/2934 @ 1fd60694 (verdict FAIL; no product defect)
+
+**PASS:** F-1 (rename receipt: exactly 1 hit `settings.ts:18`), F-2 (window `terminal` /
+title `Terminal` / route `?view=terminal` / capabilities `["main","terminal"]`), F-3
+(display name + Settings nav `Terminal`), F-4 (legacy→new copy + 0-keystroke prefill), F-5
+(legacy rewrite does NOT move the dir), F-6 (main+1; OpenCode+OpenCode and OpenCode+Copilot
+concurrent), F-7, F-8 (sentinels: own present, foreign absent both ways), F-9, F-10
+(`aria-current` follows, `id`/`pid`/`startedAt` unchanged, buffers preserved, non-active
+terminals mounted with `visibility:hidden`), F-12, F-14 (`missing-binary`, 276 ms), F-15
+(`invalid-cwd`), F-16 FORCED (`pwshMajor:5` → `prereq`, 1.56 s), F-18, F-19, F-20, F-21.
+
+**UNVERIFIED (environment — host has no PowerShell 6+; `Bun.which('pwsh')===null`):**
+F-13 native positive (`errorKind=prereq` for every native Copilot launch; the launch path
+itself PASSED gate-bypassed via the TEST-ONLY `testOverride:{pwshMajor:7}` →
+`cmd.exe`→`node npm-loader`→`copilot.exe` + live TUI), F-16 control (host default < 6 →
+non-vacuity impossible), F-17 4d (empty `COPILOT_HOME` did NOT clear Copilot auth; CLI
+showed its own trust prompt + authenticated TUI, not swallowed, no hang).
+
+**UNVERIFIED (time-boxed, not attempted):** F-11 (per-session resize).
+
+Open item: fixture dirs are empty and untracked (git can't track empty dirs); add
+`.gitkeep` + `tests-commit --feature terminal` if the cluster wants them committed.
