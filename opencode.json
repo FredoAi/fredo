@@ -416,7 +416,10 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
-                    "git checkout -- *": "allow"
+                    "git checkout -- *": "allow",
+                    "cargo check*": "allow",
+                    "cargo clippy*": "allow",
+                    "cargo test*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
