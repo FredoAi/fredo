@@ -32,6 +32,24 @@
 //! arrival), so one successful pass covers all pre-cutover history and
 //! later startups skip the re-derivation entirely.
 //!
+//! ## Provider re-derivation (Spec #2932 ST-6)
+//!
+//! [`run_startup_provider_rebackfill`] is a SECOND, INDEPENDENT one-shot leg
+//! gated by its OWN marker ([`BACKFILL_PROVIDER_COMPLETED_KEY`] —
+//! `rtdb.backfill.provider.completed`), so an install that latched
+//! `rtdb.backfill.completed` before the `provider` column existed still runs
+//! exactly one provider re-derivation pass. It reuses
+//! [`backfill_from_telemetry`] verbatim — the shared
+//! `attrs::resolve_provider_token` rule reached through the SAME classifier
+//! (NFR-6), never a second extract path. The pass is idempotent
+//! (content-no-op writes are skipped), a no-op when `telemetry_spans` is
+//! absent/empty (its marker is left unset so a later startup re-checks), and
+//! strictly READ-ONLY toward `telemetry_spans`. It builds its OWN classifier
+//! instance because it is a second replay in one process: the ST9
+//! span→correlation guard and the per-turn counters are per-classifier state,
+//! so replaying the corpus on an already-used classifier would advance turn
+//! counters and mint new correlation ids for session spans (duplicate rows).
+//!
 //! ## Read-only invariant
 //!
 //! The backfill opens its OWN `SQLITE_OPEN_READ_ONLY` connection to
@@ -53,6 +71,7 @@ use crate::infrastructure::rtdb::attrs::{
     resolve_op_name, ATTR_CONVERSATION_ID, CC_ATTR_SESSION_ID, OP_CHAT_CANON, OP_SESSION,
 };
 use crate::infrastructure::comm::event::Transport;
+use crate::infrastructure::rtdb::commands::RtdbState;
 use crate::infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
 use crate::infrastructure::storage::AppStore;
 
@@ -61,6 +80,13 @@ use crate::infrastructure::storage::AppStore;
 /// (post-cutover spans are always classified live, so the pass covered all
 /// pre-cutover history there ever was).
 pub const BACKFILL_COMPLETED_KEY: &str = "rtdb.backfill.completed";
+
+/// AppStore KV marker for the INDEPENDENT one-shot provider re-derivation pass
+/// (Spec #2932 ST-6). Deliberately separate from [`BACKFILL_COMPLETED_KEY`]: an
+/// install that latched the original marker before the canonical `provider`
+/// column existed would otherwise never re-derive provider attribution for its
+/// pre-existing rows. Checking THIS key alone preserves that independence.
+pub const BACKFILL_PROVIDER_COMPLETED_KEY: &str = "rtdb.backfill.provider.completed";
 
 /// Per-type completion counts — the startup summary log payload.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -215,6 +241,83 @@ pub fn run_startup_backfill(app: &tauri::AppHandle, data_dir: &Path) {
     }
 }
 
+/// Testable core of the Spec #2932 ST-6 provider re-derivation: gate on the
+/// INDEPENDENT [`BACKFILL_PROVIDER_COMPLETED_KEY`] marker, run the UNCHANGED
+/// [`backfill_from_telemetry`] path (the shared classifier resolves the
+/// provider token via `attrs::resolve_provider_token` — NFR-6), and latch the
+/// marker only after a pass that actually read spans.
+///
+/// Returns `Ok(None)` when a prior pass already latched the marker (idempotent
+/// skip); `Ok(Some(summary))` when a pass ran. `spans_read == 0` (absent or
+/// empty `telemetry_spans`) leaves the marker UNSET so the next startup
+/// re-checks — never a false "done".
+fn provider_rebackfill_pass(
+    app_store: &AppStore,
+    classifier: &IngestClassifier,
+    data_dir: &Path,
+) -> Result<Option<BackfillSummary>> {
+    if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
+        return Ok(None);
+    }
+    let summary = backfill_from_telemetry(data_dir, classifier)?;
+    if summary.spans_read > 0 {
+        let stamped = chrono::Utc::now().to_rfc3339();
+        app_store.set(BACKFILL_PROVIDER_COMPLETED_KEY, &stamped)?;
+    }
+    Ok(Some(summary))
+}
+
+/// The lib.rs startup-hook body for the Spec #2932 ST-6 leg: run ONE provider
+/// re-derivation pass over `telemetry_spans`, gated solely by
+/// [`BACKFILL_PROVIDER_COMPLETED_KEY`] (independent of
+/// [`BACKFILL_COMPLETED_KEY`]). Uses a FRESH classifier instance — the pass is
+/// a second replay in one process and the classifier's correlation/turn maps
+/// are per-instance (see the module docs). Never blocks startup; tolerates a
+/// missing/empty telemetry tier.
+pub fn run_startup_provider_rebackfill(app: &tauri::AppHandle, data_dir: &Path) {
+    let app_store = app.state::<Arc<AppStore>>();
+    if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
+        tracing::debug!(
+            target: "fredo::rtdb::backfill",
+            "rtdb provider re-derivation already completed — skipping"
+        );
+        return;
+    }
+
+    let rtdb = app.state::<RtdbState>();
+    let classifier = IngestClassifier::new(Arc::clone(rtdb.inner()));
+
+    match provider_rebackfill_pass(app_store.inner().as_ref(), &classifier, data_dir) {
+        Ok(None) => {
+            // Race-free re-check (another pass latched it between the read and
+            // the call) — nothing to do.
+            tracing::debug!(
+                target: "fredo::rtdb::backfill",
+                "rtdb provider re-derivation already completed — skipping"
+            );
+        }
+        Ok(Some(summary)) => {
+            tracing::info!(
+                target: "fredo::rtdb::backfill",
+                spans_read = summary.spans_read,
+                chat_spans = summary.chat_spans,
+                tool_spans = summary.tool_spans,
+                session_spans = summary.session_spans,
+                skipped_malformed = summary.skipped_malformed,
+                skipped_unrecognized = summary.skipped_unrecognized,
+                "rtdb provider re-derivation complete"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "fredo::rtdb::backfill",
+                error = %e,
+                "rtdb provider re-derivation unavailable this startup — will retry next launch"
+            );
+        }
+    }
+}
+
 // ── Span-row → flat-JSON reconstruction (no extraction logic — shape only) ──
 
 /// Parse persisted `attributes_json` (a flat JSON object of merged
@@ -304,7 +407,7 @@ mod tests {
     use crate::infrastructure::rtdb::flush::FlushLoop;
     use crate::infrastructure::rtdb::ingest::IngestClassifier;
     use crate::infrastructure::rtdb::project::RowDelivery;
-    use crate::infrastructure::rtdb::rows::RowState;
+    use crate::infrastructure::rtdb::rows::{ChatRow, RowState};
     use crate::infrastructure::rtdb::store::RtdbStore;
     use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
     use crate::infrastructure::storage::span_store::SpanStore;
@@ -696,5 +799,245 @@ mod tests {
         assert_eq!(copied.prompt_tokens, Some(10), "row content carried over");
         assert_eq!(copied.composited_child_session_id.as_deref(), Some("ses_child"));
         assert_eq!(copied.parent_session_id.as_deref(), Some("ses_parent"));
+    }
+
+    // ── Spec #2932 ST-6: provider re-derivation marker gating ───────────────
+
+    /// A chat span whose persisted merged attrs carry the OTLP resource
+    /// identity `service.name` — the ONE attribute the shared
+    /// `resolve_provider_token` rule reads (NFR-6).
+    fn chat_attrs_with_service(session: &str, service_name: &str, input_tokens: i64) -> Value {
+        let mut attrs = chat_attrs(session, input_tokens);
+        attrs["service.name"] = json!(service_name);
+        attrs
+    }
+
+    /// A pre-existing canonical row exactly as the #2932 migration leaves it
+    /// (`provider` physically NOT NULL DEFAULT 'unknown').
+    fn pre_existing_chat_row(session: &str, corr: &str, provider: &str) -> ChatRow {
+        ChatRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq: 1,
+            started_at_ns: Some(1_000_000_000),
+            ended_at_ns: Some(1_000_001_000),
+            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
+            state: RowState::Response,
+            provider: Some(provider.to_string()),
+            user_message: Some("hello backfill".to_string()),
+            agent_reply: Some("hi there".to_string()),
+            prompt_tokens: Some(100),
+            completion_tokens: Some(40),
+            cache_read_tokens: None,
+            cost_usd: None,
+            model: Some("claude-sonnet-4".to_string()),
+            parent_session_id: None,
+            composited_child_session_id: None,
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn provider_rebackfill_runs_once_under_its_own_marker_independent_of_the_old_one() {
+        let stack = make_stack();
+        stack
+            .span_store
+            .insert_raw_spans(&[raw_span(
+                "sp-pr",
+                "ses_pr",
+                "my.llm",
+                1_000_000_000,
+                chat_attrs_with_service("ses_pr", "fredo-opencode-plugin", 100),
+            )])
+            .expect("insert spans");
+        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        // Simulate a pre-#2932 install: the ORIGINAL marker is already latched.
+        app_store
+            .set(BACKFILL_COMPLETED_KEY, "2026-01-01T00:00:00+00:00")
+            .expect("latch old marker");
+        assert!(app_store
+            .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+            .expect("read new marker")
+            .is_none());
+
+        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
+        let first = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+            .expect("pass")
+            .expect("the new pass runs even though the OLD marker is latched");
+        assert_eq!(first.spans_read, 1);
+
+        // The NEW marker latched; the OLD marker's value is untouched.
+        assert!(
+            app_store
+                .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+                .expect("read new marker")
+                .is_some(),
+            "a successful pass latches its own marker"
+        );
+        assert_eq!(
+            app_store.get(BACKFILL_COMPLETED_KEY).expect("read old marker").as_deref(),
+            Some("2026-01-01T00:00:00+00:00"),
+            "existing marker semantics untouched"
+        );
+
+        // Idempotent: the second call is a no-op.
+        let second = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+            .expect("pass");
+        assert!(second.is_none(), "the latched marker makes a re-run a no-op");
+    }
+
+    #[test]
+    fn provider_rebackfill_is_a_no_op_without_spans_and_does_not_latch() {
+        // Present-but-empty telemetry tier.
+        let stack = make_stack();
+        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
+        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+            .expect("pass")
+            .expect("pass runs");
+        assert_eq!(summary.spans_read, 0);
+        assert!(
+            app_store
+                .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+                .expect("read")
+                .is_none(),
+            "an empty telemetry tier re-checks next startup instead of latching done"
+        );
+
+        // Missing telemetry_spans table entirely.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("store"));
+        store.ensure_schema().expect("schema");
+        let (cache, _rx) = RtdbCache::new(Arc::clone(&store));
+        let rtdb = Arc::new(Rtdb::new(
+            cache,
+            Arc::new(SubscriptionRegistry::new()),
+            Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery], _: Option<&str>| {}))),
+        ));
+        let app_store = AppStore::open(dir.path().to_path_buf()).expect("app store");
+        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
+        let summary = provider_rebackfill_pass(&app_store, &classifier, dir.path())
+            .expect("pass")
+            .expect("pass runs");
+        assert_eq!(summary.spans_read, 0, "missing table → zero summary, no error");
+        assert!(
+            app_store
+                .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+                .expect("read")
+                .is_none(),
+            "a missing table does not latch the marker"
+        );
+    }
+
+    #[test]
+    fn provider_rebackfill_derives_the_shared_token_for_unrowed_spans() {
+        let stack = make_stack();
+        stack
+            .span_store
+            .insert_raw_spans(&[
+                raw_span(
+                    "sp-oc",
+                    "ses_oc",
+                    "my.llm",
+                    1_000_000_000,
+                    chat_attrs_with_service("ses_oc", "fredo-opencode-plugin", 100),
+                ),
+                raw_span(
+                    "sp-cc",
+                    "ses_cc",
+                    "my.llm",
+                    2_000_000_000,
+                    chat_attrs_with_service("ses_cc", "copilot-cli", 50),
+                ),
+                raw_span(
+                    "sp-un",
+                    "ses_un",
+                    "my.llm",
+                    3_000_000_000,
+                    chat_attrs_with_service("ses_un", "some-other-cli", 10),
+                ),
+            ])
+            .expect("insert spans");
+        let spans_before = stack.span_store.stats().expect("stats").span_count;
+        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+
+        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
+        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+            .expect("pass")
+            .expect("pass runs");
+        assert_eq!(summary.chat_spans, 3);
+
+        // The re-derived token comes from the SHARED `resolve_provider_token`
+        // rule read off the persisted resource identity (R5 byte-parity), never
+        // from a second extraction path in this module.
+        assert_eq!(
+            stack.rtdb.cache().get_chat("ses_oc", "ses_oc_1").expect("read").expect("row").provider.as_deref(),
+            Some("open_code")
+        );
+        assert_eq!(
+            stack.rtdb.cache().get_chat("ses_cc", "ses_cc_1").expect("read").expect("row").provider.as_deref(),
+            Some("copilot_cli")
+        );
+        assert_eq!(
+            stack.rtdb.cache().get_chat("ses_un", "ses_un_1").expect("read").expect("row").provider.as_deref(),
+            Some("unknown"),
+            "an unresolvable resource identity falls back to the documented token"
+        );
+
+        // READ-ONLY toward telemetry_spans.
+        assert_eq!(
+            stack.span_store.stats().expect("stats").span_count,
+            spans_before,
+            "the provider pass never writes telemetry_spans"
+        );
+    }
+
+    #[test]
+    fn provider_rebackfill_cannot_upgrade_a_pre_existing_migration_fallback() {
+        // CHARACTERIZATION — the pass's reach on an UPGRADED store. The #2932
+        // migration appends `provider TEXT NOT NULL DEFAULT 'unknown'`, so a
+        // pre-existing row reads back as a REAL `Some("unknown")`; the bound
+        // `provider` merge rule is `KeepFirst` (merge.rs), and the classifier's
+        // content-no-op gate skips an otherwise-identical re-derivation. The
+        // marker still latches. Upgrading the fallback to the re-derived token
+        // requires an Architect decision in the merge/migration layer — out of
+        // ST-6's file scope (backfill.rs + lib.rs wiring only). This pin
+        // records the observed behaviour so it is never silently assumed.
+        let stack = make_stack();
+        stack
+            .span_store
+            .insert_raw_spans(&[raw_span(
+                "sp-pre",
+                "ses_pre",
+                "my.llm",
+                1_000_000_000,
+                chat_attrs_with_service("ses_pre", "fredo-opencode-plugin", 100),
+            )])
+            .expect("insert spans");
+        stack
+            .store
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_pre", "ses_pre_1", "unknown")])
+            .expect("seed pre-existing migrated row");
+        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+
+        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
+        provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+            .expect("pass")
+            .expect("pass runs");
+
+        let row = stack
+            .store
+            .get_chat_row("ses_pre", "ses_pre_1")
+            .expect("read")
+            .expect("row still present");
+        assert!(
+            row.provider.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
+            "R6: the stored token is never NULL or empty"
+        );
+        assert_eq!(
+            row.provider.as_deref(),
+            Some("unknown"),
+            "KeepFirst keeps the migration fallback on a pre-existing row (documented limitation)"
+        );
     }
 }
