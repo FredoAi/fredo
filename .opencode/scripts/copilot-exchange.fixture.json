@@ -1,0 +1,78 @@
+{
+  "_comment": "Spec #2933 ST-5 deterministic Copilot producer. A canonical OTLP/HTTP JSON envelope (Resource service.name=copilot-cli, session via gen_ai.conversation.id) sent by `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` to the real receiver. Fixed trace/span ids and a stable e2e- session id make repeat runs upsert the SAME row keys (idempotent). int64 values are decimal strings per the OTLP/JSON spec.",
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
+          { "key": "service.version", "value": { "stringValue": "copilot-cli-fixture" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "name": "invoke_agent copilot",
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "00f067aa0ba902b7",
+              "startTimeUnixNano": "1700000000000000000",
+              "endTimeUnixNano": "1700000000900000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "e2e-copilot2933" } },
+                { "key": "gen_ai.agent.name", "value": { "stringValue": "copilot" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "12480" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "731" } }
+              ]
+            },
+            {
+              "name": "chat gpt-4o",
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "11f067aa0ba902c8",
+              "startTimeUnixNano": "1700000000100000000",
+              "endTimeUnixNano": "1700000000400000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "e2e-copilot2933" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "321" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "184" } },
+                { "key": "gen_ai.usage.reasoning.output_tokens", "value": { "intValue": "40" } },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"List the files in the src directory.\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"I will read src/main.rs first.\"}]}]"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "execute_tool readFile",
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "22f067aa0ba902d9",
+              "startTimeUnixNano": "1700000000410000000",
+              "endTimeUnixNano": "1700000000460000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "e2e-copilot2933" } },
+                { "key": "gen_ai.tool.name", "value": { "stringValue": "readFile" } },
+                {
+                  "key": "gen_ai.tool.call.arguments",
+                  "value": { "stringValue": "{\"path\":\"src/main.rs\"}" }
+                },
+                { "key": "gen_ai.tool.call.result", "value": { "stringValue": "fn main() {}" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -114,10 +114,20 @@
  *     four keys (Copilot's default) so the R-3.2 degradation discriminator can
  *     be exercised live — the structural rows still appear.
  *
+ * `--fixture <path>` (with `--copilot`) sends a committed OTLP/JSON envelope
+ * verbatim instead of the built-in shape — the QA-suite leg
+ * (`--copilot --fixture .opencode/scripts/copilot-exchange.fixture.json`). The
+ * fixture carries a stable `e2e-` session id so repeat runs upsert the same
+ * row keys (idempotent, no duplication); `--content-off` strips the four
+ * content keys from the loaded envelope if requested.
+ *
+ * Transport: `--copilot` POSTs OTLP/JSON to the receiver's `/v1/traces` —
+ * the transport the Copilot CLI actually ships — on `--port` (default 4318).
+ *
  * Params:
  *   --count N        number of fake child sessions to inject (default 2)
  *   --prefix ID      base id; session ids are `<prefix>-1 .. <prefix>-N`
- *                    (default ses_orphan2762; `--copilot` default ses_copilot2933)
+ *                    (default ses_orphan2762; `--copilot` default e2e-copilot2933)
  *   --port N         receiver port (gRPC default 4317; `--copilot` HTTP default 4318)
  *   --parent ID      delegation-tree mode: parent session id (enables the
  *                    task-span + session.parent_id shape above)
@@ -125,6 +135,8 @@
  *   --copilot        Copilot OTLP/HTTP JSON mode (see above); mutually
  *                    exclusive with `--parent`
  *   --content-off    `--copilot` only: omit the content keys (Copilot default)
+ *   --fixture PATH   `--copilot` only: POST this OTLP/JSON envelope file
+ *                    instead of the built-in shape
  *
  * Dependency-free — stdlib only. Speaks cleartext h2c via `node:http2`
  * (available in Bun) and hand-encodes the `ExportTraceServiceRequest`
@@ -133,6 +145,7 @@
  */
 
 import http2 from 'node:http2'
+import { readFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 
 // ── CLI params ────────────────────────────────────────────────────────────────
@@ -144,6 +157,7 @@ let parent: string | null = null
 let startIndex = 1
 let copilot = false
 let contentOff = false
+let fixturePath: string | null = null
 
 const argv = process.argv.slice(2)
 for (let i = 0; i < argv.length; i++) {
@@ -154,12 +168,13 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--start-index') startIndex = Number(argv[++i])
   else if (argv[i] === '--copilot') copilot = true
   else if (argv[i] === '--content-off') contentOff = true
+  else if (argv[i] === '--fixture') fixturePath = argv[++i]
   else {
     console.error(`Unknown argument: ${argv[i]}`)
     process.exit(1)
   }
 }
-const prefix = prefixArg ?? (copilot ? 'ses_copilot2933' : 'ses_orphan2762')
+const prefix = prefixArg ?? (copilot ? 'e2e-copilot2933' : 'ses_orphan2762')
 const port = portArg ?? (copilot ? 4318 : 4317)
 if (!Number.isInteger(count) || count < 1) {
   console.error('--count must be a positive integer')
@@ -187,6 +202,14 @@ if (copilot && parent !== null) {
 }
 if (contentOff && !copilot) {
   console.error('--content-off is only valid with --copilot')
+  process.exit(1)
+}
+if (fixturePath !== null && !copilot) {
+  console.error('--fixture is only valid with --copilot')
+  process.exit(1)
+}
+if (fixturePath === '') {
+  console.error('--fixture must be a non-empty path')
   process.exit(1)
 }
 
@@ -630,33 +653,132 @@ async function exportViaHttp(url: string, jsonBody: string): Promise<ExportResul
 
 // ── Copilot mode runner ───────────────────────────────────────────────────────
 
-/** Copilot mode: POST the Copilot-shaped OTLP/JSON envelope to the REAL
- * OTLP/HTTP receiver and print a self-contained receipt (row-table CONFIRM SQL
- * + the R-3.2 content-key discriminator). */
+/** The four content keys whose presence/absence is the R-3.2 discriminator. */
+const COPILOT_CONTENT_KEYS = [
+  'gen_ai.input.messages',
+  'gen_ai.output.messages',
+  'gen_ai.tool.call.arguments',
+  'gen_ai.tool.call.result',
+]
+
+interface OtlpJsonSpan {
+  name?: string
+  traceId?: string
+  spanId?: string
+  attributes?: Array<{ key?: string; value?: Record<string, unknown> }>
+}
+
+/** Walk an OTLP/JSON envelope into `[resourceSpans[].scopeSpans[].spans[]]`. */
+function envelopeSpans(envelope: unknown): OtlpJsonSpan[] {
+  const spans: OtlpJsonSpan[] = []
+  const resourceSpans = (envelope as { resourceSpans?: unknown } | null)?.resourceSpans
+  if (!Array.isArray(resourceSpans)) return spans
+  for (const rs of resourceSpans) {
+    const scopeSpans = (rs as { scopeSpans?: unknown })?.scopeSpans
+    if (!Array.isArray(scopeSpans)) continue
+    for (const ss of scopeSpans) {
+      const inner = (ss as { spans?: unknown })?.spans
+      if (!Array.isArray(inner)) continue
+      for (const s of inner as OtlpJsonSpan[]) spans.push(s)
+    }
+  }
+  return spans
+}
+
+/** Per-span receipts (name + trace/span hex) from a loaded envelope. */
+function collectSpanReceipts(envelope: unknown): CopilotSpanReceipt[] {
+  return envelopeSpans(envelope).map((s) => ({
+    name: s?.name ?? 'span',
+    traceId: s?.traceId ?? '',
+    spanId: s?.spanId ?? '',
+  }))
+}
+
+/** Session id of a loaded envelope (`gen_ai.conversation.id` → `session.id`). */
+function envelopeSessionId(envelope: unknown): string {
+  for (const s of envelopeSpans(envelope)) {
+    for (const a of s?.attributes ?? []) {
+      if (a?.key === 'gen_ai.conversation.id' || a?.key === 'session.id') {
+        const v = a.value?.stringValue
+        if (typeof v === 'string' && v.length > 0) return v
+      }
+    }
+  }
+  return 'unknown'
+}
+
+/** `--content-off`: strip the four content keys from a loaded envelope. */
+function stripCopilotContentKeys(envelope: unknown): void {
+  for (const s of envelopeSpans(envelope)) {
+    if (Array.isArray(s.attributes)) {
+      s.attributes = s.attributes.filter((a) => !COPILOT_CONTENT_KEYS.includes(a?.key ?? ''))
+    }
+  }
+}
+
+/** Copilot mode: send the Copilot-shaped OTLP/JSON envelope (a committed
+ * `--fixture` file or the built-in shape) to the REAL OTLP/HTTP receiver and
+ * print a self-contained receipt (row-table CONFIRM SQL + the R-3.2
+ * content-key discriminator). */
 async function runCopilotMode() {
-  const envelope = buildCopilotEnvelope(prefix, contentOff)
+  let envelopeBody: unknown
+  let receiptSpans: CopilotSpanReceipt[]
+  let sourceLabel: string
+
+  if (fixturePath !== null) {
+    let raw: string
+    try {
+      raw = await readFile(fixturePath, 'utf8')
+    } catch (err) {
+      console.error(`FAILED: --fixture ${fixturePath} could not be read: ${err instanceof Error ? err.message : String(err)}`)
+      process.exit(1)
+      return
+    }
+    try {
+      envelopeBody = JSON.parse(raw)
+    } catch (err) {
+      console.error(`FAILED: --fixture ${fixturePath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`)
+      process.exit(1)
+      return
+    }
+    if (contentOff) stripCopilotContentKeys(envelopeBody)
+    receiptSpans = collectSpanReceipts(envelopeBody)
+    sourceLabel = `fixture ${fixturePath}`
+    if (receiptSpans.length === 0) {
+      console.error(`FAILED: --fixture ${fixturePath} carried no resourceSpans[].scopeSpans[].spans[]`)
+      process.exit(1)
+      return
+    }
+  } else {
+    const envelope = buildCopilotEnvelope(prefix, contentOff)
+    envelopeBody = envelope.body
+    receiptSpans = envelope.spans
+    sourceLabel = 'built-in'
+  }
+
+  const sessionId = envelopeSessionId(envelopeBody)
   const url = `http://127.0.0.1:${port}/v1/traces`
-  console.log(`Copilot mode: POST ${envelope.spans.length} span(s) to ${url} (service.name=copilot-cli, session=${prefix}, content=${contentOff ? 'OFF' : 'ON'})`)
-  const result = await exportViaHttp(url, JSON.stringify(envelope.body))
+  console.log(`Copilot mode: POST ${receiptSpans.length} span(s) to ${url} (${sourceLabel}, service.name=copilot-cli, session=${sessionId}, content=${contentOff ? 'OFF' : 'ON'})`)
+  const result = await exportViaHttp(url, JSON.stringify(envelopeBody))
   if (!result.ok) {
     console.error(`FAILED: OTLP/HTTP export to ${url} did not complete: ${result.error ?? 'unknown error'} — the telemetry rows CANNOT exist. Verify the OTLP/HTTP receiver is up (GET http://127.0.0.1:${port}/health should return status ok) and re-run once.`)
     process.exit(1)
   }
   console.log(`EXPORT 1/1 -> OK (http ${result.status ?? 'unknown'})`)
-  for (const s of envelope.spans) {
-    console.log(`Injected span: session=${prefix} name=${s.name} trace_id ${s.traceId} span_id ${s.spanId}`)
+  for (const s of receiptSpans) {
+    console.log(`Injected span: session=${sessionId} name=${s.name} trace_id ${s.traceId} span_id ${s.spanId}`)
   }
 
   const db = '$env:APPDATA\\com.fredo.app\\fredo.db'
-  console.log(`CONFIRM chat_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, model, user_message, agent_reply, prompt_tokens, completion_tokens, cache_read_tokens, cost_usd FROM chat_rows WHERE session_id = '${prefix}'"`)
-  console.log(`CONFIRM tool_use_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, tool_name, tool_success, tool_error, duration_ms, tool_input_json, tool_output_json FROM tool_use_rows WHERE session_id = '${prefix}'"`)
-  console.log(`CONFIRM agent_session_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, total_tokens, total_messages, total_cost_usd, agent_name FROM agent_session_rows WHERE session_id = '${prefix}'"`)
+  console.log(`CONFIRM chat_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, model, user_message, agent_reply, prompt_tokens, completion_tokens, cache_read_tokens, cost_usd FROM chat_rows WHERE session_id = '${sessionId}'"`)
+  console.log(`CONFIRM tool_use_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, tool_name, tool_success, tool_error, duration_ms, tool_input_json, tool_output_json FROM tool_use_rows WHERE session_id = '${sessionId}'"`)
+  console.log(`CONFIRM agent_session_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, total_tokens, total_messages, total_cost_usd, agent_name FROM agent_session_rows WHERE session_id = '${sessionId}'"`)
   console.log(`EXPECT every row provider = 'copilot_cli'; chat_rows prompt_tokens = 321 / completion_tokens = 184 (PER-CALL, never a delta); agent_session_rows total_tokens = 13211 (12480+731), total_messages / total_cost_usd NULL; tool_use_rows duration_ms = 50, tool_success = 1.`)
-  console.log(`R-3.2 discriminator (${contentOff ? 'content OFF — the four content keys must be ABSENT from raw_json' : 'content ON — content must be present in raw_json'}): sqlite3 -readonly "${db}" "SELECT session_id, raw_json FROM chat_rows WHERE session_id = '${prefix}'" (check gen_ai.input.messages / gen_ai.output.messages) and tool_use_rows.raw_json (check gen_ai.tool.call.arguments / gen_ai.tool.call.result).`)
+  console.log(`R-3.2 discriminator (${contentOff ? 'content OFF — the four content keys must be ABSENT from raw_json' : 'content ON — content must be present in raw_json'}): sqlite3 -readonly "${db}" "SELECT session_id, raw_json FROM chat_rows WHERE session_id = '${sessionId}'" (check gen_ai.input.messages / gen_ai.output.messages) and tool_use_rows.raw_json (check gen_ai.tool.call.arguments / gen_ai.tool.call.result).`)
   if (contentOff) {
     console.log(`Content-off gate: chat_rows and tool_use_rows MUST still exist (structural rows), user_message / agent_reply / tool_input_json / tool_output_json MUST be NULL, and raw_json MUST NOT carry the content keys — never a silent empty result.`)
   }
-  console.log(`Raw-span receipt: sqlite3 -readonly "${db}" "SELECT span_name, session_id, transport, end_time_ns FROM telemetry_spans WHERE attributes_json LIKE '%${prefix}%' ORDER BY start_time_ns"`)
+  console.log(`Raw-span receipt: sqlite3 -readonly "${db}" "SELECT span_name, session_id, transport, end_time_ns FROM telemetry_spans WHERE attributes_json LIKE '%${sessionId}%' ORDER BY start_time_ns"`)
   console.log(`Done — Copilot OTLP/HTTP leg exported to ${url}.`)
 }
 
