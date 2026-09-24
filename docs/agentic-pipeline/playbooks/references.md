@@ -53,6 +53,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-248: on_the_go_improvement
+- **activation_date:** 2026-09-24
+- **observed:** #2935 round 1
+- **target_failure:** (a) an external CLI's resume flags / session-listing surface are assumed from documentation because no agent may invoke the binary, so the plan's central mechanism is pinned by a guess; and (b) binding convergence adjudications are recorded only in the ephemeral A2A file, so the posted plan (seven template sections) never carries them and the implementers/tester never see the decisions.
+- **guardrail:** Terminal persistence round. Two lessons. First, a CLI whose resume flags and session-listing surface cannot be probed from an agent shell must be probed from product code - the Phase-0 probe drove the real CLIs through a Rust child-spawn and pinned OpenCode exact-id resume via its json session list versus Copilot last-session continue, resolving the plan's one open fidelity question before any wiring. Second, convergence adjudications recorded only in the A2A Discussion never reach the posted plan comment, because the plan assembler carries the seven template sections only - the implementer could not find them. Binding adjudications must be published as a Status comment and inlined in every dispatch brief.
+- **home:** references.md (G-248)
+- **effectiveness:** Applied (2026-09-24, #2935) — the Phase-0 probe drove BOTH CLIs from product code and pinned OpenCode exact-id resume (via its json session list) versus Copilot last-session `--continue`, resolving the plan's one open fidelity question before any wiring; and the binding convergence adjudications were published as a Status comment plus inlined in every dispatch brief, because the plan assembler carries only the seven template sections. Re-validate on the next spec that integrates an un-shellable external CLI, or that resolves cross-planner conflicts at convergence.
+
 ### G-246: on_the_go_improvement
 - **activation_date:** 2026-09-24
 - **observed:** #2934 round 3
