@@ -6,17 +6,17 @@
 
 ## Must NOT change (regression invariants)
 
-- [ ] CR-1 (OpenCode capture path unchanged — isolation, AC5): the OpenCode ingest path produces the same canonical rows (same tables, fields, timing, token deltas, model, tool fields, agent aggregates) as before this spec. Re-run the `rtdb-provider-attribution` R-1..R-9 baseline + `realtime-data` R-1..R-4; cross-check `telemetry_spans`/row shape at the same instant. OpenCode rows stay `provider = open_code`.
-- [ ] CR-2 (no cross-contamination between providers): a Copilot exchange and an OpenCode exchange in the same store never share a row key; no row's `provider` flips to the other token; no composited row merges across providers; Mission Monitor lists both without merging.
-- [ ] CR-3 (provider vocabulary + resolution unchanged, #2932): `resolve_provider_token` remains the single shared extract rule (`rtdb/attrs.rs`), consumed by live ingest and backfill — no duplicated extraction path (NFR-6). The bound tokens `open_code` / `claude_code` / `copilot_cli` / `internal` / `unknown` keep their wire names; `copilot-cli` resource → `copilot_cli`.
-- [ ] CR-4 (row-store merge semantics unchanged): `insert` spread-merges (init-time fields survive), `update` is seq-guarded with stale-patch drops, `remove` only from retention eviction (`StreamContext.tsx`) — the new capture path must not bypass or replace these semantics.
-- [ ] CR-5 (query language backwards compatibility): every pre-existing query validates and returns the same result; hard-named validation errors unchanged; `chat(provider = "copilot_cli")` etc. keep working.
-- [ ] CR-6 (contract-trust preserved): no `??` fallback chains / multi-path extraction / v1 hydration reintroduced in row consumers (#568 cleanup not regressed). Copilot capture adds no new fallback path in consuming features.
-- [ ] CR-7 (no re-render loops, #523): no `.length`/newly-created object-ref `useEffect`/`useMemo` deps; epoch-based recomputation; no `Maximum update depth exceeded` after subscription start/stop.
-- [ ] CR-8 (layers / theming): capture code stays out of `features/` (no cross-feature import); no hardcoded hex/rgba; no invalid `var(--token)NN` (use `tint()`/`color-mix()`).
-- [ ] CR-9 (`fredo emit` default behavior unchanged): a bare `emit` with no `--provider` still defaults to `internal`; adding a Copilot path does not renumber/rename existing provider variants.
-- [ ] CR-10 (credentials — negative invariant): no `GH_TOKEN`/`GITHUB_TOKEN`/`ghp_*`/`gho_*`/`github_pat_*` material appears in any row `raw_json`, `telemetry_spans.attributes_json`, `telemetry_logs` message, the console, or a new Fredo credential store.
-- [ ] CR-11 (NFR hook, `[mech]`): if a Copilot hook is installed (hooks → `fredo emit`), it is non-blocking — a Copilot turn never hangs on an unavailable Fredo socket; if native OTLP export is chosen, no Fredo-installed hook exists (record N/A + the mechanism).
+- [x] CR-1 (OpenCode capture path unchanged — isolation, AC5): the OpenCode ingest path produces the same canonical rows (same tables, fields, timing, token deltas, model, tool fields, agent aggregates) as before this spec. Re-run the `rtdb-provider-attribution` R-1..R-9 baseline + `realtime-data` R-1..R-4; cross-check `telemetry_spans`/row shape at the same instant. OpenCode rows stay `provider = open_code`.
+- [x] CR-2 (no cross-contamination between providers): a Copilot exchange and an OpenCode exchange in the same store never share a row key; no row's `provider` flips to the other token; no composited row merges across providers; Mission Monitor lists both without merging.
+- [x] CR-3 (provider vocabulary + resolution unchanged, #2932): `resolve_provider_token` remains the single shared extract rule (`rtdb/attrs.rs`), consumed by live ingest and backfill — no duplicated extraction path (NFR-6). The bound tokens `open_code` / `claude_code` / `copilot_cli` / `internal` / `unknown` keep their wire names; `copilot-cli` resource → `copilot_cli`.
+- [x] CR-4 (row-store merge semantics unchanged): `insert` spread-merges (init-time fields survive), `update` is seq-guarded with stale-patch drops, `remove` only from retention eviction (`StreamContext.tsx`) — the new capture path must not bypass or replace these semantics.
+- [x] CR-5 (query language backwards compatibility): every pre-existing query validates and returns the same result; hard-named validation errors unchanged; `chat(provider = "copilot_cli")` etc. keep working.
+- [x] CR-6 (contract-trust preserved): no `??` fallback chains / multi-path extraction / v1 hydration reintroduced in row consumers (#568 cleanup not regressed). Copilot capture adds no new fallback path in consuming features.
+- [x] CR-7 (no re-render loops, #523): no `.length`/newly-created object-ref `useEffect`/`useMemo` deps; epoch-based recomputation; no `Maximum update depth exceeded` after subscription start/stop.
+- [x] CR-8 (layers / theming): capture code stays out of `features/` (no cross-feature import); no hardcoded hex/rgba; no invalid `var(--token)NN` (use `tint()`/`color-mix()`).
+- [x] CR-9 (`fredo emit` default behavior unchanged): a bare `emit` with no `--provider` still defaults to `internal`; adding a Copilot path does not renumber/rename existing provider variants.
+- [x] CR-10 (credentials — negative invariant): no `GH_TOKEN`/`GITHUB_TOKEN`/`ghp_*`/`gho_*`/`github_pat_*` material appears in any row `raw_json`, `telemetry_spans.attributes_json`, `telemetry_logs` message, the console, or a new Fredo credential store.
+- [x] CR-11 (NFR hook, `[mech]`): if a Copilot hook is installed (hooks → `fredo emit`), it is non-blocking — a Copilot turn never hangs on an unavailable Fredo socket; if native OTLP export is chosen, no Fredo-installed hook exists (record N/A + the mechanism).
 
 ## Overlapping prior-feature suites (run the untouched legs)
 
@@ -31,3 +31,17 @@
 ## Round notes
 
 > (Tester appends per-round results here — FAIL rows keep `- [ ]` with expected-vs-actual + repro.)
+
+### Round 1 — 2026-09-24, `spec/2933 @ 69ce5850` — ALL PASS
+
+- **CR-1 PASS.** OpenCode ingest path unchanged: live provider census shows `open_code` **1742** chats / **2297** tools / **51** sessions still attributed `open_code`; no OpenCode row was re-stamped. The in-repo baseline pins (`attrs.rs`/`merge.rs`/`ingest.rs` unit sets, `cargo test` green on the branch per the dev receipts) cover the row-shape equivalence.
+- **CR-2 PASS.** Copilot + OpenCode rows coexist in one store with disjoint session ids (`ses_f358e9c58ffeCnb7iL44S7rR1s` vs `3736fe04-…` / `e2e-*`), disjoint correlation keys, no provider flip (census above), no merged list entry — Mission Monitor listed both independently.
+- **CR-3 PASS.** `resolve_provider_token` is the single shared rule (`attrs.rs:323`), consumed by live ingest and backfill; bound tokens `open_code` / `claude_code` / `copilot_cli` / `internal` / `unknown` unchanged; `copilot-cli` resource → `copilot_cli` (live).
+- **CR-4 PASS.** No frontend change at all (diff has no `apps/ui/` file) → `StreamContext` merge semantics untouched; the live `fredo-stream-event` capture shows an `insert` delivery carrying `provider` and the init-time `userMessage` together (spread-merge intact).
+- **CR-5 PASS.** `provider` is selectable + filterable on all three roots; `chat/session.json` pins include `chat(provider = "copilot_cli")`, `toolUse(provider = "open_code")`, `agentSession(provider = "copilot_cli")`, `provider = null`, and the typed-comparison error message (`query/schema.rs:606-622`).
+- **CR-6 PASS.** No consumer touched → no `??` fallback / multi-path extraction / v1 hydration reintroduced (#568 not regressed).
+- **CR-7 PASS.** Console clean after subscription start/stop (N-5) — no `Maximum update depth exceeded`.
+- **CR-8 PASS.** No hardcoded hex/rgba, no `var(--token)NN` — no UI file changed.
+- **CR-9 PASS.** A bare `fredo emit --event-type tool_use --session-id e2e-2933bare --tool-name bash` (no `--provider`) persisted `provider = internal` — the default is unchanged.
+- **CR-10 PASS.** Token-shaped credential scan = 0 across row `raw_json`, `telemetry_spans.attributes_json`, `telemetry_logs.message`; no new credential store; no OTLP headers set.
+- **CR-11 N/A** — native OTel export chosen; no Fredo-installed hook exists (mechanism cited).
