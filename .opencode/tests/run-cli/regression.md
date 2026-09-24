@@ -97,3 +97,16 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
 - R-17 PASS — empty sidebar after restart; no `%terminal%` table in `fredo.db`.
 - Legacy single-session note: the old auto-close-on-exit (`commands.rs:362-364`) is
   deliberately removed — a session self-exit keeps the window open (verified live).
+
+### Round 2 — 2026-09-24, spec/2934 @ a656a020
+
+- R-13 PASS — one `terminal` window (main+1) at every sample with 2–4 sessions / 2+ running.
+- R-14 PASS — legacy `run_cli_work_dir` migrated onto `terminal_work_dir` (workdir-b) with a
+  0-keystroke dialog prefill; rewriting only the legacy key does not move Terminal's dir;
+  blank → home-fallback semantics retained.
+- R-15 PASS — no orphan after close-one (that session's tree gone, the other survives),
+  self-exit (only that session `exited`), or close-window (all reaped);
+  `process-hygiene.ps1 -List` = 0 unprotected orphan candidates.
+- R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the #2934 diff; other
+  settings panes unchanged (Settings nav renders Terminal alongside the static sections).
+- R-17 PASS — empty sidebar after restart; no `%terminal%` table in `fredo.db`.
