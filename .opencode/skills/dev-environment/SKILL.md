@@ -75,7 +75,7 @@ Notes:
 
 Single script: `.opencode/scripts/process-hygiene.ps1` (allowed for the tester).
 
-Prior rounds' kill paths (Run CLI close, `dev-env.ps1 -Action Down`) kill only the direct child; on Windows opencode resolves to a `.cmd`/`.bat` shim whose cmd.exe → node.exe descendants survive, hold locks in the fixture workdir, and block a fresh `opencode run` before its first byte (observed #2762 rounds 1-4: Run CLI stuck at "Starting OpenCode…" with zero PTY bytes). Run `-List` once after every `Up`, before launching Run CLI.
+Prior rounds' kill paths (Terminal close, `dev-env.ps1 -Action Down`) kill only the direct child; on Windows opencode resolves to a `.cmd`/`.bat` shim whose cmd.exe → node.exe descendants survive, hold locks in the fixture workdir, and block a fresh `opencode run` before its first byte (observed #2762 rounds 1-4: Run CLI stuck at "Starting OpenCode…" with zero PTY bytes). Run `-List` once after every `Up`, before launching a Terminal session.
 
 | Command | Description |
 |---------|-------------|
@@ -84,9 +84,9 @@ Prior rounds' kill paths (Run CLI close, `dev-env.ps1 -Action Down`) kill only t
 | `powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene [-Kill] [-Spec <N>]` | Passthrough when direct execution of `process-hygiene.ps1` is denied by the shell: resolves the sibling copy next to `dev-env.ps1` first, then the served worktree copy `.serve/<N>/.opencode/scripts/process-hygiene.ps1` (with `-Spec`), and runs it as a child powershell (`-Kill` → `-KillOrphans`, default → `-List`). Prints which copy was invoked and its exit code; "not found" exits 1 — distinguishable from "no orphans" (exit 0). |
 
 Notes:
-- Kill scope is deliberately narrow: only opencode/node processes in a DEAD tree (an ancestral parent PID is no longer alive) or whose CommandLine references `.serve\2762`. The script NEVER kills its own shell ancestry or any descendant of it, anything with a live `fredo.exe` ancestor (the current run's children, e.g. the active Run CLI PTY), or `fredo.exe` itself.
+- Kill scope is deliberately narrow: only opencode/node processes in a DEAD tree (an ancestral parent PID is no longer alive) or whose CommandLine references `.serve\2762`. The script NEVER kills its own shell ancestry or any descendant of it, anything with a live `fredo.exe` ancestor (the current run's children, e.g. the active Terminal session PTY), or `fredo.exe` itself.
 - Orphan flags in `-List` are advisory; nothing is killed without the explicit `-KillOrphans` pass.
-- A CONFIRM-STARTED gate usage: after `open_run_cli`, `-List` must show a NEW opencode/node process carrying the fixture workdir in its CommandLine, parented under the CURRENT fredo PID, AND the PTY buffer non-empty — only then submit the fixture prompt.
+- A CONFIRM-STARTED gate usage: after `open_terminal_window` + `spawn_terminal_session`, `-List` must show a NEW opencode/node process carrying the fixture workdir in its CommandLine, parented under the CURRENT fredo PID, AND that session's PTY buffer (`get_pty_buffer{sessionId}`) non-empty — only then submit the fixture prompt.
 - A mismatch between the PID owning :9223 and the current run's `fredo.exe` (process start time after `Up`) means an orphaned instance owns the port — full `Down`, verify :9223 is free via `-List`, then `Up` again.
 
 > **Which branch runs?** The dev instance builds whatever is checked out. Both the **Tester** and the **Developer** run against the **spec integration branch** — before `Up`, checkout `spec/<N>` (`git fetch origin spec/<N> && git checkout spec/<N>`) and pull the latest state. The Developer works in a worktree detached at `spec/<N>`'s tip; the Tester tests the accumulated feature on it. Never test against `main` mid-spec; the feature isn't there yet.
@@ -97,7 +97,7 @@ Notes:
 
 > **Worktree prerequisites (Tester + Developer).** A `git worktree` is a full checkout but has **no `node_modules`** — run `pnpm install` in it before `dev-env Up`, or `tauri dev` fails with "node_modules missing". Also ensure `spec/<N>` is synced with `main`'s pipeline config (`git fetch origin main && git merge origin/main` + push) before dispatching the tester — the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks it.
 
-> **Fredo plugin prerequisite (live opencode runs).** Live opencode sessions are launched through Fredo's Run CLI feature, which requires the Fredo OpenCode plugin at `~\.config\opencode\plugins\fredo.js`. **The tester must NOT install it by copying files outside the repo** (the tester sandbox only allows `Copy-Item * .opencode/*`). Install the plugin through the app's native path: the **Fredo Setup → SetupWizard** UI, or the `install_plugin` Tauri command via the MCP bridge (`features/setup/commands.rs` writes `~/.config/opencode/plugins/fredo.js`). Build it first with `bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`. Verify with `Test-Path ~\.config\opencode\plugins\fredo.js` (allowed). Without the plugin, live opencode sessions emit no telemetry and the tester cannot verify spans/events. The tester never invokes the `opencode` binary from a shell — Run CLI launches opencode itself. **`Test-Path` proves presence, NOT currency** (G-047): a plugin fix merged to the spec branch is invisible to live runs until the plugin is REBUILT from the spec branch tip and re-installed through the native path — the installed file can silently lag the branch (observed #2745 rounds 2-6: installed file lacked the R-3 fix symbol, so live runs produced NULL child attrs / zero telemetry despite a clean environment). After a plugin-source change, rebuild from the branch tip, re-install via SetupWizard/`install_plugin`, and verify the installed file carries the fix's defining symbol before the live run.
+> **Fredo plugin prerequisite (live opencode runs).** Live opencode sessions are launched through Fredo's Terminal feature, which requires the Fredo OpenCode plugin at `~\.config\opencode\plugins\fredo.js`. **The tester must NOT install it by copying files outside the repo** (the tester sandbox only allows `Copy-Item * .opencode/*`). Install the plugin through the app's native path: the **Fredo Setup → SetupWizard** UI, or the `install_plugin` Tauri command via the MCP bridge (`features/setup/commands.rs` writes `~/.config/opencode/plugins/fredo.js`). Build it first with `bun build src/index.ts --outdir dist --target bun` in `apps/opencode-plugin`. Verify with `Test-Path ~\.config\opencode\plugins\fredo.js` (allowed). Without the plugin, live opencode sessions emit no telemetry and the tester cannot verify spans/events. The tester never invokes the `opencode` binary from a shell — Terminal launches opencode itself. **`Test-Path` proves presence, NOT currency** (G-047): a plugin fix merged to the spec branch is invisible to live runs until the plugin is REBUILT from the spec branch tip and re-installed through the native path — the installed file can silently lag the branch (observed #2745 rounds 2-6: installed file lacked the R-3 fix symbol, so live runs produced NULL child attrs / zero telemetry despite a clean environment). After a plugin-source change, rebuild from the branch tip, re-install via SetupWizard/`install_plugin`, and verify the installed file carries the fix's defining symbol before the live run.
 
 > **G-084 — NEVER Grep the installed plugin path.** Do NOT use the Grep tool (or any interactive search tool) against `~\.config\opencode\plugins\fredo.js` — the `~` home-dir path is not usable by the Grep tool in this sandbox on Windows; the call stalls and the agent waits indefinitely (observed #2770 rounds 3-4: two tester rounds lost). Verify currency with these sandbox-safe PowerShell methods instead:
 > 1. **Hash comparison (proves byte-equality → currency):** `Get-FileHash ~\.config\opencode\plugins\fredo.js` vs `Get-FileHash apps\opencode-plugin\dist\index.js`. Equal SHA256 hashes prove the installed plugin is byte-identical to the built bundle — no further symbol check is needed.
@@ -134,6 +134,8 @@ tauri_driver_session start
 
 Default window is "main". Use `tauri_manage_window(action="list")` to verify windows.
 
+> **Terminal multi-session.** Terminal is a separate native window (label `terminal`) rendering a Ghostty canvas. PTY I/O is **session-scoped**: read a session's buffer with `get_pty_buffer{sessionId}`, write input with `write_pty_input{sessionId,data}`, resize with `resize_pty{sessionId,rows,cols}`, and close one session with `close_terminal_session{sessionId}`. Enumerate the live sessions (each carrying its `sessionId` + status) with `list_terminal_sessions`. `open_terminal_window` opens the window only — a session is created by `spawn_terminal_session{cli,workDir}` (or the in-window "Add session" flow), so any checklist that needs a live session must spawn one explicitly. Session events are `terminal-output{sessionId,data}` / `terminal-exited{sessionId}`.
+
 ## Diagnostics
 
 ### Process logs (startup, Vite, Cargo build)
@@ -144,13 +146,13 @@ powershell -File .opencode/scripts/dev-env.ps1 -Action Logs
 
 ### MCP bridge wedge — the "everything live is dead" signature (G-046)
 
-When ALL live-AC evidence fails at once (Mission Monitor won't mount, Run CLI stalls at "Starting OpenCode…", `install_plugin` times out) while static checks pass and the frontend console is clean, check the logs for the wedged MCP bridge:
+When ALL live-AC evidence fails at once (Mission Monitor won't mount, Terminal stalls at "Starting OpenCode…", `install_plugin` times out) while static checks pass and the frontend console is clean, check the logs for the wedged MCP bridge:
 
 ```
 [ MCP ][ WS_SERVER ][ERROR] WebSocket connection error: Handshake not finished
 ```
 
-A wedged WS server blocks every MCP-command path (including `install_plugin` and Run CLI) and survives `clean-fredo-db.ps1 -Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4).
+A wedged WS server blocks every MCP-command path (including `install_plugin` and Terminal) and survives `clean-fredo-db.ps1 -Restart`. Recovery is a **full Down → Up** (`dev-env.ps1 -Action Down` kills the process tree holding :9223/:5174, then `-Action Up`); verify the clean handshake log line (`[MCP][WS_SERVER][INFO] WebSocket server listening on: 127.0.0.1:9223`) before re-dispatching the tester. Never loop a round back to implementation on this signature alone — it is an environment wedge, not a spec defect (observed #2745 rounds 2-4).
 
 ### MCP driver-session staleness — the `resolveRef is not a function` signature (G-067)
 

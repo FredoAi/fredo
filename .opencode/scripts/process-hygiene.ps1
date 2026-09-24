@@ -1,26 +1,28 @@
 <#
 .SYNOPSIS
   Read-only process inventory (-List) and opt-in, narrowly scoped orphan
-  cleanup (-KillOrphans) for leftover opencode / node processes around a
-  Fredo dev or served instance.
+  cleanup (-KillOrphans) for leftover opencode / node / copilot processes around a
+  Fredo dev or served instance. (copilot.cmd launches cmd.exe -> node.exe on Windows,
+  so the node match already catches the CPU-bearing child; copilot itself is matched
+  so the R-5 no-orphan receipt names the CLI unambiguously.)
 
 .DESCRIPTION
   Pipeline tooling for live e2e hygiene (#2762 fix plan round 5, item D1).
-  Prior rounds' kill paths (Run CLI close, dev-env Down) kill only the direct
+  Prior rounds' kill paths (Terminal close, dev-env Down) kill only the direct
   child; on Windows opencode resolves to a .cmd/.bat shim whose cmd.exe ->
   node.exe descendants can survive, hold locks in the fixture workdir, and
   block a fresh `opencode run` before its first byte.
 
   Modes (exactly one required):
 
-    -List         Read-only inventory of every opencode/node/fredo process
+    -List         Read-only inventory of every opencode/node/copilot/fredo process
                   (PID, PPID, creation time, CommandLine) plus the PIDs
                   owning the Fredo ports (9223 MCP bridge, 4317 OTLP gRPC,
                   4318 OTLP HTTP, 5174 Vite). Also flags orphan candidates.
 
     -KillOrphans  OPT-IN, single pass, narrowly scoped kill. A process is a
                   kill candidate only when ALL of the following hold:
-                    1. Its name is opencode(.exe) or node(.exe).
+                    1. Its name is opencode(.exe), node(.exe), or copilot(.exe).
                     2. It is in a DEAD tree: its parent PID is no longer
                        alive, or an ancestor's parent is no longer alive
                        (transitive closure), or its CommandLine references
@@ -30,7 +32,7 @@
                       of it (the tester's session tree);
                     - any process with a LIVE fredo.exe ancestor (the
                       current run's legitimate children, e.g. the active
-                      Run CLI PTY);
+                       Terminal session PTY);
                     - fredo.exe itself is never a candidate (name scope).
                   Every kill decision (KILL / SKIP / failure) is printed
                   with its reason, followed by a summary line.
@@ -79,7 +81,7 @@ if ($List -and $KillOrphans) {
 }
 
 # ---- Scope (fix plan #2762 round 5, item D1) ----------------------------------
-$targetNamePattern = '^(opencode|node)(\.exe)?$'   # kill candidates: opencode/node only
+$targetNamePattern = '^(opencode|node|copilot)(\.exe)?$'   # kill/inventory candidates: opencode/node/copilot (copilot.cmd spawns cmd.exe -> node.exe, so `node` also catches it)
 $fredoNamePattern = '^fredo(\.exe)?$'              # fredo.exe: inventoried, never killed
 $serveRefPattern = '\.serve\\2762'                 # fixture workdir reference in a CommandLine
 $maxCommandLineChars = 160
@@ -278,7 +280,7 @@ $script:relevantProcs = @()
 function Show-Inventory {
   param([bool]$WithOrphanFlags)
   Write-Info ""
-  Write-Info "== opencode / node / fredo processes ==" "Cyan"
+  Write-Info "== opencode / node / copilot / fredo processes ==" "Cyan"
   $script:relevantProcs = @(
     $procs | Where-Object {
       $name = [string]$_.Name
@@ -352,7 +354,7 @@ if ($KillOrphans) {
   }
 
   if ($orphansFound -eq 0) {
-    Write-Info "  no orphaned opencode/node processes matched the kill scope." "Green"
+    Write-Info "  no orphaned opencode/node/copilot processes matched the kill scope." "Green"
   }
 
   Write-Info ""
@@ -384,7 +386,7 @@ foreach ($proc in $script:relevantProcs) {
 }
 
 Write-Info ""
-Write-Info ("Summary: {0} opencode/node process(es), {1} fredo process(es); {2} unprotected orphan candidate(s) detected." -f $targetCount, $fredoCount, $orphanCount) "Cyan"
+Write-Info ("Summary: {0} opencode/node/copilot process(es), {1} fredo process(es); {2} unprotected orphan candidate(s) detected." -f $targetCount, $fredoCount, $orphanCount) "Cyan"
 if ($orphanCount -gt 0) {
   Write-Info "Run 'powershell -File .opencode/scripts/process-hygiene.ps1 -KillOrphans' to remove them (opt-in, single pass)." "Yellow"
 } else {
