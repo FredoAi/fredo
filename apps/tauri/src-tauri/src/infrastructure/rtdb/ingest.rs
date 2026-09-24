@@ -75,7 +75,7 @@ use crate::infrastructure::rtdb::attrs::{
     ATTR_AGENT_NAME, ATTR_CONVERSATION_ID, ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS,
     ATTR_USAGE_CACHE_READ_INPUT_TOKENS, ATTR_USAGE_INPUT_TOKENS, ATTR_USAGE_OUTPUT_TOKENS,
     CC_ATTR_PROMPT_FLAT, CC_ATTR_SESSION_ID, CC_ATTR_SESSION_PARENT_ID, CC_ATTR_TOOL_INPUT,
-    MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION, OP_TOOL_PREFIX,
+    MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION, OP_TOOL_PREFIX, PROVIDER_COPILOT_CLI,
 };
 use crate::infrastructure::comm::adapters::parent_prompt_cache;
 use crate::infrastructure::comm::event::{EventState, EventType, FredoEvent, Transport};
@@ -99,6 +99,10 @@ const ATTR_COST_USD: &str = "cost_usd";
 const ATTR_TOOL_SUCCESS: &str = "tool.success";
 const ATTR_TOOL_ERROR: &str = "tool.error";
 const ATTR_DURATION_MS: &str = "duration_ms";
+/// OTel `error.type` — emitted on a failed span (Copilot's tool-failure
+/// signal). Spec #2933 ST-3: read ONLY as an additive fallback when the
+/// OpenCode-native flat `tool.success`/`tool.error` keys are absent.
+const ATTR_ERROR_TYPE: &str = "error.type";
 const ATTR_TOTAL_TOKENS: &str = "total_tokens";
 const ATTR_TOTAL_MESSAGES: &str = "total_messages";
 const ATTR_TOTAL_COST_USD: &str = "total_cost_usd";
@@ -420,9 +424,18 @@ impl IngestClassifier {
     ) -> usize {
         let span_attrs = otlp_attrs_to_map(span.get("attributes"));
 
+        // Spec #2933 ST-2: build the merged resource+span attribute map BEFORE
+        // op resolution so the resource `service.name` is visible to the
+        // provider-scoped `invoke_agent` → session promotion (the promotion
+        // resolves the provider through the shared `resolve_provider_token` rule
+        // on this map). Span attributes are extended LAST, so a span-level key
+        // always wins a collision.
+        let mut merged = res_attrs.clone();
+        merged.extend(span_attrs.clone());
+
         // Resolve canonical op name. Unrecognised spans are dropped (logged) —
         // same classification as the v1 adapter (R6).
-        let Some(op_name) = resolve_op_name(span_name, &span_attrs) else {
+        let Some(op_name) = resolve_op_name(span_name, &merged) else {
             tracing::debug!(
                 target: "fredo::rtdb::ingest",
                 span_name = %span_name,
@@ -481,9 +494,6 @@ impl IngestClassifier {
                 map.insert(trace_id.clone(), sid.to_string());
             }
         }
-
-        let mut merged = res_attrs.clone();
-        merged.extend(span_attrs);
 
         // Spec #2932 ST-3 (R1/R3): resolve the canonical CLI-provider token ONCE
         // per span from the merged resource+span attribute map, via the SHARED
@@ -658,7 +668,20 @@ impl IngestClassifier {
                     // The projector preserves the flat attrs verbatim and
                     // projects gen_ai.agent.name → `agent`/`name` — read the
                     // canonical fields (one source of truth).
-                    total_tokens: attr_i64(payload_map, ATTR_TOTAL_TOKENS),
+                    // Spec #2933 ST-3 (R-2.6): the flat OpenCode-native
+                    // `total_tokens` key stays primary; only when it is absent
+                    // fall back to Copilot's session-cumulative
+                    // `gen_ai.usage.input_tokens + gen_ai.usage.output_tokens`.
+                    // `total_messages`/`total_cost_usd` stay absent (Copilot
+                    // emits no such attributes — documented limitation).
+                    total_tokens: attr_i64(payload_map, ATTR_TOTAL_TOKENS).or_else(|| {
+                        let input = attr_i64(payload_map, ATTR_USAGE_INPUT_TOKENS);
+                        let output = attr_i64(payload_map, ATTR_USAGE_OUTPUT_TOKENS);
+                        match (input, output) {
+                            (None, None) => None,
+                            (i, o) => Some(i.unwrap_or(0) + o.unwrap_or(0)),
+                        }
+                    }),
                     total_messages: attr_i64(payload_map, ATTR_TOTAL_MESSAGES),
                     total_cost_usd: attr_f64(payload_map, ATTR_TOTAL_COST_USD),
                     agent_name: attr_str(payload_map, "agent").or_else(|| attr_str(payload_map, "name")),
@@ -711,9 +734,36 @@ impl IngestClassifier {
                     state: Some(row_state),
                     provider: Some(provider.clone()),
                     tool_name: Some(tool_name),
-                    tool_success: payload_map.get(ATTR_TOOL_SUCCESS).and_then(|v| v.as_bool()),
-                    tool_error: attr_str(payload_map, ATTR_TOOL_ERROR),
-                    duration_ms: attr_i64(payload_map, ATTR_DURATION_MS),
+                    // Spec #2933 ST-3 (R-2.5): the flat OpenCode-native
+                    // `tool.success`/`tool.error`/`duration_ms` keys stay
+                    // primary. Copilot emits `error.type` + span timing
+                    // instead, so fall back ONLY when the flat key is absent:
+                    // failure iff `error.type` is present, success iff the span
+                    // completed (has an end time), else in-flight (absent).
+                    tool_success: payload_map
+                        .get(ATTR_TOOL_SUCCESS)
+                        .and_then(|v| v.as_bool())
+                        .or_else(|| {
+                            if attr_str(payload_map, ATTR_ERROR_TYPE).is_some() {
+                                Some(false)
+                            } else if end_ns.is_some() {
+                                Some(true)
+                            } else {
+                                None
+                            }
+                        }),
+                    tool_error: attr_str(payload_map, ATTR_TOOL_ERROR)
+                        .or_else(|| attr_str(payload_map, ATTR_ERROR_TYPE)),
+                    duration_ms: attr_i64(payload_map, ATTR_DURATION_MS).or_else(|| {
+                        // Span timing fallback (end − start, ms) — fires only
+                        // when the flat duration_ms attr is absent.
+                        match (start_ns, end_ns) {
+                            (Some(start), Some(end)) if end >= start => {
+                                Some((end - start) / 1_000_000)
+                            }
+                            _ => None,
+                        }
+                    }),
                     tool_input_json: attr_str(payload_map, "input"),
                     tool_output_json: attr_str(payload_map, "output"),
                     is_subagent: Some(is_subagent),
@@ -862,6 +912,17 @@ impl IngestClassifier {
         attrs: &serde_json::Map<String, Value>,
     ) -> Option<TurnTokenDerivation> {
         if op_name != OP_CHAT_CANON {
+            return None;
+        }
+        // Spec #2933 ST-3 (R-2.2): Copilot's `gen_ai.usage.input_tokens` on a
+        // `chat` span is PER-CALL, not session-cumulative. Feeding it through
+        // the cumulative-delta machinery below would emit a deflated/zero
+        // delta; returning `None` makes the projector fall back to the RAW
+        // per-call registry values (promptTokens/completionTokens are the
+        // per-call figures; cacheReadTokens stays absent — the delta path is
+        // the only injector). No baseline is written for a Copilot session, so
+        // the OpenCode baselines stay isolated (R-5.2).
+        if resolve_provider_token(attrs) == PROVIDER_COPILOT_CLI {
             return None;
         }
         let input_n_raw = attr_i64(attrs, ATTR_USAGE_INPUT_TOKENS);
@@ -1718,6 +1779,37 @@ mod tests {
         })
     }
 
+    /// Spec #2933: an envelope carrying the Copilot CLI resource identity
+    /// (`service.name = "copilot-cli"` → provider token `copilot_cli`) so the
+    /// provider-scoped ingestion paths are exercised exactly as live.
+    fn copilot_envelope(spans: Vec<Value>) -> Value {
+        json!({
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [ attr("service.name", "copilot-cli") ]
+                },
+                "scopeSpans": [{ "spans": spans }]
+            }]
+        })
+    }
+
+    fn copilot_chat_span(session: &str, span_id: &str, input: i64, output: i64) -> Value {
+        json!({
+            "name": "chat gpt-5",
+            "traceId": format!("trace-{session}-{span_id}"),
+            "spanId": span_id,
+            "startTimeUnixNano": "1000000000",
+            "endTimeUnixNano": "2000000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "chat"),
+                attr("gen_ai.conversation.id", session),
+                attr("gen_ai.response.model", "gpt-5"),
+                attr_num("gen_ai.usage.input_tokens", input),
+                attr_num("gen_ai.usage.output_tokens", output)
+            ]
+        })
+    }
+
     fn chat_span(session: &str, span_id: &str, completed: bool, extra: Vec<Value>) -> Value {
         let mut span = json!({
             "name": "llm",
@@ -1840,6 +1932,238 @@ mod tests {
             Some(10),
             "next delta derives from the RESET baseline (60 − 50)"
         );
+    }
+
+    // ── Spec #2933 ST-2/ST-3: Copilot provider-scoped classification + mapping ─
+
+    #[test]
+    fn copilot_invoke_agent_promotes_to_agent_session_row_with_session_total() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        let session = json!({
+            "name": "invoke_agent copilot",
+            "traceId": "trace-cop-session",
+            "spanId": "sp-cop-session",
+            "attributes": [
+                attr("gen_ai.operation.name", "invoke_agent"),
+                attr("gen_ai.conversation.id", "ses_cop_session"),
+                attr("gen_ai.agent.name", "copilot"),
+                attr_num("gen_ai.usage.input_tokens", 1_000),
+                attr_num("gen_ai.usage.output_tokens", 250)
+            ]
+        });
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![session]));
+
+        let row = rtdb
+            .cache()
+            .get_agent_session("ses_cop_session", "ses_cop_session_1")
+            .expect("read")
+            .expect("Copilot invoke_agent span must produce an agent_session row");
+        assert_eq!(row.provider.as_deref(), Some("copilot_cli"));
+        assert_eq!(
+            row.total_tokens,
+            Some(1_250),
+            "session total falls back to gen_ai.usage.input_tokens + output_tokens"
+        );
+        assert_eq!(row.total_messages, None, "Copilot emits no message count");
+        assert_eq!(row.total_cost_usd, None, "Copilot emits no cost");
+        assert_eq!(row.agent_name.as_deref(), Some("copilot"));
+        assert_eq!(row.state, RowState::Init, "session spans stay Init (REQ-609)");
+    }
+
+    #[test]
+    fn invoke_agent_with_opencode_identity_stays_a_chat_row() {
+        // R-5.1: the promotion is Copilot-scoped — the SAME op name under the
+        // OpenCode resource identity must still land in chat_rows, never a
+        // session row.
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        let span = json!({
+            "name": "invoke_agent opencode",
+            "traceId": "trace-oc-invoke",
+            "spanId": "sp-oc-invoke",
+            "startTimeUnixNano": "1000000000",
+            "endTimeUnixNano": "2000000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "invoke_agent"),
+                attr("gen_ai.conversation.id", "ses_oc_invoke"),
+                attr_num("gen_ai.usage.input_tokens", 300),
+                attr_num("gen_ai.usage.output_tokens", 40)
+            ]
+        });
+        let raw = json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [ attr("service.name", "fredo-opencode-plugin") ] },
+                "scopeSpans": [{ "spans": [ span ] }]
+            }]
+        });
+        classifier.ingest_otlp(Transport::OtlpGrpc, &raw);
+
+        assert!(
+            rtdb
+                .cache()
+                .get_agent_session("ses_oc_invoke", "ses_oc_invoke_1")
+                .expect("read")
+                .is_none(),
+            "OpenCode invoke_agent must not create a session row"
+        );
+        let chat = rtdb
+            .cache()
+            .get_chat("ses_oc_invoke", "ses_oc_invoke_1")
+            .expect("read")
+            .expect("OpenCode invoke_agent stays a chat row");
+        assert_eq!(chat.provider.as_deref(), Some("open_code"));
+    }
+
+    #[test]
+    fn copilot_chat_input_is_per_call_never_a_cumulative_delta() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        classifier.ingest_otlp(
+            Transport::OtlpGrpc,
+            &copilot_envelope(vec![copilot_chat_span("ses_cop_chat", "sp-1", 100, 20)]),
+        );
+        classifier.ingest_otlp(
+            Transport::OtlpGrpc,
+            &copilot_envelope(vec![copilot_chat_span("ses_cop_chat", "sp-2", 120, 25)]),
+        );
+
+        let first = rtdb
+            .cache()
+            .get_chat("ses_cop_chat", "ses_cop_chat_1")
+            .expect("read")
+            .expect("turn 1");
+        assert_eq!(first.prompt_tokens, Some(100));
+        assert_eq!(first.completion_tokens, Some(20));
+        assert_eq!(first.provider.as_deref(), Some("copilot_cli"));
+        assert_eq!(first.model.as_deref(), Some("gpt-5"));
+
+        let second = rtdb
+            .cache()
+            .get_chat("ses_cop_chat", "ses_cop_chat_2")
+            .expect("read")
+            .expect("turn 2");
+        assert_eq!(
+            second.prompt_tokens,
+            Some(120),
+            "Copilot chat input is PER-CALL — never the 20-token cumulative delta"
+        );
+        assert_eq!(second.completion_tokens, Some(25));
+        assert_eq!(
+            second.cache_read_tokens, None,
+            "delta path bypassed → cacheReadTokens absent (documented degradation)"
+        );
+    }
+
+    #[test]
+    fn copilot_tool_failure_derives_outcome_and_duration_from_error_type_and_timing() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        let tool = json!({
+            "name": "execute_tool readFile",
+            "traceId": "trace-cop-tool-fail",
+            "spanId": "sp-cop-tool-fail",
+            "startTimeUnixNano": "1000000000",
+            "endTimeUnixNano": "1120000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "execute_tool"),
+                attr("gen_ai.conversation.id", "ses_cop_tool_fail"),
+                attr("gen_ai.tool.name", "readFile"),
+                attr("error.type", "permission_denied")
+            ]
+        });
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![tool]));
+
+        let row = rtdb
+            .cache()
+            .get_tool_use("ses_cop_tool_fail", "ses_cop_tool_fail_1")
+            .expect("read")
+            .expect("tool row");
+        assert_eq!(row.provider.as_deref(), Some("copilot_cli"));
+        assert_eq!(row.tool_name.as_deref(), Some("readFile"));
+        assert_eq!(row.tool_success, Some(false), "error.type present → failure");
+        assert_eq!(row.tool_error.as_deref(), Some("permission_denied"));
+        assert_eq!(row.duration_ms, Some(120), "duration derived from span timing");
+    }
+
+    #[test]
+    fn copilot_tool_without_error_is_success_with_timing_duration() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        let tool = json!({
+            "name": "execute_tool readFile",
+            "traceId": "trace-cop-tool-ok",
+            "spanId": "sp-cop-tool-ok",
+            "startTimeUnixNano": "1000000000",
+            "endTimeUnixNano": "1040000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "execute_tool"),
+                attr("gen_ai.conversation.id", "ses_cop_tool_ok"),
+                attr("gen_ai.tool.name", "readFile")
+            ]
+        });
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![tool]));
+
+        let row = rtdb
+            .cache()
+            .get_tool_use("ses_cop_tool_ok", "ses_cop_tool_ok_1")
+            .expect("read")
+            .expect("tool row");
+        assert_eq!(row.tool_success, Some(true), "completed without error → success");
+        assert_eq!(row.tool_error, None);
+        assert_eq!(row.duration_ms, Some(40));
+    }
+
+    #[test]
+    fn opencode_native_flat_keys_stay_primary_over_copilot_fallbacks() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        // Copilot-resource spans that ALSO carry the OpenCode-native flat keys —
+        // the additive fallbacks must never override them (R-5.1). Distinct
+        // session ids keep each first span at correlation `_1`.
+        let session = json!({
+            "name": "invoke_agent copilot",
+            "traceId": "trace-cop-flat-s",
+            "spanId": "sp-cop-flat-s",
+            "attributes": [
+                attr("gen_ai.operation.name", "invoke_agent"),
+                attr("gen_ai.conversation.id", "ses_cop_flat_s"),
+                attr_num("total_tokens", 9_999),
+                attr_num("gen_ai.usage.input_tokens", 1_000),
+                attr_num("gen_ai.usage.output_tokens", 250)
+            ]
+        });
+        let tool = json!({
+            "name": "execute_tool bash",
+            "traceId": "trace-cop-flat-t",
+            "spanId": "sp-cop-flat-t",
+            "startTimeUnixNano": "1000000000",
+            "endTimeUnixNano": "1120000000",
+            "attributes": [
+                attr("gen_ai.operation.name", "execute_tool"),
+                attr("gen_ai.conversation.id", "ses_cop_flat_t"),
+                attr("gen_ai.tool.name", "bash"),
+                json!({ "key": "tool.success", "value": { "boolValue": true } }),
+                attr("tool.error", "flat error"),
+                attr_num("duration_ms", 7),
+                attr("error.type", "cop_error")
+            ]
+        });
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![session, tool]));
+
+        let srow = rtdb
+            .cache()
+            .get_agent_session("ses_cop_flat_s", "ses_cop_flat_s_1")
+            .expect("read")
+            .expect("session row");
+        assert_eq!(srow.total_tokens, Some(9_999), "flat total_tokens stays primary");
+
+        let trow = rtdb
+            .cache()
+            .get_tool_use("ses_cop_flat_t", "ses_cop_flat_t_1")
+            .expect("read")
+            .expect("tool row");
+        assert_eq!(trow.tool_success, Some(true), "flat tool.success stays primary");
+        assert_eq!(
+            trow.tool_error.as_deref(),
+            Some("flat error"),
+            "flat tool.error stays primary"
+        );
+        assert_eq!(trow.duration_ms, Some(7), "flat duration_ms stays primary");
     }
 
     // ── R-4a: tool span → ToolUseRow, session span → AgentSessionRow ─────────
