@@ -71,8 +71,8 @@ use serde_json::Value;
 
 use crate::infrastructure::rtdb::attrs::{
     extract_messages_text, is_subagent_span, otlp_attrs_to_map, otlp_attrs_to_payload,
-    req_11_event_state_from_span, resolve_op_name, TurnTokenDerivation, ATTR_AGENT_NAME,
-    ATTR_CONVERSATION_ID, ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS,
+    req_11_event_state_from_span, resolve_op_name, resolve_provider_token, TurnTokenDerivation,
+    ATTR_AGENT_NAME, ATTR_CONVERSATION_ID, ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS,
     ATTR_USAGE_CACHE_READ_INPUT_TOKENS, ATTR_USAGE_INPUT_TOKENS, ATTR_USAGE_OUTPUT_TOKENS,
     CC_ATTR_PROMPT_FLAT, CC_ATTR_SESSION_ID, CC_ATTR_SESSION_PARENT_ID, CC_ATTR_TOOL_INPUT,
     MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION, OP_TOOL_PREFIX,
@@ -252,7 +252,14 @@ impl IngestClassifier {
                 copied += self.ingest_tool_with_copy(patch, &event.session_id);
             }
             EventType::AgentSession => {
-                let patch = session_patch_from_event(&payload, &event.session_id, &correlation, state, &updated_at);
+                let patch = session_patch_from_event(
+                    &payload,
+                    &event.session_id,
+                    &correlation,
+                    state,
+                    &updated_at,
+                    event.provider.as_str(),
+                );
                 copied += self.ingest_session_with_copy(patch, &event.session_id);
             }
             EventType::Infrastructure | EventType::Ui | EventType::Custom => {}
@@ -335,6 +342,12 @@ impl IngestClassifier {
 
         let mut merged = res_attrs.clone();
         merged.extend(span_attrs);
+
+        // Spec #2932 ST-3 (R1/R3): resolve the canonical CLI-provider token ONCE
+        // per span from the merged resource+span attribute map, via the SHARED
+        // extract rule (NFR-6 — the canonical backfill reuses the same helper).
+        // The token is stamped on all three row patch kinds below.
+        let provider = resolve_provider_token(&merged);
 
         // REQ-11 / REQ-609: session spans always Init; others from span timing.
         let event_state = if op_name == OP_SESSION {
@@ -497,9 +510,9 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
-                    // Mechanical field initialisation (ST-2 contract exposure);
-                    // the OTLP resource-identity resolution is ST-3's wiring.
-                    provider: None,
+                    // Spec #2932 ST-3 (R1): the CLI-provider token resolved from
+                    // the merged resource+span attribute map (shared rule).
+                    provider: Some(provider.clone()),
                     // The projector preserves the flat attrs verbatim and
                     // projects gen_ai.agent.name → `agent`/`name` — read the
                     // canonical fields (one source of truth).
@@ -527,7 +540,7 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
-                    provider: None,
+                    provider: Some(provider.clone()),
                     user_message: attr_str(payload_map, "userMessage"),
                     agent_reply: attr_str(payload_map, "agentReply"),
                     prompt_tokens: attr_i64(payload_map, "promptTokens"),
@@ -554,7 +567,7 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
-                    provider: None,
+                    provider: Some(provider.clone()),
                     tool_name: Some(tool_name),
                     tool_success: payload_map.get(ATTR_TOOL_SUCCESS).and_then(|v| v.as_bool()),
                     tool_error: attr_str(payload_map, ATTR_TOOL_ERROR),
@@ -1331,7 +1344,7 @@ fn chat_patch_from_row(existing: &ChatRow, parent: &str) -> ChatPatch {
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
-        provider: None,
+        provider: existing.provider.clone(),
         user_message: existing.user_message.clone(),
         agent_reply: existing.agent_reply.clone(),
         prompt_tokens: existing.prompt_tokens,
@@ -1354,7 +1367,7 @@ fn tool_patch_from_row(existing: &ToolUseRow, parent: &str) -> ToolUsePatch {
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
-        provider: None,
+        provider: existing.provider.clone(),
         tool_name: existing.tool_name.clone(),
         tool_success: existing.tool_success,
         tool_error: existing.tool_error.clone(),
@@ -1375,7 +1388,7 @@ fn session_patch_from_row(existing: &AgentSessionRow, parent: &str) -> AgentSess
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
-        provider: None,
+        provider: existing.provider.clone(),
         total_tokens: existing.total_tokens,
         total_messages: existing.total_messages,
         total_cost_usd: existing.total_cost_usd,
@@ -1405,7 +1418,7 @@ fn chat_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
-        provider: None,
+        provider: Some(event.provider.as_str().to_string()),
         user_message: str_field(payload, &["userMessage"])
             .or_else(|| nested_str(payload, &["info", "text"]))
             .or_else(|| parts_text(payload, "user")),
@@ -1441,7 +1454,7 @@ fn tool_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
-        provider: None,
+        provider: Some(event.provider.as_str().to_string()),
         tool_name: event
             .tool_name
             .clone()
@@ -1474,6 +1487,7 @@ fn session_patch_from_event(
     correlation: &str,
     state: RowState,
     updated_at: &str,
+    provider: &str,
 ) -> AgentSessionPatch {
     AgentSessionPatch {
         session_id: Some(session_id.to_string()),
@@ -1483,7 +1497,7 @@ fn session_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
-        provider: None,
+        provider: Some(provider.to_string()),
         total_tokens: i64_field(payload, &["totalTokens"]),
         total_messages: i64_field(payload, &["totalMessages"]),
         total_cost_usd: f64_field(payload, &["totalCostUsd"]),
