@@ -1,4 +1,6 @@
 pub mod commands;
+pub mod persistence;
+pub mod resume;
 pub mod state;
 
 use crate::runtime::capability::DesktopCapable;
