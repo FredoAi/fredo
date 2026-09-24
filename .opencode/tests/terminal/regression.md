@@ -185,3 +185,26 @@ append evidence; on fail mark `FAIL`.
 - R-10 PASS (`git diff --stat main origin/spec/2934` → no `infrastructure/rtdb/**` /
   `infrastructure/otlp/**`; the `infrastructure/cli/commands/setup.rs` change is 2 lines,
   non-telemetry).
+
+### Round 4 (Spec #2935) — 2026-09-24, spec/2935 @ 9ad0b360
+
+- **R-11 PASS.** Launcher click → exactly one `terminal` window (main + 1); re-invoke focuses it
+  (window count stayed 2). Sibling toolbar items unchanged.
+- **R-12 UNVERIFIED (time-boxed).** Settings → Terminal key governance not re-driven this round
+  (the persisted `terminal_default_cli='copilot'` was observed preselected in the new-session
+  dialog, a partial signal). Named blocker: round budget — the full save/restart/reopen leg was not
+  run.
+- **R-13 PASS.** Two OpenCode sessions live concurrently in one window; switch toggled the surface
+  (`visibility:hidden` on the inactive session, `visible` on the active); `close_terminal_session`
+  reaped only the target tree while the peer kept `running`; one window throughout; per-session
+  buffers isolated (resumed 1 sentinel / fresh control 0). Self-exit leg not re-driven (untouched by
+  the #2935 diff).
+- **R-14 PASS.** `git diff --stat main origin/spec/2935` → no `infrastructure/rtdb/**` /
+  `infrastructure/otlp/**`; the Terminal-launched OpenCode session emits `fredo.*` spans
+  (`ses_f2ae1f08bffeKvHxKiOCxMnM4X`: `fredo.session`/`fredo.llm`), and a resumed session keeps its
+  CLI session identity (no fresh duplicate).
+- **N-1 PASS.** `feature_terminal_sessions` column set is exactly
+  `{id, cli, work_dir, title, created_at, last_active_at, cli_session_id}`; the dumped rows contain
+  no credential-shaped strings.
+- **N-4 PASS.** Window close/reopen spawns ZERO processes until an explicit resume; no
+  attach/detach/keep-alive surface in the diff.
