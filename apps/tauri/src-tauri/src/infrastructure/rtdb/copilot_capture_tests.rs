@@ -32,19 +32,28 @@
 //! itself never depends on the real `copilot` binary (the live capture is the
 //! input, not a test dependency).
 //!
-//! ## Limitation this harness surfaced (flagged for an architect decision)
+//! ## Session-root replay guard (the limitation this harness surfaced — FIXED)
 //!
 //! The across-classifier replay (the restart shape — F-11) is FULLY idempotent.
-//! Within ONE classifier instance, a replayed export re-mints the ROOT session
-//! span's correlation id: `resolve_span_correlation_id` special-cases
-//! `OP_SESSION` to `resolve_correlation_id`, which allocates a fresh per-turn id
-//! for an Init-state span whenever a turn counter exists (pre-existing ported
-//! behavior, shared with OpenCode's `run_agent` root). The chat/tool spans ARE
-//! span-keyed (the ST9 guard) and replay as content no-ops; only the session
-//! root lands at a NEW `(sessionId, correlationId)` key. A provider-scoped
-//! span-keyed session correlation (in `ingest.rs` — outside this test module)
-//! would make the same-classifier root replay a no-op too. Not asserted here as
-//! "expected" — reported instead of enshrined.
+//! Within ONE classifier instance, a replayed export originally RE-MINTED the
+//! ROOT session span's correlation id: `resolve_span_correlation_id`
+//! special-cased `OP_SESSION` to `resolve_correlation_id`, which allocates a
+//! fresh per-turn id for an Init-state span whenever a turn counter exists.
+//! The chat/tool spans ARE span-keyed (the ST9 guard) and replayed as content
+//! no-ops; only the session root landed at a NEW `(sessionId, correlationId)`
+//! key — a second `agent_session_rows` row at the same `startedAtNs` (R-4.2).
+//!
+//! **Fixed (provider-scoped, R-4.2 / QA R-4):** the classifier now routes the
+//! promoted `copilot_cli` session root through the SAME span-keyed guard as
+//! every other span, so a replay reuses the id the span already resolved to
+//! for this classifier instance (`ingest.rs::resolve_span_correlation_id`).
+//! The guard is byte-identical to the session-keyed route on the FIRST sight
+//! of the root, and it is scoped to the `copilot_cli` token so the OpenCode
+//! `run_agent` root keeps its historical session-keyed resolution unchanged
+//! (R-5.1/AC5). Pinned by
+//! [`replayed_copilot_session_root_stays_one_row_within_one_classifier`] and
+//! [`opencode_shaped_replay_output_stays_unchanged`].
+
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -628,6 +637,122 @@ fn duplicate_span_keyed_rows_dedup_within_one_classifier() {
     assert_eq!(tool_after, tool_before);
     assert_eq!(chat_keys(&rtdb, SESSION_CONTENT_ON).len(), 1);
     assert_eq!(tool_keys(&rtdb, SESSION_CONTENT_ON).len(), 1);
+}
+
+/// R-4.2 / QA R-4 (the gap this spec closes): within ONE classifier instance a
+/// replayed Copilot export must NOT re-mint the promoted session ROOT's
+/// correlation id. The `copilot_cli` root is span-keyed (ST-2 promotion + the
+/// ST9 guard), so the replay reuses the id the span already resolved to and
+/// the session lands at exactly ONE `(sessionId, correlationId)` key — no
+/// second `agent_session_rows` row at the same `startedAtNs`, and re-running is
+/// a content no-op.
+#[test]
+fn replayed_copilot_session_root_stays_one_row_within_one_classifier() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier();
+    ingest_fixture(&classifier, CONTENT_ON);
+
+    let baseline = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
+    let keys_before = session_keys(&rtdb, SESSION_CONTENT_ON);
+    assert_eq!(keys_before.len(), 1, "the first capture is a single session row");
+    let counts_before = rtdb.cache().store().row_counts().expect("counts");
+
+    // The identical export replayed through the SAME classifier (duplicate
+    // export / late re-export).
+    ingest_fixture(&classifier, CONTENT_ON);
+
+    assert_eq!(
+        session_keys(&rtdb, SESSION_CONTENT_ON),
+        keys_before,
+        "the replay reuses the root's correlation id — no parallel (sessionId, correlationId) key"
+    );
+    assert_eq!(
+        rtdb.cache().store().row_counts().expect("counts"),
+        counts_before,
+        "the replay adds no row in any table"
+    );
+    let after = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
+    assert_eq!(after, baseline, "the session row is a content no-op (incl. seq)");
+    assert_eq!(after.seq, baseline.seq, "no seq inflation on replay");
+    assert_eq!(after.started_at_ns, Some(1_000_000_000));
+
+    // A THIRD replay is still a no-op — the guard is stable, not one-shot.
+    ingest_fixture(&classifier, CONTENT_ON);
+    assert_eq!(session_keys(&rtdb, SESSION_CONTENT_ON), keys_before);
+    assert_eq!(
+        session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1"),
+        baseline
+    );
+}
+
+/// AC5 / R-5.1 pin: the provider-scoped Copilot root guard must NOT touch the
+/// OpenCode path. The OpenCode-shaped envelope replayed through the SAME
+/// classifier reproduces the historical output: the chat/tool spans stay
+/// span-keyed (same `(sessionId, correlationId)` key set — no new keys), and
+/// the OpenCode `run_agent` root keeps its historical session-keyed resolution
+/// (a fresh per-turn id for the re-sighted root, NOT a span-keyed reuse). A
+/// general (unscoped) span-keying of `OP_SESSION` was deliberately rejected
+/// precisely so this output is unchanged.
+#[test]
+fn opencode_shaped_replay_output_stays_unchanged() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier();
+    let base = "ses_opencode_baseline";
+    feed(&classifier, &opencode_envelope());
+
+    // The v1-faithful first capture (`run_agent` root → `_1`).
+    let session_before = session_row(&rtdb, base, "ses_opencode_baseline_1");
+    assert_eq!(session_before.provider.as_deref(), Some("open_code"));
+    assert_eq!(
+        session_keys(&rtdb, base),
+        vec![(base.to_string(), "ses_opencode_baseline_1".to_string())]
+    );
+    assert_eq!(
+        chat_keys(&rtdb, base),
+        vec![(base.to_string(), "ses_opencode_baseline_2".to_string())]
+    );
+    assert_eq!(
+        tool_keys(&rtdb, base),
+        vec![(base.to_string(), "ses_opencode_baseline_3".to_string())]
+    );
+
+    // Replay the identical OpenCode-shaped export through the SAME classifier.
+    feed(&classifier, &opencode_envelope());
+
+    // Span-keyed chat/tool rows: the key SET is unchanged (no new key minted).
+    assert_eq!(
+        chat_keys(&rtdb, base),
+        vec![(base.to_string(), "ses_opencode_baseline_2".to_string())],
+        "OpenCode chat row key set unchanged"
+    );
+    assert_eq!(
+        tool_keys(&rtdb, base),
+        vec![(base.to_string(), "ses_opencode_baseline_3".to_string())],
+        "OpenCode tool row key set unchanged"
+    );
+
+    // The OpenCode root is free of the Copilot-scoped span-keying: the original
+    // `_1` row is byte-identical (session rows carry no per-turn delta) and the
+    // re-sighted root takes the historical session-keyed path — a fresh per-turn
+    // id `_4`, exactly the pre-spec behavior (NOT a span-keyed reuse of `_1`).
+    assert_eq!(session_row(&rtdb, base, "ses_opencode_baseline_1"), session_before);
+    assert_eq!(
+        session_keys(&rtdb, base),
+        vec![
+            (base.to_string(), "ses_opencode_baseline_1".to_string()),
+            (base.to_string(), "ses_opencode_baseline_4".to_string()),
+        ],
+        "OpenCode `run_agent` keeps its historical session-keyed re-mint (unchanged)"
+    );
+    assert_eq!(
+        session_row(&rtdb, base, "ses_opencode_baseline_4").provider.as_deref(),
+        Some("open_code"),
+        "the OpenCode re-minted root stays `open_code` (no provider flip)"
+    );
+    for (session, corr) in session_keys(&rtdb, base) {
+        assert_eq!(
+            session_row(&rtdb, &session, &corr).provider.as_deref(),
+            Some("open_code")
+        );
+    }
 }
 
 // ── R-4.2: a degraded/unclassifiable export never corrupts or duplicates ─────

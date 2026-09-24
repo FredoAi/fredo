@@ -515,8 +515,13 @@ impl IngestClassifier {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let correlation_id =
-            self.resolve_span_correlation_id(&session_id, &span_id, &op_name, event_state);
+        let correlation_id = self.resolve_span_correlation_id(
+            &session_id,
+            &span_id,
+            &op_name,
+            event_state,
+            &provider,
+        );
 
         // REQ-6: parent from OTLP span links (order-independent detection).
         if check_links {
@@ -780,14 +785,32 @@ impl IngestClassifier {
 
     /// ST9 (#2688) port — one correlation id per span (see
     /// `rtdb/attrs.rs` for the retained shared extract helpers).
+    ///
+    /// Spec #2933 (R-4.2): the provider-scoped promoted Copilot session root
+    /// (`invoke_agent` → [`OP_SESSION`], ST-2) is routed through the SAME
+    /// span-keyed guard as every other span. Without this, a replayed (or
+    /// late-duplicated) export would re-mint the root's per-turn correlation
+    /// id and land it at a NEW `(sessionId, correlationId)` PK — a second
+    /// `agent_session_rows` row at the same `startedAtNs`. The guard reuses
+    /// the id the span already resolved to for THIS classifier instance, so a
+    /// replay is a content no-op.
+    ///
+    /// The span-keyed route is byte-identical to the session-keyed route on
+    /// the FIRST sight of the root: with no prior resolution it mints via
+    /// `resolve_correlation_id(session, Init)` (`<session>_1` for the first
+    /// span of a session). It only diverges on a re-seen span — the duplicate
+    /// we must not create. Kept provider-scoped (checks the shared
+    /// [`PROVIDER_COPILOT_CLI`] token) so the OpenCode `run_agent` root keeps
+    /// its historical session-keyed resolution byte-for-byte (R-5.1/AC5).
     fn resolve_span_correlation_id(
         &self,
         session_id: &str,
         span_id: &str,
         op_name: &str,
         event_state: EventState,
+        provider: &str,
     ) -> String {
-        if op_name == OP_SESSION {
+        if op_name == OP_SESSION && provider != PROVIDER_COPILOT_CLI {
             return self.resolve_correlation_id(session_id, event_state);
         }
 
