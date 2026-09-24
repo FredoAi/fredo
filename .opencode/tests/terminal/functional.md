@@ -476,3 +476,54 @@ content-sized `#root` (height driven by the sidebar). The same behaviour is in t
 Round-3 evidence frame names: `r3-f17-auth-exited`, `r3-f11-after-resize`,
 `r3-f11-session-a-renders`, `r3-f13-copilot-native`, `r3-f16-prereq-error`,
 `r3-ac1-launcher-grid`, `r3-terminal-open`.
+
+### Round 4 (Spec #2935) — 2026-09-24, spec/2935 @ 9ad0b360 (verdict PASS; live)
+
+Live policy honoured: window list / DOM / PTY-buffer bytes / process inventory / `fredo` binary
+stdout+exit code / `telemetry_spans`.
+
+**AC1 — PASS.** F-22 (F-22 window-close→reopen lists A with the SAME id/cli/workDir/title/
+`cliSessionId`, `lastActiveAt` bumped; "Previous sessions" group + auto-selected `terminal-resume-state`;
+no dialog), F-23 (full app restart → the SAME 4 records, ids/cli/workDir/title/`cliSessionId` intact;
+reopen spawns 0 processes), **F-24 (load-bearing)**: A=`f86be818-…` OpenCode in `workdir-a`; typed
+`TERMINAL_RESUME_2935_SENTINEL` + `\r` (real turn — `telemetry_spans` shows the prompt on
+`ses_f2ae1f08bffeKvHxKiOCxMnM4X`); close → reopen → Resume; post-resume PTY buffer contains the
+sentinel AND the assistant replies ("I'm here and ready — no task was included with that sentinel");
+resumed CommandLine `opencode.exe … --session ses_f2ae1f08bffeKvHxKiOCxMnM4X` (pid 10164, and again
+on the 2nd cycle pid 17692); record id unchanged. F-25 control: a fresh same-cli/same-workDir session
+(`594c4fab-…`) buffer has **0** sentinel occurrences and the "Ask anything…" empty-state — non-vacuous.
+F-26 record fields exactly `{id,cli,workDir,title,createdAt,lastActiveAt,cliSessionId}`; stable titles
+`OpenCode`/`OpenCode 2`/… never renumbered. F-35 gating: previous-records reopen auto-selects the
+most-recent record + shows `terminal-resume-state`, NO `terminal-all-ended-state`, NO auto dialog;
+zero-records control → `terminal-empty-state` + auto prompt.
+
+**AC2 — PASS.** F-27: after close, `process-hygiene.ps1 -List` shows the terminal session tree gone
+(pids 13728→948 and 10164→10644 absent; 0 unprotected orphans); F-28: reopen lists the records
+(`state` resumable) and starts 0 processes; F-29: `close_terminal_session{594c4fab}` reaped only that
+tree — the peer stayed `running`, the window stayed open, and the closed record appeared in
+"Previous sessions" (no ghost/duplicate).
+
+**AC4 — PASS (partial).** F-30/IPC `spawn_terminal_session{cli:'bogus'}` → `errorKind='invalid-cli'`
++ `pid:null`; F-31/IPC `{workDir:no-such-dir}` → `errorKind='invalid-cwd'` + `pid:null`; F-32: record
+in `gone-dir`, dir deleted → still LISTED, Resume → `terminal-resume-blocked-state`
+`data-reason='invalid-cwd'` ("Working directory not found … doesn't exist…"), no partial session,
+record retained; dir restored → resume succeeds (control). F-31 (removable): `terminal-delete-session-dialog`
+copy "The CLI's own conversation transcript is not deleted — Fredo only removes its record";
+confirm → record gone from SQLite (`feature_terminal_sessions`). Start fresh → unchanged dialog
+prefilled with the record's cli+workDir; confirm → new session + the source record removed.
+**UNVERIFIED:** `cli-missing` (F-30 missing-binary lever) and `resume-failed`/Cancel (F-36) were not
+driven (needs a persisted GitHub Copilot record / a slow-then-failing resume — time-boxed);
+`transcript-missing` stays a named blocker (out-of-repo store, G-009).
+
+**AC5 — PASS.** F-1..F-5, F-6..F-12 regression sweep still green (launcher re-invoke keeps exactly one
+`terminal` window; multi-session concurrency + switch visibility; per-session sentinel isolation
+(resumed buffer 1 sentinel / control buffer 0); no re-spawn; telemetry path untouched).
+
+**Observation (pane height):** the terminal pane renders ~126 px tall in the 900×600 window while
+`#root` is content-sized; at that size the OpenCode TUI renders only its status bar + input. After
+the app restart the pane rendered full-height in the same window. Forcing `resize_pty{rows:30}` was
+required in the first cycle to make the resumed conversation render in the buffer. Pre-existing
+(reported round 3 of #2934), NOT asserted by #2935 — flagged for awareness.
+
+Evidence frame names: `r1-launcher-grid`, `r1-opencode-a-starting`, `r1-opencode-a-turn`,
+`r1-ac1-reopen-list`, `r1-ac1-resumed`, `r1-ac3-cli-opened`, `r1-ac4-invalid-cwd`.
