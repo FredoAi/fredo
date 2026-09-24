@@ -41,9 +41,13 @@ is wrong.
   command interpreter (compare with `.opencode/scripts/copilot-otel-probe.ts:195-210`). A
   spawn failure masquerading as an auth error is a FAIL (promotes to F-13/F-17).
 
-- [ ] E-9: **Prerequisite detection on a machine without `pwsh`.** Confirm the check's
-  message names PowerShell 6+ and the requirement; a generic "failed to launch" is a
-  finding (promotes to F-16).
+- [ ] E-9: **Prerequisite detection scope on a machine without `pwsh`.** The check's message
+  must name PowerShell 6+ and the requirement; a generic "failed to launch" is a finding
+  (promotes to F-16). CONFIRMED (round 2, `spec/2934 @ a656a020`): the gate is correctly
+  SCOPED to the `.ps1` launch form — a native `.cmd`-resolved Copilot no longer triggers it
+  (F-13 PASS), and the TEST-ONLY `testOverride:{pwshMajor:5}` still forces the message
+  "GitHub Copilot requires PowerShell 6 or newer (pwsh). …" within 1.3 s (F-16 PASS). A
+  blanket gate that rejected a `.cmd` launch (round-1 defect) is gone.
 
 - [ ] E-10: **Legacy key left behind.** After migration, does the legacy key remain with its
   old value? Does changing it (only) affect Terminal (it must NOT — F-5)? Does the new key
