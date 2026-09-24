@@ -40,3 +40,45 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
 - [x] R-11: **No new settings/configuration surface introduced.** No new settings keys, dialogs, or config UI beyond what #2728 delivered (the removed floating button introduces nothing). Expected: settings surface and keys unchanged from #2728 (feature Settings section count and keys identical). **PASS** — No new settings keys or UI. Only change is removal of floating button. Evidence: code review of spec branch.
 
 - [x] R-12: **Desktop grid / showable features unaffected.** Registering Run CLI as a maomaolabs toolbar desktop item does not disturb the desktop grid or other showable features' rendering; main-window console stays clean. Expected: desktop renders without layout regressions; other showable features open/close normally. **PASS** — Desktop renders normally, console clean. Evidence: DOM snapshot at 2026-08-13T21:01:04Z, console at 2026-08-13T21:00:17Z.
+
+## #2934 pre-rename regression cases (Spec #2934 baseline)
+
+> Spec #2934 (Run CLI → Terminal, multi-session) MUST leave the legacy single-session
+> behaviors true wherever they are still reachable, and retire them only deliberately.
+> These rows are the "must not change" baseline for the rename diff. Run them in addition
+> to `.opencode/tests/terminal/regression.md`, whose `R-` rows assert the new surface.
+> Cross-suite: `window-manager/regression.md` R-2 (window lifecycle), `settings/`
+> (settings surface/key safety), `copilot-capture/` (capture path untouched).
+
+- [ ] R-13: **Single-window invariant preserved through the rename.** After the rename, the
+  launch affordance is the `Terminal` toolbar item and exactly ONE `terminal` window ever
+  exists (main + 1); no per-session window is introduced.
+  EXPECTED: window count = main + 1 at every sample while 2+ sessions run.
+  Edge: rapid double-click; launch during startup; launch from the error state.
+  Full assertions: `terminal/functional.md` F-6 / `regression.md` R-4.
+
+- [ ] R-14: **Working-directory preference survives the key rename.** The legacy
+  `run_cli_work_dir` value is migrated to the new key and honored; unset → home fallback
+  (pre-rename `commands.rs` behavior) is preserved.
+  EXPECTED: migrated value governs; fallback unchanged.
+  Full assertions: `terminal/functional.md` F-4/F-5; `terminal/regression.md` R-3.
+
+- [ ] R-15: **No orphan regression (the pre-rename gap must not persist).** The prior
+  single-window kill path reaped only the direct child; on Windows `.cmd`→`node.exe`
+  descendants could survive. After #2934, closing a session or the window must leave ZERO
+  Fredo-spawned `opencode`/`copilot`/`node` processes.
+  EXPECTED: `process-hygiene.ps1 -List` shows no orphan after each close.
+  Edge: close during startup; close two sessions back-to-back; window close via OS X.
+  Full assertions: `terminal/functional.md` F-19/F-20.
+
+- [ ] R-16: **Settings + telemetry surfaces untouched.** The rename touches the Terminal
+  settings section and keys only; other settings sections and the OTLP/RTDB telemetry path
+  are unchanged, and the OpenCode session still emits `fredo.*` spans.
+  EXPECTED: no change to `infrastructure/rtdb/` or the OTLP receivers in the diff; other
+  settings sections render identically.
+  Full assertions: `terminal/regression.md` R-7/R-9/R-10.
+
+- [ ] R-17: **No persistence introduced (non-goal).** Sessions remain in-memory for the
+  window's life; a restart yields an empty sidebar and no persisted session rows.
+  EXPECTED: no `terminal` session rows in `fredo.db`; no resume.
+  Full assertions: `terminal/functional.md` N-5 / `regression.md` R-8.
