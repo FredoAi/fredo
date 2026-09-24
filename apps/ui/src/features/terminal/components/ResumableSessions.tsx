@@ -30,6 +30,11 @@ import {
  * render INSTEAD of a terminal (a persisted record has no PTY). Resume never
  * silently falls back to a fresh session: a failure leaves the record exactly as
  * it was and shows `ResumeBlockedState` (AC1/AC4).
+ *
+ * Spec 2940 ST-4 (R-3.7): the surfaces scroll INSIDE the pane at the 560×360
+ * minimum instead of clipping. The block uses `m="auto"` (never `justify:
+ * center`) so it centres when it fits and top-aligns when it overflows — a
+ * centred column flex clips the start edge unreachably.
  */
 
 const surface = {
@@ -38,7 +43,7 @@ const surface = {
   zIndex: 2,
   direction: 'column',
   align: 'center',
-  justify: 'center',
+  overflowY: 'auto',
   gap: 4,
   p: 8,
   textAlign: 'center',
@@ -78,45 +83,47 @@ export const ResumeSessionState: React.FC<{
       {...surface}
       data-testid="terminal-resume-state"
     >
-      <Icon as={LuHistory} boxSize="48px" color="fg.muted" />
-      <VStack gap={1} minW={0} maxW="520px">
-        <Text fontSize="lg" fontWeight="600" color="fg.default" truncate w="100%">
-          {record.title}
-        </Text>
-        <Text fontSize="sm" color="fg.muted">
-          {`Resume this ${cliLabel} session in ${displayWorkDir(record.workDir)}.`}
-        </Text>
-        <RecordMeta record={record} />
-        <Text fontSize="xs" color="fg.muted" fontFamily="mono" truncate w="100%" title={record.workDir}>
-          {record.workDir || '~'}
-        </Text>
+      <VStack m="auto" maxW="100%" align="center" gap={4}>
+        <Icon as={LuHistory} boxSize="48px" color="fg.muted" />
+        <VStack gap={1} minW={0} maxW="520px">
+          <Text fontSize="lg" fontWeight="600" color="fg.default" truncate w="100%">
+            {record.title}
+          </Text>
+          <Text fontSize="sm" color="fg.muted">
+            {`Resume this ${cliLabel} session in ${displayWorkDir(record.workDir)}.`}
+          </Text>
+          <RecordMeta record={record} />
+          <Text fontSize="xs" color="fg.muted" fontFamily="mono" truncate w="100%" title={record.workDir}>
+            {record.workDir || '~'}
+          </Text>
+        </VStack>
+        <HStack gap={3}>
+          <Button
+            variant="solid"
+            size="sm"
+            bg="var(--accent-primary)"
+            color="var(--accent-contrast)"
+            _hover={{ opacity: 0.9 }}
+            onClick={onResume}
+          >
+            <LuPlay size={14} />
+            Resume
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onStartFresh}>
+            <LuRotateCcw size={14} />
+            Start fresh
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }}
+          >
+            <LuTrash2 size={14} />
+            Delete
+          </Button>
+        </HStack>
       </VStack>
-      <HStack gap={3}>
-        <Button
-          variant="solid"
-          size="sm"
-          bg="var(--accent-primary)"
-          color="var(--accent-contrast)"
-          _hover={{ opacity: 0.9 }}
-          onClick={onResume}
-        >
-          <LuPlay size={14} />
-          Resume
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onStartFresh}>
-          <LuRotateCcw size={14} />
-          Start fresh
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onDelete}
-          _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }}
-        >
-          <LuTrash2 size={14} />
-          Delete
-        </Button>
-      </HStack>
     </Flex>
   );
 };
@@ -141,22 +148,24 @@ export const ResumingState: React.FC<{
 
   return (
     <Flex {...surface} data-testid="terminal-resuming-state">
-      <Spinner size="md" color="var(--accent-primary)" aria-label={`Resuming ${record.title}`} />
-      <Text fontSize="sm" color="fg.muted">{`Resuming ${record.title}…`}</Text>
-      {showHint && !showLongHint && (
-        <Text fontSize="xs" color="fg.muted">Reconnecting to your last session…</Text>
-      )}
-      {showLongHint && (
-        <Text fontSize="xs" color="fg.muted">
-          Still resuming… (this can take a moment)
-        </Text>
-      )}
-      {showLongHint && (
-        <Button variant="ghost" size="xs" onClick={onCancel}>
-          <LuCircleX size={14} />
-          Cancel
-        </Button>
-      )}
+      <VStack m="auto" maxW="100%" align="center" gap={4}>
+        <Spinner size="md" color="var(--accent-primary)" aria-label={`Resuming ${record.title}`} />
+        <Text fontSize="sm" color="fg.muted">{`Resuming ${record.title}…`}</Text>
+        {showHint && !showLongHint && (
+          <Text fontSize="xs" color="fg.muted">Reconnecting to your last session…</Text>
+        )}
+        {showLongHint && (
+          <Text fontSize="xs" color="fg.muted">
+            Still resuming… (this can take a moment)
+          </Text>
+        )}
+        {showLongHint && (
+          <Button variant="ghost" size="xs" onClick={onCancel}>
+            <LuCircleX size={14} />
+            Cancel
+          </Button>
+        )}
+      </VStack>
     </Flex>
   );
 };
@@ -219,35 +228,37 @@ export const ResumeBlockedState: React.FC<{
       data-testid="terminal-resume-blocked-state"
       data-reason={reason}
     >
-      <Icon as={icon} boxSize="48px" color="var(--status-error)" />
-      <VStack gap={1} minW={0} maxW="520px">
-        <Text fontSize="lg" fontWeight="600" color="fg.default" truncate w="100%">
-          {title}
-        </Text>
-        <Text fontSize="sm" color="fg.muted">{body}</Text>
+      <VStack m="auto" maxW="100%" align="center" gap={4}>
+        <Icon as={icon} boxSize="48px" color="var(--status-error)" />
+        <VStack gap={1} minW={0} maxW="520px">
+          <Text fontSize="lg" fontWeight="600" color="fg.default" truncate w="100%">
+            {title}
+          </Text>
+          <Text fontSize="sm" color="fg.muted">{body}</Text>
+        </VStack>
+        <HStack gap={3}>
+          {actions.map((action) => (
+            <Button
+              key={action.key}
+              variant={action.primary ? 'solid' : 'ghost'}
+              size="sm"
+              bg={action.primary ? 'var(--accent-primary)' : undefined}
+              color={action.primary ? 'var(--accent-contrast)' : undefined}
+              _hover={
+                action.key === 'delete'
+                  ? { color: 'var(--status-error)', background: tint('var(--status-error)', 8) }
+                  : action.primary
+                    ? { opacity: 0.9 }
+                    : undefined
+              }
+              onClick={action.onClick}
+            >
+              {React.createElement(action.icon, { size: 14 })}
+              {action.label}
+            </Button>
+          ))}
+        </HStack>
       </VStack>
-      <HStack gap={3}>
-        {actions.map((action) => (
-          <Button
-            key={action.key}
-            variant={action.primary ? 'solid' : 'ghost'}
-            size="sm"
-            bg={action.primary ? 'var(--accent-primary)' : undefined}
-            color={action.primary ? 'var(--accent-contrast)' : undefined}
-            _hover={
-              action.key === 'delete'
-                ? { color: 'var(--status-error)', background: tint('var(--status-error)', 8) }
-                : action.primary
-                  ? { opacity: 0.9 }
-                  : undefined
-            }
-            onClick={action.onClick}
-          >
-            {React.createElement(action.icon, { size: 14 })}
-            {action.label}
-          </Button>
-        ))}
-      </HStack>
     </Flex>
   );
 };
