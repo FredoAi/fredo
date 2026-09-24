@@ -73,7 +73,7 @@ function duplicateLadenList(): FakeFeature[] {
   return [
     new FakeFeature('mission-monitor', 'Mission Monitor'),
     new FakeFeature('query-viewer', 'Query Viewer'),
-    new FakeFeature('run-cli', 'Run CLI'),
+    new FakeFeature('terminal', 'Terminal'),
     new FakeFeature('stepper-probe', 'Stepper Probe'),
     new FakeFeature('mission-monitor', 'Mission Monitor'), // dup id
     new FakeFeature('mission-monitor', 'Mission Monitor'), // dup id
@@ -93,7 +93,7 @@ describe('dedupeByFeatureId (features/featureRegistry)', () => {
     expect(deduped.map((f) => f.id)).toEqual([
       'mission-monitor',
       'query-viewer',
-      'run-cli',
+      'terminal',
       'stepper-probe',
     ]);
     // FIRST occurrence is kept BY REFERENCE (not a later duplicate object).

@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import { Box } from '@chakra-ui/react';
 import { init, Terminal, FitAddon } from 'ghostty-web';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
-import { RunCliLaunchStatus } from './RunCliLaunchStatus';
+import { ensureTerminalSettingsMigrated } from '../settings';
+import { TerminalSessionView } from './TerminalSessionView';
 
 // ── Ghostty terminal palette (existing dark palette verbatim — ghostty-web
 //    owns the canvas colors; the window chrome uses Fredo theme tokens) ───────
@@ -35,7 +36,7 @@ interface GhosttyTerminalProps {
 }
 
 // ── Ghostty renderer (drop-in replacement for the xterm renderer) ────────────
-// Keeps every existing IPC wiring contract: `run-cli-output` → term.write,
+// Keeps every existing IPC wiring contract: `terminal-output` → term.write,
 // term.onData → write_pty_input, term.onResize → resize_pty, get_pty_buffer
 // replay on mount. Drops the xterm CSS import, the xterm-specific container
 // CSS, and the dead `setup-run-command` listener (no backend emitter exists).
@@ -108,18 +109,18 @@ export const GhosttyTerminal: React.FC<GhosttyTerminalProps> = ({ onFirstOutput 
               term?.write(new Uint8Array(buf));
             }
           })
-          .catch((err) => console.error('[RunCli] pty buffer replay failed:', err));
+          .catch((err) => console.error('[Terminal] pty buffer replay failed:', err));
 
         // Register live event listeners in PARALLEL with the replay. A failure
         // in one must not block the other (allSettled) — replay + live events
         // are independent delivery paths for the same PTY bytes.
         const listeners = import('@tauri-apps/api/event').then(({ listen }) =>
           Promise.allSettled([
-            listen<number[]>('run-cli-output', (ev) => {
+            listen<number[]>('terminal-output', (ev) => {
               fireFirstOutput();
               term?.write(new Uint8Array(ev.payload));
             }).then((fn) => { unlisten = fn; }),
-            listen('run-cli-exited', () =>
+            listen('terminal-exited', () =>
               term?.writeln('\r\n\x1b[33m[Process exited]\x1b[0m'))
               .then((fn) => { unlistenExit = fn; }),
           ]));
@@ -127,7 +128,7 @@ export const GhosttyTerminal: React.FC<GhosttyTerminalProps> = ({ onFirstOutput 
         return Promise.allSettled([replay, listeners]);
       })
       .catch((err) => {
-        console.error('[RunCli] ghostty init failed:', err);
+        console.error('[Terminal] ghostty init failed:', err);
       });
 
     return () => {
@@ -153,8 +154,16 @@ export const GhosttyTerminal: React.FC<GhosttyTerminalProps> = ({ onFirstOutput 
 };
 
 // ── Root ──────────────────────────────────────────────────────────────────────
-export const RunCliTerminalWindow: React.FC = () => (
-  <RunCliLaunchStatus renderTerminal={({ onFirstOutput }) => (
-    <GhosttyTerminal onFirstOutput={onFirstOutput} />
-  )} />
-);
+export const TerminalWindow: React.FC = () => {
+  // Idempotent (module-scoped guard) — materializes the migrated working dir
+  // even when this window is opened directly, not through the launcher.
+  useEffect(() => {
+    void ensureTerminalSettingsMigrated();
+  }, []);
+
+  return (
+    <TerminalSessionView renderTerminal={({ onFirstOutput }) => (
+      <GhosttyTerminal onFirstOutput={onFirstOutput} />
+    )} />
+  );
+};

@@ -2121,7 +2121,7 @@ describe('chat chain (#2688 ST4)', () => {
     expect(chatEdges[1].id).toBe('e-chat-corr-2-corr-3');
   });
 
-  // ST12 (#2688 round-9 AC2): the live Run CLI path delivers each turn as an
+  // ST12 (#2688 round-9 AC2): the live Terminal path delivers each turn as an
   // init+end pair sharing one correlationId IN THE SAME batch (feature-store
   // timestamps ~0.6 ms apart). The end-lifecycle re-set used to replace the
   // agentNodes entry with an object lacking prevCorrId, so buildChatEdge bailed

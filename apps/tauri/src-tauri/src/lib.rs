@@ -5,7 +5,7 @@ mod utils;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use features::terminal::state::RunCliState;
+use features::terminal::state::TerminalState;
 use infrastructure::comm::bus::EventBus;
 use infrastructure::feature_data::commands::FeatureDataState;
 use infrastructure::feature_data::envelope::FeatureRowNotification;
@@ -161,7 +161,7 @@ pub fn run() {
             features::llm_server::process::sweep_orphan(app.handle());
 
             // -- Terminal state ------------------------------------------------
-            app.manage(Mutex::new(RunCliState::new()));
+            app.manage(Mutex::new(TerminalState::new()));
 
             // -- EventBus (RTDB row-batch emitter for "fredo-stream-event") ----
             // The ONLY sanctioned emission path to the webview: RTDB row
@@ -566,12 +566,12 @@ pub fn run() {
             // Features
             features::settings::commands::save_setting,
             features::settings::commands::get_setting,
-            features::terminal::commands::open_run_cli,
-            features::terminal::commands::get_run_cli_status,
+            features::terminal::commands::open_terminal_window,
+            features::terminal::commands::list_terminal_sessions,
             features::terminal::commands::get_pty_buffer,
             features::terminal::commands::write_pty_input,
             features::terminal::commands::resize_pty,
-            features::terminal::commands::close_run_cli,
+            features::terminal::commands::close_terminal_window,
             features::setup::commands::check_cli_installations,
             features::setup::commands::install_plugin,
             features::setup::commands::get_plugin_source_path,

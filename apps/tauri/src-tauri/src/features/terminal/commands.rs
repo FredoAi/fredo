@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use portable_pty::{native_pty_system, PtySize};
 use uuid::Uuid;
 
-use crate::features::terminal::state::RunCliState;
+use crate::features::terminal::state::TerminalState;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -98,7 +98,7 @@ fn build_pty_command(bin: &str) -> Result<portable_pty::CommandBuilder, String> 
 /// FIX-2 (round 2, AC5): on Windows, ConPTY does NOT validate `cwd` at spawn
 /// time — `spawn_command` with a nonexistent working directory succeeds and
 /// opencode launches anyway, so `launch_error` would never be set. This guard
-/// makes a nonexistent `run_cli_work_dir` fail deterministically BEFORE the
+/// makes a nonexistent `terminal_work_dir` fail deterministically BEFORE the
 /// spawn so the in-window error surface can trigger (AC5 primary fixture).
 fn validate_cwd(cwd: &str) -> Result<(), String> {
     let path = std::path::Path::new(cwd);
@@ -109,17 +109,17 @@ fn validate_cwd(cwd: &str) -> Result<(), String> {
     }
 }
 
-/// Handler wired to the `run-cli-terminal` window: closing the window for ANY
-/// reason (OS X button, Alt+F4, `close_run_cli`, reader-task auto-close) must
+/// Handler wired to the `terminal` window: closing the window for ANY
+/// reason (OS X button, Alt+F4, `close_terminal_window`, reader-task auto-close) must
 /// kill the opencode child and clear session state so the process never
-/// orphans (reuses the `close_run_cli` kill path).
+/// orphans (reuses the `close_terminal_window` kill path).
 fn window_close_handler(
     app: AppHandle,
 ) -> impl Fn(&tauri::WindowEvent) + Send + Sync + 'static {
     move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event {
             tracing::debug!(target: "fredo::terminal", "CloseRequested: killing child and clearing state");
-            let s = app.state::<Mutex<RunCliState>>();
+            let s = app.state::<Mutex<TerminalState>>();
             let mut state = s.lock().unwrap();
             if let Some(mut child) = state.killer.take() {
                 let _ = child.kill();
@@ -138,23 +138,23 @@ fn window_close_handler(
 /// Spawn OpenCode CLI in a PTY, open a terminal window and start streaming
 /// raw output to both the terminal window and the main-window event log.
 ///
-/// Window-first (ST-4): the `run-cli-terminal` window is created BEFORE binary
+/// Window-first (ST-4): the `terminal` window is created BEFORE binary
 /// resolution / spawn so a launcher click yields exactly one window instantly.
 /// The command is idempotent w.r.t. an already-open window — an existing
 /// window is reused (the frontend "Retry" path) and never duplicated.
-/// Resolve/spawn failures are captured in `RunCliState.launch_error` and
-/// surfaced in-window via `get_run_cli_status` (AC5); `Err` is returned only
+/// Resolve/spawn failures are captured in `TerminalState.launch_error` and
+/// surfaced in-window via `list_terminal_sessions` (AC5); `Err` is returned only
 /// when window creation itself fails.
 #[tauri::command]
-pub async fn open_run_cli(
+pub async fn open_terminal_window(
     work_dir: Option<String>,
     app: AppHandle,
-    state: tauri::State<'_, Mutex<RunCliState>>,
+    state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Result<(), String> {
-    tracing::debug!(target: "fredo::terminal", work_dir = ?work_dir, "open_run_cli called");
+    tracing::debug!(target: "fredo::terminal", work_dir = ?work_dir, "open_terminal_window called");
 
     // ── Window-first creation (reuse when already open) ────────────────────
-    let label = "run-cli-terminal";
+    let label = "terminal";
     match app.get_webview_window(label) {
         Some(win) => {
             tracing::debug!(target: "fredo::terminal", "reusing existing terminal window");
@@ -167,7 +167,7 @@ pub async fn open_run_cli(
                 label,
                 WebviewUrl::App("index.html?view=terminal".into()),
             )
-            .title("OpenCode Terminal")
+            .title("Terminal")
             .inner_size(900.0, 600.0)
             .min_inner_size(400.0, 300.0)
             .resizable(true)
@@ -208,7 +208,7 @@ pub async fn open_run_cli(
 
     // FIX-2 (round 2, AC5): validate the working directory BEFORE emitting
     // the launch event / spawning. ConPTY accepts a nonexistent cwd at spawn
-    // time on Windows, so without this guard a bad `run_cli_work_dir` would
+    // time on Windows, so without this guard a bad `terminal_work_dir` would
     // launch opencode anyway and never set `launch_error`.
     if let Err(msg) = validate_cwd(&cwd) {
         tracing::error!(target: "fredo::terminal", error = %msg, "cwd validation failed");
@@ -316,12 +316,12 @@ pub async fn open_run_cli(
             }
 
             // Window-targeted emit (FIX-1 round 2): the terminal window is the
-            // only consumer of `run-cli-output`. Targeting the window label
+            // only consumer of `terminal-output`. Targeting the window label
             // explicitly (vs. a broadcast `emit`) removes any multi-window
             // routing ambiguity and guarantees delivery to the terminal
             // webview's `listen()`.
-            if let Err(e) = app_clone.emit_to("run-cli-terminal", "run-cli-output", chunk.to_vec()) {
-                tracing::error!(target: "fredo::terminal", error = %e, "emit run-cli-output failed");
+            if let Err(e) = app_clone.emit_to("terminal", "terminal-output", chunk.to_vec()) {
+                tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-output failed");
             }
 
             line_buf.push_str(&String::from_utf8_lossy(chunk));
@@ -337,21 +337,21 @@ pub async fn open_run_cli(
         // Only tear down if this reader still owns the session (a newer
         // launch may have replaced the state while this reader drained).
         let owns_session = {
-            let s = app_clone.state::<Mutex<RunCliState>>();
+            let s = app_clone.state::<Mutex<TerminalState>>();
             let guard = s.lock().unwrap();
             guard.correlation_id.as_deref() == Some(correlation_id.as_str())
         };
 
-        if let Err(e) = app_clone.emit_to("run-cli-terminal", "run-cli-exited", ()) {
-            tracing::error!(target: "fredo::terminal", error = %e, "emit run-cli-exited failed");
+        if let Err(e) = app_clone.emit_to("terminal", "terminal-exited", ()) {
+            tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-exited failed");
         }
 
         if owns_session {
-            // Drop live handles so `get_run_cli_status` reports "exited".
+            // Drop live handles so `list_terminal_sessions` reports "exited".
             // `correlation_id` is retained to distinguish "exited" from a
             // launch-in-progress ("starting").
             {
-                let s = app_clone.state::<Mutex<RunCliState>>();
+                let s = app_clone.state::<Mutex<TerminalState>>();
                 let mut guard = s.lock().unwrap();
                 guard.writer = None;
                 guard.master = None;
@@ -359,7 +359,7 @@ pub async fn open_run_cli(
             }
             // Backend-owned auto-close (AC4): the session is done — close the
             // terminal window deterministically, regardless of webview state.
-            if let Some(win) = app_clone.get_webview_window("run-cli-terminal") {
+            if let Some(win) = app_clone.get_webview_window("terminal") {
                 let _ = win.close();
             }
         }
@@ -370,12 +370,12 @@ pub async fn open_run_cli(
 
 // ── Status query (ST-4) ────────────────────────────────────────────────────────
 
-/// Lifecycle status of the terminal window / opencode session, returned by
-/// `get_run_cli_status`. Serialized camelCase: `{ status, error, workDir }`.
+/// Lifecycle status of the terminal session(s), returned by
+/// `list_terminal_sessions`. Serialized camelCase: `{ status, error, workDir }`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunCliStatus {
-    pub status: RunCliStatusKind,
+pub struct TerminalSessionInfo {
+    pub status: TerminalSessionStatus,
     /// Set when `status == "error"` (resolve/spawn failure message).
     pub error: Option<String>,
     /// Resolved working directory of the session (terminal toolbar title).
@@ -384,7 +384,7 @@ pub struct RunCliStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RunCliStatusKind {
+pub enum TerminalSessionStatus {
     /// Window open, session not yet spawned.
     Starting,
     /// Session spawned and streaming.
@@ -396,49 +396,51 @@ pub enum RunCliStatusKind {
 }
 
 /// Derive the terminal-window status from the session state.
-fn derive_run_cli_status(s: &RunCliState) -> RunCliStatus {
+fn derive_terminal_session_info(s: &TerminalState) -> TerminalSessionInfo {
     if let Some(err) = &s.launch_error {
-        RunCliStatus {
-            status: RunCliStatusKind::Error,
+        TerminalSessionInfo {
+            status: TerminalSessionStatus::Error,
             error: Some(err.clone()),
             work_dir: s.work_dir.clone(),
         }
     } else if s.killer.is_some() {
-        RunCliStatus {
-            status: RunCliStatusKind::Running,
+        TerminalSessionInfo {
+            status: TerminalSessionStatus::Running,
             error: None,
             work_dir: s.work_dir.clone(),
         }
     } else if s.correlation_id.is_some() {
         // Reader finished (session ended); the window auto-close is in flight.
-        RunCliStatus {
-            status: RunCliStatusKind::Exited,
+        TerminalSessionInfo {
+            status: TerminalSessionStatus::Exited,
             error: None,
             work_dir: s.work_dir.clone(),
         }
     } else {
-        RunCliStatus {
-            status: RunCliStatusKind::Starting,
+        TerminalSessionInfo {
+            status: TerminalSessionStatus::Starting,
             error: None,
             work_dir: s.work_dir.clone(),
         }
     }
 }
 
-/// Status query for the terminal window — resolves the launch/exit race
-/// without events (source of truth for the window's mount state).
+/// Session list for the terminal window — resolves the launch/exit race
+/// without events (source of truth for the window's mount state). The
+/// multi-session work extends this to one entry per live session; today it
+/// reports the single (≤1) session the backend owns.
 #[tauri::command]
-pub fn get_run_cli_status(
-    state: tauri::State<'_, Mutex<RunCliState>>,
-) -> RunCliStatus {
+pub fn list_terminal_sessions(
+    state: tauri::State<'_, Mutex<TerminalState>>,
+) -> Vec<TerminalSessionInfo> {
     let s = state.lock().unwrap();
-    derive_run_cli_status(&s)
+    vec![derive_terminal_session_info(&s)]
 }
 
 /// Return all buffered PTY output so the terminal window can replay missed bytes on mount.
 #[tauri::command]
 pub fn get_pty_buffer(
-    state: tauri::State<'_, Mutex<RunCliState>>,
+    state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Vec<u8> {
     let s = state.lock().unwrap();
     let buf = s.output_buffer.lock().unwrap().clone();
@@ -449,7 +451,7 @@ pub fn get_pty_buffer(
 #[tauri::command]
 pub fn write_pty_input(
     data: String,
-    state: tauri::State<'_, Mutex<RunCliState>>,
+    state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Result<(), String> {
     let mut s = state.lock().unwrap();
     if let Some(ref mut w) = s.writer {
@@ -464,7 +466,7 @@ pub fn write_pty_input(
 pub fn resize_pty(
     rows: u16,
     cols: u16,
-    state: tauri::State<'_, Mutex<RunCliState>>,
+    state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Result<(), String> {
     let s = state.lock().unwrap();
     if let Some(ref master) = s.master {
@@ -476,9 +478,9 @@ pub fn resize_pty(
 
 /// Kill the running CLI process and close the terminal window.
 #[tauri::command]
-pub async fn close_run_cli(
+pub async fn close_terminal_window(
     app: AppHandle,
-    state: tauri::State<'_, Mutex<RunCliState>>,
+    state: tauri::State<'_, Mutex<TerminalState>>,
 ) -> Result<(), String> {
     {
         let mut s = state.lock().unwrap();
@@ -491,7 +493,7 @@ pub async fn close_run_cli(
         s.launch_error = None;
         s.work_dir = None;
     }
-    if let Some(win) = app.get_webview_window("run-cli-terminal") {
+    if let Some(win) = app.get_webview_window("terminal") {
         win.close().ok();
     }
     Ok(())
@@ -608,37 +610,37 @@ mod tests {
         assert!(result.is_ok() || result.is_err(), "should handle unix scripts on Windows");
     }
 
-    // ── ST-4: derive_run_cli_status maps state to the status contract ─────
+    // ── ST-4: derive_terminal_session_info maps state to the status contract ─────
 
     #[test]
     fn derive_status_starting_when_no_launch_state() {
-        let s = RunCliState::new();
-        let status = derive_run_cli_status(&s);
-        assert_eq!(status.status, RunCliStatusKind::Starting);
+        let s = TerminalState::new();
+        let status = derive_terminal_session_info(&s);
+        assert_eq!(status.status, TerminalSessionStatus::Starting);
         assert!(status.error.is_none());
         assert!(status.work_dir.is_none());
     }
 
     #[test]
     fn derive_status_error_when_launch_error_set() {
-        let s = RunCliState {
+        let s = TerminalState {
             launch_error: Some("`opencode` not found in PATH".into()),
-            ..RunCliState::new()
+            ..TerminalState::new()
         };
-        let status = derive_run_cli_status(&s);
-        assert_eq!(status.status, RunCliStatusKind::Error);
+        let status = derive_terminal_session_info(&s);
+        assert_eq!(status.status, TerminalSessionStatus::Error);
         assert_eq!(status.error.as_deref(), Some("`opencode` not found in PATH"));
     }
 
     #[test]
     fn derive_status_error_carries_work_dir() {
-        let s = RunCliState {
+        let s = TerminalState {
             launch_error: Some("Failed to spawn opencode: bad cwd".into()),
             work_dir: Some(r"C:\fredo".into()),
-            ..RunCliState::new()
+            ..TerminalState::new()
         };
-        let status = derive_run_cli_status(&s);
-        assert_eq!(status.status, RunCliStatusKind::Error);
+        let status = derive_terminal_session_info(&s);
+        assert_eq!(status.status, TerminalSessionStatus::Error);
         assert_eq!(status.work_dir.as_deref(), Some(r"C:\fredo"));
     }
 
@@ -646,25 +648,25 @@ mod tests {
     fn derive_status_exited_when_reader_finished_but_window_open() {
         // The reader task drops writer/master/killer on exit but retains
         // correlation_id — "exited" must be distinguishable from "starting".
-        let s = RunCliState {
+        let s = TerminalState {
             correlation_id: Some("test-correlation".into()),
             work_dir: Some("C:\\fredo".into()),
-            ..RunCliState::new()
+            ..TerminalState::new()
         };
-        let status = derive_run_cli_status(&s);
-        assert_eq!(status.status, RunCliStatusKind::Exited);
+        let status = derive_terminal_session_info(&s);
+        assert_eq!(status.status, TerminalSessionStatus::Exited);
         assert!(status.error.is_none());
         assert_eq!(status.work_dir.as_deref(), Some("C:\\fredo"));
     }
 
     #[test]
-    fn run_cli_status_serializes_camel_case_with_lowercase_status() {
-        let s = RunCliState {
+    fn terminal_status_serializes_camel_case_with_lowercase_status() {
+        let s = TerminalState {
             launch_error: Some("boom".into()),
             work_dir: Some("C:\\fredo".into()),
-            ..RunCliState::new()
+            ..TerminalState::new()
         };
-        let json = serde_json::to_value(derive_run_cli_status(&s)).unwrap();
+        let json = serde_json::to_value(derive_terminal_session_info(&s)).unwrap();
         assert_eq!(json["status"], serde_json::json!("error"));
         assert_eq!(json["error"], serde_json::json!("boom"));
         assert_eq!(json["workDir"], serde_json::json!("C:\\fredo"));

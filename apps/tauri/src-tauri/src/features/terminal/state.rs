@@ -1,21 +1,21 @@
 use std::sync::{Arc, Mutex};
 
-pub struct RunCliState {
+pub struct TerminalState {
     pub writer: Option<Box<dyn std::io::Write + Send>>,
     pub killer: Option<Box<dyn portable_pty::Child + Send>>,
     pub master: Option<Box<dyn portable_pty::MasterPty + Send>>,
     pub correlation_id: Option<String>,
     /// Buffered PTY output so the terminal window can replay on mount.
     pub output_buffer: Arc<Mutex<Vec<u8>>>,
-    /// Resolve/spawn failure message, surfaced in-window via `get_run_cli_status`
-    /// instead of a rejected `open_run_cli` invoke (AC5).
+    /// Resolve/spawn failure message, surfaced in-window via `list_terminal_sessions`
+    /// instead of a rejected `open_terminal_window` invoke (AC5).
     pub launch_error: Option<String>,
     /// Resolved working directory of the running session (for the terminal
-    /// window's toolbar title via `get_run_cli_status`).
+    /// window's toolbar title via `list_terminal_sessions`).
     pub work_dir: Option<String>,
 }
 
-impl RunCliState {
+impl TerminalState {
     pub fn new() -> Self {
         Self {
             writer: None,
@@ -49,7 +49,7 @@ impl RunCliState {
     }
 }
 
-impl Default for RunCliState {
+impl Default for TerminalState {
     fn default() -> Self {
         Self::new()
     }
@@ -60,8 +60,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_cli_state_new_initializes_output_buffer_empty() {
-        let state = RunCliState::new();
+    fn terminal_state_new_initializes_output_buffer_empty() {
+        let state = TerminalState::new();
         assert!(state.writer.is_none());
         assert!(state.killer.is_none());
         assert!(state.master.is_none());
@@ -72,9 +72,9 @@ mod tests {
     }
 
     #[test]
-    fn run_cli_state_default_matches_new() {
-        let default_state = RunCliState::default();
-        let new_state = RunCliState::new();
+    fn terminal_state_default_matches_new() {
+        let default_state = TerminalState::default();
+        let new_state = TerminalState::new();
 
         assert!(default_state.writer.is_none());
         assert!(default_state.killer.is_none());
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_append_output_caps_at_10mb() {
-        let state = RunCliState::new();
+        let state = TerminalState::new();
         let chunk = vec![0u8; 1024]; // 1KB chunk
 
         // Append 10.5 MB (slightly over the 10MB cap)
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_append_output_preserves_recent_data() {
-        let state = RunCliState::new();
+        let state = TerminalState::new();
 
         // Fill with marker bytes
         let marker_data = b"RECENT_DATA";

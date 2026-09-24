@@ -114,7 +114,7 @@ describe('appNameMatches — whole-query prefix OR whole-word run (R-5.1/R-5.4)'
   it('INVARIANT: every rule-matching app also passes the grid substring filter', () => {
     // `prefix ⇒ includes` and `whole-word run ⇒ includes` (contract 2) — the
     // grid therefore always shows the app the hint names.
-    const names = ['Settings', 'Mission Monitor', 'Status', 'Query Viewer', 'Run CLI'];
+    const names = ['Settings', 'Mission Monitor', 'Status', 'Query Viewer', 'Terminal'];
     const queries = [
       'set',
       'Miss',

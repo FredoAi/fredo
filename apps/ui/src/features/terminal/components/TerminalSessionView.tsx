@@ -20,19 +20,20 @@ import {
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { tint } from '../../../shared/utils/colorTint';
 import { settingsService } from '../../../features/settings';
+import { ensureTerminalSettingsMigrated, WORK_DIR_KEY } from '../settings';
 
-// ── Status contract (ST-4 backend `get_run_cli_status`) ─────────────────────
-export type RunCliStatusKind = 'starting' | 'running' | 'error' | 'exited';
+// ── Status contract (backend `list_terminal_sessions`) ──────────────────────
+export type TerminalSessionStatus = 'starting' | 'running' | 'error' | 'exited';
 
-export interface RunCliStatus {
-  status: RunCliStatusKind;
+export interface TerminalSessionInfo {
+  status: TerminalSessionStatus;
   /** Set when `status === "error"` (resolve/spawn failure message). */
   error: string | null;
   /** Resolved working directory of the session (toolbar title). */
   workDir: string | null;
 }
 
-interface RunCliLaunchStatusProps {
+interface TerminalSessionViewProps {
   /**
    * Render the terminal surface. Called only while the session is `running`;
    * `onFirstOutput` fires on the first PTY output byte (fades the loading
@@ -54,14 +55,14 @@ function getErrorMeta(error: string | null): { icon: typeof LuTriangleAlert; tit
   return { icon: LuTriangleAlert, title: 'Failed to start terminal' };
 }
 
-const STATUS_DOT_COLOR: Record<RunCliStatusKind, string> = {
+const STATUS_DOT_COLOR: Record<TerminalSessionStatus, string> = {
   running: 'var(--status-success)',
   starting: 'var(--status-warning)',
   error: 'var(--status-error)',
   exited: 'var(--text-secondary)',
 };
 
-const STATUS_LABEL: Record<RunCliStatusKind, string> = {
+const STATUS_LABEL: Record<TerminalSessionStatus, string> = {
   running: 'running',
   starting: 'launching',
   error: 'error',
@@ -69,26 +70,30 @@ const STATUS_LABEL: Record<RunCliStatusKind, string> = {
 };
 
 /**
- * Launch lifecycle UI for the `run-cli-terminal` window (AC5 error surface +
- * no-linger guard). Calls `get_run_cli_status` on mount and polls while
- * `starting`; mounts the ghostty terminal only when `running`.
+ * Launch lifecycle UI for the `terminal` window (AC5 error surface + no-linger
+ * guard). Calls `list_terminal_sessions` on mount and polls while `starting`;
+ * mounts the ghostty terminal only when `running`. `list_terminal_sessions`
+ * becomes a per-session list with the multi-session work — this view reads the
+ * single (≤1) entry the backend currently reports.
  */
-export const RunCliLaunchStatus: React.FC<RunCliLaunchStatusProps> = ({ renderTerminal }) => {
-  const [status, setStatus] = useState<RunCliStatus | null>(null);
+export const TerminalSessionView: React.FC<TerminalSessionViewProps> = ({ renderTerminal }) => {
+  const [status, setStatus] = useState<TerminalSessionInfo | null>(null);
   const [hasOutput, setHasOutput] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
-  // ── Poll get_run_cli_status while starting; stop once settled ────────────
+  // ── Poll list_terminal_sessions while starting; stop once settled ────────
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
 
     const poll = async () => {
       try {
-        const s = await adapterBridge.invoke<RunCliStatus>('get_run_cli_status');
-        if (cancelled || !s) return;
-        setStatus(s);
-        if (s.status === 'starting') {
+        const sessions = await adapterBridge.invoke<TerminalSessionInfo[]>('list_terminal_sessions');
+        if (cancelled || !sessions) return;
+        const info = sessions[0];
+        if (!info) return;
+        setStatus(info);
+        if (info.status === 'starting') {
           timer = window.setTimeout(poll, POLL_MS);
         }
       } catch {
@@ -109,10 +114,11 @@ export const RunCliLaunchStatus: React.FC<RunCliLaunchStatusProps> = ({ renderTe
     setHasOutput(false);
     setStatus({ status: 'starting', error: null, workDir: null });
     try {
-      // ST-4 made open_run_cli idempotent w.r.t. an already-open window — a
-      // Retry reuses the current `run-cli-terminal` window, never a second one.
-      const savedWorkDir = await settingsService.get<string>('run_cli_work_dir', '');
-      await adapterBridge.invoke('open_run_cli', { workDir: savedWorkDir || undefined });
+      // open_terminal_window is idempotent w.r.t. an already-open window — a
+      // Retry reuses the current `terminal` window, never a second one.
+      await ensureTerminalSettingsMigrated();
+      const savedWorkDir = await settingsService.get<string>(WORK_DIR_KEY, '');
+      await adapterBridge.invoke('open_terminal_window', { workDir: savedWorkDir || undefined });
       setRetryKey((k) => k + 1); // restart the poll
     } catch (err) {
       setStatus({ status: 'error', error: String(err), workDir: null });
@@ -120,12 +126,12 @@ export const RunCliLaunchStatus: React.FC<RunCliLaunchStatusProps> = ({ renderTe
   }, []);
 
   const handleClose = useCallback(() => {
-    adapterBridge.invoke('close_run_cli').catch(() => {});
+    adapterBridge.invoke('close_terminal_window').catch(() => {});
   }, []);
 
   const handleFirstOutput = useCallback(() => setHasOutput(true), []);
 
-  const kind: RunCliStatusKind = status?.status ?? 'starting';
+  const kind: TerminalSessionStatus = status?.status ?? 'starting';
   // Overlay is mounted while starting OR while the terminal is live but no PTY
   // byte has arrived yet — it fades out (opacity 180ms) on the first output.
   const showLoading = kind === 'starting' || kind === 'running';

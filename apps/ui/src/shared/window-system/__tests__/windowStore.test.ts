@@ -120,7 +120,7 @@ describe('windowStore — updateWindow spread-merge (R-4)', () => {
 
   it('spread-merges a partial patch, preserving init-time + control state', () => {
     openWindow(params());
-    openWindow(params({ id: 'run-cli', title: 'Run CLI' }));
+    openWindow(params({ id: 'terminal', title: 'Terminal' }));
 
     const before = snap().find((w) => w.id === 'mission-monitor')!;
     const zBefore = before.zIndex;
@@ -175,18 +175,18 @@ describe('windowStore — open / focus (R-3, R-6)', () => {
 
   it('focusing a background window raises its z-order above the other windows', () => {
     openWindow(params());
-    openWindow(params({ id: 'run-cli', title: 'Run CLI' }));
-    // 'run-cli' is on top (most recently opened).
-    expect(snap().find((w) => w.id === 'run-cli')!.focused).toBe(true);
+    openWindow(params({ id: 'terminal', title: 'Terminal' }));
+    // 'terminal' is on top (most recently opened).
+    expect(snap().find((w) => w.id === 'terminal')!.focused).toBe(true);
 
     focusWindow('mission-monitor');
 
     const after = snap();
     const mm = after.find((w) => w.id === 'mission-monitor')!;
-    const rc = after.find((w) => w.id === 'run-cli')!;
+    const term = after.find((w) => w.id === 'terminal')!;
     expect(mm.focused).toBe(true);
-    expect(rc.focused).toBe(false);
-    expect(mm.zIndex).toBeGreaterThan(rc.zIndex);
+    expect(term.focused).toBe(false);
+    expect(mm.zIndex).toBeGreaterThan(term.zIndex);
   });
 
   it('focus clears minimize by default and toggles isMaximized on request', () => {

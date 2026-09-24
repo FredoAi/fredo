@@ -11,7 +11,7 @@
  *   - Prefer `useState` / `useReducer` inside hooks for component-local state.
  *   - Use a store here only when state must outlive a component or be accessed
  *     from an FredoFeatureClass method (which has no hook access).
- *   - Name files after the feature: `diagramStore.ts`, `runCliStore.ts`, etc.
+ *   - Name files after the feature: `diagramStore.ts`, `terminalStore.ts`, etc.
  *   - Export a plain object or a factory function — no global singletons that
  *     make testing hard.
  *

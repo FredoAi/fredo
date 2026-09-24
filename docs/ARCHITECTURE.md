@@ -170,8 +170,8 @@ src-tauri/src/
 +-- features/
 |   +-- terminal/               — PTY-based AI CLI terminal
 |   |   +-- mod.rs              — TerminalFeature (DesktopCapable)
-|   |   +-- state.rs            — RunCliState (PTY writer, buffer, killer)
-|   |   +-- commands.rs         — open_run_cli, get_pty_buffer, write_pty_input, resize_pty, close_run_cli
+|   |   +-- state.rs            — TerminalState (PTY writer, buffer, killer)
+|   |   +-- commands.rs         — open_terminal_window, list_terminal_sessions, get_pty_buffer, write_pty_input, resize_pty, close_terminal_window
 |   +-- llm_server/             — Out-of-process companion inference (managed `llama-server`)
 |   |   +-- mod.rs              — persisted setting keys + launch defaults
 |   |   +-- config.rs           — pure launch-config model + generated `.bat` (single argv builder)
@@ -465,7 +465,7 @@ apps/ui/src/
 |   +-- allFeatures.ts              — Vite glob auto-discovery: `import.meta.glob('./*/index.ts', { eager: true })`
 |   +-- home/                       — Home panel + AlertHandler + FredoCompanion
 |   +-- diagram/                    — Infrastructure diagram (ReactFlow)
-|   +-- run-cli/                    — xterm.js terminal (PTY output)
+|   +-- terminal/                   — Ghostty terminal (PTY output)
 |   +-- query-viewer/               — SQL query result display (multi-instance)
 |   +-- my-workitems/               — Azure DevOps work items
 |   +-- settings/                   — Settings persistence service (settingsService + SettingsSaveContext)
@@ -502,7 +502,7 @@ apps/ui/src/
 |---------|----------|-------------|-------------|
 | home | ✓ | — | Navigation grid, FredoCompanion |
 | diagram | ✓ | — | Infrastructure visualization (ReactFlow; REST snapshot) |
-| run-cli | ✓ | — | xterm.js terminal (PTY output from Rust) |
+| terminal | ✓ | — | Ghostty terminal (PTY output from Rust) |
 | query-viewer | ✓ | (dynamic) | SQL query result display (multi-instance) |
 | my-workitems | ✓ | — | Azure DevOps work items |
 | settings | ✓ | — | Settings app — Companion, Appearance, Fredo Setup, Telemetry + auto-discovered feature settings (unified Save) |
@@ -689,7 +689,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 | Mission Monitor graph rebuild | O(N_new) per batch | Incremental node/edge updates (was O(N_total)) |
 | Mission Monitor persisted sessions | 50 sessions | Oldest pruned (`persistence.ts`) |
 | SpanCollector `session_span_stack` | Cleaned on completion | `span_id` popped on Response/Error lifecycle |
-| RunCliState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
+| TerminalState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
 
 **Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
 - `infrastructure/rtdb/ingest.rs` — correlation + relationship map caps with oldest-first eviction at every write site
@@ -713,7 +713,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 | **GitHub Copilot CLI OTLP** | The Copilot CLI exports OTLP **HTTP** (plaintext `http://127.0.0.1:4318`; the CLI offers no gRPC) with `OTEL_SERVICE_NAME=copilot-cli` — no Fredo-side configuration. Fredo persists the raw signals and the SAME classifier maps them, attributing `provider = copilot_cli` from the resource `service.name` via the one shared rule. Two Copilot specifics are handled **provider-scoped** (so OpenCode rows stay byte-identical): its `invoke_agent` root is promoted to an agent-session row (an `invoke_agent` span with any other/absent identity still maps to a chat row), and a chat row that *continues* an exchange re-carries that exchange's captured prompt (Copilot splits one turn across two `chat` spans; OpenCode re-emits the prompt on every span). Tool outcome/duration fall back to `error.type` + span timing when the flat OpenCode keys are absent; content is off by default (structural rows only). Enablement + the exact non-silent degradation: `docs/telemetry-reference.md` §4. |
 | **`fredo emit` CLI** | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich` → RTDB row classifier. Payload-shape conventions in `.opencode/skills/fredo-cli-events/SKILL.md`. |
 | **`fredo open-app` CLI (#2893)** | Named-pipe `CliCommand::OpenApp` → the app's request registry emits `app-open-request` to the `main` window → the webview resolves the identity with the launcher's whole-query matcher and opens the feature through the home window opener, then confirms the structured outcome. Bounded: 5 s confirmation / 10 s child; an unknown identity opens nothing and exits non-zero; app-not-running keeps the shared exit-2 fallback. Documented in `docs/CLI_GUIDE.md`. |
-| **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `run-cli-output` Tauri events. |
+| **Terminal feature** | The `terminal` feature spawns OpenCode in a native PTY. PTY output streams as `terminal-output` Tauri events. |
 | **LLM feature** | Out-of-process companion inference via a managed `llama-server` child process. `llm_chat` / `llm_chat_with_image` route requests to the server's OpenAI-compatible streaming API and stream tokens back. |
 | **Companion skills (#2893; extended to model audio #2903)** | `llm_chat_with_skills` (typed) and the model-audio turn (`llm_chat_with_audio`, now skill-aware) offer the provider-agnostic companion-skill registry (`infrastructure/companion/skills.rs`; `open_app`, `close_app`) to the model as OpenAI-style `tools` (`tool_choice: auto`, `parallel_tool_calls: false`) and emit a validated `llm-skill-call` when the model selects one; the ONE shared frontend hook executes it. The managed launch config enables the Jinja chat-template engine (`--jinja`) so the pinned model's native tool-call template is honoured (optional template override available). Raw tool-call JSON is never rendered — the visible reply is deterministic copy. |
 
@@ -791,7 +791,7 @@ Defined in `capabilities/default.json`:
 | `core:default` | Standard window management |
 | `core:event:allow-listen` | Webview subscribes to Tauri events (fredo-stream-event, llm-token, etc.) |
 | `core:event:allow-emit` | Rust backend emits events to webview |
-| `core:window:allow-create` | Backend opens new WebviewWindow (run-cli-terminal) |
+| `core:window:allow-create` | Backend opens new WebviewWindow (terminal) |
 | `core:window:allow-close` | Backend closes the terminal window |
 | `core:window:allow-start-dragging` | Window drag support |
 | `core:window:allow-set-title` | Dynamic window title updates |
@@ -816,11 +816,12 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `feature_data_write` | feature_data | Write feature-owned columns on a declared row (an unchanged value is a silent no-op — no version bump, no notification) |
 | `feature_data_delete` | feature_data | Delete a declared row and tombstone it (emits a removal; the projection never re-creates it) |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from AppStore |
-| `open_run_cli` | terminal | Resolve binary, open PTY, spawn child |
+| `open_terminal_window` | terminal | Resolve binary, open PTY, spawn child |
+| `list_terminal_sessions` | terminal | List terminal session status |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
 | `write_pty_input` | terminal | Write keyboard input to PTY |
 | `resize_pty` | terminal | Resize PTY to new rows/cols |
-| `close_run_cli` | terminal | Kill child, release PTY, close window |
+| `close_terminal_window` | terminal | Kill child, release PTY, close window |
 | `check_cli_installations` | setup | Check if `opencode` is on PATH |
 | `install_plugin` | setup | Install OpenCode plugin |
 | `get_plugin_source_path` | setup | Return bundled plugin source path |
@@ -868,7 +869,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 
 1. Initialize `AppStore` (SQLite KV store) — managed via `app.manage()`
 2. Manage `LlamaServerState` (the managed out-of-process `llama-server` lifecycle) and run the PID-reuse-guarded startup orphan sweep — no in-process engine load
-3. Initialize `RunCliState` (PTY terminal) — managed via `app.manage()`
+3. Initialize `TerminalState` (PTY terminal) — managed via `app.manage()`
 4. Manage `EventBus` (the single `"fredo-stream-event"` emitter)
 5. Open `RtdbStore`, build the LRU cache + registry + FlushLoop, manage `Rtdb` + the ingest classifier, spawn the flush task (~5 ms) and the write-behind task (~30 ms), set retention defaults + startup prune, spawn the canonical backfill (read-only over `telemetry_spans`; one-shot completion marker)
 6. Start IPC socket server (`tauri::async_runtime::spawn`)

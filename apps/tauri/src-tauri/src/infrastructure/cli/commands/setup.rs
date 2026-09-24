@@ -187,7 +187,7 @@ fn cli_configure_opencode_otel() -> Result<(), String> {
     }
 }
 
-/// Run CLI setup commands standalone (no IPC / no AppHandle).
+/// Execute setup commands standalone (no IPC / no AppHandle).
 pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
     if args.check {
         let bin_is_available = is_binary_available("opencode");
