@@ -148,3 +148,23 @@
 - The new generic-layer suite `.opencode/tests/realtime-data/` — its REQ-1..REQ-5 legs are the layer's own regression asset.
 - Perf legs F-17..F-24 / N-10..N-15 (#2835) — re-run the first-render and sustained legs; F-38/F-39 extend them for #2896.
 - This spec's functional suite: `functional.md` F-25..F-40 + N-16..N-19.
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2933 — Copilot CLI capture, provider coexistence)
+
+> The Mission Monitor must render a captured GitHub Copilot CLI session from the canonical rows with **no feature-specific change** — it is the first row-consuming feature the new provider must reach (AC1 success metric). The existing OpenCode rendering must be unchanged. Run on every testing phase that touches mission-monitor or the row pipeline.
+
+## Must NOT change (regression invariants) — Spec #2933
+
+- [ ] R-45 (Copilot session renders without feature changes — AC1): a captured Copilot session (`provider = copilot_cli` rows in `chat_rows`/`tool_use_rows`/`agent_session_rows`) is listed and rendered by Mission Monitor (session identity, chat node, tool section) with **zero mission-monitor code changes**. Read via `useEventRows`; capture the DOM + screenshot.
+- [ ] R-46 (OpenCode rendering unchanged — AC5): existing OpenCode sessions render the same session list, graph nodes, edges, colors and layout as the pre-spec baseline (same corpus). Adding a second provider must not alter node/edge derivation.
+- [ ] R-47 (no provider cross-contamination in derivation): a Copilot session and an OpenCode session in one store are never merged into one list entry / graph; no row's `provider` flips; provider-scoped filtering (if added to the panel) never hides OpenCode rows for an unfiltered view.
+- [ ] R-48 (contract-trust + no re-render loop): the panel consumes projected row fields directly (no `??` fallback / multi-path extraction added for Copilot, #568); no new `.length`/object-ref `useEffect`/`useMemo` deps; no `Maximum update depth exceeded` after a Copilot session's rows land.
+- [ ] R-49 (#523/#509 compositing unchanged): row-level compositing (first-wins stamp, re-key never removes rows, child rows composite under the parent carrying `parentSessionId`/`compositedChildSessionId`) and the `build`/`plan` internal-session exclusion are unchanged by Copilot capture.
+
+## Overlapping prior-feature suites (Spec #2933)
+
+- This spec's capture suite: `.opencode/tests/copilot-capture/` (functional F-1..F-11 + N-1..N-7, regression CR-1..CR-11, smoke S-1..S-12).
+- `rtdb-provider-attribution` R-1..R-9 — provider vocabulary/resolution the Copilot rows use.
+- Unaffected mission-monitor legs above run as-is (graph/list/tool-detail/latency invariants).
