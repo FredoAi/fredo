@@ -16,7 +16,7 @@ import {
   type TerminalCli,
   type TerminalSessionInfo,
 } from '../sessionModel';
-import { SessionSidebar } from './SessionSidebar';
+import { SessionBar } from './SessionBar';
 import { TerminalPane } from './TerminalPane';
 import { NewSessionDialog } from './NewSessionDialog';
 import { DeleteSessionDialog } from './ResumableSessions';
@@ -486,8 +486,8 @@ export const TerminalWindow: React.FC = () => {
   const announcement = actionAnnouncement || statusAnnouncement;
 
   return (
-    <Flex direction="row" h="100%" bg="bg.canvas">
-      <SessionSidebar
+    <Flex direction="column" h="100%" minH={0} w="100%" bg="bg.canvas">
+      <SessionBar
         sessions={allSessions}
         previous={previous}
         selectedId={selectedId}
