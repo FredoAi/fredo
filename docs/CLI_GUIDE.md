@@ -83,6 +83,47 @@ fredo open-app "OPEN MISSION MONITOR"
 
 > The CLI never blocks unbound: the app confirmation is bounded at 5 s and the spawned child is bounded at 10 s, after which the outcome degrades to `unavailable`.
 
+### `fredo open-terminal`
+
+Opens (or focuses) the Terminal window and, when a CLI and/or working directory is supplied, starts that CLI in that folder in the same invocation. The running app validates the arguments **before** anything opens: an invalid CLI or directory creates no window and starts no session.
+
+```bash
+fredo open-terminal [--cli <opencode|copilot>] [--dir <PATH>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--cli` | No | CLI to start: `opencode` or `copilot`. Omitted with `--dir` → the saved default CLI (`terminal_default_cli`, else `opencode`) |
+| `--dir` | No | Working directory to start it in. Omitted with `--cli` → the saved work directory (`terminal_work_dir`, else your home folder) |
+
+**Outcome and exit codes**
+
+| Exit | Meaning | stdout |
+|------|---------|--------|
+| `0` | No arguments — the window was opened/focused | `{"outcome":"opened"}` |
+| `0` | A CLI and/or dir was supplied and started | `{"outcome":"started","cli":"opencode","workDir":"C:\\repo"}` |
+| `1` | Unknown CLI | `{"outcome":"invalid-cli","message":"..."}` |
+| `1` | Directory does not exist / is not a directory | `{"outcome":"invalid-directory","message":"..."}` |
+| `1` | Malformed invocation (missing value, unknown flag) | _(a clear error on stderr)_ |
+| `2` | Fredo app is not running | _(the fallback message below)_ |
+
+**Examples**
+
+```bash
+# Open Terminal only
+fredo open-terminal
+
+# Start OpenCode in a folder
+fredo open-terminal --cli opencode --dir C:\Code\fredo
+
+# Start the saved default CLI in a folder
+fredo open-terminal --dir C:\Code\fredo
+
+# Start GitHub Copilot in the saved work directory
+fredo open-terminal --cli copilot
+```
+
+> A malformed invocation exits `1` (invalid argument), distinct from the `2` used for app-not-running. Re-invoking focuses the same single `terminal` window.
 
 ---
 

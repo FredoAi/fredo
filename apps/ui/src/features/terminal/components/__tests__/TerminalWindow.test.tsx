@@ -516,3 +516,62 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
+
+/**
+ * Spec 2935 ST-5 — the `fredo open-terminal` transport contract as the webview
+ * sees it. The backend validates and resolves `--cli`/`--dir` defaults BEFORE it
+ * emits (single spawner), so the UI-side pins are: a missing CLI falls back to
+ * OpenCode, a missing/blank dir falls back to the home default, and neither path
+ * opens a dialog. The typed error states the CLI path can surface are pinned
+ * alongside (R-4.2 `invalid-cwd`; R-4.1 `invalid-cli` is pinned above).
+ */
+describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states', () => {
+  it('falls back to OpenCode when the launch intent carries no CLI (--dir only)', async () => {
+    renderWindow();
+    await waitFor(() => expect(listeners['terminal-open-request']).toBeTypeOf('function'));
+
+    listeners['terminal-open-request']?.({ cli: undefined, workDir: 'C:\\repo' });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('spawn_terminal_session', {
+        cli: 'opencode',
+        workDir: 'C:\\repo',
+      }),
+    );
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('spawns with no explicit dir when the launch intent carries a blank work dir (--cli only)', async () => {
+    renderWindow();
+    await waitFor(() => expect(listeners['terminal-open-request']).toBeTypeOf('function'));
+
+    listeners['terminal-open-request']?.({ cli: 'copilot', workDir: '' });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('spawn_terminal_session', {
+        cli: 'copilot',
+        workDir: undefined,
+      }),
+    );
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('renders the invalid-cwd error state the CLI path can surface (never a partial session)', async () => {
+    sessions = [
+      session({
+        id: 'bad-dir',
+        cli: 'opencode',
+        status: 'error',
+        errorKind: 'invalid-cwd',
+        error: 'Working directory not found: C:\\no-such-dir',
+        workDir: 'C:\\no-such-dir',
+      }),
+    ];
+    renderWindow();
+
+    const state = await screen.findByTestId('terminal-error-state');
+    expect(state).toHaveAttribute('data-error-kind', 'invalid-cwd');
+    expect(screen.getByText('Working directory not found')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Choose directory/ })).toBeInTheDocument();
+  });
+});

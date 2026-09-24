@@ -429,6 +429,20 @@ struct PersistedSessionsChangedPayload {
     sessions: Vec<PersistedSession>,
 }
 
+/// The window event carrying a `fredo open-terminal` launch intent (Spec #2935
+/// ST-3), mirroring `APP_OPEN_REQUEST_EVENT`. The webview consumes it ONCE and
+/// spawns the session — the backend NEVER spawns (single-spawner adjudication).
+pub const TERMINAL_OPEN_REQUEST_EVENT: &str = "terminal-open-request";
+
+/// A validated launch intent: the CLI + working directory a `fredo
+/// open-terminal` invocation asked for.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOpenRequestPayload {
+    pub cli: String,
+    pub work_dir: String,
+}
+
 /// Per-session wire record. `pid` + `startedAt` let the QA prove that switching
 /// or replaying a session never re-spawns it; `errorKind` is typed so the UI
 /// selects a distinct error state without parsing `error`.
@@ -540,6 +554,13 @@ fn emit_persisted_sessions_changed(app: &AppHandle, sessions: Vec<PersistedSessi
         PersistedSessionsChangedPayload { sessions },
     ) {
         tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-persisted-sessions-changed failed");
+    }
+}
+
+/// Window-targeted delivery of a `fredo open-terminal` launch intent.
+fn emit_terminal_open_request(app: &AppHandle, payload: TerminalOpenRequestPayload) {
+    if let Err(e) = app.emit_to(WINDOW_LABEL, TERMINAL_OPEN_REQUEST_EVENT, payload) {
+        tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-open-request failed");
     }
 }
 
@@ -971,31 +992,54 @@ fn window_close_handler(
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-/// Create or focus the ONE `terminal` window. NO session is spawned here — the
-/// first session is created by the in-window add-session flow
-/// (`spawn_terminal_session`).
-#[tauri::command]
-pub async fn open_terminal_window(app: AppHandle) -> Result<(), String> {
-    tracing::debug!(target: "fredo::terminal", "open_terminal_window called");
+/// Create or focus the ONE `terminal` window, optionally delivering a `fredo
+/// open-terminal` launch intent (Spec #2935 ST-3).
+///
+/// The backend NEVER spawns here (single-spawner adjudication): the intent
+/// carries the VALIDATED `{ cli, workDir }` and the webview consumes it to spawn
+/// the session. Delivery mirrors `APP_OPEN_REQUEST_EVENT`:
+/// - the window already exists → its listener is mounted, so emit immediately;
+/// - the window is freshly created → emit ONCE the page has loaded (the webview
+///   registers its listener on mount; an earlier emit would be lost). The
+///   one-shot guard means a dev reload cannot re-spawn.
+pub async fn open_terminal_window_with_intent(
+    app: &AppHandle,
+    intent: Option<TerminalOpenRequestPayload>,
+) -> Result<(), String> {
+    tracing::debug!(target: "fredo::terminal", "open_terminal_window_with_intent called");
 
     match app.get_webview_window(WINDOW_LABEL) {
         Some(win) => {
             tracing::debug!(target: "fredo::terminal", "reusing existing terminal window");
             win.set_focus().ok();
+            if let Some(payload) = intent {
+                emit_terminal_open_request(app, payload);
+            }
         }
         None => {
             tracing::debug!(target: "fredo::terminal", "building WebviewWindow");
-            let window = WebviewWindowBuilder::new(
-                &app,
+            let mut builder = WebviewWindowBuilder::new(
+                app,
                 WINDOW_LABEL,
                 WebviewUrl::App("index.html?view=terminal".into()),
             )
             .title("Terminal")
             .inner_size(900.0, 600.0)
             .min_inner_size(560.0, 360.0)
-            .resizable(true)
-            .build()
-            .map_err(|e| {
+            .resizable(true);
+
+            if let Some(payload) = intent {
+                let delivered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let app_for_load = app.clone();
+                builder = builder.on_page_load(move |_window, _event| {
+                    if delivered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    emit_terminal_open_request(&app_for_load, payload.clone());
+                });
+            }
+
+            let window = builder.build().map_err(|e| {
                 tracing::error!(target: "fredo::terminal", error = %e, "WebviewWindow creation failed");
                 format!("Failed to open terminal window: {e}")
             })?;
@@ -1005,6 +1049,14 @@ pub async fn open_terminal_window(app: AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Create or focus the ONE `terminal` window. NO session is spawned here — the
+/// first session is created by the in-window add-session flow
+/// (`spawn_terminal_session`).
+#[tauri::command]
+pub async fn open_terminal_window(app: AppHandle) -> Result<(), String> {
+    open_terminal_window_with_intent(&app, None).await
 }
 
 /// TEST-ONLY override seam for the AC4 negative rows. Never set by the
@@ -1037,8 +1089,6 @@ pub async fn spawn_terminal_session(
     store: tauri::State<'_, Arc<AppStore>>,
     feature_store: tauri::State<'_, Arc<FeatureStore>>,
 ) -> Result<String, String> {
-    let cli = TerminalCli::parse(&cli).ok_or_else(|| format!("Unknown CLI: {cli}"))?;
-
     let cwd = work_dir
         .filter(|s| !s.trim().is_empty())
         .or_else(|| std::env::var("USERPROFILE").ok())
@@ -1046,6 +1096,25 @@ pub async fn spawn_terminal_session(
         .unwrap_or_else(|| ".".to_string());
 
     let session_id = Uuid::new_v4().to_string();
+
+    // An unknown CLI is refused BEFORE any process exists: the row carries the
+    // typed `invalid-cli` kind so the UI renders the "Unknown CLI" state (R-4.1)
+    // and no PTY is opened. No record is persisted for a failed launch.
+    let Some(cli) = TerminalCli::parse(&cli) else {
+        {
+            let mut guard = state.lock().unwrap();
+            guard.insert_starting(session_id.clone(), TerminalCli::OpenCode, cwd, 80, 24);
+        }
+        fail_session(
+            &app,
+            &state,
+            &session_id,
+            TerminalErrorKind::InvalidCli,
+            format!("Unknown CLI: {cli}"),
+        );
+        return Ok(session_id);
+    };
+
     {
         let mut guard = state.lock().unwrap();
         guard.insert_starting(session_id.clone(), cli, cwd.clone(), 80, 24);

@@ -67,6 +67,9 @@ pub enum TerminalErrorKind {
     Prereq,
     /// The working directory does not exist / is not a directory.
     InvalidCwd,
+    /// The requested CLI name is not a known CLI (`opencode`/`copilot`) —
+    /// refused before any process started (R-4.1).
+    InvalidCli,
     /// The CLI reported an authentication failure on its first output.
     Auth,
     /// PTY open / command build / spawn failed.
@@ -336,6 +339,7 @@ mod tests {
         assert_eq!(serde_json::to_value(TerminalErrorKind::MissingBinary).unwrap(), serde_json::json!("missing-binary"));
         assert_eq!(serde_json::to_value(TerminalErrorKind::Prereq).unwrap(), serde_json::json!("prereq"));
         assert_eq!(serde_json::to_value(TerminalErrorKind::InvalidCwd).unwrap(), serde_json::json!("invalid-cwd"));
+        assert_eq!(serde_json::to_value(TerminalErrorKind::InvalidCli).unwrap(), serde_json::json!("invalid-cli"));
         assert_eq!(serde_json::to_value(TerminalErrorKind::Auth).unwrap(), serde_json::json!("auth"));
         assert_eq!(serde_json::to_value(TerminalErrorKind::Launch).unwrap(), serde_json::json!("launch"));
         assert_eq!(serde_json::to_value(TerminalErrorKind::ResumeFailed).unwrap(), serde_json::json!("resume-failed"));
