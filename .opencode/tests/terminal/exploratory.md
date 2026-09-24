@@ -173,3 +173,16 @@ is wrong.
   `terminal_default_cli`, `terminal_copilot_path`, `terminal_pwsh_path`); compare AFTER.
 - Settings restore (binding): restore those four keys to their captured pre-run values.
 - Cross-suite repeat: `.opencode/tests/run-cli/regression.md`.
+
+### #2940 testing round 2 (spec/2940 @ a4b4dfa1) — probe results
+
+- **E-21/E-22 (CLI path) CONFIRMED in round 2.** Cold `fredo open-terminal` now spawns
+  (3/3 cold + warm 3/3) — the round-1 defect was a page-load-push race, fixed by the
+  `b303ba9` pull handshake; one-shot semantics held across re-list + reload. No promotion.
+- **E-5 (resize) / E-25 (resize churn) re-confirmed.** `98×37 → 60×21 → 153×57` across
+  900×600/560×360/1400×900 with the host flush at every sample, active-only `resize_pty`.
+  No promotion.
+- **Transient-state sampling note (no promotion).** Capturing the slow-start hint and the
+  `resuming` overlay requires bounded `tauri_webview_wait_for`/separate reads — an in-page
+  `setTimeout` await wedges the webview (G-055, reconfirmed). Environment technique, not a
+  product defect.
