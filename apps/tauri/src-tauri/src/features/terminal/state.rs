@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn cli_parse_rejects_anything_else() {
-        assert_eq!(TerminalCli::parse("run-cli"), None);
+        assert_eq!(TerminalCli::parse("legacy-cli"), None);
         assert_eq!(TerminalCli::parse("OpenCode"), None);
         assert_eq!(TerminalCli::parse(""), None);
     }

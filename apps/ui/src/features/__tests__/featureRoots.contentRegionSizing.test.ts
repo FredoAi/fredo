@@ -13,11 +13,16 @@
  *                                 filter-panel `maxHeight="calc(100vh - 150px)"`)
  *   - `terminal` status root    — `TerminalSessionView.tsx` (was `h="100vh"`)
  *
- * This pin scans those three components and asserts (1) no viewport unit
- * survives in the file and (2) the root declarations now express content-region
- * sizing. It is deliberately a source scan (the same idiom as the repo's other
- * source pins) rather than a render — the defect is a static sizing declaration
- * and the three components carry heavy runtime dependencies.
+ * #2934 ST-3 moved the Terminal window root from `TerminalSessionView.tsx` to
+ * `TerminalWindow.tsx` (a row layout: sidebar + pane). The content-region-sizing
+ * invariant is unchanged and is now pinned on the new root, while the no-viewport
+ * scan covers BOTH terminal files.
+ *
+ * This pin scans those components and asserts (1) no viewport unit survives in
+ * the file and (2) the root declarations now express content-region sizing. It
+ * is deliberately a source scan (the same idiom as the repo's other source pins)
+ * rather than a render — the defect is a static sizing declaration and the
+ * components carry heavy runtime dependencies.
  *
  * `100vh` elsewhere is NOT asserted away: `Home.tsx:190` (the app shell root)
  * and the `AppDock` rail/pill calcs are legitimately viewport-relative shell
@@ -40,10 +45,11 @@ function source(relativePath: string): string {
 
 const DEV_MODE = `${BASE}/dev-mode/components/DevMode.tsx`;
 const DIAGRAM = `${BASE}/diagram/components/ArchitectureDiagram.tsx`;
+const TERMINAL_WINDOW = `${BASE}/terminal/components/TerminalWindow.tsx`;
 const TERMINAL_SESSION_VIEW = `${BASE}/terminal/components/TerminalSessionView.tsx`;
 
 describe('#2924 ST-4 — feature roots size to the content region, not the viewport', () => {
-  it.each([DEV_MODE, DIAGRAM, TERMINAL_SESSION_VIEW])(
+  it.each([DEV_MODE, DIAGRAM, TERMINAL_WINDOW, TERMINAL_SESSION_VIEW])(
     '%s contains no viewport unit (100vh / 100vw)',
     (path) => {
       const code = source(path);
@@ -64,8 +70,8 @@ describe('#2924 ST-4 — feature roots size to the content region, not the viewp
     expect(code).toContain('maxHeight="calc(100% - 90px)"');
   });
 
-  it('terminal status root is content-region sized', () => {
-    const code = source(TERMINAL_SESSION_VIEW);
-    expect(code).toContain('<Flex direction="column" h="100%"');
+  it('terminal window root is content-region sized', () => {
+    const code = source(TERMINAL_WINDOW);
+    expect(code).toContain('<Flex direction="row" h="100%"');
   });
 });

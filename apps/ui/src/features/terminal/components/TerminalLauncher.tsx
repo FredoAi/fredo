@@ -3,8 +3,7 @@ import { Box, Text } from '@chakra-ui/react';
 import { LuTriangleAlert } from 'react-icons/lu';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
-import { settingsService } from '../../settings';
-import { ensureTerminalSettingsMigrated, WORK_DIR_KEY } from '../settings';
+import { ensureTerminalSettingsMigrated } from '../settings';
 
 // Module-level in-flight guard: survives React StrictMode double-mount (mount →
 // cleanup → remount would otherwise fire `open_terminal_window` twice) and
@@ -18,9 +17,8 @@ let _launchInFlight = false;
  * The maomaolabs Toolbar opens an in-desktop window on item click; this
  * component is that window's content. On mount (a layout effect — runs before
  * paint, so the transient in-desktop window is not perceivable as a panel) it
- * migrates the pre-rename working directory (`ensureTerminalSettingsMigrated`),
- * reads the saved work dir (`terminal_work_dir`, the same key written by
- * TerminalSettings) and fires `open_terminal_window`. The backend opens the
+ * migrates the pre-rename working directory (`ensureTerminalSettingsMigrated`)
+ * and fires `open_terminal_window`. The backend opens the
  * `terminal` Tauri window directly — window-first, reusing an existing window
  * (one-window guarantee) — and captures every launch failure in TerminalState
  * (surfaced in the terminal window by TerminalSessionView). On resolve the
@@ -43,9 +41,11 @@ export const TerminalLauncher: React.FC = () => {
 
     (async () => {
       try {
+        // Materialize the migrated working directory before the window opens so
+        // the in-window add-session prompt prefills it (sessions are added in
+        // the window — `open_terminal_window` takes no work-dir argument).
         await ensureTerminalSettingsMigrated();
-        const savedWorkDir = await settingsService.get<string>(WORK_DIR_KEY, '');
-        await adapterBridge.invoke('open_terminal_window', { workDir: savedWorkDir || undefined });
+        await adapterBridge.invoke('open_terminal_window');
         closeWindow('terminal');
       } catch (err) {
         setLaunchError(String(err));

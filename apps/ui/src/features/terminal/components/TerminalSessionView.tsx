@@ -1,261 +1,228 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import {
-  Box,
-  Button,
-  Flex,
-  HStack,
-  Icon,
-  Spinner,
-  Text,
-  VStack,
-} from '@chakra-ui/react';
-import {
-  LuCircleX,
-  LuFolderOpen,
-  LuRefreshCw,
-  LuSquare,
-  LuTerminal,
-  LuTriangleAlert,
-} from 'react-icons/lu';
-import { adapterBridge } from '../../../shared/utils/adapterBridge';
+import React from 'react';
+import { Box, Button, Flex, HStack, Icon, Spinner, Text, VStack } from '@chakra-ui/react';
+import { LuCircleX, LuCopy, LuFolderOpen, LuRefreshCw, LuSquare, LuTerminal } from 'react-icons/lu';
 import { tint } from '../../../shared/utils/colorTint';
-import { settingsService } from '../../../features/settings';
-import { ensureTerminalSettingsMigrated, WORK_DIR_KEY } from '../settings';
+import {
+  CLI_LABEL,
+  errorStateMeta,
+  sessionTitle,
+  type ErrorAction,
+  type TerminalSessionInfo,
+} from '../sessionModel';
 
-// ── Status contract (backend `list_terminal_sessions`) ──────────────────────
-export type TerminalSessionStatus = 'starting' | 'running' | 'error' | 'exited';
+// ── Starting overlay (status `starting`, or `running` before the first byte) ──
 
-export interface TerminalSessionInfo {
-  status: TerminalSessionStatus;
-  /** Set when `status === "error"` (resolve/spawn failure message). */
-  error: string | null;
-  /** Resolved working directory of the session (toolbar title). */
-  workDir: string | null;
-}
-
-interface TerminalSessionViewProps {
-  /**
-   * Render the terminal surface. Called only while the session is `running`;
-   * `onFirstOutput` fires on the first PTY output byte (fades the loading
-   * overlay) — includes the `get_pty_buffer` replay, not just live events.
-   */
-  renderTerminal: (handlers: { onFirstOutput: () => void }) => React.ReactNode;
-}
-
-const POLL_MS = 500;
-
-// ── Error metadata: map the backend's launch-error message to an icon/title ──
-function getErrorMeta(error: string | null): { icon: typeof LuTriangleAlert; title: string } {
-  if (error && error.includes('not found in PATH')) {
-    return { icon: LuTerminal, title: 'OpenCode not found' };
-  }
-  if (error && /directory|cwd|working dir/i.test(error)) {
-    return { icon: LuFolderOpen, title: 'Working directory not found' };
-  }
-  return { icon: LuTriangleAlert, title: 'Failed to start terminal' };
-}
-
-const STATUS_DOT_COLOR: Record<TerminalSessionStatus, string> = {
-  running: 'var(--status-success)',
-  starting: 'var(--status-warning)',
-  error: 'var(--status-error)',
-  exited: 'var(--text-secondary)',
-};
-
-const STATUS_LABEL: Record<TerminalSessionStatus, string> = {
-  running: 'running',
-  starting: 'launching',
-  error: 'error',
-  exited: 'exited',
-};
-
-/**
- * Launch lifecycle UI for the `terminal` window (AC5 error surface + no-linger
- * guard). Calls `list_terminal_sessions` on mount and polls while `starting`;
- * mounts the ghostty terminal only when `running`. `list_terminal_sessions`
- * becomes a per-session list with the multi-session work — this view reads the
- * single (≤1) entry the backend currently reports.
- */
-export const TerminalSessionView: React.FC<TerminalSessionViewProps> = ({ renderTerminal }) => {
-  const [status, setStatus] = useState<TerminalSessionInfo | null>(null);
-  const [hasOutput, setHasOutput] = useState(false);
-  const [retryKey, setRetryKey] = useState(0);
-
-  // ── Poll list_terminal_sessions while starting; stop once settled ────────
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-
-    const poll = async () => {
-      try {
-        const sessions = await adapterBridge.invoke<TerminalSessionInfo[]>('list_terminal_sessions');
-        if (cancelled || !sessions) return;
-        const info = sessions[0];
-        if (!info) return;
-        setStatus(info);
-        if (info.status === 'starting') {
-          timer = window.setTimeout(poll, POLL_MS);
-        }
-      } catch {
-        // Transient invoke failure — keep polling (window is still open).
-        if (!cancelled) timer = window.setTimeout(poll, POLL_MS);
-      }
-    };
-
-    poll();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [retryKey]);
-
-  // ── Actions ────────────────────────────────────────────────────────────────
-  const handleRetry = useCallback(async () => {
-    setHasOutput(false);
-    setStatus({ status: 'starting', error: null, workDir: null });
-    try {
-      // open_terminal_window is idempotent w.r.t. an already-open window — a
-      // Retry reuses the current `terminal` window, never a second one.
-      await ensureTerminalSettingsMigrated();
-      const savedWorkDir = await settingsService.get<string>(WORK_DIR_KEY, '');
-      await adapterBridge.invoke('open_terminal_window', { workDir: savedWorkDir || undefined });
-      setRetryKey((k) => k + 1); // restart the poll
-    } catch (err) {
-      setStatus({ status: 'error', error: String(err), workDir: null });
-    }
-  }, []);
-
-  const handleClose = useCallback(() => {
-    adapterBridge.invoke('close_terminal_window').catch(() => {});
-  }, []);
-
-  const handleFirstOutput = useCallback(() => setHasOutput(true), []);
-
-  const kind: TerminalSessionStatus = status?.status ?? 'starting';
-  // Overlay is mounted while starting OR while the terminal is live but no PTY
-  // byte has arrived yet — it fades out (opacity 180ms) on the first output.
-  const showLoading = kind === 'starting' || kind === 'running';
-  const { icon: errorIcon, title: errorTitle } = getErrorMeta(status?.error ?? null);
-
+export const StartingState: React.FC<{
+  session: TerminalSessionInfo;
+  showSlowHint: boolean;
+  /** While `starting` the overlay blocks input; once the PTY is live (no byte
+   *  yet) it lets input fall through to the terminal. */
+  blocking: boolean;
+  onClose: () => void;
+}> = ({ session, showSlowHint, blocking, onClose }) => {
+  const cliLabel = CLI_LABEL[session.cli];
   return (
-    <Flex direction="column" h="100%" bg="bg.canvas">
-      {/* ── Toolbar (32px) ─────────────────────────────────────────────── */}
-      <Flex
-        h="32px"
-        flexShrink={0}
-        align="center"
-        gap={3}
-        px={3}
-        bg="bg.subtle"
-        borderBottom="1px solid var(--border-color)"
-      >
-        <Box
-          w="8px"
-          h="8px"
-          borderRadius="full"
-          flexShrink={0}
-          bg={STATUS_DOT_COLOR[kind]}
-          aria-label={`Session status: ${STATUS_LABEL[kind]}`}
-        />
-        <Text fontSize="xs" color="fg.muted" fontFamily="mono" flex={1} truncate>
-          {status?.workDir || '~'}
+    <Flex
+      position="absolute"
+      inset={0}
+      zIndex={2}
+      direction="column"
+      align="center"
+      justify="center"
+      gap={3}
+      bg="bg.canvas"
+      transition="opacity 180ms ease"
+      pointerEvents={blocking ? 'auto' : 'none'}
+      data-testid="terminal-starting-state"
+    >
+      <Spinner size="md" color="var(--accent-primary)" aria-label={`Starting ${cliLabel} session`} />
+      <Text fontSize="sm" color="fg.muted">{`Starting ${cliLabel}…`}</Text>
+      {showSlowHint && (
+        <Text fontSize="xs" color="fg.muted">
+          Still starting… (check the CLI is installed)
         </Text>
-        {kind === 'running' && (
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={handleClose}
-            _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }}
-          >
-            <LuSquare size={14} />
-            Stop
-          </Button>
-        )}
-      </Flex>
-
-      {/* ── Content ─────────────────────────────────────────────────────── */}
-      <Box position="relative" flex={1} minH={0}>
-        {/* Terminal mounts only when running (ghostty-web owns its own colors). */}
-        {kind === 'running' && renderTerminal({ onFirstOutput: handleFirstOutput })}
-
-        {/* Loading overlay: mounted while starting OR while the terminal is
-            live but no PTY byte has arrived yet; fades out on first output. */}
-        {showLoading && (
-          <Box
-            position="absolute"
-            inset={0}
-            zIndex={2}
-            display="flex"
-            alignItems="center"
-            justifyContent="center"
-            bg="bg.canvas"
-            transition="opacity 180ms ease"
-            opacity={hasOutput ? 0 : 1}
-            pointerEvents={hasOutput ? 'none' : 'auto'}
-          >
-            <VStack gap={3}>
-              <Spinner size="md" color="var(--accent-primary)" aria-label="Starting OpenCode session" />
-              <Text fontSize="sm" color="fg.muted">Starting OpenCode…</Text>
-            </VStack>
-          </Box>
-        )}
-
-        {/* AC5 in-window error surface — always closable, no hang. */}
-        {kind === 'error' && (
-          <Flex
-            position="absolute"
-            inset={0}
-            direction="column"
-            align="center"
-            justify="center"
-            gap={4}
-            p={8}
-            textAlign="center"
-          >
-            <Icon as={errorIcon} boxSize="48px" color="var(--status-error)" />
-            <VStack gap={1}>
-              <Text fontSize="lg" fontWeight="600" color="fg.default">{errorTitle}</Text>
-              {status?.error && (
-                <Text fontSize="sm" color="fg.muted" maxW="520px">{status.error}</Text>
-              )}
-            </VStack>
-            <HStack gap={3}>
-              <Button
-                variant="solid"
-                size="sm"
-                bg="var(--accent-primary)"
-                color="white"
-                onClick={handleRetry}
-              >
-                <LuRefreshCw size={14} />
-                Retry
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClose}
-              >
-                <LuCircleX size={14} />
-                Close
-              </Button>
-            </HStack>
-          </Flex>
-        )}
-
-        {/* Transient exited state — the backend auto-closes the window (AC4). */}
-        {kind === 'exited' && (
-          <Flex
-            position="absolute"
-            inset={0}
-            direction="column"
-            align="center"
-            justify="center"
-            gap={2}
-          >
-            <Text fontSize="sm" color="fg.muted">Session ended — closing window…</Text>
-          </Flex>
-        )}
-      </Box>
+      )}
+      <Button variant="ghost" size="xs" onClick={onClose}>
+        <LuCircleX size={14} />
+        Close session
+      </Button>
     </Flex>
   );
 };
+
+// ── Per-session error surface (typed `errorKind`, never regex) ────────────────
+
+interface ErrorActionHandlers {
+  onRetry: () => void;
+  onClose: () => void;
+  onChooseDirectory: () => void;
+  onCopyCommand: () => void;
+}
+
+const ACTION_LABELS: Record<ErrorAction, string> = {
+  retry: 'Retry',
+  close: 'Close session',
+  'choose-directory': 'Choose directory',
+  'copy-command': 'Copy command',
+};
+
+const ACTION_ICONS: Record<ErrorAction, React.ElementType> = {
+  retry: LuRefreshCw,
+  close: LuCircleX,
+  'choose-directory': LuFolderOpen,
+  'copy-command': LuCopy,
+};
+
+const ACTION_HANDLERS: Record<ErrorAction, keyof ErrorActionHandlers> = {
+  retry: 'onRetry',
+  close: 'onClose',
+  'choose-directory': 'onChooseDirectory',
+  'copy-command': 'onCopyCommand',
+};
+
+export const SessionErrorState: React.FC<{
+  session: TerminalSessionInfo;
+  handlers: ErrorActionHandlers;
+}> = ({ session, handlers }) => {
+  const meta = errorStateMeta(session);
+  return (
+    <Flex
+      role="alert"
+      position="absolute"
+      inset={0}
+      zIndex={3}
+      direction="column"
+      align="center"
+      justify="center"
+      gap={4}
+      p={8}
+      textAlign="center"
+      bg="bg.canvas"
+      data-testid="terminal-error-state"
+      data-error-kind={session.errorKind ?? 'generic'}
+    >
+      <Icon as={meta.icon} boxSize="48px" color="var(--status-error)" />
+      <VStack gap={1}>
+        <Text fontSize="lg" fontWeight="600" color="fg.default">{meta.title}</Text>
+        {meta.body && (
+          <Text fontSize="sm" color="fg.muted" maxW="520px">{meta.body}</Text>
+        )}
+        {meta.showRawMessage && (
+          <Text fontSize="xs" color="fg.muted" maxW="520px">{session.error}</Text>
+        )}
+      </VStack>
+      <HStack gap={3}>
+        {meta.actions.map((action) => (
+          <Button
+            key={action}
+            variant={action === 'retry' ? 'solid' : 'ghost'}
+            size="sm"
+            bg={action === 'retry' ? 'var(--accent-primary)' : undefined}
+            color={action === 'retry' ? 'var(--accent-contrast)' : undefined}
+            onClick={handlers[ACTION_HANDLERS[action]]}
+          >
+            {React.createElement(ACTION_ICONS[action], { size: 14 })}
+            {ACTION_LABELS[action]}
+          </Button>
+        ))}
+      </HStack>
+    </Flex>
+  );
+};
+
+// ── Per-session ended banner (terminal kept mounted + visible underneath) ─────
+
+export const SessionEndedBanner: React.FC<{
+  session: TerminalSessionInfo;
+  onRestart: () => void;
+  onClose: () => void;
+}> = ({ session, onRestart, onClose }) => (
+  <HStack
+    position="absolute"
+    top={0}
+    left={0}
+    right={0}
+    zIndex={2}
+    gap={3}
+    px={3}
+    py={2}
+    bg="bg.subtle"
+    borderBottom="1px solid var(--border-color)"
+    data-testid="terminal-ended-banner"
+  >
+    <Text fontSize="sm" color="fg.default" flex={1}>
+      This session has ended
+    </Text>
+    <Button variant="ghost" size="xs" onClick={onRestart}>
+      <LuRefreshCw size={14} />
+      Restart session
+    </Button>
+    <Button
+      variant="ghost"
+      size="xs"
+      onClick={onClose}
+      _hover={{ color: 'var(--status-error)', background: tint('var(--status-error)', 8) }}
+    >
+      <LuCircleX size={14} />
+      Close session
+    </Button>
+  </HStack>
+);
+
+// ── Window-level empty states ─────────────────────────────────────────────────
+
+const EmptyShell: React.FC<{
+  icon: React.ElementType;
+  iconColor: string;
+  title: string;
+  body: string;
+  onAdd: () => void;
+  testId: string;
+}> = ({ icon, iconColor, title, body, onAdd, testId }) => (
+  <Flex
+    position="absolute"
+    inset={0}
+    direction="column"
+    align="center"
+    justify="center"
+    gap={3}
+    p={8}
+    textAlign="center"
+    data-testid={testId}
+  >
+    <Icon as={icon} boxSize="48px" color={iconColor} />
+    <Text fontSize="lg" fontWeight="600" color="fg.default">{title}</Text>
+    <Text fontSize="sm" color="fg.muted" maxW="420px">{body}</Text>
+    <Button
+      size="sm"
+      background="var(--accent-primary)"
+      color="var(--accent-contrast)"
+      onClick={onAdd}
+      _hover={{ opacity: 0.9 }}
+    >
+      Add session
+    </Button>
+  </Flex>
+);
+
+export const EmptySessionsState: React.FC<{ onAdd: () => void }> = ({ onAdd }) => (
+  <EmptyShell
+    icon={LuTerminal}
+    iconColor="fg.muted"
+    title="No sessions yet"
+    body="Add a session to run OpenCode or GitHub Copilot."
+    onAdd={onAdd}
+    testId="terminal-empty-state"
+  />
+);
+
+export const AllEndedState: React.FC<{ onAdd: () => void }> = ({ onAdd }) => (
+  <EmptyShell
+    icon={LuSquare}
+    iconColor="var(--text-secondary)"
+    title="All sessions ended"
+    body="Every session in this window has exited."
+    onAdd={onAdd}
+    testId="terminal-all-ended-state"
+  />
+);

@@ -1,169 +1,274 @@
-import React, { useCallback, useEffect, useRef } from 'react';
-import { Box } from '@chakra-ui/react';
-import { init, Terminal, FitAddon } from 'ghostty-web';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Flex, VisuallyHidden } from '@chakra-ui/react';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
-import { TerminalSessionView } from './TerminalSessionView';
+import {
+  COPILOT_AUTH_COMMAND,
+  STATUS_LABEL,
+  sessionTitle,
+  type TerminalCli,
+  type TerminalSessionInfo,
+} from '../sessionModel';
+import { SessionSidebar } from './SessionSidebar';
+import { TerminalPane } from './TerminalPane';
+import { NewSessionDialog } from './NewSessionDialog';
 
-// ── Ghostty terminal palette (existing dark palette verbatim — ghostty-web
-//    owns the canvas colors; the window chrome uses Fredo theme tokens) ───────
-const GHOSTTY_THEME = {
-  background:    '#0d0d0d',
-  foreground:    '#e0e0e0',
-  cursor:        '#e0e0e0',
-  cursorAccent:  '#0d0d0d',
-  black:         '#0d0d0d',
-  red:           '#f44747',
-  green:         '#4ec9b0',
-  yellow:        '#dcdcaa',
-  blue:          '#569cd6',
-  magenta:       '#c586c0',
-  cyan:          '#9cdcfe',
-  white:         '#d4d4d4',
-  brightBlack:   '#808080',
-  brightRed:     '#f44747',
-  brightGreen:   '#4ec9b0',
-  brightYellow:  '#dcdcaa',
-  brightBlue:    '#569cd6',
-  brightMagenta: '#c586c0',
-  brightCyan:    '#9cdcfe',
-  brightWhite:   '#ffffff',
-};
+/** Client-only ids for optimistic rows the backend has not created (yet). */
+const PENDING_PREFIX = 'pending-';
 
-interface GhosttyTerminalProps {
-  /** Fired on the first PTY output byte (live event OR buffer replay). */
-  onFirstOutput?: () => void;
+function newPendingId(): string {
+  const uuid =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${PENDING_PREFIX}${uuid}`;
 }
 
-// ── Ghostty renderer (drop-in replacement for the xterm renderer) ────────────
-// Keeps every existing IPC wiring contract: `terminal-output` → term.write,
-// term.onData → write_pty_input, term.onResize → resize_pty, get_pty_buffer
-// replay on mount. Drops the xterm CSS import, the xterm-specific container
-// CSS, and the dead `setup-run-command` listener (no backend emitter exists).
-export const GhosttyTerminal: React.FC<GhosttyTerminalProps> = ({ onFirstOutput }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const firstOutputFiredRef = useRef(false);
+function isRealSession(session: TerminalSessionInfo): boolean {
+  return !session.id.startsWith(PENDING_PREFIX);
+}
 
-  const fireFirstOutput = useCallback(() => {
-    if (firstOutputFiredRef.current) return;
-    firstOutputFiredRef.current = true;
-    onFirstOutput?.();
-  }, [onFirstOutput]);
+interface DialogInit {
+  cli: TerminalCli | null;
+  workDir: string | null;
+  replaceId: string | null;
+}
 
+/**
+ * TerminalWindow — the root of the single `terminal` window (Spec #2934 ST-3).
+ *
+ * Owns the session list (mount-time `list_terminal_sessions` + live
+ * `terminal-sessions-changed`/`terminal-exited`), the selection, and the
+ * per-session actions. Switching only flips `selectedId` — it never spawns,
+ * kills, or remounts anything (AC2/NFR).
+ */
+export const TerminalWindow: React.FC = () => {
+  const [sessions, setSessions] = useState<TerminalSessionInfo[]>([]);
+  const [pending, setPending] = useState<TerminalSessionInfo[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [outputSeen, setOutputSeen] = useState<Record<string, boolean>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogInit, setDialogInit] = useState<DialogInit>({
+    cli: null,
+    workDir: null,
+    replaceId: null,
+  });
+  const [slowStartingId, setSlowStartingId] = useState<string | null>(null);
+  const promptedRef = useRef(false);
+
+  const allSessions = useMemo(() => [...sessions, ...pending], [sessions, pending]);
+  const selected = useMemo(
+    () => allSessions.find((s) => s.id === selectedId) ?? null,
+    [allSessions, selectedId],
+  );
+  const allExited = allSessions.length > 0 && allSessions.every((s) => s.status === 'exited');
+
+  // ── Mount: idempotent migration, mount-time truth, live listeners ──────────
   useEffect(() => {
-    if (!containerRef.current) return;
-    let unlisten: (() => void) | null = null;
-    let unlistenExit: (() => void) | null = null;
-    let resizeDisposable: { dispose(): void } | null = null;
-    let dataDisposable: { dispose(): void } | null = null;
-    let term: Terminal | null = null;
-    let fitAddon: FitAddon | null = null;
-    let disposed = false;
+    let cancelled = false;
+    const unlisteners: Array<Promise<() => void>> = [];
 
-    // init() is a module-level singleton; the wasm is base64-inlined in the
-    // bundle (no separate asset fetch). No top-level await (es2020 target).
-    init()
-      .then(() => {
-        if (disposed || !containerRef.current) return;
+    const refresh = async () => {
+      try {
+        const list = await adapterBridge.invoke<TerminalSessionInfo[]>('list_terminal_sessions');
+        if (cancelled || !list) return;
+        setSessions(list);
+      } catch {
+        /* window is open — keep the last known list */
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    };
 
-        term = new Terminal({
-          cursorBlink: true,
-          fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace',
-          fontSize: 14,
-          allowTransparency: false,
-          scrollback: 5000,
-          theme: GHOSTTY_THEME,
-        });
+    void ensureTerminalSettingsMigrated().then(refresh);
 
-        fitAddon = new FitAddon();
-        term.loadAddon(fitAddon);
-        term.open(containerRef.current);
-
-        // term.onResize fires on every resize (incl. FitAddon.fit) → notify PTY.
-        resizeDisposable = term.onResize(({ cols, rows }) => {
-          adapterBridge.invoke('resize_pty', { rows, cols }).catch(() => {});
-        });
-
-        dataDisposable = term.onData((data: string) => {
-          adapterBridge.invoke('write_pty_input', { data }).catch(() => {});
-        });
-
-        // Fit to the container now (fires onResize → resize_pty with real
-        // dims), then observe container resizes (ResizeObserver → fit).
-        fitAddon.fit();
-        fitAddon.observeResize();
-
-        term.focus();
-
-        // Replay buffered PTY output as soon as the terminal is open, fired
-        // INDEPENDENTLY of the listener chain (FIX-1 round 2). With window-first
-        // launch the reader emits the initial burst before this webview's
-        // `listen()` registers — those events are not queued by Tauri, so the
-        // `get_pty_buffer` replay is the ONLY path that renders them and fades
-        // the loading overlay. Gating the replay on `listen()` resolving means
-        // a listener hiccup blanks the terminal and the overlay never fades.
-        const replay = adapterBridge.invoke<number[]>('get_pty_buffer')
-          .then((buf) => {
-            if (buf?.length) {
-              fireFirstOutput();
-              term?.write(new Uint8Array(buf));
-            }
-          })
-          .catch((err) => console.error('[Terminal] pty buffer replay failed:', err));
-
-        // Register live event listeners in PARALLEL with the replay. A failure
-        // in one must not block the other (allSettled) — replay + live events
-        // are independent delivery paths for the same PTY bytes.
-        const listeners = import('@tauri-apps/api/event').then(({ listen }) =>
-          Promise.allSettled([
-            listen<number[]>('terminal-output', (ev) => {
-              fireFirstOutput();
-              term?.write(new Uint8Array(ev.payload));
-            }).then((fn) => { unlisten = fn; }),
-            listen('terminal-exited', () =>
-              term?.writeln('\r\n\x1b[33m[Process exited]\x1b[0m'))
-              .then((fn) => { unlistenExit = fn; }),
-          ]));
-
-        return Promise.allSettled([replay, listeners]);
-      })
-      .catch((err) => {
-        console.error('[Terminal] ghostty init failed:', err);
-      });
+    unlisteners.push(
+      adapterBridge.listen<{ sessions: TerminalSessionInfo[] }>(
+        'terminal-sessions-changed',
+        (ev) => {
+          if (ev?.sessions) setSessions(ev.sessions);
+        },
+      ),
+      adapterBridge.listen<{ sessionId: string }>('terminal-exited', (ev) => {
+        if (!ev?.sessionId) return;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === ev.sessionId ? { ...s, status: 'exited' } : s)),
+        );
+      }),
+    );
 
     return () => {
-      disposed = true;
-      unlisten?.();
-      unlistenExit?.();
-      resizeDisposable?.dispose();
-      dataDisposable?.dispose();
-      fitAddon?.dispose();
-      term?.dispose();
+      cancelled = true;
+      unlisteners.forEach((p) => p.then((fn) => fn()).catch(() => {}));
     };
-  }, [fireFirstOutput]);
-
-  return (
-    <Box
-      ref={containerRef}
-      w="100%"
-      h="100%"
-      background="#0d0d0d"
-      overflow="hidden"
-    />
-  );
-};
-
-// ── Root ──────────────────────────────────────────────────────────────────────
-export const TerminalWindow: React.FC = () => {
-  // Idempotent (module-scoped guard) — materializes the migrated working dir
-  // even when this window is opened directly, not through the launcher.
-  useEffect(() => {
-    void ensureTerminalSettingsMigrated();
   }, []);
 
+  // ── Keep a valid selection ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (selectedId && allSessions.some((s) => s.id === selectedId)) return;
+    const next =
+      allSessions.find((s) => s.status === 'running') ??
+      allSessions.find((s) => s.status === 'starting') ??
+      allSessions[0];
+    setSelectedId(next ? next.id : null);
+  }, [allSessions, selectedId]);
+
+  // ── A launch with an empty window IS "adding a session" — prompt on open ────
+  useEffect(() => {
+    if (!loaded || promptedRef.current) return;
+    promptedRef.current = true;
+    if (allSessions.length === 0) setDialogOpen(true);
+  }, [loaded, allSessions.length]);
+
+  // ── Doherty ≥10s hint for a session stuck in `starting` ─────────────────────
+  useEffect(() => {
+    if (selected?.status !== 'starting') {
+      setSlowStartingId((prev) => (prev === selected?.id ? null : prev));
+      return;
+    }
+    const timer = window.setTimeout(() => setSlowStartingId(selected.id), 10000);
+    return () => window.clearTimeout(timer);
+  }, [selected?.id, selected?.status]);
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  const handleFirstOutput = useCallback((sessionId: string) => {
+    setOutputSeen((prev) => (prev[sessionId] ? prev : { ...prev, [sessionId]: true }));
+  }, []);
+
+  const handleSelect = useCallback((id: string) => setSelectedId(id), []);
+
+  const closeSession = useCallback((session: TerminalSessionInfo) => {
+    const real = isRealSession(session);
+    setPending((prev) => prev.filter((s) => s.id !== session.id));
+    setSessions((prev) => prev.filter((s) => s.id !== session.id));
+    setOutputSeen((prev) => {
+      if (!(session.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[session.id];
+      return next;
+    });
+    if (real) {
+      adapterBridge.invoke('close_terminal_session', { sessionId: session.id }).catch(() => {});
+    }
+  }, []);
+
+  const spawnSession = useCallback(async (cli: TerminalCli, workDir: string) => {
+    const tempId = newPendingId();
+    const optimistic: TerminalSessionInfo = {
+      id: tempId,
+      cli,
+      status: 'starting',
+      error: null,
+      errorKind: null,
+      workDir,
+      cols: 80,
+      rows: 24,
+      pid: null,
+      startedAt: Date.now(),
+    };
+    setPending((prev) => [...prev, optimistic]);
+    setSelectedId(tempId);
+    try {
+      const realId = await adapterBridge.invoke<string>('spawn_terminal_session', {
+        cli,
+        workDir: workDir || undefined,
+      });
+      setPending((prev) => prev.filter((s) => s.id !== tempId));
+      if (realId) {
+        setSelectedId((prev) => (prev === tempId ? realId : prev));
+        const list = await adapterBridge.invoke<TerminalSessionInfo[]>('list_terminal_sessions');
+        if (list) setSessions(list);
+      }
+    } catch (err) {
+      setPending((prev) =>
+        prev.map((s) =>
+          s.id === tempId
+            ? { ...s, status: 'error' as const, error: String(err), errorKind: 'generic' as const }
+            : s,
+        ),
+      );
+    }
+  }, []);
+
+  const openDialog = useCallback(
+    (opts?: { cli?: TerminalCli | null; workDir?: string | null; replaceId?: string | null }) => {
+      setDialogInit({
+        cli: opts?.cli ?? null,
+        workDir: opts?.workDir ?? null,
+        replaceId: opts?.replaceId ?? null,
+      });
+      setDialogOpen(true);
+    },
+    [],
+  );
+
+  const handleConfirm = useCallback(
+    (cli: TerminalCli, workDir: string) => {
+      const replaceId = dialogInit.replaceId;
+      setDialogOpen(false);
+      if (replaceId) {
+        const target = allSessions.find((s) => s.id === replaceId);
+        if (target) closeSession(target);
+      }
+      void spawnSession(cli, workDir);
+    },
+    [dialogInit.replaceId, allSessions, closeSession, spawnSession],
+  );
+
+  const handleRetry = useCallback(
+    (session: TerminalSessionInfo) => {
+      closeSession(session);
+      void spawnSession(session.cli, session.workDir);
+    },
+    [closeSession, spawnSession],
+  );
+
+  const handleChooseDirectory = useCallback(
+    (session: TerminalSessionInfo) => {
+      openDialog({ cli: session.cli, workDir: session.workDir, replaceId: session.id });
+    },
+    [openDialog],
+  );
+
+  const handleCopyCommand = useCallback(() => {
+    void navigator.clipboard?.writeText(COPILOT_AUTH_COMMAND).catch(() => {});
+  }, []);
+
+  const announcement = selected
+    ? `${sessionTitle(selected, allSessions)}, ${STATUS_LABEL[selected.status]}`
+    : '';
+
   return (
-    <TerminalSessionView renderTerminal={({ onFirstOutput }) => (
-      <GhosttyTerminal onFirstOutput={onFirstOutput} />
-    )} />
+    <Flex direction="row" h="100%" bg="bg.canvas">
+      <SessionSidebar
+        sessions={allSessions}
+        selectedId={selectedId}
+        onSelect={handleSelect}
+        onClose={closeSession}
+        onAdd={() => openDialog()}
+      />
+      <TerminalPane
+        sessions={allSessions}
+        selected={selected}
+        allExited={allExited}
+        outputSeen={outputSeen}
+        slowStarting={!!selected && slowStartingId === selected.id}
+        onFirstOutput={handleFirstOutput}
+        onClose={closeSession}
+        onRetry={handleRetry}
+        onChooseDirectory={handleChooseDirectory}
+        onCopyCommand={handleCopyCommand}
+        onAdd={() => openDialog()}
+      />
+      <NewSessionDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onConfirm={handleConfirm}
+        initialCli={dialogInit.cli}
+        initialWorkDir={dialogInit.workDir}
+      />
+      <VisuallyHidden aria-live="polite">{announcement}</VisuallyHidden>
+    </Flex>
   );
 };
