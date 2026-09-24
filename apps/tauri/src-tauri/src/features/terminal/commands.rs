@@ -2,15 +2,21 @@ use std::io::{Read, Write};
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, PtySize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-use crate::features::terminal::state::{
-    append_capped, finalize_exited, TerminalCli, TerminalErrorKind, TerminalSession,
-    TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
+use crate::features::terminal::persistence::{self, PersistedSession};
+use crate::features::terminal::resume::{
+    resume_args, run_bounded, ResumeOutcome, ResumeResult, RESUME_PREFLIGHT_TIMEOUT,
 };
+use crate::features::terminal::state::{
+    append_capped, finalize_exited, finalize_resume_failed, mark_resumed, now_ms, TerminalCli,
+    TerminalErrorKind, TerminalSession, TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
+};
+use crate::infrastructure::storage::feature_store::FeatureStore;
 use crate::infrastructure::storage::AppStore;
 
 /// The ONE terminal window label (window-targeted events + lifecycle).
@@ -46,6 +52,23 @@ const EXIT_POLL_MS: u64 = 250;
 /// FX-4 (RC-2): settle window after a detected child exit, so trailing PTY bytes
 /// land in the per-session buffer before `exited` is published (R-5.3).
 const EXIT_DRAIN_MS: u64 = 250;
+
+// ── Best-effort CLI-native session-id capture (Spec #2935 ST-2) ───────────────
+//
+// ST-1 pinned that OpenCode exposes a non-interactive listing surface
+// (`opencode session list --format json`), so an OpenCode record can carry its
+// CLI-native session id and resume with `--session <id>`. Copilot exposes none,
+// so its records keep `cli_session_id = None` and fall back to `--continue`.
+
+/// Delay after a spawn before the first listing attempt (the CLI's session is
+/// usually created at TUI start).
+const CAPTURE_DELAY_MS: u64 = 2_000;
+/// Bounded number of listing attempts before giving up.
+const CAPTURE_ATTEMPTS: u32 = 4;
+/// Hard timeout for ONE listing invocation.
+const CAPTURE_TIMEOUT_MS: u64 = 15_000;
+/// Clock-skew slack when matching a listed session's `created` time to a spawn.
+const CAPTURE_CLOCK_SLACK_MS: u64 = 5_000;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -397,6 +420,29 @@ struct SessionsChangedPayload {
     sessions: Vec<TerminalSessionInfo>,
 }
 
+/// ADDITIVE event payload for persisted-record changes (Spec #2935 ST-2). The
+/// shipped `terminal-sessions-changed` / `terminal-output` / `terminal-exited`
+/// payloads are unchanged.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedSessionsChangedPayload {
+    sessions: Vec<PersistedSession>,
+}
+
+/// The window event carrying a `fredo open-terminal` launch intent (Spec #2935
+/// ST-3), mirroring `APP_OPEN_REQUEST_EVENT`. The webview consumes it ONCE and
+/// spawns the session — the backend NEVER spawns (single-spawner adjudication).
+pub const TERMINAL_OPEN_REQUEST_EVENT: &str = "terminal-open-request";
+
+/// A validated launch intent: the CLI + working directory a `fredo
+/// open-terminal` invocation asked for.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOpenRequestPayload {
+    pub cli: String,
+    pub work_dir: String,
+}
+
 /// Per-session wire record. `pid` + `startedAt` let the QA prove that switching
 /// or replaying a session never re-spawns it; `errorKind` is typed so the UI
 /// selects a distinct error state without parsing `error`.
@@ -468,6 +514,18 @@ fn emit_session_exited(app: &AppHandle, id: &str) {
         snapshot(&guard)
     };
     emit_sessions_changed(app, sessions);
+
+    // Self-exit does not remove the record: stamp its last-active time and keep
+    // it resumable (R-1.4/R-2.2).
+    if let Some(feature_store) = app.try_state::<Arc<FeatureStore>>() {
+        if let Err(e) = persistence::touch(feature_store.inner(), id, now_ms()) {
+            tracing::error!(target: "fredo::terminal", error = %e, "touch record on exit failed");
+        }
+        emit_persisted_sessions_changed(
+            app,
+            persistence::list(feature_store.inner()).unwrap_or_default(),
+        );
+    }
 }
 
 /// Mark a session failed (before any process exists) and broadcast the list.
@@ -488,199 +546,248 @@ fn fail_session(
     emit_sessions_changed(app, sessions);
 }
 
-/// Handler wired to the `terminal` window: closing the window for ANY reason
-/// (OS X button, Alt+F4, `close_terminal_window`) tree-kills EVERY session so no
-/// process orphans (AC5).
-fn window_close_handler(
-    app: AppHandle,
-) -> impl Fn(&tauri::WindowEvent) + Send + Sync + 'static {
-    move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            tracing::debug!(target: "fredo::terminal", "CloseRequested: tree-killing every session");
-            let drained = {
-                let s = app.state::<Mutex<TerminalState>>();
-                let mut guard = s.lock().unwrap();
-                guard.drain_sessions()
-            };
-            for session in drained {
-                kill_session_tree(session.pid, session.killer);
-            }
-        }
+/// Broadcast the persisted-record list to the terminal window (additive).
+fn emit_persisted_sessions_changed(app: &AppHandle, sessions: Vec<PersistedSession>) {
+    if let Err(e) = app.emit_to(
+        WINDOW_LABEL,
+        "terminal-persisted-sessions-changed",
+        PersistedSessionsChangedPayload { sessions },
+    ) {
+        tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-persisted-sessions-changed failed");
     }
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
-
-/// Create or focus the ONE `terminal` window. NO session is spawned here — the
-/// first session is created by the in-window add-session flow
-/// (`spawn_terminal_session`).
-#[tauri::command]
-pub async fn open_terminal_window(app: AppHandle) -> Result<(), String> {
-    tracing::debug!(target: "fredo::terminal", "open_terminal_window called");
-
-    match app.get_webview_window(WINDOW_LABEL) {
-        Some(win) => {
-            tracing::debug!(target: "fredo::terminal", "reusing existing terminal window");
-            win.set_focus().ok();
-        }
-        None => {
-            tracing::debug!(target: "fredo::terminal", "building WebviewWindow");
-            let window = WebviewWindowBuilder::new(
-                &app,
-                WINDOW_LABEL,
-                WebviewUrl::App("index.html?view=terminal".into()),
-            )
-            .title("Terminal")
-            .inner_size(900.0, 600.0)
-            .min_inner_size(560.0, 360.0)
-            .resizable(true)
-            .build()
-            .map_err(|e| {
-                tracing::error!(target: "fredo::terminal", error = %e, "WebviewWindow creation failed");
-                format!("Failed to open terminal window: {e}")
-            })?;
-            // Wire CloseRequested → tree-kill every session (no orphans).
-            window.on_window_event(window_close_handler(app.clone()));
-        }
+/// Window-targeted delivery of a `fredo open-terminal` launch intent.
+fn emit_terminal_open_request(app: &AppHandle, payload: TerminalOpenRequestPayload) {
+    if let Err(e) = app.emit_to(WINDOW_LABEL, TERMINAL_OPEN_REQUEST_EVENT, payload) {
+        tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-open-request failed");
     }
-
-    Ok(())
 }
 
-/// TEST-ONLY override seam for the AC4 negative rows. Never set by the
-/// production UI: it deterministically forces a missing binary or an unmet
-/// PowerShell prerequisite without touching the host PATH.
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpawnTestOverride {
-    pub binary: Option<String>,
-    pub pwsh_major: Option<u32>,
-}
-
-/// Spawn a new CLI session in its own PTY and start streaming its output.
+/// Persist a record for a session that SUCCEEDED in spawning.
 ///
-/// Deterministic order: allocate id → insert `starting` → resolve binary →
-/// validate cwd → Copilot-only PowerShell-6+ gate → openpty/spawn → store
-/// handles + pid → spawn the reader task. ANY failure before `spawn_command`
-/// sets `status=error`, a typed `error_kind`, and `launch_error`, and still
-/// returns `Ok(sessionId)` so the sidebar row is the in-window error surface.
-/// Nothing is spawned on a failure path, so no orphan can exist.
-#[tauri::command]
-pub async fn spawn_terminal_session(
-    cli: String,
-    work_dir: Option<String>,
-    test_override: Option<SpawnTestOverride>,
-    app: AppHandle,
-    state: tauri::State<'_, Mutex<TerminalState>>,
-    store: tauri::State<'_, Arc<AppStore>>,
-) -> Result<String, String> {
-    let cli = TerminalCli::parse(&cli).ok_or_else(|| format!("Unknown CLI: {cli}"))?;
+/// Deliberately after the process exists: a failed launch must never leave a
+/// bogus resumable record (a fresh spawn failure keeps only a live error row,
+/// never a persisted record). The title is minted once from the existing
+/// records and persisted, so ordinals never renumber on restart.
+fn persist_new_record(
+    feature_store: &FeatureStore,
+    app: &AppHandle,
+    id: &str,
+    cli: TerminalCli,
+    work_dir: &str,
+    created_at: u64,
+) {
+    if let Err(e) = persistence::ensure_table(feature_store) {
+        tracing::error!(target: "fredo::terminal", error = %e, "ensure record table failed");
+        return;
+    }
+    let existing = persistence::list(feature_store).unwrap_or_default();
+    let record = PersistedSession {
+        id: id.to_string(),
+        cli,
+        work_dir: work_dir.to_string(),
+        title: persistence::mint_title(cli, &existing),
+        created_at,
+        last_active_at: created_at,
+        cli_session_id: None,
+    };
+    if let Err(e) = persistence::insert(feature_store, &record) {
+        tracing::error!(target: "fredo::terminal", error = %e, "persist session record failed");
+        return;
+    }
+    emit_persisted_sessions_changed(app, persistence::list(feature_store).unwrap_or_default());
+}
 
-    let cwd = work_dir
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .or_else(|| std::env::var("HOME").ok())
-        .unwrap_or_else(|| ".".to_string());
-
-    let session_id = Uuid::new_v4().to_string();
-    {
+/// Remove a live session and tree-kill its process (used when a resume must not
+/// leave a partial session behind, and when a record with a live process is
+/// deleted).
+fn remove_live_session(app: &AppHandle, state: &Mutex<TerminalState>, id: &str) {
+    let removed = {
         let mut guard = state.lock().unwrap();
-        guard.insert_starting(session_id.clone(), cli, cwd.clone(), 80, 24);
+        guard.remove(id)
+    };
+    if let Some(session) = removed {
+        kill_session_tree(session.pid, session.killer);
     }
     let sessions = {
         let guard = state.lock().unwrap();
         snapshot(&guard)
     };
-    emit_sessions_changed(&app, sessions);
+    emit_sessions_changed(app, sessions);
+}
 
-    // Diagnostic override settings (unrendered). The TEST-ONLY seam wins over
-    // the stored Copilot path (which only applies to a Copilot session).
-    let binary_override = test_override.as_ref().and_then(|o| o.binary.clone()).or_else(|| {
-        if cli == TerminalCli::Copilot {
-            store.get(COPILOT_PATH_KEY).ok().flatten()
-        } else {
+/// Map a launch-preparation failure kind onto the typed resume outcome. Only the
+/// pre-flight kinds reach here; anything else is a launch failure.
+fn resume_outcome_for(kind: TerminalErrorKind) -> ResumeOutcome {
+    match kind {
+        TerminalErrorKind::MissingBinary => ResumeOutcome::MissingBinary,
+        TerminalErrorKind::InvalidCwd => ResumeOutcome::InvalidCwd,
+        _ => ResumeOutcome::LaunchFailed,
+    }
+}
+
+/// A `std::process::Command` for a resolved CLI, mirroring [`plan_launch`]'s
+/// wrapping (`.cmd`/`.bat` → `cmd.exe /C`, `.ps1` → `pwsh -File`).
+fn list_command(bin: &str) -> std::process::Command {
+    let lower = bin.to_ascii_lowercase();
+    #[cfg(target_os = "windows")]
+    {
+        if lower.ends_with(".ps1") {
+            let mut cmd = std::process::Command::new("pwsh");
+            cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", bin]);
+            return cmd;
+        }
+        if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            let mut cmd = std::process::Command::new("cmd.exe");
+            cmd.arg("/C");
+            cmd.arg(bin);
+            return cmd;
+        }
+    }
+    let _ = lower;
+    std::process::Command::new(bin)
+}
+
+/// Best-effort, bounded: list OpenCode's sessions (ST-1 pinned
+/// `opencode session list --format json`) and return stdout.
+fn list_opencode_sessions() -> Option<String> {
+    let bin = resolve_binary(TerminalCli::OpenCode, None).ok()?;
+    let mut command = list_command(&bin);
+    command.args(["session", "list", "--format", "json"]);
+    match run_bounded(command, Duration::from_millis(CAPTURE_TIMEOUT_MS)) {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+        Ok(output) => {
+            tracing::debug!(target: "fredo::terminal", status = ?output.status, "session list exited non-zero");
             None
         }
-    });
-    let pwsh = powershell_shell(store.get(PWSH_PATH_KEY).ok().flatten().as_deref());
-
-    // ── Resolve binary ─────────────────────────────────────────────────────
-    let bin = match resolve_binary(cli, binary_override.as_deref()) {
-        Ok(bin) => bin,
-        Err(msg) => {
-            tracing::error!(target: "fredo::terminal", error = %msg, "binary resolution failed");
-            fail_session(&app, &state, &session_id, TerminalErrorKind::MissingBinary, msg);
-            return Ok(session_id);
+        Err(e) => {
+            tracing::debug!(target: "fredo::terminal", error = %e, "session list probe failed");
+            None
         }
-    };
-    tracing::debug!(target: "fredo::terminal", bin = ?bin, "resolved binary");
-
-    // ── Validate cwd (ConPTY does not) ─────────────────────────────────────
-    if let Err(msg) = validate_cwd(&cwd) {
-        tracing::error!(target: "fredo::terminal", error = %msg, "cwd validation failed");
-        fail_session(&app, &state, &session_id, TerminalErrorKind::InvalidCwd, msg);
-        return Ok(session_id);
     }
+}
 
-    // ── Plan the launch form (pure; NO spawn, NO PTY) ──────────────────────
-    // Computed BEFORE the prereq gate so the gate can be scoped to the form
-    // that actually executes PowerShell. The `Err → Launch` mapping is
-    // unchanged (a Unix script with no bash is still a launch failure).
-    let form = match plan_launch(&bin, &pwsh) {
-        Ok(form) => form,
-        Err(msg) => {
-            tracing::error!(target: "fredo::terminal", error = %msg, "launch planning failed");
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
-            return Ok(session_id);
-        }
-    };
-
-    // ── Copilot-only PowerShell 6+ gate (pre-spawn) ────────────────────────
-    // Scoped to the launch form that genuinely runs PowerShell (`.ps1`): a
-    // `.cmd`/`.bat` (CmdShim, via `cmd.exe /C`) or `.exe`/bare (Direct) launch
-    // never invokes it, so it must not be blocked on a pwsh-less host. The
-    // TEST-ONLY `pwsh_major` seam still forces the check (AC4 4c).
-    #[cfg(target_os = "windows")]
-    if cli == TerminalCli::Copilot {
-        let override_major = test_override.as_ref().and_then(|o| o.pwsh_major);
-        if powershell_gate_applies(&form, override_major) {
-            if let Err(msg) = check_powershell_prereq(&pwsh, override_major) {
-                tracing::error!(target: "fredo::terminal", error = %msg, "PowerShell prerequisite failed");
-                fail_session(&app, &state, &session_id, TerminalErrorKind::Prereq, msg);
-                return Ok(session_id);
+/// Best-effort capture of an OpenCode session's CLI-native id, persisted onto the
+/// record so a later resume uses `--session <id>` instead of the last-session
+/// fallback. A no-op for Copilot (ST-1: no listing surface). Never spawns a
+/// session and never blocks a command — it runs on the async runtime, bounded.
+fn capture_cli_session_id(
+    app: AppHandle,
+    cli: TerminalCli,
+    work_dir: String,
+    session_id: String,
+    spawned_at: u64,
+) {
+    if cli != TerminalCli::OpenCode {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let since = spawned_at.saturating_sub(CAPTURE_CLOCK_SLACK_MS);
+        for _ in 0..CAPTURE_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(CAPTURE_DELAY_MS)).await;
+            let Some(json) = list_opencode_sessions() else {
+                continue;
+            };
+            let Some(native_id) =
+                persistence::newest_session_id_for_dir(&json, &work_dir, since)
+            else {
+                continue;
+            };
+            let Some(feature_store) = app.try_state::<Arc<FeatureStore>>() else {
+                return;
+            };
+            match persistence::set_cli_session_id(feature_store.inner(), &session_id, &native_id) {
+                Ok(()) => {
+                    tracing::debug!(target: "fredo::terminal", id = %native_id, "captured CLI session id");
+                    emit_persisted_sessions_changed(
+                        &app,
+                        persistence::list(feature_store.inner()).unwrap_or_default(),
+                    );
+                    return;
+                }
+                Err(e) => tracing::error!(
+                    target: "fredo::terminal",
+                    error = %e,
+                    "persist CLI session id failed"
+                ),
             }
         }
-    }
+    });
+}
 
+/// The steps that must succeed BEFORE any PTY is opened: resolve the binary,
+/// validate the working directory, plan the launch form, and apply the
+/// Copilot-only PowerShell prerequisite gate. A failure is typed so the caller
+/// can choose an in-window error row (fresh spawn) or a typed `ResumeOutcome`
+/// (resume).
+fn prepare_session(
+    cli: TerminalCli,
+    cwd: &str,
+    binary_override: Option<String>,
+    pwsh: &str,
+    test_override: Option<&SpawnTestOverride>,
+) -> Result<LaunchForm, (TerminalErrorKind, String)> {
+    let bin = resolve_binary(cli, binary_override.as_deref())
+        .map_err(|msg| (TerminalErrorKind::MissingBinary, msg))?;
+    tracing::debug!(target: "fredo::terminal", bin = ?bin, "resolved binary");
+
+    validate_cwd(cwd).map_err(|msg| (TerminalErrorKind::InvalidCwd, msg))?;
+
+    let form = plan_launch(&bin, pwsh).map_err(|msg| (TerminalErrorKind::Launch, msg))?;
+
+    #[cfg(target_os = "windows")]
+    if cli == TerminalCli::Copilot {
+        let override_major = test_override.and_then(|o| o.pwsh_major);
+        if powershell_gate_applies(&form, override_major) {
+            check_powershell_prereq(pwsh, override_major)
+                .map_err(|msg| (TerminalErrorKind::Prereq, msg))?;
+        }
+    }
+    let _ = test_override;
+
+    Ok(form)
+}
+
+/// Open the PTY, spawn the process (with any resume args appended), store the
+/// handles, and start the reader + exit-watcher tasks.
+///
+/// Returns `Ok(true)` when the session is live, `Ok(false)` when it vanished
+/// mid-spawn (closed by the user), and a typed `Err` on a launch failure. The
+/// session row is expected to exist in `state`; the caller owns that row's fate.
+fn spawn_and_wire(
+    app: &AppHandle,
+    state: &Mutex<TerminalState>,
+    session_id: &str,
+    form: LaunchForm,
+    cwd: &str,
+    extra_args: &[String],
+) -> Result<bool, (TerminalErrorKind, String)> {
     // ── Open the PTY and spawn ─────────────────────────────────────────────
     let pty_system = native_pty_system();
-    let pair = match pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
-    {
-        Ok(pair) => pair,
-        Err(e) => {
-            let msg = format!("Failed to open PTY: {e}");
+    let pair = pty_system
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| {
             tracing::error!(target: "fredo::terminal", error = %e, "openpty failed");
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
-            return Ok(session_id);
-        }
-    };
+            (TerminalErrorKind::Launch, format!("Failed to open PTY: {e}"))
+        })?;
 
     let mut cmd = build_pty_command(form);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "fredo");
-    cmd.cwd(&cwd);
+    cmd.cwd(cwd);
 
-    tracing::debug!(target: "fredo::terminal", bin = ?bin, cwd = ?cwd, "spawning child");
-    let child = match pair.slave.spawn_command(cmd) {
-        Ok(child) => child,
-        Err(e) => {
-            let msg = format!("Could not start session: {e}");
-            tracing::error!(target: "fredo::terminal", error = %e, "spawn failed");
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
-            return Ok(session_id);
-        }
-    };
+    tracing::debug!(target: "fredo::terminal", cwd = ?cwd, "spawning child");
+    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+        tracing::error!(target: "fredo::terminal", error = %e, "spawn failed");
+        (TerminalErrorKind::Launch, format!("Could not start session: {e}"))
+    })?;
     let pid = child.process_id();
     tracing::debug!(target: "fredo::terminal", pid = ?pid, "child spawned OK");
 
@@ -691,8 +798,7 @@ pub async fn spawn_terminal_session(
             let msg = format!("Failed to get PTY reader: {e}");
             tracing::error!(target: "fredo::terminal", error = %e, "reader clone failed");
             kill_session_tree(pid, Some(child));
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
-            return Ok(session_id);
+            return Err((TerminalErrorKind::Launch, msg));
         }
     };
     let writer = match pair.master.take_writer() {
@@ -701,15 +807,14 @@ pub async fn spawn_terminal_session(
             let msg = format!("Failed to get PTY writer: {e}");
             tracing::error!(target: "fredo::terminal", error = %e, "writer take failed");
             kill_session_tree(pid, Some(child));
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
-            return Ok(session_id);
+            return Err((TerminalErrorKind::Launch, msg));
         }
     };
 
     // ── Store handles + make the session live ──────────────────────────────
     let output_buffer = {
         let mut guard = state.lock().unwrap();
-        match guard.get_mut(&session_id) {
+        match guard.get_mut(session_id) {
             Some(session) => {
                 session.pid = pid;
                 session.writer = Some(writer);
@@ -724,7 +829,7 @@ pub async fn spawn_terminal_session(
                 // The session was closed mid-spawn: kill the fresh child and stop.
                 tracing::warn!(target: "fredo::terminal", "session vanished before spawn completed");
                 kill_session_tree(pid, Some(child));
-                return Ok(session_id);
+                return Ok(false);
             }
         }
     };
@@ -732,13 +837,11 @@ pub async fn spawn_terminal_session(
         let guard = state.lock().unwrap();
         snapshot(&guard)
     };
-    emit_sessions_changed(&app, sessions);
+    emit_sessions_changed(app, sessions);
 
     // ── Reader task (never holds the state lock across a read) ─────────────
-    // The reader never owns the exit transition alone any more (FX-4): it calls
-    // the shared `finalize_exited`, which is idempotent with the watcher below.
     let app_task = app.clone();
-    let task_id = session_id.clone();
+    let task_id = session_id.to_string();
     tauri::async_runtime::spawn(async move {
         let mut buf = [0u8; 4096];
         let mut line_buf = String::new();
@@ -768,8 +871,6 @@ pub async fn spawn_terminal_session(
                 }
             }
 
-            // Window-targeted emit: the terminal window is the only consumer,
-            // and the payload carries the sessionId so routing is session-scoped.
             if let Err(e) = app_task.emit_to(
                 WINDOW_LABEL,
                 "terminal-output",
@@ -789,68 +890,278 @@ pub async fn spawn_terminal_session(
         }
 
         // Mark ONLY this session exited; retain its row + buffer. The window
-        // stays open (R-5.3) — the removed auto-close is intentional. If the
-        // watcher won the transition first this is a no-op, so the exit event
-        // is emitted exactly once.
+        // stays open (R-5.3). A RESUMED session defers its transition to the
+        // exit watcher, which can distinguish a clean exit from a failed
+        // reconnect (`resume-failed`, R-4.3).
         let s = app_task.state::<Mutex<TerminalState>>();
-        if finalize_exited(&s, &task_id) {
+        let resumed = {
+            let guard = s.lock().unwrap();
+            guard.get(&task_id).map(|session| session.resumed).unwrap_or(false)
+        };
+        if !resumed && finalize_exited(&s, &task_id) {
             emit_session_exited(&app_task, &task_id);
         }
     });
 
     // ── Per-session exit watcher (FX-4 / RC-2) ─────────────────────────────
-    // The only pre-FX-4 exit path was the reader's read-EOF, which a short-lived
-    // child (or a ConPTY EOF race) may never deliver — pinning a dead session
-    // at `running`. This watches the child itself. It never kills, closes or
-    // tree-kills anything (AC5: exit is not teardown) and never touches the
-    // output buffer; the state lock is held only for the non-blocking probe.
     let watcher_app = app.clone();
-    let watcher_id = session_id.clone();
+    let watcher_id = session_id.to_string();
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(EXIT_POLL_MS)).await;
 
-            let exit_status = {
+            let (exit_status, resumed) = {
                 let s = watcher_app.state::<Mutex<TerminalState>>();
                 let mut guard = s.lock().unwrap();
                 match guard.get_mut(&watcher_id) {
-                    // Session closed, already finalized, or nothing to watch.
                     None => return,
                     Some(session) if session.status == TerminalSessionStatus::Exited => return,
-                    Some(session) => match session.killer.as_mut() {
-                        None => return,
-                        Some(child) => match child.try_wait() {
-                            Ok(None) => continue, // still running
-                            Ok(Some(status)) => status,
-                            Err(e) => {
-                                tracing::error!(
-                                    target: "fredo::terminal",
-                                    error = %e,
-                                    "child liveness probe failed"
-                                );
-                                return;
-                            }
-                        },
-                    },
+                    Some(session) if session.status == TerminalSessionStatus::Error => return,
+                    Some(session) => {
+                        let resumed = session.resumed;
+                        match session.killer.as_mut() {
+                            None => return,
+                            Some(child) => match child.try_wait() {
+                                Ok(None) => continue,
+                                Ok(Some(status)) => (status, resumed),
+                                Err(e) => {
+                                    tracing::error!(
+                                        target: "fredo::terminal",
+                                        error = %e,
+                                        "child liveness probe failed"
+                                    );
+                                    return;
+                                }
+                            },
+                        }
+                    }
                 }
             };
 
-            // Phase-0 discrimination (permanent): proves whether the child
-            // itself terminated. Absent from `telemetry_logs` for the fixture
-            // run ⇒ the fixture never terminated; harden it (FX-6).
             tracing::debug!(target: "fredo::terminal", exit = ?exit_status, "child exited");
 
-            // Settle briefly so trailing PTY bytes land in the retained buffer
-            // before `exited` is published (R-5.3).
             tokio::time::sleep(std::time::Duration::from_millis(EXIT_DRAIN_MS)).await;
 
+            // A resumed session whose CLI exited NON-ZERO could not reconnect:
+            // classify a typed `resume-failed` rather than a clean exit (R-4.3).
+            let failed = resumed && exit_status.exit_code() != 0;
             let s = watcher_app.state::<Mutex<TerminalState>>();
-            if finalize_exited(&s, &watcher_id) {
+            let transitioned = if failed {
+                finalize_resume_failed(&s, &watcher_id)
+            } else {
+                finalize_exited(&s, &watcher_id)
+            };
+            if transitioned {
                 emit_session_exited(&watcher_app, &watcher_id);
             }
             return;
         }
     });
+
+    Ok(true)
+}
+
+/// Handler wired to the `terminal` window: closing the window for ANY reason
+/// (OS X button, Alt+F4, `close_terminal_window`) tree-kills EVERY session so no
+/// process orphans (AC5), and stamps every live record's `last_active_at` while
+/// KEEPING every record (R-1.4/R-2.2).
+fn window_close_handler(
+    app: AppHandle,
+) -> impl Fn(&tauri::WindowEvent) + Send + Sync + 'static {
+    move |event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            tracing::debug!(target: "fredo::terminal", "CloseRequested: tree-killing every session");
+            let drained = {
+                let s = app.state::<Mutex<TerminalState>>();
+                let mut guard = s.lock().unwrap();
+                guard.drain_sessions()
+            };
+            let feature_store = app.try_state::<Arc<FeatureStore>>();
+            let closed_at = now_ms();
+            for session in drained {
+                if let Some(store) = feature_store.as_ref() {
+                    if let Err(e) = persistence::touch(store.inner(), &session.id, closed_at) {
+                        tracing::error!(target: "fredo::terminal", error = %e, "touch record on window close failed");
+                    }
+                }
+                kill_session_tree(session.pid, session.killer);
+            }
+        }
+    }
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+/// Create or focus the ONE `terminal` window, optionally delivering a `fredo
+/// open-terminal` launch intent (Spec #2935 ST-3).
+///
+/// The backend NEVER spawns here (single-spawner adjudication): the intent
+/// carries the VALIDATED `{ cli, workDir }` and the webview consumes it to spawn
+/// the session. Delivery mirrors `APP_OPEN_REQUEST_EVENT`:
+/// - the window already exists → its listener is mounted, so emit immediately;
+/// - the window is freshly created → emit ONCE the page has loaded (the webview
+///   registers its listener on mount; an earlier emit would be lost). The
+///   one-shot guard means a dev reload cannot re-spawn.
+pub async fn open_terminal_window_with_intent(
+    app: &AppHandle,
+    intent: Option<TerminalOpenRequestPayload>,
+) -> Result<(), String> {
+    tracing::debug!(target: "fredo::terminal", "open_terminal_window_with_intent called");
+
+    match app.get_webview_window(WINDOW_LABEL) {
+        Some(win) => {
+            tracing::debug!(target: "fredo::terminal", "reusing existing terminal window");
+            win.set_focus().ok();
+            if let Some(payload) = intent {
+                emit_terminal_open_request(app, payload);
+            }
+        }
+        None => {
+            tracing::debug!(target: "fredo::terminal", "building WebviewWindow");
+            let mut builder = WebviewWindowBuilder::new(
+                app,
+                WINDOW_LABEL,
+                WebviewUrl::App("index.html?view=terminal".into()),
+            )
+            .title("Terminal")
+            .inner_size(900.0, 600.0)
+            .min_inner_size(560.0, 360.0)
+            .resizable(true);
+
+            if let Some(payload) = intent {
+                let delivered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let app_for_load = app.clone();
+                builder = builder.on_page_load(move |_window, _event| {
+                    if delivered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    emit_terminal_open_request(&app_for_load, payload.clone());
+                });
+            }
+
+            let window = builder.build().map_err(|e| {
+                tracing::error!(target: "fredo::terminal", error = %e, "WebviewWindow creation failed");
+                format!("Failed to open terminal window: {e}")
+            })?;
+            // Wire CloseRequested → tree-kill every session (no orphans).
+            window.on_window_event(window_close_handler(app.clone()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Create or focus the ONE `terminal` window. NO session is spawned here — the
+/// first session is created by the in-window add-session flow
+/// (`spawn_terminal_session`).
+#[tauri::command]
+pub async fn open_terminal_window(app: AppHandle) -> Result<(), String> {
+    open_terminal_window_with_intent(&app, None).await
+}
+
+/// TEST-ONLY override seam for the AC4 negative rows. Never set by the
+/// production UI: it deterministically forces a missing binary or an unmet
+/// PowerShell prerequisite without touching the host PATH.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpawnTestOverride {
+    pub binary: Option<String>,
+    pub pwsh_major: Option<u32>,
+}
+
+/// Spawn a new CLI session in its own PTY and start streaming its output.
+///
+/// Deterministic order: allocate id → insert `starting` → pre-flight (resolve
+/// binary, validate cwd, Copilot-only PowerShell-6+ gate) → openpty/spawn →
+/// store handles + pid → spawn the reader task → persist the record. ANY
+/// failure before `spawn_command` sets `status=error`, a typed `error_kind`,
+/// and `launch_error`, and still returns `Ok(sessionId)` so the sidebar row is
+/// the in-window error surface. Nothing is spawned on a failure path, so no
+/// orphan can exist; and no record is persisted for a failed launch (a bogus
+/// resumable record would violate AC4's "never a wrong session").
+#[tauri::command]
+pub async fn spawn_terminal_session(
+    cli: String,
+    work_dir: Option<String>,
+    test_override: Option<SpawnTestOverride>,
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+    store: tauri::State<'_, Arc<AppStore>>,
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
+) -> Result<String, String> {
+    let cwd = work_dir
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .or_else(|| std::env::var("HOME").ok())
+        .unwrap_or_else(|| ".".to_string());
+
+    let session_id = Uuid::new_v4().to_string();
+
+    // An unknown CLI is refused BEFORE any process exists: the row carries the
+    // typed `invalid-cli` kind so the UI renders the "Unknown CLI" state (R-4.1)
+    // and no PTY is opened. No record is persisted for a failed launch.
+    let Some(cli) = TerminalCli::parse(&cli) else {
+        {
+            let mut guard = state.lock().unwrap();
+            guard.insert_starting(session_id.clone(), TerminalCli::OpenCode, cwd, 80, 24);
+        }
+        fail_session(
+            &app,
+            &state,
+            &session_id,
+            TerminalErrorKind::InvalidCli,
+            format!("Unknown CLI: {cli}"),
+        );
+        return Ok(session_id);
+    };
+
+    {
+        let mut guard = state.lock().unwrap();
+        guard.insert_starting(session_id.clone(), cli, cwd.clone(), 80, 24);
+    }
+    let sessions = {
+        let guard = state.lock().unwrap();
+        snapshot(&guard)
+    };
+    emit_sessions_changed(&app, sessions);
+
+    // Diagnostic override settings (unrendered). The TEST-ONLY seam wins over
+    // the stored Copilot path (which only applies to a Copilot session).
+    let binary_override = test_override.as_ref().and_then(|o| o.binary.clone()).or_else(|| {
+        if cli == TerminalCli::Copilot {
+            store.get(COPILOT_PATH_KEY).ok().flatten()
+        } else {
+            None
+        }
+    });
+    let pwsh = powershell_shell(store.get(PWSH_PATH_KEY).ok().flatten().as_deref());
+
+    let created_at = now_ms();
+
+    // ── Pre-flight: resolve / validate / plan / Copilot prereq gate ────────
+    let form = match prepare_session(cli, &cwd, binary_override, &pwsh, test_override.as_ref()) {
+        Ok(form) => form,
+        Err((kind, msg)) => {
+            tracing::error!(target: "fredo::terminal", error = %msg, "launch preparation failed");
+            fail_session(&app, &state, &session_id, kind, msg);
+            return Ok(session_id);
+        }
+    };
+
+    // ── Open the PTY, spawn, and wire the reader/watcher ───────────────────
+    match spawn_and_wire(&app, &state, &session_id, form, &cwd, &[]) {
+        Ok(true) => {
+            // A record is persisted ONLY for a session that actually spawned: a
+            // failed launch must never leave a bogus resumable record.
+            persist_new_record(&feature_store, &app, &session_id, cli, &cwd, created_at);
+            capture_cli_session_id(app.clone(), cli, cwd, session_id.clone(), created_at);
+        }
+        Ok(false) => {}
+        Err((kind, msg)) => {
+            tracing::error!(target: "fredo::terminal", error = %msg, "spawn failed");
+            fail_session(&app, &state, &session_id, kind, msg);
+        }
+    }
 
     Ok(session_id)
 }
@@ -919,12 +1230,14 @@ pub fn resize_pty(
 }
 
 /// Close ONE session: remove its row and tree-kill its process. Other sessions
-/// and the window are untouched.
+/// and the window are untouched. The session's RECORD is kept (only its process
+/// ended), stamped with a fresh `last_active_at` (R-1.4/R-2.2).
 #[tauri::command]
 pub async fn close_terminal_session(
     session_id: String,
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
 ) -> Result<(), String> {
     let removed = {
         let mut guard = state.lock().unwrap();
@@ -933,32 +1246,169 @@ pub async fn close_terminal_session(
     if let Some(session) = removed {
         kill_session_tree(session.pid, session.killer);
     }
+    if let Err(e) = persistence::touch(&feature_store, &session_id, now_ms()) {
+        tracing::error!(target: "fredo::terminal", error = %e, "touch record on session close failed");
+    }
     let sessions = {
         let guard = state.lock().unwrap();
         snapshot(&guard)
     };
     emit_sessions_changed(&app, sessions);
+    emit_persisted_sessions_changed(&app, persistence::list(&feature_store).unwrap_or_default());
     Ok(())
 }
 
-/// Close the terminal window: tree-kill EVERY session, then close. Also reached
-/// via the window's `CloseRequested` handler.
+/// Close the terminal window: tree-kill EVERY session, keep every record, then
+/// close. Also reached via the window's `CloseRequested` handler.
 #[tauri::command]
 pub async fn close_terminal_window(
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
 ) -> Result<(), String> {
     let drained = {
         let mut guard = state.lock().unwrap();
         guard.drain_sessions()
     };
+    let closed_at = now_ms();
     for session in drained {
+        if let Err(e) = persistence::touch(&feature_store, &session.id, closed_at) {
+            tracing::error!(target: "fredo::terminal", error = %e, "touch record on window close failed");
+        }
         kill_session_tree(session.pid, session.killer);
     }
     emit_sessions_changed(&app, Vec::new());
+    emit_persisted_sessions_changed(&app, persistence::list(&feature_store).unwrap_or_default());
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         win.close().ok();
     }
+    Ok(())
+}
+
+// ── Persisted-record commands (Spec #2935 ST-2) ───────────────────────────────
+
+/// Every persisted session record, newest `lastActiveAt` first. The mount-time
+/// source of truth for the "Previous sessions" group.
+#[tauri::command]
+pub fn list_persisted_terminal_sessions(
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
+) -> Result<Vec<PersistedSession>, String> {
+    persistence::list(&feature_store).map_err(|e| e.to_string())
+}
+
+/// Resume a persisted record through its CLI's own mechanism.
+///
+/// The source record is REUSED (its id becomes the live session id) — no new
+/// record is inserted, so one logical session is exactly one record. On any
+/// failure no partial session is left behind and no fresh session is silently
+/// substituted (AC4/R-4.3).
+#[tauri::command]
+pub async fn resume_terminal_session(
+    session_id: String,
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+    store: tauri::State<'_, Arc<AppStore>>,
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
+) -> Result<ResumeResult, String> {
+    let preflight_started = Instant::now();
+
+    let record = match persistence::get(&feature_store, &session_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return Ok(ResumeResult::failure(
+                ResumeOutcome::Unresumable,
+                format!("No saved session matches {session_id}"),
+            ))
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    // Diagnostic override settings, same precedence as a fresh spawn.
+    let binary_override = if record.cli == TerminalCli::Copilot {
+        store.get(COPILOT_PATH_KEY).ok().flatten()
+    } else {
+        None
+    };
+    let pwsh = powershell_shell(store.get(PWSH_PATH_KEY).ok().flatten().as_deref());
+
+    let form = match prepare_session(record.cli, &record.work_dir, binary_override, &pwsh, None) {
+        Ok(form) => form,
+        Err((kind, msg)) => return Ok(ResumeResult::failure(resume_outcome_for(kind), msg)),
+    };
+
+    // Bounded pre-flight: no resume path may block indefinitely (NFR).
+    if preflight_started.elapsed() > RESUME_PREFLIGHT_TIMEOUT {
+        return Ok(ResumeResult::failure(
+            ResumeOutcome::Unresumable,
+            format!("Resume pre-flight exceeded {RESUME_PREFLIGHT_TIMEOUT:?}"),
+        ));
+    }
+
+    let args = resume_args(record.cli, record.cli_session_id.as_deref());
+
+    // The record exists and passed the pre-flight: reuse its id for the live row.
+    {
+        let mut guard = state.lock().unwrap();
+        guard.insert_starting(session_id.clone(), record.cli, record.work_dir.clone(), 80, 24);
+    }
+    // Flag it so a non-zero exit is surfaced as `resume-failed`, not a clean exit.
+    mark_resumed(state.inner(), &session_id);
+    let sessions = {
+        let guard = state.lock().unwrap();
+        snapshot(&guard)
+    };
+    emit_sessions_changed(&app, sessions);
+
+    match spawn_and_wire(&app, &state, &session_id, form, &record.work_dir, &args) {
+        Ok(true) => {}
+        Ok(false) => {
+            remove_live_session(&app, &state, &session_id);
+            return Ok(ResumeResult::failure(
+                ResumeOutcome::LaunchFailed,
+                format!("Session {session_id} was closed before it could start"),
+            ));
+        }
+        Err((kind, msg)) => {
+            remove_live_session(&app, &state, &session_id);
+            return Ok(ResumeResult::failure(resume_outcome_for(kind), msg));
+        }
+    }
+
+    // REUSE the source record: bump last_active_at only (no new record).
+    if let Err(e) = persistence::touch(&feature_store, &session_id, now_ms()) {
+        tracing::error!(target: "fredo::terminal", error = %e, "touch resumed record failed");
+    }
+    emit_persisted_sessions_changed(&app, persistence::list(&feature_store).unwrap_or_default());
+    capture_cli_session_id(
+        app.clone(),
+        record.cli,
+        record.work_dir.clone(),
+        session_id.clone(),
+        now_ms(),
+    );
+
+    Ok(ResumeResult::resumed(session_id))
+}
+
+/// Delete a persisted record. If a live session shares its id (a resumed or
+/// freshly spawned session), terminate that process tree FIRST so deletion
+/// leaves no orphan; then remove the record.
+#[tauri::command]
+pub async fn delete_terminal_session_record(
+    session_id: String,
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
+) -> Result<(), String> {
+    let is_live = {
+        let guard = state.lock().unwrap();
+        guard.get(&session_id).is_some()
+    };
+    if is_live {
+        remove_live_session(&app, &state, &session_id);
+    }
+    persistence::delete(&feature_store, &session_id).map_err(|e| e.to_string())?;
+    emit_persisted_sessions_changed(&app, persistence::list(&feature_store).unwrap_or_default());
     Ok(())
 }
 
@@ -1414,5 +1864,46 @@ mod tests {
     #[test]
     fn now_ms_is_a_nonzero_epoch_value() {
         assert!(crate::features::terminal::state::now_ms() > 1_600_000_000_000);
+    }
+
+    // ── Resume pre-flight (Spec #2935 ST-2) ────────────────────────────────
+
+    #[test]
+    fn resume_outcome_maps_preflight_kinds_and_falls_back_to_launch_failed() {
+        assert_eq!(
+            resume_outcome_for(TerminalErrorKind::MissingBinary),
+            ResumeOutcome::MissingBinary
+        );
+        assert_eq!(resume_outcome_for(TerminalErrorKind::InvalidCwd), ResumeOutcome::InvalidCwd);
+        assert_eq!(resume_outcome_for(TerminalErrorKind::Prereq), ResumeOutcome::LaunchFailed);
+        assert_eq!(resume_outcome_for(TerminalErrorKind::Launch), ResumeOutcome::LaunchFailed);
+    }
+
+    #[test]
+    fn persisted_sessions_changed_payload_serializes_the_records() {
+        let record = PersistedSession {
+            id: "s1".into(),
+            cli: TerminalCli::OpenCode,
+            work_dir: "~".into(),
+            title: "OpenCode".into(),
+            created_at: 1,
+            last_active_at: 2,
+            cli_session_id: None,
+        };
+        let json = serde_json::to_value(PersistedSessionsChangedPayload { sessions: vec![record] })
+            .unwrap();
+        assert_eq!(json["sessions"][0]["id"], serde_json::json!("s1"));
+        assert_eq!(json["sessions"][0]["workDir"], serde_json::json!("~"));
+        assert_eq!(json["sessions"][0]["title"], serde_json::json!("OpenCode"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn list_command_wraps_a_cmd_shim_with_the_command_interpreter() {
+        let argv: Vec<String> = list_command(r"C:\nvm4w\nodejs\copilot.cmd")
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(argv, vec!["/C".to_string(), r"C:\nvm4w\nodejs\copilot.cmd".to_string()]);
     }
 }

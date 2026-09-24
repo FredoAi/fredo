@@ -32,6 +32,14 @@ pub enum CliCommand {
     /// Open a Fredo app window by identity (Spec #2893). The server waits for
     /// the webview's `confirm_app_open_request` before answering the CLI.
     OpenApp { identity: String },
+    /// Open (or focus) the Terminal window, optionally starting a CLI in a
+    /// folder (Spec #2935 ST-3). The server validates the args FIRST (no window
+    /// and no spawn on a refusal), then delivers a `terminal-open-request`
+    /// launch intent the webview consumes to spawn the session.
+    OpenTerminal {
+        cli: Option<String>,
+        work_dir: Option<String>,
+    },
 }
 
 /// Response the server sends back to the CLI after processing a command.
@@ -133,6 +141,9 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
         CliCommand::OpenApp { identity } => {
             crate::infrastructure::app_open::dispatch_open_app(identity, app).await
         }
+        CliCommand::OpenTerminal { cli, work_dir } => {
+            crate::features::terminal::open_terminal::dispatch_open_terminal(cli, work_dir, app).await
+        }
     }
 }
 
@@ -218,6 +229,40 @@ mod tests {
         match decoded {
             CliCommand::OpenApp { identity } => assert_eq!(identity, "Mission Monitor"),
             other => panic!("expected OpenApp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_terminal_command_serializes_with_snake_case_tag_and_fields() {
+        let cmd = CliCommand::OpenTerminal {
+            cli: Some("opencode".into()),
+            work_dir: Some(r"C:\Code\fredo".into()),
+        };
+        let json = serde_json::to_value(&cmd).expect("CliCommand serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "open_terminal",
+                "cli": "opencode",
+                "work_dir": "C:\\Code\\fredo",
+            })
+        );
+    }
+
+    #[test]
+    fn open_terminal_command_round_trips_including_absent_args() {
+        let cmd = CliCommand::OpenTerminal {
+            cli: None,
+            work_dir: None,
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let decoded: CliCommand = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            CliCommand::OpenTerminal { cli, work_dir } => {
+                assert!(cli.is_none());
+                assert!(work_dir.is_none());
+            }
+            other => panic!("expected OpenTerminal, got {other:?}"),
         }
     }
 }

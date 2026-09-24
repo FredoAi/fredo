@@ -1,13 +1,20 @@
 import React from 'react';
 import { Box, Button, HStack, Icon, IconButton, Text, VStack } from '@chakra-ui/react';
-import { LuGithub, LuPlus, LuTerminal, LuX } from 'react-icons/lu';
+import { LuChevronRight, LuGithub, LuPlus, LuTerminal, LuX } from 'react-icons/lu';
 import { tint } from '../../../shared/utils/colorTint';
 import {
+  PREVIOUS_STATE_DOT_COLOR,
+  PREVIOUS_STATE_LABEL,
   STATUS_DOT_COLOR,
   STATUS_LABEL,
   displayWorkDir,
+  lastActiveAbsolute,
+  lastActiveLabel,
+  persistedAriaLabel,
   sessionAriaLabel,
   sessionTitle,
+  type PersistedTerminalSession,
+  type PreviousSessionState,
   type TerminalSessionInfo,
 } from '../sessionModel';
 
@@ -29,6 +36,48 @@ const killReveal = {
   '&:hover .terminal-session-kill': { opacity: 1 },
   '&:focus-within .terminal-session-kill': { opacity: 1 },
 } as const;
+
+// A resuming record fades between groups (UI/UX §9–§10). The move is the ONLY
+// transition; honours `prefers-reduced-motion` (no motion, same end state).
+const previousRowMotion = {
+  transition: 'opacity 150ms ease',
+  '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
+} as const;
+
+/** Shared group heading — the LIVE-vs-PERSISTED signal. Never focusable. */
+const SectionHeading: React.FC<{
+  id: string;
+  label: string;
+  count: number;
+  borderTop?: boolean;
+}> = ({ id, label, count, borderTop = false }) => (
+  <HStack
+    px={3}
+    pt={2}
+    pb={1}
+    gap={2}
+    position="sticky"
+    top={0}
+    zIndex={1}
+    bg="bg.subtle"
+    borderTop={borderTop ? '1px solid var(--border-color)' : undefined}
+    data-testid={`terminal-section-${id}`}
+  >
+    <Text
+      id={id}
+      fontSize="xs"
+      fontWeight="600"
+      color="fg.subtle"
+      textTransform="uppercase"
+      letterSpacing="0.06em"
+    >
+      {label}
+    </Text>
+    <Text fontSize="xs" color="fg.subtle" fontFamily="mono">
+      {count}
+    </Text>
+  </HStack>
+);
 
 const SessionListItem: React.FC<{
   session: TerminalSessionInfo;
@@ -116,13 +165,112 @@ const SessionListItem: React.FC<{
   );
 };
 
+/**
+ * A persisted record's row (Spec 2935 UI/UX §4). Deliberately distinct from a
+ * live row: the section, the state label wording ("not running" — never
+ * "exited"/"running") and the trailing chevron. It carries NO action buttons —
+ * the actions live in the pane (§4 rationale), and the most-recent record is
+ * auto-selected so Resume is reachable with zero clicks. Never opacity-dimmed
+ * (G-235); distinction is carried by section + label.
+ */
+const PreviousSessionListItem: React.FC<{
+  record: PersistedTerminalSession;
+  state: PreviousSessionState;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}> = ({ record, state, selected, onSelect }) => (
+  <HStack as="li" role="listitem" align="stretch" gap={0} css={previousRowMotion}>
+    <HStack
+      as="button"
+      flex={1}
+      minW={0}
+      gap={2}
+      px={3}
+      py={2}
+      align="center"
+      textAlign="left"
+      cursor="pointer"
+      bg={selected ? tint('var(--accent-primary)', 12) : 'transparent'}
+      borderLeft="3px solid"
+      borderColor={selected ? 'var(--accent-strong)' : 'transparent'}
+      fontWeight={selected ? 600 : 500}
+      aria-current={selected ? 'true' : undefined}
+      aria-label={persistedAriaLabel(record, state)}
+      data-testid={`terminal-previous-session-row-${record.id}`}
+      onClick={() => onSelect(record.id)}
+      _hover={{
+        bg: selected ? tint('var(--accent-primary)', 12) : 'var(--hover-bg)',
+      }}
+      _focusVisible={{ outline: '2px solid var(--accent-primary)', outlineOffset: '-2px' }}
+    >
+      <Icon
+        as={record.cli === 'copilot' ? LuGithub : LuTerminal}
+        boxSize="16px"
+        flexShrink={0}
+        color="fg.muted"
+      />
+      <VStack align="start" gap={0} flex={1} minW={0}>
+        <HStack w="100%" gap={1} minW={0}>
+          <Text fontSize="sm" color="fg.default" truncate>
+            {record.title}
+          </Text>
+          <Icon as={LuChevronRight} boxSize="14px" color="fg.subtle" flexShrink={0} ml="auto" />
+        </HStack>
+        <HStack gap={1.5} minW={0} w="100%">
+          <Box
+            as="span"
+            boxSize="8px"
+            borderRadius="full"
+            flexShrink={0}
+            bg={PREVIOUS_STATE_DOT_COLOR[state]}
+            aria-hidden="true"
+          />
+          <Text fontSize="xs" color="fg.muted" flexShrink={0}>
+            {PREVIOUS_STATE_LABEL[state]}
+          </Text>
+          <Text
+            fontSize="xs"
+            color="fg.muted"
+            flexShrink={0}
+            title={lastActiveAbsolute(record.lastActiveAt)}
+          >
+            {lastActiveLabel(record.lastActiveAt)}
+          </Text>
+          <Text fontSize="xs" color="fg.muted" fontFamily="mono" truncate>
+            {displayWorkDir(record.workDir)}
+          </Text>
+        </HStack>
+      </VStack>
+    </HStack>
+  </HStack>
+);
+
+/**
+ * SessionSidebar — two labelled groups inside one nav (Spec 2935 UI/UX §3):
+ * `This window` (live sessions) and `Previous sessions` (persisted records with
+ * no process this window). A group renders only when non-empty; its header still
+ * renders when it is the only group, so the live-vs-persisted distinction is
+ * never ambiguous.
+ */
 export const SessionSidebar: React.FC<{
   sessions: readonly TerminalSessionInfo[];
+  previous: readonly PersistedTerminalSession[];
   selectedId: string | null;
+  previousStateOf: (record: PersistedTerminalSession) => PreviousSessionState;
   onSelect: (id: string) => void;
   onClose: (session: TerminalSessionInfo) => void;
   onAdd: () => void;
-}> = ({ sessions, selectedId, onSelect, onClose, onAdd }) => (
+  addButtonRef?: React.RefObject<HTMLButtonElement>;
+}> = ({
+  sessions,
+  previous,
+  selectedId,
+  previousStateOf,
+  onSelect,
+  onClose,
+  onAdd,
+  addButtonRef,
+}) => (
   <VStack
     align="stretch"
     gap={0}
@@ -135,6 +283,7 @@ export const SessionSidebar: React.FC<{
   >
     <Box px={3} py={2} flexShrink={0}>
       <Button
+        ref={addButtonRef}
         size="xs"
         variant="ghost"
         w="100%"
@@ -148,17 +297,54 @@ export const SessionSidebar: React.FC<{
         Add session
       </Button>
     </Box>
-    <VStack as="ul" role="list" aria-label="Terminal sessions" align="stretch" gap={0} m={0} p={0}>
-      {sessions.map((session) => (
-        <SessionListItem
-          key={session.id}
-          session={session}
-          sessions={sessions}
-          selected={session.id === selectedId}
-          onSelect={onSelect}
-          onClose={onClose}
-        />
-      ))}
-    </VStack>
+    <Box as="nav" aria-label="Terminal sessions" flex={1} minH={0}>
+      {sessions.length > 0 && (
+        <Box role="group" aria-labelledby="terminal-active-heading">
+          <SectionHeading id="terminal-active-heading" label="This window" count={sessions.length} />
+          <VStack as="ul" role="list" aria-label="Active sessions" align="stretch" gap={0} m={0} p={0}>
+            {sessions.map((session) => (
+              <SessionListItem
+                key={session.id}
+                session={session}
+                sessions={sessions}
+                selected={session.id === selectedId}
+                onSelect={onSelect}
+                onClose={onClose}
+              />
+            ))}
+          </VStack>
+        </Box>
+      )}
+
+      {previous.length > 0 && (
+        <Box role="group" aria-labelledby="terminal-previous-heading">
+          <SectionHeading
+            id="terminal-previous-heading"
+            label="Previous sessions"
+            count={previous.length}
+            borderTop
+          />
+          <VStack
+            as="ul"
+            role="list"
+            aria-label="Previous sessions"
+            align="stretch"
+            gap={0}
+            m={0}
+            p={0}
+          >
+            {previous.map((record) => (
+              <PreviousSessionListItem
+                key={record.id}
+                record={record}
+                state={previousStateOf(record)}
+                selected={record.id === selectedId}
+                onSelect={onSelect}
+              />
+            ))}
+          </VStack>
+        </Box>
+      )}
+    </Box>
   </VStack>
 );

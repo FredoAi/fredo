@@ -124,6 +124,12 @@ pub fn run() {
             );
             app.manage(feature_store.clone());
 
+            // -- Terminal persisted session records (Spec #2935 ST-2) ----------
+            // Materialize the record table once at startup; the terminal feature
+            // writes/reads it directly (never via useFeatureData).
+            features::terminal::persistence::ensure_table(&feature_store)
+                .expect("Failed to create terminal session record table");
+
             // -- Tracing subscriber initialization (Spec #408) -----------------
             // Initialize before any tracing::info!/warn!/error! calls.
             // Uses a deferred LogBridgeLayer that reads from LOG_COLLECTOR_CELL,
@@ -574,6 +580,9 @@ pub fn run() {
             features::terminal::commands::resize_pty,
             features::terminal::commands::close_terminal_session,
             features::terminal::commands::close_terminal_window,
+            features::terminal::commands::list_persisted_terminal_sessions,
+            features::terminal::commands::resume_terminal_session,
+            features::terminal::commands::delete_terminal_session_record,
             features::setup::commands::check_cli_installations,
             features::setup::commands::install_plugin,
             features::setup::commands::get_plugin_source_path,

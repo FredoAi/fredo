@@ -9,6 +9,7 @@ use std::io::IsTerminal;
 use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
 use commands::emit::EmitArgs;
 use commands::open_app::OpenAppArgs;
+use commands::open_terminal::OpenTerminalArgs;
 use commands::setup::SetupArgs;
 
 /// fredo — infrastructure AI CLI
@@ -30,6 +31,8 @@ pub enum Commands {
     Setup(SetupArgs),
     /// Open a Fredo app window by stable id or display name
     OpenApp(OpenAppArgs),
+    /// Open the Terminal window, optionally starting a CLI in a folder
+    OpenTerminal(OpenTerminalArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -94,6 +97,19 @@ pub fn exit_code_for_response(response: Option<&CliResponse>) -> i32 {
     }
 }
 
+/// The process exit code for a clap parse failure: `0` for `--help` /
+/// `--version` (a successful, informative request), `1` for a malformed
+/// invocation (`invalid-argument`) — NEVER clap's default `2`, which this CLI
+/// reserves for app-not-running (R-3.3 / R-4.4).
+pub fn exit_code_for_parse_error(kind: clap::error::ErrorKind) -> i32 {
+    match kind {
+        clap::error::ErrorKind::DisplayHelp
+        | clap::error::ErrorKind::DisplayVersion
+        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => 0,
+        _ => 1,
+    }
+}
+
 fn build_ipc_command(cmd: Commands) -> CliCommand {
     match cmd {
         Commands::Emit(args) => {
@@ -107,6 +123,10 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         }
         Commands::OpenApp(args) => CliCommand::OpenApp {
             identity: args.identity,
+        },
+        Commands::OpenTerminal(args) => CliCommand::OpenTerminal {
+            cli: args.cli,
+            work_dir: args.dir,
         },
         Commands::Setup(_) => {
             // Setup commands are handled locally in run_async, not via IPC.
@@ -184,6 +204,7 @@ mod tests {
         let mut root = Cli::command();
         let help = root.render_long_help().to_string();
         assert!(help.contains("open-app"), "`fredo --help` must list open-app:\n{help}");
+        assert!(help.contains("open-terminal"), "`fredo --help` must list open-terminal:\n{help}");
         assert!(help.contains("emit"), "`fredo --help` must keep listing emit:\n{help}");
         assert!(help.contains("setup"), "`fredo --help` must keep listing setup:\n{help}");
 
@@ -195,6 +216,94 @@ mod tests {
             sub_help.contains("IDENTITY"),
             "`fredo open-app --help` must name the identity argument:\n{sub_help}"
         );
+
+        let terminal = root
+            .find_subcommand_mut("open-terminal")
+            .expect("open-terminal is a registered subcommand");
+        let terminal_help = terminal.render_long_help().to_string();
+        assert!(
+            terminal_help.contains("--cli"),
+            "`fredo open-terminal --help` must name --cli:\n{terminal_help}"
+        );
+        assert!(
+            terminal_help.contains("--dir"),
+            "`fredo open-terminal --help` must name --dir:\n{terminal_help}"
+        );
+    }
+
+    #[test]
+    fn build_ipc_command_open_terminal_maps_cli_and_dir() {
+        let cmd = Commands::OpenTerminal(commands::open_terminal::OpenTerminalArgs {
+            cli: Some("copilot".into()),
+            dir: Some(r"C:\Code\fredo".into()),
+        });
+        match build_ipc_command(cmd) {
+            CliCommand::OpenTerminal { cli, work_dir } => {
+                assert_eq!(cli.as_deref(), Some("copilot"));
+                assert_eq!(work_dir.as_deref(), Some(r"C:\Code\fredo"));
+            }
+            other => panic!("expected CliCommand::OpenTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_terminal_subcommand_parses_free_form_values() {
+        // Free-form `Option<String>`s: an unknown CLI and a bogus dir parse
+        // cleanly so the RUNNING APP (not clap) decides the outcome (R-3.4).
+        let cli = Cli::try_parse_from([
+            "fredo",
+            "open-terminal",
+            "--cli",
+            "bogus",
+            "--dir",
+            r"C:\no-such-dir",
+        ])
+        .expect("free-form values parse as one invocation");
+        match cli.command {
+            Commands::OpenTerminal(args) => {
+                assert_eq!(args.cli.as_deref(), Some("bogus"));
+                assert_eq!(args.dir.as_deref(), Some(r"C:\no-such-dir"));
+            }
+            other => panic!("expected OpenTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_terminal_subcommand_accepts_no_args() {
+        let cli = Cli::try_parse_from(["fredo", "open-terminal"]).expect("no-arg form parses");
+        match cli.command {
+            Commands::OpenTerminal(args) => {
+                assert!(args.cli.is_none());
+                assert!(args.dir.is_none());
+            }
+            other => panic!("expected OpenTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exit_code_for_parse_error_never_returns_clap_default_two() {
+        use clap::error::ErrorKind;
+        // Help / version are successful, informative requests.
+        assert_eq!(exit_code_for_parse_error(ErrorKind::DisplayHelp), 0);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::DisplayVersion), 0);
+        // A malformed invocation is `invalid-argument` — exit 1, never 2.
+        assert_eq!(exit_code_for_parse_error(ErrorKind::UnknownArgument), 1);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::InvalidValue), 1);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::MissingSubcommand), 1);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::ArgumentConflict), 1);
+    }
+
+    #[test]
+    fn a_malformed_open_terminal_invocation_is_a_parse_error_exit_one() {
+        // `--cli` with no value is clap's own parse error (the app never sees
+        // it): main.rs turns that into `invalid-argument` / exit 1.
+        let err = Cli::try_parse_from(["fredo", "open-terminal", "--cli"])
+            .expect_err("a missing value is a parse error");
+        assert_eq!(exit_code_for_parse_error(err.kind()), 1);
+
+        let unknown = Cli::try_parse_from(["fredo", "open-terminal", "--bogus-flag"])
+            .expect_err("an unknown flag is a parse error");
+        assert_eq!(exit_code_for_parse_error(unknown.kind()), 1);
     }
 
     #[test]

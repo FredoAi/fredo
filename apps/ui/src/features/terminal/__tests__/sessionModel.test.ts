@@ -3,9 +3,14 @@ import {
   CLI_LABEL,
   displayWorkDir,
   errorStateMeta,
+  lastActiveLabel,
   normalizeCli,
+  persistedAriaLabel,
+  resumeBlockedReason,
   sessionAriaLabel,
   sessionTitle,
+  sortPersistedSessions,
+  type PersistedTerminalSession,
   type TerminalSessionInfo,
 } from '../sessionModel';
 
@@ -108,5 +113,67 @@ describe('Spec 2934 ST-3 — sessionModel (titles, paths, typed error states)', 
       'retry',
       'close',
     ]);
+  });
+
+  it('maps an unknown CLI to the invalid-cli state (AC4) instead of a generic error', () => {
+    const meta = errorStateMeta(
+      session({ errorKind: 'invalid-cli', error: "'bogus' is not a known CLI." }),
+    );
+    expect(meta.title).toBe('Unknown CLI');
+    // The offending value is surfaced from the raw message — never parsed.
+    expect(meta.showRawMessage).toBe(true);
+    expect(meta.actions).toEqual(['close']);
+  });
+});
+
+describe('Spec 2935 ST-4 — persisted records + resume contract', () => {
+  function record(overrides: Partial<PersistedTerminalSession>): PersistedTerminalSession {
+    return {
+      id: 'p1',
+      cli: 'opencode',
+      workDir: 'C:\\Code\\fredo',
+      title: 'OpenCode',
+      createdAt: 1,
+      lastActiveAt: Date.now(),
+      cliSessionId: null,
+      ...overrides,
+    };
+  }
+
+  it('formats the relative last-active cell and falls back safely', () => {
+    const now = 1_700_000_000_000;
+    expect(lastActiveLabel(now - 5_000, now)).toBe('just now');
+    expect(lastActiveLabel(now - 12 * 60_000, now)).toBe('12m ago');
+    expect(lastActiveLabel(now - 3 * 3_600_000, now)).toBe('3h ago');
+    expect(lastActiveLabel(now - 2 * 86_400_000, now)).toBe('2d ago');
+    expect(lastActiveLabel(now - 30 * 86_400_000, now)).toBe(
+      new Date(now - 30 * 86_400_000).toLocaleDateString(),
+    );
+    expect(lastActiveLabel(0, now)).toBe('unknown');
+    expect(lastActiveLabel(Number.NaN, now)).toBe('unknown');
+  });
+
+  it('maps resume outcomes onto the renderable blocked reasons (no transcript-missing)', () => {
+    expect(resumeBlockedReason('missing-binary')).toBe('cli-missing');
+    expect(resumeBlockedReason('invalid-cwd')).toBe('invalid-cwd');
+    expect(resumeBlockedReason('unresumable')).toBe('resume-failed');
+    expect(resumeBlockedReason('launch-failed')).toBe('resume-failed');
+    expect(resumeBlockedReason('resumed')).toBeNull();
+  });
+
+  it('composes the previous-row aria-label as title, CLI, state, relative last-active', () => {
+    const now = 1_700_000_000_000;
+    const r = record({ title: 'OpenCode 2', cli: 'copilot', lastActiveAt: now - 3 * 3_600_000 });
+    expect(persistedAriaLabel(r, 'resumable', now)).toBe(
+      'OpenCode 2, GitHub Copilot, not running, last active 3h ago',
+    );
+    expect(persistedAriaLabel(r, 'unresumable', now)).toContain("can't resume");
+  });
+
+  it('orders persisted records newest-first (the zero-click Resume selection)', () => {
+    const a = record({ id: 'a', lastActiveAt: 100 });
+    const b = record({ id: 'b', lastActiveAt: 900 });
+    const c = record({ id: 'c', lastActiveAt: 500 });
+    expect(sortPersistedSessions([a, b, c]).map((r) => r.id)).toEqual(['b', 'c', 'a']);
   });
 });
