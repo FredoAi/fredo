@@ -849,3 +849,161 @@ required in the first cycle to make the resumed conversation render in the buffe
 
 Evidence frame names: `r1-launcher-grid`, `r1-opencode-a-starting`, `r1-opencode-a-turn`,
 `r1-ac1-reopen-list`, `r1-ac1-resumed`, `r1-ac3-cli-opened`, `r1-ac4-invalid-cwd`.
+
+### Round 5 (Spec #2940) — 2026-09-24, spec/2940 @ 6a8b2c6d (verdict FAIL — R-18/S-16 cold leg)
+
+Served commit `spec/2940 @ 6a8b2c6d` (`dev-env.ps1 -Action Up -Spec 2940`, status line
+`running (repo root on spec/2940 @ 6a8b2c6d)`). Live policy honoured: window list /
+measured geometry (offsetWidth + getBoundingClientRect) / DOM / PTY-buffer bytes /
+`list_terminal_sessions` / `process-hygiene.ps1 -List` / `fredo` stdout / read-only
+`feature_terminal_sessions` + `telemetry_spans` queries.
+
+**AC1 — PASS (measured).**
+- **F-37 default 900×600** (dark, 2 running sessions): `pane` `{w:900,h:556,right:900,bottom:600,offsetW:900,offsetH:556}`,
+  `#root.offsetH=600`, `docScrollH=600`; active surface rect == pane rect; `canvasHost` rect == pane rect
+  (`hostEqualsPane:true`); `canvas {w:882,h:555,right:882,bottom:899,pxW:882,pxH:555}`. **T1 ✓ T3 ✓ T4 ✓**;
+  **T2** `pane.bottom − canvas.bottom = 1` ✓ but `pane.right − canvas.right = 18` — disclosed: the 18–23 px
+  remainder is ghostty-web's documented **scrollbar-width reservation** (`FitAddon.proposeDimensions()`
+  "Scrollbar width reservation"; the canvas computed style is an explicit `882px`/`555px`), the HOST fills the
+  pane exactly (0 px), and the same `GHOSTTY_THEME.background` paints the gutter — so the pane has NO dead band.
+  See Round notes caveats.
+- **F-38 minimum 560×360**: `pane {w:560,h:316,right:560,bottom:360,offsetW:560,offsetH:316}`,
+  `bar {h:44,offsetW:560}`, `#root.offsetH=360`, `docScrollH=360`, `canvas {w:540,h:315,pxW:540,pxH:315}`,
+  `canvasHost` == pane. T1/T3/T4 ✓, T2 bottom 1 px.
+- **F-39 resized 1400×900**: `pane {w:1400,h:856,right:1400,bottom:900,offsetW:1400}`, `#root.offsetH=900`,
+  `docScrollH=900`, `canvas {w:1377,h:855,pxW:1377,pxH:855}`, `canvasHost` == pane. T1/T3/T4 ✓.
+  **Maximize is unavailable** — `tauri_manage_window action="maximize"` →
+  `Failed to maximize window: manage_window action "maximize" needs tauri-plugin-mcp-bridge 0.13.0 or newer`
+  (same <0.13 plugin cap as the #2934 minimize block). The measured 1400×900 resize is the size coverage;
+  the maximize leg is a **named environment limitation**, never passed unmeasured.
+- **F-40 grid-follows-pane**: active (`9a4a8c41` opencode) `cols/rows` tracked the pane
+  (98×37 @900×600 → 153×57 @1400×900); the NON-active session (`1967d8ff` copilot) stayed **80×24**
+  across the whole sequence — active-only `resize_pty` ✓.
+- **F-41 pane invariant under state surfaces** (re-measured): `empty` 900×556, `all-ended` 900×556,
+  `starting` 900×556, `error` 560×316 + 900×556, `ended` 900×556, `resume` 900×556,
+  `resume-blocked` 560×316 + 900×556 — `pane[data-surface]` equalled the forced state and the pane filled
+  the window in every case (the surfaces are absolute-inset children).
+- **F-54 continuous tracking (G-123)**: sequence **900×600 → 1200×700 → 560×360 → 1400×900**
+  sampled at EVERY step: `cols/rows` **98×37 → 131×43 → 60×21 → 153×57** (monotonic in the pane's
+  direction), `canvasHost` flush at every sample, pane/`#root`/`docScrollH` exact at every step, and
+  no 0×0 latch (all sampled boxes > 0; the 0×0 guard + its unit pin below).
+
+**AC2 — PASS (measured + described frames).**
+- **F-42** at 900×600 / 560×360 / 1400×900: `bar.h = 44` and `bar.offsetW == innerW` in all three;
+  `pane.offsetW` (900/560/1400) > tablist (793/453/1293); `pane.offsetH` 556/316/856 ≥ `innerH−46`;
+  pane area share **92.7% / 87.8% / 95.1%** (≥80% ✓), nav share **7.3% / 12.2% / 4.9%** (≤15% ✓);
+  every visible tab's title + "running" + work-dir leaf boxes non-zero (title 113.64×21, status 42.83×18,
+  work-dir 64.81×18).
+- **F-43** at 560×360 with 2 sessions: status dot 8×8, title/status/work-dir non-zero,
+  active tab `aria-selected="true"` + `aria-current="true"`, `+` 32×32, History toggle 51.2×32,
+  per-tab close 32×32 — all ≥24×24.
+- **F-44** described frames at all three sizes in BOTH themes. Light theme (`Light Default` preset)
+  reproduced the identical geometry (pane 1400×856 / 560×316 / 900×556, cols 153/60/98) — the rail re-tints
+  (light `--header-bg`) while the Ghostty canvas keeps its allowlisted data palette; the terminal stays
+  dominant and the nav/status stay legible. See the Round notes caveat on how the light leg was driven.
+
+**AC3 — PASS (all nine surfaces, live).** `pane[data-surface]` + the preserved testid per surface:
+- **F-45** `empty` (0 live + 0 persisted → `terminal-empty-state`, pane 900×556) and `all-ended`
+  (all sessions self-exited → `terminal-all-ended-state`; window stayed open).
+- **F-46** `starting` + slow-start hint via the **C-6** lever
+  (`terminal_pwsh_path = fixtures/slow-pwsh.cmd` + `spawn_terminal_session{cli:'copilot',
+  testOverride:{binary:fixtures/fake-copilot.ps1}}`): `status='starting'` + `terminal-starting-state`
+  ("Starting GitHub Copilot…"), then past the 10 s Doherty bound the hint rendered
+  ("Still starting… (check the CLI is installed)"), then the session errored `prereq`. Key restored.
+- **F-47** `running`: `status='running'`, first byte cleared the overlay, `data-surface="terminal"`,
+  `terminal-canvas-host-<activeId>` + `canvas` present, pane filled.
+- **F-48** every typed kind: `invalid-cli` (cli `bogus`), `invalid-cwd` (`…\fixtures\no-such-dir`),
+  `missing-binary` (`testOverride.binary = …\no-such-binary.cmd`), `prereq` (`testOverride.pwshMajor:5`),
+  `auth` (`terminal_copilot_path = fixtures/fake-copilot-auth.cmd`), `launch` (override = a directory),
+  plus the file-as-workDir edge → `invalid-cwd`. Each rendered `pane[data-surface]="error"` +
+  `terminal-error-state[data-error-kind]` with distinct readable copy. Native control (Copilot, NO
+  override) reached `running` (pid) → the `prereq` leg is non-vacuous. `generic` is the frontend
+  IPC-rejection fallback only (no shipped launch path yields it).
+- **F-49** `ended`: 2 live, one self-exited (Ctrl-C) → `terminal-ended-banner`
+  ("This session has ended / Restart session / Close session") over its retained scrollback, the peer
+  still `running`, window open.
+- **F-50** `resume` (auto-selected the newest record, zero clicks) / `resuming`
+  ("Resuming GitHub Copilot…", and at ≥10 s "Still resuming… (this can take a moment)" + **Cancel**) /
+  `resume-blocked` for all three producible reasons: `cli-missing`
+  (`terminal_copilot_path = no-such-binary.cmd`), `invalid-cwd` (workdir-a removed + restored) and
+  **`resume-failed` via the C-6 lever** (`terminal_copilot_path = fake-copilot.ps1` +
+  `terminal_pwsh_path = slow-pwsh.cmd` → the gate held the IPC promise past the 15 s watchdog →
+  "Couldn't resume this session / Resume timed out… Nothing was started.", record unchanged, no
+  partial session, no orphan). A real record→Resume→`running` cycle also passed
+  (`1b0bb092` reused its id). `resume-blocked / invalid-cli` = **n/a — PO/Architect-ruled unreachable**
+  (closed 3-member reason set; asserted on the LAUNCH surface via F-48).
+- **F-55** at 560×360: the state surface is `overflowY:auto` inside the pane, primary controls
+  (Retry 87.7×36, Start fresh 119.6×36, Delete 95×36) all ≥24×24 and inside; no shipped surface's
+  content exceeded the 316 px pane so the scroll never engaged (disclosed).
+- **F-56** `terminal-previous-toggle` (`aria-label="Previous sessions (3)"`,
+  `aria-haspopup="dialog"`, `aria-expanded`, `aria-controls="terminal-previous-panel"`, 51.2×32),
+  `terminal-previous-panel` present + queryable while COLLAPSED (`role="dialog"`,
+  `aria-label="Previous sessions"`), and 3 `terminal-previous-session-row-<id>` buttons each carrying
+  `persistedAriaLabel`; selecting a row surfaced `terminal-resume-state` in the pane. (Observation: the
+  rows render as `<button>` without `role="listitem"` — labelled + keyboard-reachable, a11y nicety only.)
+- **F-41 corroboration** — the pane re-measured with each state (see AC1).
+
+**AC4 — PASS (fixture isolation).** Accounting: the pre-run store held **4 records, ALL #2935-era
+automation leaks** (3 under `.opencode\tests\terminal\fixtures\`, 1 under `.opencode\tmp\2935\gone-dir`).
+The one-time purge (`purge-fixture-records.js` logic) removed the 3 fixture-root rows
+(`1967d8ff`, `9a4a8c41`, `f86be818`); the F-45(a) recipe then removed the 4th (`7ce805d1`). The run then
+created fixture-root records for every spawning row and the C-5 teardown removed them all
+(`013649e1`, `2729527c`, `1b652d70`, `45e48ff9`, `b3c4fe65`, …), leaving the non-fixture control record
+`1b0bb092` (`C:\Users\pktro`) **untouched** through two teardown runs. Final state: **0 records** (the
+tester-created non-fixture record was also removed to leave the developer's list clean) → the developer's
+"Previous sessions" list is empty, zero fixture/automation rows.
+- **F-51 scoped before/after**: BEFORE (post-purge) `[1b0bb092]` + settings
+  `{work_dir: …\workdir-b, default_cli: copilot, copilot_path: "", pwsh_path: ""}`; after the run +
+  teardown AFTER = `[1b0bb092]` — **identical id set/count**, zero fixture-root records.
+- **F-52 idempotent teardown**: run 1 deleted 2 (fixture-root) / run 2 deleted **0** → idempotent;
+  read-only `SELECT id,cli,work_dir,title FROM feature_terminal_sessions` via the `telemetry-query`
+  skill returned **zero rows** (final). Settings restored to the captured values.
+- **F-53 static pin** (supporting): `pnpm --filter @fredo/ui test:run featureRoots.contentRegionSizing`
+  → **7/7 pass**; the pin asserts the no-`100vh`/`100vw` scan BROADENED to every `.tsx` under
+  `features/terminal/components/`, a direction-agnostic `<Flex … h="100%">` root assertion, AND the
+  host-document assertion reading `../tauri/index.html` (which declares
+  `html, body { margin: 0; height: 100% }` + `#root { height: 100% }`).
+- **F-54 supporting**: `SessionTerminal.resize.test.tsx` → **6/6 pass** (0×0-fit pin).
+
+**AC5 — PASS except R-18/S-16 (cold `fredo open-terminal`).**
+- **F-6** main + exactly ONE `terminal` window during two concurrent sessions; **F-8** session-scoped
+  PTY I/O (`ZZSENTINELZZ` present in A's buffer, absent from B's);
+  **F-10** switching preserved `id`/`pid`/`startedAt` (byte-identical before/after) with both terminals
+  mounted and `visibility` toggled (hidden/visible) — no re-spawn, no remount;
+  **F-12** `terminal_default_cli='copilot'` preselects GitHub Copilot + `terminal_work_dir` prefills the
+  Working-directory field; **F-13** native Copilot reached `running`;
+  **F-22..F-29** close→reopen listed all records, reopened with **0 processes**, and a real resume
+  (`1b0bb092`) reached `running`; **F-33/F-34** CLI negatives returned
+  `{"outcome":"invalid-cli"}` / `{"outcome":"invalid-directory"}` with the session list unchanged;
+  **R-19** after closing with 2 live sessions `process-hygiene.ps1 -List` = 0 session trees,
+  **0 unprotected orphan candidate(s)**, records survived.
+- **R-18/S-16 — FAIL (cold leg).** With NO `terminal` window open, `fredo open-terminal --cli opencode
+  --dir …\workdir-a` reports `{"cli":"opencode","outcome":"started",…}` and the window IS created — but
+  **no session is spawned** (`list_terminal_sessions` = `[]`, pane `data-surface="resume"`, 0 session
+  rows, no persisted record). Reproduced **4/4** cold runs (two closed via
+  `getCurrentWindow().close()`, one via the product's own `close_terminal_window`, one re-checked after
+  12 s). With the window ALREADY open the same command spawns + auto-selects the session
+  (3/3 warm runs, e.g. `b3c4fe65` running in `workdir-a`, `aria-current="true"`).
+  Root cause (code, not speculation): backend `open_terminal_window_with_intent`
+  (`commands.rs:1005-1052`) arms a ONE-SHOT `on_page_load` handler that does not filter
+  `PageLoadEvent`, so the launch intent is emitted at `PageLoadEvent::Started` — before the webview's
+  `adapterBridge.listen('terminal-open-request')` registers (it resolves through a dynamic import +
+  IPC). `git diff --stat main HEAD -- apps/tauri/src-tauri` = **empty** and the
+  `TerminalWindow` listener effect (`TerminalWindow.tsx:346-402`) is unchanged by #2940 → the defect is
+  **pre-existing, not introduced by this spec**, but the AC5 R-18/S-16 row as written requires the cold
+  spawn.
+
+**Non-functional (#2940).** N-18: the ONLY hardcoded colours in `features/terminal/components/**` are the
+allowlisted `GHOSTTY_THEME` ANSI data palette — no `rgba()` UI colour, no `var(--token)NN`
+alpha-append. N-19: `role="tablist"` + `aria-label="Terminal sessions"`, roving tabindex `[0,-1,-1]`,
+ArrowRight moved `aria-selected`/`aria-current`/`tabIndex=0` + focus to the next tab; History toggle
+carries `aria-haspopup/expanded/controls`; the panel is non-modal (no focus trap). N-20: console clean in
+BOTH windows (only DEBUG/INFO + the pre-existing `motion() is deprecated` WARN). N-21: 0 orphans
+(R-19). N-22: primary controls ≥24×24 at 560×360. N-23: no re-spawn (F-10). N-24: pin covers the
+reworked root + files (F-53).
+
+Round-5 frame names: `r2940-ac1-default`, `r2940-ac1-min`, `r2940-ac1-resized`,
+`r2940-ac2-900-light`, `r2940-ac2-560-light`, `r2940-ac2-1400-light`, `r2940-ac2-min-dark`,
+`r2940-ac3-empty`, `r2940-ac3-starting`, `r2940-ac3-error-prereq`, `r2940-ac3-ended`,
+`r2940-ac3-resume-panel`, `r2940-ac3-resume-failed`, `r2940-ac4-clean-records`,
+`r2940-e27-12tabs-min`.

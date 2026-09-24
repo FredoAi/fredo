@@ -279,3 +279,39 @@ append evidence; on fail mark `FAIL`.
   no credential-shaped strings.
 - **N-4 PASS.** Window close/reopen spawns ZERO processes until an explicit resume; no
   attach/detach/keep-alive surface in the diff.
+
+### Round 5 (Spec #2940) — 2026-09-24, spec/2940 @ 6a8b2c6d — AC5 re-run
+
+- **R-15 PASS.** F-6: two concurrent sessions in ONE window (`main + 1 terminal` throughout).
+  F-8: `ZZSENTINELZZ` written to session A appeared in A's PTY buffer and was **absent** from B's
+  (session-scoped I/O held). F-10: switching tabs left `id`/`pid`/`startedAt` byte-identical
+  (`[{1b652d70,pid 19916,…},{45e48ff9,pid 27696,…}]` before == after); both terminals stayed mounted
+  with `visibility` toggled (`hidden`/`visible`) and `data-active` moving — no re-spawn, no remount.
+- **R-16 PASS.** F-12: the new-session dialog preselects **GitHub Copilot** (`data-state="checked"`)
+  matching `terminal_default_cli='copilot'`, and the working-directory input is prefilled with
+  `C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-b` matching `terminal_work_dir`. The rework
+  added no settings key (the four keys are exactly the pre-existing ones).
+- **R-17 PASS.** F-22..F-29: closing the window with 2 live sessions then reopening listed ALL records
+  (`Previous sessions (3)`), reopened with **0 processes**, surface `resume`, and a real
+  record→Resume→`running` cycle reused the record id (`1b0bb092`). A record in a removed dir resumed to
+  `terminal-resume-blocked-state[data-reason="invalid-cwd"]` (record retained) and resumed normally
+  after the dir was restored.
+- **R-18 FAIL — cold `fredo open-terminal` leg only.** `fredo open-terminal --cli opencode --dir …\workdir-a`
+  with NO `terminal` window open reports `{"outcome":"started"}` and creates the window, but **no session
+  spawns** (`list_terminal_sessions=[]`, `data-surface="resume"`, 0 tab rows, no record) — **4/4 cold
+  runs**. With the window already open the identical command spawns + auto-selects the session —
+  **3/3 warm runs**. Root cause: `open_terminal_window_with_intent` (`commands.rs:1005-1052`) emits the
+  one-shot launch intent on `PageLoadEvent::Started` (the handler does not filter the event), before the
+  webview's `terminal-open-request` listener registers. **Not a #2940 regression**:
+  `git diff --stat main HEAD -- apps/tauri/src-tauri` is empty and the `TerminalWindow` listener effect
+  is unchanged. The F-33/F-34 negatives both PASS (`{"outcome":"invalid-cli"}` /
+  `{"outcome":"invalid-directory"}`, session list unchanged).
+- **R-19 PASS.** With 2 live sessions, closing the window left `process-hygiene.ps1 -List` at
+  **0 unprotected orphan candidate(s)** — the session trees (`opencode.exe 19916`/`13496`,
+  `node 11816` → `copilot.exe 17848`, `opencode.exe 27696`) were all absent, and the records survived
+  (reopen listed them).
+- R-11..R-14 (and N-1..N-8) not re-driven this round beyond the above — the #2940 diff touches no
+  `infrastructure/rtdb/**` / `infrastructure/otlp/**` path and no R-11..R-14 surface beyond those
+  already covered by R-15..R-19 (window count, sentinel isolation, no-re-spawn, persisted list).
+  The final clean state is **0 records** (all pre-existing rows were #2935-era automation leaks, purged
+  per the C-5 one-time purge; every record the run created was removed by the teardown).

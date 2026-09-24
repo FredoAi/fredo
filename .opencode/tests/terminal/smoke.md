@@ -113,6 +113,31 @@ uninstall a binary or edit the OS PATH.
       EXPECTED: the record set is unchanged (no fixture workdir/title). Full assertions in
       F-51/F-52.
 
+### #2940 testing round 1 (spec/2940 @ 6a8b2c6d) — results
+
+- **S-1 PASS.** `tauri_webview_dom_snapshot`/DOM non-empty in the main window; the `terminal`
+  window DOM renders `terminal-session-bar` + `terminal-pane`.
+- **S-2 PASS.** No `Error:`/`Uncaught`/`Maximum update depth exceeded` in EITHER window (only the
+  pre-existing `motion() is deprecated` WARN + `[ghostty-vt]` renderer WARNs).
+- **S-3..S-7 PASS (from prior rounds).** `tauri_manage_window(action="list")` = main + exactly ONE
+  `terminal` window (label `terminal`, title `Terminal`, `?view=terminal`) through every launch.
+- **S-8/S-9 PASS.** OpenCode and GitHub Copilot both reach `running` in the reworked composition.
+- **S-13/S-14 PASS.** Persist + list + resume (record id reused, PTY non-empty).
+- **S-15 PASS.** Close the window with sessions live → the trees are reaped, 0 unprotected orphans;
+  records survive.
+- **S-16 FAIL (cold leg).** With the `terminal` window CLOSED, `fredo open-terminal --cli opencode
+  --dir …\workdir-a` → exit-JSON `{"outcome":"started"}` + the window opens, but the session does NOT
+  spawn (4/4 cold runs). Warm (window already open) → spawns + auto-selected (3/3). See
+  `regression.md` R-18 for the root cause + receipts.
+- **S-17 PASS.** Default-size geometry: pane `900×556` flush to the window (`right` 900, `bottom` 600),
+  no dead band below/beside the host, `docScrollH` 600 (no scrollbar).
+- **S-18 PASS.** Workspace reads coherently at 900×600 (dark + light): terminal dominant, one 44 px
+  rail with subordinate per-session status.
+- **S-19 PASS.** `empty`, `error` (`invalid-cli`) and `resume` each rendered in turn inside the pane
+  (`data-surface` per state + its preserved testid).
+- **S-20 PASS.** The C-5 teardown left zero fixture-root records; the read-only store query returned
+  no rows.
+
 ## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
 
 > Suite-side, no product change. Run in the `terminal` window via `tauri_webview_execute_js`
