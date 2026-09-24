@@ -128,6 +128,27 @@ is wrong.
       running. Any canvas/ghostty surface or sidebar chrome that fails to re-tint, or any
       text that loses contrast against the new background, promotes to N-18/F-43.
 
+### #2940 testing round 1 (spec/2940 @ 6a8b2c6d) — probe results
+
+- **E-25 PASS (no promotion).** Rapid churn 560×360 → 600×400 → 1000×700 with the error surface
+  rendered: pane flush at every step (`rightGap 0`, `bottomGap 0`), `pane.height == innerH−44`,
+  `docScrollH == innerH`. Combined with F-54's 4-size sequence (cols/rows `98×37 → 131×43 → 60×21 →
+  153×57`) the rail/pane never detached mid-resize and no 0×0 box ever latched.
+- **E-26 PASS (no promotion).** Resizes while an `error` surface showed kept the pane filling the
+  window at each size (560×316 / 600×356 / 1000×656) — a state surface never pinned a stale height.
+- **E-27 PASS (no promotion).** 12 tabs at 560×360: `[role="tablist"]` `overflowX:auto`,
+  `scrollWidth 1487` vs `clientWidth 453` (rail scrolls, never crushes the terminal); rail stayed
+  `44 px`/`560 px`; pane stayed `560×316`; `+` and History pinned at the ends.
+- **E-28 observation (no promotion).** With a real (non-fixture) record present plus fixture records,
+  the newest fixture record was auto-selected and ordered first (`last_active_at DESC`) — the expected
+  ordering, not a fault; the teardown removed only the fixture-root rows and left the real one.
+- **E-29 partial (named reason).** Not driven by killing the dev instance mid-run (destructive +
+  expensive). Crash-tolerance is instead evidenced by F-52's idempotence (2nd teardown deleted 0) and
+  by the post-run residue read (0 fixture rows) after a run with ~40 spawns.
+- **E-30 PASS (covered by F-44).** Light (`Light Default`) vs dark at 560×360: identical geometry, the
+  rail re-tints, the canvas keeps its data palette, all chrome legible. (See the F-44 caveat on the
+  light-leg method.)
+
 ## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
 
 > Suite-side, no product change. Run in the `terminal` window via `tauri_webview_execute_js`
