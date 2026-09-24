@@ -60,3 +60,13 @@ uninstall a binary or edit the OS PATH.
 - [ ] S-12: **Rename quick check** — window label `terminal`, title `Terminal`, toolbar item
   reads `Terminal`; the zero-match receipts in `regression.md`/F-1 pass. Full assertions in
   F-1..F-3.
+- [ ] S-13: **Persist + list (quick path)** — add a session, close the `terminal` window, reopen;
+  the session is still listed with its CLI + workDir. Full assertions in F-22/F-23.
+- [ ] S-14: **Resume (quick path)** — resume a persisted record; a PTY starts and its buffer is
+  non-empty. Full assertions in F-24/F-25 (the sentinel + the fresh-session control).
+- [ ] S-15: **Teardown receipt (quick path)** — close the window with sessions live;
+  `process-hygiene.ps1 -List` reports `0 opencode/node/copilot process(es)` and the records are still
+  listed on reopen. Full assertions in F-27/F-28.
+- [ ] S-16: **CLI open (quick path)** — `fredo open-terminal --cli opencode --dir
+  C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a` → exit 0 and the `terminal` window opens
+  with an OpenCode session in that dir. Full assertions in F-33/F-34.
