@@ -70,3 +70,21 @@ uninstall a binary or edit the OS PATH.
 - [ ] S-16: **CLI open (quick path)** — `fredo open-terminal --cli opencode --dir
   C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a` → exit 0 and the `terminal` window opens
   with an OpenCode session in that dir. Full assertions in F-33/F-34.
+
+### #2935 testing round 1 (spec/2935 @ 9ad0b360) — results
+
+- **S-1 PASS.** `tauri_webview_dom_snapshot`/DOM non-empty (launcher + window manager render).
+- **S-2 PASS.** No `Error:`/`Uncaught`/`Maximum update depth exceeded` in the main OR `terminal`
+  window console (only the pre-existing `motion() is deprecated` WARN + `[ghostty-vt]` renderer WARNs).
+- **S-3 PASS.** The `Terminal` desktop item renders on the revealed launcher grid
+  (`div[aria-label="Terminal"]`) and is clickable.
+- **S-4/S-5 PASS (from #2934 rounds).**
+- **S-6 PASS.** Launcher click → `main + 1 terminal` window; re-invoke focuses (no duplicate).
+- **S-13 PASS.** Add session → close window → reopen lists it ("Previous sessions").
+- **S-14 PASS.** Resume a persisted record → a PTY starts (`status=running`) and its buffer is
+  non-empty and contains the prior conversation (`TERMINAL_RESUME_2935_SENTINEL`).
+- **S-15 PASS.** Close the window with sessions live → `process-hygiene.ps1 -List` shows the terminal
+  session trees gone, 0 unprotected orphans; the records are still listed on reopen.
+- **S-16 PASS.** `fredo open-terminal --cli opencode --dir …\workdir-b` → exit **0**
+  `{"cli":"opencode","outcome":"started","workDir":"…\\workdir-b"}`, the `terminal` window opens,
+  a session with that cli+workDir spawns and is auto-selected (no dialog).
