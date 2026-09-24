@@ -12,3 +12,14 @@
 - [ ] S-8: Distinct-provider injection smoke — `& $fredoBin emit --event-type chat --state init --provider copilot_cli --session-id <e2e-guid>` succeeds and `SELECT provider FROM chat_rows WHERE session_id = '<e2e-guid>'` returns exactly `copilot_cli`
 - [ ] S-9: OpenCode attribution smoke — `SELECT provider, COUNT(*) FROM chat_rows GROUP BY provider` shows OpenCode-origin rows under `open_code` (and no row carrying a model provider such as `openai`/`anthropic`)
 - [ ] S-10: Query-language smoke — `chat(sessionId = "<s>") { provider, userMessage }` validates and returns rows with a `provider` field (no `has no field 'provider'`)
+
+## Round notes
+
+### Round 2 — 2026-09-24 (`spec/2932` @ `182fec5`) — Verdict: PASS
+
+- S-1..S-5 PASS — app renders (389 a11y elements), console clean (only `motion() is deprecated` WARN), Mission Monitor opens + lists sessions, Settings surface reachable, screenshots captured.
+- S-6 PASS — `provider TEXT NOT NULL DEFAULT 'unknown'` on all three row tables.
+- S-7 PASS — `NULL/empty = 0/0/0`.
+- S-8 PASS — `--provider copilot_cli` → row exactly `copilot_cli`.
+- S-9 PASS — `open_code` rows present; 0 model-provider rows.
+- S-10 PASS — `chat(provider = "copilot_cli")` and legacy `chat(sessionId=…)` both register; invalid field → hard-named error.
