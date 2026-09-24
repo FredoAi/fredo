@@ -89,6 +89,7 @@ use crate::infrastructure::rtdb::rows::{
     AgentSessionRow, ChatRow, RowState, ToolUseRow, AGENT_SESSION_FIELDS, CHAT_FIELDS,
     TOOL_USE_FIELDS,
 };
+use crate::infrastructure::rtdb::store::RowKind;
 
 // ── Row-specific attribute keys (verified against the plugin's emitted shapes:
 //    apps/opencode-plugin/src/telemetry-constants.ts:40-54; message.ts:135/323
@@ -115,6 +116,23 @@ const INTERNAL_TOOL_EXECUTION_AGENTS: &[&str] = &["build", "plan"];
 /// Managed-state alias — `app.manage(Arc::new(IngestClassifier::new(rtdb)))`
 /// in lib.rs (P3.1); consumed by the OTLP receivers + the IPC dispatcher.
 pub type IngestClassifierState = Arc<IngestClassifier>;
+
+/// Outcome of one [`IngestClassifier::reattribute_provider`] call
+/// (Spec #2932 round-2 FIX-R2-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderReattribution {
+    /// The row's provider slot was written — a documented fallback was upgraded
+    /// to a resolved token.
+    Upgraded,
+    /// No write: the row already carried a resolved token, or the re-derived
+    /// token equalled the stored fallback (the content-no-op gate skipped it).
+    Unchanged,
+    /// The matched spans disagreed on the provider token — nothing written
+    /// (never guess).
+    Ambiguous,
+    /// No matched span in the row's op family — nothing written.
+    NoSource,
+}
 
 /// The RTDB write-path classifier (module doc — Spec #2788 P3.1).
 pub struct IngestClassifier {
@@ -265,6 +283,130 @@ impl IngestClassifier {
             EventType::Infrastructure | EventType::Ui | EventType::Custom => {}
         }
         copied
+    }
+
+    /// Upgrade the provider attribution of a PRE-EXISTING row, addressed by the
+    /// row's OWN persisted identity `(session_id, correlation_id)`
+    /// (Spec #2932 round-2 FIX-R2-1).
+    ///
+    /// The token is resolved with the SAME shared rule the live path uses
+    /// ([`resolve_provider_token`], NFR-6) — never a second extraction path.
+    /// The correlation-MINTING path (`resolve_span_correlation_id` /
+    /// `resolve_correlation_id` / `generate_per_turn_correlation_id`) is NEVER
+    /// called: the re-derivation pass cannot reproduce the historical
+    /// per-process correlation key, so it must write AT the row's own key
+    /// instead of minting one. Round-1 tester FAIL: a re-minted key targeted a
+    /// different PK `(session_id, correlation_id)` and INSERTed a PARALLEL row
+    /// while the pre-existing `unknown` row was never read, never patched.
+    ///
+    /// `candidates` are the span attribute maps the caller matched to this row
+    /// (already filtered to the row's op family via the shared
+    /// `attrs::resolve_op_name`). No candidates → [`ProviderReattribution::NoSource`];
+    /// candidates disagreeing on the token → [`ProviderReattribution::Ambiguous`].
+    /// Both write nothing (never guess). A one-token patch is dispatched
+    /// through the existing [`Self::apply_chat`] / [`Self::apply_tool_use`] /
+    /// [`Self::apply_agent_session`] path, so durable seq allocation, delivery
+    /// routing and cache semantics are preserved; the patch carries ONLY
+    /// `session_id` / `correlation_id` / `updated_at` / `provider`, and every
+    /// other field stays `None` — absent patch fields are skipped by
+    /// `merge::apply_rule`, so the row's existing content is untouched.
+    ///
+    /// Defensive: a missing or unreadable target row writes NOTHING. The pass
+    /// only ever targets rows it just enumerated, but without this guard a
+    /// failed lookup would fall through to the apply path's `INSERT OR REPLACE`
+    /// and replace a live full row with a minimal one (data loss).
+    pub fn reattribute_provider(
+        &self,
+        kind: RowKind,
+        session_id: &str,
+        correlation_id: &str,
+        candidates: &[serde_json::Map<String, Value>],
+    ) -> ProviderReattribution {
+        // Distinct tokens across the matched spans — the shared rule only.
+        let mut tokens: Vec<String> = Vec::new();
+        for attrs in candidates {
+            let token = resolve_provider_token(attrs);
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+        match tokens.len() {
+            0 => return ProviderReattribution::NoSource,
+            1 => {}
+            _ => {
+                tracing::debug!(
+                    target: "fredo::rtdb::ingest",
+                    session_id = %session_id,
+                    correlation_id = %correlation_id,
+                    "provider re-attribution skipped — matched spans disagree on the resource identity"
+                );
+                return ProviderReattribution::Ambiguous;
+            }
+        }
+        // The target row must already exist — never create one, never let a
+        // failed lookup degrade into an empty-row INSERT over a live row.
+        let target_present = match kind {
+            RowKind::Chat => self
+                .rtdb
+                .cache()
+                .get_chat(session_id, correlation_id)
+                .map(|row| row.is_some())
+                .unwrap_or(false),
+            RowKind::ToolUse => self
+                .rtdb
+                .cache()
+                .get_tool_use(session_id, correlation_id)
+                .map(|row| row.is_some())
+                .unwrap_or(false),
+            RowKind::AgentSession => self
+                .rtdb
+                .cache()
+                .get_agent_session(session_id, correlation_id)
+                .map(|row| row.is_some())
+                .unwrap_or(false),
+        };
+        if !target_present {
+            tracing::debug!(
+                target: "fredo::rtdb::ingest",
+                session_id = %session_id,
+                correlation_id = %correlation_id,
+                "provider re-attribution skipped — target row absent"
+            );
+            return ProviderReattribution::Unchanged;
+        }
+        let token = tokens.into_iter().next().expect("token list has exactly one element");
+        let updated_at = Some(rfc3339_now());
+        let wrote = match kind {
+            RowKind::Chat => self.apply_chat(
+                ChatPatch {
+                    session_id: Some(session_id.to_string()),
+                    correlation_id: Some(correlation_id.to_string()),
+                    updated_at,
+                    provider: Some(token),
+                    ..ChatPatch::default()
+                },
+                None,
+            ),
+            RowKind::ToolUse => self.apply_tool_use(ToolUsePatch {
+                session_id: Some(session_id.to_string()),
+                correlation_id: Some(correlation_id.to_string()),
+                updated_at,
+                provider: Some(token),
+                ..ToolUsePatch::default()
+            }),
+            RowKind::AgentSession => self.apply_agent_session(AgentSessionPatch {
+                session_id: Some(session_id.to_string()),
+                correlation_id: Some(correlation_id.to_string()),
+                updated_at,
+                provider: Some(token),
+                ..AgentSessionPatch::default()
+            }),
+        };
+        if wrote {
+            ProviderReattribution::Upgraded
+        } else {
+            ProviderReattribution::Unchanged
+        }
     }
 
     // ── Per-span classification (ported from the deleted v1 OTLP adapter) ────
@@ -986,12 +1128,14 @@ impl IngestClassifier {
 
     // ── Merge-then-ingest helpers (P1.1 rules applied by the classifier) ─────
 
-    fn apply_chat(&self, patch: ChatPatch, stamp: Option<(&str, &str)>) {
+    /// Merge-then-ingest one chat patch. Returns `true` when the row was
+    /// actually written (a new row, or a content change past the no-op gate).
+    fn apply_chat(&self, patch: ChatPatch, stamp: Option<(&str, &str)>) -> bool {
         let Some(session) = patch.session_id.clone() else {
-            return;
+            return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
-            return;
+            return false;
         };
         let existing = self.rtdb.cache().get_chat(&session, &corr).unwrap_or(None);
         let existed = existing.is_some();
@@ -1005,19 +1149,22 @@ impl IngestClassifier {
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, CHAT_FIELDS);
         if content_no_op(existed, &changed) {
-            return;
+            return false;
         }
         if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::Chat(row), &changed) {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "chat row ingest failed");
+            return false;
         }
+        true
     }
 
-    fn apply_tool_use(&self, patch: ToolUsePatch) {
+    /// Merge-then-ingest one tool-use patch. Returns `true` when written.
+    fn apply_tool_use(&self, patch: ToolUsePatch) -> bool {
         let Some(session) = patch.session_id.clone() else {
-            return;
+            return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
-            return;
+            return false;
         };
         let existing = self
             .rtdb
@@ -1031,19 +1178,22 @@ impl IngestClassifier {
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, TOOL_USE_FIELDS);
         if content_no_op(existed, &changed) {
-            return;
+            return false;
         }
         if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::ToolUse(row), &changed) {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "tool-use row ingest failed");
+            return false;
         }
+        true
     }
 
-    fn apply_agent_session(&self, patch: AgentSessionPatch) {
+    /// Merge-then-ingest one agent-session patch. Returns `true` when written.
+    fn apply_agent_session(&self, patch: AgentSessionPatch) -> bool {
         let Some(session) = patch.session_id.clone() else {
-            return;
+            return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
-            return;
+            return false;
         };
         let existing = self
             .rtdb
@@ -1057,11 +1207,13 @@ impl IngestClassifier {
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, AGENT_SESSION_FIELDS);
         if content_no_op(existed, &changed) {
-            return;
+            return false;
         }
         if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::AgentSession(row), &changed) {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "agent-session row ingest failed");
+            return false;
         }
+        true
     }
 
     /// Ingest a child chat row, then (while a child→parent relationship is
@@ -1510,8 +1662,10 @@ fn session_patch_from_event(
 mod tests {
     use super::*;
     use crate::infrastructure::comm::event::EventProvider;
+    use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
     use crate::infrastructure::rtdb::flush::{FlushLoop, RowEmitter};
     use crate::infrastructure::rtdb::project::{RowChangeKind, RowDelivery};
+    use crate::infrastructure::rtdb::rows::{AgentSessionRow, ToolUseRow};
     use crate::infrastructure::rtdb::store::RtdbStore;
     use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
     use serde_json::json;
@@ -2101,6 +2255,217 @@ mod tests {
                 .expect("read")
                 .is_none(),
             "internal tool-execution agent (plan) never registers"
+        );
+    }
+
+    // ── Spec #2932 round-2 FIX-R2-1: identity-keyed provider re-attribution ──
+
+    /// A merged-resource attribute map carrying just the OTLP identity (the
+    /// ONE key the shared rule reads).
+    fn provider_attrs(service_name: &str) -> serde_json::Map<String, Value> {
+        let mut map = serde_json::Map::new();
+        map.insert("service.name".to_string(), Value::String(service_name.to_string()));
+        map
+    }
+
+    fn seeded_chat_row(session: &str, corr: &str, provider: &str) -> ChatRow {
+        ChatRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq: 1,
+            started_at_ns: Some(1_000_000_000),
+            ended_at_ns: Some(1_000_001_000),
+            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
+            state: RowState::Response,
+            provider: Some(provider.to_string()),
+            user_message: Some("hello".to_string()),
+            agent_reply: Some("hi".to_string()),
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            cache_read_tokens: None,
+            cost_usd: None,
+            model: None,
+            parent_session_id: None,
+            composited_child_session_id: None,
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn seeded_tool_row(session: &str, corr: &str, provider: &str) -> ToolUseRow {
+        ToolUseRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq: 1,
+            started_at_ns: Some(1_000_000_000),
+            ended_at_ns: Some(1_000_001_000),
+            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
+            state: RowState::Response,
+            provider: Some(provider.to_string()),
+            tool_name: Some("Bash".to_string()),
+            tool_success: Some(true),
+            tool_error: None,
+            duration_ms: Some(10),
+            tool_input_json: None,
+            tool_output_json: None,
+            is_subagent: Some(false),
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn seeded_session_row(session: &str, corr: &str, provider: &str) -> AgentSessionRow {
+        AgentSessionRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq: 1,
+            started_at_ns: Some(1_000_000_000),
+            ended_at_ns: None,
+            updated_at: "2026-08-31T00:00:00+00:00".to_string(),
+            state: RowState::Init,
+            provider: Some(provider.to_string()),
+            total_tokens: Some(500),
+            total_messages: Some(3),
+            total_cost_usd: None,
+            agent_name: Some("general".to_string()),
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn reattribute_provider_upgrades_a_pre_existing_row_at_its_own_key() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        rtdb
+            .cache()
+            .store()
+            .upsert_chat_rows(&[seeded_chat_row("ses_x", "ses_x_7", PROVIDER_UNKNOWN)])
+            .expect("seed");
+
+        let outcome = classifier.reattribute_provider(
+            RowKind::Chat,
+            "ses_x",
+            "ses_x_7",
+            &[provider_attrs("fredo-opencode-plugin")],
+        );
+        assert_eq!(outcome, ProviderReattribution::Upgraded);
+
+        let row = rtdb.cache().get_chat("ses_x", "ses_x_7").expect("read").expect("row");
+        assert_eq!(row.provider.as_deref(), Some("open_code"));
+        assert_eq!(row.seq, 2, "the upgrade is a real content write");
+        assert!(
+            rtdb.cache().get_chat("ses_x", "ses_x_1").expect("read").is_none(),
+            "reattribution never mints a correlation id (round-1 parallel-row regression)"
+        );
+    }
+
+    #[test]
+    fn reattribute_provider_never_replaces_a_resolved_token() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        rtdb
+            .cache()
+            .store()
+            .upsert_chat_rows(&[seeded_chat_row("ses_r", "ses_r_1", "open_code")])
+            .expect("seed");
+
+        let outcome = classifier.reattribute_provider(
+            RowKind::Chat,
+            "ses_r",
+            "ses_r_1",
+            &[provider_attrs("copilot-cli")],
+        );
+        assert_eq!(outcome, ProviderReattribution::Unchanged);
+
+        let row = rtdb.cache().get_chat("ses_r", "ses_r_1").expect("read").expect("row");
+        assert_eq!(row.provider.as_deref(), Some("open_code"), "resolved tokens never restamp");
+        assert_eq!(row.seq, 1, "no write, no seq bump");
+    }
+
+    #[test]
+    fn reattribute_provider_fallback_to_fallback_is_a_no_op() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        rtdb
+            .cache()
+            .store()
+            .upsert_chat_rows(&[seeded_chat_row("ses_f", "ses_f_1", PROVIDER_UNKNOWN)])
+            .expect("seed");
+
+        // An unrecognised `service.name` → the shared rule resolves the
+        // documented fallback (an unresolvable identity is never a guess).
+        let outcome = classifier.reattribute_provider(
+            RowKind::Chat,
+            "ses_f",
+            "ses_f_1",
+            &[provider_attrs("some-other-cli")],
+        );
+        assert_eq!(outcome, ProviderReattribution::Unchanged);
+
+        let row = rtdb.cache().get_chat("ses_f", "ses_f_1").expect("read").expect("row");
+        assert_eq!(row.provider.as_deref(), Some(PROVIDER_UNKNOWN), "never NULL/empty");
+        assert_eq!(row.seq, 1);
+    }
+
+    #[test]
+    fn reattribute_provider_is_ambiguous_when_matched_spans_disagree() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        rtdb
+            .cache()
+            .store()
+            .upsert_chat_rows(&[seeded_chat_row("ses_amb", "ses_amb_1", PROVIDER_UNKNOWN)])
+            .expect("seed");
+
+        let outcome = classifier.reattribute_provider(
+            RowKind::Chat,
+            "ses_amb",
+            "ses_amb_1",
+            &[
+                provider_attrs("fredo-opencode-plugin"),
+                provider_attrs("copilot-cli"),
+            ],
+        );
+        assert_eq!(outcome, ProviderReattribution::Ambiguous);
+
+        let row = rtdb.cache().get_chat("ses_amb", "ses_amb_1").expect("read").expect("row");
+        assert_eq!(row.provider.as_deref(), Some(PROVIDER_UNKNOWN), "never guess");
+        assert_eq!(row.seq, 1, "an ambiguous match writes nothing");
+    }
+
+    #[test]
+    fn reattribute_provider_upgrades_each_row_kind_in_place() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        let store = rtdb.cache().store();
+        store
+            .upsert_chat_rows(&[seeded_chat_row("ses_kc", "ses_kc_1", PROVIDER_UNKNOWN)])
+            .expect("chat");
+        store
+            .upsert_tool_use_rows(&[seeded_tool_row("ses_kt", "ses_kt_1", PROVIDER_UNKNOWN)])
+            .expect("tool");
+        store
+            .upsert_agent_session_rows(&[seeded_session_row("ses_ks", "ses_ks_1", PROVIDER_UNKNOWN)])
+            .expect("session");
+
+        let attrs = [provider_attrs("fredo-opencode-plugin")];
+        assert_eq!(
+            classifier.reattribute_provider(RowKind::Chat, "ses_kc", "ses_kc_1", &attrs),
+            ProviderReattribution::Upgraded
+        );
+        assert_eq!(
+            classifier.reattribute_provider(RowKind::ToolUse, "ses_kt", "ses_kt_1", &attrs),
+            ProviderReattribution::Upgraded
+        );
+        assert_eq!(
+            classifier.reattribute_provider(RowKind::AgentSession, "ses_ks", "ses_ks_1", &attrs),
+            ProviderReattribution::Upgraded
+        );
+
+        assert_eq!(
+            rtdb.cache().get_chat("ses_kc", "ses_kc_1").expect("read").expect("row").provider.as_deref(),
+            Some("open_code")
+        );
+        assert_eq!(
+            rtdb.cache().get_tool_use("ses_kt", "ses_kt_1").expect("read").expect("row").provider.as_deref(),
+            Some("open_code")
+        );
+        assert_eq!(
+            rtdb.cache().get_agent_session("ses_ks", "ses_ks_1").expect("read").expect("row").provider.as_deref(),
+            Some("open_code")
         );
     }
 }
