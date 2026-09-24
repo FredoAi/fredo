@@ -1,0 +1,79 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
+          { "key": "service.version", "value": { "stringValue": "1.0.88" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": { "name": "github.copilot", "version": "1.0.88" },
+          "schemaUrl": "",
+          "spans": [
+            {
+              "name": "invoke_agent",
+              "kind": 1,
+              "traceId": "2af7651916cd43dd8448eb211c80319e",
+              "spanId": "d7ad6b7169205551",
+              "startTimeUnixNano": "20000000000",
+              "endTimeUnixNano": "28000000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_3" } },
+                { "key": "github.copilot.agent.type", "value": { "stringValue": "builtin" } },
+                { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [ { "stringValue": "stop" } ] } } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "600" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "80" } }
+              ],
+              "status": { "code": 0 }
+            },
+            {
+              "name": "chat auto",
+              "kind": 2,
+              "traceId": "2af7651916cd43dd8448eb211c80319e",
+              "spanId": "d7ad6b7169205552",
+              "parentSpanId": "d7ad6b7169205551",
+              "startTimeUnixNano": "20100000000",
+              "endTimeUnixNano": "23000000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
+                { "key": "gen_ai.request.model", "value": { "stringValue": "auto" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_3" } },
+                { "key": "gen_ai.request.stream", "value": { "boolValue": true } },
+                { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [ { "stringValue": "tool_calls" } ] } } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "600" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "80" } },
+                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "500" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } }
+              ],
+              "status": { "code": 0 }
+            },
+            {
+              "name": "execute_tool applyPatch",
+              "kind": 2,
+              "traceId": "2af7651916cd43dd8448eb211c80319e",
+              "spanId": "d7ad6b7169205553",
+              "parentSpanId": "d7ad6b7169205551",
+              "startTimeUnixNano": "23100000000",
+              "endTimeUnixNano": "23600000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_3" } },
+                { "key": "gen_ai.tool.name", "value": { "stringValue": "applyPatch" } },
+                { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call_fixture_3" } },
+                { "key": "gen_ai.tool.type", "value": { "stringValue": "function" } },
+                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
+                { "key": "error.type", "value": { "stringValue": "ToolExecutionError" } }
+              ],
+              "status": { "code": 2, "message": "ToolExecutionError" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

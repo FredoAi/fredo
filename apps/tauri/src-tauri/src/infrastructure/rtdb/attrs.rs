@@ -48,6 +48,12 @@ pub(crate) const ATTR_SERVICE_NAME: &str = "service.name";
 /// Documented fallback token for an unresolvable CLI identity (R7 — mirrors the
 /// fallback already used at `otlp/raw.rs:131`). Never empty.
 pub(crate) const PROVIDER_UNKNOWN: &str = "unknown";
+/// Resolved CLI-provider tokens (Spec #2932 ST-1). `pub(crate)`: the Spec #2933
+/// ST-2 `invoke_agent` → session promotion is scoped to the exact `copilot_cli`
+/// token, resolved through the SAME shared rule ([`resolve_provider_token`],
+/// NFR-6) — never a second provider derivation.
+pub(crate) const PROVIDER_OPEN_CODE: &str = "open_code";
+pub(crate) const PROVIDER_COPILOT_CLI: &str = "copilot_cli";
 
 // ── Flat Claude-Code convention fallback keys (secondary only) ────────────────
 pub(crate) const CC_ATTR_SESSION_ID: &str = "session.id";
@@ -151,16 +157,38 @@ pub(crate) struct TurnTokenDerivation {
 /// Resolve the canonical op name for a span (classification priority):
 ///
 /// 1. `gen_ai.operation.name` registry values (`run_agent` → `session`,
-///    `chat`/`invoke_agent` → `chat`, `execute_tool` → `tool.<name>`, plus the
-///    legacy `permission`/`elicitation` tool ops).
+///    `chat` → `chat`, `execute_tool` → `tool.<name>`, plus the legacy
+///    `permission`/`elicitation` tool ops). The legacy `invoke_agent` value is
+///    provider-scoped (Spec #2933 ST-2): it promotes to `session` ONLY when the
+///    merged attrs resolve to the `copilot_cli` provider token, and stays `chat`
+///    for every other/absent provider — preserving the historical OpenCode
+///    classification (`invoke_agent` is an observed name in Fredo's own
+///    OpenCode-derived telemetry, so a global remap would drift that row set).
 /// 2. Generic span-name heuristics (NO `fredo.*` patterns): spans whose name
 ///    mentions session/agent, chat/llm/message, or tool classify accordingly.
 /// 3. `span.type` attribute fallback (REQ-10).
+///
+/// `attrs` MUST be the merged resource+span attribute map so the Copilot
+/// promotion can see the resource `service.name` via the shared
+/// [`resolve_provider_token`] rule (NFR-6).
 pub(crate) fn resolve_op_name(span_name: &str, attrs: &Map<String, Value>) -> Option<String> {
     if let Some(op) = attrs.get(ATTR_OPERATION_NAME).and_then(|v| v.as_str()) {
         match op {
             OP_NAME_SESSION => return Some(OP_SESSION.to_string()),
-            OP_NAME_CHAT | OP_LEGACY_INVOKE_AGENT => return Some(OP_CHAT_CANON.to_string()),
+            OP_NAME_CHAT => return Some(OP_CHAT_CANON.to_string()),
+            // Spec #2933 ST-2 (R-1.1): Copilot's session-root span carries
+            // `gen_ai.operation.name = invoke_agent`. Promote it to the canonical
+            // session op ONLY when the shared provider rule resolves the
+            // `copilot_cli` token (a global remap would drift the OpenCode row
+            // set — R-5.1: OpenCode `invoke_agent` spans keep classifying as
+            // `chat`).
+            OP_LEGACY_INVOKE_AGENT => {
+                return Some(if resolve_provider_token(attrs) == PROVIDER_COPILOT_CLI {
+                    OP_SESSION.to_string()
+                } else {
+                    OP_CHAT_CANON.to_string()
+                });
+            }
             OP_NAME_TOOL => {
                 let tool = attrs
                     .get(ATTR_TOOL_NAME)
@@ -295,14 +323,14 @@ pub(crate) fn otlp_attrs_to_map(attrs_json: Option<&Value>) -> Map<String, Value
 pub(crate) fn resolve_provider_token(attrs: &Map<String, Value>) -> String {
     let service = attrs.get(ATTR_SERVICE_NAME).and_then(|v| v.as_str());
     match service {
-        Some("fredo-opencode-plugin") => "open_code",
-        Some("copilot-cli") => "copilot_cli",
+        Some("fredo-opencode-plugin") => PROVIDER_OPEN_CODE,
+        Some("copilot-cli") => PROVIDER_COPILOT_CLI,
         Some(s) => {
             let lower = s.to_lowercase();
             if lower.contains("copilot") {
-                "copilot_cli"
+                PROVIDER_COPILOT_CLI
             } else if lower.contains("opencode") {
-                "open_code"
+                PROVIDER_OPEN_CODE
             } else {
                 PROVIDER_UNKNOWN
             }
@@ -1120,6 +1148,59 @@ mod tests {
         let empty = Map::new();
         assert_eq!(resolve_op_name("my.tool.bash", &empty), Some("tool.bash".to_string()));
         assert_eq!(resolve_op_name("totally-unknown", &empty), None);
+    }
+
+    // ── Spec #2933 ST-2: provider-scoped `invoke_agent` promotion (R-1.1/R-5.1) ─
+
+    #[test]
+    fn resolve_op_name_promotes_invoke_agent_to_session_only_for_copilot() {
+        // A Copilot session-root span (resource identity `copilot-cli`) promotes
+        // the legacy `invoke_agent` op to the canonical session op.
+        let mut copilot = Map::new();
+        copilot.insert(ATTR_OPERATION_NAME.to_string(), json!("invoke_agent"));
+        copilot.insert(ATTR_SERVICE_NAME.to_string(), json!("copilot-cli"));
+        assert_eq!(
+            resolve_op_name("invoke_agent copilot", &copilot),
+            Some(OP_SESSION.to_string()),
+            "the Copilot session root must classify as `session`"
+        );
+
+        // The CLI's documented default resource identity is also caught by the
+        // `contains("copilot")` branch of the shared provider rule.
+        let mut default_identity = Map::new();
+        default_identity.insert(ATTR_OPERATION_NAME.to_string(), json!("invoke_agent"));
+        default_identity.insert(ATTR_SERVICE_NAME.to_string(), json!("github-copilot"));
+        assert_eq!(
+            resolve_op_name("invoke_agent copilot", &default_identity),
+            Some(OP_SESSION.to_string())
+        );
+
+        // R-5.1: an OpenCode `invoke_agent` span keeps classifying as `chat` —
+        // the promotion must never be a global remap.
+        let mut opencode = Map::new();
+        opencode.insert(ATTR_OPERATION_NAME.to_string(), json!("invoke_agent"));
+        opencode.insert(ATTR_SERVICE_NAME.to_string(), json!("fredo-opencode-plugin"));
+        assert_eq!(
+            resolve_op_name("invoke_agent opencode", &opencode),
+            Some(OP_CHAT_CANON.to_string()),
+            "OpenCode invoke_agent MUST stay chat"
+        );
+
+        // Absent resource identity → `chat` (historical behavior preserved).
+        let mut absent = Map::new();
+        absent.insert(ATTR_OPERATION_NAME.to_string(), json!("invoke_agent"));
+        assert_eq!(
+            resolve_op_name("invoke_agent", &absent),
+            Some(OP_CHAT_CANON.to_string())
+        );
+
+        // Provider-independent registry values are unchanged (regression).
+        let mut run_agent = Map::new();
+        run_agent.insert(ATTR_OPERATION_NAME.to_string(), json!("run_agent"));
+        assert_eq!(resolve_op_name("llm", &run_agent), Some(OP_SESSION.to_string()));
+        let mut chat = Map::new();
+        chat.insert(ATTR_OPERATION_NAME.to_string(), json!("chat"));
+        assert_eq!(resolve_op_name("llm", &chat), Some(OP_CHAT_CANON.to_string()));
     }
 
     #[test]
