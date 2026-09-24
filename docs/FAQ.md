@@ -100,6 +100,18 @@ export OPENCODE_OTLP_PROTOCOL=grpc
 
 Or use the Setup Wizard in Fredo's UI to configure automatically.
 
+**GitHub Copilot CLI** (capture is opt-in on the CLI side; Fredo installs nothing):
+
+```bash
+# Windows (PowerShell)
+$env:COPILOT_OTEL_ENABLED = "true"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"   # OTLP/HTTP only — the CLI has no gRPC
+$env:OTEL_SERVICE_NAME = "copilot-cli"                       # maps to provider = copilot_cli
+$env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "true"   # optional; default off
+```
+
+Copilot's content capture is **off by default** — the rows are then structural (provider, session, model, per-call tokens, tool name/outcome/duration) with `userMessage`/`agentReply`/tool arguments/result absent; that absence is the documented, non-silent degradation, not a broken extractor. Fredo never handles Copilot credentials (do not set `OTEL_EXPORTER_OTLP_HEADERS`). Note: the CLI's own `help monitoring` text claims a plaintext `http://` endpoint disables export — **false for v1.0.88** (verified empirically). Full detail: `docs/telemetry-reference.md` §4.
+
 OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`), persisted raw on receipt, and classified into canonical rows by the RTDB ingest classifier (`infrastructure/rtdb/ingest.rs`) — the row pipeline is the only delivery path.
 
 ### What OTLP data does Fredo ingest?

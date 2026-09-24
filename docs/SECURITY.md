@@ -30,6 +30,7 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 - Loopback-only binding prevents external access
 - No authentication required — same threat model as IPC socket (local user only)
 - OTLP telemetry is persisted on receipt to the local `fredo.db` (`telemetry_spans`/`telemetry_metrics`/`telemetry_logs`) and classified into canonical rows by the RTDB ingest classifier (`infrastructure/rtdb/ingest.rs`). All persisted telemetry stays local — nothing leaves the machine. Retention is bounded by the existing `delete_expired` sweep (default 7 days).
+- Capturing a **GitHub Copilot CLI** session requires no credential held or handled by Fredo: the CLI authenticates itself and exports to plaintext loopback (`http://127.0.0.1:4318`) with no headers. Fredo sets no `OTEL_EXPORTER_OTLP_HEADERS`, adds no token store, and never logs or persists Copilot auth material.
 
 **Limitations:**
 - Any process on the same machine can send OTLP data to these ports

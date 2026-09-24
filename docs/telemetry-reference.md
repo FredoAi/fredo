@@ -169,7 +169,7 @@ tagged `provider = copilot_cli`; OpenCode rows stay `open_code`.
 $env:COPILOT_OTEL_ENABLED = "true"
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"   # exporter appends /v1/traces
 $env:OTEL_SERVICE_NAME = "copilot-cli"                       # deterministic provider token
-$env:COPILOT_OTEL_CAPTURE_CONTENT = "false"                  # Copilot default; "true" enables content
+$env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false"  # Copilot default; "true" enables content
 ```
 
 - `OTEL_SERVICE_NAME=copilot-cli` takes the exact `copilot-cli` branch of the
@@ -181,6 +181,7 @@ $env:COPILOT_OTEL_CAPTURE_CONTENT = "false"                  # Copilot default; 
   CLI authenticates itself). Fredo never logs or persists Copilot auth material
   and adds no token store.
 - Restart the CLI after changing the env; the exporter reads it at startup.
+- **Env names verified on v1.0.88 (Phase-0 probe):** `COPILOT_OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT` (auto-enables), `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/json` default | `http/protobuf` — the CLI has no gRPC), `OTEL_SERVICE_NAME`, and `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (content). The CLI's own `help monitoring` text claims a plaintext `http://` endpoint "disables export … (including the default `http://localhost:4318`)" — **that is false for v1.0.88**: a plain listener on `:4318` received `POST /v1/traces` in cleartext with no refusal logged. Treat the help text's own working example as authoritative and re-probe on a CLI upgrade; the file exporter (`COPILOT_OTEL_FILE_EXPORTER_PATH`) is the documented fallback.
 
 ### 4.2 Provider token rule (the one shared extract rule)
 
@@ -252,7 +253,7 @@ Absent means **NULL — never fabricated, never an empty string**.
 row's `rawJson`** while the canonical content fields are NULL. Content-ON with a
 broken extractor ⇒ those keys are **present in `rawJson`** while the canonical
 field is NULL — a defect, not the documented degradation. Enabling content
-(`COPILOT_OTEL_CAPTURE_CONTENT=true`) populates `userMessage`/`agentReply` (from
+(`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`) populates `userMessage`/`agentReply` (from
 `gen_ai.input.messages`/`gen_ai.output.messages`) and
 `toolInputJson`/`toolOutputJson` (from `gen_ai.tool.call.arguments`/`result`).
 
