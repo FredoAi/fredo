@@ -8,8 +8,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 use crate::features::terminal::state::{
-    append_capped, TerminalCli, TerminalErrorKind, TerminalSession, TerminalSessionStatus,
-    TerminalState, OUTPUT_BUFFER_CAP,
+    append_capped, finalize_exited, TerminalCli, TerminalErrorKind, TerminalSession,
+    TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
 };
 use crate::infrastructure::storage::AppStore;
 
@@ -24,7 +24,7 @@ const PWSH_PATH_KEY: &str = "terminal_pwsh_path";
 /// Copilot requires PowerShell 6+ (Windows PowerShell 5.1 is not acceptable).
 const MIN_POWERSHELL_MAJOR: u32 = 6;
 
-/// Best-effort Copilot auth-failure markers in the CLI's own first output.
+/// Best-effort Copilot auth-failure markers in the CLI's own output.
 const AUTH_MARKERS: &[&str] = &[
     "not logged in",
     "please sign in",
@@ -32,6 +32,20 @@ const AUTH_MARKERS: &[&str] = &[
     "authentication failed",
     "unauthorized",
 ];
+
+/// FX-3 (RC-1): bytes of reader output scanned for an auth marker, per session.
+/// ConPTY reliably delivers the 16 B mode-escape prefix as the FIRST read and
+/// the CLI's own text in a later one, so a first-chunk-only scan misses the
+/// marker. The window is bounded (≤ 4 KiB/session) and stops growing once
+/// exhausted — no unbounded state.
+const AUTH_SCAN_WINDOW: usize = 4096;
+
+/// FX-4 (RC-2): how often a session's child liveness is probed (ms).
+const EXIT_POLL_MS: u64 = 250;
+
+/// FX-4 (RC-2): settle window after a detected child exit, so trailing PTY bytes
+/// land in the per-session buffer before `exited` is published (R-5.3).
+const EXIT_DRAIN_MS: u64 = 250;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -266,10 +280,64 @@ fn check_powershell_prereq(shell: &str, override_major: Option<u32>) -> Result<(
     }
 }
 
-/// Best-effort Copilot auth-failure detection over the CLI's own first output.
+/// Best-effort Copilot auth-failure detection over the CLI's own output.
 fn detect_auth_marker(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     AUTH_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+/// FX-3 pure decision: is the bounded auth scan finished?
+///
+/// It finishes as soon as a marker is present (nothing further to look for) or
+/// once the whole [`AUTH_SCAN_WINDOW`] has been scanned (a later chunk can no
+/// longer introduce a marker). Keeping this pure makes the ConPTY
+/// chunk-splitting cases unit-testable without a PTY.
+fn auth_marker_reached(accumulated: &str, scanned: usize) -> bool {
+    detect_auth_marker(accumulated) || scanned >= AUTH_SCAN_WINDOW
+}
+
+/// FX-3: an `auth` marker may only be recorded when no other (stronger,
+/// pre-spawn) kind is already set — `missing-binary` / `invalid-cwd` / `prereq`
+/// / `launch` must never be overwritten.
+fn auth_kind_may_be_recorded(current: Option<TerminalErrorKind>) -> bool {
+    current.is_none()
+}
+
+/// FX-3 (RC-1): a bounded, order-independent auth-marker scan window.
+///
+/// ConPTY's first `read()` is reliably the mode-escape prefix, not the text, so
+/// the detector must accumulate reader output rather than inspect chunk 1 only.
+/// Every chunk is appended (capped at [`AUTH_SCAN_WINDOW`] bytes) and the
+/// accumulated text is re-scanned after each chunk until it matches or the
+/// window closes.
+struct AuthScanWindow {
+    bytes: Vec<u8>,
+    done: bool,
+}
+
+impl AuthScanWindow {
+    fn new() -> Self {
+        Self { bytes: Vec::with_capacity(AUTH_SCAN_WINDOW), done: false }
+    }
+
+    /// Feed one reader chunk. Returns `true` exactly once — the first time a
+    /// marker is present in the accumulated window. Afterwards it is inert.
+    fn feed(&mut self, chunk: &[u8]) -> bool {
+        if self.done {
+            return false;
+        }
+        let remaining = AUTH_SCAN_WINDOW.saturating_sub(self.bytes.len());
+        if remaining > 0 {
+            let take = remaining.min(chunk.len());
+            self.bytes.extend_from_slice(&chunk[..take]);
+        }
+        let text = String::from_utf8_lossy(&self.bytes);
+        if !auth_marker_reached(&text, self.bytes.len()) {
+            return false;
+        }
+        self.done = true;
+        detect_auth_marker(&text)
+    }
 }
 
 /// Validate that a resolved working directory exists and is a directory.
@@ -379,6 +447,27 @@ fn emit_sessions_changed(app: &AppHandle, sessions: Vec<TerminalSessionInfo>) {
     ) {
         tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-sessions-changed failed");
     }
+}
+
+/// FX-4: publish a session's ONE-SHOT exit notification.
+///
+/// Called only by the caller that won the [`finalize_exited`] transition, so
+/// exactly one `terminal-exited` (and one session-list refresh) is emitted per
+/// session (AC2/R-5.3).
+fn emit_session_exited(app: &AppHandle, id: &str) {
+    if let Err(e) = app.emit_to(
+        WINDOW_LABEL,
+        "terminal-exited",
+        TerminalExitedPayload { session_id: id.to_string() },
+    ) {
+        tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-exited failed");
+    }
+    let sessions = {
+        let s = app.state::<Mutex<TerminalState>>();
+        let guard = s.lock().unwrap();
+        snapshot(&guard)
+    };
+    emit_sessions_changed(app, sessions);
 }
 
 /// Mark a session failed (before any process exists) and broadcast the list.
@@ -646,12 +735,14 @@ pub async fn spawn_terminal_session(
     emit_sessions_changed(&app, sessions);
 
     // ── Reader task (never holds the state lock across a read) ─────────────
+    // The reader never owns the exit transition alone any more (FX-4): it calls
+    // the shared `finalize_exited`, which is idempotent with the watcher below.
     let app_task = app.clone();
     let task_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
         let mut buf = [0u8; 4096];
         let mut line_buf = String::new();
-        let mut first_chunk_checked = false;
+        let mut auth_scan = AuthScanWindow::new();
 
         loop {
             let n = match reader.read(&mut buf) {
@@ -662,12 +753,16 @@ pub async fn spawn_terminal_session(
 
             append_capped(&output_buffer, chunk, OUTPUT_BUFFER_CAP);
 
-            if !first_chunk_checked {
-                first_chunk_checked = true;
-                if detect_auth_marker(&String::from_utf8_lossy(chunk)) {
-                    let s = app_task.state::<Mutex<TerminalState>>();
-                    let mut guard = s.lock().unwrap();
-                    if let Some(session) = guard.get_mut(&task_id) {
+            // FX-3: scan the BOUNDED ACCUMULATED window, not just the first
+            // chunk (RC-1 — ConPTY puts the mode-escape prefix in chunk 1 and
+            // the CLI's text in a later one). Never overwrites a stronger kind
+            // and never sets `status` (the CLI's own sign-in prompt must stay
+            // visible).
+            if auth_scan.feed(chunk) {
+                let s = app_task.state::<Mutex<TerminalState>>();
+                let mut guard = s.lock().unwrap();
+                if let Some(session) = guard.get_mut(&task_id) {
+                    if auth_kind_may_be_recorded(session.error_kind) {
                         session.error_kind = Some(TerminalErrorKind::Auth);
                     }
                 }
@@ -694,32 +789,67 @@ pub async fn spawn_terminal_session(
         }
 
         // Mark ONLY this session exited; retain its row + buffer. The window
-        // stays open (R-5.3) — the removed auto-close is intentional.
-        {
-            let s = app_task.state::<Mutex<TerminalState>>();
-            let mut guard = s.lock().unwrap();
-            if let Some(session) = guard.get_mut(&task_id) {
-                session.status = TerminalSessionStatus::Exited;
-                session.writer = None;
-                session.master = None;
-                let _ = session.killer.take();
+        // stays open (R-5.3) — the removed auto-close is intentional. If the
+        // watcher won the transition first this is a no-op, so the exit event
+        // is emitted exactly once.
+        let s = app_task.state::<Mutex<TerminalState>>();
+        if finalize_exited(&s, &task_id) {
+            emit_session_exited(&app_task, &task_id);
+        }
+    });
+
+    // ── Per-session exit watcher (FX-4 / RC-2) ─────────────────────────────
+    // The only pre-FX-4 exit path was the reader's read-EOF, which a short-lived
+    // child (or a ConPTY EOF race) may never deliver — pinning a dead session
+    // at `running`. This watches the child itself. It never kills, closes or
+    // tree-kills anything (AC5: exit is not teardown) and never touches the
+    // output buffer; the state lock is held only for the non-blocking probe.
+    let watcher_app = app.clone();
+    let watcher_id = session_id.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(EXIT_POLL_MS)).await;
+
+            let exit_status = {
+                let s = watcher_app.state::<Mutex<TerminalState>>();
+                let mut guard = s.lock().unwrap();
+                match guard.get_mut(&watcher_id) {
+                    // Session closed, already finalized, or nothing to watch.
+                    None => return,
+                    Some(session) if session.status == TerminalSessionStatus::Exited => return,
+                    Some(session) => match session.killer.as_mut() {
+                        None => return,
+                        Some(child) => match child.try_wait() {
+                            Ok(None) => continue, // still running
+                            Ok(Some(status)) => status,
+                            Err(e) => {
+                                tracing::error!(
+                                    target: "fredo::terminal",
+                                    error = %e,
+                                    "child liveness probe failed"
+                                );
+                                return;
+                            }
+                        },
+                    },
+                }
+            };
+
+            // Phase-0 discrimination (permanent): proves whether the child
+            // itself terminated. Absent from `telemetry_logs` for the fixture
+            // run ⇒ the fixture never terminated; harden it (FX-6).
+            tracing::debug!(target: "fredo::terminal", exit = ?exit_status, "child exited");
+
+            // Settle briefly so trailing PTY bytes land in the retained buffer
+            // before `exited` is published (R-5.3).
+            tokio::time::sleep(std::time::Duration::from_millis(EXIT_DRAIN_MS)).await;
+
+            let s = watcher_app.state::<Mutex<TerminalState>>();
+            if finalize_exited(&s, &watcher_id) {
+                emit_session_exited(&watcher_app, &watcher_id);
             }
+            return;
         }
-
-        if let Err(e) = app_task.emit_to(
-            WINDOW_LABEL,
-            "terminal-exited",
-            TerminalExitedPayload { session_id: task_id.clone() },
-        ) {
-            tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-exited failed");
-        }
-
-        let sessions = {
-            let s = app_task.state::<Mutex<TerminalState>>();
-            let guard = s.lock().unwrap();
-            snapshot(&guard)
-        };
-        emit_sessions_changed(&app_task, sessions);
     });
 
     Ok(session_id)
@@ -1102,6 +1232,66 @@ mod tests {
         assert!(!detect_auth_marker("Welcome to GitHub Copilot"));
         assert!(!detect_auth_marker("opencode v1.2.3"));
         assert!(!detect_auth_marker(""));
+    }
+
+    // ── FX-3: bounded accumulated auth scan (RC-1) ─────────────────────────
+
+    #[test]
+    fn auth_scan_detects_a_marker_in_the_first_chunk() {
+        let mut scan = AuthScanWindow::new();
+        assert!(scan.feed(b"GitHub Copilot CLI\r\nYou are not logged in.\r\n"));
+        assert!(scan.done);
+    }
+
+    #[test]
+    fn auth_scan_detects_a_marker_split_across_chunks() {
+        let mut scan = AuthScanWindow::new();
+        assert!(!scan.feed(b"GitHub Copilot CLI\r\nYou are not logg"));
+        assert!(scan.feed(b"ed in. Please sign in.\r\n"));
+    }
+
+    #[test]
+    fn auth_scan_skips_a_conpty_escape_only_first_chunk() {
+        // The observed F-17 case: chunk 1 is the 16 B ConPTY mode-escape
+        // prefix, chunk 2 carries the CLI's own auth copy.
+        let mut scan = AuthScanWindow::new();
+        assert!(!scan.feed(b"\x1b[?9001h\x1b[?1004h"));
+        assert!(scan.feed(b"GitHub Copilot CLI\r\nYou are not logged in. Please sign in.\r\n"));
+    }
+
+    #[test]
+    fn auth_scan_reports_no_marker_and_stops_when_the_window_closes() {
+        let mut scan = AuthScanWindow::new();
+        assert!(!scan.feed(&vec![b'x'; AUTH_SCAN_WINDOW]));
+        assert!(scan.done, "window exhausted without a match stops the scan");
+        // A later marker can no longer be introduced.
+        assert!(!scan.feed(b"not logged in"));
+        assert!(!auth_marker_reached("still normal output", 12));
+    }
+
+    #[test]
+    fn auth_scan_window_never_exceeds_the_cap() {
+        let mut scan = AuthScanWindow::new();
+        let _ = scan.feed(&vec![b'x'; 10 * AUTH_SCAN_WINDOW]);
+        assert_eq!(scan.bytes.len(), AUTH_SCAN_WINDOW);
+    }
+
+    #[test]
+    fn auth_kind_is_only_recorded_when_unset() {
+        assert!(auth_kind_may_be_recorded(None));
+        assert!(!auth_kind_may_be_recorded(Some(TerminalErrorKind::Prereq)));
+        assert!(!auth_kind_may_be_recorded(Some(TerminalErrorKind::Launch)));
+        assert!(!auth_kind_may_be_recorded(Some(TerminalErrorKind::MissingBinary)));
+        assert!(!auth_kind_may_be_recorded(Some(TerminalErrorKind::InvalidCwd)));
+        assert!(!auth_kind_may_be_recorded(Some(TerminalErrorKind::Auth)));
+        assert!(!auth_kind_may_be_recorded(Some(TerminalErrorKind::Generic)));
+    }
+
+    #[test]
+    fn auth_marker_reached_stops_on_a_match_or_a_full_window() {
+        assert!(auth_marker_reached("You are not logged in.", 22));
+        assert!(!auth_marker_reached("Welcome to GitHub Copilot", 25));
+        assert!(auth_marker_reached("Welcome to GitHub Copilot", AUTH_SCAN_WINDOW));
     }
 
     // ── validate_cwd ───────────────────────────────────────────────────────

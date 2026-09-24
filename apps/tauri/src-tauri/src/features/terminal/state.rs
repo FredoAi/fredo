@@ -180,6 +180,29 @@ impl TerminalState {
     }
 }
 
+/// FX-4 (RC-2): the ONE idempotent exit finalization.
+///
+/// Both the per-session exit watcher and the reader loop's post-loop block call
+/// this. It locks the state, requires the session to exist and not already be
+/// `Exited`, then flips `status` to `Exited`, releases the PTY handles
+/// (`writer`/`master`/`killer`) and returns `true`. Every later caller gets
+/// `false`, so the `terminal-exited` + `terminal-sessions-changed` emission
+/// happens exactly once per session. The row and its `output_buffer` are
+/// retained (R-5.3); the window is never touched here (AC5).
+pub fn finalize_exited(state: &Mutex<TerminalState>, id: &str) -> bool {
+    let mut guard = state.lock().unwrap();
+    match guard.get_mut(id) {
+        Some(session) if session.status != TerminalSessionStatus::Exited => {
+            session.status = TerminalSessionStatus::Exited;
+            session.writer = None;
+            session.master = None;
+            let _ = session.killer.take();
+            true
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +356,52 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert!(state.sessions.is_empty());
         assert!(state.active.is_none());
+    }
+
+    // ── FX-4: idempotent exit finalization (RC-2) ───────────────────────────
+
+    #[test]
+    fn finalize_exited_transitions_once_and_retains_the_buffer() {
+        let state = Mutex::new(state_with("s1", TerminalCli::Copilot));
+        {
+            let mut guard = state.lock().unwrap();
+            let session = guard.get_mut("s1").unwrap();
+            session.status = TerminalSessionStatus::Running;
+            append_capped(&session.output_buffer, b"GitHub Copilot CLI", OUTPUT_BUFFER_CAP);
+        }
+
+        // The winning caller (watcher or reader) transitions; every later
+        // caller gets false and must not emit a second `terminal-exited`.
+        assert!(finalize_exited(&state, "s1"));
+        assert!(!finalize_exited(&state, "s1"));
+
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.sessions.len(), 1, "the row is retained (R-5.3)");
+        let session = guard.get("s1").unwrap();
+        assert_eq!(session.status, TerminalSessionStatus::Exited);
+        assert!(session.writer.is_none());
+        assert!(session.master.is_none());
+        assert!(session.killer.is_none());
+        assert_eq!(
+            session.output_buffer.lock().unwrap().as_slice(),
+            b"GitHub Copilot CLI",
+            "the retained buffer survives the exit transition (R-5.3)"
+        );
+    }
+
+    #[test]
+    fn finalize_exited_returns_false_for_an_unknown_session() {
+        let state = Mutex::new(TerminalState::new());
+        assert!(!finalize_exited(&state, "missing"));
+    }
+
+    #[test]
+    fn finalize_exited_is_a_no_op_for_an_already_exited_session() {
+        let state = Mutex::new(state_with("s1", TerminalCli::OpenCode));
+        {
+            let mut guard = state.lock().unwrap();
+            guard.get_mut("s1").unwrap().status = TerminalSessionStatus::Exited;
+        }
+        assert!(!finalize_exited(&state, "s1"));
     }
 }
