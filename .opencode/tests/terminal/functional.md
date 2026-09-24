@@ -152,15 +152,21 @@ only F-1's static half).
   6+ (SA text "GitHub Copilot requires PowerShell 6 or newer (pwsh). …" / UI/UX §6
   "PowerShell 6 or newer required"); no PTY opened; within 10 s; the control spawn launches
   normally (the observation is non-vacuous from the override, not the host).
-- [ ] F-17: **4d — auth / launch failure surfaced, not silent.** Launch the instance with
-  `-EnvVar "COPILOT_HOME=C:\\Code\\fredo\\.opencode\\tests\\terminal\\fixtures\\empty-copilot-home" -EnvVar "GH_TOKEN=" -EnvVar "GITHUB_TOKEN="`,
-  with a control run WITHOUT those vars.
-  EXPECTED (per SA `:308` — Fredo does not intercept Copilot auth): the CLI's OWN auth
-  prompt/failure bytes appear in that session's PTY buffer (`get_pty_buffer{sessionId}` —
-  not swallowed, not a silent blank), and the session reaches a terminal state (`exited`
-  with the buffer retained, or `error` if the plan adds an auth error kind) within 10 s; no
-  hang; the control run launches normally. If the plan ships a typed auth state (UI/UX §6),
-  assert that state instead — see the `## Discussion` conflict note.
+- [ ] F-17: **4d — auth / launch failure surfaced, not silent (FX-2 lever).** Drive the
+  in-repo fixture through the EXISTING diagnostic override (no product seam):
+  1. `tauri_webview_execute_js` (window `terminal`) →
+     `__TAURI__.core.invoke('save_setting', { key:'terminal_copilot_path', value:'C:\\Code\\fredo\\.opencode\\tests\\terminal\\fixtures\\fake-copilot-auth.cmd' })`.
+  2. `__TAURI__.core.invoke('spawn_terminal_session', { cli:'copilot', workDir:'C:\\Code\\fredo\\.opencode\\tests\\terminal\\fixtures\\workdir-a' })`.
+  3. Read `list_terminal_sessions` + `get_pty_buffer{sessionId}`.
+  4. Clear the override (`save_setting('terminal_copilot_path','')`).
+  EXPECTED (per SA FX-2 — Fredo does not intercept Copilot auth; the covering
+  `SessionErrorState('auth')` render branch is a documented residual, NOT asserted):
+  that session's `errorKind === 'auth'` on `list_terminal_sessions`; the fixture's OWN auth
+  copy (`GitHub Copilot CLI` / `You are not logged in. Please sign in.`) appears in the PTY
+  buffer (`get_pty_buffer` — not swallowed, not a silent blank); a terminal state is reached
+  within 10 s; no hang; no orphan after close. The control run launches normally (F-13).
+  NOTE (round 2): the retired `COPILOT_HOME` env lever is removed — it could not clear
+  Copilot's stored auth.
   Edge: quota/rate-limit message (degradation surfaced, not silent).
 - [ ] F-18: **Negative cleanup.** After each of F-14..F-17, close the error window.
   EXPECTED: `process-hygiene.ps1 -List` shows no new `copilot`/`node` child from the failed
@@ -238,3 +244,39 @@ showed its own trust prompt + authenticated TUI, not swallowed, no hang).
 
 Open item: fixture dirs are empty and untracked (git can't track empty dirs); add
 `.gitkeep` + `tests-commit --feature terminal` if the cluster wants them committed.
+
+### Round 2 — 2026-09-24, spec/2934 @ a656a020 (verdict FAIL — 2 rows)
+
+Cold-restarted dev instance (the FX-1 fix is Rust; warm fast-path serves the old binary).
+
+**FX-1 verified — the headline defect is FIXED.** Native GitHub Copilot (resolved
+`copilot.cmd`, NO override) now reaches `status='running'` (pid 20408) with a live Copilot
+TUI in the buffer (`Copilot v1.0.88`, folder-trust prompt) and the real process tree
+`cmd.exe 20408 → node npm-loader 948 → copilot.exe 17980`. F-13 PASS; F-16 control now
+non-vacuous.
+
+**PASS:** F-1 (1 hit `settings.ts:18`), F-2/F-3, F-4 (legacy→new copy; 0-keystroke prefill —
+NOTE: must clear the `terminal` window's `localStorage` too, not only SQLite, or the stale
+`localStorage` value short-circuits the migration), F-5, F-6, F-8 (A echoed its own sentinel;
+B's Copilot TUI withholds echo until submit — documented path), F-9, F-10 (`id`/`pid`/
+`startedAt` unchanged), F-12, F-13 (native), F-14/F-15 (unchanged), **F-16 (forced + control
+non-vacuous)**, F-18, F-19, F-20, F-21, N-1..N-8.
+
+**FAIL — F-17 (FX-2 auth lever).** `terminal_copilot_path` = `fake-copilot-auth.cmd` →
+the auth copy IS in the buffer (130 B, `GitHub Copilot CLI` / `You are not logged in. Please
+sign in.`), no hang, no orphan — BUT `list_terminal_sessions` returns `errorKind=null`
+(expected `'auth'`) and the session never reaches a terminal state (stays `running`; no
+`terminal-exited`). Root cause: `commands.rs:665-674` checks `detect_auth_marker` ONLY on the
+first reader chunk; an instrumented `terminal-output` listener shows the reader got chunk 1 =
+16 B of ConPTY mode escapes and chunk 2 = 114 B with the marker → never detected. Reproduced
+twice. **New defect.**
+
+**FAIL — F-11 (per-session resize).** Window resize while B is active changed NEITHER A nor
+B (`resize_pty` fired for neither); only an activation switch re-fits and pushes a per-session
+`resize_pty` (A selected → A 99×15, B untouched — isolation half holds). Root cause:
+`SessionTerminal.tsx` has NO `ResizeObserver`/window-resize listener — `fit()` runs only on
+mount and on activation. **New defect** (the plan/UI-UX §2 specifies the ResizeObserver path).
+
+Round-2 evidence frame names: `r2-f13-copilot-native`, `r2-f16-prereq-selected`,
+`r2-f17-auth-buffer`, `r2-ac1-migration-prefill`, `r2-ac2-switch-opencode`,
+`r2-ac3-settings-defaultcli`, `r2-ac5-selfexit`.
