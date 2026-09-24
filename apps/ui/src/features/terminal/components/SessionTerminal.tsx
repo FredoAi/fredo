@@ -37,6 +37,13 @@ interface SessionTerminalProps {
   active: boolean;
   /** Fired on the first PTY byte for this session (live event OR replay). */
   onFirstOutput?: (sessionId: string) => void;
+  /**
+   * Last applied fit dimensions for this session (stamped after every applied
+   * fit). Optional: a caller that does not pass it still compiles and the
+   * terminal behaves identically. `TerminalPane` passes it only for the ACTIVE
+   * session so the pane can publish `data-cols`/`data-rows` (C-2).
+   */
+  onFit?: (cols: number, rows: number) => void;
 }
 
 /**
@@ -57,6 +64,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
   sessionId,
   active,
   onFirstOutput,
+  onFit,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -66,6 +74,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
   // `sessionId` — an inline parent callback must never re-initialise the
   // terminal (that would remount and drop scrollback).
   const onFirstOutputRef = useRef(onFirstOutput);
+  const onFitRef = useRef(onFit);
   const firstOutputFiredRef = useRef(false);
 
   useEffect(() => {
@@ -74,6 +83,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
 
   useEffect(() => {
     onFirstOutputRef.current = onFirstOutput;
+    onFitRef.current = onFit;
   });
 
   useEffect(() => {
@@ -123,6 +133,22 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
           adapterBridge.invoke('write_pty_input', { sessionId, data }).catch(() => {});
         });
 
+        // Fit the canvas to the observed box and publish the APPLIED grid as a
+        // receipt (`onFit`, C-2) so the pane can stamp `data-cols`/`data-rows`.
+        // Guarded on a real box: a not-yet-laid-out mount reports 0×0, and a
+        // 0×0 fit would push a bogus size / publish a bogus receipt.
+        const fitAndPublish = () => {
+          const el = containerRef.current;
+          if (!el || el.clientWidth <= 0 || el.clientHeight <= 0) return;
+          try {
+            fitAddon?.fit();
+          } catch {
+            /* not laid out yet — no fit applied, so no receipt */
+            return;
+          }
+          if (term) onFitRef.current?.(term.cols, term.rows);
+        };
+
         // A window/pane resize must re-fit the ACTIVE terminal so its
         // `term.onResize` pushes a fresh `resize_pty` (the activation effect
         // only covers a deselect→select transition, not a live window resize).
@@ -139,13 +165,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
             cancelAnimationFrame(resizeFrame);
             resizeFrame = requestAnimationFrame(() => {
               if (disposed || !activeRef.current) return;
-              const el = containerRef.current;
-              if (!el || el.clientWidth <= 0 || el.clientHeight <= 0) return;
-              try {
-                fitAddon?.fit();
-              } catch {
-                /* not laid out yet */
-              }
+              fitAndPublish();
             });
           });
           resizeObserver.observe(container);
@@ -154,11 +174,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
         // Fit after layout settles (hidden-canvas fit yields 0×0).
         requestAnimationFrame(() => {
           if (disposed) return;
-          try {
-            fitAddon?.fit();
-          } catch {
-            /* not laid out yet */
-          }
+          fitAndPublish();
           if (activeRef.current) termRef.current?.focus();
         });
 
@@ -213,16 +229,25 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
   }, [sessionId]);
 
   // Activation: re-fit BEFORE accepting resize events, then move focus into the
-  // newly visible terminal so keystrokes land in the right PTY immediately.
+  // newly visible terminal so keystrokes land in the right PTY immediately. The
+  // applied dims are published as a fit receipt (C-2) — never from a 0×0 box.
   useEffect(() => {
     if (!active) return;
     const raf = requestAnimationFrame(() => {
-      try {
-        fitRef.current?.fit();
-      } catch {
-        /* not laid out yet */
+      const el = containerRef.current;
+      const term = termRef.current;
+      const fitAddon = fitRef.current;
+      if (el && el.clientWidth > 0 && el.clientHeight > 0 && fitAddon) {
+        let fitted = false;
+        try {
+          fitAddon.fit();
+          fitted = true;
+        } catch {
+          /* not laid out yet — no fit applied, so no receipt */
+        }
+        if (fitted && term) onFitRef.current?.(term.cols, term.rows);
       }
-      termRef.current?.focus();
+      term?.focus();
     });
     return () => cancelAnimationFrame(raf);
   }, [active]);
@@ -230,6 +255,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
   return (
     <Box
       ref={containerRef}
+      data-testid={`terminal-canvas-host-${sessionId}`}
       w="100%"
       h="100%"
       background={GHOSTTY_THEME.background}
