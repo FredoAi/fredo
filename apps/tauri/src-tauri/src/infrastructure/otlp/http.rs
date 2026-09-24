@@ -115,7 +115,18 @@ async fn handle_traces(
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-protobuf export classified into RTDB rows");
                 StatusCode::OK
             }
-            Err(_e) => StatusCode::BAD_REQUEST,
+            Err(e) => {
+                // R-4.2 (Spec #2933 ST-7): a rejected trace body must leave a
+                // non-silent signal. Log-and-continue ONLY — the pre-existing
+                // 400 status is unchanged (no retry-storm contract change), and
+                // no classification runs for a body that did not decode.
+                tracing::warn!(
+                    target: "fredo::otlp",
+                    error = %e,
+                    "rejected OTLP/HTTP protobuf trace export — body failed to decode; export dropped, no rows classified"
+                );
+                StatusCode::BAD_REQUEST
+            }
         }
     } else {
         // JSON OTLP (standard OTLP/HTTP JSON or OpenCode's custom flat format)
@@ -137,7 +148,19 @@ async fn handle_traces(
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-JSON export classified into RTDB rows");
                 StatusCode::OK
             }
-            Err(_) => StatusCode::OK,
+            Err(e) => {
+                // R-4.2 (Spec #2933 ST-7): the JSON arm previously returned 200
+                // with NO log — a partial/replayed/duplicated Copilot export
+                // that failed to parse vanished silently. Log-and-continue
+                // ONLY: the 200 status is unchanged (no retry-storm contract
+                // change), and no classification runs for an unparseable body.
+                tracing::warn!(
+                    target: "fredo::otlp",
+                    error = %e,
+                    "rejected OTLP/HTTP JSON trace export — body failed to parse; export dropped, no rows classified"
+                );
+                StatusCode::OK
+            }
         }
     }
 }
@@ -342,6 +365,44 @@ mod tests {
         assert_eq!(spans[0].span_name, "my.llm");
         assert_eq!(spans[0].span_id, "aabbccddeeff0011");
         assert_eq!(spans[0].session_id, "sess-json-1");
+        assert_eq!(spans[0].transport.as_deref(), Some("otlp_http"));
+    }
+
+    #[test]
+    fn copilot_otlp_json_envelope_deserializes_for_raw_ingestion() {
+        // Spec #2933 ST-5: the `--copilot` injector POSTs this OTLP/HTTP JSON
+        // shape to `/v1/traces` (the transport the Copilot CLI ships). Pin that
+        // the receiver's `with-serde` deserializer accepts it — int64 fields
+        // are decimal STRINGS per the OTLP/JSON spec — and that the span maps
+        // through `raw_spans_from_export` with its session id derived from
+        // `gen_ai.conversation.id`.
+        let json = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [
+                    { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
+                    { "key": "service.version", "value": { "stringValue": "copilot-cli-fixture" } }
+                ]},
+                "scopeSpans": [{ "spans": [{
+                    "name": "invoke_agent copilot",
+                    "traceId": "0f0e0d0c0b0a09080706050403020100",
+                    "spanId": "0102030405060708",
+                    "startTimeUnixNano": "1700000000000000000",
+                    "endTimeUnixNano": "1700000000900000000",
+                    "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot2933" } },
+                        { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "12480" } }
+                    ]
+                }]}]
+            }]
+        });
+
+        let request: ExportTraceServiceRequest =
+            serde_json::from_value(json).expect("Copilot OTLP/JSON envelope must deserialize");
+        let spans = raw_spans_from_export(&request, "otlp_http");
+        assert_eq!(spans.len(), 1, "the Copilot session span must map");
+        assert_eq!(spans[0].span_name, "invoke_agent copilot");
+        assert_eq!(spans[0].session_id, "ses_copilot2933");
         assert_eq!(spans[0].transport.as_deref(), Some("otlp_http"));
     }
 

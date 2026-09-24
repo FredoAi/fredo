@@ -92,18 +92,44 @@
  * phase 2 runs `--count 1 --start-index 2` (MM closed) against the SAME
  * --parent id. Receipts print per span (task + child), keyed by span_id hex.
  *
+ * Copilot mode (--copilot, Spec #2933 ST-5): a self-contained producer for the
+ * GitHub Copilot CLI capture contract. Instead of the hand-encoded gRPC
+ * protobuf, it POSTs a Copilot-shaped OTLP/JSON envelope to the REAL OTLP/HTTP
+ * receiver on `127.0.0.1:4318/v1/traces` — the exact transport the Copilot CLI
+ * ships — so a tester can drive receiver → classifier → canonical rows without
+ * the `copilot` binary, auth, or a paid subscription. The Rust fixture (ST-4)
+ * remains the no-network deterministic baseline; this is the optional live leg.
+ *
+ * Envelope shape (mirrors the ST-4 fixture):
+ *   - Resource `service.name = "copilot-cli"` → provider token `copilot_cli`
+ *     (the one shared rule, `rtdb/attrs.rs::resolve_provider_token`).
+ *   - Session root span `invoke_agent copilot` with
+ *     `gen_ai.operation.name = invoke_agent` (NOT the OpenCode `run_agent`) and
+ *     session-cumulative `gen_ai.usage.input_tokens`/`output_tokens`.
+ *   - `chat <model>` span with PER-CALL `gen_ai.usage.*` (Copilot's per-call
+ *     semantics — the classifier bypasses the cumulative-delta derivation).
+ *   - `execute_tool readFile` span with `gen_ai.tool.name` + span timing.
+ *   - Content ON by default (`gen_ai.input.messages` / `output.messages` /
+ *     `tool.call.arguments` / `tool.call.result`); `--content-off` omits those
+ *     four keys (Copilot's default) so the R-3.2 degradation discriminator can
+ *     be exercised live — the structural rows still appear.
+ *
  * Params:
  *   --count N        number of fake child sessions to inject (default 2)
  *   --prefix ID      base id; session ids are `<prefix>-1 .. <prefix>-N`
- *                    (default ses_orphan2762)
- *   --port N         OTLP gRPC port (default 4317)
+ *                    (default ses_orphan2762; `--copilot` default ses_copilot2933)
+ *   --port N         receiver port (gRPC default 4317; `--copilot` HTTP default 4318)
  *   --parent ID      delegation-tree mode: parent session id (enables the
  *                    task-span + session.parent_id shape above)
  *   --start-index N  first child index in tree mode (default 1)
+ *   --copilot        Copilot OTLP/HTTP JSON mode (see above); mutually
+ *                    exclusive with `--parent`
+ *   --content-off    `--copilot` only: omit the content keys (Copilot default)
  *
  * Dependency-free — stdlib only. Speaks cleartext h2c via `node:http2`
  * (available in Bun) and hand-encodes the `ExportTraceServiceRequest`
- * protobuf wrapped in a gRPC length-prefixed frame.
+ * protobuf wrapped in a gRPC length-prefixed frame; `--copilot` uses the
+ * global `fetch` + `AbortController` (Bun/Node built-ins, no new dependency).
  */
 
 import http2 from 'node:http2'
@@ -112,23 +138,29 @@ import { randomBytes } from 'node:crypto'
 // ── CLI params ────────────────────────────────────────────────────────────────
 
 let count = 2
-let prefix = 'ses_orphan2762'
-let port = 4317
+let prefixArg: string | null = null
+let portArg: number | null = null
 let parent: string | null = null
 let startIndex = 1
+let copilot = false
+let contentOff = false
 
 const argv = process.argv.slice(2)
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--count') count = Number(argv[++i])
-  else if (argv[i] === '--prefix') prefix = argv[++i]
-  else if (argv[i] === '--port') port = Number(argv[++i])
+  else if (argv[i] === '--prefix') prefixArg = argv[++i]
+  else if (argv[i] === '--port') portArg = Number(argv[++i])
   else if (argv[i] === '--parent') parent = argv[++i]
   else if (argv[i] === '--start-index') startIndex = Number(argv[++i])
+  else if (argv[i] === '--copilot') copilot = true
+  else if (argv[i] === '--content-off') contentOff = true
   else {
     console.error(`Unknown argument: ${argv[i]}`)
     process.exit(1)
   }
 }
+const prefix = prefixArg ?? (copilot ? 'ses_copilot2933' : 'ses_orphan2762')
+const port = portArg ?? (copilot ? 4318 : 4317)
 if (!Number.isInteger(count) || count < 1) {
   console.error('--count must be a positive integer')
   process.exit(1)
@@ -147,6 +179,14 @@ if (parent !== null && !parent) {
 }
 if (!Number.isInteger(startIndex) || startIndex < 1) {
   console.error('--start-index must be a positive integer')
+  process.exit(1)
+}
+if (copilot && parent !== null) {
+  console.error('--copilot and --parent are mutually exclusive modes')
+  process.exit(1)
+}
+if (contentOff && !copilot) {
+  console.error('--content-off is only valid with --copilot')
   process.exit(1)
 }
 
@@ -363,6 +403,106 @@ function buildExportRequest(span: InjectedSpan): number[] {
   return pbMessage(1, resourceSpans)
 }
 
+// ── Copilot mode envelope (OTLP/HTTP JSON, Spec #2933 ST-5) ───────────────────
+
+/** OTLP AnyValue attribute helpers — int64 fields are decimal STRINGS per the
+ * OTLP/JSON spec (the receiver's `with-serde` deserializer accepts them). */
+function attrString(key: string, value: string): { key: string; value: Record<string, unknown> } {
+  return { key, value: { stringValue: value } }
+}
+
+function attrInt(key: string, value: number): { key: string; value: Record<string, unknown> } {
+  return { key, value: { intValue: String(value) } }
+}
+
+interface CopilotSpanReceipt {
+  name: string
+  traceId: string
+  spanId: string
+}
+
+/** Build the Copilot-shaped OTLP/JSON envelope (mirrors the ST-4 fixture). */
+function buildCopilotEnvelope(
+  sessionId: string,
+  omitContent: boolean,
+): { body: unknown; spans: CopilotSpanReceipt[] } {
+  const model = 'gpt-4o'
+  const traceId = randomBytes(16).toString('hex')
+  const sessionSpanId = randomBytes(8).toString('hex')
+  const chatSpanId = randomBytes(8).toString('hex')
+  const toolSpanId = randomBytes(8).toString('hex')
+  const base = Date.now() * 1_000_000 // ms → ns
+  const at = (offsetMs: number) => String(base + offsetMs * 1_000_000)
+
+  const sessionAttrs = [
+    attrString('gen_ai.operation.name', 'invoke_agent'),
+    attrString('gen_ai.conversation.id', sessionId),
+    attrString('gen_ai.agent.name', 'copilot'),
+    attrString('gen_ai.response.model', model),
+    attrInt('gen_ai.usage.input_tokens', 12480), // session-cumulative
+    attrInt('gen_ai.usage.output_tokens', 731), // session-cumulative
+  ]
+  const chatAttrs = [
+    attrString('gen_ai.operation.name', 'chat'),
+    attrString('gen_ai.conversation.id', sessionId),
+    attrString('gen_ai.response.model', model),
+    attrInt('gen_ai.usage.input_tokens', 321), // PER-CALL (not cumulative)
+    attrInt('gen_ai.usage.output_tokens', 184), // PER-CALL
+    attrInt('gen_ai.usage.reasoning.output_tokens', 40),
+    ...(omitContent
+      ? []
+      : [
+          attrString(
+            'gen_ai.input.messages',
+            JSON.stringify([
+              { role: 'user', parts: [{ type: 'text', content: 'List the files in the src directory.' }] },
+            ]),
+          ),
+          attrString(
+            'gen_ai.output.messages',
+            JSON.stringify([
+              { role: 'assistant', parts: [{ type: 'text', content: 'I will read src/main.rs first.' }] },
+            ]),
+          ),
+        ]),
+  ]
+  const toolAttrs = [
+    attrString('gen_ai.operation.name', 'execute_tool'),
+    attrString('gen_ai.conversation.id', sessionId),
+    attrString('gen_ai.tool.name', 'readFile'),
+    ...(omitContent
+      ? []
+      : [
+          attrString('gen_ai.tool.call.arguments', JSON.stringify({ path: 'src/main.rs' })),
+          attrString('gen_ai.tool.call.result', 'fn main() {}'),
+        ]),
+  ]
+
+  const spans = [
+    { name: 'invoke_agent copilot', traceId, spanId: sessionSpanId, startTimeUnixNano: at(0), endTimeUnixNano: at(900), attributes: sessionAttrs },
+    { name: `chat ${model}`, traceId, spanId: chatSpanId, startTimeUnixNano: at(100), endTimeUnixNano: at(400), attributes: chatAttrs },
+    { name: 'execute_tool readFile', traceId, spanId: toolSpanId, startTimeUnixNano: at(410), endTimeUnixNano: at(460), attributes: toolAttrs },
+  ]
+
+  const body = {
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            attrString('service.name', 'copilot-cli'), // → provider copilot_cli
+            attrString('service.version', 'copilot-cli-fixture'),
+          ],
+        },
+        scopeSpans: [{ spans }],
+      },
+    ],
+  }
+  return {
+    body,
+    spans: spans.map((s) => ({ name: s.name, traceId: s.traceId, spanId: s.spanId })),
+  }
+}
+
 // ── gRPC transport (cleartext h2c) ────────────────────────────────────────────
 
 // Fix round 5: every export resolves with an explicit outcome instead of
@@ -464,9 +604,72 @@ function exportViaGrpc(portNum: number, message: number[]): Promise<ExportResult
   })
 }
 
+// ── OTLP/HTTP transport (Copilot mode) ────────────────────────────────────────
+
+/** POST an OTLP/JSON envelope to the HTTP receiver. Resolves with an explicit
+ * outcome (mirrors `exportViaGrpc`) so a silent transport failure is impossible
+ * to miss. Uses the global `fetch` + `AbortController` — no new dependency. */
+async function exportViaHttp(url: string, jsonBody: string): Promise<ExportResult> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: jsonBody,
+      signal: controller.signal,
+    })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
+    return { ok: true, status: String(res.status) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// ── Copilot mode runner ───────────────────────────────────────────────────────
+
+/** Copilot mode: POST the Copilot-shaped OTLP/JSON envelope to the REAL
+ * OTLP/HTTP receiver and print a self-contained receipt (row-table CONFIRM SQL
+ * + the R-3.2 content-key discriminator). */
+async function runCopilotMode() {
+  const envelope = buildCopilotEnvelope(prefix, contentOff)
+  const url = `http://127.0.0.1:${port}/v1/traces`
+  console.log(`Copilot mode: POST ${envelope.spans.length} span(s) to ${url} (service.name=copilot-cli, session=${prefix}, content=${contentOff ? 'OFF' : 'ON'})`)
+  const result = await exportViaHttp(url, JSON.stringify(envelope.body))
+  if (!result.ok) {
+    console.error(`FAILED: OTLP/HTTP export to ${url} did not complete: ${result.error ?? 'unknown error'} — the telemetry rows CANNOT exist. Verify the OTLP/HTTP receiver is up (GET http://127.0.0.1:${port}/health should return status ok) and re-run once.`)
+    process.exit(1)
+  }
+  console.log(`EXPORT 1/1 -> OK (http ${result.status ?? 'unknown'})`)
+  for (const s of envelope.spans) {
+    console.log(`Injected span: session=${prefix} name=${s.name} trace_id ${s.traceId} span_id ${s.spanId}`)
+  }
+
+  const db = '$env:APPDATA\\com.fredo.app\\fredo.db'
+  console.log(`CONFIRM chat_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, model, user_message, agent_reply, prompt_tokens, completion_tokens, cache_read_tokens, cost_usd FROM chat_rows WHERE session_id = '${prefix}'"`)
+  console.log(`CONFIRM tool_use_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, tool_name, tool_success, tool_error, duration_ms, tool_input_json, tool_output_json FROM tool_use_rows WHERE session_id = '${prefix}'"`)
+  console.log(`CONFIRM agent_session_rows: sqlite3 -readonly "${db}" "SELECT session_id, correlation_id, provider, total_tokens, total_messages, total_cost_usd, agent_name FROM agent_session_rows WHERE session_id = '${prefix}'"`)
+  console.log(`EXPECT every row provider = 'copilot_cli'; chat_rows prompt_tokens = 321 / completion_tokens = 184 (PER-CALL, never a delta); agent_session_rows total_tokens = 13211 (12480+731), total_messages / total_cost_usd NULL; tool_use_rows duration_ms = 50, tool_success = 1.`)
+  console.log(`R-3.2 discriminator (${contentOff ? 'content OFF — the four content keys must be ABSENT from raw_json' : 'content ON — content must be present in raw_json'}): sqlite3 -readonly "${db}" "SELECT session_id, raw_json FROM chat_rows WHERE session_id = '${prefix}'" (check gen_ai.input.messages / gen_ai.output.messages) and tool_use_rows.raw_json (check gen_ai.tool.call.arguments / gen_ai.tool.call.result).`)
+  if (contentOff) {
+    console.log(`Content-off gate: chat_rows and tool_use_rows MUST still exist (structural rows), user_message / agent_reply / tool_input_json / tool_output_json MUST be NULL, and raw_json MUST NOT carry the content keys — never a silent empty result.`)
+  }
+  console.log(`Raw-span receipt: sqlite3 -readonly "${db}" "SELECT span_name, session_id, transport, end_time_ns FROM telemetry_spans WHERE attributes_json LIKE '%${prefix}%' ORDER BY start_time_ns"`)
+  console.log(`Done — Copilot OTLP/HTTP leg exported to ${url}.`)
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (copilot) {
+    // Copilot mode (Spec #2933 ST-5) is a standalone OTLP/HTTP JSON leg — it
+    // shares no state with the gRPC orphan/delegation modes.
+    await runCopilotMode()
+    return
+  }
+
   // Every exported span: single-span Export, own random trace/span ids.
   const spans: InjectedSpan[] = []
   const sessions: InjectedSession[] = []

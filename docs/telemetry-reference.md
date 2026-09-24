@@ -1,6 +1,6 @@
 # GenAI Telemetry Reference — What Fredo Receives
 
-Ground truth of the GenAI telemetry Fredo actually receives from opencode (via the fredo plugin → OTLP → `fredo.db`), organized by signal type. Every table is grounded in live data from the `telemetry_spans`, `telemetry_metrics`, and `telemetry_logs` tables (query via `.opencode/skills/telemetry-query/telemetry-query.ps1`), cross-referenced against the [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/).
+Ground truth of the GenAI telemetry Fredo actually receives from the agent CLIs it captures — opencode (via the fredo plugin → OTLP → `fredo.db`) and GitHub Copilot CLI (via its native OpenTelemetry export into the same OTLP/HTTP receiver) — organized by signal type. Every table is grounded in live data from the `telemetry_spans`, `telemetry_metrics`, and `telemetry_logs` tables (query via `.opencode/skills/telemetry-query/telemetry-query.ps1`), cross-referenced against the [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/).
 
 > **Reading this doc:** "Property" is the key name as it appears in the JSON attributes. "Path" is where it lives in the payload (top-level `attributes_json` or nested). "Available in Fredo?" is ✅ if Fredo stores/receives it today, ⚠️ if present but non-conformant to the OTel registry, and ❌ if not received.
 
@@ -156,7 +156,103 @@ Spans progress Init → Update → Response/Error. Status: `UNSET` (open), `OK`,
 
 ---
 
-## 4. Source of truth + how to query
+## 4. GitHub Copilot CLI capture (provider `copilot_cli`)
+
+GitHub Copilot CLI emits **native OpenTelemetry** traces. When pointed at
+Fredo's OTLP/HTTP receiver they land in the same tables above — same receiver
+(`127.0.0.1:4318`, `POST /v1/traces`), same ingest classifier. Copilot rows are
+tagged `provider = copilot_cli`; OpenCode rows stay `open_code`.
+
+### 4.1 Enabling capture (CLI-side env; Fredo installs nothing)
+
+```powershell
+$env:COPILOT_OTEL_ENABLED = "true"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"   # exporter appends /v1/traces
+$env:OTEL_SERVICE_NAME = "copilot-cli"                       # deterministic provider token
+$env:COPILOT_OTEL_CAPTURE_CONTENT = "false"                  # Copilot default; "true" enables content
+```
+
+- `OTEL_SERVICE_NAME=copilot-cli` takes the exact `copilot-cli` branch of the
+  shared rule (`rtdb/attrs.rs::resolve_provider_token`); the CLI's documented
+  default `github-copilot` is also caught by the `contains("copilot")`
+  fallback. Both map to `copilot_cli` — no Fredo-side configuration.
+- **Credential rule:** do NOT set `OTEL_EXPORTER_OTLP_HEADERS`. The export is
+  plaintext localhost with no headers and needs no Fredo-held credential (the
+  CLI authenticates itself). Fredo never logs or persists Copilot auth material
+  and adds no token store.
+- Restart the CLI after changing the env; the exporter reads it at startup.
+
+### 4.2 Provider token rule (the one shared extract rule)
+
+`provider` is resolved **only** from the OTLP **resource** `service.name`
+(`rtdb/attrs.rs::resolve_provider_token`, NFR-6 — the same function the live
+classifier and the canonical backfill use):
+
+| resource `service.name` | row `provider` |
+|---|---|
+| `fredo-opencode-plugin` (or any value containing `opencode`) | `open_code` |
+| `copilot-cli` (or any value containing `copilot`, e.g. `github-copilot`) | `copilot_cli` |
+| absent / unrecognised | `unknown` |
+
+The rule deliberately IGNORES `gen_ai.provider.name` and the flat `provider`
+attribute — in real telemetry those carry the **model** provider
+(`openai`/`anthropic`), never the CLI.
+
+### 4.3 Signal → canonical row mapping
+
+| Copilot span (`gen_ai.operation.name`) | Canonical row |
+|---|---|
+| `invoke_agent` (provider `copilot_cli`) | `agent_session_rows` (session root) |
+| `chat` | `chat_rows` |
+| `execute_tool` | `tool_use_rows` (`toolName` = `gen_ai.tool.name`) |
+
+- `sessionId` comes from `gen_ai.conversation.id`; `model` from
+  `gen_ai.response.model`; `startedAtNs`/`endedAtNs` from the span timing
+  (`durationMs` is derived from it when the flat `duration_ms` key is absent).
+- **Token semantics:** Copilot's `chat` span carries **per-call**
+  `gen_ai.usage.input_tokens` (not session-cumulative), so the classifier
+  bypasses the cumulative-delta derivation for `copilot_cli` — `promptTokens`
+  is the per-call value. The `invoke_agent` span carries session totals in
+  `gen_ai.usage.input_tokens` + `output_tokens`; their sum becomes
+  `totalTokens` (fallback when the flat `total_tokens` key is absent).
+- **Tool outcome:** `error.type` on a failed span → `toolSuccess = false` +
+  `toolError`; a completed span with no error indication → `toolSuccess = true`.
+
+### 4.4 The precise, non-silent degradation (content capture off — the default)
+
+Copilot's content-off default is the expected state, **not** a broken capture:
+structural rows are always produced (never a silent empty result).
+
+| Present | Absent (documented degradation) |
+|---|---|
+| `provider = copilot_cli` | `userMessage` / `agentReply` |
+| `sessionId` / `correlationId` | `toolInputJson` / `toolOutputJson` |
+| `model` | `cacheReadTokens` |
+| token counts (per-call for chat; session totals on the session row) | `totalMessages` |
+| `toolName`, `toolSuccess`, span timing | `costUsd` (chat) / `totalCostUsd` (session) |
+
+Absent means **NULL — never fabricated, never an empty string**.
+
+**Binding discriminator (R-3.2).** Content-off ⇒ the four content keys
+(`gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`) are **absent from the
+row's `rawJson`** while the canonical content fields are NULL. Content-ON with a
+broken extractor ⇒ those keys are **present in `rawJson`** while the canonical
+field is NULL — a defect, not the documented degradation. Enabling content
+(`COPILOT_OTEL_CAPTURE_CONTENT=true`) populates `userMessage`/`agentReply` (from
+`gen_ai.input.messages`/`gen_ai.output.messages`) and
+`toolInputJson`/`toolOutputJson` (from `gen_ai.tool.call.arguments`/`result`).
+
+**Not claimed as parity (known limitations):** no cost (`costUsd`) and no
+parent/child compositing / SubagentNode for Copilot — its spans carry no cost
+attribute and no parent-session attribution. Partial, duplicated or replayed
+exports are idempotent: rows upsert on `(session_id, correlation_id)` with no
+`seq` inflation, and a trace body that fails to decode/parse is dropped with a
+`tracing::warn` (never a silent success).
+
+---
+
+## 5. Source of truth + how to query
 
 - **Database:** `fredo.db` (`telemetry_spans`, `telemetry_metrics`, `telemetry_logs`).
 - **Query tool:** `.opencode/skills/telemetry-query/telemetry-query.ps1` (read-only sqlite3 wrapper).
@@ -166,7 +262,7 @@ Spans progress Init → Update → Response/Error. Status: `UNSET` (open), `OK`,
 
 ---
 
-## 5. Coverage summary (vs the 5 OTel GenAI docs)
+## 6. Coverage summary (vs the 5 OTel GenAI docs)
 
 | Doc | Applicable events/metrics | Received today | Spec closes |
 |-----|---------------------------|----------------|-------------|
