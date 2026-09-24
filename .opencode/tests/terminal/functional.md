@@ -280,3 +280,40 @@ mount and on activation. **New defect** (the plan/UI-UX §2 specifies the Resize
 Round-2 evidence frame names: `r2-f13-copilot-native`, `r2-f16-prereq-selected`,
 `r2-f17-auth-buffer`, `r2-ac1-migration-prefill`, `r2-ac2-switch-opencode`,
 `r2-ac3-settings-defaultcli`, `r2-ac5-selfexit`.
+
+### Round 3 — 2026-09-24, spec/2934 @ 7ba5a99c (verdict PASS — both round-2 FAILs fixed)
+
+Cold restart (`dev-env.ps1 -Action Up -Spec 2934`); driver session stop+start + namespace re-probe.
+
+**F-17 (R-4.4, FX-3 + FX-4) — PASS (was round-2 FAIL).** Session
+`390e2daa-2f9e-4277-b666-70769a7f89be`: `errorKind='auth'` immediately on
+`list_terminal_sessions`, status `exited` at **544 ms** (≤10 s), `get_pty_buffer` = **139 B
+retained** (`GitHub Copilot CLI` / `You are not logged in. Please sign in.`), **exactly one**
+`terminal-exited` emit (listener log), no hang, window open, no orphan; override cleared.
+Second confirmation (F-21 leg) with two OpenCode sessions live: fixture `e60af9da-…` exited
+in ~800 ms with the peers still `running`. FX-4's Phase-0 `child exited` DEBUG line is not
+observable because the app's `EnvFilter` defaults to INFO (`lib.rs:136-137`) — the watcher's
+effect (exited + one emit + retained buffer) is the direct receipt.
+
+**F-11 (R-2.4, FX-5) — PASS (was round-2 FAIL).** With A=`4fb23974` (71×4) and B=`19a2ad5a`
+(80×24) and B active, `tauri_manage_window resize terminal 1150×780` → **B 99×8, A 71×4
+unchanged**; a second resize (1000×700) moved only B (→82 cols). Both buffers render
+(A 3567 B, B 13724 B; both TUIs + their own workdirs). The live **minimise** leg is blocked
+(bridge plugin < 0.13); the 0×0 branch is covered by `SessionTerminal.resize.test.tsx` (3/3
+PASS) + the `clientWidth/clientHeight <= 0` guard.
+
+**Regression sweep PASS:** F-13 native Copilot (`running` ~1 s, `Copilot v1.0.88` TUI),
+F-16 forced `pwshMajor:5` → `error`/`prereq` in 1.93 s with `pid:null` + the UI error surface
+and the non-vacuous native control, AC1 rename receipt (exactly 1 hit `settings.ts:18`;
+zero-match corroborating receipts; capabilities `["main","terminal"]`), F-2/F-3, F-6/F-8/F-9/F-10,
+F-12 (`terminal_default_cli='copilot'` still preselected), F-19/F-20/F-21 (0 orphans; main-only
+after window close), N-1..N-8.
+
+**Observation (pre-existing, NOT asserted by R-2.4, NOT a round-3 regression):** the terminal
+pane renders ~126 px tall in a 780 px window — the window root `h="100%"` resolves against a
+content-sized `#root` (height driven by the sidebar). The same behaviour is in the round-2 frame
+`r2-ac2-switch-opencode.jpeg`. Flagged for awareness only.
+
+Round-3 evidence frame names: `r3-f17-auth-exited`, `r3-f11-after-resize`,
+`r3-f11-session-a-renders`, `r3-f13-copilot-native`, `r3-f16-prereq-error`,
+`r3-ac1-launcher-grid`, `r3-terminal-open`.
