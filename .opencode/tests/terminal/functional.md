@@ -210,11 +210,170 @@ only F-1's static half).
   `var(--token)NN` alpha-append.
 - [ ] N-5: **No persistence (non-goal)** — after `-Action Restart`, the sidebar is empty;
   no `terminal` session rows in `fredo.db`; no resume.
+  > **SUPERSEDED by #2935** (do NOT run as written): persistence/resume is now REQUIRED. The #2934
+  > non-goal assertion is retained only as the historical record; the live assertions are the
+  > `#2935` rows F-22..F-36 + N-9..N-17 below (a restart MUST list the persisted records).
 - [ ] N-6: **Console hygiene (both windows)** — no `Error:`/`Uncaught`/`Maximum update
   depth exceeded` in the main OR terminal window.
 - [ ] N-7: **Zero orphans** — see F-19/F-20.
 - [ ] N-8: **Accessibility** — sidebar items + add-session menu keyboard-reachable and
   ARIA-labelled; no focus trap.
+
+## #2935 — Persistence, resume, and the `fredo` open-Terminal command (AC1/AC2/AC4)
+
+> Seeded at triage for Spec #2935. Sessions persist as RECORDS across window close/reopen + app
+> restart; reopening lists them and offers RESUME through the CLI's OWN resume mechanism
+> (`--resume`/`--continue`), never keep-alive. Closing the window TERMINATES processes while
+> keeping the records. Resume is refusable + removable; an unresumable record surfaces a clear
+> message. Bind rows to the SA-published command/setting names (fallback: records on
+> `list_terminal_sessions`, `resume_terminal_session{sessionId}`, `delete_terminal_session_record{sessionId}`).
+> **Evidence policy: LIVE** (per the suite header + the plan's `> Verification policy: live`).
+
+> **Fixture note (G-172, in-repo only):** `fixtures/workdir-a/` (committed `README.md`) and
+> `…/workdir-b/` are the resume working directories; `no-such-binary.cmd` / `no-such-dir` under the
+> same folder are DELIBERATELY MISSING negative data (never create them). The sentinel
+> `TERMINAL_RESUME_2935_SENTINEL` is a literal in the plan.
+
+### AC1 — persisted list + real resume
+
+- [ ] F-22 (**R-1.1a, AC1**): Add A = OpenCode in `workdir-a` and B = GitHub Copilot in
+      `workdir-b`; capture `list_terminal_sessions` (ids/cli/workDirs). Close the `terminal` window
+      (OS close). Reopen Terminal.
+      EXPECTED: main + one `terminal` window; A and B still listed with the SAME ids/cli/workDirs and
+      a resumable marker; neither is running.
+      Edge: reopen twice (no duplicate records); a record whose workDir no longer exists is still
+      listed (resume refuses — F-31/F-32).
+- [ ] F-23 (**R-1.1b, AC1**): After F-22, `dev-env.ps1 -Action Restart -Spec <N>`; reopen Terminal.
+      EXPECTED: the SAME record ids/cli/workDirs as F-22 (persistence survives a full app restart);
+      the reopen itself starts no process.
+      Edge: zero records → empty state; two restarts; reopen before the list resolves (loading, not a
+      false empty).
+- [ ] F-24 (**R-1.1c, AC1 — load-bearing**): In live session A (OpenCode, workdir-a)
+      `write_pty_input{sessionId:A, data:"TERMINAL_RESUME_2935_SENTINEL\r"}` (one bounded real turn);
+      capture `get_pty_buffer{A}` (contains the sentinel). Close the window. Reopen and RESUME A.
+      EXPECTED: a PTY starts for A's record with `cli=opencode` + `workDir=…\workdir-a`; the
+      post-resume buffer contains `TERMINAL_RESUME_2935_SENTINEL`; the resume process CommandLine
+      (`process-hygiene.ps1 -List`) carries the resume switch (`--continue`/`--resume <id>`) or the
+      app logs the resume launch; A's record id is unchanged (last-active updated).
+      Edge: CLI prints "no session"/"cannot resume" → F-30 (unresumable), never a silent fresh
+      session; resume while another session streams; resume twice (no duplicate PTY).
+- [ ] F-25 (**R-1.1d, AC1 — discrimination control, non-vacuous**): right after F-24, start a control
+      session with the SAME cli + workdir WITHOUT resume; compare buffers.
+      EXPECTED: the control buffer does NOT contain the sentinel and does not re-render the prior
+      conversation; the resumed buffer does; the control spawns a NEW record id while the resume keeps
+      A's id.
+      Edge: a control that also shows the sentinel = the oracle is blind (FAIL + flag it); an empty
+      resumed buffer = no history re-render.
+- [ ] F-26 (**R-1.1e, AC1**): read the record payloads (`list_terminal_sessions`) and `rg` the record
+      struct.
+      EXPECTED: each record carries exactly `cli`, `workDir`, title/identity (+ stable id), and timing
+      (`lastActive`/`createdAt`); the sidebar shows each record's CLI name + workDir basename.
+      Edge: blank workDir → `~`; two same-CLI records get distinct titles.
+
+### AC2 — teardown receipt + records survive
+
+- [ ] F-27 (**R-2.1, AC2 — process receipt**): with A + B running capture the pids + the
+      `process-hygiene.ps1 -List` inventory. Close the `terminal` window (OS close) and
+      `close_terminal_window`.
+      EXPECTED: `process-hygiene.ps1 -List` summary reads `0 opencode/node/copilot process(es)` and
+      `0 unprotected orphan candidate(s)`; `Get-Process -Id <each captured pid>` reports "Cannot find a
+      process" for EVERY captured pid; the named `cmd.exe` scan finds no CommandLine containing
+      `opencode`/`copilot`/`workdir-a`/`workdir-b`.
+      Edge: close during `starting`; close while the error surface shows; close right after a self-exit.
+- [ ] F-28 (**R-2.2, AC2**): reopen Terminal immediately after F-27.
+      EXPECTED: A and B still listed (same ids, resumable) AND `-List` still reads zero — reopen
+      restores availability, not a process (no keep-alive/reattach).
+      Edge: reopen after a restart between close and reopen; resume one record then re-run `-List`
+      (exactly one process per resumed record).
+- [ ] F-29 (**R-2.3, AC2**): with A + B running, `close_terminal_session{A}`.
+      EXPECTED: A's process tree gone; B still `running` + streaming; the window stays open; A's row is
+      removed (or marked non-resumable per the SA contract) — no ghost row.
+      Edge: close the non-active session; two back-to-back; close a record-only entry.
+
+### AC4 — negatives (first-class rows)
+
+- [ ] F-30 (**R-4.3, AC4 — unresumable**): persist a Copilot record (spawn B, close the window);
+      `save_setting{key:'terminal_copilot_path', value:'C:\Code\fredo\.opencode\tests\terminal\fixtures\no-such-binary.cmd'}`;
+      restart; resume B.
+      EXPECTED: a clear cause-naming message (`missing-binary` naming `copilot`) reaches a terminal
+      state within the SA's bound (resume pre-flight 5 s); NO fresh/wrong session starts; B's record is
+      retained + still removable; no orphan. **Control:** clear the override
+      (`save_setting('terminal_copilot_path','')`), restart, resume the SAME record → it succeeds.
+      Edge: override = a directory; override = a non-executable file; resume twice while missing.
+- [ ] F-31 (**R-4.4, AC4**): from a persisted record, (a) choose "start fresh"; (b)
+      `delete_terminal_session_record{record}`.
+      EXPECTED: (a) a NEW record is appended, the persisted one untouched (id/fields unchanged);
+      (b) the record is gone and stays gone after a restart; removing a live-owning record leaves no
+      process; no window double-open.
+      Edge: refuse then resume the same record (still resumable); remove the selected record
+      (selection falls to a valid entry); remove all → empty state.
+- [ ] F-32 (**R-4.5, AC4**): persist a record in `workdir-a`; rename that dir away (in-repo,
+      reversible); resume.
+      EXPECTED: typed `invalid-cwd` + a clear message; no partial session; the record is retained;
+      after restoring the dir name the resume succeeds.
+      Edge: dir removed between listing and clicking resume; resume with the CLI ALSO missing (record
+      the cause priority).
+
+### AC4 — CLI negatives (drive the real binary)
+
+- [ ] F-33 (**R-4.1, AC4**): `fredo open-terminal --cli bogus` (and IPC
+      `spawn_terminal_session{cli:'bogus', workDir:'…\workdir-a'}`).
+      EXPECTED: a clear error naming the invalid CLI; session list count unchanged; no process started.
+      Edge: `OpenCode` wrong case rejected; empty string; `claude`.
+- [ ] F-34 (**R-4.2, AC4**): `fredo open-terminal --cli opencode --dir …\no-such-dir` (and the IPC
+      spawn form).
+      EXPECTED: typed `invalid-cwd` + "Working directory not found: …" within 10 s; NO PTY/process; the
+      window renders the state (no hang); retry after a valid dir launches normally.
+      Edge: a file path instead of a directory; whitespace-only `--cli`.
+
+### AC1/AC4 — reopen gating + the blocked/resuming states (UI/UX §5b/§5c/§6, requested)
+
+- [ ] F-35 (**R-1.1f, AC1 — gating**): (a) with persisted records present, reopen Terminal; (b) clear
+      the records and reopen.
+      EXPECTED: (a) the pane auto-selects the most-recent previous record and shows
+      `terminal-resume-state` (zero clicks); `terminal-all-ended-state` ("All sessions ended") is NOT
+      shown; the New Session dialog did NOT auto-open; the "Previous sessions" header + count render.
+      (b) control: with zero live + zero persisted, `terminal-empty-state` renders and the add prompt
+      auto-opens.
+      Edge: live `exited` + persisted both present (per-session ended banner shows, Previous group stays
+      actionable); only unresumable records → no silent dead-end.
+- [ ] F-36 (**R-4.6, AC4 — bounded resuming → resume-failed + the four blocked causes**): drive a
+      resume that is slow then fails; separately render each `terminal-resume-blocked-state` cause.
+      EXPECTED: `terminal-resuming-state` renders ("Resuming `<title>`…") with the ≥3 s hint and a
+      **Cancel** that aborts leaving the record `resumable`; the surface flips to
+      `terminal-resume-blocked-state` with `data-reason='resume-failed'` + raw message + **Retry**
+      within the watchdog bound (never a hang); the record is unchanged. The four causes render
+      distinctly: `cli-missing` (F-30), `invalid-cwd` (F-32), `resume-failed` (this row), `invalid-cli`
+      (F-33).
+      Edge: `transcript-missing` is a **named blocker** — no in-repo lever deletes the CLI transcript
+      (out-of-repo store, G-009); UNVERIFIED unless the SA exposes a reason path. Retry after the cause
+      clears → `Resumed`.
+
+## Non-functional (Spec #2935)
+
+- [ ] N-9 (**N-1**): dump every persisted record payload (and the record table via
+      `telemetry-query.ps1 -Query "PRAGMA table_info(<t>)"` if a table exists), then
+      `Select-String -Pattern 'ghp_|github_pat_|sk-|token|password|secret|authorization|bearer|api[_-]?key|cookie' -AllMatches`.
+      EXPECTED: ZERO credential-shaped matches; the field set is exactly `{cli, workDir, title/id,
+      timing}` (no env/args/headers/tokens).
+- [ ] N-10 (**N-2**): a resume that cannot complete reaches a terminal/`error` state (or the CLI's own
+      exit) within ≤10 s with a message; record the measured success + failure times.
+      EXPECTED: no indefinite spinner/hang.
+- [ ] N-11 (**N-3**): after F-27 `-List` = 0; reopen starts 0 processes until an explicit resume;
+      `rg -i 'attach|detach|keep-?alive|daemon'` over the terminal feature + diff finds no
+      attach/detach/keep-alive surface.
+- [ ] N-12 (**N-4**): `tauri_read_logs(source="console", lines=50)` clean in BOTH the main and
+      `terminal` windows across close/reopen/restart/resume (no `Error:`/`Uncaught`/`Maximum update
+      depth exceeded`).
+- [ ] N-13 (**N-5**): the persisted record struct carries only CLI/directory/title/timing; pin (static)
+      that no raw PTY buffer / launch args / environment is persisted.
+- [ ] N-14 (**N-6**): new resume/refuse/remove chrome reads theme tokens; no hardcoded hex/rgba except
+      the allowlisted renderer ANSI palette; no invalid `var(--token)NN` alpha-append.
+- [ ] N-15 (**N-7**): resume/refuse/remove affordances keyboard-reachable + ARIA-labelled +
+      DOM-observable; no focus trap; the active record carries `aria-current`.
+- [ ] N-16 (**N-8**): static/diff pin — no cross-device sync path and no session-content mutation added.
+- [ ] N-17 (**N-9**): reopen with N persisted records renders the list within the UI/UX budget; the
+      main window stays responsive during reopen + resume.
 
 ## Round notes
 
