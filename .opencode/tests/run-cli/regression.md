@@ -110,3 +110,19 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
 - R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the #2934 diff; other
   settings panes unchanged (Settings nav renders Terminal alongside the static sections).
 - R-17 PASS — empty sidebar after restart; no `%terminal%` table in `fredo.db`.
+
+### Round 3 — 2026-09-24, spec/2934 @ 7ba5a99c
+
+- R-13 PASS — one `terminal` window (main+1) at every sample while up to 5 sessions ran
+  (OpenCode ×2, Copilot ×2, fixture ×1).
+- R-14 PASS — the legacy `run_cli_work_dir` read remains the single allowlisted hit
+  (`terminal/settings.ts:18`); migration code untouched this round; `terminal_work_dir`
+  governs live (add-session dialog prefill = `…\fixtures\workdir-b`).
+- R-15 PASS — close-one reaps that session's tree and the peer survives; self-exit marks only
+  that session `exited` with the buffer retained; close-window reaps all; three
+  `process-hygiene.ps1 -List` runs → **0 unprotected orphan candidates**.
+- R-16 PASS — no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the #2934 diff;
+  `telemetry_spans`/`telemetry_logs` live (see the round-3 `## Tests Runs`); both windows'
+  consoles clean.
+- R-17 PASS — `list_terminal_sessions` = `[]` after the window closed; `sqlite_master` has no
+  `%terminal%`/`%run_cli%` table.
