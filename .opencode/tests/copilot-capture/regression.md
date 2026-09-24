@@ -45,3 +45,19 @@
 - **CR-9 PASS.** A bare `fredo emit --event-type tool_use --session-id e2e-2933bare --tool-name bash` (no `--provider`) persisted `provider = internal` — the default is unchanged.
 - **CR-10 PASS.** Token-shaped credential scan = 0 across row `raw_json`, `telemetry_spans.attributes_json`, `telemetry_logs.message`; no new credential store; no OTLP headers set.
 - **CR-11 N/A** — native OTel export chosen; no Fredo-installed hook exists (mechanism cited).
+
+### Round 2 — 2026-09-24, `spec/2933 @ c96ab4dd` — ALL PASS (fixed surface: ST-3R classifier carry)
+
+Round-2 change is capture-side and `copilot_cli`-scoped (continuation chat row re-carries the exchange prompt) — re-swept the whole regression baseline.
+
+- **CR-1 PASS.** OpenCode path unchanged: provider census `open_code` **2607** chats (plus 3592→ tool / 84 session) still `open_code`; **0** rows outside the bound tokens (`NOT IN ('open_code','copilot_cli','internal','unknown','claude_code')` = 0); the carry branch is `provider == PROVIDER_COPILOT_CLI`-guarded (`ingest.rs:672-690`) and `turn_split_branch_never_fires_on_opencode_shaped_rows` green — no OpenCode row can take it.
+- **CR-2 PASS.** Copilot + OpenCode rows coexist (one store) with disjoint keys; no provider flip; census `open_code 2607 / copilot_cli 18 / unknown 70 / internal 2 / claude_code 1`; Mission Monitor listed the split Copilot session and the OpenCode session independently.
+- **CR-3 PASS.** `resolve_provider_token` still the single shared rule (`attrs.rs:323`); bound token wire names unchanged; `copilot-cli` resource → `copilot_cli` live (`telemetry_spans.provider = copilot-cli` resource, row `provider = copilot_cli`).
+- **CR-4 PASS.** No `apps/ui/` file in the spec diff → `StreamContext` merge semantics untouched; live `fredo-stream-event` capture shows an `insert` carrying `provider` + the carried `userMessage` together (spread-merge intact).
+- **CR-5 PASS.** Query schema untouched this round; `provider` selectable/filterable on all three roots (round-1 pins). Live `chat(sessionId = "e2e-copilotsplit2933") { userMessage, agentReply, provider, promptTokens }` registered + replayed + settled cleanly.
+- **CR-6 PASS.** No consumer changed → no `??` fallback / multi-path extraction / v1 hydration reintroduced (#568 not regressed).
+- **CR-7 PASS.** Console clean after restart + subscribe/replay + app open (0 `Error:`/`Uncaught`/`Maximum update depth exceeded`; only the pre-existing `motion()` deprecation WARN).
+- **CR-8 PASS.** No hardcoded hex/rgba, no `var(--token)NN` — no UI file changed.
+- **CR-9 PASS.** Bare `fredo emit --event-type tool_use --session-id e2e-2933bare-r2 --tool-name bash` (no `--provider`) → `provider = internal`; default unchanged.
+- **CR-10 PASS.** Refined token-shaped scan (`GLOB '*ghp_[0-9A-Za-z]*'` / `gho_` / `github_pat_` / `GITHUB_TOKEN=` / `GH_TOKEN=`) = **0** on `chat_rows.raw_json`; the only `telemetry_spans` hits (5) are this tester's OWN scan SQL echoed into `fredo.tool.bash` span `gen_ai.tool.call.arguments` (verified snippet) — not credential material. No new store; no OTLP headers.
+- **CR-11 N/A** — native OTel export; no Fredo-installed hook exists (mechanism cited).
