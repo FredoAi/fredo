@@ -993,17 +993,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_rebackfill_cannot_upgrade_a_pre_existing_migration_fallback() {
-        // CHARACTERIZATION — the pass's reach on an UPGRADED store. The #2932
-        // migration appends `provider TEXT NOT NULL DEFAULT 'unknown'`, so a
-        // pre-existing row reads back as a REAL `Some("unknown")`; the bound
-        // `provider` merge rule is `KeepFirst` (merge.rs), and the classifier's
-        // content-no-op gate skips an otherwise-identical re-derivation. The
-        // marker still latches. Upgrading the fallback to the re-derived token
-        // requires an Architect decision in the merge/migration layer — out of
-        // ST-6's file scope (backfill.rs + lib.rs wiring only). This pin
-        // records the observed behaviour so it is never silently assumed.
-        let stack = make_stack();
+    fn provider_rebackfill_upgrades_a_pre_existing_migration_fallback() {
+        // The #2932 migration appends `provider TEXT NOT NULL DEFAULT 'unknown'`,
+        // so a pre-existing row reads back as a REAL `Some("unknown")`. The
+        // bound `provider` merge rule is `MergeRule::KeepFirstAttributed`: the
+        // documented fallback is a placeholder, not an attribution, so the
+        // pass's re-derived resolved token upgrades the row exactly once
+        // (R6) — and the classifier's content-no-op gate now sees a real
+        // content change, so the row IS written (seq advances).
+        let mut stack = make_stack();
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1025,19 +1023,84 @@ mod tests {
             .expect("pass")
             .expect("pass runs");
 
+        // The row was actually written: the re-derivation produced a real
+        // content change (provider in the diff) and the durable seq advanced.
+        persist_write_behind(&mut stack);
         let row = stack
             .store
             .get_chat_row("ses_pre", "ses_pre_1")
             .expect("read")
             .expect("row still present");
-        assert!(
-            row.provider.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
-            "R6: the stored token is never NULL or empty"
-        );
         assert_eq!(
             row.provider.as_deref(),
+            Some("open_code"),
+            "R6: the pre-existing migration fallback is upgraded to the resolved token"
+        );
+        assert_eq!(
+            row.seq, 2,
+            "R6: the upgrade is a real write — the durable seq advanced past the seeded 1"
+        );
+    }
+
+    #[test]
+    fn provider_rebackfill_fallback_to_fallback_replay_is_a_no_op() {
+        // R7 non-regression: a span whose resource lacks `service.name`
+        // re-derives the documented fallback `unknown`; a fallback→fallback
+        // replay is a no-op (row unchanged, no seq bump) and the stored value
+        // is never NULL/empty.
+        let mut stack = make_stack();
+        stack
+            .span_store
+            .insert_raw_spans(&[raw_span(
+                "sp-r7",
+                "ses_r7",
+                "my.llm",
+                1_000_000_000,
+                // `chat_attrs` carries NO `service.name` → resolve_provider_token
+                // falls back to PROVIDER_UNKNOWN (the shared rule, NFR-6).
+                chat_attrs("ses_r7", 100),
+            )])
+            .expect("insert spans");
+
+        // First derivation (fresh classifier, the startup-backfill shape).
+        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
+        backfill_from_telemetry(stack.dir.path(), &classifier).expect("first pass");
+        persist_write_behind(&mut stack);
+
+        let before = stack
+            .store
+            .get_chat_row("ses_r7", "ses_r7_1")
+            .expect("read")
+            .expect("row derived");
+        assert_eq!(
+            before.provider.as_deref(),
             Some("unknown"),
-            "KeepFirst keeps the migration fallback on a pre-existing row (documented limitation)"
+            "R7: an unresolvable span persists the documented fallback"
+        );
+        assert!(
+            before.provider.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
+            "R7: the stored token is never NULL or empty"
+        );
+
+        // Replay the same corpus with a FRESH classifier (the restart shape):
+        // the re-derivation is byte-identical, so the content-no-op gate skips
+        // the write and the durable seq is unchanged.
+        let fresh = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
+        backfill_from_telemetry(stack.dir.path(), &fresh).expect("replay");
+        persist_write_behind(&mut stack);
+
+        let after = stack
+            .store
+            .get_chat_row("ses_r7", "ses_r7_1")
+            .expect("read")
+            .expect("row still present");
+        assert_eq!(
+            after, before,
+            "R7: a fallback→fallback replay is a no-op — the row is byte-identical"
+        );
+        assert_eq!(
+            after.seq, before.seq,
+            "R7: a fallback→fallback replay does not bump seq"
         );
     }
 }

@@ -13,6 +13,10 @@
 //! - [`MergeRule::KeepFirst`] — the existing non-`None` value always survives;
 //!   the patch value fills only an unset field. Never re-initializes init-time
 //!   data (user prompt, tool input, attribution joins).
+//! - [`MergeRule::KeepFirstAttributed`] — [`MergeRule::KeepFirst`] for a
+//!   resolved value, except the documented fallback sentinel is a placeholder,
+//!   not an attribution; it may be replaced exactly once by a resolved value;
+//!   a resolved value is never replaced.
 //! - [`MergeRule::LastNonZero`] — overwrites ONLY with a non-zero/non-empty
 //!   value; a zero/empty patch value never changes anything (it cannot clobber
 //!   non-zero existing data, and it does not fill an unset field either).
@@ -30,6 +34,7 @@ use serde::{Deserialize, Serialize};
 pub enum MergeRule {
     LastWins,
     KeepFirst,
+    KeepFirstAttributed,
     LastNonZero,
 }
 
@@ -53,7 +58,7 @@ pub const CHAT_MERGE: &[FieldRule] = &[
     FieldRule { field: "endedAtNs", rule: MergeRule::LastNonZero },
     FieldRule { field: "updatedAt", rule: MergeRule::LastWins },
     FieldRule { field: "state", rule: MergeRule::LastWins },
-    FieldRule { field: "provider", rule: MergeRule::KeepFirst },
+    FieldRule { field: "provider", rule: MergeRule::KeepFirstAttributed },
     FieldRule { field: "userMessage", rule: MergeRule::KeepFirst },
     FieldRule { field: "agentReply", rule: MergeRule::LastNonZero },
     FieldRule { field: "promptTokens", rule: MergeRule::LastNonZero },
@@ -75,7 +80,7 @@ pub const TOOL_USE_MERGE: &[FieldRule] = &[
     FieldRule { field: "endedAtNs", rule: MergeRule::LastNonZero },
     FieldRule { field: "updatedAt", rule: MergeRule::LastWins },
     FieldRule { field: "state", rule: MergeRule::LastWins },
-    FieldRule { field: "provider", rule: MergeRule::KeepFirst },
+    FieldRule { field: "provider", rule: MergeRule::KeepFirstAttributed },
     FieldRule { field: "toolName", rule: MergeRule::KeepFirst },
     FieldRule { field: "toolSuccess", rule: MergeRule::LastWins },
     FieldRule { field: "toolError", rule: MergeRule::LastNonZero },
@@ -95,7 +100,7 @@ pub const AGENT_SESSION_MERGE: &[FieldRule] = &[
     FieldRule { field: "endedAtNs", rule: MergeRule::LastNonZero },
     FieldRule { field: "updatedAt", rule: MergeRule::LastWins },
     FieldRule { field: "state", rule: MergeRule::LastWins },
-    FieldRule { field: "provider", rule: MergeRule::KeepFirst },
+    FieldRule { field: "provider", rule: MergeRule::KeepFirstAttributed },
     FieldRule { field: "totalTokens", rule: MergeRule::LastNonZero },
     FieldRule { field: "totalMessages", rule: MergeRule::LastNonZero },
     FieldRule { field: "totalCostUsd", rule: MergeRule::LastNonZero },
@@ -142,8 +147,41 @@ impl ZeroValue for bool {
     }
 }
 
+/// Values that have a "documented fallback" reading for
+/// [`MergeRule::KeepFirstAttributed`]. Only the `provider` attribution token
+/// has one: the shared `attrs::PROVIDER_UNKNOWN` sentinel, imported from the
+/// ONE vocabulary home (NFR-6 — never re-declared as a literal here). Scalars
+/// have no fallback (`false` for every non-`String`).
+trait FallbackValue {
+    fn is_fallback(&self) -> bool;
+}
+
+impl FallbackValue for i64 {
+    fn is_fallback(&self) -> bool {
+        false
+    }
+}
+
+impl FallbackValue for f64 {
+    fn is_fallback(&self) -> bool {
+        false
+    }
+}
+
+impl FallbackValue for bool {
+    fn is_fallback(&self) -> bool {
+        false
+    }
+}
+
+impl FallbackValue for String {
+    fn is_fallback(&self) -> bool {
+        self == crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN
+    }
+}
+
 /// Apply one present optional patch value per `rule`.
-fn apply_rule<T: Clone + ZeroValue>(
+fn apply_rule<T: Clone + ZeroValue + FallbackValue>(
     target: &mut Option<T>,
     patch: Option<&T>,
     rule: MergeRule,
@@ -155,6 +193,15 @@ fn apply_rule<T: Clone + ZeroValue>(
         MergeRule::LastWins => *target = Some(value.clone()),
         MergeRule::KeepFirst => {
             if target.is_none() {
+                *target = Some(value.clone());
+            }
+        }
+        MergeRule::KeepFirstAttributed => {
+            let replaceable = match target.as_ref() {
+                None => true,
+                Some(existing) => existing.is_fallback() && !value.is_fallback(),
+            };
+            if replaceable {
                 *target = Some(value.clone());
             }
         }
@@ -251,7 +298,11 @@ pub fn apply_chat_patch(row: &mut ChatRow, patch: &ChatPatch) {
     if let Some(state) = patch.state {
         row.state = state;
     }
-    apply_rule(&mut row.provider, patch.provider.as_ref(), MergeRule::KeepFirst);
+    apply_rule(
+        &mut row.provider,
+        patch.provider.as_ref(),
+        MergeRule::KeepFirstAttributed,
+    );
     apply_rule(&mut row.user_message, patch.user_message.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.agent_reply, patch.agent_reply.as_ref(), MergeRule::LastNonZero);
     apply_rule(&mut row.prompt_tokens, patch.prompt_tokens.as_ref(), MergeRule::LastNonZero);
@@ -280,7 +331,11 @@ pub fn apply_tool_use_patch(row: &mut ToolUseRow, patch: &ToolUsePatch) {
     if let Some(state) = patch.state {
         row.state = state;
     }
-    apply_rule(&mut row.provider, patch.provider.as_ref(), MergeRule::KeepFirst);
+    apply_rule(
+        &mut row.provider,
+        patch.provider.as_ref(),
+        MergeRule::KeepFirstAttributed,
+    );
     apply_rule(&mut row.tool_name, patch.tool_name.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.tool_success, patch.tool_success.as_ref(), MergeRule::LastWins);
     apply_rule(&mut row.tool_error, patch.tool_error.as_ref(), MergeRule::LastNonZero);
@@ -303,7 +358,11 @@ pub fn apply_agent_session_patch(row: &mut AgentSessionRow, patch: &AgentSession
     if let Some(state) = patch.state {
         row.state = state;
     }
-    apply_rule(&mut row.provider, patch.provider.as_ref(), MergeRule::KeepFirst);
+    apply_rule(
+        &mut row.provider,
+        patch.provider.as_ref(),
+        MergeRule::KeepFirstAttributed,
+    );
     apply_rule(&mut row.total_tokens, patch.total_tokens.as_ref(), MergeRule::LastNonZero);
     apply_rule(&mut row.total_messages, patch.total_messages.as_ref(), MergeRule::LastNonZero);
     apply_rule(&mut row.total_cost_usd, patch.total_cost_usd.as_ref(), MergeRule::LastNonZero);
@@ -314,6 +373,7 @@ pub fn apply_agent_session_patch(row: &mut AgentSessionRow, patch: &AgentSession
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
     use crate::infrastructure::rtdb::rows::{
         AgentSessionRow, AGENT_SESSION_FIELDS, ChatRow, CHAT_FIELDS, RowState, ToolUseRow,
         TOOL_USE_FIELDS,
@@ -349,9 +409,9 @@ mod tests {
     #[test]
     fn rule_of_resolves_every_declared_field_and_none_outside() {
         assert_eq!(rule_of(CHAT_MERGE, "userMessage"), Some(MergeRule::KeepFirst));
-        assert_eq!(rule_of(CHAT_MERGE, "provider"), Some(MergeRule::KeepFirst));
-        assert_eq!(rule_of(TOOL_USE_MERGE, "provider"), Some(MergeRule::KeepFirst));
-        assert_eq!(rule_of(AGENT_SESSION_MERGE, "provider"), Some(MergeRule::KeepFirst));
+        assert_eq!(rule_of(CHAT_MERGE, "provider"), Some(MergeRule::KeepFirstAttributed));
+        assert_eq!(rule_of(TOOL_USE_MERGE, "provider"), Some(MergeRule::KeepFirstAttributed));
+        assert_eq!(rule_of(AGENT_SESSION_MERGE, "provider"), Some(MergeRule::KeepFirstAttributed));
         assert_eq!(rule_of(CHAT_MERGE, "costUsd"), Some(MergeRule::LastNonZero));
         assert_eq!(rule_of(TOOL_USE_MERGE, "toolSuccess"), Some(MergeRule::LastWins));
         assert_eq!(rule_of(AGENT_SESSION_MERGE, "agentName"), Some(MergeRule::KeepFirst));
@@ -411,6 +471,140 @@ mod tests {
         let mut unset: Option<i64> = None;
         apply_rule(&mut unset, Some(&0), MergeRule::LastNonZero);
         assert_eq!(unset, None);
+    }
+
+    // ── KeepFirstAttributed: fallback is a placeholder, resolved is immutable ─
+
+    #[test]
+    fn keep_first_attributed_fills_unset_and_never_replaces_a_resolved_token() {
+        // Unset + resolved → fill.
+        let mut target: Option<String> = None;
+        apply_rule(
+            &mut target,
+            Some(&"open_code".to_string()),
+            MergeRule::KeepFirstAttributed,
+        );
+        assert_eq!(target, Some("open_code".to_string()));
+
+        // Resolved + a DIFFERENT resolved → unchanged (R4/R9: no restamping).
+        apply_rule(
+            &mut target,
+            Some(&"copilot_cli".to_string()),
+            MergeRule::KeepFirstAttributed,
+        );
+        assert_eq!(target, Some("open_code".to_string()), "a resolved token is immutable");
+
+        // Resolved + omitted → unchanged.
+        apply_rule(&mut target, None, MergeRule::KeepFirstAttributed);
+        assert_eq!(target, Some("open_code".to_string()));
+
+        // Resolved + empty → unchanged (an empty patch value is not a resolved token).
+        apply_rule(
+            &mut target,
+            Some(&String::new()),
+            MergeRule::KeepFirstAttributed,
+        );
+        assert_eq!(target, Some("open_code".to_string()));
+    }
+
+    #[test]
+    fn keep_first_attributed_upgrades_the_documented_fallback_once() {
+        // Fallback + resolved → upgraded exactly once.
+        let mut target: Option<String> = Some(PROVIDER_UNKNOWN.to_string());
+        apply_rule(
+            &mut target,
+            Some(&"open_code".to_string()),
+            MergeRule::KeepFirstAttributed,
+        );
+        assert_eq!(target, Some("open_code".to_string()), "the R6 migration upgrade");
+
+        // Now resolved + a different resolved → unchanged (the upgrade is one-shot).
+        apply_rule(
+            &mut target,
+            Some(&"copilot_cli".to_string()),
+            MergeRule::KeepFirstAttributed,
+        );
+        assert_eq!(target, Some("open_code".to_string()));
+
+        // Fallback + fallback → no-op (no churn).
+        let mut sticky: Option<String> = Some(PROVIDER_UNKNOWN.to_string());
+        apply_rule(
+            &mut sticky,
+            Some(&PROVIDER_UNKNOWN.to_string()),
+            MergeRule::KeepFirstAttributed,
+        );
+        assert_eq!(sticky, Some(PROVIDER_UNKNOWN.to_string()));
+
+        // Fallback + omitted → no-op.
+        apply_rule(&mut sticky, None, MergeRule::KeepFirstAttributed);
+        assert_eq!(sticky, Some(PROVIDER_UNKNOWN.to_string()));
+    }
+
+    #[test]
+    fn keep_first_attributed_end_to_end_per_row_type_upgrades_migration_fallback() {
+        // Chat.
+        let mut chat = chat_row();
+        chat.provider = Some(PROVIDER_UNKNOWN.to_string());
+        apply_chat_patch(
+            &mut chat,
+            &ChatPatch {
+                provider: Some("open_code".to_string()),
+                ..ChatPatch::default()
+            },
+        );
+        assert_eq!(chat.provider, Some("open_code".to_string()), "chat: fallback upgraded");
+        apply_chat_patch(
+            &mut chat,
+            &ChatPatch {
+                provider: Some("copilot_cli".to_string()),
+                ..ChatPatch::default()
+            },
+        );
+        assert_eq!(chat.provider, Some("open_code".to_string()), "chat: resolved not restamped");
+
+        // Tool-use.
+        let mut tool = tool_row();
+        tool.provider = Some(PROVIDER_UNKNOWN.to_string());
+        apply_tool_use_patch(
+            &mut tool,
+            &ToolUsePatch {
+                provider: Some("claude_code".to_string()),
+                ..ToolUsePatch::default()
+            },
+        );
+        assert_eq!(tool.provider, Some("claude_code".to_string()), "tool: fallback upgraded");
+        apply_tool_use_patch(
+            &mut tool,
+            &ToolUsePatch {
+                provider: Some("open_code".to_string()),
+                ..ToolUsePatch::default()
+            },
+        );
+        assert_eq!(tool.provider, Some("claude_code".to_string()), "tool: resolved not restamped");
+
+        // Agent-session.
+        let mut session = session_row();
+        session.provider = Some(PROVIDER_UNKNOWN.to_string());
+        apply_agent_session_patch(
+            &mut session,
+            &AgentSessionPatch {
+                provider: Some("internal".to_string()),
+                ..AgentSessionPatch::default()
+            },
+        );
+        assert_eq!(session.provider, Some("internal".to_string()), "session: fallback upgraded");
+        apply_agent_session_patch(
+            &mut session,
+            &AgentSessionPatch {
+                provider: Some("open_code".to_string()),
+                ..AgentSessionPatch::default()
+            },
+        );
+        assert_eq!(
+            session.provider,
+            Some("internal".to_string()),
+            "session: resolved not restamped"
+        );
     }
 
     #[test]
@@ -1048,6 +1242,7 @@ mod tests {
         let rules = [
             (MergeRule::LastWins, "LastWins"),
             (MergeRule::KeepFirst, "KeepFirst"),
+            (MergeRule::KeepFirstAttributed, "KeepFirstAttributed"),
             (MergeRule::LastNonZero, "LastNonZero"),
         ];
         for (rule, name) in rules {
