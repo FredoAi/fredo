@@ -561,7 +561,11 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-08-31T00:00:00+00:00".to_string(),
             state: RowState::Init,
-            provider: None,
+            // #2932 ST-4: the physical `provider` column is NOT NULL DEFAULT
+            // 'unknown', so a stored row always reads back `Some(..)` — the
+            // reload-from-SQLite equality pin needs a real token, not the ST-2
+            // compile placeholder.
+            provider: Some("open_code".to_string()),
             user_message: Some("q".to_string()),
             agent_reply: None,
             prompt_tokens: None,
