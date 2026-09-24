@@ -124,3 +124,22 @@ append evidence; on fail mark `FAIL`.
 - R-9 UNVERIFIED (no LLM turn driven in a Terminal-launched OpenCode session; the
   `telemetry_spans`/`telemetry_logs` tables are live — see the `## Tests Runs` on #2934).
 - R-10 PASS (no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the diff).
+
+### Round 3 — 2026-09-24, spec/2934 @ 7ba5a99c
+
+- R-1 PASS (live Ghostty canvas renders in both sessions' screenshots; no `.xterm*` DOM).
+- R-2 PASS (session-keyed `write_pty_input`/`get_pty_buffer`/`resize_pty`; sentinels round-trip
+  both ways; window-resize `resize_pty` now fires for the ACTIVE session only — F-11 fixed by FX-5).
+- R-3 PASS (`terminal_work_dir` governs: the add-session dialog prefills `…\fixtures\workdir-b`).
+- R-4 PASS (main+1 at every sample while up to 5 sessions ran).
+- R-5 PASS (both-window console clean — only `[LOG]/[DEBUG]` + the pre-existing `motion()`
+  deprecation WARN; 0 errors).
+- R-6 PASS (launcher grid = Mission Monitor, Query Viewer, Settings, Stepper Probe, Terminal).
+- R-7 PASS (Settings → Terminal alongside the static sections; the diff touches no other pane).
+- R-8 PASS (`list_terminal_sessions` = `[]` from the main window after the window closed;
+  `sqlite_master` has no `%terminal%`/`%run_cli%` table).
+- R-9 UNVERIFIED (no LLM turn driven in a Terminal-launched OpenCode session — G-080 cost
+  ceiling; the `telemetry_spans` table is live — see the `## Tests Runs` round 3).
+- R-10 PASS (`git diff --stat main origin/spec/2934` → no `infrastructure/rtdb/**` /
+  `infrastructure/otlp/**`; the `infrastructure/cli/commands/setup.rs` change is 2 lines,
+  non-telemetry).
