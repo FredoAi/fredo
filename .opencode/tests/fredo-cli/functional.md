@@ -59,6 +59,72 @@
   **Expected:** no duplicate windows (re-invokes focus the existing one); exit codes consistent; no
       console `Error:`/`Uncaught`/`Maximum update depth exceeded`; the app remains responsive.
 
+## #2935 — `fredo open-terminal` (R-3 / AC3, plus the CLI halves of AC4)
+
+> Seeded at triage for Spec #2935. The `fredo` binary opens Terminal programmatically with an
+> optional CLI + working directory and a deterministic outcome + exit status.
+> **Verification policy: live** — run the shipped binary and quote its literal stdout/stderr + exit
+> code against the running app (`docs/CLI_GUIDE.md`).
+> **Names are provisional:** the SA publishes the exact subcommand/flag names + exit table. Proposed:
+> `fredo open-terminal [--cli <opencode|copilot>] [--dir <path>]`; exit 0 opened, 1 app-validated
+> failure (invalid CLI / invalid dir / open failed), 2 app-not-running OR clap parse error.
+> **Prerequisites:** the `fredo` binary on PATH; the app running for F-6/F-7/F-9/F-10; DOWN for F-8.
+> In-repo test data: `C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a` and `…\workdir-b`
+> (committed); `…\no-such-dir` (deliberately missing).
+
+## F-6 (R-3.1/AC3) — opens Terminal with the chosen CLI + folder in one invocation
+
+- [ ] F-6: App running. Run `fredo open-terminal --cli opencode --dir C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a`;
+      then `--cli copilot --dir …\workdir-b`. Record raw exit code, stdout, the window list, and
+      `list_terminal_sessions`.
+  **Expected:** exit **0**; machine-readable success on stdout (e.g. `{"outcome":"opened",…}`);
+      `tauri_manage_window(action="list")` shows the `terminal` window; `list_terminal_sessions` shows a
+      session with `cli=opencode` + `workDir=…\workdir-a` (resp. `copilot`/`workdir-b`); its PTY buffer
+      matches `(?i)opencode` (resp. `(?i)copilot`).
+  - **Edge:** re-invoke focuses the SAME window (no duplicate); a second invocation with a different
+    cli/dir (record the defined behavior); repeated invocations (≥5) → no duplicate window.
+
+## F-7 (R-3.1/AC3) — optional CLI/folder fall back to the configured defaults
+
+- [ ] F-7: Run `fredo open-terminal` with NO `--cli`/`--dir` (app running).
+  **Expected:** exit **0**; the started session uses the persisted `terminal_default_cli` +
+      `terminal_work_dir` (or the documented defaults when unset); the window opens once.
+  - **Edge:** `--cli` only; `--dir` only; both set to the persisted values.
+
+## F-8 (R-3.2/AC3) — app not running → exit 2 + the documented fallback
+
+- [ ] F-8: `dev-env.ps1 -Action Down`; run `fredo open-terminal --cli opencode --dir …\workdir-a`;
+      record the RAW exit code.
+  **Expected:** exit code **2** (the unchanged `open-app`/`emit` fallback); nothing opens; no hang.
+      Then `-Action Up` and confirm the same invocation succeeds.
+  - **Edge:** stale socket with no app; app killed mid-call.
+
+## F-9 (R-3.3/AC3) — invalid argument → deterministic non-zero + additive help
+
+- [ ] F-9: Run `fredo open-terminal --cli` (missing value); `fredo open-terminal --bogus-flag`;
+      `fredo open-terminal --help`; `fredo --help`.
+  **Expected:** the malformed invocations exit non-zero with clap usage on stderr and open nothing;
+      `fredo open-terminal --help` exits **0** and lists the subcommand + `--cli`/`--dir`;
+      `fredo --help` still lists `emit`/`setup`/`open-app`/`open-terminal` (additive only).
+  - **Edge:** unknown flag combined with a valid one; empty-string value.
+
+## F-10 (R-3.4/AC4) — invalid CLI name / invalid directory → non-zero + named cause
+
+- [ ] F-10: Run `fredo open-terminal --cli bogus`; `fredo open-terminal --cli opencode --dir
+      C:\Code\fredo\.opencode\tests\terminal\fixtures\no-such-dir`.
+  **Expected:** per the SA's published exit table, a non-zero exit with a message naming the offending
+      value (`bogus` CLI / the missing directory); ZERO window/session side effects
+      (`list_terminal_sessions` unchanged; no new process).
+  - **Edge:** invalid CLI + valid dir; a file path instead of a directory; whitespace-only `--cli`.
+
+## F-11 (R-4.1/AC4) — invalid CLI never starts a wrong/partial session
+
+- [ ] F-11: With the app running, invoke `fredo open-terminal --cli bogus`; correlate with the
+      `terminal` window's session list and the process inventory.
+  **Expected:** a clear error naming the invalid CLI; the session list count is unchanged; no new
+      process (`process-hygiene.ps1 -List`); the window stays healthy.
+  - **Edge:** `OpenCode` (wrong case); `claude`; empty string.
+
 ### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
 
 > Raw exit codes captured with a Node `spawnSync` helper (the bash harness does not surface exit
