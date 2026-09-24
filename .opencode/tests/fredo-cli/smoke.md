@@ -41,3 +41,14 @@
   exit 0; the `Sessions` (Mission Monitor) window opened; screenshot captured.
 - **S-5 PASS.** `tauri_webview_screenshot` succeeded; the round's captures were uploaded as
   user-attachments and embedded in the `## Tests Runs (round 2)` verdict.
+
+### #2935 testing round 1 (spec/2935 @ 9ad0b360) — results
+
+- **S-6 PASS.** `fredo open-terminal --cli opencode --dir
+  C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-b` → exit **0**, stdout
+  `{"cli":"opencode","outcome":"started","workDir":"…\\workdir-b"}`, the `terminal` window opened
+  with an auto-selected OpenCode session in that dir. `fredo --help` exit 0 lists the new subcommand.
+- **R-4 (regression) PASS.** `fredo emit --event-type chat --session-id e2e-2935-cli` →
+  `{"queued":true}` exit **0**, classified into `chat_rows` (1 row, `state='init'`, provider
+  `internal`); `fredo setup --check` exit **0** (all sections `ok`); `fredo open-app mission-monitor`
+  → `{"displayName":"Mission Monitor","outcome":"opened"}` exit **0**.
