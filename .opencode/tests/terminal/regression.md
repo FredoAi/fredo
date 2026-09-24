@@ -91,3 +91,20 @@ append evidence; on fail mark `FAIL`.
 - [ ] R-10: **Copilot capture unaffected.** Copilot telemetry capture (prior ticket)
   continues to work; Terminal's launch does not write to or alter the capture path.
   EXPECTED: no change to `infrastructure/rtdb/` or the OTLP receivers in the #2934 diff.
+
+## Round notes
+
+### Round 1 — 2026-09-24, spec/2934 @ 1fd60694
+
+- R-1 PASS (live canvas; `.xterm`=0 / `.xterm-viewport`=0).
+- R-2 PASS (`write_pty_input`/`get_pty_buffer`/`resize_pty` session-keyed; sentinel round-trip).
+- R-3 PASS (new key governs; blank → home-fallback semantics).
+- R-4 PASS (main+1 at every sample).
+- R-5 PASS (both-window console clean).
+- R-6 PASS (siblings Mission Monitor / Query Viewer / Settings / Stepper Probe intact).
+- R-7 PASS (Settings → Terminal discovered alongside the static sections).
+- R-8/N-5 PASS (empty sidebar after restart; no `%terminal%` table in `fredo.db`).
+- R-9 UNVERIFIED (no LLM turn driven in a Terminal-launched session; the
+  `telemetry_spans` table is live — see the `## Tests Runs` on #2934).
+- R-10 PASS (`git diff --stat main origin/spec/2934` → no `infrastructure/rtdb/**` or
+  `infrastructure/otlp/**`).
