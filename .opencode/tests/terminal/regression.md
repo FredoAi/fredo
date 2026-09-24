@@ -108,3 +108,19 @@ append evidence; on fail mark `FAIL`.
   `telemetry_spans` table is live — see the `## Tests Runs` on #2934).
 - R-10 PASS (`git diff --stat main origin/spec/2934` → no `infrastructure/rtdb/**` or
   `infrastructure/otlp/**`).
+
+### Round 2 — 2026-09-24, spec/2934 @ a656a020
+
+- R-1 PASS (no renderer change in `a656a02`; live Ghostty canvas, `.xterm`=0).
+- R-2 PASS (`write_pty_input`/`get_pty_buffer` sentinel round-trip; activation resize changes
+  the selected session's dims — see F-11 for the missing window-resize path).
+- R-3 PASS (`terminal_work_dir` governs; migration copies the legacy value when the new key
+  and the window's `localStorage` are both empty).
+- R-4 PASS (main+1 at every sample with 4 sessions live).
+- R-5 PASS (both-window console clean — terminal has only `[ghostty-vt]` renderer warnings).
+- R-6 PASS (launcher grid: Mission Monitor, Query Viewer, Settings, Stepper Probe, Terminal).
+- R-7 PASS (Settings → Terminal alongside the static sections; other panes untouched).
+- R-8/N-5 PASS (`list_terminal_sessions` = `[]` after restart).
+- R-9 UNVERIFIED (no LLM turn driven in a Terminal-launched OpenCode session; the
+  `telemetry_spans`/`telemetry_logs` tables are live — see the `## Tests Runs` on #2934).
+- R-10 PASS (no `infrastructure/rtdb/**` / `infrastructure/otlp/**` in the diff).
