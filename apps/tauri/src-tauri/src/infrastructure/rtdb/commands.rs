@@ -440,6 +440,7 @@ fn columns_of(event_type: EventTypeArg) -> &'static [&'static str] {
             "ended_at_ns",
             "updated_at",
             "state",
+            "provider",
             "user_message",
             "agent_reply",
             "prompt_tokens",
@@ -459,6 +460,7 @@ fn columns_of(event_type: EventTypeArg) -> &'static [&'static str] {
             "ended_at_ns",
             "updated_at",
             "state",
+            "provider",
             "tool_name",
             "tool_success",
             "tool_error",
@@ -476,6 +478,7 @@ fn columns_of(event_type: EventTypeArg) -> &'static [&'static str] {
             "ended_at_ns",
             "updated_at",
             "state",
+            "provider",
             "total_tokens",
             "total_messages",
             "total_cost_usd",
@@ -704,6 +707,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: updated_at.to_string(),
             state: RowState::Init,
+            provider: None,
             user_message: Some("fix the bug".to_string()),
             agent_reply: None,
             prompt_tokens: None,
@@ -1233,6 +1237,20 @@ mod tests {
              compound paths and string ordering stay in-memory"
         );
         assert_eq!(params.len(), 3);
+    }
+
+    #[test]
+    fn provider_arg_pushes_down_to_the_typed_column() {
+        // #2932 R2: a provider equality arg maps 1:1 onto the typed column and
+        // narrows the replay snapshot (the registry still re-checks it).
+        let args = vec![QueryArg {
+            field: vec!["provider".to_string()],
+            op: CompareOp::Eq,
+            value: serde_json::json!("copilot_cli"),
+        }];
+        let (where_sql, params) = pushdown(EventTypeArg::Chat, &args);
+        assert_eq!(where_sql, "provider = ?1");
+        assert_eq!(params, vec![SqlValue::Text("copilot_cli".to_string())]);
     }
 
     #[test]

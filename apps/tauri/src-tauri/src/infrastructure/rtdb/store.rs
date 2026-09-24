@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
 use crate::infrastructure::rtdb::project::{RowKey, RowSnapshot};
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
 
@@ -99,6 +100,31 @@ fn parse_row_state(s: &str) -> Result<RowState, rusqlite::Error> {
             ),
         ))),
     }
+}
+
+/// Bind a canonical provider token for the physical `provider` column
+/// (Spec #2932 ST-4).
+///
+/// The column is `NOT NULL DEFAULT 'unknown'`; the Rust field stays
+/// `Option<String>` because an empty-row bootstrap is built unattributed and
+/// filled by its first patch. A row that reaches the store still `None` (a
+/// patch never carried an attribution) therefore persists as the documented
+/// fallback [`PROVIDER_UNKNOWN`] rather than tripping the NOT NULL constraint —
+/// never NULL, never empty (R7).
+fn provider_token(provider: &Option<String>) -> &str {
+    provider.as_deref().unwrap_or(PROVIDER_UNKNOWN)
+}
+
+/// True when `column` physically exists on `table` (`PRAGMA table_info`-based,
+/// the established guarded-ALTER idiom — see `storage/feature_store.rs`
+/// `table_schema` / `feature_data/registry.rs` `AddColumns`).
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 /// An owned row of any RTDB kind — the snapshot-select result element
@@ -195,6 +221,9 @@ fn chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
         parent_session_id: row.get(14)?,
         composited_child_session_id: row.get(15)?,
         raw_json: row.get(16)?,
+        // #2932 ST-4: `provider` is physically LAST (index 17, after raw_json);
+        // the column is `NOT NULL DEFAULT 'unknown'`, so the read is always Some.
+        provider: Some(row.get(17)?),
     })
 }
 
@@ -217,6 +246,8 @@ fn tool_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolUseRow> {
         tool_output_json: row.get(12)?,
         is_subagent: row.get(13)?,
         raw_json: row.get(14)?,
+        // #2932 ST-4: `provider` is physically LAST (index 15, after raw_json).
+        provider: Some(row.get(15)?),
     })
 }
 
@@ -236,6 +267,8 @@ fn agent_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSess
         total_cost_usd: row.get(9)?,
         agent_name: row.get(10)?,
         raw_json: row.get(11)?,
+        // #2932 ST-4: `provider` is physically LAST (index 12, after raw_json).
+        provider: Some(row.get(12)?),
     })
 }
 
@@ -292,6 +325,7 @@ impl RtdbStore {
                 parent_session_id          TEXT,
                 composited_child_session_id TEXT,
                 raw_json                   TEXT NOT NULL,
+                provider                   TEXT NOT NULL DEFAULT 'unknown',
                 PRIMARY KEY (session_id, correlation_id)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_started
@@ -317,6 +351,7 @@ impl RtdbStore {
                 tool_output_json           TEXT,
                 is_subagent                INTEGER,
                 raw_json                   TEXT NOT NULL,
+                provider                   TEXT NOT NULL DEFAULT 'unknown',
                 PRIMARY KEY (session_id, correlation_id)
             );
             CREATE INDEX IF NOT EXISTS idx_tool_started
@@ -339,6 +374,7 @@ impl RtdbStore {
                 total_cost_usd             REAL,
                 agent_name                 TEXT,
                 raw_json                   TEXT NOT NULL,
+                provider                   TEXT NOT NULL DEFAULT 'unknown',
                 PRIMARY KEY (session_id, correlation_id)
             );
             CREATE INDEX IF NOT EXISTS idx_agent_started
@@ -348,6 +384,25 @@ impl RtdbStore {
             CREATE INDEX IF NOT EXISTS idx_agent_updated
                 ON agent_session_rows(updated_at);",
         )?;
+
+        // ── Idempotent provider migration (Spec #2932 ST-4) ─────────────────
+        // Fresh stores already get `provider` from the CREATE TABLE DDL above.
+        // Pre-existing stores (created before #2932) are upgraded here. The
+        // `PRAGMA table_info` guard makes this re-runnable: running it on a
+        // fresh or already-migrated store is a no-op, and the ALTER never runs
+        // twice on the same table. Existing rows take the column DEFAULT
+        // ('unknown') — no data loss, PK/seq/retention untouched.
+        for table in [
+            RowKind::Chat.table(),
+            RowKind::ToolUse.table(),
+            RowKind::AgentSession.table(),
+        ] {
+            if !column_exists(&conn, table, "provider")? {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN provider TEXT NOT NULL DEFAULT 'unknown';"
+                ))?;
+            }
+        }
         Ok(())
     }
 
@@ -370,8 +425,8 @@ impl RtdbStore {
                      (session_id, correlation_id, seq, started_at_ns, ended_at_ns,
                       updated_at, state, user_message, agent_reply, prompt_tokens,
                       completion_tokens, cache_read_tokens, cost_usd, model,
-                      parent_session_id, composited_child_session_id, raw_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                      parent_session_id, composited_child_session_id, raw_json, provider)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
                         row.session_id,
                         row.correlation_id,
@@ -390,6 +445,7 @@ impl RtdbStore {
                         row.parent_session_id,
                         row.composited_child_session_id,
                         row.raw_json,
+                        provider_token(&row.provider),
                     ],
                 )?;
                 total += 1;
@@ -422,8 +478,8 @@ impl RtdbStore {
                     "INSERT OR REPLACE INTO tool_use_rows
                      (session_id, correlation_id, seq, started_at_ns, ended_at_ns,
                       updated_at, state, tool_name, tool_success, tool_error,
-                      duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                      duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json, provider)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                     params![
                         row.session_id,
                         row.correlation_id,
@@ -440,6 +496,7 @@ impl RtdbStore {
                         row.tool_output_json,
                         row.is_subagent,
                         row.raw_json,
+                        provider_token(&row.provider),
                     ],
                 )?;
                 total += 1;
@@ -472,8 +529,8 @@ impl RtdbStore {
                     "INSERT OR REPLACE INTO agent_session_rows
                      (session_id, correlation_id, seq, started_at_ns, ended_at_ns,
                       updated_at, state, total_tokens, total_messages,
-                      total_cost_usd, agent_name, raw_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                      total_cost_usd, agent_name, raw_json, provider)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                     params![
                         row.session_id,
                         row.correlation_id,
@@ -487,6 +544,7 @@ impl RtdbStore {
                         row.total_cost_usd,
                         row.agent_name,
                         row.raw_json,
+                        provider_token(&row.provider),
                     ],
                 )?;
                 total += 1;
@@ -514,7 +572,7 @@ pub fn get_chat_row(&self, session_id: &str, correlation_id: &str) -> Result<Opt
         "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
                 updated_at, state, user_message, agent_reply, prompt_tokens,
                 completion_tokens, cache_read_tokens, cost_usd, model,
-                parent_session_id, composited_child_session_id, raw_json
+                parent_session_id, composited_child_session_id, raw_json, provider
          FROM chat_rows WHERE session_id = ?1 AND correlation_id = ?2",
         params![session_id, correlation_id],
         chat_from_row,
@@ -536,7 +594,7 @@ pub fn get_tool_use_row(
     let result = conn.query_row(
         "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
                 updated_at, state, tool_name, tool_success, tool_error,
-                duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json
+                duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json, provider
          FROM tool_use_rows WHERE session_id = ?1 AND correlation_id = ?2",
         params![session_id, correlation_id],
         tool_from_row,
@@ -558,7 +616,7 @@ pub fn get_agent_session_row(
     let result = conn.query_row(
         "SELECT session_id, correlation_id, seq, started_at_ns, ended_at_ns,
                 updated_at, state, total_tokens, total_messages,
-                total_cost_usd, agent_name, raw_json
+                total_cost_usd, agent_name, raw_json, provider
          FROM agent_session_rows WHERE session_id = ?1 AND correlation_id = ?2",
         params![session_id, correlation_id],
         agent_session_from_row,
@@ -587,17 +645,17 @@ pub fn select_snapshot(
             "session_id, correlation_id, seq, started_at_ns, ended_at_ns,
              updated_at, state, user_message, agent_reply, prompt_tokens,
              completion_tokens, cache_read_tokens, cost_usd, model,
-             parent_session_id, composited_child_session_id, raw_json"
+             parent_session_id, composited_child_session_id, raw_json, provider"
         }
         RowKind::ToolUse => {
             "session_id, correlation_id, seq, started_at_ns, ended_at_ns,
              updated_at, state, tool_name, tool_success, tool_error,
-             duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json"
+             duration_ms, tool_input_json, tool_output_json, is_subagent, raw_json, provider"
         }
         RowKind::AgentSession => {
             "session_id, correlation_id, seq, started_at_ns, ended_at_ns,
              updated_at, state, total_tokens, total_messages,
-             total_cost_usd, agent_name, raw_json"
+             total_cost_usd, agent_name, raw_json, provider"
         }
     };
     let sql = format!(
@@ -852,6 +910,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: updated_at.to_string(),
             state: RowState::Init,
+            provider: Some("open_code".to_string()),
             user_message: Some("fix the bug".to_string()),
             agent_reply: None,
             prompt_tokens: None,
@@ -874,6 +933,7 @@ mod tests {
             ended_at_ns: Some(3_000),
             updated_at: updated_at.to_string(),
             state: RowState::Response,
+            provider: Some("open_code".to_string()),
             tool_name: Some("bash".to_string()),
             tool_success: Some(false),
             tool_error: Some("exit code 1".to_string()),
@@ -894,6 +954,7 @@ mod tests {
             ended_at_ns: Some(9_000),
             updated_at: updated_at.to_string(),
             state: RowState::Update,
+            provider: Some("open_code".to_string()),
             total_tokens: Some(23_262),
             total_messages: Some(57),
             total_cost_usd: Some(0.512),
@@ -939,6 +1000,83 @@ mod tests {
         ] {
             assert!(indexes.contains(&expected.to_string()), "index {expected} should exist");
         }
+    }
+
+    // ── Provider column: appended LAST + idempotent legacy migration (#2932) ─
+
+    #[test]
+    fn ensure_schema_migrates_a_legacy_store_adding_provider_idempotently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A pre-#2932 store: `chat_rows` exists WITHOUT `provider`.
+        {
+            let conn = Connection::open(dir.path().join("fredo.db")).expect("open raw");
+            conn.execute_batch(
+                "CREATE TABLE chat_rows (
+                    session_id TEXT NOT NULL, correlation_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                    started_at_ns INTEGER, ended_at_ns INTEGER, updated_at TEXT NOT NULL,
+                    state TEXT NOT NULL, user_message TEXT, agent_reply TEXT,
+                    prompt_tokens INTEGER, completion_tokens INTEGER, cache_read_tokens INTEGER,
+                    cost_usd REAL, model TEXT, parent_session_id TEXT,
+                    composited_child_session_id TEXT, raw_json TEXT NOT NULL,
+                    PRIMARY KEY (session_id, correlation_id)
+                );
+                INSERT INTO chat_rows
+                    (session_id, correlation_id, seq, updated_at, state, raw_json)
+                    VALUES ('ses_old', 'ses_old_1', 1, '2026-01-01T00:00:00+00:00', 'init', '{}');",
+            )
+            .expect("seed legacy schema + row");
+        }
+
+        let store = RtdbStore::open(dir.path().to_path_buf()).expect("open");
+        store.ensure_schema().expect("migrate legacy store");
+        // A second pass is a no-op — the ALTER is PRAGMA table_info-guarded.
+        store.ensure_schema().expect("re-run is idempotent");
+
+        let conn = store.lock_conn();
+        let mut stmt = conn
+            .prepare("SELECT name, `notnull`, dflt_value FROM pragma_table_info('chat_rows')")
+            .expect("prepare");
+        let cols: Vec<(String, i64, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get(2)?))
+            })
+            .expect("query_map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        let provider = cols.last().expect("last column");
+        assert_eq!(provider.0, "provider", "provider is appended physically LAST");
+        assert_eq!(provider.1, 1, "provider is NOT NULL");
+        assert_eq!(provider.2.as_deref(), Some("'unknown'"), "column DEFAULT 'unknown'");
+        drop(stmt);
+
+        // The pre-existing row keeps its data and takes the DEFAULT — never NULL.
+        let legacy: String = conn
+            .query_row(
+                "SELECT provider FROM chat_rows WHERE session_id = 'ses_old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row provider");
+        assert_eq!(legacy, "unknown", "existing rows are backfilled with the fallback");
+    }
+
+    #[test]
+    fn provider_none_persists_as_the_unknown_fallback_never_null() {
+        let (_dir, store) = make_store();
+        let mut row = chat_row("ses_n", "ses_n_1", 1, "2026-08-31T00:00:00+00:00");
+        // An empty-row bootstrap that never received an attribution patch (R7).
+        row.provider = None;
+        store.upsert_chat_rows(&[row]).expect("upsert");
+
+        let loaded = store
+            .get_chat_row("ses_n", "ses_n_1")
+            .expect("select")
+            .expect("row exists");
+        assert_eq!(
+            loaded.provider,
+            Some("unknown".to_string()),
+            "a None provider persists as the documented fallback, never NULL"
+        );
     }
 
     // ── Round-trip upsert/select per row type ───────────────────────────────

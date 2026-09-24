@@ -176,6 +176,7 @@ fn chat(
         ended_at_ns: None,
         updated_at: updated_at.to_string(),
         state: RowState::Init,
+        provider: None,
         user_message: user_message.map(str::to_string),
         agent_reply: None,
         prompt_tokens: None,

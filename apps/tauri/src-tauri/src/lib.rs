@@ -503,10 +503,23 @@ pub fn run() {
             // Spawned: never blocks startup. Idempotent: content-identical
             // re-merges skip the write (no seq inflation); a one-shot
             // completion marker keeps later startups O(1).
+            //
+            // Spec #2932 ST-6: the provider re-derivation leg runs SEQUENTIALLY
+            // after it, gated by its OWN independent marker
+            // (`rtdb.backfill.provider.completed`) so an install that latched
+            // `rtdb.backfill.completed` before the `provider` column existed
+            // still gets one pass. Sequential in this task so the two one-shot
+            // replays never overlap; the second leg builds its own classifier
+            // instance (the per-classifier turn/correlation state must start
+            // fresh — see rtdb::backfill module docs).
             let backfill_handle = app.handle().clone();
             let backfill_dir = data_dir.clone();
             tauri::async_runtime::spawn(async move {
                 infrastructure::rtdb::backfill::run_startup_backfill(&backfill_handle, &backfill_dir);
+                infrastructure::rtdb::backfill::run_startup_provider_rebackfill(
+                    &backfill_handle,
+                    &backfill_dir,
+                );
             });
 
             // -- IPC server (OpenCode plugin event path) -----------------------------

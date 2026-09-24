@@ -90,6 +90,7 @@ pub static CHAT_SCHEMA: RowSchema = RowSchema {
         FieldDef { name: "endedAtNs", ty: FieldType::Number, nullable: true },
         FieldDef { name: "updatedAt", ty: FieldType::String, nullable: false },
         STATE_FIELD,
+        FieldDef { name: "provider", ty: FieldType::String, nullable: true },
         FieldDef { name: "userMessage", ty: FieldType::String, nullable: true },
         FieldDef { name: "agentReply", ty: FieldType::String, nullable: true },
         FieldDef { name: "promptTokens", ty: FieldType::Number, nullable: true },
@@ -114,6 +115,7 @@ pub static TOOL_USE_SCHEMA: RowSchema = RowSchema {
         FieldDef { name: "endedAtNs", ty: FieldType::Number, nullable: true },
         FieldDef { name: "updatedAt", ty: FieldType::String, nullable: false },
         STATE_FIELD,
+        FieldDef { name: "provider", ty: FieldType::String, nullable: true },
         FieldDef { name: "toolName", ty: FieldType::String, nullable: true },
         FieldDef { name: "toolSuccess", ty: FieldType::Boolean, nullable: true },
         FieldDef { name: "toolError", ty: FieldType::String, nullable: true },
@@ -136,6 +138,7 @@ pub static AGENT_SESSION_SCHEMA: RowSchema = RowSchema {
         FieldDef { name: "endedAtNs", ty: FieldType::Number, nullable: true },
         FieldDef { name: "updatedAt", ty: FieldType::String, nullable: false },
         STATE_FIELD,
+        FieldDef { name: "provider", ty: FieldType::String, nullable: true },
         FieldDef { name: "totalTokens", ty: FieldType::Number, nullable: true },
         FieldDef { name: "totalMessages", ty: FieldType::Number, nullable: true },
         FieldDef { name: "totalCostUsd", ty: FieldType::Number, nullable: true },
@@ -498,6 +501,7 @@ mod tests {
             ended_at_ns: Some(2),
             updated_at: "t".into(),
             state: RowState::Init,
+            provider: None,
             user_message: Some("u".into()),
             agent_reply: Some("a".into()),
             prompt_tokens: Some(1),
@@ -517,6 +521,7 @@ mod tests {
             ended_at_ns: Some(2),
             updated_at: "t".into(),
             state: RowState::Update,
+            provider: None,
             tool_name: Some("t".into()),
             tool_success: Some(true),
             tool_error: None,
@@ -534,6 +539,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "t".into(),
             state: RowState::Response,
+            provider: None,
             total_tokens: Some(10),
             total_messages: Some(2),
             total_cost_usd: Some(0.5),
@@ -593,6 +599,27 @@ mod tests {
                 vec!["agentReply"],
                 vec!["promptTokens"]
             ]
+        );
+    }
+
+    #[test]
+    fn provider_is_selectable_and_filterable_on_every_root() {
+        // #2932 R2: provider is a selectable + filterable string field on all
+        // three canonical roots (nullable — pre-migration rows read as null).
+        validate(&valid_spec(r#"chat(provider = "copilot_cli") { provider, userMessage }"#))
+            .expect("chat provider filter validates");
+        validate(&valid_spec(r#"toolUse(provider = "open_code") { provider, toolName }"#))
+            .expect("toolUse provider filter validates");
+        validate(&valid_spec(r#"agentSession(provider = "copilot_cli") { provider, agentName }"#))
+            .expect("agentSession provider filter validates");
+        validate(&valid_spec("chat(provider = null) { provider }"))
+            .expect("nullable provider accepts null");
+        validate(&valid_spec(r#"chat(provider > "copilot") { provider }"#))
+            .expect("string ordering on provider validates");
+        // Type mismatches stay hard named errors.
+        assert_single_error(
+            "chat(provider = 5) { provider }",
+            "chat field 'provider' is string; cannot compare with number 5",
         );
     }
 
