@@ -44,3 +44,21 @@ After #2731 the **only** launch affordance is the **Run CLI desktop item in the 
 - [x] S-11: **Toolbar launch opens exactly ONE window (quick path).** Click the Run CLI toolbar desktop item; `tauri_manage_window(action="list")` immediately shows main + 1 terminal window and stays at main + 1 through launch. Quick smoke — full assertions live in F-14/F-19. **PASS** — Window list shows 2 windows (main + run-cli-terminal). Evidence: window list at 2026-08-13T21:02:04Z.
 
 - [x] S-12: **#2728 floating "RUN CLI" button absent (quick path).** DOM-scan of the Fredo desktop shows no floating RUN CLI button element outside the maomaolabs toolbar. Quick smoke — full absence assertions live in F-12. **PASS** — JavaScript scan found 0 fixed-position buttons. Only toolbar button exists. Evidence: JS check at 2026-08-13T21:01:04Z.
+
+## #2934 pre-rename smoke cases (renamed surfacing)
+
+> Spec #2934 renames this surface to **Terminal** and makes it multi-session. The smoke
+> path below is the renamed quick check; the full new-surface assertions live in
+> `.opencode/tests/terminal/smoke.md` + `terminal/functional.md`. Run both.
+
+- [ ] S-13: **Terminal toolbar item quick check.** The maomaolabs toolbar shows a `Terminal`
+  desktop item (renamed from `Run CLI`); clicking it opens exactly one `terminal` window.
+  Quick smoke — full assertions in `terminal/smoke.md` S-3/S-6 and F-2.
+
+- [ ] S-14: **Renamed window quick check.** `tauri_manage_window(action="list")` shows the
+  terminal window labelled `terminal` with title `Terminal` (not `run-cli-terminal`).
+  Quick smoke — full assertions in F-1..F-3.
+
+- [ ] S-15: **Legacy work-dir quick check.** Pre-seed `run_cli_work_dir`, restart, launch —
+  the renamed Terminal honors the migrated value. Quick smoke — full assertions in
+  `terminal/functional.md` F-4.
