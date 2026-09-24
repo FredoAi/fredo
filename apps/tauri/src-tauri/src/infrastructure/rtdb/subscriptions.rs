@@ -374,6 +374,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-08-31T00:00:00Z".to_string(),
             state: RowState::Update,
+            provider: None,
             user_message: Some("fix the bug".to_string()),
             agent_reply: agent_reply.map(str::to_string),
             prompt_tokens,
@@ -396,6 +397,7 @@ mod tests {
             ended_at_ns: Some(5_000),
             updated_at: "2026-08-31T00:00:01Z".to_string(),
             state: RowState::Response,
+            provider: None,
             tool_name: Some("bash".to_string()),
             tool_success,
             tool_error: None,
@@ -416,6 +418,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-08-31T00:00:02Z".to_string(),
             state: RowState::Update,
+            provider: None,
             total_tokens,
             total_messages: Some(4),
             total_cost_usd: Some(0.512),
@@ -790,7 +793,7 @@ mod tests {
         assert_eq!(insert.len(), 1);
         assert_eq!(insert[0].kind, RowChangeKind::Insert);
         let patch = insert[0].patch.as_ref().and_then(|p| p.as_object()).expect("insert patch object");
-        assert_eq!(patch.len(), 17, "insert carries the FULL row (all chat fields)");
+        assert_eq!(patch.len(), 18, "insert carries the FULL row (all chat fields)");
         assert_eq!(patch.get("userMessage"), Some(&json!("fix the bug")));
         assert_eq!(insert[0].seq, 1);
 
@@ -903,7 +906,7 @@ mod tests {
         assert_eq!(reentry.len(), 1);
         assert_eq!(reentry[0].kind, RowChangeKind::Insert);
         let patch = reentry[0].patch.as_ref().and_then(|p| p.as_object()).expect("full row");
-        assert_eq!(patch.len(), 17);
+        assert_eq!(patch.len(), 18);
     }
 
     #[test]

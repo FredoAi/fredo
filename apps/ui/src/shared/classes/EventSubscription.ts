@@ -64,6 +64,12 @@ export interface ChatRow {
   /** RFC3339 last-write stamp. */
   updatedAt: string;
   state: RowState;
+  /**
+   * Canonical CLI token that originated this row
+   * (`open_code` | `claude_code` | `copilot_cli` | `internal` | `unknown`).
+   * Init-time attribution — never re-derived for a live row.
+   */
+  provider: string | null;
   /** User prompt text (init-time data — survives every later patch). */
   userMessage: string | null;
   /** Assistant reply text (latest non-empty wins). */
@@ -95,6 +101,12 @@ export interface ToolUseRow {
   endedAtNs: number | null;
   updatedAt: string;
   state: RowState;
+  /**
+   * Canonical CLI token that originated this row
+   * (`open_code` | `claude_code` | `copilot_cli` | `internal` | `unknown`).
+   * Init-time attribution — never re-derived for a live row.
+   */
+  provider: string | null;
   /** Tool name (`gen_ai.tool.name`). */
   toolName: string | null;
   /** Outcome flag (`tool.success` — `false` is a meaningful outcome). */
@@ -121,6 +133,12 @@ export interface AgentSessionRow {
   endedAtNs: number | null;
   updatedAt: string;
   state: RowState;
+  /**
+   * Canonical CLI token that originated this row
+   * (`open_code` | `claude_code` | `copilot_cli` | `internal` | `unknown`).
+   * Init-time attribution — never re-derived for a live row.
+   */
+  provider: string | null;
   /** Session-cumulative tokens. */
   totalTokens: number | null;
   /** Session-cumulative message count. */
@@ -143,6 +161,7 @@ export const CHAT_ROW_FIELDS: readonly string[] = [
   'endedAtNs',
   'updatedAt',
   'state',
+  'provider',
   'userMessage',
   'agentReply',
   'promptTokens',
@@ -163,6 +182,7 @@ export const TOOL_USE_ROW_FIELDS: readonly string[] = [
   'endedAtNs',
   'updatedAt',
   'state',
+  'provider',
   'toolName',
   'toolSuccess',
   'toolError',
@@ -181,6 +201,7 @@ export const AGENT_SESSION_ROW_FIELDS: readonly string[] = [
   'endedAtNs',
   'updatedAt',
   'state',
+  'provider',
   'totalTokens',
   'totalMessages',
   'totalCostUsd',

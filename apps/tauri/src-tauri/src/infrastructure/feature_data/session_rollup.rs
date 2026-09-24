@@ -853,6 +853,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-09-18T00:00:00+00:00".to_string(),
             state: RowState::Response,
+            provider: None,
             user_message: None,
             agent_reply: Some("persisted".to_string()),
             prompt_tokens: None,

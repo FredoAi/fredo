@@ -195,6 +195,9 @@ fn chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRow> {
         parent_session_id: row.get(14)?,
         composited_child_session_id: row.get(15)?,
         raw_json: row.get(16)?,
+        // Mechanical field initialisation (ST-2 contract exposure) — the
+        // physical `provider` column read is ST-4's schema work.
+        provider: None,
     })
 }
 
@@ -217,6 +220,8 @@ fn tool_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolUseRow> {
         tool_output_json: row.get(12)?,
         is_subagent: row.get(13)?,
         raw_json: row.get(14)?,
+        // Mechanical field initialisation (ST-2 contract exposure).
+        provider: None,
     })
 }
 
@@ -236,6 +241,8 @@ fn agent_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSess
         total_cost_usd: row.get(9)?,
         agent_name: row.get(10)?,
         raw_json: row.get(11)?,
+        // Mechanical field initialisation (ST-2 contract exposure).
+        provider: None,
     })
 }
 
@@ -852,6 +859,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: updated_at.to_string(),
             state: RowState::Init,
+            provider: None,
             user_message: Some("fix the bug".to_string()),
             agent_reply: None,
             prompt_tokens: None,
@@ -874,6 +882,7 @@ mod tests {
             ended_at_ns: Some(3_000),
             updated_at: updated_at.to_string(),
             state: RowState::Response,
+            provider: None,
             tool_name: Some("bash".to_string()),
             tool_success: Some(false),
             tool_error: Some("exit code 1".to_string()),
@@ -894,6 +903,7 @@ mod tests {
             ended_at_ns: Some(9_000),
             updated_at: updated_at.to_string(),
             state: RowState::Update,
+            provider: None,
             total_tokens: Some(23_262),
             total_messages: Some(57),
             total_cost_usd: Some(0.512),

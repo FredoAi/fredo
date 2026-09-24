@@ -16,7 +16,8 @@
 //!   (session.ts:608) / `gen_ai.agent.name`.
 //! - Envelope: `session.id` / per-turn correlation (`<session>_<n>`, REQ-639) /
 //!   span `startTimeUnixNano`/`endTimeUnixNano` / `state` (PascalCase, REQ-11) /
-//!   `parentSessionId` (#2768) / `compositedChildSessionId` (#523 ECE re-key).
+//!   `parentSessionId` (#2768) / `compositedChildSessionId` (#523 ECE re-key) /
+//!   `provider` (#2932 CLI attribution, init-time immutable).
 //!
 //! `state` is an ORDINARY field (`Init | Update | Response | Timeout | Error`)
 //! — lifecycle transitions become ordinary patches later (P2+); nothing about
@@ -64,6 +65,7 @@ pub const CHAT_FIELDS: &[&str] = &[
     "endedAtNs",
     "updatedAt",
     "state",
+    "provider",
     "userMessage",
     "agentReply",
     "promptTokens",
@@ -84,6 +86,7 @@ pub const TOOL_USE_FIELDS: &[&str] = &[
     "endedAtNs",
     "updatedAt",
     "state",
+    "provider",
     "toolName",
     "toolSuccess",
     "toolError",
@@ -102,6 +105,7 @@ pub const AGENT_SESSION_FIELDS: &[&str] = &[
     "endedAtNs",
     "updatedAt",
     "state",
+    "provider",
     "totalTokens",
     "totalMessages",
     "totalCostUsd",
@@ -126,6 +130,10 @@ pub struct ChatRow {
     /// RFC3339 last-write stamp.
     pub updated_at: String,
     pub state: RowState,
+    /// Canonical CLI token that originated this row
+    /// (`open_code` | `claude_code` | `copilot_cli` | `internal` | `unknown`).
+    /// Init-time attribution — never re-derived for a live row.
+    pub provider: Option<String>,
     /// User prompt text (init-time data — survives every later patch).
     pub user_message: Option<String>,
     /// Assistant reply text (latest non-empty wins).
@@ -159,6 +167,10 @@ pub struct ToolUseRow {
     pub ended_at_ns: Option<i64>,
     pub updated_at: String,
     pub state: RowState,
+    /// Canonical CLI token that originated this row
+    /// (`open_code` | `claude_code` | `copilot_cli` | `internal` | `unknown`).
+    /// Init-time attribution — never re-derived for a live row.
+    pub provider: Option<String>,
     /// Tool name (`gen_ai.tool.name`).
     pub tool_name: Option<String>,
     /// Outcome flag (`tool.success` — `false` is a meaningful outcome).
@@ -187,6 +199,10 @@ pub struct AgentSessionRow {
     pub ended_at_ns: Option<i64>,
     pub updated_at: String,
     pub state: RowState,
+    /// Canonical CLI token that originated this row
+    /// (`open_code` | `claude_code` | `copilot_cli` | `internal` | `unknown`).
+    /// Init-time attribution — never re-derived for a live row.
+    pub provider: Option<String>,
     /// Session-cumulative tokens (`total_tokens`).
     pub total_tokens: Option<i64>,
     /// Session-cumulative message count (`total_messages`).

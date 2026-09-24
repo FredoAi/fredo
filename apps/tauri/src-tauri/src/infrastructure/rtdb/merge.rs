@@ -53,6 +53,7 @@ pub const CHAT_MERGE: &[FieldRule] = &[
     FieldRule { field: "endedAtNs", rule: MergeRule::LastNonZero },
     FieldRule { field: "updatedAt", rule: MergeRule::LastWins },
     FieldRule { field: "state", rule: MergeRule::LastWins },
+    FieldRule { field: "provider", rule: MergeRule::KeepFirst },
     FieldRule { field: "userMessage", rule: MergeRule::KeepFirst },
     FieldRule { field: "agentReply", rule: MergeRule::LastNonZero },
     FieldRule { field: "promptTokens", rule: MergeRule::LastNonZero },
@@ -74,6 +75,7 @@ pub const TOOL_USE_MERGE: &[FieldRule] = &[
     FieldRule { field: "endedAtNs", rule: MergeRule::LastNonZero },
     FieldRule { field: "updatedAt", rule: MergeRule::LastWins },
     FieldRule { field: "state", rule: MergeRule::LastWins },
+    FieldRule { field: "provider", rule: MergeRule::KeepFirst },
     FieldRule { field: "toolName", rule: MergeRule::KeepFirst },
     FieldRule { field: "toolSuccess", rule: MergeRule::LastWins },
     FieldRule { field: "toolError", rule: MergeRule::LastNonZero },
@@ -93,6 +95,7 @@ pub const AGENT_SESSION_MERGE: &[FieldRule] = &[
     FieldRule { field: "endedAtNs", rule: MergeRule::LastNonZero },
     FieldRule { field: "updatedAt", rule: MergeRule::LastWins },
     FieldRule { field: "state", rule: MergeRule::LastWins },
+    FieldRule { field: "provider", rule: MergeRule::KeepFirst },
     FieldRule { field: "totalTokens", rule: MergeRule::LastNonZero },
     FieldRule { field: "totalMessages", rule: MergeRule::LastNonZero },
     FieldRule { field: "totalCostUsd", rule: MergeRule::LastNonZero },
@@ -182,6 +185,7 @@ pub struct ChatPatch {
     pub ended_at_ns: Option<i64>,
     pub updated_at: Option<String>,
     pub state: Option<RowState>,
+    pub provider: Option<String>,
     pub user_message: Option<String>,
     pub agent_reply: Option<String>,
     pub prompt_tokens: Option<i64>,
@@ -205,6 +209,7 @@ pub struct ToolUsePatch {
     pub ended_at_ns: Option<i64>,
     pub updated_at: Option<String>,
     pub state: Option<RowState>,
+    pub provider: Option<String>,
     pub tool_name: Option<String>,
     pub tool_success: Option<bool>,
     pub tool_error: Option<String>,
@@ -226,6 +231,7 @@ pub struct AgentSessionPatch {
     pub ended_at_ns: Option<i64>,
     pub updated_at: Option<String>,
     pub state: Option<RowState>,
+    pub provider: Option<String>,
     pub total_tokens: Option<i64>,
     pub total_messages: Option<i64>,
     pub total_cost_usd: Option<f64>,
@@ -245,6 +251,7 @@ pub fn apply_chat_patch(row: &mut ChatRow, patch: &ChatPatch) {
     if let Some(state) = patch.state {
         row.state = state;
     }
+    apply_rule(&mut row.provider, patch.provider.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.user_message, patch.user_message.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.agent_reply, patch.agent_reply.as_ref(), MergeRule::LastNonZero);
     apply_rule(&mut row.prompt_tokens, patch.prompt_tokens.as_ref(), MergeRule::LastNonZero);
@@ -273,6 +280,7 @@ pub fn apply_tool_use_patch(row: &mut ToolUseRow, patch: &ToolUsePatch) {
     if let Some(state) = patch.state {
         row.state = state;
     }
+    apply_rule(&mut row.provider, patch.provider.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.tool_name, patch.tool_name.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.tool_success, patch.tool_success.as_ref(), MergeRule::LastWins);
     apply_rule(&mut row.tool_error, patch.tool_error.as_ref(), MergeRule::LastNonZero);
@@ -295,6 +303,7 @@ pub fn apply_agent_session_patch(row: &mut AgentSessionRow, patch: &AgentSession
     if let Some(state) = patch.state {
         row.state = state;
     }
+    apply_rule(&mut row.provider, patch.provider.as_ref(), MergeRule::KeepFirst);
     apply_rule(&mut row.total_tokens, patch.total_tokens.as_ref(), MergeRule::LastNonZero);
     apply_rule(&mut row.total_messages, patch.total_messages.as_ref(), MergeRule::LastNonZero);
     apply_rule(&mut row.total_cost_usd, patch.total_cost_usd.as_ref(), MergeRule::LastNonZero);
@@ -340,6 +349,9 @@ mod tests {
     #[test]
     fn rule_of_resolves_every_declared_field_and_none_outside() {
         assert_eq!(rule_of(CHAT_MERGE, "userMessage"), Some(MergeRule::KeepFirst));
+        assert_eq!(rule_of(CHAT_MERGE, "provider"), Some(MergeRule::KeepFirst));
+        assert_eq!(rule_of(TOOL_USE_MERGE, "provider"), Some(MergeRule::KeepFirst));
+        assert_eq!(rule_of(AGENT_SESSION_MERGE, "provider"), Some(MergeRule::KeepFirst));
         assert_eq!(rule_of(CHAT_MERGE, "costUsd"), Some(MergeRule::LastNonZero));
         assert_eq!(rule_of(TOOL_USE_MERGE, "toolSuccess"), Some(MergeRule::LastWins));
         assert_eq!(rule_of(AGENT_SESSION_MERGE, "agentName"), Some(MergeRule::KeepFirst));
@@ -421,6 +433,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-08-31T00:00:00Z".to_string(),
             state: RowState::Init,
+            provider: None,
             user_message: Some("fix the bug".to_string()),
             agent_reply: None,
             prompt_tokens: None,
@@ -504,6 +517,82 @@ mod tests {
     }
 
     #[test]
+    fn provider_is_init_time_immutable_across_omitted_and_differing_patches() {
+        // Chat: first observation fills, every later patch (omitted, empty, or
+        // a different non-empty token) leaves the stored token untouched (R4).
+        let mut chat = chat_row();
+        assert_eq!(chat.provider, None, "bootstrap starts unset");
+        apply_chat_patch(
+            &mut chat,
+            &ChatPatch {
+                provider: Some("open_code".to_string()),
+                ..ChatPatch::default()
+            },
+        );
+        assert_eq!(chat.provider, Some("open_code".to_string()));
+        apply_chat_patch(&mut chat, &ChatPatch::default());
+        assert_eq!(
+            chat.provider,
+            Some("open_code".to_string()),
+            "omitted provider never clears"
+        );
+        apply_chat_patch(
+            &mut chat,
+            &ChatPatch {
+                provider: Some(String::new()),
+                ..ChatPatch::default()
+            },
+        );
+        assert_eq!(
+            chat.provider,
+            Some("open_code".to_string()),
+            "empty provider never clears"
+        );
+        apply_chat_patch(
+            &mut chat,
+            &ChatPatch {
+                provider: Some("copilot_cli".to_string()),
+                ..ChatPatch::default()
+            },
+        );
+        assert_eq!(
+            chat.provider,
+            Some("open_code".to_string()),
+            "KeepFirst: a different token must never restamp attribution"
+        );
+
+        // Tool-use: same contract.
+        let mut tool = tool_row();
+        apply_tool_use_patch(
+            &mut tool,
+            &ToolUsePatch {
+                provider: Some("copilot_cli".to_string()),
+                ..ToolUsePatch::default()
+            },
+        );
+        apply_tool_use_patch(
+            &mut tool,
+            &ToolUsePatch {
+                provider: Some("open_code".to_string()),
+                ..ToolUsePatch::default()
+            },
+        );
+        assert_eq!(tool.provider, Some("copilot_cli".to_string()));
+
+        // Agent-session: same contract.
+        let mut session = session_row();
+        apply_agent_session_patch(
+            &mut session,
+            &AgentSessionPatch {
+                provider: Some("internal".to_string()),
+                ..AgentSessionPatch::default()
+            },
+        );
+        apply_agent_session_patch(&mut session, &AgentSessionPatch::default());
+        assert_eq!(session.provider, Some("internal".to_string()));
+    }
+
+    #[test]
     fn empty_chat_patch_changes_nothing() {
         let mut row = chat_row();
         let before = row.clone();
@@ -531,6 +620,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-08-31T00:00:00Z".to_string(),
             state: RowState::Init,
+            provider: None,
             tool_name: Some("bash".to_string()),
             tool_success: None,
             tool_error: None,
@@ -613,6 +703,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "2026-08-31T00:00:00Z".to_string(),
             state: RowState::Init,
+            provider: None,
             total_tokens: None,
             total_messages: None,
             total_cost_usd: None,
@@ -678,6 +769,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "old".to_string(),
             state: RowState::Init,
+            provider: None,
             user_message: None,
             agent_reply: None,
             prompt_tokens: None,
@@ -699,6 +791,7 @@ mod tests {
                 ended_at_ns: Some(222),
                 updated_at: Some("new".to_string()),
                 state: Some(RowState::Response),
+                provider: Some("open_code".to_string()),
                 user_message: Some("user".to_string()),
                 agent_reply: Some("agent".to_string()),
                 prompt_tokens: Some(1),
@@ -718,6 +811,7 @@ mod tests {
         assert_eq!(row.ended_at_ns, Some(222));
         assert_eq!(row.updated_at, "new");
         assert_eq!(row.state, RowState::Response);
+        assert_eq!(row.provider, Some("open_code".to_string()));
         assert_eq!(row.user_message, Some("user".to_string()));
         assert_eq!(row.agent_reply, Some("agent".to_string()));
         assert_eq!(row.prompt_tokens, Some(1));
@@ -728,7 +822,7 @@ mod tests {
         assert_eq!(row.parent_session_id, Some("p".to_string()));
         assert_eq!(row.composited_child_session_id, Some("c".to_string()));
         assert_eq!(row.raw_json, "raw");
-        assert_eq!(CHAT_FIELDS.len(), 17);
+        assert_eq!(CHAT_FIELDS.len(), 18);
     }
 
     #[test]
@@ -741,6 +835,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "old".to_string(),
             state: RowState::Init,
+            provider: None,
             tool_name: None,
             tool_success: None,
             tool_error: None,
@@ -760,6 +855,7 @@ mod tests {
                 ended_at_ns: Some(222),
                 updated_at: Some("new".to_string()),
                 state: Some(RowState::Response),
+                provider: Some("copilot_cli".to_string()),
                 tool_name: Some("read".to_string()),
                 tool_success: Some(true),
                 tool_error: Some(String::new()), // empty → must NOT fill
@@ -777,6 +873,7 @@ mod tests {
         assert_eq!(row.ended_at_ns, Some(222));
         assert_eq!(row.updated_at, "new");
         assert_eq!(row.state, RowState::Response);
+        assert_eq!(row.provider, Some("copilot_cli".to_string()));
         assert_eq!(row.tool_name, Some("read".to_string()));
         assert_eq!(row.tool_success, Some(true));
         assert_eq!(row.tool_error, None, "empty error string must not fill");
@@ -785,7 +882,7 @@ mod tests {
         assert_eq!(row.tool_output_json, Some("data".to_string()));
         assert_eq!(row.is_subagent, Some(true));
         assert_eq!(row.raw_json, "raw");
-        assert_eq!(TOOL_USE_FIELDS.len(), 15);
+        assert_eq!(TOOL_USE_FIELDS.len(), 16);
     }
 
     #[test]
@@ -798,6 +895,7 @@ mod tests {
             ended_at_ns: None,
             updated_at: "old".to_string(),
             state: RowState::Init,
+            provider: None,
             total_tokens: None,
             total_messages: None,
             total_cost_usd: None,
@@ -814,6 +912,7 @@ mod tests {
                 ended_at_ns: Some(222),
                 updated_at: Some("new".to_string()),
                 state: Some(RowState::Response),
+                provider: Some("open_code".to_string()),
                 total_tokens: Some(100),
                 total_messages: Some(4),
                 total_cost_usd: Some(1.25),
@@ -828,12 +927,13 @@ mod tests {
         assert_eq!(row.ended_at_ns, Some(222));
         assert_eq!(row.updated_at, "new");
         assert_eq!(row.state, RowState::Response);
+        assert_eq!(row.provider, Some("open_code".to_string()));
         assert_eq!(row.total_tokens, Some(100));
         assert_eq!(row.total_messages, Some(4));
         assert_eq!(row.total_cost_usd, Some(1.25));
         assert_eq!(row.agent_name, Some("build".to_string()));
         assert_eq!(row.raw_json, "raw");
-        assert_eq!(AGENT_SESSION_FIELDS.len(), 12);
+        assert_eq!(AGENT_SESSION_FIELDS.len(), 13);
     }
 
     // ── Serde round-trips: camelCase rows/patches, PascalCase enums ─────────
@@ -848,6 +948,7 @@ mod tests {
             ended_at_ns: Some(9_000),
             updated_at: "2026-08-31T00:00:00Z".to_string(),
             state: RowState::Response,
+            provider: Some("open_code".to_string()),
             user_message: Some("q".to_string()),
             agent_reply: Some("a".to_string()),
             prompt_tokens: Some(25),
@@ -878,6 +979,7 @@ mod tests {
             ended_at_ns: Some(2),
             updated_at: "t".to_string(),
             state: RowState::Update,
+            provider: Some("copilot_cli".to_string()),
             tool_name: Some("bash".to_string()),
             tool_success: Some(false),
             tool_error: Some("boom".to_string()),
@@ -905,6 +1007,7 @@ mod tests {
             ended_at_ns: Some(2),
             updated_at: "t".to_string(),
             state: RowState::Timeout,
+            provider: Some("unknown".to_string()),
             total_tokens: Some(1),
             total_messages: Some(1),
             total_cost_usd: Some(0.5),

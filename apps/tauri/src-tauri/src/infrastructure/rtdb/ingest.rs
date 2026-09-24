@@ -497,6 +497,9 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
+                    // Mechanical field initialisation (ST-2 contract exposure);
+                    // the OTLP resource-identity resolution is ST-3's wiring.
+                    provider: None,
                     // The projector preserves the flat attrs verbatim and
                     // projects gen_ai.agent.name → `agent`/`name` — read the
                     // canonical fields (one source of truth).
@@ -524,6 +527,7 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
+                    provider: None,
                     user_message: attr_str(payload_map, "userMessage"),
                     agent_reply: attr_str(payload_map, "agentReply"),
                     prompt_tokens: attr_i64(payload_map, "promptTokens"),
@@ -550,6 +554,7 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
+                    provider: None,
                     tool_name: Some(tool_name),
                     tool_success: payload_map.get(ATTR_TOOL_SUCCESS).and_then(|v| v.as_bool()),
                     tool_error: attr_str(payload_map, ATTR_TOOL_ERROR),
@@ -1261,6 +1266,7 @@ fn empty_chat_row(session: &str, corr: &str) -> ChatRow {
         ended_at_ns: None,
         updated_at: rfc3339_now(),
         state: RowState::Init,
+        provider: None,
         user_message: None,
         agent_reply: None,
         prompt_tokens: None,
@@ -1283,6 +1289,7 @@ fn empty_tool_row(session: &str, corr: &str) -> ToolUseRow {
         ended_at_ns: None,
         updated_at: rfc3339_now(),
         state: RowState::Init,
+        provider: None,
         tool_name: None,
         tool_success: None,
         tool_error: None,
@@ -1303,6 +1310,7 @@ fn empty_session_row(session: &str, corr: &str) -> AgentSessionRow {
         ended_at_ns: None,
         updated_at: rfc3339_now(),
         state: RowState::Init,
+        provider: None,
         total_tokens: None,
         total_messages: None,
         total_cost_usd: None,
@@ -1323,6 +1331,7 @@ fn chat_patch_from_row(existing: &ChatRow, parent: &str) -> ChatPatch {
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
+        provider: None,
         user_message: existing.user_message.clone(),
         agent_reply: existing.agent_reply.clone(),
         prompt_tokens: existing.prompt_tokens,
@@ -1345,6 +1354,7 @@ fn tool_patch_from_row(existing: &ToolUseRow, parent: &str) -> ToolUsePatch {
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
+        provider: None,
         tool_name: existing.tool_name.clone(),
         tool_success: existing.tool_success,
         tool_error: existing.tool_error.clone(),
@@ -1365,6 +1375,7 @@ fn session_patch_from_row(existing: &AgentSessionRow, parent: &str) -> AgentSess
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
+        provider: None,
         total_tokens: existing.total_tokens,
         total_messages: existing.total_messages,
         total_cost_usd: existing.total_cost_usd,
@@ -1394,6 +1405,7 @@ fn chat_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
+        provider: None,
         user_message: str_field(payload, &["userMessage"])
             .or_else(|| nested_str(payload, &["info", "text"]))
             .or_else(|| parts_text(payload, "user")),
@@ -1429,6 +1441,7 @@ fn tool_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
+        provider: None,
         tool_name: event
             .tool_name
             .clone()
@@ -1470,6 +1483,7 @@ fn session_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
+        provider: None,
         total_tokens: i64_field(payload, &["totalTokens"]),
         total_messages: i64_field(payload, &["totalMessages"]),
         total_cost_usd: f64_field(payload, &["totalCostUsd"]),
