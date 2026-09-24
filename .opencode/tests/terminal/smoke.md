@@ -162,3 +162,19 @@ uninstall a binary or edit the OS PATH.
   `terminal_default_cli`, `terminal_copilot_path`, `terminal_pwsh_path`); compare AFTER.
 - Settings restore (binding): restore those four keys to their captured pre-run values.
 - Cross-suite repeat: `.opencode/tests/run-cli/regression.md`.
+
+### #2940 testing round 2 (spec/2940 @ a4b4dfa1) — results
+
+Cold-restarted the dev instance so the round-2 Rust fix `b303ba9` was built+served.
+
+- **S-1..S-7 PASS.** Main + exactly ONE `terminal` window (label `terminal`, title `Terminal`,
+  `?view=terminal`) through every launch; both windows' console clean.
+- **S-16 PASS (was round-1 FAIL).** Cold (no `terminal` window open)
+  `fredo open-terminal --cli opencode --dir …\workdir-a` → exit-JSON `{"outcome":"started"}`,
+  window opened, session spawned + auto-selected — **3/3 cold** (`7f3c8ad9`, `c1d44309`,
+  `78470a18`, all RUNNING with the requested cli+workDir). One-shot: re-list ×4 + reload kept
+  exactly 1 session. Warm 3/3 spawned exactly one new session each. See `regression.md` R-18.
+- **S-17/S-18/S-19/S-20 PASS.** Default-size pane flush (`900×556`, `right` 900, `bottom` 600,
+  no scrollbar); coherent workspace at 900×600; `empty`/`error`/`resume` (+ `starting`,
+  `ended`, `all-ended`, `resuming`, `resume-blocked`) each rendered inside the pane; the C-5
+  teardown left 0 fixture-root records (run 1 deleted 3 / run 2 deleted 0).
