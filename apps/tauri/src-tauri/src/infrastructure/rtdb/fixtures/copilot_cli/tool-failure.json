@@ -1,0 +1,60 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
+          { "key": "service.version", "value": { "stringValue": "0.0.0-fixture" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "name": "invoke_agent copilot",
+              "traceId": "2af7651916cd43dd8448eb211c80319e",
+              "spanId": "d7ad6b7169205551",
+              "startTimeUnixNano": "20000000000",
+              "endTimeUnixNano": "28000000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_3" } },
+                { "key": "gen_ai.agent.name", "value": { "stringValue": "copilot" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "800" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "110" } }
+              ]
+            },
+            {
+              "name": "chat gpt-4o",
+              "traceId": "2af7651916cd43dd8448eb211c80319e",
+              "spanId": "d7ad6b7169205552",
+              "startTimeUnixNano": "20100000000",
+              "endTimeUnixNano": "23000000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_3" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "600" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "80" } }
+              ]
+            },
+            {
+              "name": "execute_tool applyPatch",
+              "traceId": "2af7651916cd43dd8448eb211c80319e",
+              "spanId": "d7ad6b7169205553",
+              "startTimeUnixNano": "23100000000",
+              "endTimeUnixNano": "23600000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_3" } },
+                { "key": "gen_ai.tool.name", "value": { "stringValue": "applyPatch" } },
+                { "key": "error.type", "value": { "stringValue": "ToolExecutionError" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

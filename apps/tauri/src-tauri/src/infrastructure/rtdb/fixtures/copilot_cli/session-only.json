@@ -1,0 +1,49 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
+          { "key": "service.version", "value": { "stringValue": "0.0.0-fixture" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "name": "invoke_agent copilot",
+              "traceId": "3af7651916cd43dd8448eb211c80319f",
+              "spanId": "e7ad6b7169206661",
+              "startTimeUnixNano": "30000000000",
+              "endTimeUnixNano": "36000000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_4" } },
+                { "key": "gen_ai.agent.name", "value": { "stringValue": "copilot" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "400" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "60" } }
+              ]
+            },
+            {
+              "name": "chat gpt-4o",
+              "traceId": "3af7651916cd43dd8448eb211c80319f",
+              "spanId": "e7ad6b7169206662",
+              "startTimeUnixNano": "30100000000",
+              "endTimeUnixNano": "33000000000",
+              "attributes": [
+                { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_4" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "350" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "50" } },
+                { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What does src/main.rs do?\"}]}]" } },
+                { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"It is the entry point.\"}]}]" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
