@@ -82,6 +82,28 @@
   - EXPECTED: zero duplicated provider extraction; live and backfill derivation byte-comparable (F-8); a `provider` added to `*_FIELDS` without a merge rule or schema entry fails the build — never silently defaults.
 - [ ] N4 (build/console hygiene): `cargo check` zero warnings; `pnpm --filter @fredo/ui build` clean; `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
+## Promoted exploratory cases
+
+- [ ] F-11 (promoted from E-11/E-12, R5/R6 — confirmed round 1): over a real pre-existing store, the one-shot provider re-derivation does NOT transition span-matched pre-existing rows in place; it derives a different correlation key and creates a PARALLEL row instead.
+  - REPRO (live, `ses_f358e9c58ffeCnb7iL44S7rR1s`): the startup pass latched `settings.rtdb.backfill.provider.completed` (`2026-09-24T05:24:28Z`); `SELECT provider, COUNT(*) FROM chat_rows WHERE session_id='ses_f358…' GROUP BY provider` → `open_code 30` (written `05:24:22`) + `unknown 20` (untouched). All 20 `unknown` rows have a resolvable span: `… AND EXISTS (SELECT 1 FROM telemetry_spans s WHERE s.session_id=c.session_id AND s.start_time_ns=c.started_at_ns AND instr(s.attributes_json,'fredo-opencode-plugin')>0)` → **20**; 16 of them also have a parallel `open_code` row at the same `started_at_ns`.
+  - EXPECTED: pre-existing key `unknown` → `open_code` in place. ACTUAL: key stays `unknown`; a parallel row is created (e.g. `_3` unknown seq 2 vs `_2` open_code seq 1 at the same `started_at_ns 1790102823906000000`).
+
 ## Round notes
 
 > (Tester appends per-round results here — keep `- [ ]` on FAIL/UNVERIFIED, mark PASS with evidence, promote confirmed exploratory probes to a new `F-` row keeping the origin note.)
+
+### Round 1 — 2026-09-24 (`spec/2932` @ `8ce8e14`) — Verdict: FAIL
+
+- F-1 (R1 live OTLP): PASS — OpenCode-origin rows are `open_code` (live streaming + `00:24:22` startup writes); NULL/empty = 0/0/0.
+- F-2 (R1 resource mapping): PASS — span attrs carry `service.name":"fredo-opencode-plugin"`; row token `open_code` ≠ `telemetry_spans.provider` (`commandcode`). Plan oracle path `$.service.name` returns NULL (dotted-key); use `instr(attributes_json,'service.name')`.
+- F-3 (R10/R3): PASS — `copilot_cli` / `open_code` / `claude_code` / `internal` all parse+store; bare → `internal`; `bogus` rejected.
+- F-4 (R2): PASS — provider selectable/filterable on chat/toolUse/agentSession; zero-match + legacy queries validate; hard-named errors unchanged.
+- F-5 (R2/R9): PASS — scoped subscription delivered only `copilot_cli` (3/3), `open_code` withheld, `replayCompleteQueryId` settle.
+- F-6 (R2 typed wire): PASS — `provider: string | null` + `'provider'` in all three `*_ROW_FIELDS`; `pnpm --filter @fredo/ui build` clean.
+- F-7 (R4): PASS — `copilot_cli` survived a no-provider update and a different-resolved response patch.
+- F-8 (R5): **FAIL** — parity token `open_code` is correct for re-rowed spans but is NOT applied to pre-existing span-matched rows; parallel rows created. See F-11.
+- F-9 (R8): PASS — legacy queries unchanged; Mission Monitor renders; console clean (Pattern-8 smoke 5/5).
+- F-10 (R7): PASS — OTLP fixture (no `service.name`) → row `unknown` (non-empty), span `unknown`.
+- N1 (R6): **FAIL** (strict leg) — `provider TEXT NOT NULL DEFAULT 'unknown'` on all three tables and 0 NULL/empty, but pre-existing span-matched rows do not transition (same evidence as F-8/F-11).
+- N2 (latency): **UNVERIFIED** — named blocker: no batch-loop lever in the sandbox (pipes/loops denied), `cargo` not in the tester allowlist, no pre-fix baseline binary without a heavyweight rebuild.
+- N3 (NFR-6): PASS (source pins) — one `resolve_provider_token` (`attrs.rs:295`), consumed at `ingest.rs:350`; `provider` = `KeepFirstAttributed` in all three merge tables; schema + `*_FIELDS` + SQLite column all present. Named gap: `cargo test` not runnable in-sandbox.
