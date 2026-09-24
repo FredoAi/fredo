@@ -315,3 +315,26 @@ append evidence; on fail mark `FAIL`.
   already covered by R-15..R-19 (window count, sentinel isolation, no-re-spawn, persisted list).
   The final clean state is **0 records** (all pre-existing rows were #2935-era automation leaks, purged
   per the C-5 one-time purge; every record the run created was removed by the teardown).
+
+### Round 6 (Spec #2940 — round 2 retry) — 2026-09-24, spec/2940 @ a4b4dfa1 (verdict PASS; R-18 FIXED)
+
+Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix `b303ba9`).
+
+- **R-18 PASS (was round-5 FAIL) — the cold `fredo open-terminal` leg.** With NO `terminal`
+  window open, `fredo open-terminal --cli opencode --dir …\workdir-a` → `{"outcome":"started"}`,
+  ONE `terminal` window, a RUNNING OpenCode session with that cli+workDir, `data-surface=terminal`,
+  `aria-current="true"` — **cold 3/3** (`7f3c8ad9`/pid 16728, `c1d44309`/pid 23380,
+  `78470a18`/pid 14960) plus a reload leg. One-shot proven: 4× re-list + `location.reload()`
+  kept exactly 1 session (same id). Warm **3/3** spawned exactly one new session each
+  (`5c472c32`, `f27bb196`, `dd876bf8`). F-33/F-34: `--cli bogus` → `{"outcome":"invalid-cli"}`,
+  `--dir …\no-such-dir` → `{"outcome":"invalid-directory"}`, session list unchanged (4→4).
+- **R-15 PASS.** F-6 main+1 window with concurrent sessions; F-8 `ZZSENTINEL_R2_A` present in A
+  only, `ZZSENTINEL_R2_B` in B only; F-10 switch kept `id`/`pid`/`startedAt` byte-identical.
+- **R-16 PASS.** F-12 New-session dialog showed GitHub Copilot `data-state="checked"`
+  (matches `terminal_default_cli='copilot'`).
+- **R-17 PASS.** Close→reopen listed all 7 records with 0 processes; `resume` auto-selected the
+  newest record; a real Resume rendered `resuming` then reached a terminal state.
+- **R-19 PASS.** Closing with 2 live sessions → `process-hygiene.ps1 -List` session trees gone,
+  **0 unprotected orphan candidate(s)**; records survived.
+- C-5 teardown: run 1 deleted 3 fixture-root records / run 2 deleted 0 (idempotent) → 0; the four
+  settings keys restored to their captured pre-run values.
