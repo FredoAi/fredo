@@ -21,6 +21,9 @@ export type TerminalErrorKind =
   | 'prereq'
   | 'invalid-cwd'
   | 'auth'
+  // Spec 2935 R-4.1 — an unknown CLI name was refused before any process started.
+  // Renders through the EXISTING `SessionErrorState` (UI/UX §2), not a new surface.
+  | 'invalid-cli'
   | 'launch'
   | 'generic';
 
@@ -36,6 +39,121 @@ export interface TerminalSessionInfo {
   rows: number;
   pid: number | null;
   startedAt: number;
+}
+
+// ── Persisted records + resume contract (Spec 2935) ───────────────────────────
+//
+// A persisted record is NOT a live session: it has no process and no PTY. It is
+// the durable identity of a session across a window close / app restart, read
+// from `list_persisted_terminal_sessions` (ordered `lastActiveAt` DESC). Resume
+// REUSES the source record — the live session created on `resumed` carries the
+// SAME `id` (SI adjudication, `## Discussion`), so a record "moves" from the
+// Previous group to This window without ever appearing in both.
+
+export type PersistedSessionState = 'resumable' | 'unresumable';
+
+/** Why a record's resume is blocked. `transcript-missing` is deliberately NOT
+ *  renderable (SI adjudication: the CLI's own session store is out-of-repo). */
+export type ResumeBlockedReason = 'cli-missing' | 'invalid-cwd' | 'resume-failed';
+
+/** Display state of a Previous-sessions row (client-derived). */
+export type PreviousSessionState = 'resumable' | 'resuming' | 'unresumable' | 'resume-failed';
+
+export const PREVIOUS_STATE_LABEL: Record<PreviousSessionState, string> = {
+  resumable: 'not running',
+  resuming: 'resuming…',
+  unresumable: "can't resume",
+  'resume-failed': 'resume failed',
+};
+
+/** Status dot colours — always paired with the text label (never colour alone). */
+export const PREVIOUS_STATE_DOT_COLOR: Record<PreviousSessionState, string> = {
+  resumable: 'var(--text-secondary)',
+  resuming: 'var(--status-warning)',
+  unresumable: 'var(--status-warning)',
+  'resume-failed': 'var(--status-error)',
+};
+
+/** One persisted session record (`list_persisted_terminal_sessions`), camelCase. */
+export interface PersistedTerminalSession {
+  id: string;
+  cli: TerminalCli;
+  workDir: string;
+  /** STABLE identity minted once ("OpenCode", "OpenCode 2") — never re-derived. */
+  title: string;
+  createdAt: number;
+  lastActiveAt: number;
+  cliSessionId?: string | null;
+}
+
+/** `resume_terminal_session` outcome (wire: kebab-case). */
+export type ResumeOutcome =
+  | 'resumed'
+  | 'unresumable'
+  | 'missing-binary'
+  | 'invalid-cwd'
+  | 'launch-failed';
+
+export interface ResumeResult {
+  outcome: ResumeOutcome;
+  /** The (reused) live session id on `resumed`. */
+  sessionId?: string | null;
+  /** Clear human message on any non-`resumed` outcome. */
+  message?: string | null;
+}
+
+/**
+ * Map a resume outcome onto the renderable blocked reason. `null` means the
+ * resume is not blocked (only `resumed` maps to `null`).
+ */
+export function resumeBlockedReason(outcome: ResumeOutcome): ResumeBlockedReason | null {
+  switch (outcome) {
+    case 'missing-binary':
+      return 'cli-missing';
+    case 'invalid-cwd':
+      return 'invalid-cwd';
+    case 'unresumable':
+    case 'launch-failed':
+      return 'resume-failed';
+    default:
+      return null;
+  }
+}
+
+/** Relative "last active" cell (UI/UX §2); the absolute time is exposed via `title`. */
+export function lastActiveLabel(epochMs: number, now: number = Date.now()): string {
+  if (!Number.isFinite(epochMs) || epochMs <= 0) return 'unknown';
+  const seconds = Math.max(0, Math.floor((now - epochMs) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(epochMs).toLocaleDateString();
+}
+
+/** Absolute timestamp for a row/meta `title` attribute. */
+export function lastActiveAbsolute(epochMs: number): string {
+  if (!Number.isFinite(epochMs) || epochMs <= 0) return '';
+  return new Date(epochMs).toLocaleString();
+}
+
+/** Composed accessible name for a Previous-sessions row. */
+export function persistedAriaLabel(
+  record: PersistedTerminalSession,
+  state: PreviousSessionState,
+  now?: number,
+): string {
+  return `${record.title}, ${CLI_LABEL[record.cli]}, ${PREVIOUS_STATE_LABEL[state]}, last active ${lastActiveLabel(record.lastActiveAt, now)}`;
+}
+
+/** Newest-first ordering of persisted records (backend orders; this is the guarantee). */
+export function sortPersistedSessions(
+  records: readonly PersistedTerminalSession[],
+): PersistedTerminalSession[] {
+  return [...records].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
 }
 
 // ── Identity maps ─────────────────────────────────────────────────────────────
@@ -166,6 +284,16 @@ export function errorStateMeta(session: TerminalSessionInfo): ErrorStateMeta {
         body: 'GitHub Copilot needs you to sign in. Run `copilot auth login` in a terminal, then retry.',
         showRawMessage: false,
         actions: ['copy-command', 'retry', 'close'],
+      };
+    case 'invalid-cli':
+      // AC4 R-4.1 — an unknown CLI name never starts a session. The backend's raw
+      // message names the offending value; it is shown verbatim (never parsed).
+      return {
+        icon: LuTerminal,
+        title: 'Unknown CLI',
+        body: "That isn't a supported CLI. Choose OpenCode or GitHub Copilot.",
+        showRawMessage: true,
+        actions: ['close'],
       };
     case 'launch':
     case 'generic':
