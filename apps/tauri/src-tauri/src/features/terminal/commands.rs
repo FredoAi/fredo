@@ -230,6 +230,19 @@ fn parse_powershell_major(stdout: &str) -> Option<u32> {
     stdout.lines().map(str::trim).find(|l| !l.is_empty())?.parse().ok()
 }
 
+/// Whether the Copilot PowerShell prerequisite gate applies to a launch.
+///
+/// It applies only when the launch actually executes PowerShell — a `.ps1`
+/// target, which [`plan_launch`] maps to [`LaunchForm::PowerShellScript`]. A
+/// `.cmd`/`.bat` shim (launched via `cmd.exe /C`) or a `.exe`/bare binary
+/// (launched directly) never invokes PowerShell, so it must not be rejected on
+/// a host without pwsh 6+. The TEST-ONLY `override_major` seam (AC4 4c) still
+/// forces the check so a below-six observation stays deterministic.
+#[cfg(target_os = "windows")]
+fn powershell_gate_applies(form: &LaunchForm, override_major: Option<u32>) -> bool {
+    matches!(form, LaunchForm::PowerShellScript { .. }) || override_major.is_some()
+}
+
 /// Windows-only Copilot gate: PowerShell 6+ must be available BEFORE any PTY is
 /// opened. `override_major` is the TEST-ONLY deterministic seam (AC4 4c).
 #[cfg(target_os = "windows")]
@@ -520,14 +533,33 @@ pub async fn spawn_terminal_session(
         return Ok(session_id);
     }
 
+    // ── Plan the launch form (pure; NO spawn, NO PTY) ──────────────────────
+    // Computed BEFORE the prereq gate so the gate can be scoped to the form
+    // that actually executes PowerShell. The `Err → Launch` mapping is
+    // unchanged (a Unix script with no bash is still a launch failure).
+    let form = match plan_launch(&bin, &pwsh) {
+        Ok(form) => form,
+        Err(msg) => {
+            tracing::error!(target: "fredo::terminal", error = %msg, "launch planning failed");
+            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
+            return Ok(session_id);
+        }
+    };
+
     // ── Copilot-only PowerShell 6+ gate (pre-spawn) ────────────────────────
+    // Scoped to the launch form that genuinely runs PowerShell (`.ps1`): a
+    // `.cmd`/`.bat` (CmdShim, via `cmd.exe /C`) or `.exe`/bare (Direct) launch
+    // never invokes it, so it must not be blocked on a pwsh-less host. The
+    // TEST-ONLY `pwsh_major` seam still forces the check (AC4 4c).
     #[cfg(target_os = "windows")]
     if cli == TerminalCli::Copilot {
         let override_major = test_override.as_ref().and_then(|o| o.pwsh_major);
-        if let Err(msg) = check_powershell_prereq(&pwsh, override_major) {
-            tracing::error!(target: "fredo::terminal", error = %msg, "PowerShell prerequisite failed");
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Prereq, msg);
-            return Ok(session_id);
+        if powershell_gate_applies(&form, override_major) {
+            if let Err(msg) = check_powershell_prereq(&pwsh, override_major) {
+                tracing::error!(target: "fredo::terminal", error = %msg, "PowerShell prerequisite failed");
+                fail_session(&app, &state, &session_id, TerminalErrorKind::Prereq, msg);
+                return Ok(session_id);
+            }
         }
     }
 
@@ -544,14 +576,6 @@ pub async fn spawn_terminal_session(
         }
     };
 
-    let form = match plan_launch(&bin, &pwsh) {
-        Ok(form) => form,
-        Err(msg) => {
-            tracing::error!(target: "fredo::terminal", error = %msg, "launch planning failed");
-            fail_session(&app, &state, &session_id, TerminalErrorKind::Launch, msg);
-            return Ok(session_id);
-        }
-    };
     let mut cmd = build_pty_command(form);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -1037,6 +1061,31 @@ mod tests {
     fn prereq_missing_shell_fails_without_panicking() {
         let err = check_powershell_prereq(r"C:\Nonexistent\pwsh.exe", None).unwrap_err();
         assert!(err.contains("PowerShell 6"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_gate_applies_only_to_a_ps1_form_or_a_forced_override() {
+        let cmd_shim = LaunchForm::CmdShim {
+            interpreter: "cmd.exe".to_string(),
+            target: r"C:\nvm4w\nodejs\copilot.cmd".to_string(),
+        };
+        let direct = LaunchForm::Direct(r"C:\tools\copilot.exe".to_string());
+        let ps1 = LaunchForm::PowerShellScript {
+            shell: "pwsh".to_string(),
+            target: r"C:\tools\copilot.ps1".to_string(),
+        };
+
+        // A `.cmd`/`.bat` shim never runs PowerShell → the gate must NOT apply.
+        assert!(!powershell_gate_applies(&cmd_shim, None));
+        // A `.ps1` genuinely runs PowerShell → the gate applies.
+        assert!(powershell_gate_applies(&ps1, None));
+        // Any forced override still applies the gate (AC4 4c non-vacuity).
+        assert!(powershell_gate_applies(&cmd_shim, Some(5)));
+        assert!(powershell_gate_applies(&cmd_shim, Some(7)));
+        // A directly-launched binary does not run PowerShell either.
+        assert!(!powershell_gate_applies(&direct, None));
+        assert!(powershell_gate_applies(&direct, Some(7)));
     }
 
     // ── Auth marker ────────────────────────────────────────────────────────
