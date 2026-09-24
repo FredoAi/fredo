@@ -186,7 +186,11 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     expect(screen.getByTestId('terminal-surface-a')).toHaveAttribute('data-active', 'false');
     // No new terminal instance, no re-spawn, and the switch focused the new PTY.
     expect(ghostty.constructed).toBe(before);
-    expect(ghostty.focused).toBeGreaterThan(0);
+    // Focus lands from the activation rAF (SessionTerminal activation effect),
+    // so wait for that same observable instead of racing the frame — the
+    // synchronous read flaked when the rAF had not run yet. The assertion
+    // itself is unchanged: focus must still land (> 0).
+    await waitFor(() => expect(ghostty.focused).toBeGreaterThan(0), { timeout: 2000 });
   });
 
   it('adds a session: the prompt preselects the default CLI and prefills the migrated work dir', async () => {
