@@ -27,7 +27,13 @@ is wrong.
 
 - [ ] E-5: **Resize the active session only.** Resize the window with B active, then
   switch to A; confirm A's PTY dims did not change. Then resize with A active. Any
-  rendering artifact at extreme sizes (min bounds)?
+  rendering artifact at extreme sizes (min bounds)? CONFIRMED (round 3, `spec/2934 @ 7ba5a99c`,
+  FX-5): a `tauri_manage_window resize` with B active pushed `resize_pty` for **B only**
+  (B 80×24→99×8→82×8; A stayed 71×4 across both resizes); activation re-fit A on select with
+  B untouched; both buffers still rendered. Live **minimise**/0×0 could not be driven (bridge
+  plugin < 0.13) — covered by the `SessionTerminal.resize.test.tsx` 0×0 pin. Observation
+  (pre-existing, not R-2.4): the pane is ~126 px tall in a 780 px window (content-sized
+  `#root`, sidebar-driven) — same in round-2 `r2-ac2-switch-opencode.jpeg`.
 
 - [ ] E-6: **Session self-exit while unselected.** While B is active, let A exit on its
   own. Does A's sidebar item disappear cleanly (no ghost), does B keep streaming, does the
