@@ -27,3 +27,16 @@
 ## Round notes
 
 > (Tester appends per-round results here — FAIL rows keep `- [ ]` with expected-vs-actual + repro.)
+
+### Round 1 — 2026-09-24 (`spec/2932` @ `8ce8e14`) — Verdict: FAIL
+
+- R-1 (merge semantics unchanged): PASS — `provider` is the only new field; provider = first resolved token (R4 PASS); the other fields' rules unchanged.
+- R-2 (additive migration, no data loss): PASS for the migration itself — `provider TEXT NOT NULL DEFAULT 'unknown'` present on all three tables, 0 NULL/empty, pre-existing rows intact. **FAIL for the strict upgrade leg**: pre-existing span-matched rows do NOT transition in place (see functional F-8/F-11 and regression R-3).
+- R-3 (single shared extract rule): PASS on structure (one `resolve_provider_token`); the re-derivation parity FAIL is a reach/row-key issue, not a duplicated-extraction issue.
+- R-4 (query backwards compatibility): PASS — legacy queries + hard-named errors unchanged.
+- R-5 (existing ingest unchanged): PASS — rows still stream and render; Mission Monitor unchanged.
+- R-6 (no contract-trust regression): PASS — single direct `provider` field; no `??` fallback chains in `EventSubscription.ts`.
+- R-7 (frontend wire stability): PASS — `pnpm --filter @fredo/ui build` clean; console clean before/after.
+- R-8 (layer/theming): PASS — changes confined to `infrastructure/rtdb/` + shared classes; no new visible surface.
+- R-9 (`fredo emit` defaults unchanged): PASS — bare emit → `internal`; existing wire names stable.
+- Overlap observation (R8 concern, raised for the Architect): the startup re-derivation creates PARALLEL rows for pre-existing sessions (`ses_f358…`: 16 `unknown` rows each with a matching `open_code` row at the same `started_at_ns`), i.e. row-count growth on upgrade.
