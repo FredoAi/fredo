@@ -134,6 +134,77 @@ append evidence; on fail mark `FAIL`.
       `infrastructure/otlp/**`; a live `telemetry_spans` query records the Terminal-launched session.
       Edge: a resumed session's spans carry the resumed CLI session's identity (no fresh duplicate).
 
+## #2940 no-change baseline (AC5) — the layout rework must not regress live multi-session behavior
+
+> The #2940 rework changes the terminal window's COMPOSITION (layout/measurement + a test
+> fixture-isolation fix). It must not change the live behaviors proven by #2934/#2935. These
+> rows re-run the existing suite rows named in each — a rework that makes any of them FAIL is
+> a defect. Evidence is LIVE (window list / DOM / PTY-buffer bytes / process inventory / the
+> `fredo` binary stdout), same policy as the parent rows.
+
+- [ ] R-15 (**AC5 — concurrency + session-scoped I/O + no-re-spawn**): run `functional.md`
+      F-6 (two concurrent sessions, OpenCode + Copilot, one `terminal` window), F-8 (per-session
+      sentinel isolation both ways), F-10 (switch preserves `id`/`pid`/`startedAt`, no
+      re-spawn) against the reworked composition.
+      EXPECTED: all three keep passing exactly as in the #2934/#2935 rounds; the rework does
+      not turn a switch into a re-spawn or a tab click into a remount.
+      Edge: two same-CLI sessions; switch during heavy output.
+
+- [ ] R-16 (**AC5 — default-CLI + settings governance**): run `functional.md` F-12
+      (`terminal_default_cli` persists + preselects) and `regression.md` R-12 (Settings →
+      Terminal keys still govern; the legacy `run_cli_work_dir` migration still behaves).
+      EXPECTED: unchanged; the rework adds no settings key and removes none.
+      Edge: unset keys → documented fallbacks.
+
+- [ ] R-17 (**AC5 — resume + teardown**): run `functional.md` F-22..F-29 (persisted list
+      across window close/reopen + restart; real resume via the CLI's own resume switch;
+      teardown receipt `0 opencode/node/copilot process(es)`; records survive; close one
+      session leaves the peer).
+      EXPECTED: all keep passing; the rework does not change the record payload, the resume
+      semantics, or the teardown receipt.
+      Edge: resume a missing-dir record; resume while another session streams.
+
+- [ ] R-18 (**AC5 — the `fredo open-terminal` CLI path**): run `functional.md` F-33/F-34 and
+      `smoke.md` S-16.
+      EXPECTED: `fredo open-terminal --cli opencode --dir
+      C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a` → exit 0, the `terminal`
+      window opens, a session with that cli+workDir spawns and is auto-selected (no dialog);
+      invalid `--cli`/`--dir` still surface the typed errors.
+      Edge: `--cli`/`--dir` defaults; concurrent invocations.
+
+- [ ] R-19 (**AC5 — zero orphans after the rework**): with ≥2 sessions live, close the
+      `terminal` window; `process-hygiene.ps1 -List`.
+      EXPECTED: `0 opencode/node/copilot process(es)` and `0 unprotected orphan candidate(s)`;
+      the main window stays responsive.
+      Edge: close during `starting`; close while an error surface shows; close right after a
+      self-exit.
+
+## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
+
+> Suite-side, no product change: run the recipe below in the `terminal` window via
+> `tauri_webview_execute_js` after every run of these rows, then restore the four settings
+> keys. It deletes every persisted record whose `workDir` is under the in-repo fixtures root.
+> Full detail: `functional.md` → "C-5 teardown / snapshot / settings-restore".
+
+```js
+(async () => {
+  const FIX = String.raw`.opencode\tests\terminal\fixtures`.toLowerCase();
+  const recs = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  const doomed = recs.filter(r => String(r.workDir || '').toLowerCase().includes(FIX));
+  for (const r of doomed) {
+    await window.__TAURI__.core.invoke('delete_terminal_session_record', { sessionId: r.id });
+  }
+  const left = await window.__TAURI__.core.invoke('list_persisted_terminal_sessions');
+  return { deleted: doomed.map(r => [r.id, r.title, r.workDir]), remaining: left.map(r => r.id) };
+})()
+```
+
+- Pre-run snapshot: the record id set + the four settings keys (`terminal_work_dir`,
+  `terminal_default_cli`, `terminal_copilot_path`, `terminal_pwsh_path`); compare AFTER.
+- Settings restore (binding): restore those four keys to their captured pre-run values.
+- Idempotent: a second run deletes nothing. Cross-suite repeat:
+  `.opencode/tests/run-cli/regression.md`.
+
 ## Round notes
 
 ### Round 1 — 2026-09-24, spec/2934 @ 1fd60694
