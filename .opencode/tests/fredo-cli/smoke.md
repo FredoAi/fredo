@@ -13,6 +13,9 @@
       Monitor with a success outcome; `tauri_webview_screenshot` succeeds.
 - [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80,
       filePath=".opencode/tmp/2893/e2e/smoke.jpeg")` succeeds.
+- [ ] S-6: **Open-Terminal quick path** — `fredo open-terminal --cli opencode --dir
+      C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a` → exit 0, the `terminal` window opens
+      with an OpenCode session in that dir. Full assertions in F-6..F-8.
 
 ### #2893 testing round 1 (spec/2893 @ 614f26d3) — results
 
