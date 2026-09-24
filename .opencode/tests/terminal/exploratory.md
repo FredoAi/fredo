@@ -79,3 +79,24 @@ is wrong.
 - [ ] E-16: **Memory/stability over a long multi-session run.** Keep 2+ sessions alive with
   steady output for an extended period; watch for unbounded growth, console errors, or a
   wedged bridge.
+
+## #2935 probes — persistence, resume, CLI
+
+- [ ] E-17: **Close the window at the instant of a resume.** Does the record survive (resumable), is
+      the fresh PTY reaped, and is the list consistent on reopen? A ghost PTY or a lost record is a
+      finding (promotes to F-24/F-27).
+- [ ] E-18: **Resume a record while the CLI is mid-upgrade / slow to first byte.** Does the resume
+      bound hold (≤10 s to a message or output) or hang? A hang promotes to F-24/N-10.
+- [ ] E-19: **Record growth over repeated close/reopen/resume cycles.** Cycle A through
+      close→reopen→resume 5×: does the record count grow unboundedly (a twin per cycle) or stay at 1?
+      Growth = an identity defect (G-242 taste) → F-24/F-25.
+- [ ] E-20: **Two records with the same CLI + workDir.** Do they remain distinguishable (title
+      ordinal, stable ids) on reopen, and does resume pick the RIGHT one (per-record sentinel)?
+- [ ] E-21: **`fredo open-terminal` while the window is showing an error state.** Does it focus the
+      window, start a session, or wedge? Record the defined behavior (feeds R-3.1's edge).
+- [ ] E-22: **Concurrent/rapid `fredo open-terminal` invocations with different `--cli`/`--dir`.**
+      Duplicate windows? Lost responses? Two sessions in one window? Record.
+- [ ] E-23: **Delete a record whose workDir was deleted, then resume it.** Does the remove succeed
+      cleanly and the resume land on F-32's `invalid-cwd` path (not a wrong dir)?
+- [ ] E-24: **Restart mid-resume.** Kill the app during a resume; on restart, is the record still
+      listed and resumable (no half-record, no orphan)?
