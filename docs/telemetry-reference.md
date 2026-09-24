@@ -60,7 +60,7 @@ Ground truth of the GenAI telemetry Fredo actually receives from opencode (via t
 | `app.version` | top-level | Fredo version (resource). | ✅ |
 | `agent` | top-level | Agent name (e.g. `build`, `plan`, `tester`). | ✅ |
 | `agent.type` | top-level | Agent type (`unknown` etc.). | ✅ |
-| `provider` / `model` | top-level | Provider/model shorthand. | ✅ |
+| `provider` / `model` | top-level | Provider/model shorthand — this is the **MODEL** provider (`openai`, `anthropic`, `commandcode`, …), NOT the CLI/row attribution. The canonical ROW `provider` is derived from the OTLP resource identity `service.name` (`fredo-opencode-plugin` → `open_code`, `copilot-cli` → `copilot_cli`, else `unknown`), never from this field. | ✅ |
 | `duration_ms` | top-level | Span duration in ms. | ✅ |
 | `input_tokens` / `output_tokens` / `reasoning_tokens` | top-level | Token counts (flat). | ✅ |
 | `cache_read_tokens` / `cache_creation_tokens` | top-level | Cache token counts (flat). | ✅ |

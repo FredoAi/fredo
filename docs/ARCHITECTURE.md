@@ -42,7 +42,7 @@ The `comm` module holds the canonical wire types and the single IPC emitter. Sin
 
 ### Core Types
 
-- **`FredoEvent`** — the `fredo emit` CLI wire format and classifier input: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. **Demoted, not deleted**: FredoEvent no longer crosses IPC to the webview.
+- **`FredoEvent`** — the `fredo emit` CLI wire format and classifier input: `id`, `eventType` (ToolUse | AgentSession | Chat | Infrastructure | Ui | Custom), `state` (Init | Update | Response | Error), `provider` (OpenCode | ClaudeCode | CopilotCli | Internal), `transport` (Hook | OtlpGrpc | OtlpHttp | WebSocket | HttpPost | Internal), `sessionId`, `correlationId`, `toolName`, `payload`, `error`, `metadata`, `timestamp`. Serialized as camelCase. **Demoted, not deleted**: FredoEvent no longer crosses IPC to the webview.
 - **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel. It carries TWO envelope families: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch` (the ONLY sanctioned RTDB emission path) and feature-data `FeatureDeliveryBatch` envelopes (`{"featureBatch": …}`) via `emit_feature_delivery_batch`. Registered as Tauri state in `lib.rs`.
 - **`CommAdapter`** trait — retained and implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
@@ -139,7 +139,7 @@ SQLite-authoritative typed rows behind an LRU cache — the production event pip
 
 ### Row types + queries
 
-Three canonical tables in `fredo.db` — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`.
+Three canonical tables in `fredo.db` — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`. Every row carries a **`provider`** attribution derived from the OTLP resource identity `service.name` (`fredo-opencode-plugin` → `open_code`, `copilot-cli` → `copilot_cli`, else the documented `unknown` fallback — never the model provider carried by `telemetry_spans.provider`), resolved by ONE shared rule (`rtdb/attrs.rs::resolve_provider_token`) used by both the live classifier and a one-shot re-derivation pass (`rtdb/backfill.rs`, gated by its own marker under an independent key) that upgrades a pre-existing migration-defaulted row **in place at the row's own `(session_id, correlation_id)`** — it never re-mints a key, so it creates no parallel rows. The column is appended by an idempotent migration as `provider TEXT NOT NULL DEFAULT 'unknown'`.
 
 The orphaned `contract_events` table (a pre-RTDB v1 data artifact) stays in `fredo.db` — it has zero code references and destructive data cleanup is out of scope; it is left in place.
 
@@ -561,7 +561,7 @@ interface FredoEvent {
   id: string;
   eventType: 'ToolUse' | 'AgentSession' | 'Chat' | 'Infrastructure' | 'Ui' | 'Custom';
   state: 'Init' | 'Update' | 'Response' | 'Error';
-  provider: 'opencode' | 'claudeCode' | 'internal';
+  provider: 'opencode' | 'claudeCode' | 'copilotCli' | 'internal';
   transport: 'hook' | 'otlpGrpc' | 'otlpHttp' | 'webSocket' | 'httpPost' | 'internal';
   sessionId: string;
   correlationId?: string;

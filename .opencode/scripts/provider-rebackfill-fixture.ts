@@ -96,7 +96,9 @@ const TABLES = ["chat_rows", "tool_use_rows", "agent_session_rows"] as const;
 
 function open(readonly: boolean): Database {
   try {
-    return new Database(dbPath, { readonly });
+    // Bun's `bun:sqlite` rejects `{ readonly: false }` ("bad parameter or other
+    // API misuse", observed on Bun 1.3.14); an omitted option opens read-write.
+    return readonly ? new Database(dbPath, { readonly: true }) : new Database(dbPath);
   } catch (err) {
     console.error(
       `Cannot open fredo.db (${readonly ? "read-only" : "read-write"}): ${err instanceof Error ? err.message : String(err)}`,

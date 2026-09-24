@@ -68,12 +68,12 @@ The feature appears in the navigation grid if `showable = true`. To consume live
 Use the `fredo emit` CLI command to inject synthetic events through the real pipeline (IPC socket → InternalAdapter → RTDB ingest classifier → row deliveries):
 
 ```bash
-fredo emit --event-type chat --state init --provider open-code --session-id e2e-test --correlation-id e2e-1 --file ./payload.json
+fredo emit --event-type chat --state init --provider open_code --session-id e2e-test --correlation-id e2e-1 --file ./payload.json
 ```
 
 Events flow through the same pipeline as real events and surface in the UI as row deliveries. For full recipes (payload shapes, event types, transports), see `.opencode/skills/fredo-cli-events/SKILL.md`.
 
-> ⚠️ **CLI arg casing**: state must be lowercase (`init`, not `Init`) and provider must be hyphenated (`open-code`, not `open_code`). Wrong casing silently fails.
+> ⚠️ **CLI arg casing**: state must be lowercase (`init`, not `Init`) and provider is **snake_case** (`open_code`, `claude_code`, `copilot_cli`, `internal` — underscores, not hyphens). An unknown value is rejected by the parser.
 
 ### Why does the UI not have a REST API client?
 
