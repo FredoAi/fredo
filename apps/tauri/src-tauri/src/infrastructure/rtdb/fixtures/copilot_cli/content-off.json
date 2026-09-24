@@ -4,52 +4,71 @@
       "resource": {
         "attributes": [
           { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
-          { "key": "service.version", "value": { "stringValue": "0.0.0-fixture" } }
+          { "key": "service.version", "value": { "stringValue": "1.0.88" } }
         ]
       },
       "scopeSpans": [
         {
+          "scope": { "name": "github.copilot", "version": "1.0.88" },
+          "schemaUrl": "",
           "spans": [
             {
-              "name": "invoke_agent copilot",
+              "name": "invoke_agent",
+              "kind": 1,
               "traceId": "1af7651916cd43dd8448eb211c80319d",
               "spanId": "c7ad6b7169204441",
               "startTimeUnixNano": "10000000000",
               "endTimeUnixNano": "18000000000",
               "attributes": [
                 { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
                 { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_2" } },
-                { "key": "gen_ai.agent.name", "value": { "stringValue": "copilot" } },
-                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
-                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "900" } },
-                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "120" } }
-              ]
+                { "key": "github.copilot.agent.type", "value": { "stringValue": "builtin" } },
+                { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [ { "stringValue": "stop" } ] } } },
+                { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "700" } },
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "90" } }
+              ],
+              "status": { "code": 0 }
             },
             {
-              "name": "chat gpt-4o",
+              "name": "chat auto",
+              "kind": 2,
               "traceId": "1af7651916cd43dd8448eb211c80319d",
               "spanId": "c7ad6b7169204442",
+              "parentSpanId": "c7ad6b7169204441",
               "startTimeUnixNano": "10100000000",
               "endTimeUnixNano": "13000000000",
               "attributes": [
                 { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } },
+                { "key": "gen_ai.request.model", "value": { "stringValue": "auto" } },
                 { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_2" } },
-                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } },
+                { "key": "gen_ai.request.stream", "value": { "boolValue": true } },
+                { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [ { "stringValue": "stop" } ] } } },
                 { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "700" } },
-                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "90" } }
-              ]
+                { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "90" } },
+                { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "600" } },
+                { "key": "gen_ai.response.model", "value": { "stringValue": "gpt-4o" } }
+              ],
+              "status": { "code": 0 }
             },
             {
               "name": "execute_tool readFile",
+              "kind": 2,
               "traceId": "1af7651916cd43dd8448eb211c80319d",
               "spanId": "c7ad6b7169204443",
+              "parentSpanId": "c7ad6b7169204441",
               "startTimeUnixNano": "13100000000",
               "endTimeUnixNano": "13600000000",
               "attributes": [
                 { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
                 { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot_fixture_2" } },
-                { "key": "gen_ai.tool.name", "value": { "stringValue": "readFile" } }
-              ]
+                { "key": "gen_ai.tool.name", "value": { "stringValue": "readFile" } },
+                { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call_fixture_2" } },
+                { "key": "gen_ai.tool.type", "value": { "stringValue": "function" } },
+                { "key": "gen_ai.provider.name", "value": { "stringValue": "github" } }
+              ],
+              "status": { "code": 0 }
             }
           ]
         }

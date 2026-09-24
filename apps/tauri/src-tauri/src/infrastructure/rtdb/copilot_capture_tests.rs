@@ -28,8 +28,13 @@
 //! 4. **Replay idempotency** (R-4.1/R-4.2): a replayed identical export is a
 //!    content no-op — no duplicate composite key, no seq inflation.
 //!
-//! The fixtures are ST-1's recorded (documented-shape) live capture; the suite
-//! itself never depends on the real `copilot` binary (the live capture is the
+//! The fixtures were overwritten (Spec #2933 Phase-0 probe) from the REAL
+//! Copilot CLI 1.0.88 capture — resource `service.name = copilot-cli` /
+//! `service.version = 1.0.88`, scope `github.copilot`, span names
+//! `invoke_agent` / `chat auto` / `execute_tool <tool>`, and the real
+//! attribute key set (`gen_ai.request.model`, `gen_ai.usage.cache_read.input_tokens`,
+//! `gen_ai.tool.call.id`/`type`, `gen_ai.provider.name`). The suite itself
+//! never depends on the real `copilot` binary (the recorded capture is the
 //! input, not a test dependency).
 //!
 //! ## Session-root replay guard (the limitation this harness surfaced — FIXED)
@@ -271,12 +276,18 @@ fn content_on_fixture_maps_the_full_copilot_field_set() {
     assert_eq!(session.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(
         session.total_tokens,
-        Some(1_700),
-        "session total falls back to gen_ai.usage.input_tokens + output_tokens (1500 + 200)"
+        Some(1_350),
+        "session total falls back to gen_ai.usage.input_tokens + output_tokens (1200 + 150); \
+         the live-verified `invoke_agent` root carries the SESSION TOTAL (the sum of the per-call chat inputs)"
     );
     assert_eq!(session.total_messages, None, "Copilot emits no message count");
     assert_eq!(session.total_cost_usd, None, "Copilot emits no cost");
-    assert_eq!(session.agent_name.as_deref(), Some("copilot"));
+    assert_eq!(
+        session.agent_name.as_deref(),
+        None,
+        "the live capture emits no `gen_ai.agent.name` for the builtin agent → agentName absent \
+         (real-shape correction: the pre-capture fixture assumed `copilot`)"
+    );
     assert_eq!(session.state, crate::infrastructure::rtdb::rows::RowState::Init);
     assert_eq!(session.started_at_ns, Some(1_000_000_000));
     assert_eq!(session.ended_at_ns, Some(9_000_000_000));
@@ -348,8 +359,12 @@ fn content_off_fixture_degrades_structurally_and_leaves_content_keys_absent() {
     // Structural rows still exist in ALL three classes.
     let session = session_row(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_1");
     assert_eq!(session.provider.as_deref(), Some("copilot_cli"));
-    assert_eq!(session.total_tokens, Some(1_020), "900 + 120 session total fallback");
-    assert_eq!(session.agent_name.as_deref(), Some("copilot"));
+    assert_eq!(session.total_tokens, Some(790), "700 + 90 session total fallback");
+    assert_eq!(
+        session.agent_name.as_deref(),
+        None,
+        "no `gen_ai.agent.name` in the live capture → agentName absent (documented degradation)"
+    );
 
     let chat_row = chat(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_2");
     assert_eq!(chat_row.provider.as_deref(), Some("copilot_cli"));
@@ -393,7 +408,7 @@ fn tool_failure_fixture_maps_failure_outcome_error_and_duration() {
     ingest_fixture(&classifier, TOOL_FAILURE);
 
     let session = session_row(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_1");
-    assert_eq!(session.total_tokens, Some(910), "800 + 110 session total fallback");
+    assert_eq!(session.total_tokens, Some(680), "600 + 80 session total fallback");
 
     let chat_row = chat(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_2");
     assert_eq!(chat_row.prompt_tokens, Some(600));
@@ -418,7 +433,7 @@ fn session_only_fixture_produces_no_tool_row() {
     ingest_fixture(&classifier, SESSION_ONLY);
 
     let session = session_row(&rtdb, SESSION_SESSION_ONLY, "ses_copilot_fixture_4_1");
-    assert_eq!(session.total_tokens, Some(460), "400 + 60 session total fallback");
+    assert_eq!(session.total_tokens, Some(400), "350 + 50 session total fallback");
 
     let chat_row = chat(&rtdb, SESSION_SESSION_ONLY, "ses_copilot_fixture_4_2");
     assert_eq!(chat_row.user_message.as_deref(), Some("What does src/main.rs do?"));
@@ -440,7 +455,7 @@ fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
     let (_dir, classifier, rtdb, _sink) = make_classifier();
     let session = "ses_copilot_partial";
     let chat_span = json!({
-        "name": "chat gpt-4o",
+        "name": "chat auto",
         "traceId": "baf7651916cd43dd8448eb211c803200",
         "spanId": "bbad6b7169204001",
         "startTimeUnixNano": "1000000000",
@@ -454,7 +469,7 @@ fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
         ]
     });
     let session_span = json!({
-        "name": "invoke_agent copilot",
+        "name": "invoke_agent",
         "traceId": "baf7651916cd43dd8448eb211c803200",
         "spanId": "bbad6b7169204002",
         "startTimeUnixNano": "500000000",
@@ -462,7 +477,6 @@ fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
         "attributes": [
             attr("gen_ai.operation.name", "invoke_agent"),
             attr("gen_ai.conversation.id", session),
-            attr("gen_ai.agent.name", "copilot"),
             attr_num("gen_ai.usage.input_tokens", 200),
             attr_num("gen_ai.usage.output_tokens", 30)
         ]
