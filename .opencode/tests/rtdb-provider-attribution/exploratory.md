@@ -24,7 +24,9 @@
 ## Backfill
 
 - [ ] E-11: Run the canonical backfill where the live classifier already rowed the same span — is the provider re-derived identically (byte-equal) or does a second path produce a different token?
+  - **CONFIRMED (round 1, promoted to F-11):** the re-derivation derives the correct token (`open_code`) but does NOT update the pre-existing live-rowed key; it creates a PARALLEL row (`ses_f358…`: 20 span-matched rows stayed `unknown`; 16 have a matching `open_code` row at the same `started_at_ns`). The replay's correlation key differs from the live key.
 - [ ] E-12: A `telemetry_spans` row whose `provider` column is NULL/empty (a legacy span) — what does the backfill put on the canonical row? Is it the documented fallback (non-empty)?
+  - **CONFIRMED (round 1):** the fallback is non-empty (`unknown`); the OTLP fixture whose Resource omits `service.name` yields row + span provider `unknown`, never NULL/'' (F-10 PASS).
 
 ## Query / subscription
 
