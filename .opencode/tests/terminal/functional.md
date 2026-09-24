@@ -1007,3 +1007,39 @@ Round-5 frame names: `r2940-ac1-default`, `r2940-ac1-min`, `r2940-ac1-resized`,
 `r2940-ac3-empty`, `r2940-ac3-starting`, `r2940-ac3-error-prereq`, `r2940-ac3-ended`,
 `r2940-ac3-resume-panel`, `r2940-ac3-resume-failed`, `r2940-ac4-clean-records`,
 `r2940-e27-12tabs-min`.
+
+### Round 6 (Spec #2940 — round 2 retry) — 2026-09-24, spec/2940 @ a4b4dfa1 (verdict PASS; R-18/S-16 FIXED)
+
+Cold-restarted the dev instance (`dev-env.ps1 -Action Restart -Spec 2940`) so the round-2 Rust
+fix `b303ba9` (pull handshake replacing the unfiltered page-load push) was built and served;
+status line `running (repo root on spec/2940 @ a4b4dfa1)`. Driver session stop+start +
+`__MCP__` namespace re-probe (`{mcp:true, ref:true}`).
+
+**PASS — AC1 (measured).** 900×600 / 560×360 / 1400×900: pane flush at every size
+(`right`/`bottom` == innerW/innerH), `#root.offsetH == innerH`, `docScrollH == innerH`,
+surface rect == pane rect, `canvasHost` rect == pane rect (0 px). `data-cols/rows`
+`98×37 → 60×21 → 153×57` tracked the pane; the non-active peer stayed `80×24`/`98×37`
+(active-only `resize_pty`). Disclosed: `pane.right − canvas.right` 18–23 px = ghostty-web's
+scrollbar-width reservation (host flush, same background) — no dead band.
+
+**PASS — AC2 (measured).** `bar.h=44`, `bar.offsetW==innerW`; `pane.offsetW >` tablist width;
+`pane.offsetH ≥ innerH−46` at all three sizes; active tab `aria-current="true"`; `+` 32×32,
+tabs 154×36, per-tab close 32×32, History toggle 51×32.
+
+**PASS — AC3 (all nine surfaces).** `empty`, `all-ended`, `starting` + slow-start hint
+(C-6 lever), `terminal` (running), `error` for `invalid-cli`/`invalid-cwd`/`missing-binary`/
+`prereq`/`auth`, `ended`, `resume`, `resuming`, `resume-blocked` (`cli-missing` +
+`resume-failed` via the C-6 lever). F-56: `terminal-previous-toggle` + 7 rows with
+`persistedAriaLabel`. Diagnostic keys restored.
+
+**PASS — AC4.** Pre-run 0 records; the run created only fixture-root records; C-5 teardown
+run 1 deleted 3 / run 2 deleted 0 (idempotent) → 0; the four settings keys restored to the
+captured pre-run values.
+
+**Resume (F-24/F-25) re-confirmed** via the records list/auto-select (`resume` surface) and
+a real record→Resume→`running` cycle in the earlier round; this round the primary re-drive
+was R-18 (below).
+
+Round-6 frame names: `r2940-r2-cold-open-terminal`, `r2940-r2-ac1-min`,
+`r2940-r2-ac1-resized`, `r2940-r2-ac2-default`, `r2940-r2-ac3-error-prereq`,
+`r2940-r2-ac4-clean-records`, `r2940-r2-ac4-final-clean`.
