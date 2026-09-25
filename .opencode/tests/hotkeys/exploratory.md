@@ -134,3 +134,36 @@ The served app boots (F-28 PASS), so the probes were partially exercisable.
 Teardown: `Reset all` was invoked (bindings cleared to defaults, macros kept). The Vim preset
 flag was left ON by the reset-all finding above; a subsequent round should reset it.
 
+## #2946 exploratory round 3 — probe results
+
+Run on `spec/2946 @ 45d5120` (dev-env UP, driver `com.fredo.app`).
+
+- [ ] E-4 Terminal passthrough boundary — **PASS (product).** With a live
+      `spawn_terminal_session{cli:"shell"}` session focused, `data-fredo-passthrough="true"`;
+      a bare `g` reached the PTY (buffer 277→286, shell echoed `g`) and armed no sequence;
+      a well-formed `Ctrl+C` reached the PTY (`^C`, buffer 542→601); `Ctrl+Shift+F10` fired
+      the exit hotkey (passthrough cleared, focus on `hotkeys-terminal-passthrough-exit`).
+      **Harness observation (not a product defect):** the MCP driver emits modifier
+      keystrokes with a non-standard `code` (literal `"c"`, `keyCode:0`), so ghostty-web
+      does not map the *driver's* `Ctrl+C`/`Ctrl+Space` to control bytes; standards-shaped
+      events do reach the PTY. No chord leaked to or was swallowed by the hotkey engine.
+- [ ] E-5 Terminal + sequence prefix — **PASS.** `g` typed into the focused terminal
+      session did not install a pending sequence (`data-fredo-pending-sequence` remained
+      null) and reached the PTY.
+- [ ] E-7 Conflict with a sequence prefix — **PASS.** Binding `Ctrl+Space` onto
+      `fredo.palette.openActions` surfaced the same-tier conflict dialog naming
+      `Toggle launcher` (Global); the `g g` prefix did not silently shadow a `g` binding.
+- [ ] E-9 Rebind under a pending sequence — **PASS (incidental).** Rebind capture cleanly
+      entered `data-capture="active"` and recorded the next chord; no stale pending
+      completed the capture.
+- [ ] E-12 Theme switch mid-overlay — **PASS (token-level).** `themeHygiene.test.ts` (7
+      tests) green over `CheatSheetOverlay.tsx` + the hotkeys sources; the overlay uses
+      tokens/`tint()` only (zero hex/rgba, no `var()x NN`).
+- [ ] **New observation (harness):** the launcher stays mounted (graph grid collapsed) after
+      Escape; a subsequent coordinate-click can land on its backdrop until it is minimized.
+      This is pre-existing launcher behavior, not a #2946 regression.
+
+Teardown: reset-all applied (`vimPresetEnabled:false`, `leader:null`, defaults, macros
+kept); the Vim preset was re-enabled for the H-14 restart leg and persisted across the
+restart, matching the shipped behavior.
+
