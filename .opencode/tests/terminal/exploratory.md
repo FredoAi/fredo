@@ -261,3 +261,31 @@ is wrong.
   webview open) creates a session whose first `get_pty_buffer` returns `Unknown session` until the
   `terminal` window mounts and wires the PTY — drive spawns from the `terminal` window (or the
   `fredo open-terminal` CLI path).
+
+### #2942 testing round 2 (spec/2942 @ 97495693) — probe results
+
+- **E-31/E-32 (rename under a live session) re-confirmed (no promotion).** A rename via the inline field
+  left the session `running` (`id`/`pid`/`startedAt` byte-identical), the PTY buffer
+  (`SENTINEL_RENAME_2942_deadbeef`) intact, and the record's title the only changed field (read-only
+  SELECT). Cross-surface consistency (live row → previous row → full restart) held.
+- **E-33 (10+ rows at MIN) re-confirmed (no promotion).** At 560×360 with 11 live rows
+  `sidebar.scrollH 469 > clientH 360` (`overflowY:auto`); the pane kept dominance (share 0.64); the
+  window never scrolled horizontally (`docScrollW 560`).
+- **E-34 (same-type identity) re-confirmed (no promotion).** The plain shells kept distinct ordinal
+  titles (`Terminal`, `Terminal 2` … `Terminal 11`) and stable ids across reopen/restart.
+- **E-37 (mixed-type sidebar at MIN) re-confirmed (no promotion).** shell + OpenCode + Copilot live rows
+  stayed 32 px and the pane stayed dominant.
+- **E-40 (OpenCode TUI fit under stress) re-confirmed — maps to F-76 (PASS).** Full TUI at 900×600 and
+  after a 1400×900 resize, no manual `resize_pty`, grid 76×40 → 131×60.
+- **ENVIRONMENT (no promotion).** A **burst of sequential `spawn_terminal_session` calls** (≈13 across the
+  round) wedged the MCP WS bridge (`WebView execution failed: Connection closed`) while the app stayed
+  healthy (OTLP kept exporting). Recovered with a full `dev-env.ps1 -Down`/`-Up` (G-046). Spawn in small
+  batches.
+- **Environment observation (no promotion, pre-existing).** `tauri_manage_window action="maximize"` is
+  unavailable on this host (plugin < 0.13) — the measured 1400×900 resize is the size coverage (G-251
+  named limitation). The resume-state surface scrolls **horizontally** as well as vertically at 560×360
+  when its workdir path is long (`terminal-resume-state` `scrollWidth 385 > clientWidth 360`); the
+  `terminal-pane` itself stays flush (`overflowX:hidden`, `scrollWidth == clientWidth == 360`) — a minor
+  cosmetic observation, not asserted by any AC.
+- **Environment observation (no promotion).** `tauri_manage_window resize` needs no `terminal` re-focus;
+  the Ghostty grid tracks the pane on the next frame (no manual `resize_pty`).
