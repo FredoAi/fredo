@@ -18,7 +18,22 @@
 - [ ] **R-8 (no test weakening / build gates — CI parity):** `pnpm --filter @fredo/ui build` exit 0 zero TypeScript errors; `pnpm --filter @fredo/ui test:run` green; the repo lint/typecheck leg passes; no existing assertion weakened/disabled/deleted (any refreshed assertion owned per G-125); `cargo check` zero warnings if the backend is touched (e.g. a persisted-config command).
 - [ ] **R-9 (no shortcut-usage telemetry):** the new layer emits NO span/event/metric carrying shortcut usage or binding identity (PO resolution Q13). Verify by diffing `telemetry_spans`/`telemetry_metrics` span + metric names before vs after a hotkey drive.
 - [ ] **R-10 (no OS-wide hotkeys):** no Tauri global-shortcut plugin / OS-level registration is introduced (PO out-of-scope: no OS-wide/unfocused hotkeys). The global layer remains a webview `document`/`window` listener.
-- [ ] **R-11 (served app boots + engine mounts — promoted round 1):** the SERVED entry `apps/tauri/src/main.tsx` must resolve every import in the `@fredo/ui` graph (no `@/...` alias assumed from `apps/ui`; the served alias is `@` → `apps/tauri/src`) AND must mount `HotkeysProvider` (engine + announcer + which-key overlay) the way `apps/ui/src/main.tsx` does. **Actual round 1: FAIL** — the served webview is blank because `Keycap.tsx` imports `@/shared/utils/colorTint` (unresolvable in the served Vite config), and the served entry never mounts `HotkeysProvider`. A green `pnpm --filter @fredo/ui build`/`test:run` is NOT evidence for this row (the served entry is not in the UI-library graph).
+- [x] **R-11 (served app boots + engine mounts — promoted round 1):** the SERVED entry `apps/tauri/src/main.tsx` must resolve every import in the `@fredo/ui` graph (no `@/...` alias assumed from `apps/ui`; the served alias is `@` → `apps/tauri/src`) AND must mount `HotkeysProvider` (engine + announcer + which-key overlay) the way `apps/ui/src/main.tsx` does. **Actual round 2 (PASS):** on `spec/2946 @ 4ad4f802` `#root` has children, `data-fredo-hotkeys-engine="1"`, no `vite-error-overlay`; `ui-validate` now builds the served webview. (Round 1 was FAIL — blank served webview.)
+
+## #2946 testing round 2 — regression result
+
+- R-1 PASS — Ctrl+Space opens/focuses the launcher when closed, keeps it open when the
+  searchbox is focused (#2823 preserved), and fires from a locked text field when closed.
+- R-2 PASS — launcher Escape closed it and restored the pre-open focus (`Companion` button).
+- R-3 PASS — exactly one hotkey `document` keydown listener; Ctrl+Space fired once per press
+  (no double-fire) and synthetic bare keys did not double-dispatch.
+- R-5 PASS — the Hotkeys pane is a static `SettingsSurface` nav entry; sibling sections
+  (Companion, Appearance, Fredo Setup, Telemetry) render unchanged.
+- R-6/R-7 PASS — no hex/rgba/`var()NN` in the hotkeys sources; console clean after
+  open/close/filter/rebind/pending/theme operations.
+- R-9 PASS — no shortcut-usage span/metric names.
+- R-10 PASS — no Tauri global-shortcut registration in `src-tauri`.
+- R-11 PASS — served app boots + engine mounts (above).
 - [ ] **R-5 note (stale text):** the binding adjudication supersedes this file's `hasSettings` + `renderSettings()` wording — the Hotkeys pane is a **static `SettingsSurface` `NavItem id="hotkeys"`**, not a discovered feature section. Assert the static nav entry + `hotkeys-*` testids, not `hasSettings`.
 
 ## Overlapping prior-feature suites (run alongside)
