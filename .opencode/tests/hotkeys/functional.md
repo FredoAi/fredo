@@ -164,18 +164,56 @@
 
 ## F-28 (promoted round 1, served-app boot) — Served app boots + engine mount
 
-- [ ] F-28: Load the SERVED app (`dev-env.ps1 -Up -Spec 2946`, port 5174, the
+- [x] F-28: Load the SERVED app (`dev-env.ps1 -Up -Spec 2946`, port 5174, the
       `apps/tauri` entry) and assert the React tree mounts. **Expected:** `#root` has
       children; `document.documentElement[data-fredo-hotkeys-engine]="1"`; no
-      `vite-error-overlay`. **Actual (round 1):** FAIL — Vite import-analysis error
-      `Failed to resolve import "@/shared/utils/colorTint" from Keycap.tsx` blanks the
-      app (root 0 children, overlay present, no engine attribute). **Origin:** E-1
-      round 1 (promoted). Also: the served entry `apps/tauri/src/main.tsx` does not
-      mount `HotkeysProvider` at all; the standalone `apps/ui` entry does.
+      `vite-error-overlay`. **Result (round 2, PASS):** on `spec/2946 @ 4ad4f802`
+      `#root` = 2 children, `data-fredo-hotkeys-engine="1"`, `data-fredo-focus-context="default"`,
+      `vite-error-overlay` absent, screenshot shows the Fredo desktop. **Origin:** E-1 round 1.
   - **Edge:** the served `apps/tauri` Vite `@` alias points at `apps/tauri/src` while
-    `apps/ui` sources use `@/...` — a module in `apps/ui/src` must use a relative
-    import (or the served alias must be widened); CI `ui-validate` builds only
-    `apps/ui` and therefore cannot catch this.
+    `apps/ui` sources use `@/...` — round 2 fixed it with relative imports in `Keycap.tsx`
+    and mounted `HotkeysProvider` in `apps/tauri/src/main.tsx`; `ui-validate` now runs
+    `pnpm --filter @fredo/tauri build:webview`.
+
+## F-29 (promoted round 2, feature tier absent) — AC2 feature hotkeys unsupported in the shipped app
+
+- [ ] F-29: Open Settings → Hotkeys and inspect the tier sections; then `grep` the
+      production feature sources for a `hotkeys` declaration. **Expected:** ONE listing
+      shows the Fredo tier AND the focused feature's local bindings; a feature declaring
+      hotkeys appears automatically. **Actual (round 2): FAIL** — the listing contains only
+      a `FREDO (GLOBAL)` section (12 rows, all `data-hotkey-tier="global"`); zero
+      production features declare `hotkeys` (`registerFeatureHotkeys`/`hotkeys:` appear
+      only in `__tests__`), so no feature-tier row can render. **Repro:** Settings → Hotkeys
+      → `document.querySelectorAll('[data-testid="hotkeys-row"]')` all `global`.
+      This blocks H-4/H-5/H-6 (AC2).
+
+## F-30 (promoted round 2, `g g` absent) — Non-leader multi-key sequence not shipped
+
+- [ ] F-30: On a non-text surface press `g` then `g`. **Expected:** the first `g` arms a
+      pending sequence naming `g` and the second executes the `g g` action once. **Actual
+      (round 2): FAIL** — no non-leader multi-key binding is shipped
+      (`MINIMAL_DEFAULT_BINDINGS` has only `@leader ?` under the Vim preset), so `g`
+      arms nothing and `g g` performs no action. **Repro:** focus a window content region,
+      dispatch `g`,`g` → no `data-fredo-pending-sequence`, no effect. This blocks H-8 (AC3).
+
+## F-31 (promoted round 2, dead cheatsheet action) — `fredo.help.cheatsheet` has no run handler
+
+- [ ] F-31: Fire the leader then `?`. **Expected:** a cheat-sheet surface opens. **Actual
+      (round 2): PARTIAL** — the leader + which-key hint work (`pending="@leader"`, overlay
+      names `?`), but completing the sequence executes a **no-op**: `fredo.help.cheatsheet`
+      is registered with no `run` and `registerHotkeyHandler('fredo.help.cheatsheet', …)` is
+      never called (no cheat-sheet component ships). **Repro:** complete `Leader`,`?` → no
+      dialog/surface.
+
+## F-32 (promoted round 2, reset-all / preset inconsistency) — reset-all leaves the Vim preset half-applied
+
+- [ ] F-32: Enable the Vim preset, then Reset all → confirm, then inspect the toggle + rows.
+      **Expected:** reset restores a clean shipped-default state. **Actual (round 2): FAIL
+      (inconsistent)** — `vimPresetEnabled` stays `true` while `bindings` are cleared, so
+      the toggle reads ON but `fredo.focus.left/right` render unbound and `hjkl` no longer
+      fire. Macros are correctly kept (trigger cleared), matching R-4.4. **Repro:** enable
+      Vim preset → Reset all → `get_setting fredo.hotkeys.keymap` → `vimPresetEnabled:true`,
+      `bindings['fredo.focus.left']` absent.
 
 ---
 
@@ -186,6 +224,23 @@
 `@/shared/utils/colorTint` (the served `apps/tauri` alias maps `@` → `apps/tauri/src`,
 whereas the module lives in `apps/ui/src`). Every F-1..F-27 live leg is therefore
 blocked — none could be driven. Rows remain unchecked; re-run after the boot fix.
+
+## #2946 testing round 2 — result
+
+**Verdict: FAIL (21/27 QA rows PASS).** The served app boots on `spec/2946 @ 4ad4f802`
+(F-28 PASS). AC4 (configuration + full-restart persistence), AC1 (traversal), and the
+AC5 conflict/reserved/typing/modal legs all pass with live evidence. The feature fails on:
+- **AC2 (F-29):** no shipping feature declares hotkeys → the feature tier is absent from the
+  shipped listing (H-4/H-5/H-6).
+- **AC3 (F-30):** `g g` is not shipped; the only multi-key binding is the Vim `@leader ?`.
+- **AC3 (F-31):** `fredo.help.cheatsheet` is a dead action (no cheat-sheet surface).
+- **AC5 (H-17 terminal leg):** no live PTY session was available to verify terminal full
+  passthrough (blocker: `list_terminal_sessions` → `[]`, `[data-fredo-terminal-root]` count 0).
+- **AC4 (F-32):** reset-all leaves the Vim preset flag ON while clearing its bindings.
+
+Passing rows: H-1, H-2, H-3, H-7 (caveat), H-9, H-10, H-11, H-12, H-13 (finding), H-14,
+H-15, H-16, H-18, H-19, H-20, H-21, H-22, H-23, H-24, H-25, H-26, H-27.
+Failing: H-4, H-5, H-6, H-8, H-17.
 
 ---
 
