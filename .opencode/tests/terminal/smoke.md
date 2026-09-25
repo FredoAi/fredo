@@ -212,3 +212,27 @@ Cold-restarted the dev instance so the round-2 Rust fix `b303ba9` was built+serv
   no scrollbar); coherent workspace at 900×600; `empty`/`error`/`resume` (+ `starting`,
   `ended`, `all-ended`, `resuming`, `resume-blocked`) each rendered inside the pane; the C-5
   teardown left 0 fixture-root records (run 1 deleted 3 / run 2 deleted 0).
+
+### #2942 testing round 1 (spec/2942 @ 3241b90d) — results
+
+- **S-1/S-2 PASS.** DOM non-empty in both windows; no `Error:`/`Uncaught`/`Maximum update depth
+  exceeded` in either console (only the pre-existing `motion() is deprecated` WARN + `[ghostty-vt]`
+  renderer warnings).
+- **S-3/S-6 PASS.** The `Terminal` desktop item launches exactly ONE `terminal` window (label
+  `terminal`, title `Terminal`, `?view=terminal`); re-invoking focuses (window count stayed 2).
+- **S-4/S-24 PASS.** Settings → Terminal renders alongside Companion/Appearance/Fredo Setup/Telemetry.
+- **S-13 PASS.** Add a session → close the window → reopen lists it in the sidebar's `Previous` group.
+- **S-21 PASS (with a defect).** The vertical sidebar root `terminal-session-sidebar` + `-add` +
+  `-live-section` + `-previous-section` and full-width 32 px live rows render; NO `terminal-session-bar`
+  and NO `[role=tablist]`. **F-80 FAIL (new):** in the 0-live state the sticky `Previous (N)` header
+  overlaps the first previous row by 23 px (label hidden).
+- **S-22 PASS.** With the default key + `localStorage` cleared + a cold restart, adding a session with
+  no override spawns a plain PowerShell shell (record `cli=shell`); no agent process.
+- **S-23 PASS.** Rename renders on the live row, on the previous row after close/reopen, and survives a
+  full app restart (`TERMINAL_RENAME_2942_e5f6a7b8`).
+- **S-25 PASS (cold).** `fredo open-terminal --cli opencode --dir …\workdir-a` with 0 `terminal` windows
+  → exit 0, the window opens, a RUNNING session spawns + auto-selects — **cold 3/3** + warm control.
+- **S-20 PASS.** C-5 teardown run 1 deleted 23 / run 2 deleted 0 (idempotent) → 0 fixture-root records;
+  the four settings keys restored.
+- **New: S-26 (from F-81).** `fredo open-terminal --help` shows `--cli <opencode|copilot>` — the new
+  `shell` value is missing from the usage/value-name (FAIL; behaviour is correct).

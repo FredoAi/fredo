@@ -232,3 +232,32 @@ is wrong.
   `resuming` overlay requires bounded `tauri_webview_wait_for`/separate reads — an in-page
   `setTimeout` await wedges the webview (G-055, reconfirmed). Environment technique, not a
   product defect.
+
+### #2942 testing round 1 (spec/2942 @ 3241b90d) — probe results
+
+- **E-31/E-32 (rename under a live session) CONFIRMED — PROMOTED to F-63/F-64.** A rename via both the
+  inline UI field and the `rename_terminal_session_record` command left the session `running` with
+  `id`/`pid`/`startedAt` byte-identical and the PTY buffer (incl. `SENTINEL_RENAME_2942_deadbeef`)
+  intact; the record kept the same id with only `title` changed (read-only SELECT). Cross-surface
+  consistency (live row → previous row → full restart) held.
+- **E-33 (10+ rows at MIN) CONFIRMED — PROMOTED to F-58.** At 560×360 with 15 sidebar rows the sidebar
+  scrolled internally (`scrollH 565 > clientH 360`, `overflowY:auto`) and the pane kept dominance
+  (share 0.64); the window itself never scrolled horizontally.
+- **E-34 (same-type identity) CONFIRMED (no promotion).** The many plain shells got distinct ordinal
+  titles (`Terminal`, `Terminal 2` … `Terminal 15`) and stable ids across reopen; a rename freed its
+  ordinal for the next shell (no collision, no renumber of other rows).
+- **E-36 (plain-shell self-exit / close lifecycle) partial (no promotion).** Closing a live shell from
+  its row removed only that session, kept the peer `running`, kept the window open, and retained the
+  closed record in the `Previous` group.
+- **E-37 (mixed-type sidebar at MIN) CONFIRMED (no promotion).** A shell + OpenCode + Copilot live at
+  560×360 kept all live rows at the 32 px height and the pane dominant.
+- **E-40 (OpenCode TUI fit under stress) CONFIRMED — PROMOTED to F-76.** The TUI filled the pane and
+  the grid tracked the resize with no manual `resize_pty`.
+- **ENVIRONMENT (no promotion).** A burst of ~9 sequential `spawn_terminal_session` calls wedged the
+  MCP WS bridge (`Connection closed` → repeated 2 s execute-js timeouts) while the app itself stayed
+  healthy and kept exporting OTLP; a full `dev-env.ps1 -Down/-Up` recovered it in seconds (G-046).
+  Spawn sessions in small batches.
+- **ENVIRONMENT (no promotion).** `spawn_terminal_session` invoked from the MAIN window (no `terminal`
+  webview open) creates a session whose first `get_pty_buffer` returns `Unknown session` until the
+  `terminal` window mounts and wires the PTY — drive spawns from the `terminal` window (or the
+  `fredo open-terminal` CLI path).
