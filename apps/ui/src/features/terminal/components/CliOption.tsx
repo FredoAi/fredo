@@ -4,8 +4,8 @@ import { LuGithub, LuTerminal } from 'react-icons/lu';
 import { CLI_DESCRIPTION, CLI_LABEL, type TerminalCli } from '../sessionModel';
 
 /**
- * One CLI choice in a single-select `RadioCard` group (shared by the
- * add-session dialog and Settings → Default CLI).
+ * One session-type choice in a single-select `RadioCard` group (shared by the
+ * add-session dialog and Settings → Default session type).
  *
  * The CLI identity is always icon + text (never colour alone). `LuGithub` is a
  * verified `react-icons/lu` export (v5.6.0) — the `OC`/`GH` text chip is the
@@ -13,14 +13,19 @@ import { CLI_DESCRIPTION, CLI_LABEL, type TerminalCli } from '../sessionModel';
  *
  * `aria-checked` is set explicitly on the hidden radio input: it is the
  * DOM-observable selected state the QA plan reads (Ark's native radio carries a
- * `checked` property but no `aria-checked` attribute).
+ * `checked` property but no `aria-checked` attribute). The same input carries
+ * the `terminal-default-type-<value>` hook (Spec 2942), so the type control is
+ * observable in BOTH the add-session dialog and Settings.
  */
 export const CliOption: React.FC<{ value: TerminalCli; selected: boolean }> = ({
   value,
   selected,
 }) => (
   <RadioCard.Item value={value}>
-    <RadioCard.ItemHiddenInput aria-checked={selected} />
+    <RadioCard.ItemHiddenInput
+      aria-checked={selected}
+      data-testid={`terminal-default-type-${value}`}
+    />
     <RadioCard.ItemControl>
       <RadioCard.ItemContent>
         <HStack gap={2}>
