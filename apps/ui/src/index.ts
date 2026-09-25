@@ -102,3 +102,81 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
 export type { GridItemConfig } from './shared/classes/types';
+
+// ── Hotkeys (Spec #2946 ST-2) ─────────────────────────────────────────────────
+export {
+  registerFeatureHotkeys,
+  registerFredoAction,
+  registerHotkeyHandler,
+  listHotkeyActions,
+  getHotkeyAction,
+  runHotkeyAction,
+  resetRegistryForTests,
+} from './shared/hotkeys/registry';
+export type { HotkeyContributor } from './shared/hotkeys/registry';
+export {
+  subscribeHotkeys,
+  subscribeHotkeyEvents,
+  getHotkeyRevision,
+  getKeymap,
+  getBinding,
+  getHotkeyCandidates,
+  getPendingSequence,
+  getMacroRecordingState,
+  isMacroRecording,
+  isPassthroughActive,
+  applyKeymap,
+  setBinding,
+  clearBinding,
+  resetBinding,
+  resetAllBindings,
+  setLeader,
+  setVimPresetEnabled,
+  setSequenceTimeoutMs,
+  setMacros,
+  setRawMacros,
+  setPendingSequence,
+  clearPendingSequence,
+  setMacroRecording,
+  setPassthrough,
+  hydrateKeymap,
+  resetKeymapStoreForTests,
+  useHotkeyRevision,
+  useHotkeyCandidates,
+  useHotkeyBinding,
+} from './shared/hotkeys/store';
+export type { MacroRecordingState } from './shared/hotkeys/store';
+export {
+  KEYMAP_STORAGE_KEY,
+  RECORDING_LATCH_KEY,
+  CURRENT_SCHEMA_VERSION,
+} from './shared/hotkeys/types';
+export {
+  DEFAULT_KEYMAP,
+  DEFAULT_SEQUENCE_TIMEOUT_MS,
+  MIN_SEQUENCE_TIMEOUT_MS,
+  MAX_SEQUENCE_TIMEOUT_MS,
+  getDefaultBinding,
+  createDefaultBindingMap,
+  createDefaultKeymap,
+  migrateKeymap,
+  loadKeymap,
+  saveKeymap,
+  readRecordingLatch,
+  acquireRecordingLatch,
+  releaseRecordingLatch,
+} from './shared/hotkeys/persistence';
+export type { RecordingLatch } from './shared/hotkeys/persistence';
+export type {
+  FeatureHotkeyAction,
+  HotkeyActionId,
+  HotkeyCandidate,
+  HotkeyEvent,
+  HotkeyInvocationContext,
+  HotkeyResetReason,
+  HotkeyTier,
+  PersistedKeymap,
+  PersistedMacro,
+  PersistedRawMacro,
+  RegisteredHotkeyAction,
+} from './shared/hotkeys/types';

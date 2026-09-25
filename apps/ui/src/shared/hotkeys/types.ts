@@ -52,13 +52,23 @@ export type KeySequence = readonly KeyStroke[];
 export type HotkeyTier = 'fredo' | 'feature';
 
 /**
- * `fredo.` for the platform tier; `<featureId>.` for a feature tier. Lowercase
- * kebab segments, exactly one dot.
+ * `fredo.` for the platform tier; `<featureId>.` for a feature tier. Dot-separated
+ * segments: the first segment is lowercase kebab (`fredo` or a feature id); every
+ * following segment starts with a lowercase letter and may be camelCase. This
+ * admits the shipped multi-segment ids the plan itself declares, e.g.
+ * `fredo.launcher.toggle`, `fredo.window.cycleNth`, `fredo.terminal.exitPassthrough`.
  */
 export type HotkeyActionId = string;
 
-/** The action-id grammar (contract block 3). */
-export const HOTKEY_ACTION_ID_PATTERN = /^(fredo|[a-z0-9][a-z0-9-]*)\.[a-z0-9][a-z0-9-]*$/;
+/**
+ * The action-id grammar (contract block 3, corrected per the ST-2 adjudication).
+ *
+ * The literal contract regex admitted exactly ONE dot and would reject the plan's
+ * own multi-segment camelCase ids; the corrected grammar allows one or more
+ * dot-separated segments after the leading namespace.
+ */
+export const HOTKEY_ACTION_ID_PATTERN =
+  /^(fredo|[a-z0-9][a-z0-9-]*)\.[a-z][a-zA-Z0-9-]*(\.[a-z][a-zA-Z0-9-]*)*$/;
 
 /** True when `id` is a well-formed hotkey action id. */
 export function isValidHotkeyActionId(id: string): boolean {
@@ -94,6 +104,13 @@ export interface FeatureHotkeyAction {
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
 }
+
+/**
+ * The empty contribution a feature with no hotkeys inherits (ST-2). A frozen
+ * singleton so every feature instance points at the SAME object — no per-instance
+ * allocation and no accidental mutation of the default declaration.
+ */
+export const EMPTY_HOTKEYS: readonly FeatureHotkeyAction[] = Object.freeze([]);
 
 /**
  * A registered action as listed by the registry (ST-2 fills this). `invalid`

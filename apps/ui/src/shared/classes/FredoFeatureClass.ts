@@ -47,6 +47,7 @@
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 import type { GridItemConfig } from './types';
+import { EMPTY_HOTKEYS, type FeatureHotkeyAction } from '../hotkeys/types';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -116,6 +117,17 @@ export abstract class FredoFeatureClass<TProps = {}> {
    * owns the single Save button and delegates to whatever fn is registered.
    */
   renderSettings?(): ReactElement;
+
+  /**
+   * Hotkey actions this feature declares (Spec #2946, AC2 contract block 3).
+   *
+   * The platform discovers, lists, rebinds and persists these with NO
+   * listing/rendering code supplied by the feature. A feature that declares none
+   * simply inherits the empty frozen default — it contributes zero rows.
+   * Overriding this is additive: it does not affect `showable`/`hasSettings`/
+   * `renderSettings`/`registerOpenCallback`.
+   */
+  readonly hotkeys: readonly FeatureHotkeyAction[] = EMPTY_HOTKEYS;
   
   // === INTERNAL CALLBACKS (managed by Home.tsx) ===
   
