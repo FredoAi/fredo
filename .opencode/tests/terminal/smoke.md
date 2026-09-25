@@ -138,7 +138,41 @@ uninstall a binary or edit the OS PATH.
 - **S-20 PASS.** The C-5 teardown left zero fixture-root records; the read-only store query returned
   no rows.
 
+## #2942 — vertical sidebar, rename, plain shell (quick paths)
+
+> Seeded at triage for Spec #2942. Quick smoke paths only; full assertions live in the named
+> `functional.md` rows. AC1 needs the measured geometry NUMBERS from the served host document —
+> a quick smoke frame never clears it. Replace the `<issue>` token in S-24's path with the spec
+> issue number.
+
+> **EARS map (Architect-authoritative):** S-21 → R-1.1; S-22 → R-3.1/R-3.2; S-23 → R-2.2/R-2.4;
+> S-24 → R-4.1; S-25 → R-4.4 + G-250. Published hooks/gates: see `functional.md` →
+> "Requirement-ID reconciliation" (bind to either published form; flag a miss as a TOOLING GAP).
+
+- [ ] S-21: **Vertical sidebar renders (quick path)** — open the `terminal` window with ≥1 session
+      and query the sidebar root (`terminal-session-sidebar`) + the live rows.
+      EXPECTED: a full-height COLUMN with full-width compact rows; NO `terminal-session-bar` and NO
+      `[role="tablist"]`. Full assertions in F-57/F-58.
+- [ ] S-22: **Plain-shell default (quick path)** — clear the default key + `localStorage`, restart,
+      add a session with no override.
+      EXPECTED: a shell prompt appears in the PTY buffer and no agent process is spawned. Full
+      assertions in F-66/F-67.
+- [ ] S-23: **Rename (quick path)** — rename a session; the new name renders on the row (and, after
+      close/reopen, on the previous row). Full assertions in F-62/F-64.
+- [ ] S-24: **Settings → Terminal (quick path)** — open Settings → Terminal; a default-TYPE control
+      (3 choices) + the working-directory input render.
+      EXPECTED: Save persists; a screenshot at
+      `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/<issue>/e2e/2942-settings.jpeg")`
+      succeeds. Full assertions in F-69/F-70.
+- [ ] S-25: **Cold `fredo open-terminal` (quick path)** — close the `terminal` window (assert 0),
+      run `fredo open-terminal --cli opencode --dir …\fixtures\workdir-a`.
+      EXPECTED: exit 0, the window opens, a session spawns (COLD — G-250). Full assertions in F-77/R-24.
+
 ## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
+
+> **#2942 delta:** also snapshot/restore the default-TYPE key (published; fallback
+> `terminal_default_cli`) and snapshot every pre-existing record's `{id → title}` (G-242). Full
+> detail: `functional.md` → "Teardown delta for #2942".
 
 > Suite-side, no product change. Run in the `terminal` window via `tauri_webview_execute_js`
 > after every run; then restore the four settings keys. Deletes every persisted record whose
