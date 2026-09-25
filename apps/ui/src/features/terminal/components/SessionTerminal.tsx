@@ -31,6 +31,32 @@ const GHOSTTY_THEME = {
   brightWhite:   '#ffffff',
 };
 
+/**
+ * Spec #2942 ST-5 — the pane/grid fit fix (the ticket's named residual:
+ * "OpenCode TUI doesn't fill the pane").
+ *
+ * Root cause chain (SA §8): the PTY was born at a hardcoded 80×24
+ * (`commands.rs`); `resize_pty` fires only on a CHANGED grid (ghostty's FitAddon
+ * is a no-op for an equal grid), and the mount fit could latch a transiently
+ * tiny box (measured 71×4 in #2934 round 3) whose only correction was a later
+ * active-only, rAF-coalesced ResizeObserver frame.
+ *
+ * Three countermeasures live here:
+ *   (ii) ONE unconditional settling `resize_pty` after the mount/activation fit
+ *        settles (double rAF) — even when the grid is unchanged. This
+ *        deterministically reproduces the tester-proven "forced resize".
+ *   (iv) a FLOOR on the box guard: a transiently smaller box is never fitted,
+ *        published, or pushed (the sink for the 71×4 latch).
+ *   (iii) the last-good grid for the next spawn is kept by the window
+ *        (`TerminalPane.onGridChange` → `TerminalWindow.lastGridRef`).
+ */
+
+/** Below this the box is mid-layout (min window pane ≈ 360×335 px). */
+const MIN_FIT_BOX_PX = 120;
+/** A grid below this is a transiently-small box, never a real pane. */
+const MIN_FIT_COLS = 10;
+const MIN_FIT_ROWS = 6;
+
 interface SessionTerminalProps {
   sessionId: string;
   /** The session is the selected one — visible + owns the pane geometry. */
@@ -76,6 +102,14 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
   const onFirstOutputRef = useRef(onFirstOutput);
   const onFitRef = useRef(onFit);
   const firstOutputFiredRef = useRef(false);
+  /**
+   * The last grid this surface pushed UNCONDITIONALLY (Spec #2942 ST-5 ii).
+   * Reset on every activation so exactly ONE settling `resize_pty` follows the
+   * mount/activation fit even when ghostty reports no grid change.
+   */
+  const settledGridRef = useRef<{ cols: number; rows: number } | null>(null);
+  /** The init effect's settling-push trigger, callable from the activation effect. */
+  const settleRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     activeRef.current = active;
@@ -97,6 +131,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
     let fitAddon: FitAddon | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let resizeFrame = 0;
+    let settleFrame = 0;
 
     const fireFirstOutput = () => {
       if (firstOutputFiredRef.current) return;
@@ -125,8 +160,13 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
 
         // Only the active session owns the pane geometry; a deactivated terminal
         // re-fits on activation instead of pushing a stale/zero size to its PTY.
+        // A grid below the floor is a transiently-small box (Spec #2942 ST-5 iv)
+        // and is never pushed; a real push is recorded so the settling push below
+        // stays idempotent for the common (changed-grid) mount.
         resizeDisposable = term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
           if (!activeRef.current) return;
+          if (cols < MIN_FIT_COLS || rows < MIN_FIT_ROWS) return;
+          settledGridRef.current = { cols, rows };
           adapterBridge.invoke('resize_pty', { sessionId, rows, cols }).catch(() => {});
         });
         dataDisposable = term.onData((data: string) => {
@@ -135,11 +175,13 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
 
         // Fit the canvas to the observed box and publish the APPLIED grid as a
         // receipt (`onFit`, C-2) so the pane can stamp `data-cols`/`data-rows`.
-        // Guarded on a real box: a not-yet-laid-out mount reports 0×0, and a
-        // 0×0 fit would push a bogus size / publish a bogus receipt.
+        // Guarded on a REAL box (Spec #2942 ST-5 iv): a not-yet-laid-out mount
+        // reports 0×0 AND a partially laid-out pass can report a transiently tiny
+        // box (measured 71×4 in #2934 round 3) — fitting either would push a
+        // bogus size / publish a bogus receipt.
         const fitAndPublish = () => {
           const el = containerRef.current;
-          if (!el || el.clientWidth <= 0 || el.clientHeight <= 0) return;
+          if (!el || el.clientWidth < MIN_FIT_BOX_PX || el.clientHeight < MIN_FIT_BOX_PX) return;
           try {
             fitAddon?.fit();
           } catch {
@@ -148,6 +190,38 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
           }
           if (term) onFitRef.current?.(term.cols, term.rows);
         };
+
+        // (ii) Push ONE settling `resize_pty` after the mount/activation fit has
+        // settled — even when the grid did NOT change. ghostty's FitAddon is a
+        // no-op for an equal grid (pinned at SessionTerminal.resize.test.tsx:53),
+        // so a PTY born at a stale size had no correction on the cold-mount path.
+        // This deterministically reproduces the tester-proven forced resize; when
+        // the fit DID change the grid, `term.onResize` already pushed it and the
+        // dedupe below keeps this idempotent.
+        const pushSettlingResize = () => {
+          const el = containerRef.current;
+          const term = termRef.current;
+          if (!el || el.clientWidth < MIN_FIT_BOX_PX || el.clientHeight < MIN_FIT_BOX_PX) return;
+          if (!term) return;
+          const { cols, rows } = term;
+          if (cols < MIN_FIT_COLS || rows < MIN_FIT_ROWS) return;
+          const last = settledGridRef.current;
+          if (last && last.cols === cols && last.rows === rows) return;
+          settledGridRef.current = { cols, rows };
+          adapterBridge.invoke('resize_pty', { sessionId, rows, cols }).catch(() => {});
+        };
+
+        // Double rAF: one frame for the fit's layout write, one for it to settle.
+        const settleThenPush = () => {
+          cancelAnimationFrame(settleFrame);
+          settleFrame = requestAnimationFrame(() => {
+            settleFrame = requestAnimationFrame(() => {
+              if (disposed || !activeRef.current) return;
+              pushSettlingResize();
+            });
+          });
+        };
+        settleRef.current = settleThenPush;
 
         // A window/pane resize must re-fit the ACTIVE terminal so its
         // `term.onResize` pushes a fresh `resize_pty` (the activation effect
@@ -171,11 +245,13 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
           resizeObserver.observe(container);
         }
 
-        // Fit after layout settles (hidden-canvas fit yields 0×0).
+        // Fit after layout settles (hidden-canvas fit yields 0×0), then schedule
+        // the ONE unconditional settling push (Spec #2942 ST-5 ii).
         requestAnimationFrame(() => {
           if (disposed) return;
           fitAndPublish();
           if (activeRef.current) termRef.current?.focus();
+          settleThenPush();
         });
 
         // Replay this session's buffered output (independent of live listeners —
@@ -216,6 +292,8 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
     return () => {
       disposed = true;
       cancelAnimationFrame(resizeFrame);
+      cancelAnimationFrame(settleFrame);
+      settleRef.current = null;
       resizeObserver?.disconnect();
       unlistenOutput?.();
       unlistenExit?.();
@@ -231,13 +309,16 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
   // Activation: re-fit BEFORE accepting resize events, then move focus into the
   // newly visible terminal so keystrokes land in the right PTY immediately. The
   // applied dims are published as a fit receipt (C-2) — never from a 0×0 box.
+  // Spec #2942 ST-5 (ii): the settling push is re-armed on every activation (a
+  // deselect→select with an unchanged grid still seeds the PTY once).
   useEffect(() => {
     if (!active) return;
+    settledGridRef.current = null;
     const raf = requestAnimationFrame(() => {
       const el = containerRef.current;
       const term = termRef.current;
       const fitAddon = fitRef.current;
-      if (el && el.clientWidth > 0 && el.clientHeight > 0 && fitAddon) {
+      if (el && el.clientWidth >= MIN_FIT_BOX_PX && el.clientHeight >= MIN_FIT_BOX_PX && fitAddon) {
         let fitted = false;
         try {
           fitAddon.fit();
@@ -248,6 +329,7 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
         if (fitted && term) onFitRef.current?.(term.cols, term.rows);
       }
       term?.focus();
+      settleRef.current?.();
     });
     return () => cancelAnimationFrame(raf);
   }, [active]);
