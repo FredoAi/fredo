@@ -37,3 +37,10 @@
 - [x] S-14 (PASS round 3): with a canonical `fredo emit` mutation the declared table watch delivers `featureBatch` and the projected row appears (disposable-DB re-drive).
 - [x] S-15 (PASS round 3): a session renders its Chat node on selection; declared-table `remove` re-fits the canvas (`auto-fit … epoch` console lines).
 - [x] S-16 (PASS round 3): a full cold restart serves the 31 stored sessions immediately (`backfill_done=1`; no backfill re-drain in the log; only `persisted declared tables re-materialized tables=1`).
+
+## Mission Monitor multi-CLI quick path (Spec #2945)
+
+- [ ] S-17 (open for #2945): Open Mission Monitor — the session list renders with its usual entries; the sidebar/drawer chrome is unchanged and no console error appears.
+- [ ] S-18 (open for #2945): With both an OpenCode and a Copilot-shaped session present, each list row shows a non-blank CLI label; selecting the Copilot session renders its activity (chat node + tools or zero-tools) at the same structural detail as an OpenCode session. Cross-check `telemetry_spans` at the same instant.
+- [ ] S-19 (open for #2945): The selected session's header shows the same CLI label as its list row; a session with `provider = unknown` shows the explicit non-blank fallback and is not presented as OpenCode.
+- [ ] S-20 (open for #2945): UI build gate — `pnpm --filter @fredo/ui build` completes clean (TypeScript zero errors); if the Rust rollup/declaration is touched, `cargo check` + `cargo clippy --locked -- -D warnings` are clean.
