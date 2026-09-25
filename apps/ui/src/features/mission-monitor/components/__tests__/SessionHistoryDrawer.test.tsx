@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<MissionMonitorSession> & { sessionId: st
     startTime: new Date(2021, 2, 5, 10, 30).getTime(),
     latestTimestamp: '2021-03-05T10:30:00.000Z',
     deliveryCount: 3,
+    provider: null,
     ...overrides,
   };
 }

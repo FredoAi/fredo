@@ -87,6 +87,7 @@ function rollupRowToSession(row: FeatureDataRow): MissionMonitorSession | null {
     startTime,
     latestTimestamp: latestAt ?? new Date(startTime).toISOString(),
     deliveryCount: asNumber(row.chatRowCount) ?? 0,
+    provider: asString(row.provider) ?? null,
   };
 
   const derivedRaw = asString(row.derivedName);
