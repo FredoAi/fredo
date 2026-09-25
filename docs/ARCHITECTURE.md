@@ -485,6 +485,7 @@ apps/ui/src/
 +-- shared/
     +-- contexts/StreamContext.tsx  — connection status + the module-scoped RTDB row store
     +-- hooks/useEventRows.ts       — the typed row-subscription hook (replay + live patches)
+    +-- hotkeys/                    — the keyboard contract (registry, engine, sequences, macros, keymap persistence)
     +-- classes/
     |   +-- FredoFeatureClass.ts    — abstract base class for grid features
     |   +-- EventSubscription.ts    — RTDB row wire types (RowDelivery / RowDeliveryBatch)
@@ -498,6 +499,19 @@ apps/ui/src/
             +-- features/
                 +-- tictactoe/      — Tic-Tac-Toe game (vision-based AI)
 ```
+
+### Keyboard & Hotkeys (`shared/hotkeys/`)
+
+A first-class keyboard contract (Spec #2946) lets features **declare** their hotkeys once and have the platform discover, list, rebind and persist them uniformly:
+
+- **Two tiers.** *Fredo* actions (open the launcher, switch windows, open Settings) are app-global; *feature* actions apply only while their feature is focused. A feature contributes actions by overriding the `hotkeys` member on its `FredoFeatureClass` — no per-feature listing code is needed.
+- **Engine.** One capture-phase `document` keydown listener (`engine.ts`) classifies the focus context, applies context-aware suppression (text-entry, modal, terminal, native consumers) and dispatches the matched action. `HotkeysProvider` mounts the engine plus the announcer and the which-key / cheat-sheet overlays in BOTH webviews (main and `?view=terminal`); it is mounted in the served entry `apps/tauri/src/main.tsx`.
+- **Sequences.** Multi-key sequences and a leader key are supported; while a sequence is pending, a which-key overlay shows the prefix and the currently valid next keys, and an invalid or abandoned sequence resets visibly without acting.
+- **Macros.** Named ordered action sequences plus raw keystroke record/replay (confirmation-gated; strokes typed into text-entry fields are never captured).
+- **Configuration.** Settings → Hotkeys lists both tiers, supports search/rebind/reset, surfaces conflicts **before** the save takes effect, lists platform-reserved combos as unavailable-with-reason, and offers an opt-in Vim preset (leader = Space, `hjkl`). The keymap is one per-user JSON document under the `fredo.hotkeys.keymap` `AppStore` KV (schema-versioned, total migration to defaults on corruption) so both webviews read one truth.
+- **Typing safety.** Bare keys and multi-key sequences are suppressed while a text control has focus; modifier chords remain global; an open modal owns the keyboard; a focused terminal session passes every key (including chords) to the PTY except the single exit-passthrough chord.
+
+Shipped defaults: `Ctrl+Space` (launcher), `Ctrl+Shift+P` (action palette in the launcher command bar), `?` (cheat sheet), `Ctrl+Tab` / `Ctrl+Shift+Tab` and `Ctrl+1..9` (window traversal), `g g` (first window), `Ctrl+Shift+F9` (toggle raw recording), `Ctrl+Shift+F10` (release terminal passthrough).
 
 ### Active UI Features
 

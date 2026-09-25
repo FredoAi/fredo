@@ -23,6 +23,10 @@ Agents integrate through two paths:
 
 Raw telemetry is persisted on receipt and then classified by the **RTDB ingest classifier** into canonical SQLite rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries. The `fredo` CLI can also inject CLI events through the same classifier path.
 
+### Can I use Fredo entirely with the keyboard?
+
+Yes — Fredo ships a keyboard-first hotkey system (Spec #2946). Press `?` anywhere outside a text field for a searchable cheat sheet. `Ctrl+Space` opens the launcher, `Ctrl+Shift+P` opens its action list (type `>` for the same list), `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+1..9`) move focus between windows, and `g g` jumps to the first window. Both app-global and feature-local shortcuts appear in one listing under **Settings → Hotkeys**, where you can search, rebind (conflicts are surfaced before they take effect), reset, and opt into a Vim preset (leader = Space, `hjkl`). Multi-key sequences and named or recorded macros are supported; typed text is never captured by a recording. Your changes persist across restarts. While a terminal session has focus every key goes to the shell except `Ctrl+Shift+F10`, which releases the keyboard back to Fredo.
+
 ---
 
 ## Development
