@@ -177,43 +177,60 @@
 
 ## F-29 (promoted round 2, feature tier absent) — AC2 feature hotkeys unsupported in the shipped app
 
-- [ ] F-29: Open Settings → Hotkeys and inspect the tier sections; then `grep` the
+- [x] F-29: Open Settings → Hotkeys and inspect the tier sections; then `grep` the
       production feature sources for a `hotkeys` declaration. **Expected:** ONE listing
       shows the Fredo tier AND the focused feature's local bindings; a feature declaring
-      hotkeys appears automatically. **Actual (round 2): FAIL** — the listing contains only
-      a `FREDO (GLOBAL)` section (12 rows, all `data-hotkey-tier="global"`); zero
-      production features declare `hotkeys` (`registerFeatureHotkeys`/`hotkeys:` appear
-      only in `__tests__`), so no feature-tier row can render. **Repro:** Settings → Hotkeys
-      → `document.querySelectorAll('[data-testid="hotkeys-row"]')` all `global`.
-      This blocks H-4/H-5/H-6 (AC2).
+      hotkeys appears automatically. **Round 3 (PASS, `spec/2946 @ 45d5120`):** the
+      listing renders 3 tiers — `global` (13 rows), `feature:mission-monitor` (3:
+      focusSessionSearch `s`, nextSession `n`, previousSession `p`) and `feature:diagram`
+      (2: search `s`, fitView `f`); features declaring none (My Work Items, Model Storage,
+      Terminal) contribute zero rows. With Mission Monitor focused, `s` focuses the session
+      filter and `n`/`p` change the selected session (wrap-around); the same chord is inert
+      while Settings is focused and while a text field is focused. **Repro:** Settings →
+      Hotkeys → `document.querySelectorAll('[data-testid="hotkeys-row"]')` tier histogram =
+      `{global:13, feature:diagram:2, feature:mission-monitor:3}`.
 
 ## F-30 (promoted round 2, `g g` absent) — Non-leader multi-key sequence not shipped
 
-- [ ] F-30: On a non-text surface press `g` then `g`. **Expected:** the first `g` arms a
-      pending sequence naming `g` and the second executes the `g g` action once. **Actual
-      (round 2): FAIL** — no non-leader multi-key binding is shipped
-      (`MINIMAL_DEFAULT_BINDINGS` has only `@leader ?` under the Vim preset), so `g`
-      arms nothing and `g g` performs no action. **Repro:** focus a window content region,
-      dispatch `g`,`g` → no `data-fredo-pending-sequence`, no effect. This blocks H-8 (AC3).
+- [x] F-30: On a non-text surface press `g` then `g`. **Expected:** the first `g` arms a
+      pending sequence naming `g` and the second executes the `g g` action once. **Round 3
+      (PASS, `spec/2946 @ 45d5120`):** `MINIMAL_DEFAULT_BINDINGS` now ships
+      `'fredo.window.first': ['g g']`; the first `g` sets `data-fredo-pending-sequence="g"`
+      with the which-key overlay (`prefix=G`, candidate `G — Focus first window — Global`,
+      announcer `Prefix: G. Valid next keys: G (Focus first window).`); the second `g`
+      clears pending and focused the first window (`window-frame-setup`, one
+      `data-focused false→true` transition). `g`+invalid clears pending with the
+      non-colour toast `No binding for G — sequence cancelled`. The listing shows `G G`
+      for `fredo.window.first`. **Observation:** bare `g` does not arm while a `<button>`
+      is focused (engine native-consumer rule); the AC's "non-text surface" = BODY/default
+      context, which arms correctly.
 
 ## F-31 (promoted round 2, dead cheatsheet action) — `fredo.help.cheatsheet` has no run handler
 
-- [ ] F-31: Fire the leader then `?`. **Expected:** a cheat-sheet surface opens. **Actual
-      (round 2): PARTIAL** — the leader + which-key hint work (`pending="@leader"`, overlay
-      names `?`), but completing the sequence executes a **no-op**: `fredo.help.cheatsheet`
-      is registered with no `run` and `registerHotkeyHandler('fredo.help.cheatsheet', …)` is
-      never called (no cheat-sheet component ships). **Repro:** complete `Leader`,`?` → no
-      dialog/surface.
+- [x] F-31: Fire the leader then `?`. **Expected:** a cheat-sheet surface opens. **Round 3
+      (PASS, `spec/2946 @ 45d5120`):** ST-14 ships `CheatSheetOverlay`
+      (`hotkeys-cheatsheet-overlay`/`-search`/`-list`/`-row`/`-empty`/`-close`), mounted in
+      `HotkeysProvider` and wired via `registerHotkeyHandler('fredo.help.cheatsheet', …)`.
+      `?` on a non-text surface opens `role="dialog" aria-modal="true"` with 20 rows
+      (grouped Fredo-then-feature, incl. `Focus first window G G` and the feature rows);
+      the search focuses on open; `session` filters to the 3 session rows; `zzzznomatch`
+      shows `hotkeys-cheatsheet-empty` (`role="status"`) `No hotkeys match "zzzznomatch".`;
+      Escape closes and returns focus to the invoker (`window-content-setup`). With the Vim
+      preset ON, `Space` then `?` (`@leader ?`) opens the same overlay. The pane-local
+      cheat sheet/testids are preserved.
 
 ## F-32 (promoted round 2, reset-all / preset inconsistency) — reset-all leaves the Vim preset half-applied
 
-- [ ] F-32: Enable the Vim preset, then Reset all → confirm, then inspect the toggle + rows.
-      **Expected:** reset restores a clean shipped-default state. **Actual (round 2): FAIL
-      (inconsistent)** — `vimPresetEnabled` stays `true` while `bindings` are cleared, so
-      the toggle reads ON but `fredo.focus.left/right` render unbound and `hjkl` no longer
-      fire. Macros are correctly kept (trigger cleared), matching R-4.4. **Repro:** enable
-      Vim preset → Reset all → `get_setting fredo.hotkeys.keymap` → `vimPresetEnabled:true`,
-      `bindings['fredo.focus.left']` absent.
+- [x] F-32: Enable the Vim preset, then Reset all → confirm, then inspect the toggle + rows.
+      **Expected:** reset restores a clean shipped-default state. **Round 3 (PASS,
+      `spec/2946 @ 45d5120`):** enabling the preset applies `leader=space`,
+      `focus.left/right/down/up = h/l/j/k`, `fredo.help.cheatsheet=['@leader ?']` and writes
+      the snapshot. `Reset all` → `get_setting fredo.hotkeys.keymap` =
+      `{leader:null, vimPresetEnabled:false, 'fredo.focus.left':absent,
+      'fredo.help.cheatsheet':['?']}`, macros kept (`e2e-macro`, `e2e-raw`, triggers null);
+      `get_setting fredo.hotkeys.vimPreset.snapshot` absent; the toggle reads OFF; toast
+      `All hotkeys reset to defaults. Macros were kept.`. ST-17 clears the snapshot from
+      `confirmResetAll` (no store→vimPreset cycle).
 
 ---
 
@@ -241,6 +258,54 @@ AC5 conflict/reserved/typing/modal legs all pass with live evidence. The feature
 Passing rows: H-1, H-2, H-3, H-7 (caveat), H-9, H-10, H-11, H-12, H-13 (finding), H-14,
 H-15, H-16, H-18, H-19, H-20, H-21, H-22, H-23, H-24, H-25, H-26, H-27.
 Failing: H-4, H-5, H-6, H-8, H-17.
+
+## #2946 testing round 3 — result
+
+**Verdict: PASS (27/27 QA rows).** Run on the served app `spec/2946 @ 45d5120` (dev-env
+UP, driver `com.fredo.app`, main + terminal windows). The round-3 fix (ST-14 cheat-sheet
+overlay, ST-15 real feature declarations, ST-16 `g g`, ST-17 reset-all) closed every
+round-2 failure and the regression sweep held.
+
+Re-run live this round (previously failing):
+- **AC2 H-4/H-5/H-6 (F-29): PASS** — 3 tiers in one listing (global 13,
+  `feature:mission-monitor` 3, `feature:diagram` 2); zero-contribution holds; with Mission
+  Monitor focused `s` focuses the session filter and `n`/`p` change the selection with
+  wrap-around; inert while Settings is focused; typed verbatim in a text field.
+- **AC3 H-7 (F-31): PASS** — `?` opens `hotkeys-cheatsheet-overlay` (20 rows, search
+  focused); search filter + `hotkeys-cheatsheet-empty`; Escape closes and returns focus to
+  the invoker; `@leader ?` opens the same overlay with the Vim preset ON.
+- **AC3 H-8 (F-30): PASS** — first `g` arms `data-fredo-pending-sequence="g"` + which-key
+  naming `g`; second `g` focuses the first window once; `g`+invalid resets with the text
+  toast; listing shows `G G` for `fredo.window.first`.
+- **AC4 H-13/F-32: PASS** — reset-all → `vimPresetEnabled:false`, `leader:null`, defaults
+  bound (`?`), macros kept, snapshot absent, toggle OFF.
+- **AC5 H-17: PASS** — terminal full passthrough driven with a live
+  `spawn_terminal_session{cli:"shell"}` session: `[data-fredo-terminal-root="true"]`
+  count 1, `document.body[data-fredo-passthrough="true"]` when the session is focused; a
+  bare key reaches the PTY (buffer 277→286, echoed), no hotkey fires; `Ctrl+Shift+F10`
+  exits passthrough (`data-fredo-passthrough` clears, focus on
+  `hotkeys-terminal-passthrough-exit`); the `Passthrough | Ctrl+Shift+F10 | Release
+  keyboard` pill renders. Typing-field suppression PASS.
+
+Regression sweep re-run live:
+- **AC1 H-3: PASS** — keyboard-only flow (Ctrl+Space → type → Enter → operate → collapse)
+  with `{mousedown:0, click:0, pointerdown:0}`.
+- **H-15 conflict-before-effect: PASS** — Ctrl+Space collided with `Toggle launcher`
+  (Global, `fredo.launcher.toggle`); target row stayed `primary+P`; Cancel left both
+  unchanged.
+- **H-14 full-restart persistence: PASS** — after `dev-env Down`+`Up` the rebind
+  (`primary+alt+o`), Vim preset ON (`leader=space`, `hjkl`) and macros (`e2e-macro`,
+  `e2e-raw`) all survived; the listing rendered them.
+- **H-27 no shortcut-usage telemetry: PASS** — 0 `telemetry_spans` span names and 0
+  `telemetry_metrics` metric names matching hotkey/shortcut/keymap/macro/binding.
+- **Console: clean** — no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+Technique note (H-17): the MCP driver emits non-standard modifier keystrokes
+(`code` = the literal key, e.g. `"c"` instead of `"KeyC"`, `keyCode:0`), so ghostty-web
+does not map the driver's synthetic modifier chords to control bytes; a well-formed
+`Ctrl+C` (`code:"KeyC"`, keyCode 67) DOES reach the PTY (`^C`, buffer grew). The exit
+chord (also a modifier chord) fires through the driver, and no non-exit chord is consumed
+by the engine. This is a harness fidelity note, not a product defect.
 
 ---
 
