@@ -83,7 +83,50 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   EXPECTED: no `terminal` session rows in `fredo.db`; no resume.
   Full assertions: `terminal/functional.md` N-5 / `regression.md` R-8.
 
+## #2942 pre-rename-suite regression cases (vertical sidebar / rename / plain shell)
+
+> Seeded at triage for Spec #2942. This suite is the pre-rename baseline; the #2942 rework
+> (horizontal rail → vertical sidebar, rename, plain-shell default, Settings type) must not
+> regress the CLI open path or the multi-session/session-scoped PTY contract. These rows
+> complement `.opencode/tests/terminal/regression.md` R-20..R-27. Evidence: LIVE.
+
+> **EARS map (Architect-authoritative):** R-18 → the cold-open contract + G-250; R-19 → R-4.4
+> (`--cli shell` accepted; no-`--cli` uses the stored default); R-20 → R-5.1 + R-5.2.
+> Published hooks/values (RECONCILED at convergence): the plain-shell wire value is `shell`
+> (frontend `TerminalSessionKind`; display label "Terminal"); see
+> `.opencode/tests/terminal/functional.md` → "Requirement-ID reconciliation".
+
+- [ ] R-18 (**AC5, G-250 — the cold `fredo open-terminal` leg holds after the rework**): close the
+      `terminal` window (assert 0), then `fredo open-terminal --cli opencode --dir
+      C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a`.
+      EXPECTED: exit 0 + `{"outcome":"started"}`, ONE `terminal` window, a RUNNING OpenCode session
+      with that cli+workDir auto-selected — **COLD** (repeat ≥3×) plus a warm control. A cold run
+      that opens the window but spawns NOTHING is a FAIL. Negatives: `--cli bogus` →
+      `{"outcome":"invalid-cli"}`, `--dir …\no-such-dir` → `{"outcome":"invalid-directory"}`, session
+      list unchanged.
+      Edge: rapid cold invocations; window closed with a state surface showing.
+
+- [ ] R-19 (**AC5 — the CLI default path accepts the new plain-shell type**): with the Settings default
+      type = Terminal (plain shell) and NO `--cli`, run `fredo open-terminal` (window closed, cold);
+      separately, if the wire value is exposed, `fredo open-terminal --cli shell`.
+      EXPECTED: exit 0, the `terminal` window opens, and a PLAIN SHELL session spawns (no agent
+      process; a shell prompt in the PTY buffer); `--cli` validation still rejects unknown values
+      (`invalid-cli`) and a blank `--cli` (`invalid-argument`). A plain-shell launch must not resolve
+      to an OpenCode/Copilot agent.
+      Edge: `--cli` omitted with a saved non-default type; blank `--dir` (no error).
+
+- [ ] R-20 (**AC5 — plain-shell records persist + list in the sidebar**): spawn a plain-shell session
+      via the CLI; close the `terminal` window; reopen.
+      EXPECTED: the record is still listed (its type + workDir) in the sidebar's previous-session
+      rows (`terminal-previous-session-row-<id>`); reopening starts 0 processes; resume reopens a
+      shell in the directory (no false conversation-resume copy).
+      Edge: a shell record whose dir was removed → typed blocked state (record retained).
+
 ## #2940 C-5 teardown (MANDATORY — run after this suite)
+
+> **#2942 delta:** also snapshot/restore the default-TYPE key (published; fallback
+> `terminal_default_cli`) and snapshot every pre-existing record's `{id → title}` (G-242). Full
+> detail: `.opencode/tests/terminal/functional.md` → "Teardown delta for #2942".
 
 > This pre-rename suite also spawns sessions against the running dev instance, so it leaks
 > persisted Terminal records the same way `.opencode/tests/terminal/` does. Spec #2940's
