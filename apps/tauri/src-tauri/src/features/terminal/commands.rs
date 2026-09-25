@@ -13,7 +13,7 @@ use crate::features::terminal::resume::{
     resume_args, run_bounded, ResumeOutcome, ResumeResult, RESUME_PREFLIGHT_TIMEOUT,
 };
 use crate::features::terminal::state::{
-    append_capped, finalize_exited, finalize_resume_failed, mark_resumed, now_ms, TerminalCli,
+    append_capped, finalize_exited, finalize_resume_failed, mark_resumed, now_ms, SessionKind,
     TerminalErrorKind, TerminalSession, TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
 };
 use crate::infrastructure::storage::feature_store::FeatureStore;
@@ -117,40 +117,70 @@ fn find_git_bash() -> Option<String> {
 /// `pickCopilot`): a native `.exe` first, then the `.cmd`/`.bat` shims, then a
 /// `.ps1`, then the bare name. On non-Windows the extension probes are harmless
 /// misses and the bare name resolves.
-fn cli_candidates(cli: TerminalCli) -> Vec<String> {
+///
+/// The plain-shell chain (Spec #2942 R-3.2) is platform-specific: Windows tries
+/// the modern PowerShell (`pwsh.exe`) first, then Windows PowerShell
+/// (`powershell.exe`), then always-present `cmd.exe` — so a host without `pwsh`
+/// still has a shell. Non-Windows prefers `$SHELL`, then `sh`.
+fn cli_candidates(cli: SessionKind) -> Vec<String> {
     match cli {
-        TerminalCli::OpenCode => vec![
+        SessionKind::OpenCode => vec![
             "opencode.exe".to_string(),
             "opencode.cmd".to_string(),
             "opencode.bat".to_string(),
             "opencode".to_string(),
         ],
-        TerminalCli::Copilot => vec![
+        SessionKind::Copilot => vec![
             "copilot.exe".to_string(),
             "copilot.cmd".to_string(),
             "copilot.bat".to_string(),
             "copilot.ps1".to_string(),
             "copilot".to_string(),
         ],
+        SessionKind::Shell => {
+            #[cfg(target_os = "windows")]
+            {
+                vec![
+                    "pwsh.exe".to_string(),
+                    "powershell.exe".to_string(),
+                    "cmd.exe".to_string(),
+                ]
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let mut candidates = Vec::new();
+                if let Ok(shell) = std::env::var("SHELL") {
+                    let trimmed = shell.trim();
+                    if !trimmed.is_empty() {
+                        candidates.push(trimmed.to_string());
+                    }
+                }
+                candidates.push("sh".to_string());
+                candidates
+            }
+        }
     }
 }
 
 /// Message shown when a CLI cannot be resolved. Names the CLI so the in-window
 /// error (and the AC4 receipt) can identify the cause without string parsing.
-fn not_found_message(cli: TerminalCli) -> String {
+fn not_found_message(cli: SessionKind) -> String {
     match cli {
-        TerminalCli::OpenCode => "`opencode` not found in PATH. \
+        SessionKind::OpenCode => "`opencode` not found in PATH. \
              Install OpenCode from https://opencode.ai or via your package manager."
             .to_string(),
-        TerminalCli::Copilot => "GitHub Copilot CLI (`copilot`) not found in PATH. \
+        SessionKind::Copilot => "GitHub Copilot CLI (`copilot`) not found in PATH. \
              Install the GitHub Copilot CLI, then retry."
+            .to_string(),
+        SessionKind::Shell => "No system shell found in PATH. \
+             On Windows `cmd.exe` should always be present; on Unix set `$SHELL` or install `sh`."
             .to_string(),
     }
 }
 
 /// Resolve the CLI binary. A non-empty override (diagnostic setting or the
 /// TEST-ONLY seam) is used BEFORE the PATH search and must exist.
-fn resolve_binary(cli: TerminalCli, override_path: Option<&str>) -> Result<String, String> {
+fn resolve_binary(cli: SessionKind, override_path: Option<&str>) -> Result<String, String> {
     if let Some(path) = override_path.map(str::trim).filter(|p| !p.is_empty()) {
         if std::path::Path::new(path).exists() {
             tracing::debug!(target: "fredo::terminal", path = ?path, "using override binary");
@@ -483,7 +513,7 @@ impl PendingTerminalOpen {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionInfo {
     pub id: String,
-    pub cli: TerminalCli,
+    pub cli: SessionKind,
     pub status: TerminalSessionStatus,
     pub error: Option<String>,
     pub error_kind: Option<TerminalErrorKind>,
@@ -607,7 +637,7 @@ fn persist_new_record(
     feature_store: &FeatureStore,
     app: &AppHandle,
     id: &str,
-    cli: TerminalCli,
+    cli: SessionKind,
     work_dir: &str,
     created_at: u64,
 ) {
@@ -685,7 +715,7 @@ fn list_command(bin: &str) -> std::process::Command {
 /// Best-effort, bounded: list OpenCode's sessions (ST-1 pinned
 /// `opencode session list --format json`) and return stdout.
 fn list_opencode_sessions() -> Option<String> {
-    let bin = resolve_binary(TerminalCli::OpenCode, None).ok()?;
+    let bin = resolve_binary(SessionKind::OpenCode, None).ok()?;
     let mut command = list_command(&bin);
     command.args(["session", "list", "--format", "json"]);
     match run_bounded(command, Duration::from_millis(CAPTURE_TIMEOUT_MS)) {
@@ -705,16 +735,18 @@ fn list_opencode_sessions() -> Option<String> {
 
 /// Best-effort capture of an OpenCode session's CLI-native id, persisted onto the
 /// record so a later resume uses `--session <id>` instead of the last-session
-/// fallback. A no-op for Copilot (ST-1: no listing surface). Never spawns a
-/// session and never blocks a command — it runs on the async runtime, bounded.
+/// fallback. A no-op for Copilot (ST-1: no listing surface) and for a plain
+/// Shell (Spec #2942: no CLI-native session exists, so `cli_session_id` stays
+/// NULL and the shell reopen appends no args). Never spawns a session and never
+/// blocks a command — it runs on the async runtime, bounded.
 fn capture_cli_session_id(
     app: AppHandle,
-    cli: TerminalCli,
+    cli: SessionKind,
     work_dir: String,
     session_id: String,
     spawned_at: u64,
 ) {
-    if cli != TerminalCli::OpenCode {
+    if cli != SessionKind::OpenCode {
         return;
     }
     tauri::async_runtime::spawn(async move {
@@ -757,7 +789,7 @@ fn capture_cli_session_id(
 /// can choose an in-window error row (fresh spawn) or a typed `ResumeOutcome`
 /// (resume).
 fn prepare_session(
-    cli: TerminalCli,
+    cli: SessionKind,
     cwd: &str,
     binary_override: Option<String>,
     pwsh: &str,
@@ -771,8 +803,11 @@ fn prepare_session(
 
     let form = plan_launch(&bin, pwsh).map_err(|msg| (TerminalErrorKind::Launch, msg))?;
 
+    // The PowerShell-6+ prerequisite gate is Copilot-ONLY (Spec #2942 R-3.2): a
+    // plain Shell must NOT be gated on pwsh — its candidate chain falls back to
+    // `powershell.exe`/`cmd.exe`, which are not PowerShell-6+ shells.
     #[cfg(target_os = "windows")]
-    if cli == TerminalCli::Copilot {
+    if cli == SessionKind::Copilot {
         let override_major = test_override.and_then(|o| o.pwsh_major);
         if powershell_gate_applies(&form, override_major) {
             check_powershell_prereq(pwsh, override_major)
@@ -1140,10 +1175,10 @@ pub async fn spawn_terminal_session(
     // An unknown CLI is refused BEFORE any process exists: the row carries the
     // typed `invalid-cli` kind so the UI renders the "Unknown CLI" state (R-4.1)
     // and no PTY is opened. No record is persisted for a failed launch.
-    let Some(cli) = TerminalCli::parse(&cli) else {
+    let Some(cli) = SessionKind::parse(&cli) else {
         {
             let mut guard = state.lock().unwrap();
-            guard.insert_starting(session_id.clone(), TerminalCli::OpenCode, cwd, 80, 24);
+            guard.insert_starting(session_id.clone(), SessionKind::OpenCode, cwd, 80, 24);
         }
         fail_session(
             &app,
@@ -1168,7 +1203,7 @@ pub async fn spawn_terminal_session(
     // Diagnostic override settings (unrendered). The TEST-ONLY seam wins over
     // the stored Copilot path (which only applies to a Copilot session).
     let binary_override = test_override.as_ref().and_then(|o| o.binary.clone()).or_else(|| {
-        if cli == TerminalCli::Copilot {
+        if cli == SessionKind::Copilot {
             store.get(COPILOT_PATH_KEY).ok().flatten()
         } else {
             None
@@ -1383,7 +1418,7 @@ pub async fn resume_terminal_session(
     };
 
     // Diagnostic override settings, same precedence as a fresh spawn.
-    let binary_override = if record.cli == TerminalCli::Copilot {
+    let binary_override = if record.cli == SessionKind::Copilot {
         store.get(COPILOT_PATH_KEY).ok().flatten()
     } else {
         None
@@ -1536,11 +1571,11 @@ mod tests {
     #[test]
     fn candidate_order_prefers_win32_shims_then_bare() {
         assert_eq!(
-            cli_candidates(TerminalCli::OpenCode),
+            cli_candidates(SessionKind::OpenCode),
             vec!["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"]
         );
         assert_eq!(
-            cli_candidates(TerminalCli::Copilot),
+            cli_candidates(SessionKind::Copilot),
             vec![
                 "copilot.exe",
                 "copilot.cmd",
@@ -1552,17 +1587,44 @@ mod tests {
     }
 
     #[test]
+    fn shell_candidate_chain_always_offers_a_shell() {
+        // Spec #2942 R-3.2 — the chain must terminate in a shell that exists on
+        // the host: `cmd.exe` on Windows, `sh` on Unix.
+        let candidates = cli_candidates(SessionKind::Shell);
+        assert!(!candidates.is_empty());
+        #[cfg(target_os = "windows")]
+        assert_eq!(candidates, vec!["pwsh.exe", "powershell.exe", "cmd.exe"]);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(candidates.last().map(String::as_str), Some("sh"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolve_binary_finds_a_shell_on_windows() {
+        // The chain terminates in `cmd.exe` (always present) so a plain-shell
+        // session resolves even on a host without `pwsh` (R-3.2).
+        let resolved = resolve_binary(SessionKind::Shell, None);
+        assert!(resolved.is_ok(), "a shell must resolve on Windows: {resolved:?}");
+    }
+
+    #[test]
+    fn shell_not_found_message_names_the_shell() {
+        let msg = not_found_message(SessionKind::Shell);
+        assert!(msg.contains("shell"), "message should name the shell: {msg}");
+    }
+
+    #[test]
     fn resolve_binary_uses_a_diagnostic_override_that_exists() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("copilot.exe");
         std::fs::write(&fake, b"stub").unwrap();
-        let resolved = resolve_binary(TerminalCli::Copilot, Some(fake.to_str().unwrap())).unwrap();
+        let resolved = resolve_binary(SessionKind::Copilot, Some(fake.to_str().unwrap())).unwrap();
         assert_eq!(resolved, fake.to_str().unwrap());
     }
 
     #[test]
     fn resolve_binary_rejects_a_missing_override_naming_the_cli() {
-        let err = resolve_binary(TerminalCli::Copilot, Some(r"C:\Nonexistent\copilot.exe"))
+        let err = resolve_binary(SessionKind::Copilot, Some(r"C:\Nonexistent\copilot.exe"))
             .unwrap_err();
         assert!(err.contains("copilot"), "message should name copilot: {err}");
         assert!(err.contains("not found"), "message should say not found: {err}");
@@ -1570,14 +1632,14 @@ mod tests {
 
     #[test]
     fn resolve_binary_not_found_message_names_opencode() {
-        let msg = not_found_message(TerminalCli::OpenCode);
+        let msg = not_found_message(SessionKind::OpenCode);
         assert!(msg.contains("opencode"));
         assert!(msg.contains("not found"));
     }
 
     #[test]
     fn resolve_binary_succeeds_or_reports_not_found() {
-        let result = resolve_binary(TerminalCli::OpenCode, None);
+        let result = resolve_binary(SessionKind::OpenCode, None);
         match result {
             Ok(path) => assert!(!path.is_empty()),
             Err(msg) => assert!(msg.contains("not found")),
@@ -1834,14 +1896,14 @@ mod tests {
     fn session_info_carries_every_required_field() {
         let session = TerminalSession::starting(
             "abc".into(),
-            TerminalCli::Copilot,
+            SessionKind::Copilot,
             r"C:\fredo".into(),
             100,
             30,
         );
         let info = session_info(&session);
         assert_eq!(info.id, "abc");
-        assert_eq!(info.cli, TerminalCli::Copilot);
+        assert_eq!(info.cli, SessionKind::Copilot);
         assert_eq!(info.status, TerminalSessionStatus::Starting);
         assert_eq!(info.work_dir, r"C:\fredo");
         assert_eq!(info.cols, 100);
@@ -1856,7 +1918,7 @@ mod tests {
     fn session_info_falls_back_to_generic_kind_when_kind_missing() {
         let mut session = TerminalSession::starting(
             "abc".into(),
-            TerminalCli::OpenCode,
+            SessionKind::OpenCode,
             "~".into(),
             80,
             24,
@@ -1871,7 +1933,7 @@ mod tests {
     fn session_info_serializes_camel_case_with_typed_error_kind() {
         let mut session = TerminalSession::starting(
             "abc".into(),
-            TerminalCli::Copilot,
+            SessionKind::Copilot,
             r"C:\fredo".into(),
             80,
             24,
@@ -1891,7 +1953,7 @@ mod tests {
     fn sessions_changed_payload_serializes_the_list() {
         let session = TerminalSession::starting(
             "s1".into(),
-            TerminalCli::OpenCode,
+            SessionKind::OpenCode,
             "~".into(),
             80,
             24,
@@ -1942,7 +2004,7 @@ mod tests {
     fn persisted_sessions_changed_payload_serializes_the_records() {
         let record = PersistedSession {
             id: "s1".into(),
-            cli: TerminalCli::OpenCode,
+            cli: SessionKind::OpenCode,
             work_dir: "~".into(),
             title: "OpenCode".into(),
             created_at: 1,

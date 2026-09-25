@@ -7,7 +7,7 @@ import {
   DEFAULT_CLI_KEY,
   WORK_DIR_KEY,
 } from '../settings';
-import { DEFAULT_CLI, normalizeCli, type TerminalCli } from '../sessionModel';
+import { DEFAULT_KIND, normalizeKind, type TerminalSessionKind } from '../sessionModel';
 import { CliOption } from './CliOption';
 
 /**
@@ -21,7 +21,7 @@ import { CliOption } from './CliOption';
  */
 export const TerminalSettings: React.FC = () => {
   const [workDir, setWorkDir] = useState('');
-  const [defaultCli, setDefaultCli] = useState<TerminalCli>(DEFAULT_CLI);
+  const [defaultCli, setDefaultCli] = useState<TerminalSessionKind>(DEFAULT_KIND);
   const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
@@ -29,10 +29,10 @@ export const TerminalSettings: React.FC = () => {
       await ensureTerminalSettingsMigrated();
       const [savedDir, savedCli] = await Promise.all([
         settingsService.get<string>(WORK_DIR_KEY, ''),
-        settingsService.get<string>(DEFAULT_CLI_KEY, DEFAULT_CLI),
+        settingsService.get<string>(DEFAULT_CLI_KEY, DEFAULT_KIND),
       ]);
       if (savedDir) setWorkDir(savedDir);
-      setDefaultCli(normalizeCli(savedCli));
+      setDefaultCli(normalizeKind(savedCli));
     })();
   }, []);
 
@@ -59,7 +59,7 @@ export const TerminalSettings: React.FC = () => {
         <RadioCard.Root
           value={defaultCli}
           onValueChange={(details) => {
-            setDefaultCli(normalizeCli(details.value));
+            setDefaultCli(normalizeKind(details.value));
             setStatus(null);
           }}
           orientation="horizontal"
@@ -67,6 +67,7 @@ export const TerminalSettings: React.FC = () => {
           mt={1}
         >
           <HStack align="stretch" gap={3}>
+            <CliOption value="shell" selected={defaultCli === 'shell'} />
             <CliOption value="opencode" selected={defaultCli === 'opencode'} />
             <CliOption value="copilot" selected={defaultCli === 'copilot'} />
           </HStack>

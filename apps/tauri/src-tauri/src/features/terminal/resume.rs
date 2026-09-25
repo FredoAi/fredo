@@ -3,10 +3,15 @@
 //! Resume uses each CLI's OWN mechanism — never a keep-alive/detach and never a
 //! silently substituted fresh session:
 //!
-//! | CLI      | exact id (`cli_session_id`) | last-session fallback |
+//! | Kind     | exact id (`cli_session_id`) | last-session fallback |
 //! |----------|-----------------------------|-----------------------|
 //! | OpenCode | `--session <id>`            | `--continue`          |
 //! | Copilot  | `--resume=<id>`             | `--continue`          |
+//! | Shell    | — (no CLI-native session)   | — (no flags)          |
+//!
+//! A plain-shell record has no CLI-native conversation to restore, so its
+//! resume appends NOTHING: it opens a fresh shell in the record's directory
+//! (Spec #2942 R-5.2 — never a false "resumed your conversation" promise).
 //!
 //! The flags were pinned by the ST-1 Phase-0 probe
 //! (`apps/tauri/src-tauri/tests/terminal_cli_resume_probe.rs`,
@@ -25,7 +30,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::features::terminal::state::TerminalCli;
+use crate::features::terminal::state::SessionKind;
 
 /// The hard bound on the resume pre-flight: no resume path may block
 /// indefinitely (NFR).
@@ -84,16 +89,19 @@ impl ResumeResult {
 /// `cli_session_id` is the record's captured CLI-native id. When it is present
 /// the CLI's exact-id flag is used; otherwise the deterministic last-session
 /// flag.
-pub fn resume_args(cli: TerminalCli, cli_session_id: Option<&str>) -> Vec<String> {
+pub fn resume_args(cli: SessionKind, cli_session_id: Option<&str>) -> Vec<String> {
     match cli {
-        TerminalCli::OpenCode => match cli_session_id {
+        SessionKind::OpenCode => match cli_session_id {
             Some(id) => vec!["--session".to_string(), id.to_string()],
             None => vec!["--continue".to_string()],
         },
-        TerminalCli::Copilot => match cli_session_id {
+        SessionKind::Copilot => match cli_session_id {
             Some(id) => vec![format!("--resume={id}")],
             None => vec!["--continue".to_string()],
         },
+        // A plain shell is not an agent CLI: no resume flag exists, and none is
+        // invented. The session simply opens a fresh shell in its directory.
+        SessionKind::Shell => Vec::new(),
     }
 }
 
@@ -165,7 +173,7 @@ mod tests {
     #[test]
     fn opencode_resume_uses_the_exact_session_flag_when_an_id_is_known() {
         assert_eq!(
-            resume_args(TerminalCli::OpenCode, Some("ses_abc")),
+            resume_args(SessionKind::OpenCode, Some("ses_abc")),
             vec!["--session".to_string(), "ses_abc".to_string()]
         );
     }
@@ -173,7 +181,7 @@ mod tests {
     #[test]
     fn opencode_resume_falls_back_to_continue_without_an_id() {
         assert_eq!(
-            resume_args(TerminalCli::OpenCode, None),
+            resume_args(SessionKind::OpenCode, None),
             vec!["--continue".to_string()]
         );
     }
@@ -181,7 +189,7 @@ mod tests {
     #[test]
     fn copilot_resume_uses_the_exact_resume_equals_form_when_an_id_is_known() {
         assert_eq!(
-            resume_args(TerminalCli::Copilot, Some("a1b2")),
+            resume_args(SessionKind::Copilot, Some("a1b2")),
             vec!["--resume=a1b2".to_string()]
         );
     }
@@ -192,15 +200,23 @@ mod tests {
         // Copilot's deterministic last-session flag; a bare `--resume` opens an
         // interactive picker.
         assert_eq!(
-            resume_args(TerminalCli::Copilot, None),
+            resume_args(SessionKind::Copilot, None),
             vec!["--continue".to_string()]
         );
     }
 
     #[test]
+    fn shell_resume_appends_no_cli_flags() {
+        // Spec #2942 R-5.2 — a plain-shell record reopens a fresh shell; no
+        // `--continue`/`--resume`/`--session` switch is ever emitted.
+        assert!(resume_args(SessionKind::Shell, None).is_empty());
+        assert!(resume_args(SessionKind::Shell, Some("ignored")).is_empty());
+    }
+
+    #[test]
     fn resume_never_emits_a_flag_for_the_other_cli() {
-        assert!(!resume_args(TerminalCli::OpenCode, Some("x")).iter().any(|a| a.starts_with("--resume")));
-        assert!(!resume_args(TerminalCli::Copilot, Some("x")).iter().any(|a| a == "--session"));
+        assert!(!resume_args(SessionKind::OpenCode, Some("x")).iter().any(|a| a.starts_with("--resume")));
+        assert!(!resume_args(SessionKind::Copilot, Some("x")).iter().any(|a| a == "--session"));
     }
 
     // ── Wire contract ───────────────────────────────────────────────────────

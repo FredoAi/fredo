@@ -5,7 +5,7 @@ import { ensureTerminalSettingsMigrated } from '../settings';
 import {
   COPILOT_AUTH_COMMAND,
   STATUS_LABEL,
-  normalizeCli,
+  normalizeKind,
   resumeBlockedReason,
   sessionTitle,
   sortPersistedSessions,
@@ -13,7 +13,7 @@ import {
   type PreviousSessionState,
   type ResumeBlockedReason,
   type ResumeResult,
-  type TerminalCli,
+  type TerminalSessionKind,
   type TerminalSessionInfo,
 } from '../sessionModel';
 import { SessionBar } from './SessionBar';
@@ -52,7 +52,7 @@ function isRealSession(session: TerminalSessionInfo): boolean {
 }
 
 interface DialogInit {
-  cli: TerminalCli | null;
+  cli: TerminalSessionKind | null;
   workDir: string | null;
   replaceId: string | null;
 }
@@ -158,7 +158,7 @@ export const TerminalWindow: React.FC = () => {
     }
   }, []);
 
-  const spawnSession = useCallback(async (cli: TerminalCli, workDir: string) => {
+  const spawnSession = useCallback(async (cli: TerminalSessionKind, workDir: string) => {
     const tempId = newPendingId();
     const optimistic: TerminalSessionInfo = {
       id: tempId,
@@ -265,7 +265,7 @@ export const TerminalWindow: React.FC = () => {
   }, []);
 
   const openDialog = useCallback(
-    (opts?: { cli?: TerminalCli | null; workDir?: string | null; replaceId?: string | null }) => {
+    (opts?: { cli?: TerminalSessionKind | null; workDir?: string | null; replaceId?: string | null }) => {
       setDialogInit({
         cli: opts?.cli ?? null,
         workDir: opts?.workDir ?? null,
@@ -277,7 +277,7 @@ export const TerminalWindow: React.FC = () => {
   );
 
   const handleConfirm = useCallback(
-    (cli: TerminalCli, workDir: string) => {
+    (cli: TerminalSessionKind, workDir: string) => {
       const replaceId = dialogInit.replaceId;
       setDialogOpen(false);
       if (replaceId) {
@@ -387,7 +387,7 @@ export const TerminalWindow: React.FC = () => {
       // opening, so this always spawns directly — no dialog, auto-selected.
       adapterBridge.listen<{ cli?: string; workDir?: string }>('terminal-open-request', (ev) => {
         if (!ev) return;
-        void spawnSession(normalizeCli(ev.cli), ev.workDir ?? '');
+        void spawnSession(normalizeKind(ev.cli), ev.workDir ?? '');
       }),
     );
 

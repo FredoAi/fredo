@@ -85,12 +85,13 @@ describe('Spec 2934 ST-3 — TerminalSettings', () => {
     );
   });
 
-  it('defaults to OpenCode when no default CLI has been chosen', async () => {
+  it('defaults to Terminal (plain shell) when no default has been chosen', async () => {
+    // Spec #2942 R-3.1/R-3.4 — absent/corrupt default → a plain Terminal.
     renderSettings();
-    const opencodeRadio = document.querySelector<HTMLInputElement>(
-      'input[type="radio"][value="opencode"]',
+    const shellRadio = document.querySelector<HTMLInputElement>(
+      'input[type="radio"][value="shell"]',
     );
-    await waitFor(() => expect(opencodeRadio).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(shellRadio).toHaveAttribute('aria-checked', 'true'));
   });
 
   it('persists a changed default CLI', async () => {

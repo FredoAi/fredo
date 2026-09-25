@@ -6,16 +6,16 @@ import {
   DEFAULT_CLI_KEY,
   WORK_DIR_KEY,
 } from '../settings';
-import { DEFAULT_CLI, normalizeCli, type TerminalCli } from '../sessionModel';
+import { DEFAULT_KIND, normalizeKind, type TerminalSessionKind } from '../sessionModel';
 import { CliOption } from './CliOption';
 
 interface NewSessionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Fired on confirm with the chosen CLI + (possibly blank) working directory. */
-  onConfirm: (cli: TerminalCli, workDir: string) => void;
+  onConfirm: (cli: TerminalSessionKind, workDir: string) => void;
   /** Prefill overrides (Retry / Choose directory flows); null = read Settings. */
-  initialCli?: TerminalCli | null;
+  initialCli?: TerminalSessionKind | null;
   initialWorkDir?: string | null;
 }
 
@@ -37,7 +37,7 @@ export const NewSessionDialog: React.FC<NewSessionDialogProps> = ({
   initialCli = null,
   initialWorkDir = null,
 }) => {
-  const [cli, setCli] = useState<TerminalCli>(DEFAULT_CLI);
+  const [cli, setCli] = useState<TerminalSessionKind>(DEFAULT_KIND);
   const [workDir, setWorkDir] = useState('');
 
   useEffect(() => {
@@ -46,11 +46,11 @@ export const NewSessionDialog: React.FC<NewSessionDialogProps> = ({
     void (async () => {
       await ensureTerminalSettingsMigrated();
       const [savedCli, savedDir] = await Promise.all([
-        settingsService.get<string>(DEFAULT_CLI_KEY, DEFAULT_CLI),
+        settingsService.get<string>(DEFAULT_CLI_KEY, DEFAULT_KIND),
         settingsService.get<string>(WORK_DIR_KEY, ''),
       ]);
       if (cancelled) return;
-      setCli(initialCli ?? normalizeCli(savedCli));
+      setCli(initialCli ?? normalizeKind(savedCli));
       setWorkDir(initialWorkDir ?? savedDir ?? '');
     })();
     return () => {
@@ -93,11 +93,12 @@ export const NewSessionDialog: React.FC<NewSessionDialogProps> = ({
                   </Text>
                   <RadioCard.Root
                     value={cli}
-                    onValueChange={(details) => setCli(normalizeCli(details.value))}
+                    onValueChange={(details) => setCli(normalizeKind(details.value))}
                     orientation="horizontal"
                     gap={3}
                   >
                     <HStack align="stretch" gap={3}>
+                      <CliOption value="shell" selected={cli === 'shell'} />
                       <CliOption value="opencode" selected={cli === 'opencode'} />
                       <CliOption value="copilot" selected={cli === 'copilot'} />
                     </HStack>

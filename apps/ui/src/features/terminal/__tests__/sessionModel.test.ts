@@ -4,7 +4,7 @@ import {
   displayWorkDir,
   errorStateMeta,
   lastActiveLabel,
-  normalizeCli,
+  normalizeKind,
   persistedAriaLabel,
   resumeBlockedReason,
   sessionAriaLabel,
@@ -57,12 +57,33 @@ describe('Spec 2934 ST-3 — sessionModel (titles, paths, typed error states)', 
     expect(displayWorkDir(null)).toBe('~');
   });
 
-  it('normalizes a stored default CLI safely (never invents copilot)', () => {
-    expect(normalizeCli('copilot')).toBe('copilot');
-    expect(normalizeCli('opencode')).toBe('opencode');
-    expect(normalizeCli('corrupt')).toBe('opencode');
-    expect(normalizeCli(null)).toBe('opencode');
-    expect(normalizeCli(undefined)).toBe('opencode');
+  it('normalizes a stored default kind safely (absent/corrupt → Terminal)', () => {
+    // Spec #2942 AC3 edge — absent or unrecognized → the plain-shell default.
+    expect(normalizeKind('shell')).toBe('shell');
+    expect(normalizeKind('copilot')).toBe('copilot');
+    expect(normalizeKind('opencode')).toBe('opencode');
+    expect(normalizeKind('corrupt')).toBe('shell');
+    expect(normalizeKind(null)).toBe('shell');
+    expect(normalizeKind(undefined)).toBe('shell');
+  });
+
+  it('titles a shell session with the Terminal label (Spec #2942)', () => {
+    const s = session({ id: 's', cli: 'shell' });
+    expect(CLI_LABEL.shell).toBe('Terminal');
+    expect(sessionTitle(s, [s])).toBe('Terminal');
+    expect(sessionAriaLabel(s, [s])).toBe('Terminal, Terminal, running');
+  });
+
+  it('adds the shell ordinal only when more than one Terminal-type session exists', () => {
+    const a = session({ id: 'a', cli: 'shell' });
+    const b = session({ id: 'b', cli: 'shell' });
+    expect(sessionTitle(a, [a, b])).toBe('Terminal 1');
+    expect(sessionTitle(b, [a, b])).toBe('Terminal 2');
+  });
+
+  it('maps a missing shell binary to a shell-specific state', () => {
+    const meta = errorStateMeta(session({ errorKind: 'missing-binary', cli: 'shell' }));
+    expect(meta.title).toBe('No shell found');
   });
 
   it('maps every typed error kind to its distinct state (missing binary names the CLI)', () => {

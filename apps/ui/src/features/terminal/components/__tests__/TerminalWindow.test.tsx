@@ -653,7 +653,9 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
  * alongside (R-4.2 `invalid-cwd`; R-4.1 `invalid-cli` is pinned above).
  */
 describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states', () => {
-  it('falls back to OpenCode when the launch intent carries no CLI (--dir only)', async () => {
+  it('falls back to the default kind (plain shell) when the launch intent carries no CLI (--dir only)', async () => {
+    // Spec #2942 R-3.1/R-3.2 — the shipped default kind is `shell`, so a
+    // defensive no-CLI intent resolves to a plain Terminal (not OpenCode).
     renderWindow();
     await waitFor(() => expect(listeners['terminal-open-request']).toBeTypeOf('function'));
 
@@ -661,7 +663,7 @@ describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('spawn_terminal_session', {
-        cli: 'opencode',
+        cli: 'shell',
         workDir: 'C:\\repo',
       }),
     );

@@ -14,7 +14,7 @@
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 
-use crate::features::terminal::state::TerminalCli;
+use crate::features::terminal::state::SessionKind;
 use crate::infrastructure::storage::feature_store::{ColumnDef, ColumnType, FeatureStore};
 
 /// The owning feature namespace (`feature_terminal_sessions`).
@@ -37,7 +37,7 @@ pub struct PersistedSession {
     /// Fredo record id (uuid v4); stable across restarts. A resume REUSES it as
     /// the live session id, so one logical session is exactly one record.
     pub id: String,
-    pub cli: TerminalCli,
+    pub cli: SessionKind,
     pub work_dir: String,
     /// Stable identity ("OpenCode", "OpenCode 2", "GitHub Copilot") minted once
     /// at creation — never re-derived, so ordinals do not renumber on restart.
@@ -89,7 +89,7 @@ impl PersistedSession {
     pub fn from_row(row: &Map<String, Value>) -> Option<Self> {
         Some(Self {
             id: row.get("id")?.as_str()?.to_string(),
-            cli: TerminalCli::parse(row.get("cli")?.as_str()?)?,
+            cli: SessionKind::parse(row.get("cli")?.as_str()?)?,
             work_dir: row.get("work_dir")?.as_str()?.to_string(),
             title: row.get("title")?.as_str()?.to_string(),
             created_at: row.get("created_at")?.as_u64()?,
@@ -202,7 +202,7 @@ pub fn evict_oldest_beyond_max(store: &FeatureStore) -> Result<u64> {
 /// positive ordinal appended when a record of the same CLI already exists
 /// (`"OpenCode"`, `"OpenCode 2"`, …). The title is persisted, so existing titles
 /// never renumber when a later record is removed.
-pub fn mint_title(cli: TerminalCli, existing: &[PersistedSession]) -> String {
+pub fn mint_title(cli: SessionKind, existing: &[PersistedSession]) -> String {
     let base = cli.label();
     let next = existing
         .iter()
@@ -267,7 +267,7 @@ pub fn newest_session_id_for_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::terminal::state::TerminalCli;
+    use crate::features::terminal::state::SessionKind;
     use std::path::PathBuf;
 
     fn store_with_table(dir: &tempfile::TempDir) -> FeatureStore {
@@ -276,7 +276,7 @@ mod tests {
         store
     }
 
-    fn record(id: &str, cli: TerminalCli, title: &str, last_active_at: u64) -> PersistedSession {
+    fn record(id: &str, cli: SessionKind, title: &str, last_active_at: u64) -> PersistedSession {
         PersistedSession {
             id: id.to_string(),
             cli,
@@ -294,7 +294,7 @@ mod tests {
     fn to_row_carries_exactly_the_seven_columns() {
         let session = PersistedSession {
             id: "s1".into(),
-            cli: TerminalCli::Copilot,
+            cli: SessionKind::Copilot,
             work_dir: r"C:\repo".into(),
             title: "GitHub Copilot".into(),
             created_at: 10,
@@ -325,7 +325,7 @@ mod tests {
     fn row_round_trips_through_from_row() {
         let session = PersistedSession {
             id: "s1".into(),
-            cli: TerminalCli::OpenCode,
+            cli: SessionKind::OpenCode,
             work_dir: r"C:\repo".into(),
             title: "OpenCode 2".into(),
             created_at: 10,
@@ -334,6 +334,26 @@ mod tests {
         };
         let back = PersistedSession::from_row(&session.to_row()).unwrap();
         assert_eq!(back, session);
+    }
+
+    #[test]
+    fn from_row_accepts_the_shell_kind() {
+        // Spec #2942 R-5.3: a parse gap here would make shell records silently
+        // INVISIBLE through `list`'s `filter_map` — the shell wire value MUST
+        // parse back into a record.
+        let session = PersistedSession {
+            id: "s1".into(),
+            cli: SessionKind::Shell,
+            work_dir: r"C:\repo".into(),
+            title: "Terminal".into(),
+            created_at: 10,
+            last_active_at: 20,
+            cli_session_id: None,
+        };
+        let back = PersistedSession::from_row(&session.to_row()).unwrap();
+        assert_eq!(back.cli, SessionKind::Shell);
+        assert_eq!(back, session);
+        assert_eq!(session.to_row().get("cli").unwrap(), &json!("shell"));
     }
 
     #[test]
@@ -358,7 +378,7 @@ mod tests {
     fn record_serializes_camel_case_for_the_ui_wire() {
         let session = PersistedSession {
             id: "s1".into(),
-            cli: TerminalCli::OpenCode,
+            cli: SessionKind::OpenCode,
             work_dir: r"C:\repo".into(),
             title: "OpenCode".into(),
             created_at: 10,
@@ -379,19 +399,32 @@ mod tests {
 
     #[test]
     fn mint_title_starts_at_the_bare_label() {
-        assert_eq!(mint_title(TerminalCli::OpenCode, &[]), "OpenCode");
-        assert_eq!(mint_title(TerminalCli::Copilot, &[]), "GitHub Copilot");
+        assert_eq!(mint_title(SessionKind::OpenCode, &[]), "OpenCode");
+        assert_eq!(mint_title(SessionKind::Copilot, &[]), "GitHub Copilot");
+        // Spec #2942 — the plain shell's stable title uses the "Terminal" label.
+        assert_eq!(mint_title(SessionKind::Shell, &[]), "Terminal");
+    }
+
+    #[test]
+    fn mint_title_numbers_shell_records_independently() {
+        let existing = vec![
+            record("a", SessionKind::Shell, "Terminal", 1),
+            record("b", SessionKind::OpenCode, "OpenCode", 2),
+        ];
+        assert_eq!(mint_title(SessionKind::Shell, &existing), "Terminal 2");
+        // A different kind's records do not affect the ordinal.
+        assert_eq!(mint_title(SessionKind::Copilot, &existing), "GitHub Copilot");
     }
 
     #[test]
     fn mint_title_appends_the_lowest_unused_ordinal() {
         let existing = vec![
-            record("a", TerminalCli::OpenCode, "OpenCode", 1),
-            record("b", TerminalCli::OpenCode, "OpenCode 2", 2),
+            record("a", SessionKind::OpenCode, "OpenCode", 1),
+            record("b", SessionKind::OpenCode, "OpenCode 2", 2),
         ];
-        assert_eq!(mint_title(TerminalCli::OpenCode, &existing), "OpenCode 3");
+        assert_eq!(mint_title(SessionKind::OpenCode, &existing), "OpenCode 3");
         // A different CLI's records do not affect the ordinal.
-        assert_eq!(mint_title(TerminalCli::Copilot, &existing), "GitHub Copilot");
+        assert_eq!(mint_title(SessionKind::Copilot, &existing), "GitHub Copilot");
     }
 
     #[test]
@@ -399,10 +432,10 @@ mod tests {
         // Records 1 and 3 exist (2 was removed): the next title is 4, so no
         // existing title is duplicated.
         let existing = vec![
-            record("a", TerminalCli::OpenCode, "OpenCode", 1),
-            record("c", TerminalCli::OpenCode, "OpenCode 3", 3),
+            record("a", SessionKind::OpenCode, "OpenCode", 1),
+            record("c", SessionKind::OpenCode, "OpenCode 3", 3),
         ];
-        assert_eq!(mint_title(TerminalCli::OpenCode, &existing), "OpenCode 4");
+        assert_eq!(mint_title(SessionKind::OpenCode, &existing), "OpenCode 4");
     }
 
     // ── Retention / eviction ────────────────────────────────────────────────
@@ -413,7 +446,7 @@ mod tests {
         let store = store_with_table(&dir);
 
         for i in 0..(MAX_RECORDS as u64 + 5) {
-            insert(&store, &record(&format!("r{i}"), TerminalCli::OpenCode, "OpenCode", i)).unwrap();
+            insert(&store, &record(&format!("r{i}"), SessionKind::OpenCode, "OpenCode", i)).unwrap();
         }
 
         let all = list(&store).unwrap();
@@ -430,7 +463,7 @@ mod tests {
     fn eviction_returns_zero_below_the_cap() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_table(&dir);
-        insert(&store, &record("only", TerminalCli::OpenCode, "OpenCode", 1)).unwrap();
+        insert(&store, &record("only", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
         assert_eq!(evict_oldest_beyond_max(&store).unwrap(), 0);
     }
 
@@ -440,7 +473,7 @@ mod tests {
     fn touch_refreshes_last_active_at_and_keeps_the_record() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_table(&dir);
-        insert(&store, &record("s1", TerminalCli::OpenCode, "OpenCode", 1)).unwrap();
+        insert(&store, &record("s1", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
 
         touch(&store, "s1", 42).unwrap();
         let record = get(&store, "s1").unwrap().unwrap();
@@ -453,7 +486,7 @@ mod tests {
     fn set_cli_session_id_persists_the_capture() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_table(&dir);
-        insert(&store, &record("s1", TerminalCli::OpenCode, "OpenCode", 1)).unwrap();
+        insert(&store, &record("s1", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
 
         set_cli_session_id(&store, "s1", "ses_abc").unwrap();
         assert_eq!(
@@ -466,8 +499,8 @@ mod tests {
     fn delete_removes_only_the_named_record() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_table(&dir);
-        insert(&store, &record("a", TerminalCli::OpenCode, "OpenCode", 1)).unwrap();
-        insert(&store, &record("b", TerminalCli::Copilot, "GitHub Copilot", 2)).unwrap();
+        insert(&store, &record("a", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
+        insert(&store, &record("b", SessionKind::Copilot, "GitHub Copilot", 2)).unwrap();
 
         assert_eq!(delete(&store, "a").unwrap(), 1);
         assert!(get(&store, "a").unwrap().is_none());
