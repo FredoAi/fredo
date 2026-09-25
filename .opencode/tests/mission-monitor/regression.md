@@ -179,3 +179,31 @@
 - This spec's capture suite: `.opencode/tests/copilot-capture/` (functional F-1..F-11 + N-1..N-7, regression CR-1..CR-11, smoke S-1..S-12).
 - `rtdb-provider-attribution` R-1..R-9 — provider vocabulary/resolution the Copilot rows use.
 - Unaffected mission-monitor legs above run as-is (graph/list/tool-detail/latency invariants).
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2945 — every supported agent CLI in one view, each labeled with its CLI)
+
+> Adding a second CLI's sessions to the list and a per-session CLI label must NOT change any existing OpenCode rendering or any mission-monitor behavior. Every invariant below is a FAIL if the spec branch changes it. Run on every testing phase that touches mission-monitor or the row pipeline.
+
+## Must NOT change (regression invariants) — Spec #2945
+
+- [ ] R-50 (AC-4, OpenCode rendering unchanged): an OpenCode session renders the SAME session list entry, graph nodes/edges/layout/colors, `── TOOLS (N) ──` section, token figures (INPUT/OUTPUT/TOTAL/TOTAL MESSAGES) and session name as the pre-spec baseline (same corpus). Compare node/edge sets + titles against a pre-spec capture.
+- [ ] R-51 (AC-4, names/rename/delete unchanged): `deriveDisplayName` (custom > derived > label), rename persistence and delete/tombstone behavior are unchanged for OpenCode sessions; a Copilot session present in the same store does not alter an OpenCode session's name, rename, or delete.
+- [ ] R-52 (no session merge/cross-contamination): a Copilot session and an OpenCode session in one store are never merged into one list entry / graph; no row's `provider` flips; provider-scoped filtering (if added) never hides OpenCode rows for an unfiltered view (extends #2933 R-47).
+- [ ] R-53 (provider attribution contract unchanged): the `provider` column on `chat_rows`/`tool_use_rows`/`agent_session_rows` and the single shared `resolve_provider_token` (`rtdb/attrs.rs`, NFR-6) are unchanged; the label reads the row's `provider` — never `telemetry_spans.provider` (mixed model-provider precedence is out of scope). No new extraction path introduced (extends `rtdb-provider-attribution` R-3/R-6).
+- [ ] R-54 (contract-trust): the UI reads the projected typed `provider`/label field directly — no `??` fallback chains, multi-path lookups, text filtering, or v1 hydration reintroduced (#568 cleanup not regressed). The single legitimate fallback is the explicit non-blank fallback for absent/unrecognized providers (AC-2).
+- [ ] R-55 (list qualification unchanged): the renderable-agent-activity qualification (shared predicate, #2896) is unchanged; a listed OpenCode session still renders ≥1 node once its rows land and no unlisted-but-landed session renders ≥1 node; a legitimate transient (just-started / rows landing) is still listed and resolves (G-074).
+- [ ] R-56 (ingest/classification + row-store semantics unchanged): the IngestClassifier mappings + canonical extract rules are unchanged (cross-check `telemetry_spans`/row counts + shape at the same instant); `insert` spread-merges, `update` is seq-guarded, `remove` only from retention eviction (`StreamContext.tsx`).
+- [ ] R-57 (#523 compositing + #509 subagent filter unchanged): the relationship registry first-wins stamp persists, a re-key never removes rows, child rows composite under the parent carrying `parentSessionId`/`compositedChildSessionId`; `build`/`plan` internal tool-execution sessions stay excluded from list + graph; user-requested @-subagent dispatches still render SubagentNodes.
+- [ ] R-58 (no re-render loop, #523): epoch-based recomputation; no `.length`/newly-created-object `useEffect`/`useMemo` deps added; no `Maximum update depth exceeded` after a Copilot session's rows land or on selection switch.
+- [ ] R-59 (theming + no cross-feature imports): no hardcoded hex/rgba or invalid `var(--token)NN` introduced by the label; all colors via semantic tokens → CSS vars → `tint()`/`color-mix()`; no new cross-feature import introduced.
+- [ ] R-60 (list first-paint/latency unchanged): the #2896 first-paint/list latency budget is preserved — provider labeling must not add a round-trip or a history scan (cross-check N-23/N-24).
+
+## Overlapping prior-feature suites (Spec #2945)
+
+- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-46..F-53 and N-23..N-26.
+- `.opencode/tests/copilot-capture/` — the capture-side suite that produces the Copilot rows this spec consumes (incl. the split-turn producer); run its regression legs unchanged.
+- `.opencode/tests/rtdb-provider-attribution/` — the `provider` column + `resolve_provider_token` the CLI label depends on; run R-1..R-9 unchanged.
+- `mission-monitor` R-45..R-49 (#2933 Copilot provider coexistence) — run as the direct precedence for this spec's AC-1/AC-2/AC-4.
+- `mission-monitor` R-33..R-44 (#2896 feature-owned realtime data layer) — run the unaffected legs; the label must not regress first-paint/list behavior.
