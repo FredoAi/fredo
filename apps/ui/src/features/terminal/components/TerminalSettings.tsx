@@ -7,32 +7,36 @@ import {
   DEFAULT_CLI_KEY,
   WORK_DIR_KEY,
 } from '../settings';
-import { DEFAULT_CLI, normalizeCli, type TerminalCli } from '../sessionModel';
+import { DEFAULT_KIND, normalizeKind, type TerminalSessionKind } from '../sessionModel';
 import { CliOption } from './CliOption';
 
 /**
  * Settings → Terminal (auto-discovered via `hasSettings` — no shell edit).
  *
  * Exposes the working directory (`terminal_work_dir`, migrated from the legacy
- * key) and the default CLI (`terminal_default_cli`) that preselects a new
- * session. There is intentionally NO in-panel heading — the settings surface
- * sidebar already labels the section "Terminal". Both keys persist through the
- * unified Save footer (`useSettingsSave`).
+ * key) and the default session TYPE (`terminal_default_cli`, whose value domain
+ * now includes the plain-shell `'shell'` kind) that preselects a new session.
+ * There is intentionally NO in-panel heading — the settings surface sidebar
+ * already labels the section "Terminal". Both keys persist through the unified
+ * Save footer (`useSettingsSave`).
+ *
+ * Changing a default writes ONLY those two setting keys — it never mutates a
+ * live session or a persisted record (Spec 2942 R-4.3).
  */
 export const TerminalSettings: React.FC = () => {
   const [workDir, setWorkDir] = useState('');
-  const [defaultCli, setDefaultCli] = useState<TerminalCli>(DEFAULT_CLI);
+  const [defaultKind, setDefaultKind] = useState<TerminalSessionKind>(DEFAULT_KIND);
   const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     void (async () => {
       await ensureTerminalSettingsMigrated();
-      const [savedDir, savedCli] = await Promise.all([
+      const [savedDir, savedKind] = await Promise.all([
         settingsService.get<string>(WORK_DIR_KEY, ''),
-        settingsService.get<string>(DEFAULT_CLI_KEY, DEFAULT_CLI),
+        settingsService.get<string>(DEFAULT_CLI_KEY, DEFAULT_KIND),
       ]);
       if (savedDir) setWorkDir(savedDir);
-      setDefaultCli(normalizeCli(savedCli));
+      setDefaultKind(normalizeKind(savedKind));
     })();
   }, []);
 
@@ -40,35 +44,36 @@ export const TerminalSettings: React.FC = () => {
     setStatus(null);
     try {
       await settingsService.set(WORK_DIR_KEY, workDir);
-      await settingsService.set(DEFAULT_CLI_KEY, defaultCli);
+      await settingsService.set(DEFAULT_CLI_KEY, defaultKind);
       setStatus({ ok: true, message: 'Saved.' });
     } catch (err) {
       setStatus({ ok: false, message: String(err) });
     }
-  }, [workDir, defaultCli]);
+  }, [workDir, defaultKind]);
 
   useSettingsSave(handleSave);
 
   return (
     <VStack align="stretch" gap={5} p={4}>
       <VStack align="stretch" gap={1}>
-        <Text fontSize="sm" fontWeight="600" color="fg.default">Default CLI</Text>
+        <Text fontSize="sm" fontWeight="600" color="fg.default">Default session type</Text>
         <Text fontSize="xs" color="fg.muted">
-          New sessions start with this CLI preselected.
+          New sessions start as this type.
         </Text>
         <RadioCard.Root
-          value={defaultCli}
+          value={defaultKind}
           onValueChange={(details) => {
-            setDefaultCli(normalizeCli(details.value));
+            setDefaultKind(normalizeKind(details.value));
             setStatus(null);
           }}
           orientation="horizontal"
           gap={3}
           mt={1}
         >
-          <HStack align="stretch" gap={3}>
-            <CliOption value="opencode" selected={defaultCli === 'opencode'} />
-            <CliOption value="copilot" selected={defaultCli === 'copilot'} />
+          <HStack align="stretch" gap={3} wrap="wrap">
+            <CliOption value="shell" selected={defaultKind === 'shell'} />
+            <CliOption value="opencode" selected={defaultKind === 'opencode'} />
+            <CliOption value="copilot" selected={defaultKind === 'copilot'} />
           </HStack>
         </RadioCard.Root>
       </VStack>

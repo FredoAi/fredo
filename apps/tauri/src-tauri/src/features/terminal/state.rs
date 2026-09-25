@@ -4,20 +4,32 @@ use std::sync::{Arc, Mutex};
 /// mount; it is trimmed oldest-first once the cap is exceeded.
 pub const OUTPUT_BUFFER_CAP: usize = 256 * 1024;
 
-/// Which CLI a session runs. Wire form is lowercase (`"opencode"` / `"copilot"`).
+/// Which kind of session a terminal runs. Wire form is lowercase
+/// (`"opencode"` / `"copilot"` / `"shell"`). Spec #2942 renamed the former
+/// 2-variant `TerminalCli` so a NON-CLI member (a plain OS shell) can live here
+/// without the "CLI" misnomer; the persisted column stays `cli` and the two
+/// existing wire values are unchanged (G-242 — no record rewrite).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum TerminalCli {
+pub enum SessionKind {
     OpenCode,
     Copilot,
+    /// A plain OS shell — the OS default terminal (PowerShell on Windows,
+    /// `$SHELL` elsewhere) with NO agent. Wire `"shell"`, label "Terminal".
+    Shell,
 }
 
-impl TerminalCli {
+/// The session kind a new session defaults to: a plain Terminal (Spec #2942
+/// R-3.1/R-3.4). Mirrors the UI's `DEFAULT_KIND` (`sessionModel.ts`).
+pub const DEFAULT_KIND: SessionKind = SessionKind::Shell;
+
+impl SessionKind {
     /// Parse the wire value sent by `spawn_terminal_session`.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "opencode" => Some(Self::OpenCode),
             "copilot" => Some(Self::Copilot),
+            "shell" => Some(Self::Shell),
             _ => None,
         }
     }
@@ -28,15 +40,18 @@ impl TerminalCli {
         match self {
             Self::OpenCode => "opencode",
             Self::Copilot => "copilot",
+            Self::Shell => "shell",
         }
     }
 
     /// The human label, matching `CLI_LABEL` in the UI (`sessionModel.ts`).
-    /// Used to mint a stable record title.
+    /// Used to mint a stable record title. The shell's user-facing label is
+    /// "Terminal" (Spec #2942 R-3.1).
     pub fn label(self) -> &'static str {
         match self {
             Self::OpenCode => "OpenCode",
             Self::Copilot => "GitHub Copilot",
+            Self::Shell => "Terminal",
         }
     }
 }
@@ -85,7 +100,7 @@ pub enum TerminalErrorKind {
 /// buffer, and lifecycle metadata.
 pub struct TerminalSession {
     pub id: String,
-    pub cli: TerminalCli,
+    pub cli: SessionKind,
     pub writer: Option<Box<dyn std::io::Write + Send>>,
     pub killer: Option<Box<dyn portable_pty::Child + Send>>,
     /// `child.process_id()` captured at spawn — the whole-tree kill anchor (AC5).
@@ -108,7 +123,7 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     /// A freshly allocated session before any process exists.
-    pub fn starting(id: String, cli: TerminalCli, work_dir: String, cols: u16, rows: u16) -> Self {
+    pub fn starting(id: String, cli: SessionKind, work_dir: String, cols: u16, rows: u16) -> Self {
         Self {
             id,
             cli,
@@ -180,7 +195,7 @@ impl TerminalState {
     pub fn insert_starting(
         &mut self,
         id: String,
-        cli: TerminalCli,
+        cli: SessionKind,
         work_dir: String,
         cols: u16,
         rows: u16,
@@ -282,48 +297,64 @@ mod tests {
         out
     }
 
-    // ── TerminalCli wire parsing ────────────────────────────────────────────
+    // ── SessionKind wire parsing ────────────────────────────────────────────
 
     #[test]
     fn cli_parse_accepts_the_wire_values() {
-        assert_eq!(TerminalCli::parse("opencode"), Some(TerminalCli::OpenCode));
-        assert_eq!(TerminalCli::parse("copilot"), Some(TerminalCli::Copilot));
+        assert_eq!(SessionKind::parse("opencode"), Some(SessionKind::OpenCode));
+        assert_eq!(SessionKind::parse("copilot"), Some(SessionKind::Copilot));
+        assert_eq!(SessionKind::parse("shell"), Some(SessionKind::Shell));
     }
 
     #[test]
     fn cli_parse_rejects_anything_else() {
-        assert_eq!(TerminalCli::parse("legacy-cli"), None);
-        assert_eq!(TerminalCli::parse("OpenCode"), None);
-        assert_eq!(TerminalCli::parse(""), None);
+        assert_eq!(SessionKind::parse("legacy-cli"), None);
+        assert_eq!(SessionKind::parse("OpenCode"), None);
+        assert_eq!(SessionKind::parse(""), None);
+        // The display label is NEVER a wire value — `shell` is the wire form.
+        assert_eq!(SessionKind::parse("Terminal"), None);
     }
 
     #[test]
     fn cli_serializes_lowercase() {
-        assert_eq!(serde_json::to_value(TerminalCli::OpenCode).unwrap(), serde_json::json!("opencode"));
-        assert_eq!(serde_json::to_value(TerminalCli::Copilot).unwrap(), serde_json::json!("copilot"));
+        assert_eq!(serde_json::to_value(SessionKind::OpenCode).unwrap(), serde_json::json!("opencode"));
+        assert_eq!(serde_json::to_value(SessionKind::Copilot).unwrap(), serde_json::json!("copilot"));
+        assert_eq!(serde_json::to_value(SessionKind::Shell).unwrap(), serde_json::json!("shell"));
     }
 
     #[test]
     fn cli_deserializes_from_its_wire_value() {
         // The persisted record round-trips `cli` through its lowercase wire form.
-        let opencode: TerminalCli = serde_json::from_value(serde_json::json!("opencode")).unwrap();
-        let copilot: TerminalCli = serde_json::from_value(serde_json::json!("copilot")).unwrap();
-        assert_eq!(opencode, TerminalCli::OpenCode);
-        assert_eq!(copilot, TerminalCli::Copilot);
+        let opencode: SessionKind = serde_json::from_value(serde_json::json!("opencode")).unwrap();
+        let copilot: SessionKind = serde_json::from_value(serde_json::json!("copilot")).unwrap();
+        let shell: SessionKind = serde_json::from_value(serde_json::json!("shell")).unwrap();
+        assert_eq!(opencode, SessionKind::OpenCode);
+        assert_eq!(copilot, SessionKind::Copilot);
+        assert_eq!(shell, SessionKind::Shell);
     }
 
     #[test]
     fn cli_wire_is_the_inverse_of_parse() {
-        assert_eq!(TerminalCli::OpenCode.wire(), "opencode");
-        assert_eq!(TerminalCli::Copilot.wire(), "copilot");
-        assert_eq!(TerminalCli::parse(TerminalCli::OpenCode.wire()), Some(TerminalCli::OpenCode));
-        assert_eq!(TerminalCli::parse(TerminalCli::Copilot.wire()), Some(TerminalCli::Copilot));
+        assert_eq!(SessionKind::OpenCode.wire(), "opencode");
+        assert_eq!(SessionKind::Copilot.wire(), "copilot");
+        assert_eq!(SessionKind::Shell.wire(), "shell");
+        for kind in [SessionKind::OpenCode, SessionKind::Copilot, SessionKind::Shell] {
+            assert_eq!(SessionKind::parse(kind.wire()), Some(kind));
+        }
     }
 
     #[test]
     fn cli_labels_match_the_ui() {
-        assert_eq!(TerminalCli::OpenCode.label(), "OpenCode");
-        assert_eq!(TerminalCli::Copilot.label(), "GitHub Copilot");
+        assert_eq!(SessionKind::OpenCode.label(), "OpenCode");
+        assert_eq!(SessionKind::Copilot.label(), "GitHub Copilot");
+        // Spec #2942 R-3.1 — the plain-shell kind's user-facing label.
+        assert_eq!(SessionKind::Shell.label(), "Terminal");
+    }
+
+    #[test]
+    fn default_kind_is_the_plain_shell() {
+        // Spec #2942 R-3.1 — no stored default → a plain Terminal is preselected.
+        assert_eq!(DEFAULT_KIND, SessionKind::Shell);
     }
 
     #[test]
@@ -371,7 +402,7 @@ mod tests {
     fn session_append_output_uses_the_live_cap() {
         let session = TerminalSession::starting(
             "s1".into(),
-            TerminalCli::OpenCode,
+            SessionKind::OpenCode,
             "~".into(),
             80,
             24,
@@ -387,7 +418,7 @@ mod tests {
 
     // ── Session map operations ──────────────────────────────────────────────
 
-    fn state_with(id: &str, cli: TerminalCli) -> TerminalState {
+    fn state_with(id: &str, cli: SessionKind) -> TerminalState {
         let mut state = TerminalState::new();
         state.insert_starting(id.to_string(), cli, "~".into(), 80, 24);
         state
@@ -395,11 +426,11 @@ mod tests {
 
     #[test]
     fn insert_starting_creates_a_starting_session_and_marks_it_active() {
-        let state = state_with("s1", TerminalCli::Copilot);
+        let state = state_with("s1", SessionKind::Copilot);
         assert_eq!(state.sessions.len(), 1);
         assert_eq!(state.active.as_deref(), Some("s1"));
         let session = state.get("s1").unwrap();
-        assert_eq!(session.cli, TerminalCli::Copilot);
+        assert_eq!(session.cli, SessionKind::Copilot);
         assert_eq!(session.status, TerminalSessionStatus::Starting);
         assert_eq!(session.cols, 80);
         assert_eq!(session.rows, 24);
@@ -411,18 +442,18 @@ mod tests {
 
     #[test]
     fn sessions_are_keyed_independently() {
-        let mut state = state_with("a", TerminalCli::OpenCode);
-        state.insert_starting("b".into(), TerminalCli::Copilot, "~".into(), 80, 24);
+        let mut state = state_with("a", SessionKind::OpenCode);
+        state.insert_starting("b".into(), SessionKind::Copilot, "~".into(), 80, 24);
         assert_eq!(state.sessions.len(), 2);
         assert_eq!(state.active.as_deref(), Some("b"));
-        assert_eq!(state.get("a").unwrap().cli, TerminalCli::OpenCode);
-        assert_eq!(state.get("b").unwrap().cli, TerminalCli::Copilot);
+        assert_eq!(state.get("a").unwrap().cli, SessionKind::OpenCode);
+        assert_eq!(state.get("b").unwrap().cli, SessionKind::Copilot);
         assert!(state.get("missing").is_none());
     }
 
     #[test]
     fn fail_marks_error_with_a_typed_kind() {
-        let mut state = state_with("s1", TerminalCli::Copilot);
+        let mut state = state_with("s1", SessionKind::Copilot);
         state.get_mut("s1").unwrap().fail(TerminalErrorKind::Prereq, "pwsh too old".into());
         let session = state.get("s1").unwrap();
         assert_eq!(session.status, TerminalSessionStatus::Error);
@@ -432,7 +463,7 @@ mod tests {
 
     #[test]
     fn remove_returns_the_session_and_clears_active() {
-        let mut state = state_with("s1", TerminalCli::OpenCode);
+        let mut state = state_with("s1", SessionKind::OpenCode);
         let removed = state.remove("s1");
         assert!(removed.is_some());
         assert!(state.sessions.is_empty());
@@ -442,8 +473,8 @@ mod tests {
 
     #[test]
     fn drain_sessions_empties_the_map_and_active() {
-        let mut state = state_with("a", TerminalCli::OpenCode);
-        state.insert_starting("b".into(), TerminalCli::Copilot, "~".into(), 80, 24);
+        let mut state = state_with("a", SessionKind::OpenCode);
+        state.insert_starting("b".into(), SessionKind::Copilot, "~".into(), 80, 24);
         let drained = state.drain_sessions();
         assert_eq!(drained.len(), 2);
         assert!(state.sessions.is_empty());
@@ -454,7 +485,7 @@ mod tests {
 
     #[test]
     fn finalize_exited_transitions_once_and_retains_the_buffer() {
-        let state = Mutex::new(state_with("s1", TerminalCli::Copilot));
+        let state = Mutex::new(state_with("s1", SessionKind::Copilot));
         {
             let mut guard = state.lock().unwrap();
             let session = guard.get_mut("s1").unwrap();
@@ -489,7 +520,7 @@ mod tests {
 
     #[test]
     fn finalize_exited_is_a_no_op_for_an_already_exited_session() {
-        let state = Mutex::new(state_with("s1", TerminalCli::OpenCode));
+        let state = Mutex::new(state_with("s1", SessionKind::OpenCode));
         {
             let mut guard = state.lock().unwrap();
             guard.get_mut("s1").unwrap().status = TerminalSessionStatus::Exited;
@@ -501,7 +532,7 @@ mod tests {
 
     #[test]
     fn mark_resumed_flags_the_session() {
-        let state = Mutex::new(state_with("s1", TerminalCli::OpenCode));
+        let state = Mutex::new(state_with("s1", SessionKind::OpenCode));
         assert!(!state.lock().unwrap().get("s1").unwrap().resumed);
         mark_resumed(&state, "s1");
         assert!(state.lock().unwrap().get("s1").unwrap().resumed);
@@ -509,7 +540,7 @@ mod tests {
 
     #[test]
     fn finalize_resume_failed_transitions_once_to_a_typed_error() {
-        let state = Mutex::new(state_with("s1", TerminalCli::OpenCode));
+        let state = Mutex::new(state_with("s1", SessionKind::OpenCode));
         {
             let mut guard = state.lock().unwrap();
             guard.get_mut("s1").unwrap().status = TerminalSessionStatus::Running;

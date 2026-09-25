@@ -1,5 +1,11 @@
 import type { IconType } from 'react-icons';
-import { LuFolderOpen, LuRotateCcw, LuTerminal, LuTriangleAlert } from 'react-icons/lu';
+import {
+  LuFolderOpen,
+  LuRotateCcw,
+  LuSquareTerminal,
+  LuTerminal,
+  LuTriangleAlert,
+} from 'react-icons/lu';
 
 /**
  * Canonical wire types for the Terminal multi-session model (Spec 2934 ST-3).
@@ -11,7 +17,12 @@ import { LuFolderOpen, LuRotateCcw, LuTerminal, LuTriangleAlert } from 'react-ic
  * regex over the message text is deleted).
  */
 
-export type TerminalCli = 'opencode' | 'copilot';
+/**
+ * Which kind of session a terminal runs (Spec #2942 renamed the former 2-variant
+ * `TerminalCli`). Wire values are lowercase; the persisted column stays `cli`.
+ * `'shell'` is a plain OS shell — no agent — with the display label "Terminal".
+ */
+export type TerminalSessionKind = 'opencode' | 'copilot' | 'shell';
 
 export type TerminalSessionStatus = 'starting' | 'running' | 'error' | 'exited';
 
@@ -36,7 +47,7 @@ export type TerminalErrorKind =
 /** One session's wire record (`list_terminal_sessions` / `terminal-sessions-changed`). */
 export interface TerminalSessionInfo {
   id: string;
-  cli: TerminalCli;
+  cli: TerminalSessionKind;
   status: TerminalSessionStatus;
   error: string | null;
   errorKind: TerminalErrorKind | null;
@@ -83,7 +94,7 @@ export const PREVIOUS_STATE_DOT_COLOR: Record<PreviousSessionState, string> = {
 /** One persisted session record (`list_persisted_terminal_sessions`), camelCase. */
 export interface PersistedTerminalSession {
   id: string;
-  cli: TerminalCli;
+  cli: TerminalSessionKind;
   workDir: string;
   /** STABLE identity minted once ("OpenCode", "OpenCode 2") — never re-derived. */
   title: string;
@@ -164,14 +175,17 @@ export function sortPersistedSessions(
 
 // ── Identity maps ─────────────────────────────────────────────────────────────
 
-export const CLI_LABEL: Record<TerminalCli, string> = {
+export const CLI_LABEL: Record<TerminalSessionKind, string> = {
   opencode: 'OpenCode',
   copilot: 'GitHub Copilot',
+  // Spec #2942 R-3.1 — the plain-shell kind's user-facing label.
+  shell: 'Terminal',
 };
 
-export const CLI_DESCRIPTION: Record<TerminalCli, string> = {
+export const CLI_DESCRIPTION: Record<TerminalSessionKind, string> = {
   opencode: 'Local agent CLI',
   copilot: "GitHub's agent CLI",
+  shell: 'Plain OS shell — no agent',
 };
 
 export const STATUS_LABEL: Record<TerminalSessionStatus, string> = {
@@ -189,11 +203,21 @@ export const STATUS_DOT_COLOR: Record<TerminalSessionStatus, string> = {
   exited: 'var(--text-secondary)',
 };
 
-export const DEFAULT_CLI: TerminalCli = 'opencode';
+/**
+ * The session kind a new session defaults to: a plain Terminal (Spec #2942
+ * R-3.1/R-3.4). Mirrors the backend's `DEFAULT_KIND` (`state.rs`).
+ */
+export const DEFAULT_KIND: TerminalSessionKind = 'shell';
 
-/** Safe fallback for a corrupt/absent stored default (never guesses a new value). */
-export function normalizeCli(value: unknown): TerminalCli {
-  return value === 'copilot' ? 'copilot' : 'opencode';
+/**
+ * Safe fallback for a corrupt/absent stored default. An absent or unrecognized
+ * value resolves to [`DEFAULT_KIND`] (a plain Terminal) — never a guessed agent
+ * CLI (Spec #2942 AC3 edge).
+ */
+export function normalizeKind(value: unknown): TerminalSessionKind {
+  return value === 'opencode' || value === 'copilot' || value === 'shell'
+    ? value
+    : DEFAULT_KIND;
 }
 
 // ── Derived display helpers ───────────────────────────────────────────────────
@@ -213,6 +237,45 @@ export function sessionTitle(
 }
 
 /**
+ * The name rendered for a session row (Spec 2942 ST-3, R-2.1/R-2.2).
+ *
+ * The persisted record's `title` is the SINGLE source of truth for a session's
+ * name: a rename writes that one column, and BOTH the live row and its
+ * previous-session row resolve through the same record map — one session
+ * identity, one name (`resume` reuses the record's `id`, so the maps agree by
+ * construction). Only a record-less row falls back to the derived ordinal title
+ * (`sessionTitle`); a failed spawn never persists a record, so it cannot carry a
+ * user-set name. `TerminalSessionInfo` deliberately keeps NO title field.
+ */
+export function sessionDisplayTitle(
+  session: TerminalSessionInfo,
+  sessions: readonly TerminalSessionInfo[],
+  persistedById: ReadonlyMap<string, PersistedTerminalSession>,
+): string {
+  return persistedById.get(session.id)?.title ?? sessionTitle(session, sessions);
+}
+
+// ── Rename contract (Spec 2942 ST-3) ──────────────────────────────────────────
+
+/**
+ * The client-side rename outcome. `ok: false` carries the message the row shows
+ * inline; a false result is ALWAYS a no-write (blank / refused).
+ */
+export interface RenameResult {
+  ok: boolean;
+  message?: string;
+}
+
+/** The window's rename handler: trims, refuses blank, writes atomically. */
+export type RenameHandler = (id: string, name: string) => Promise<RenameResult> | RenameResult;
+
+/** The one empty-name copy (UI/UX §2), shared by the validator and the row. */
+export const RENAME_EMPTY_MESSAGE = "Name can't be empty";
+
+/** The pinned inline-field length (UI/UX §2). */
+export const RENAME_MAX_LENGTH = 64;
+
+/**
  * Basename of a session's working directory for the sidebar's secondary line.
  * Blank / `.` / `~` render as `~` (the backend's home fallback).
  */
@@ -223,12 +286,18 @@ export function displayWorkDir(workDir: string | null | undefined): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** Composed accessible name for a sidebar row's select affordance. */
+/**
+ * Composed accessible name for a sidebar row's select affordance. `displayName`
+ * defaults to the derived title; a row with a persisted record passes its
+ * `sessionDisplayTitle` so the accessible name carries the user-set name too
+ * (Spec 2942 R-2.2).
+ */
 export function sessionAriaLabel(
   session: TerminalSessionInfo,
   sessions: readonly TerminalSessionInfo[],
+  displayName: string = sessionTitle(session, sessions),
 ): string {
-  return `${sessionTitle(session, sessions)}, ${CLI_LABEL[session.cli]}, ${STATUS_LABEL[session.status]}`;
+  return `${displayName}, ${CLI_LABEL[session.cli]}, ${STATUS_LABEL[session.status]}`;
 }
 
 // ── Error-state contract (typed, never regex) ─────────────────────────────────
@@ -252,21 +321,33 @@ export interface ErrorStateMeta {
 export function errorStateMeta(session: TerminalSessionInfo): ErrorStateMeta {
   switch (session.errorKind) {
     case 'missing-binary':
-      return session.cli === 'copilot'
-        ? {
-            icon: LuTerminal,
-            title: 'GitHub Copilot not found',
-            body: "`copilot` isn't on your PATH. Install the GitHub Copilot CLI, then retry.",
-            showRawMessage: false,
-            actions: ['retry', 'close'],
-          }
-        : {
-            icon: LuTerminal,
-            title: 'OpenCode not found',
-            body: "`opencode` isn't on your PATH. Install OpenCode, then retry.",
-            showRawMessage: false,
-            actions: ['retry', 'close'],
-          };
+      if (session.cli === 'copilot') {
+        return {
+          icon: LuTerminal,
+          title: 'GitHub Copilot not found',
+          body: "`copilot` isn't on your PATH. Install the GitHub Copilot CLI, then retry.",
+          showRawMessage: false,
+          actions: ['retry', 'close'],
+        };
+      }
+      if (session.cli === 'shell') {
+        // Spec #2942 — the plain-shell chain terminates in an always-present
+        // shell, so this is a rare host anomaly (no pwsh/powershell/cmd).
+        return {
+          icon: LuSquareTerminal,
+          title: 'No shell found',
+          body: 'No system shell was found. On Windows `cmd.exe` should always be present; on Unix set `$SHELL` or install `sh`, then retry.',
+          showRawMessage: false,
+          actions: ['retry', 'close'],
+        };
+      }
+      return {
+        icon: LuTerminal,
+        title: 'OpenCode not found',
+        body: "`opencode` isn't on your PATH. Install OpenCode, then retry.",
+        showRawMessage: false,
+        actions: ['retry', 'close'],
+      };
     case 'prereq':
       return {
         icon: LuTriangleAlert,
@@ -295,9 +376,9 @@ export function errorStateMeta(session: TerminalSessionInfo): ErrorStateMeta {
       // AC4 R-4.1 — an unknown CLI name never starts a session. The backend's raw
       // message names the offending value; it is shown verbatim (never parsed).
       return {
-        icon: LuTerminal,
+        icon: LuSquareTerminal,
         title: 'Unknown CLI',
-        body: "That isn't a supported CLI. Choose OpenCode or GitHub Copilot.",
+        body: "That isn't a supported session type. Choose Terminal, OpenCode or GitHub Copilot.",
         showRawMessage: true,
         actions: ['close'],
       };

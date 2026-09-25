@@ -49,6 +49,12 @@ interface TerminalPaneProps {
   /** The selected record's last failed resume (null while none). */
   resumeFailure: { reason: ResumeBlockedReason; message: string } | null;
   onFirstOutput: (sessionId: string) => void;
+  /**
+   * Spec #2942 ST-5: the ACTIVE session's last applied grid, lifted to the
+   * window so the NEXT spawn/resume can seed the PTY at pane size. Fired from
+   * the same fit receipt as `data-cols`/`data-rows` — never a new IPC.
+   */
+  onGridChange?: (cols: number, rows: number) => void;
   onClose: (session: TerminalSessionInfo) => void;
   onRetry: (session: TerminalSessionInfo) => void;
   onChooseDirectory: (session: TerminalSessionInfo) => void;
@@ -71,12 +77,13 @@ interface FitReceipt {
 /**
  * TerminalPane — the dominant `terminal-pane` region (Spec 2940 ST-3, UI/UX §2).
  *
- * It is the ONLY `flex=1 / minH=0 / minW=0` child of the window root, so it
- * absorbs all remaining height under the 44 px `SessionBar` — there is no dead
- * area. It hosts the stacked terminals (one mounted instance per live session,
- * visibility-toggled, never unmounted), the window-level state surfaces
- * (empty / all-ended), the per-session surfaces (starting / error / ended) and
- * the persisted-record surfaces (resume / resuming / blocked).
+ * It is the ONLY `flex=1 / minH=0 / minW=0` child of the window's row flex, so
+ * it absorbs all remaining WIDTH beside the compact vertical `TerminalSidebar`
+ * (200 px) and all of the height — there is no dead area. It hosts the stacked
+ * terminals (one mounted instance per live session, visibility-toggled, never
+ * unmounted), the window-level state surfaces (empty / all-ended), the
+ * per-session surfaces (starting / error / ended) and the persisted-record
+ * surfaces (resume / resuming / blocked).
  *
  * C-2/C-3 hooks: `data-surface` names the surface currently painted;
  * `data-cols`/`data-rows` carry the ACTIVE session's last fit receipt
@@ -95,6 +102,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
   resumingId,
   resumeFailure,
   onFirstOutput,
+  onGridChange,
   onClose,
   onRetry,
   onChooseDirectory,
@@ -183,7 +191,10 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
               onFirstOutput={onFirstOutput}
               onFit={
                 isActive
-                  ? (cols: number, rows: number) => setFit({ sessionId: session.id, cols, rows })
+                  ? (cols: number, rows: number) => {
+                      setFit({ sessionId: session.id, cols, rows });
+                      onGridChange?.(cols, rows);
+                    }
                   : undefined
               }
             />

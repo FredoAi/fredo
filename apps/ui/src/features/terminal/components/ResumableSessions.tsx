@@ -7,6 +7,7 @@ import {
   LuPlay,
   LuRefreshCw,
   LuRotateCcw,
+  LuSquareTerminal,
   LuTerminal,
   LuTrash2,
   LuTriangleAlert,
@@ -76,6 +77,10 @@ export const ResumeSessionState: React.FC<{
   onDelete: () => void;
 }> = ({ record, onResume, onStartFresh, onDelete }) => {
   const cliLabel = CLI_LABEL[record.cli];
+  // Spec #2942 R-5.2 — a persisted plain-shell record has no CLI-native
+  // conversation to restore. It reopens a FRESH shell in its directory, so the
+  // copy must never claim a conversation was resumed.
+  const isShell = record.cli === 'shell';
   return (
     <Flex
       role="region"
@@ -90,7 +95,9 @@ export const ResumeSessionState: React.FC<{
             {record.title}
           </Text>
           <Text fontSize="sm" color="fg.muted">
-            {`Resume this ${cliLabel} session in ${displayWorkDir(record.workDir)}.`}
+            {isShell
+              ? `Open a shell in ${displayWorkDir(record.workDir)}.`
+              : `Resume this ${cliLabel} session in ${displayWorkDir(record.workDir)}.`}
           </Text>
           <RecordMeta record={record} />
           <Text fontSize="xs" color="fg.muted" fontFamily="mono" truncate w="100%" title={record.workDir}>
@@ -107,7 +114,7 @@ export const ResumeSessionState: React.FC<{
             onClick={onResume}
           >
             <LuPlay size={14} />
-            Resume
+            {isShell ? 'Open' : 'Resume'}
           </Button>
           <Button variant="ghost" size="sm" onClick={onStartFresh}>
             <LuRotateCcw size={14} />
@@ -152,7 +159,11 @@ export const ResumingState: React.FC<{
         <Spinner size="md" color="var(--accent-primary)" aria-label={`Resuming ${record.title}`} />
         <Text fontSize="sm" color="fg.muted">{`Resuming ${record.title}…`}</Text>
         {showHint && !showLongHint && (
-          <Text fontSize="xs" color="fg.muted">Reconnecting to your last session…</Text>
+          <Text fontSize="xs" color="fg.muted">
+            {record.cli === 'shell'
+              ? 'Starting your shell…'
+              : 'Reconnecting to your last session…'}
+          </Text>
         )}
         {showLongHint && (
           <Text fontSize="xs" color="fg.muted">
@@ -199,7 +210,18 @@ export const ResumeBlockedState: React.FC<{
     { key: 'delete', label: 'Delete', icon: LuTrash2, onClick: onDelete },
   ];
 
-  if (reason === 'cli-missing') {
+  if (reason === 'cli-missing' && record.cli === 'shell') {
+    // Spec #2942 R-5.2 — a plain-shell record needs no agent CLI; when no shell
+    // could be resolved the copy must not name an agent that "isn't installed".
+    icon = LuSquareTerminal;
+    title = 'No shell found';
+    body =
+      'No system shell was found. Install one (or set $SHELL), then reopen Terminal. You can also start a fresh session.';
+    actions = [
+      { key: 'start-fresh', label: 'Start fresh', icon: LuRotateCcw, primary: true, onClick: onStartFresh },
+      { key: 'delete', label: 'Delete', icon: LuTrash2, onClick: onDelete },
+    ];
+  } else if (reason === 'cli-missing') {
     icon = LuTerminal;
     title = `${cliLabel} isn't installed`;
     body = `${cliLabel} wasn't found on your PATH. Install it, then reopen Terminal to resume. You can also start a fresh session.`;

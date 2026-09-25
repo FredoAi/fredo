@@ -37,6 +37,11 @@
  * rather than a render — the defect is a static sizing declaration and the
  * components carry heavy runtime dependencies.
  *
+ * #2942 ST-5/ST-6 — the 44 px horizontal rail is DELIBERATELY SUPERSEDED by the
+ * compact vertical `TerminalSidebar`; the root assertion stays direction-agnostic
+ * (`row` again, but that is UI/UX-owned) and the scan now also pins that the
+ * retired rail hooks cannot silently return.
+ *
  * `100vh` elsewhere is NOT asserted away: `Home.tsx:190` (the app shell root)
  * and the `AppDock` rail/pill calcs are legitimately viewport-relative shell
  * chrome, not feature-window content roots.
@@ -76,7 +81,10 @@ const DEV_MODE = `${BASE}/dev-mode/components/DevMode.tsx`;
 const DIAGRAM = `${BASE}/diagram/components/ArchitectureDiagram.tsx`;
 const TERMINAL_COMPONENTS = `${BASE}/terminal/components`;
 const TERMINAL_WINDOW = `${TERMINAL_COMPONENTS}/TerminalWindow.tsx`;
+const TERMINAL_SIDEBAR = `${TERMINAL_COMPONENTS}/TerminalSidebar.tsx`;
 const TERMINAL_SESSION_VIEW = `${TERMINAL_COMPONENTS}/TerminalSessionView.tsx`;
+/** The superseded #2940 horizontal rail module — must not return (#2942). */
+const TERMINAL_SESSION_BAR = `${TERMINAL_COMPONENTS}/SessionBar.tsx`;
 
 /** The served host document, read from the `apps/ui` vitest CWD (G-061-safe). */
 const HOST_DOCUMENT = '../tauri/index.html';
@@ -95,6 +103,9 @@ describe('#2924 ST-4 — feature roots size to the content region, not the viewp
     expect(files).toContain(TERMINAL_WINDOW);
     expect(files).toContain(TERMINAL_SESSION_VIEW);
     expect(files).toContain(`${TERMINAL_COMPONENTS}/TerminalPane.tsx`);
+    // Spec #2942 ST-5: the NEW vertical sidebar is the navigation surface and
+    // must be inside the viewport-unit scan.
+    expect(files).toContain(TERMINAL_SIDEBAR);
 
     for (const file of files) {
       const code = source(file);
@@ -120,6 +131,29 @@ describe('#2924 ST-4 — feature roots size to the content region, not the viewp
     // The invariant: a Flex window root that fills its definite-height content
     // region. `direction` / extra props are UI/UX-owned and are NOT pinned.
     expect(code).toMatch(/<Flex\b[^>]*\bh="100%"/);
+  });
+
+  it('pins the #2942 sidebar as the terminal navigation surface (the #2940 rail cannot return)', () => {
+    // The window composes the NEW vertical sidebar, and the sidebar module is
+    // the one carrying the `terminal-session-sidebar` root hook.
+    expect(source(TERMINAL_WINDOW)).toContain('TerminalSidebar');
+    expect(source(TERMINAL_SIDEBAR)).toContain('terminal-session-sidebar');
+
+    const files = collectTsx(TERMINAL_COMPONENTS);
+    // The superseded 44 px rail module is deleted…
+    expect(files).not.toContain(TERMINAL_SESSION_BAR);
+    // …and no PRODUCTION terminal component restores the superseded hooks (the
+    // window test legitimately asserts their ABSENCE, so tests are excluded).
+    const production = files.filter((file) => !file.includes('/__tests__/'));
+    for (const file of production) {
+      const code = source(file);
+      expect(code, `${file} must not restore the superseded rail`).not.toContain(
+        'terminal-session-bar',
+      );
+      expect(code, `${file} must not restore the superseded History popover`).not.toContain(
+        'terminal-previous-toggle',
+      );
+    }
   });
 
   it('served host document (apps/tauri/index.html) hands the content region a definite height', () => {

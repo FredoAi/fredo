@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLI_LABEL,
+  RENAME_EMPTY_MESSAGE,
+  RENAME_MAX_LENGTH,
   displayWorkDir,
   errorStateMeta,
   lastActiveLabel,
-  normalizeCli,
+  normalizeKind,
   persistedAriaLabel,
   resumeBlockedReason,
   sessionAriaLabel,
+  sessionDisplayTitle,
   sessionTitle,
   sortPersistedSessions,
   type PersistedTerminalSession,
@@ -57,12 +60,33 @@ describe('Spec 2934 ST-3 — sessionModel (titles, paths, typed error states)', 
     expect(displayWorkDir(null)).toBe('~');
   });
 
-  it('normalizes a stored default CLI safely (never invents copilot)', () => {
-    expect(normalizeCli('copilot')).toBe('copilot');
-    expect(normalizeCli('opencode')).toBe('opencode');
-    expect(normalizeCli('corrupt')).toBe('opencode');
-    expect(normalizeCli(null)).toBe('opencode');
-    expect(normalizeCli(undefined)).toBe('opencode');
+  it('normalizes a stored default kind safely (absent/corrupt → Terminal)', () => {
+    // Spec #2942 AC3 edge — absent or unrecognized → the plain-shell default.
+    expect(normalizeKind('shell')).toBe('shell');
+    expect(normalizeKind('copilot')).toBe('copilot');
+    expect(normalizeKind('opencode')).toBe('opencode');
+    expect(normalizeKind('corrupt')).toBe('shell');
+    expect(normalizeKind(null)).toBe('shell');
+    expect(normalizeKind(undefined)).toBe('shell');
+  });
+
+  it('titles a shell session with the Terminal label (Spec #2942)', () => {
+    const s = session({ id: 's', cli: 'shell' });
+    expect(CLI_LABEL.shell).toBe('Terminal');
+    expect(sessionTitle(s, [s])).toBe('Terminal');
+    expect(sessionAriaLabel(s, [s])).toBe('Terminal, Terminal, running');
+  });
+
+  it('adds the shell ordinal only when more than one Terminal-type session exists', () => {
+    const a = session({ id: 'a', cli: 'shell' });
+    const b = session({ id: 'b', cli: 'shell' });
+    expect(sessionTitle(a, [a, b])).toBe('Terminal 1');
+    expect(sessionTitle(b, [a, b])).toBe('Terminal 2');
+  });
+
+  it('maps a missing shell binary to a shell-specific state', () => {
+    const meta = errorStateMeta(session({ errorKind: 'missing-binary', cli: 'shell' }));
+    expect(meta.title).toBe('No shell found');
   });
 
   it('maps every typed error kind to its distinct state (missing binary names the CLI)', () => {
@@ -175,5 +199,65 @@ describe('Spec 2935 ST-4 — persisted records + resume contract', () => {
     const b = record({ id: 'b', lastActiveAt: 900 });
     const c = record({ id: 'c', lastActiveAt: 500 });
     expect(sortPersistedSessions([a, b, c]).map((r) => r.id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('Spec 2942 ST-3 — sessionDisplayTitle (the record title is the name)', () => {
+  function record(overrides: Partial<PersistedTerminalSession>): PersistedTerminalSession {
+    return {
+      id: 'p1',
+      cli: 'opencode',
+      workDir: 'C:\\Code\\fredo',
+      title: 'OpenCode',
+      createdAt: 1,
+      lastActiveAt: 1,
+      cliSessionId: null,
+      ...overrides,
+    };
+  }
+
+  it('resolves the persisted record title over the derived ordinal title', () => {
+    const a = session({ id: 'a', cli: 'opencode' });
+    const b = session({ id: 'b', cli: 'opencode' });
+    const sessions = [a, b];
+    // In a two-OpenCode window the derived title for `a` would be "OpenCode 1".
+    expect(sessionTitle(a, sessions)).toBe('OpenCode 1');
+
+    const map = new Map([['a', record({ id: 'a', title: 'Build agent' })]]);
+    expect(sessionDisplayTitle(a, sessions, map)).toBe('Build agent');
+    // A record-less row (a failed spawn never persists a record) keeps the
+    // derived title — it cannot carry a user-set name.
+    expect(sessionDisplayTitle(b, sessions, map)).toBe('OpenCode 2');
+  });
+
+  it('resolves the live row and its previous-session row through ONE record map', () => {
+    // `resume` REUSES the record's id, so the same id resolves both the live row
+    // and the previous row — they can never disagree (one identity, one name).
+    const live = session({ id: 'x', cli: 'opencode' });
+    const map = new Map([['x', record({ id: 'x', title: 'My agent' })]]);
+    expect(sessionDisplayTitle(live, [live], map)).toBe('My agent');
+  });
+
+  it('shows the renamed name after the record map updates (rename is one column)', () => {
+    const live = session({ id: 'x', cli: 'opencode' });
+    const before = new Map([['x', record({ id: 'x', title: 'OpenCode' })]]);
+    const after = new Map([['x', record({ id: 'x', title: 'Deploy bot' })]]);
+    expect(sessionDisplayTitle(live, [live], before)).toBe('OpenCode');
+    expect(sessionDisplayTitle(live, [live], after)).toBe('Deploy bot');
+  });
+
+  it('carries the display name in the row aria-label (renamed name, not the derived one)', () => {
+    const live = session({ id: 'x', cli: 'opencode', status: 'running' });
+    const map = new Map([['x', record({ id: 'x', title: 'Deploy bot' })]]);
+    expect(sessionAriaLabel(live, [live], sessionDisplayTitle(live, [live], map))).toBe(
+      'Deploy bot, OpenCode, running',
+    );
+    // The default (no override) keeps the derived title.
+    expect(sessionAriaLabel(live, [live])).toBe('OpenCode, OpenCode, running');
+  });
+
+  it('pins the rename contract constants (max length + the one empty-name copy)', () => {
+    expect(RENAME_MAX_LENGTH).toBe(64);
+    expect(RENAME_EMPTY_MESSAGE).toBe("Name can't be empty");
   });
 });

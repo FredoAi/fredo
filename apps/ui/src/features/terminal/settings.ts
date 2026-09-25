@@ -4,9 +4,13 @@ import { settingsService } from '../settings';
  * Terminal settings keys.
  *
  * `WORK_DIR_KEY` — the working directory new terminal sessions default to.
- * `DEFAULT_CLI_KEY` — the CLI a newly added session is preselected to (the
- * constant is defined here so the multi-session work can consume it; its
- * Settings control lands with that work and is NOT rendered yet).
+ * `DEFAULT_CLI_KEY` — the session TYPE a newly added session is preselected to.
+ * The stored value is a `TerminalSessionKind` wire value — `'opencode'`,
+ * `'copilot'`, or `'shell'` (the plain-shell "Terminal" type). An absent or
+ * unrecognized value falls back to `DEFAULT_KIND` through `normalizeKind`. The
+ * key name predates the third type and is REUSED unchanged, so the widened value
+ * domain needs no new key, no record rewrite, and no second migration
+ * (Spec 2942 ST-4).
  */
 export const WORK_DIR_KEY = 'terminal_work_dir';
 export const DEFAULT_CLI_KEY = 'terminal_default_cli';

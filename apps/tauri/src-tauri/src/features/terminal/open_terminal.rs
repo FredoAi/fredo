@@ -18,15 +18,16 @@ use tauri::{AppHandle, Manager};
 use crate::features::terminal::commands::{
     open_terminal_window_with_intent, TerminalOpenRequestPayload,
 };
-use crate::features::terminal::state::TerminalCli;
+use crate::features::terminal::state::{SessionKind, DEFAULT_KIND};
 use crate::infrastructure::ipc::CliResponse;
 use crate::infrastructure::storage::AppStore;
 
 /// The saved working directory a new session defaults to (mirrors the UI's
 /// `WORK_DIR_KEY`, `apps/ui/src/features/terminal/settings.ts`).
 pub const TERMINAL_WORK_DIR_KEY: &str = "terminal_work_dir";
-/// The saved default CLI (mirrors the UI's `DEFAULT_CLI_KEY`); absent → OpenCode
-/// (the UI's `DEFAULT_CLI`).
+/// The saved default session kind (mirrors the UI's `DEFAULT_CLI_KEY`); absent →
+/// a plain shell (the UI's `DEFAULT_KIND`). The stored value domain now also
+/// includes `"shell"` (Spec #2942 R-3.1/R-4.3).
 pub const TERMINAL_DEFAULT_CLI_KEY: &str = "terminal_default_cli";
 
 /// The named reasons an `open-terminal` invocation is refused in-app. Every one
@@ -55,7 +56,7 @@ impl OpenTerminalRejection {
 /// `invalid-cli` — never a clap parse error (the field is a free-form String).
 pub fn parse_cli_arg(
     raw: Option<&str>,
-) -> Result<Option<TerminalCli>, (OpenTerminalRejection, String)> {
+) -> Result<Option<SessionKind>, (OpenTerminalRejection, String)> {
     let Some(value) = raw else { return Ok(None) };
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -64,11 +65,11 @@ pub fn parse_cli_arg(
             "`--cli` requires a non-empty value".to_string(),
         ));
     }
-    match TerminalCli::parse(trimmed) {
-        Some(cli) => Ok(Some(cli)),
+    match SessionKind::parse(trimmed) {
+        Some(kind) => Ok(Some(kind)),
         None => Err((
             OpenTerminalRejection::UnknownCli,
-            format!("Unknown CLI `{trimmed}` — use `opencode` or `copilot`"),
+            format!("Unknown session type `{trimmed}` — use `shell`, `opencode` or `copilot`"),
         )),
     }
 }
@@ -128,16 +129,16 @@ pub async fn dispatch_open_terminal(
     let stored_cli = store
         .as_ref()
         .and_then(|state| state.get(TERMINAL_DEFAULT_CLI_KEY).ok().flatten())
-        .and_then(|value| TerminalCli::parse(value.trim()));
+        .and_then(|value| SessionKind::parse(value.trim()));
     let stored_dir = store
         .as_ref()
         .and_then(|state| state.get(TERMINAL_WORK_DIR_KEY).ok().flatten())
         .filter(|value| !value.trim().is_empty());
 
-    // `--cli` omitted → the saved default (else OpenCode); `--dir` omitted →
-    // the saved work dir (an empty dir lets `spawn_terminal_session` apply its
-    // home fallback).
-    let effective_cli = cli_arg.or(stored_cli).unwrap_or(TerminalCli::OpenCode);
+    // `--cli` omitted → the saved default (else a plain shell, the shipped
+    // `DEFAULT_KIND`); `--dir` omitted → the saved work dir (an empty dir lets
+    // `spawn_terminal_session` apply its home fallback).
+    let effective_cli = cli_arg.or(stored_cli).unwrap_or(DEFAULT_KIND);
     let effective_dir = dir_arg
         .or_else(|| stored_dir.map(|value| value.trim().to_string()))
         .unwrap_or_default();
@@ -175,8 +176,25 @@ mod tests {
 
     #[test]
     fn parse_cli_accepts_the_known_wire_values() {
-        assert_eq!(parse_cli_arg(Some("opencode")), Ok(Some(TerminalCli::OpenCode)));
-        assert_eq!(parse_cli_arg(Some("copilot")), Ok(Some(TerminalCli::Copilot)));
+        assert_eq!(parse_cli_arg(Some("opencode")), Ok(Some(SessionKind::OpenCode)));
+        assert_eq!(parse_cli_arg(Some("copilot")), Ok(Some(SessionKind::Copilot)));
+        // Spec #2942 R-3.2 — `--cli shell` is a first-class plain-shell request.
+        assert_eq!(parse_cli_arg(Some("shell")), Ok(Some(SessionKind::Shell)));
+    }
+
+    #[test]
+    fn parse_cli_rejection_names_all_three_valid_values() {
+        let (rejection, message) = parse_cli_arg(Some("bogus")).unwrap_err();
+        assert_eq!(rejection, OpenTerminalRejection::UnknownCli);
+        assert!(message.contains("shell"), "message should name shell: {message}");
+        assert!(message.contains("opencode"), "message should name opencode: {message}");
+        assert!(message.contains("copilot"), "message should name copilot: {message}");
+    }
+
+    #[test]
+    fn the_no_cli_fallback_kind_is_the_plain_shell() {
+        // Mirrors `dispatch_open_terminal`'s `cli_arg.or(stored).unwrap_or(...)`.
+        assert_eq!(DEFAULT_KIND, SessionKind::Shell);
     }
 
     #[test]
@@ -211,7 +229,7 @@ mod tests {
 
     #[test]
     fn parse_cli_trims_a_valid_value() {
-        assert_eq!(parse_cli_arg(Some("  opencode  ")), Ok(Some(TerminalCli::OpenCode)));
+        assert_eq!(parse_cli_arg(Some("  opencode  ")), Ok(Some(SessionKind::OpenCode)));
     }
 
     // ── --dir validation ────────────────────────────────────────────────────

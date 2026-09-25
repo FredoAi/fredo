@@ -21,6 +21,14 @@
  *   5. `onFit` is never called from a 0×0 box;
  *   6. the canvas host carries `data-testid="terminal-canvas-host-<sessionId>"`.
  *
+ * Spec #2942 ST-5 adds two rows:
+ *   7. (ii) ONE unconditional settling `resize_pty` after the mount fit, even
+ *      when ghostty reports an UNCHANGED grid (the "forced resize" behind the
+ *      residual "OpenCode TUI doesn't fill the pane" defect, made deterministic)
+ *      — and it stays exactly one (the dedupe);
+ *   8. (iv) a transiently too-small box (the documented 71×4 latch) is never
+ *      fitted, published, or pushed.
+ *
  * The receipt assertions are scoped to THIS component's callback (G-222) — no
  * global/order-dependent quantity is asserted.
  */
@@ -252,5 +260,62 @@ describe('Spec 2940 ST-2 — fit receipt (onFit) + canvas host hook', () => {
     const host = getByTestId('terminal-canvas-host-s-42');
     expect(host).toBeInTheDocument();
     await waitFor(() => expect(ghostty.opened).toBe(host));
+  });
+});
+
+/**
+ * Spec 2942 ST-5 (ii)/(iv) — the settling push + the too-small-box floor.
+ *
+ * (ii) ONE unconditional `resize_pty` follows the mount fit even when ghostty's
+ * FitAddon reports NO grid change (it is a no-op for an equal grid), which is the
+ * deterministic form of the tester-proven "forced resize" behind the residual
+ * "OpenCode TUI doesn't fill the pane" defect. (iv) The box floor: a transiently
+ * tiny box (the documented 71×4 latch) is never fitted, published, or pushed.
+ */
+describe('Spec 2942 ST-5 — settling resize_pty + too-small-box floor', () => {
+  /** This component's OWN `resize_pty` calls (never a global count — G-222). */
+  const resizeCalls = () =>
+    invoke.mock.calls.filter(([command]: unknown[]) => command === 'resize_pty');
+
+  it('pushes exactly ONE settling resize_pty after the mount fit even when the grid is unchanged', async () => {
+    // A box whose fitted grid EQUALS the terminal's initial 80×24 → the FitAddon
+    // reports no change, so only the settling push can seed the PTY.
+    const origWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+    const origHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+    Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get: () => 640 });
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get: () => 384 });
+    try {
+      renderTerminal(true);
+
+      await waitFor(() => expect(resizeCalls()).toHaveLength(1));
+      expect(resizeCalls()[0]).toEqual(['resize_pty', { sessionId: 'a', rows: 24, cols: 80 }]);
+
+      // The dedupe holds: a later mount/activation settling pass never re-pushes.
+      await nextFrame();
+      await nextFrame();
+      expect(resizeCalls()).toHaveLength(1);
+    } finally {
+      if (origWidth) Object.defineProperty(Element.prototype, 'clientWidth', origWidth);
+      if (origHeight) Object.defineProperty(Element.prototype, 'clientHeight', origHeight);
+    }
+  });
+
+  it('never fits, publishes, or pushes from a transiently too-small box (the 71×4 latch)', async () => {
+    const onFit = vi.fn();
+    renderWithChakra(<SessionTerminal sessionId="a" active onFit={onFit} />);
+    await waitFor(() => expect(ResizeObserverStub.instances).toHaveLength(1));
+    await nextFrame();
+
+    // The documented #2934 latch: a box below the floor in BOTH dimensions.
+    setBox(ghostty.opened!, 71, 4);
+    onFit.mockClear();
+
+    ResizeObserverStub.instances[0].trigger();
+    await nextFrame();
+    await nextFrame();
+    await nextFrame();
+
+    expect(onFit).not.toHaveBeenCalled();
+    expect(resizeCalls()).toHaveLength(0);
   });
 });
