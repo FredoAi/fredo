@@ -31,6 +31,9 @@ export { Toaster } from './shared/components/ui/toaster';
 // ── Hotkeys: shared Keycap primitive + single announcement channel (Spec #2946 ST-3)
 export { Keycap } from './shared/components/hotkeys/Keycap';
 export type { KeycapProps } from './shared/components/hotkeys/Keycap';
+// Exported for the SERVED Tauri entry (`apps/tauri/src/main.tsx`), which mounts
+// the engine for BOTH webviews; the library entry imports it directly (ST-4 rework).
+export { HotkeysProvider } from './shared/hotkeys/HotkeysProvider';
 export { describeBinding, describeSequence } from './shared/hotkeys/describe';
 export type { BindingDescription, DescribableBinding } from './shared/hotkeys/describe';
 export {

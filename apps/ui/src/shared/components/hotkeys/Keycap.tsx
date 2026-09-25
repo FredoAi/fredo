@@ -20,10 +20,10 @@
 
 import React from 'react';
 import { chakra } from '@chakra-ui/react';
-import { tint } from '@/shared/utils/colorTint';
-import { displayStroke, parseSequence } from '@/shared/hotkeys/keys';
-import { describeSequence } from '@/shared/hotkeys/describe';
-import type { Platform } from '@/shared/hotkeys/types';
+import { tint } from '../../utils/colorTint';
+import { displayStroke, parseSequence } from '../../hotkeys/keys';
+import { describeSequence } from '../../hotkeys/describe';
+import type { Platform } from '../../hotkeys/types';
 
 export interface KeycapProps {
   /** The serialized binding, e.g. `primary+space`, `@leader g`, `g g`. */
