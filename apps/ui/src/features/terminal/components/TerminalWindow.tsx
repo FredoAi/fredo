@@ -1,5 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Flex, VisuallyHidden } from '@chakra-ui/react';
+import { Button, Flex, Icon, Text, VisuallyHidden } from '@chakra-ui/react';
+import { LuCircleCheck, LuKeyboard } from 'react-icons/lu';
+import { Keycap } from '../../../shared/components/hotkeys/Keycap';
+import {
+  TERMINAL_PASSTHROUGH_TESTID,
+  TERMINAL_RELEASE_TESTID,
+  exitTerminalPassthrough,
+  installTerminalPassthrough,
+  useTerminalPassthrough,
+} from '../../../shared/hotkeys/terminalMode';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
 import {
@@ -103,6 +112,10 @@ export const TerminalWindow: React.FC = () => {
   // corrected on a CHANGED grid). A ref — not state — so a fit receipt never
   // re-renders the window; `null` on a cold mount keeps the backend default.
   const lastGridRef = useRef<{ cols: number; rows: number } | null>(null);
+
+  // Spec #2946 ST-12 — the continuous terminal-passthrough state (R-5.7/R-5.8).
+  // Focus tracking + the exit-chord handler; NO second keydown listener.
+  const passthrough = useTerminalPassthrough();
 
   // ── Derived model ──────────────────────────────────────────────────────────
   const allSessions = useMemo(() => [...sessions, ...pending], [sessions, pending]);
@@ -416,6 +429,11 @@ export const TerminalWindow: React.FC = () => {
     void navigator.clipboard?.writeText(COPILOT_AUTH_COMMAND).catch(() => {});
   }, []);
 
+  // Spec #2946 ST-12 — install terminal passthrough tracking for this webview.
+  // Idempotent; installs focus listeners + the exit-chord handler only (the ONE
+  // document keydown listener stays owned by the ST-4 engine).
+  useEffect(() => installTerminalPassthrough(), []);
+
   // ── Mount: idempotent migration, mount-time truth, live listeners ──────────
   useEffect(() => {
     let cancelled = false;
@@ -566,7 +584,7 @@ export const TerminalWindow: React.FC = () => {
   const announcement = actionAnnouncement || statusAnnouncement;
 
   return (
-    <Flex direction="row" h="100%" minH={0} w="100%" bg="bg.canvas">
+    <Flex direction="row" h="100%" minH={0} w="100%" bg="bg.canvas" position="relative">
       <TerminalSidebar
         sessions={allSessions}
         previous={previous}
@@ -602,6 +620,16 @@ export const TerminalWindow: React.FC = () => {
         onDelete={handleDeleteRequest}
         onAdd={() => openDialog()}
       />
+      {/* Spec #2946 ST-12 — the PERSISTENT passthrough indicator (R-5.8). It is
+          terminal chrome (OUTSIDE the `data-fredo-terminal-root` session root),
+          so activating its real release button moves focus out of the terminal
+          session and resumes dispatch immediately. */}
+      {selected && (
+        <TerminalPassthroughIndicator
+          active={passthrough.active}
+          exitChord={passthrough.exitChord}
+        />
+      )}
       <NewSessionDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
@@ -618,6 +646,74 @@ export const TerminalWindow: React.FC = () => {
         onConfirm={() => void handleDeleteConfirm()}
       />
       <VisuallyHidden aria-live="polite">{announcement}</VisuallyHidden>
+    </Flex>
+  );
+};
+
+export interface TerminalPassthroughIndicatorProps {
+  /** Passthrough is active — the terminal session owns the keyboard. */
+  readonly active: boolean;
+  /** The effective exit binding (`ctrl+shift+f10` unless rebound). */
+  readonly exitChord: string | null;
+}
+
+/**
+ * Spec #2946 ST-12 — the persistent, non-colour-only passthrough indicator
+ * (R-5.8; UI/UX §6).
+ *
+ * A terminal-chrome pill that names the exit chord with the shared `Keycap` and
+ * carries a REAL `<button>` (`hotkeys-terminal-passthrough-exit`) so an AT user
+ * can release the keyboard even mid-passthrough. The state is conveyed by an
+ * icon + a text swap (`Passthrough` → `Hotkeys active`), never by colour alone.
+ * It lives OUTSIDE the `data-fredo-terminal-root` session root so activating it
+ * leaves passthrough; it is present in every passthrough state (never a toast).
+ */
+export const TerminalPassthroughIndicator: React.FC<TerminalPassthroughIndicatorProps> = ({
+  active,
+  exitChord,
+}) => {
+  const StateIcon = active ? LuKeyboard : LuCircleCheck;
+  const stateLabel = active ? 'Passthrough' : 'Hotkeys active';
+  return (
+    <Flex
+      data-testid={TERMINAL_PASSTHROUGH_TESTID}
+      data-passthrough={active ? 'true' : 'false'}
+      role="group"
+      aria-label={`Terminal keyboard mode: ${stateLabel}`}
+      position="absolute"
+      top="3"
+      right="3"
+      zIndex={20}
+      align="center"
+      gap="2"
+      px="2"
+      py="1"
+      bg="bg.surface"
+      borderWidth="1px"
+      borderColor="border.subtle"
+      borderRadius="md"
+      boxShadow="var(--shadow-dialog)"
+    >
+      <Icon
+        as={StateIcon}
+        aria-hidden="true"
+        boxSize="14px"
+        color={active ? 'accent.fg' : 'status.success'}
+      />
+      <Text fontSize="xs" fontWeight="medium" color="fg.default" whiteSpace="nowrap">
+        {stateLabel}
+      </Text>
+      {exitChord && <Keycap sequence={exitChord} />}
+      <Button
+        type="button"
+        size="xs"
+        variant="solid"
+        colorPalette="accent"
+        data-testid={TERMINAL_RELEASE_TESTID}
+        onClick={exitTerminalPassthrough}
+      >
+        Release keyboard
+      </Button>
     </Flex>
   );
 };

@@ -43,6 +43,27 @@ export {
   useHotkeyAnnouncer,
 } from './shared/hotkeys/announcer';
 
+// ── Hotkeys: terminal passthrough mode + indicator state (Spec #2946 ST-12) ───
+export {
+  TERMINAL_ROOT_SELECTOR,
+  TERMINAL_RELEASE_TESTID,
+  TERMINAL_PASSTHROUGH_TESTID,
+  BODY_PASSTHROUGH_ATTR,
+  PASSTHROUGH_ANNOUNCEMENT_PREFIX,
+  getTerminalExitChord,
+  isTerminalFocused,
+  passthroughAnnouncementText,
+  getReleaseButton,
+  syncTerminalPassthrough,
+  exitTerminalPassthrough,
+  installTerminalPassthrough,
+  uninstallTerminalPassthrough,
+  isTerminalPassthroughInstalled,
+  resetTerminalModeForTests,
+  useTerminalPassthrough,
+} from './shared/hotkeys/terminalMode';
+export type { TerminalPassthroughState } from './shared/hotkeys/terminalMode';
+
 // ── Shared FREDO avatar (canonical mascot, Spec #2850) ───────────────────────
 export { FredoAvatar } from './shared/components/fredo-avatar';
 export type { FredoAvatarProps, FredoAvatarState } from './shared/components/fredo-avatar';
