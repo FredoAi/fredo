@@ -195,3 +195,28 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   consoles clean.
 - R-17 PASS — `list_terminal_sessions` = `[]` after the window closed; `sqlite_master` has no
   `%terminal%`/`%run_cli%` table.
+
+### Round 4 (Spec #2942) — 2026-09-24, spec/2942 @ 3241b90d (R-18/R-19/R-20 PASS)
+
+- **R-18 PASS (cold leg, G-250).** With the `terminal` window CLOSED (asserted 0 windows),
+  `fredo open-terminal --cli opencode --dir C:\Code\fredo\.opencode\tests\terminal\fixtures\workdir-a`
+  → exit 0, `{"cli":"opencode","outcome":"started","workDir":"…\\workdir-a"}`, ONE `terminal` window, a
+  RUNNING OpenCode session auto-selected (`aria-current="true"`, active surface, `data-surface="terminal"`)
+  — **cold 3/3** (`935dcdcc`/pid 2224, `cb4d3e6e`/pid 25676, `95f58362`/pid 22636). Warm control: the
+  same command with the window open spawned exactly ONE new session (`78ae767c`). Negatives: `--cli bogus`
+  → `{"outcome":"invalid-cli","message":"Unknown session type \`bogus\` — use \`shell\`, \`opencode\` or
+  \`copilot\`"}`; `--dir …\no-such-dir` → `{"outcome":"invalid-directory","message":"Working directory not
+  found: …"}`; `--cli " "` → `{"outcome":"invalid-argument","message":"\`--cli\` requires a non-empty
+  value"}`. The #2940 round-1 cold defect (window opens, nothing spawns) is fixed.
+- **R-19 PASS.** With the stored default-TYPE key cleared, no `--cli` → a plain shell; `--cli shell` →
+  `{"cli":"shell","outcome":"started"}`, a RUNNING plain shell session (`7041cae3`, workDir workdir-b,
+  PowerShell prompt, no agent process). A plain-shell launch never resolved to an OpenCode/Copilot agent.
+  **Disclosed defect (F-81):** `fredo open-terminal --help` still shows `--cli <opencode|copilot>` + "CLI
+  to start: `opencode` or `copilot`" — the new `shell` value is absent from the usage/help text
+  (`open_terminal.rs:11-12`); the runtime validation message is correct.
+- **R-20 PASS.** A plain-shell session spawned via the CLI persisted as a record
+  (`feature_terminal_sessions`, `cli='shell'`), listed in the sidebar's `Previous` group after the window
+  closed/reopened with **0 processes** started, and `Open` reopened a fresh shell in the record's
+  directory (no false conversation-resume copy).
+- **C-5 + #2942-delta teardown:** run 1 deleted 23 fixture-root records / run 2 deleted 0 (idempotent) →
+  0; the four settings keys + the default-TYPE key restored to their captured pre-run values.
