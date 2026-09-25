@@ -18,6 +18,32 @@ const config = defineConfig({
     button: { color: 'inherit' },
     'button[data-variant="outline"]': { borderColor: 'var(--border-color)' },
     'button[data-variant="outline"]:hover': { borderColor: 'var(--accent-primary)' },
+    /**
+     * Spec #2946 ST-11 (R-1.3) — the SINGLE global keyboard-focus guarantee.
+     *
+     * `:focus-visible` (never `:focus`) so pointer interaction never paints the
+     * ring; a 2px accent outline with a 2px offset makes focus visible on EVERY
+     * interactive control without any per-component opt-in. `outline: none` is
+     * never used (G-235's non-colour-only / visible requirement). Chakra emits
+     * `globalCss` into the `base` cascade layer, so an unlayered component
+     * `_focusVisible` style still wins — the existing per-component rings
+     * (`SettingsSurface.tsx:66`, `LauncherAppGrid.tsx:73`,
+     * `DetailPanel.tsx:292-293`) are preserved, not replaced.
+     */
+    ':focus-visible': {
+      outline: '2px solid var(--accent-primary)',
+      outlineOffset: '2px',
+    },
+    /**
+     * Nav surfaces: chrome on `--header-bg` and semantic navigation landmarks
+     * paint with the deepened `--accent-strong` (#2864 T6 — derived to clear
+     * 3:1 on nav surfaces). Selector-only — no markup is added (the nav
+     * chrome class + the semantic landmark role are both pre-existing).
+     */
+    '.fredo-window__header :focus-visible, [role="navigation"] :focus-visible, nav :focus-visible': {
+      outline: '2px solid var(--accent-strong)',
+      outlineOffset: '2px',
+    },
   },
   theme: {
     tokens: {
