@@ -56,6 +56,7 @@ import { getDefaultBinding } from '../../../shared/hotkeys/persistence';
 import { listHotkeyActions } from '../../../shared/hotkeys/registry';
 import { PLATFORM_RESERVED_COMBOS } from '../../../shared/hotkeys/reserved';
 import {
+  clearBinding,
   getKeymap,
   hydrateKeymap,
   resetAllBindings,
@@ -74,6 +75,7 @@ import type {
   PersistedKeymap,
   RegisteredHotkeyAction,
 } from '../../../shared/hotkeys/types';
+import { HotkeyConflictDialog, type HotkeyConflictResolution } from './HotkeyConflictDialog';
 
 // ── Testids (the plan's UI/UX names block — consumed by the tester) ──────────
 
@@ -86,8 +88,12 @@ export interface HotkeyConflictDialogContext {
   readonly candidate: string;
   readonly targetAction: RegisteredHotkeyAction | null;
   readonly report: ConflictReport;
-  /** `override` applies the captured chord with cross-tier precedence; `cancel` discards it. */
-  readonly onResolve: (resolution: 'override' | 'cancel') => void;
+  /**
+   * `override` keeps both bindings (the displaced one stays recorded + labelled);
+   * `rebind-other` clears the colliding binding(s) then saves this one; `cancel`
+   * discards the capture and changes nothing.
+   */
+  readonly onResolve: (resolution: HotkeyConflictResolution) => void;
 }
 
 export type HotkeyConflictDialogRenderer = (ctx: HotkeyConflictDialogContext) => React.ReactNode;
@@ -136,9 +142,13 @@ interface PaneRow {
 }
 
 interface PrecedenceTag {
-  readonly kind: 'wins' | 'fallback';
+  readonly kind: 'wins' | 'fallback' | 'duplicate';
   readonly featureId: string | null;
   readonly featureName: string | null;
+  /** The other action's title for a same-tier duplicate (override kept both). */
+  readonly otherTitle?: string;
+  /** `displaced` = this row's binding was displaced by an explicit override (R-5.2). */
+  readonly duplicateRole?: 'displaced' | 'overriding';
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -181,6 +191,18 @@ function rebindButtonId(actionId: HotkeyActionId): string {
   return `hotkeys-rebind-${actionId}`;
 }
 
+/**
+ * The focused window's first focusable control (R-1.4 fallback): used when the
+ * dialog's invoking rebind button is no longer in the DOM.
+ */
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusFirstFocusable(): void {
+  const first = document.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+  first?.focus();
+}
+
 const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <Text
     fontSize="xs"
@@ -211,6 +233,10 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
   const [capturing, setCapturing] = useState<CaptureState | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
+  /** displacedActionId → overridingActionId, set by an explicit override (R-5.2). */
+  const [displacedOverrides, setDisplacedOverrides] = useState<
+    Record<HotkeyActionId, HotkeyActionId>
+  >({});
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showResetAll, setShowResetAll] = useState(false);
@@ -241,6 +267,14 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
   }, [loadGeneration]);
 
   const retryLoad = useCallback(() => setLoadGeneration((generation) => generation + 1), []);
+
+  // Install the ST-7 resolve-before-save dialog through the ST-6 hand-off hook.
+  // The inline fallback below keeps the flow completable on the very first paint;
+  // thereafter the real dialog owns every same-tier resolution.
+  useEffect(() => {
+    registerHotkeyConflictDialog((ctx) => <HotkeyConflictDialog {...ctx} />);
+    return () => registerHotkeyConflictDialog(null);
+  }, []);
 
   useEffect(() => {
     if (capturing) captureFieldRef.current?.focus();
@@ -307,11 +341,51 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
         }
       }
     }
+
+    // Same-tier duplicates exist ONLY through an explicit override (a normal
+    // same-tier save is blocked by the dialog). Label BOTH rows and name the
+    // displaced one so it is never silently discarded (R-5.2).
+    for (const row of rows) {
+      for (const other of rows) {
+        if (row.action.actionId === other.action.actionId) continue;
+        if (row.action.tier !== other.action.tier) continue;
+        if (map.has(row.action.actionId)) continue;
+        const intersects = row.bindings.some((a) =>
+          other.bindings.some((b) => sequencesEqual(a, b)),
+        );
+        if (!intersects) continue;
+        const displacedByOther =
+          displacedOverrides[row.action.actionId] === other.action.actionId;
+        const overridesOther =
+          displacedOverrides[other.action.actionId] === row.action.actionId;
+        map.set(row.action.actionId, {
+          kind: 'duplicate',
+          featureId: row.featureId,
+          featureName: row.featureName,
+          otherTitle: other.action.title,
+          duplicateRole: displacedByOther
+            ? 'displaced'
+            : overridesOther
+              ? 'overriding'
+              : undefined,
+        });
+      }
+    }
     return map;
-  }, [rows]);
+  }, [rows, displacedOverrides]);
 
   const precedenceLabel = useCallback(
     (tag: PrecedenceTag): string => {
+      if (tag.kind === 'duplicate') {
+        const other = tag.otherTitle ?? 'another binding';
+        if (tag.duplicateRole === 'displaced') {
+          return `Displaced by "${other}" (override kept both)`;
+        }
+        if (tag.duplicateRole === 'overriding') {
+          return `Overrides "${other}" (both kept)`;
+        }
+        return `Same key as "${other}" (override kept)`;
+      }
       if (tag.kind === 'wins') return 'Feature wins here';
       const featureName = tag.featureName ?? 'feature';
       if (tag.featureId !== null && focusedFeatureId === tag.featureId) {
@@ -474,18 +548,78 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
     setCapturing(null);
   }, []);
 
+  /** Restore focus to the invoking rebind button (or the first focusable) after close. */
+  const focusInvoker = useCallback((actionId: HotkeyActionId) => {
+    window.requestAnimationFrame(() => {
+      const invoker = document.getElementById(rebindButtonId(actionId));
+      if (invoker) {
+        invoker.focus();
+        return;
+      }
+      focusFirstFocusable();
+    });
+  }, []);
+
   const resolveConflict = useCallback(
-    async (resolution: 'override' | 'cancel') => {
+    async (resolution: HotkeyConflictResolution) => {
       const pending = conflict;
       if (!pending) return;
       setConflict(null);
+      setCaptureError(null);
+
       if (resolution === 'cancel') {
-        announce('Rebind cancelled.');
+        announce('Conflict dismissed — neither binding was changed.');
+        focusInvoker(pending.actionId);
         return;
       }
+
+      const target =
+        listHotkeyActions().find((entry) => entry.actionId === pending.actionId) ?? null;
+      const targetTier: HotkeyTier =
+        target?.tier ?? (pending.actionId.startsWith('fredo.') ? 'fredo' : 'feature');
+      const sameTierCollisions = pending.report.colliding.filter(
+        (entry) => entry.tier === targetTier,
+      );
+
+      if (resolution === 'rebind-other') {
+        // Clear every same-tier binding on the chord, then save this one. The
+        // other action becomes unbound (re-bindable) — never silently replaced.
+        for (const entry of sameTierCollisions) {
+          await clearBinding(entry.actionId);
+        }
+      }
+
+      // Re-classify the LIVE keymap before committing: the classifier is the ONE
+      // authority and no resolution path may bypass it.
+      const verdict = classifyBinding({
+        candidate: pending.serialized,
+        targetActionId: pending.actionId,
+        targetTier,
+        keymap: getKeymap(),
+        actions: listHotkeyActions(),
+      });
+      if (verdict.kind === 'reserved' || verdict.kind === 'invalid') {
+        const reason = verdict.reason ?? 'Unavailable combination';
+        setSaveError(`${describeSequence(pending.serialized).display} — ${reason}.`);
+        announce(`Rejected: ${reason}`);
+        focusInvoker(pending.actionId);
+        return;
+      }
+
+      if (resolution === 'override' && sameTierCollisions.length > 0) {
+        // Record the displaced bindings BEFORE applying so the listing labels
+        // them — the displaced binding stays recorded (R-5.2).
+        setDisplacedOverrides((previous) => {
+          const next = { ...previous };
+          for (const entry of sameTierCollisions) next[entry.actionId] = pending.actionId;
+          return next;
+        });
+      }
+
       await applyCaptured(pending.actionId, pending.mode, pending.serialized);
+      focusInvoker(pending.actionId);
     },
-    [conflict, applyCaptured],
+    [conflict, applyCaptured, focusInvoker],
   );
 
   // ── Reset ───────────────────────────────────────────────────────────────────
