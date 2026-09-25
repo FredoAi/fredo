@@ -35,6 +35,7 @@ import {
 import { Box } from '@chakra-ui/react';
 import { closeWindow, focusWindow } from './windowStore';
 import { WindowChrome } from './WindowChrome';
+import { useWindowTraversal } from './useWindowActions';
 import type { WindowEntry } from './windowTypes';
 import {
   clampToWorkspace,
@@ -78,6 +79,10 @@ const GRIP_STYLE: Record<ResizeDir, CSSProperties> = {
 const GRIP_DIRS: ResizeDir[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
 
 export function WindowFrame({ window: win }: WindowFrameProps) {
+  // Spec #2946 ST-10 — arm keyboard window traversal while a window is rendered
+  // (idempotent + reference-counted; releases when the last frame unmounts).
+  useWindowTraversal();
+
   // Deterministic seed mirroring `resolveFloatGeometry(null)` (DEFAULT at 0,0)
   // for jsdom / pre-layout; the measured, CENTERED float is resolved in the
   // mount layout effect below (REQ-8 — no cascade offset).
@@ -244,6 +249,9 @@ export function WindowFrame({ window: win }: WindowFrameProps) {
       ref={surfaceRef}
       role="group"
       aria-label={win.title}
+      data-testid={`window-frame-${win.id}`}
+      data-focused={win.focused ? 'true' : 'false'}
+      data-focused-window={win.focused ? 'true' : undefined}
       position="absolute"
       display={hidden ? 'none' : 'flex'}
       flexDirection="column"
@@ -273,6 +281,7 @@ export function WindowFrame({ window: win }: WindowFrameProps) {
       />
 
       <Box
+        data-testid={`window-content-${win.id}`}
         flex="1"
         minHeight="0"
         overflow="auto"
