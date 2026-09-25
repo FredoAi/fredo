@@ -65,3 +65,31 @@ shipped webview.
 
 **Smoke verdict: FAIL (0/9 fully passing).** All live legs blocked by the app-wide
 boot failure. CI-suite parity alone does not evidence the served app.
+
+## Hotkeys smoke round 2 — result (served app boots; 8/9 PASS)
+
+Run on `spec/2946 @ 4ad4f802` (dev-env UP, driver `com.fredo.app`, main + terminal windows).
+
+- [x] S-1: App window renders — **PASS.** `#root` has 2 children; screenshot shows the Fredo
+      desktop / Settings window. Round-1 blank-webview signature gone.
+- [x] S-2: No console errors — **PASS.** Post-restart console has no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded` (only the pre-existing
+      `motion() is deprecated` warning).
+- [x] S-3: Hotkeys surface reachable — **PASS.** Settings → Hotkeys renders the single listing
+      (`FREDO (GLOBAL)`, 12 rows) with `hotkeys-search-input` / `hotkeys-reset-all-button` /
+      `hotkeys-reserved-list` / `hotkeys-vim-preset-toggle` / `hotkeys-macros-section`.
+- [x] S-4: Telemetry Settings accessible — **PASS.** Sibling nav sections (Companion,
+      Appearance, Fredo Setup, Telemetry) + feature sections all present alongside Hotkeys.
+- [x] S-5: Screenshot captured — **PASS.** Multiple JPEG captures succeeded.
+- [x] S-6: Ctrl+Space opens the launcher — **PASS.** From the resting desktop Ctrl+Space
+      opened the launcher and focused `TEXTAREA[data-testid="launcher-command-input"]`.
+- [x] S-7: Leader sequence shows pending hints — **PASS.** Vim preset leader = Space; arming
+      yields `data-fredo-pending-sequence="@leader"` + the which-key overlay naming `?`.
+- [x] S-8: A text field suppresses bare shortcuts — **PASS.** Typing `g?h` in the Hotkeys
+      search landed verbatim; no pending sequence, no action.
+- [ ] S-9: CI-parity gate — **PARTIAL.** `gh pr checks 2952` all green including
+      `ui-validate` (which now runs `pnpm --filter @fredo/tauri build:webview`). The local
+      `pnpm --filter @fredo/ui build` / `test:run` legs were not re-run this round (CI is the
+      authority, and round 2 changed no test code).
+
+**Smoke verdict: PASS (8/9; S-9 CI-parity delegated to the green PR checks).**
