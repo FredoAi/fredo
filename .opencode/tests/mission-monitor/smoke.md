@@ -40,7 +40,7 @@
 
 ## Mission Monitor multi-CLI quick path (Spec #2945)
 
-- [ ] S-17 (open for #2945): Open Mission Monitor — the session list renders with its usual entries; the sidebar/drawer chrome is unchanged and no console error appears.
-- [ ] S-18 (open for #2945): With both an OpenCode and a Copilot-shaped session present, each list row shows a non-blank CLI label; selecting the Copilot session renders its activity (chat node + tools or zero-tools) at the same structural detail as an OpenCode session. Cross-check `telemetry_spans` at the same instant.
-- [ ] S-19 (open for #2945): The selected session's header shows the same CLI label as its list row; a session with `provider = unknown` shows the explicit non-blank fallback and is not presented as OpenCode.
-- [ ] S-20 (open for #2945): UI build gate — `pnpm --filter @fredo/ui build` completes clean (TypeScript zero errors); if the Rust rollup/declaration is touched, `cargo check` + `cargo clippy --locked -- -D warnings` are clean.
+- [x] S-17 (PASS 2026-09-25 #2945 round 1): MM opened from the launcher ("Mission Monitor"); the session list rendered its usual entries (list + `Sessions` drawer chrome unchanged) with no `Error:`/`Uncaught`/`Maximum update depth exceeded` in the webview console.
+- [x] S-18 (PASS 2026-09-25 #2945 round 1): with a live OpenCode session + a Copilot split-turn fixture in one store, every row showed a non-blank CLI chip (`◈OpenCode`, `◆GitHub Copilot`, `?Unknown CLI`); selecting the Copilot session rendered chat node + `── TOOLS (1) ──` + `── RESPONSE ──` at the same structural detail as OpenCode. `telemetry_spans` + `chat_rows` cross-checked at the same instant.
+- [x] S-19 (PASS 2026-09-25 #2945 round 1): the selected session's header chip matched its list row (`◈OpenCode` / `◆GitHub Copilot`); a `provider = unknown` session showed the explicit `?Unknown CLI` fallback (non-blank, dashed warning border) and was never presented as OpenCode.
+- [x] S-20 (PASS 2026-09-25 #2945 round 1): `pnpm --filter @fredo/ui build` clean (2594 modules, zero TS errors); the Rust rollup/registry was touched → `cargo check --locked` + `cargo clippy --locked -- -D warnings` + `cargo test --locked` (950 lib + integration) all green.
