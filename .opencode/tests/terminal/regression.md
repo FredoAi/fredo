@@ -179,7 +179,90 @@ append evidence; on fail mark `FAIL`.
       Edge: close during `starting`; close while an error surface shows; close right after a
       self-exit.
 
+## #2942 no-change baseline (AC5) — the vertical-sidebar rework must not regress the live contract
+
+> Seeded at triage for Spec #2942. The rework changes the terminal window's COMPOSITION
+> (horizontal 44 px rail → vertical sidebar) and adds rename / plain-shell / settings-type.
+> It must NOT change the live behaviors proven by #2934/#2935/#2940 (concurrency, session-scoped
+> I/O, no re-spawn, resume, teardown receipt, telemetry path). Evidence is LIVE, same policy as
+> the parent rows. **Note:** the #2940 composition rows F-42/F-43/F-44/F-56 + N-19 are
+> SUPERSEDED by the #2942 functional rows F-57..F-61; R-15..R-19 below remain live (they assert
+> behavior, not the rail shape).
+
+> **EARS map (Architect-authoritative):** R-20 → R-1.1 + R-1.7; R-21 → the #2934 live contract
+> (F-6/F-8/F-10); R-22 → #2935 F-22..F-29; R-23 → R-4.1 + R-4.3 (G-242); R-24 → R-4.4 + G-250;
+> R-25 → the zero-orphan NFR; R-26 → #2935 R-14; R-27 → the Architect §8 supersede/Preserve list.
+> Published hooks/gates: see `functional.md` → "Requirement-ID reconciliation" (the two
+> sections disagree on the sidebar root testid / rename trigger / plain-shell value — bind to
+> either, flag a miss as a TOOLING GAP).
+
+- [ ] R-20 (**AC5 — pane invariants preserved under the vertical sidebar**): run `functional.md`
+      F-37..F-41 and F-54 against the reworked composition (re-measured with the new sidebar).
+      EXPECTED: the #2940 pane invariants T1–T4 + T12 still hold at 900×600 / 560×360 / 1400×900
+      (pane flush to its window edge, active surface rect == pane rect, `canvasHost` rect == pane
+      rect, no dead band ≥8 px, `docScrollH ≤ innerH + 1`) and the active grid still tracks the pane
+      (no 0×0 latch). The COMPOSITION is new; the invariants are not.
+      Edge: resize while a state surface shows; the min bound; light + dark.
+
+- [ ] R-21 (**AC5 — concurrency + session-scoped I/O + no-re-spawn**): run `functional.md`
+      F-6 (two concurrent sessions — OpenCode + a plain shell or Copilot — in ONE `terminal` window),
+      F-8 (per-session sentinel isolation both ways) and F-10 (switch preserves
+      `id`/`pid`/`startedAt`, no re-spawn) against the reworked sidebar.
+      EXPECTED: all three keep passing; a row click is not a remount/re-spawn.
+      Edge: two same-type sessions; switch during heavy output.
+
+- [ ] R-22 (**AC5 — resume + record payload unchanged**): run `functional.md` F-22..F-29 (persisted
+      list across window close/reopen + restart; real resume via the CLI's own switch; teardown
+      receipt `0 opencode/node/copilot process(es)`; records survive; close one leaves the peer).
+      EXPECTED: the record payload is still exactly `{id, cli, workDir, title, createdAt,
+      lastActiveAt, cliSessionId}`; resume semantics unchanged; the receipt unchanged. The new
+      plain-shell TYPE is additive — existing `opencode`/`copilot` resume paths are untouched.
+      Edge: resume a missing-dir record; resume while another session streams.
+
+- [ ] R-23 (**AC5 — settings governance + legacy migration, G-242**): run `regression.md` R-12
+      (Settings → Terminal keys still govern; the legacy `run_cli_work_dir` migration still behaves)
+      and `functional.md` F-71 (the legacy `terminal_default_cli` value migrates/resolves without
+      orphaning the key or mutating a record).
+      EXPECTED: `terminal_work_dir` still governs; the legacy work-dir migration is unchanged; the
+      default-TYPE control is additive (no pre-existing settings key removed/renamed out from under
+      the user); pre-existing records are byte-identical after the settings change.
+      Edge: unset keys → documented fallbacks; both legacy + new keys set (new wins).
+
+- [ ] R-24 (**AC5, G-250 — the cold `fredo open-terminal` path**): run `functional.md` F-77 / S-16
+      with the `terminal` window CLOSED.
+      EXPECTED: `fredo open-terminal --cli opencode --dir …\fixtures\workdir-a` → exit 0, the
+      `terminal` window opens, a session spawns and is auto-selected (cold 3/3 + a warm control);
+      invalid `--cli`/`--dir` still surface their typed outcomes. A cold leg that opens the window
+      but spawns nothing is a FAIL.
+      Edge: rapid cold invocations; window closed with a state surface showing.
+
+- [ ] R-25 (**AC5 — zero orphans after the rework**): with ≥2 live sessions, close the `terminal`
+      window; `process-hygiene.ps1 -List`.
+      EXPECTED: `0 opencode/node/copilot process(es)` (+ no leftover `pwsh`/`powershell` for the
+      plain-shell leg) and `0 unprotected orphan candidate(s)`; the main window stays responsive.
+      Edge: close during `starting`; close while an error surface shows; close right after a self-exit.
+
+- [ ] R-26 (**AC5 — telemetry/ingest path untouched**): run `regression.md` R-14.
+      EXPECTED: `git diff --stat main origin/spec/<N>` shows no `infrastructure/rtdb/**` or
+      `infrastructure/otlp/**`; a live `telemetry_spans` query records the Terminal-launched OpenCode
+      session (the plain-shell type emits no agent spans and must not corrupt the classifier).
+      Edge: a resumed session keeps its CLI session identity (no fresh duplicate).
+
+- [ ] R-27 (**AC5 — the retired rail contract is gone; the preserved contract is intact**): inspect
+      the served `terminal` window DOM.
+      EXPECTED (retired): `[data-testid="terminal-session-bar"]`, `[data-testid="terminal-previous-toggle"]`,
+      `[data-testid="terminal-previous-panel"]`, and the `[role="tablist"]`/`role="tab"` tab strip are
+      ABSENT. EXPECTED (preserved): `[data-testid="terminal-pane"]` with `data-surface`/`data-cols`/
+      `data-rows`, `[data-testid^="terminal-previous-session-row-"]` rows with `persistedAriaLabel`, and
+      `[data-testid^="terminal-canvas-host-"]` all present.
+      Edge: 0 previous records (no previous rows); a state surface showing.
+
 ## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
+
+> **#2942 delta:** ALSO snapshot/restore the default-TYPE key (published; fallback
+> `terminal_default_cli`) and snapshot every pre-existing record's `{id → title}` so a
+> rename row can prove G-242 (no pre-existing title changed) and no pre-existing settings key
+> is left mutated. Full detail: `functional.md` → "Teardown delta for #2942".
 
 > Suite-side, no product change: run the recipe below in the `terminal` window via
 > `tauri_webview_execute_js` after every run of these rows, then restore the four settings
