@@ -439,6 +439,21 @@ rect == `pane` rect ±2; **T4** `docScrollH ≤ innerH + 1` && `#root.offsetH ==
 session's `cols`/`rows` on `list_terminal_sessions`). Width is read via `offsetWidth`
 (G-040); positions via `getBoundingClientRect`.
 
+> **SUPERSEDED by #2942 — do NOT run the horizontal-rail rows as written.** Spec #2942
+> replaces the 44 px horizontal rail (`terminal-session-bar`), the `[role="tablist"]` /
+> `role="tab"` tab strip, and the `terminal-previous-toggle` + `terminal-previous-panel`
+> History popover with a **vertical session sidebar**. Therefore:
+> - tolerance **T5** (rail `h == 44`, full-width rail, tablist scroll) is **retired** — the
+>   #2942 tolerances T7–T12 below replace it;
+> - **F-42/F-43/F-44** (rail subordinate / tab legible / rail frames) are **superseded** by
+>   **F-57/F-58/F-59** (vertical sidebar geometry + rows + selection);
+> - **F-56** (`terminal-previous-toggle`/`-panel` reachable) is **superseded** by **F-60**
+>   (previous sessions reachable from the sidebar, no popover);
+> - **N-19** (tablist roving tabindex) is **superseded** by **N-26** (vertical list keyboard model).
+> **PRESERVED and still asserted:** `terminal-pane` + `data-surface`/`data-cols`/`data-rows`,
+> `terminal-previous-session-row-<id>` (+ `persistedAriaLabel`), the `SessionTerminal` Ghostty
+> canvas + `terminal-canvas-host-<id>`, and tolerances **T1–T4** (re-measured by #2942 F-61).
+
 ### AC1 — the terminal fills its pane (no dead area)
 
 - [ ] F-37 (**R-1.1, AC1 — default 900×600**): open the `terminal` window at the default size
@@ -696,6 +711,328 @@ record whose `workDir` is under the in-repo fixtures root and reports what remai
       contract) — the rework must not turn a switch into a re-spawn.
 - [ ] N-24 (**static pin coverage**): the source pin covers the reworked root and its files
       (see F-53).
+
+## #2942 — vertical sidebar, rename, plain-shell default, Settings, persistence (AC1–AC5)
+
+> Seeded at triage for Spec #2942. The 44 px horizontal rail is replaced by a **compact
+> vertical session sidebar** (AC1); a session's **name is editable** (AC2); a newly added
+> session defaults to a **plain shell** with no agent (AC3); **Settings → Terminal** chooses
+> the default session type + working directory (AC4); records for all three types persist
+> with their type + renamed name (AC5). The ticket's **named risk** — the OpenCode TUI not
+> filling the pane until a forced `resize_pty` — is F-76.
+>
+> **Evidence policy: LIVE + MEASURED.** AC1 is cleared only by the geometry NUMBERS from the
+> SERVED host document (recipe below) at DEFAULT / MIN 560×360 / RESIZED (G-251) — a screenshot
+> never clears it. Cold rows require the window CLOSED (G-250). Rename/type upgrades prove
+> record KEY IDENTITY (G-242). Every OpenCode leg needs a live `telemetry_spans` receipt.
+>
+> **Supersede/PRESERVE (see the note on the #2940 AC1/AC2 sections):** T5 + F-42/F-43/F-44/F-56/
+> N-19 are retired; T1–T4, `terminal-pane`/`data-surface`, `terminal-previous-session-row-<id>`,
+> and `terminal-canvas-host-<id>` are preserved.
+>
+> **Bind to the convergence-reconciled hooks (binding — no fallbacks).** Sidebar root
+> `terminal-session-sidebar`; live row `terminal-session-row-<id>`; rename affordance
+> `terminal-session-rename-<id>` + inline input `terminal-session-rename-input-<id>`; plain-shell
+> type value `shell` (display label "Terminal"). A missing hook is a **TOOLING GAP** — record it, do not improvise.
+
+### Requirement-ID reconciliation (Architect `### Requirements` EARS, authoritative)
+
+> The #2942 rows below were drafted in parallel with the Architect's EARS; map them to the
+> authoritative IDs before reporting. **Row → EARS:** F-57 → **R-1.1**; F-58 → **R-1.5**;
+> F-59 → **R-1.2 + R-1.3**; F-60 → **R-1.4**; F-61 → **R-1.1 + R-1.7**; F-62 → **R-2.2 +
+> R-2.5**; F-63 → **R-2.4**; F-64 → **R-2.4** (record key identity); F-65 → **R-2.3**;
+> F-66 → **R-3.1 + R-3.4**; F-67 → **R-3.2**; F-68 → **R-3.3**; F-69 → **R-4.1**;
+> F-70 → **R-4.2**; F-71 → **R-4.1 + R-4.3 + R-3.4**; F-72 → **R-4.3**; F-73 → **R-5.1**;
+> F-74 → **R-5.2**; F-75 → **R-5.3**; F-76 → **R-1.6** (the named fit risk); F-77 → **R-4.4**
+> (+ G-250); F-78 → **R-3.1** (cold); **F-79 → R-2.1** (added below).
+>
+> **Published hooks — RECONCILED at convergence (binding; no fallbacks).** The orchestrator
+> adjudicated the inter-section conflicts (G-023): sidebar root `terminal-session-sidebar`;
+> rename trigger `terminal-session-rename-<id>` + input `terminal-session-rename-input-<id>`;
+> plain-shell wire value `shell` (frontend `TerminalSessionKind`; display label "Terminal");
+> rename command `rename_terminal_session_record {sessionId, name}`; `TerminalSessionInfo` keeps
+> NO `title` (the name resolves via the persisted record map). Read the served DOM / invoke the
+> shipped command and record the ACTUAL name in the evidence.
+>
+> **Published gate values (G-235, controls in parentheses):** row height ≤ **32 px** (control:
+> 36 px tab `SessionBar.tsx:67` / ~46 px previous row); sidebar width **200 px fixed** (control:
+> retired 240 px); pane width ≥ **0.60 × innerW** (control: == innerW); pane height ==
+> **innerH ±2** (control: innerH − 44); resized samples **700×500 / 1200×800** (fallback
+> 1400×900). A rename/kind-widening rewrites NO record and adds NO settings key (Architect
+> NFR: reuse `terminal_default_cli`, widened domain; absent/unknown → `shell`).
+
+- [ ] F-79 (**AC2, R-2.1 — the rename affordance is an inline editable field and the ONLY
+      editable field**): activate the per-row rename affordance (kebab / F2) on a LIVE row, and
+      separately on a PREVIOUS row.
+      EXPECTED: an inline editable field renders for that session's name, focused + labelled
+      (`aria-label="Session name"` per UI/UX); Enter commits, Esc cancels with NO write; NO other
+      session field is editable anywhere (a work-dir/type edit affordance is a FAIL).
+      Edge: F2 on a focused row; Enter on a previous row; blur-commit vs Enter-commit.
+
+### #2942 geometry recipe (served host document — G-251)
+
+```js
+(() => {
+  const px = (n) => Math.round(n * 100) / 100;
+  const r = (el) => { const b = el.getBoundingClientRect();
+    return { x: px(b.x), y: px(b.y), w: px(b.width), h: px(b.height),
+             right: px(b.right), bottom: px(b.bottom) }; };
+  const root = document.getElementById('root');
+  const sidebar = document.querySelector('[data-testid="terminal-session-sidebar"]');
+  const pane = document.querySelector('[data-testid="terminal-pane"]');
+  const rows = Array.from(document.querySelectorAll('[data-testid^="terminal-session-row-"]'));
+  const surface = document.querySelector('[data-testid^="terminal-surface-"][data-active="true"]');
+  const host = document.querySelector('[data-testid^="terminal-canvas-host-"]');
+  const cs = sidebar && getComputedStyle(sidebar);
+  return {
+    innerW: window.innerWidth, innerH: window.innerHeight,
+    docScrollW: document.documentElement.scrollWidth, docScrollH: document.documentElement.scrollHeight,
+    root: root && { ...r(root), offsetW: root.offsetWidth, offsetH: root.offsetHeight },
+    sidebar: sidebar && { ...r(sidebar), offsetW: sidebar.offsetWidth, offsetH: sidebar.offsetHeight,
+      clientH: sidebar.clientHeight, scrollH: sidebar.scrollHeight, clientW: sidebar.clientWidth,
+      scrollW: sidebar.scrollWidth, overflowY: cs.overflowY, flexDirection: cs.flexDirection },
+    rows: rows.map((el) => ({ testid: el.dataset.testid, ...r(el) })),
+    pane: pane && { ...r(pane), offsetW: pane.offsetWidth, offsetH: pane.offsetHeight,
+      dataSurface: pane.dataset.surface, dataCols: pane.dataset.cols, dataRows: pane.dataset.rows },
+    surface: surface && r(surface),
+    host: host && r(host),
+    paneWidthShare: pane ? px(pane.offsetWidth / window.innerWidth) : null,
+  };
+})()
+```
+
+**#2942 tolerances (PASS gates):** **T7** `sidebar.offsetH ≥ innerH − 2` && `offsetH > offsetW`;
+**T8** every live row `h ≤ 32 ±1` && `row.w ≈ sidebar.offsetW ±2`; **T9**
+`pane.offsetW ≈ innerW − sidebar.offsetW ±2` && `paneWidthShare ≥` the ABSOLUTE floor (fallback
+0.60) && `pane.offsetH ≈ innerH ±2`; **T10** `docScrollW ≤ innerW + 1` && `#root.offsetW/offsetH
+≈ innerW/innerH ±2`; **T11** at 560×360 with 10+ sessions `sidebar.scrollH > sidebar.clientH` &&
+`overflowY ∈ {auto, scroll}`; **T12** `pane.right ≈ innerW ±2`, `pane.bottom ≈ innerH ±2`,
+`surface` rect == pane rect ±2, `host` rect == pane rect ±2, `pane.bottom − canvas.bottom ≤ 8` (the
+disclosed ghostty scrollbar-width reservation is a host-flush gutter — record the number).
+
+> **G-235 governing tier:** T9's pane-width share and the sidebar-width / row-height gates are NEW
+> **absolute floors** — the pre-change 44 px-rail control (pane share ~87.8% at 560) cannot satisfy
+> a no-worse-than-control width gate for a vertical sidebar, so the floor governs. T12's pane
+> invariants (height, dead band, host flush, docScroll) use the **no-worse-than-control** tier
+> against the #2940 build. Measure BOTH builds per preset BEFORE adjudicating anything.
+
+### AC1 — compact vertical sidebar
+
+- [ ] F-57 (**AC1, R-1.1 — served-doc geometry: DEFAULT 900×600 / MIN 560×360 / RESIZED 1400×900**):
+      open the `terminal` window with ≥1 live session; run the #2942 recipe at each size
+      (`tauri_manage_window resize terminal 560 360`, then `1400 900`).
+      EXPECTED (numbers): T7 + T8 + T9 + T10 hold at every size — the sidebar is a full-height
+      COLUMN (`offsetH ≈ innerH`, `offsetH > offsetW`, width ≤ the published max / fallback 240),
+      each live row is ONE tight full-width row (h ≤ 40 ±1), the pane is flush to its window edge
+      and keeps dominance (`paneWidthShare ≥` floor), `#root`/`docScrollW` show no window-level
+      scrollbar. Maximize is a NAMED limitation (MCP-bridge < 0.13) — never passed unmeasured.
+      Edge: 1 / 2 sessions; long title + long work-dir; light + dark; sidebar on the left vs right.
+- [ ] F-58 (**AC1, R-1.2 — sidebar scrolls, pane dominant, no clipped terminal at MIN**):
+      at 560×360 create 10+ Terminal-type (plain-shell) sessions rooted in the fixture dirs; run the
+      recipe.
+      EXPECTED: T11 holds (`sidebar.scrollH > clientH`, `overflowY` auto/scroll); T10 holds
+      (`documentElement.scrollWidth ≤ innerW + 1` — no whole-window horizontal scroll); T9 holds
+      (`paneWidthShare ≥` the ABSOLUTE floor — the governing tier); T12 holds (pane flush, surface
+      rect == pane rect, host == pane rect) → the terminal is NOT clipped. Record the measured
+      sidebar width, row height, pane share, and scrollHeight at 560×360.
+      Edge: exactly 560 wide; mixed types; resize while scrolled to the sidebar's extreme.
+      Fixtures are in-repo only; the 10+ sessions are rooted in `fixtures/workdir-*` so C-5 removes
+      their records.
+- [ ] F-59 (**AC1, R-1.3 — select a row shows its live terminal; close a row ends that session**):
+      with A and B live from the sidebar, select each row; then close A from its row.
+      EXPECTED: the selected row carries `aria-current="true"` and the pane paints A's live canvas
+      (`terminal-surface-<id>[data-active="true"]`; `get_pty_buffer{A}` matches); `close_terminal_session{A}`
+      leaves exactly ONE `terminal` window, B still `running` + streaming, the sidebar shows only B,
+      and A's process tree is gone (`process-hygiene.ps1 -List`).
+      Edge: close the non-active row; two back-to-back closes; close while the peer is `starting`;
+      close the last row → the window stays open (`all-ended`).
+- [ ] F-60 (**AC1, R-1.4 — previous/persisted sessions reachable from the SIDEBAR; resume zero-click**):
+      persist records (spawn → close the window), reopen; inspect the sidebar.
+      EXPECTED: every `terminal-previous-session-row-<id>` renders INSIDE the sidebar (the
+      sidebar-scoped query finds them) with `persistedAriaLabel`; NO `terminal-previous-toggle` and
+      NO `terminal-previous-panel` exists anywhere; selecting a record surfaces `terminal-resume-state`
+      in the pane; the newest record is auto-selected (zero clicks).
+      Edge: 0 records (empty state); many records; long title/work-dir; a record whose dir was removed
+      (typed blocked state, record retained).
+- [ ] F-61 (**AC1, R-1.5 — pane invariants T1–T4 preserved under the new sidebar**): run the #2940
+      recipe cells (pane box, active surface, canvas host, `#root`, docScroll) at all three sizes.
+      EXPECTED: `pane.right ≈ innerW ±2`, `pane.bottom ≈ innerH ±2`, active `surface` rect == pane
+      rect ±2, `canvasHost` rect == pane rect ±2, `pane.bottom − canvas.bottom ≤ 8` (record the
+      ghostty gutter number), `docScrollH ≤ innerH + 1`.
+      Edge: resize while a state surface shows; min size; dark + light.
+
+### AC2 — rename
+
+- [ ] F-62 (**AC2, R-2.1 — rename live row + previous row + survives close/reopen + FULL restart**):
+      rename a live session to `TERMINAL_RENAME_2942_<guid8>`; close the window; reopen;
+      `dev-env.ps1 -Action Restart`; reopen.
+      EXPECTED: the new name renders on the LIVE row AND (after close/reopen) on its
+      PREVIOUS-session row; the row's visible title + its `aria-label` carry the new name;
+      `list_persisted_terminal_sessions` returns the SAME record `id` with the new `title` across
+      reopen AND full restart; the old name appears nowhere in the sidebar.
+      Edge: rename twice; rename to the same value; rename a session that self-exited; rename while
+      another streams.
+- [ ] F-63 (**AC2, R-2.2 — rename does not end the session or lose scrollback**): write
+      `SENTINEL_RENAME_<guid8>` into a running session, read the buffer, rename, re-read.
+      EXPECTED: `list_terminal_sessions{id}` stays `running`; `id`/`pid`/`startedAt` byte-identical;
+      the PTY buffer still contains `SENTINEL_RENAME_<guid8>`; the process tree is alive.
+      Edge: rename during heavy output; rename while `starting`; rename a resumed session.
+- [ ] F-64 (**AC2, R-2.3 — G-242 record KEY IDENTITY on rename**): snapshot
+      `{id,title,cli,workDir,createdAt}`; rename; re-read via `list_persisted_terminal_sessions` AND
+      a read-only `SELECT id,cli,work_dir,title,created_at FROM feature_terminal_sessions`
+      (telemetry-query skill).
+      EXPECTED: exactly ONE row keeps the SAME `id`; `cli`/`work_dir`/`created_at` unchanged; only
+      `title` differs; the record COUNT is unchanged (no new row, no orphan); the sidebar shows one
+      row, never two.
+      Edge: a PRE-CHANGE record upgraded by rename → same id, still listed; rename → restart →
+      rename again; two records renamed back-to-back; rename to blank.
+- [ ] F-65 (**AC2, R-2.4 — blank/whitespace rename never yields an empty row**): submit `""`,
+      `"   "`, and a tab-only name.
+      EXPECTED: the rename is refused (validation / input reverts) OR falls back to the prior name;
+      the row NEVER renders blank; `feature_terminal_sessions.title` is never empty/whitespace; the
+      record id is unchanged.
+      Edge: very long name (truncation, not overflow); unicode/emoji; a name equal to another
+      session's title.
+
+### AC3 — plain-shell default
+
+- [ ] F-66 (**AC3, R-3.1 — no stored default → Terminal preselected**): clear the default key + the
+      terminal window's `localStorage`; cold restart; open add-session.
+      EXPECTED: the plain-shell **Terminal** type is DOM-observable preselected (`aria-checked="true"`
+      on the hidden radio / `data-state=checked`, per the published hook); OpenCode + GitHub Copilot
+      are still selectable.
+      Edge: corrupt stored value → safe fallback; legacy `terminal_default_cli='copilot'` still
+      resolves to Copilot (F-71).
+- [ ] F-67 (**AC3 + R-3.4 — a new session starts a PLAIN SHELL (no agent) in its directory**): set
+      `terminal_work_dir` = `…\fixtures\workdir-a`; restart; accept the plain-shell default; drive
+      `SENTINEL_SHELL_<guid8>` + `Get-Location\r` (PowerShell) via `write_pty_input`; read the buffer
+      + process inventory + the record.
+      EXPECTED: the record's type is the published plain-shell value; the buffer shows the OS default
+      shell prompt and NONE of the OpenCode/Copilot banners; `process-hygiene.ps1 -List` shows a
+      `pwsh`/`powershell` (or `$SHELL`) under the Fredo PID and NO `opencode`/`copilot`/`node` agent
+      process; the `Get-Location` output contains `workdir-a`.
+      Edge: a directory with spaces/unicode; blank dir → home fallback; shell self-exit → record
+      retained.
+- [ ] F-68 (**AC3, R-3.3 — OpenCode + GitHub Copilot still selectable and still launch (control)**):
+      add one OpenCode and one GitHub Copilot session explicitly.
+      EXPECTED: each launches its real CLI (`process-hygiene.ps1 -List` shows the CLI tree; the buffer
+      shows its TUI); the plain-shell default does not pre-empt an explicit choice; the OpenCode leg
+      emits `fredo.*` spans in `telemetry_spans` (live query).
+      Edge: Copilot `prereq` (named blocker if `pwsh` < 6 on the host); choose a non-default type
+      after the default was set.
+
+### AC4 — Settings → Terminal
+
+- [ ] F-69 (**AC4, R-4.1 — the panel exposes default session TYPE + default working directory**):
+      open Settings → Terminal.
+      EXPECTED: a type control renders the THREE choices (Terminal / OpenCode / GitHub Copilot) with
+      the stored one preselected and DOM-observable; the working-directory input renders and is
+      prefilled from `terminal_work_dir`; Save persists both; the other settings sections are
+      untouched.
+      Edge: first run (no default) → Terminal; invalid stored value → safe fallback.
+- [ ] F-70 (**AC4, R-4.2 — save + restart preselects/prefills for EACH of the 3 types**): for each
+      type: set it + a fixture dir, Save, `dev-env.ps1 -Action Restart`, add a session (no override).
+      EXPECTED: the add-session chooser shows the chosen type selected (DOM-observable) and the
+      directory field prefilled with the chosen directory (0 keystrokes); the spawned session matches
+      type + dir.
+      Edge: type = Terminal + dir set; two restarts; change type and dir together.
+- [ ] F-71 (**AC4, R-4.3 — G-242: existing work-dir key governs; the legacy DEFAULT value migrates
+      without orphan**): (a) pre-seed `terminal_default_cli='copilot'` + `terminal_work_dir`; restart;
+      (b) run the legacy `run_cli_work_dir` migration leg (F-4/F-5 pattern).
+      EXPECTED: (a) the stored/effective default resolves to GitHub Copilot (migrated or preserved) —
+      the old key is read at most once and is never the live path; no pre-existing record changes;
+      (b) `terminal_work_dir` still governs a new session; the legacy `run_cli_work_dir` still
+      migrates.
+      Edge: both legacy + new keys set (new wins); blank legacy value; a corrupt default value.
+- [ ] F-72 (**AC4, R-4.4 — changing a default mutates nothing**): snapshot all live sessions +
+      records; change default type + dir; Save; restart; re-read.
+      EXPECTED: every pre-existing live session's `id`/`cli`/`workDir`/`status` and every record's
+      `{id,title,cli,workDir,createdAt,cliSessionId}` are byte-identical; no re-spawn; no record
+      added/removed/renamed.
+      Edge: change defaults while a session is running; change to the same value.
+
+### AC5 — persistence
+
+- [ ] F-73 (**AC5, R-5.1 — all three types persist incl. type + renamed name across a full restart**):
+      create a Terminal-type (plain shell), an OpenCode, and a GitHub Copilot record; rename the
+      shell; close the window; `dev-env.ps1 -Action Restart`; reopen.
+      EXPECTED: all three records list with their type + workDir; the shell's renamed title persists;
+      ids/fields stable; the reopen starts ZERO processes until an explicit resume; the
+      `feature_terminal_sessions` rows carry the plain-shell type value (read-only query).
+      Edge: zero records → empty state; two restarts; reopen before the list resolves (loading, not a
+      false empty); mixed with pre-change records.
+- [ ] F-74 (**AC5, R-5.2 — a persisted TERMINAL-type record reopens a shell with NO false resume
+      promise**): close a plain-shell record's window; reopen; resume/open it.
+      EXPECTED: a shell (no agent process) starts in the record's directory; the buffer shows a fresh
+      shell prompt; the visible resume/open copy contains NO claim that a conversation was restored,
+      and no CLI `--continue`/`--resume` switch is used (process CommandLine); no agent banner.
+      Edge: record dir removed → typed blocked state (record retained); resume twice; shell record
+      rooted in home.
+- [ ] F-75 (**AC5, R-5.3 — pre-change records remain listed + usable**): with the PRE-CHANGE build
+      create `opencode`/`copilot` records; switch to the changed build; reopen.
+      EXPECTED: the pre-existing rows still parse + list (no dropped row from the type/value-set
+      extension); a read-only `SELECT … FROM feature_terminal_sessions` shows them intact; each
+      remains resumable/usable per its type; no duplicate/orphan row created by the upgrade.
+      Edge: a record with `cli_session_id` set; a record whose dir is gone; the 100-record retention
+      boundary.
+
+### RISK — the OpenCode TUI must fill the pane (the ticket's named residual fit/grid issue)
+
+- [ ] F-76 (**RISK R-6.1 — reproduce or verify; ties to the `resize_pty` path**): spawn an OpenCode
+      session in `workdir-a`; WITHOUT any manual `resize_pty`, read
+      `list_terminal_sessions{cols,rows}`, `pane[data-cols/data-rows]`, `get_pty_buffer`, and the
+      served-document host rect; then `tauri_manage_window resize terminal 1400 900` and re-read.
+      EXPECTED: after mount the OpenCode TUI renders MORE than its status bar + input (the
+      conversation/body region is present) WITHOUT a forced `resize_pty`; the grid is sized to the
+      pane (`data-cols/rows` ≥ the published floor, fallback `rows ≥ 20` at 900×600) and tracks the
+      resize monotonically; the host is flush (T12). A session that renders only the status bar +
+      input until a manual `resize_pty` is a **FAIL** (this is the ticket's named risk).
+      Edge: mount at 560×360; resize immediately after spawn (before the first byte); resize during
+      heavy output; a RESUMED OpenCode session.
+      Evidence: the `data-cols/rows` + buffer line count numbers at each step, plus the OpenCode leg's
+      `telemetry_spans` receipt.
+
+### COLD-START rows (G-250 — the window must be CLOSED for each run)
+
+- [ ] F-77 (**G-250 — COLD `fredo open-terminal`**): close the `terminal` window (assert 0 `terminal`
+      windows), then `fredo open-terminal --cli opencode --dir …\fixtures\workdir-a`; repeat for the
+      plain-shell default with no `--cli`.
+      EXPECTED: exit 0, ONE `terminal` window, a RUNNING session with the requested cli+workDir
+      auto-selected — COLD, every run. With the window already open the same command spawns warm
+      (record both legs, e.g. cold 3/3 + warm 3/3). A cold run that opens the window but spawns
+      NOTHING is a FAIL (the #2940 round-1 R-18 defect).
+      Edge: window closed with a state surface showing; rapid cold invocations; every shipped preset.
+- [ ] F-78 (**G-250 — plain-shell default on a COLD app start**): `dev-env.ps1 -Action Restart`; open
+      Terminal; add a session with no override.
+      EXPECTED: a plain shell spawns (F-67) — the default does not depend on warm state; the shell
+      record persists.
+      Edge: first-ever run (no keys); after a fresh DB.
+
+### Non-functional (#2942)
+
+- [ ] N-25: **Theme/token hygiene.** The new sidebar/row/rename/settings chrome reads theme tokens;
+      no hardcoded hex/rgba except the allowlisted `GHOSTTY_THEME` ANSI palette; NO invalid
+      `var(--token)NN` alpha-append (use `tint()`); no `100vh`/`100vw` in the terminal tree.
+- [ ] N-26: **Accessibility (supersedes N-19).** The sidebar rows are keyboard-reachable with the
+      UI/UX-published collection role/keyboard model (Arrow Up/Down for a vertical list), each
+      ARIA-labelled (`sessionAriaLabel`/`persistedAriaLabel`), the active row `aria-current="true"`;
+      the rename affordance + type chooser are keyboard-operable; interactive targets ≥24×24 px; NO
+      focus trap (the sidebar is in-flow, not a dialog).
+- [ ] N-27: **Console hygiene (both windows).** No `Error:`/`Uncaught`/`Maximum update depth exceeded`
+      in the main OR `terminal` window across rename / 10+ sessions / restart.
+- [ ] N-28: **Zero orphans.** Close a session then the window (incl. a plain shell) →
+      `process-hygiene.ps1 -List` = 0 Fredo-spawned `opencode`/`copilot`/`node`/`pwsh` processes.
+- [ ] N-29: **No re-spawn on switch.** A switch preserves `id`/`pid`/`startedAt` (the F-10 contract);
+      the rework must not turn a switch into a re-spawn or a row click into a remount.
+
+### Teardown delta for #2942 (extends the C-5 recipe — MANDATORY)
+
+> Before the run, snapshot `{id → title}` for EVERY persisted record (not only fixture-root) plus the
+> settings keys — which now include the **default-TYPE key** (published; fallback
+> `terminal_default_cli`) alongside `terminal_work_dir`, `terminal_copilot_path`, `terminal_pwsh_path`.
+> After the run: assert every pre-existing title is unchanged (G-242), run the C-5 fixture-root delete
+> (recipe below), and restore the keys. All 10+ shell/CLI sessions for the geometry legs must be
+> rooted in `.opencode\tests\terminal\fixtures\*` so C-5 removes their records.
 
 ## Round notes
 
