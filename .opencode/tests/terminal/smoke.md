@@ -236,3 +236,26 @@ Cold-restarted the dev instance so the round-2 Rust fix `b303ba9` was built+serv
   the four settings keys restored.
 - **New: S-26 (from F-81).** `fredo open-terminal --help` shows `--cli <opencode|copilot>` — the new
   `shell` value is missing from the usage/value-name (FAIL; behaviour is correct).
+
+### #2942 testing round 2 (spec/2942 @ 97495693) — results (retry; PASS)
+
+- **S-1/S-2 PASS.** DOM non-empty in both windows; consoles clean on both (only the pre-existing
+  `motion() is deprecated` WARN + `[ghostty-vt]` renderer warnings).
+- **S-3/S-6 PASS.** The `Terminal` desktop item launches exactly ONE `terminal` window (label `terminal`,
+  title `Terminal`, `?view=terminal`); re-invoking focuses (count stayed 2).
+- **S-4/S-24 PASS.** Settings → Terminal renders the 3 type choices + work-dir input alongside
+  Companion/Appearance/Fredo Setup/Telemetry.
+- **S-13 PASS.** Add a session → close the window → reopen lists it in the sidebar's `Previous` group.
+- **S-21 PASS.** Vertical sidebar root `terminal-session-sidebar` + `-add` + `-live-section` +
+  `-previous-section` and full-width 32 px rows render; NO `terminal-session-bar` and NO `[role=tablist]`.
+  **F-80 now PASS** — sticky Previous header no longer overlaps the first previous row (0 px).
+- **S-22 PASS.** With the default key + `localStorage` cleared, adding a session with no override spawns
+  a plain PowerShell (`cli=shell`); no agent process.
+- **S-23 PASS.** Rename renders on the live row, on the previous row after close/reopen, and survives a
+  full app restart (`TERMINAL_RENAME_2942_e5f6a7b8`).
+- **S-25 PASS (cold).** `fredo open-terminal --cli opencode --dir …\workdir-a` with 0 `terminal` windows
+  → exit 0, the window opens, a RUNNING session spawns + auto-selects — **cold 3/3** + warm control.
+- **S-20 PASS.** C-5 teardown run 1 deleted 7 / run 2 deleted 0 (idempotent) → 0 fixture-root records;
+  the four settings keys restored.
+- **S-26 now PASS (F-81 fixed).** `fredo open-terminal --help` shows
+  `--cli <shell|opencode|copilot>` + the `shell` type in the description.
