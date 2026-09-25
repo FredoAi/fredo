@@ -769,7 +769,7 @@ record whose `workDir` is under the in-repo fixtures root and reports what remai
       session field is editable anywhere (a work-dir/type edit affordance is a FAIL).
       Edge: F2 on a focused row; Enter on a previous row; blur-commit vs Enter-commit.
 
-- [ ] F-80 (**AC1, promoted from round 1 — FAIL; the sidebar's first Previous row is clipped by
+- [x] F-80 (**AC1, promoted from round 1 — FAIL; FIXED in round 2; the sidebar's first Previous row is clipped by
       its own sticky section header**): open the `terminal` window with ≥1 persisted record and
       **ZERO live sessions** (the app's normal reopen state).
       EXPECTED: every previous-session row is fully legible below the `Previous (N)` header.
@@ -784,8 +784,15 @@ record whose `workDir` is under the in-repo fixtures root and reports what remai
       separates the headers and the overlap does not occur.
       Likely fix: the section-header `top` must equal the real height of the sticky header above it
       (37 px), or the add-header must be sized to the assumed 60 px.
+      **Round-2 result: PASS.** Fix `337640a` derives the sticky offsets from the real pinned stack
+      (`FIRST_SECTION_TOP = 37px`; the Previous header pins at `sessions.length > 0 ? 61px : 37px`).
+      Served-doc measurement (0 live sessions): add header `{y:0,h:37}`, Previous header
+      `{y:37,bottom:61}` (`top:37px`), first Previous row `{y:61,bottom:93}` → **0 px overlap**
+      (was 23 px). Reproduced at 2 and at 16 records, at 900×600 and 560×360; with ≥1 live session
+      the bands tile at 37/61 and the overlap stays 0. The auto-selected newest row's label is fully
+      readable (aria-label + text intact).
 
-- [ ] F-81 (**AC3/R-4.4, promoted from round 1 — FAIL; the `--cli` help/usage omits the new
+- [x] F-81 (**AC3/R-4.4, promoted from round 1 — FAIL; FIXED in round 2; the `--cli` help/usage omits the new
       `shell` value**): `fredo open-terminal --help`.
       EXPECTED: the help names the accepted values including the new plain-shell type.
       ACTUAL: `--cli <opencode|copilot>` and the line "CLI to start: `opencode` or `copilot`"
@@ -794,6 +801,14 @@ record whose `workDir` is under the in-repo fixtures root and reports what remai
       behaviour is correct (`--cli shell` spawns a shell; `--cli bogus` is refused in-app with a
       message naming `shell`/`opencode`/`copilot`), so this is a documentation/help-text defect
       only — but the CLI's user-facing contract contradicts the shipped value set.
+      **Round-2 result: PASS.** Fix `337640a` widened the clap value-name + doc
+      (`open_terminal.rs:11-13`). Live `fredo open-terminal --help` now prints
+      `--cli <shell|opencode|copilot>  Session type to start: \`shell\` (plain OS shell), \`opencode\`
+      or \`copilot\` (defaults to the saved default session type)`; `--cli shell` is accepted at
+      runtime (cold `{"cli":"shell","outcome":"started"}`); `--cli bogus` → `invalid-cli` naming
+      all three; `--cli " "` → `invalid-argument`. (Observation, not a defect: the subcommand
+      one-line summary still reads "…optionally starting a CLI in a folder" — a generic noun, it
+      names no value domain.)
 
 ### #2942 geometry recipe (served host document — G-251)
 
@@ -1523,3 +1538,82 @@ were removed by the same filter — the one-time purge intent).
 Round-7 frame names: `ac1-default-shell`, `ac1-min-15rows`, `ac1-resized`,
 `f62-reopen-renamed`, `f69-settings-terminal`, `f76-opencode-turn`, `f78-cold-shell-default`,
 `newsession-dialog`, `defect-header-overlap`.
+
+### Round 8 (Spec #2942 — round 2 retry) — 2026-09-25, spec/2942 @ 97495693 (verdict PASS; F-80 + F-81 FIXED)
+
+Served commit `spec/2942 @ 97495693` (`dev-env.ps1 -Action Status` → `running (repo root on spec/2942 @
+97495693)`), matching the dispatch brief. Cold restart used to serve the round-2 fix `337640a`. Live
+policy honoured: served-document geometry (`offsetWidth` + `getBoundingClientRect`, G-040), `fredo`
+stdout/exit, PTY-buffer bytes, `process-hygiene.ps1 -List`, read-only `feature_terminal_sessions` +
+`telemetry_spans`.
+
+**F-80 (AC1) — PASS (was round-1 FAIL; headline fix).** Served-doc pinned stack, 0 live sessions: add
+header `{y:0,h:37}`, Previous header `{y:37,bottom:61}` (`position:sticky; top:37px`), first Previous row
+`{y:61,bottom:93}` → **prevOverlap = 0 px** (round 1: 23 px). Reproduced at **2 records and 16 records**,
+at **900×600** (`{37,61}` vs `{61,93}`) and **560×360** (same, `sidebar.scrollH 573 > clientH 360`, 16
+rows); with **≥1 live session** the live header pins at 37 and the Previous header at `top:61px` with
+`prevOverlap = 0`. The auto-selected newest row (`aria-current="true"`) renders its full label.
+
+**F-81 (AC3/R-4.4) — PASS.** `fredo open-terminal --help` → `--cli <shell|opencode|copilot>` +
+"Session type to start: `shell` (plain OS shell), `opencode` or `copilot` (defaults to the saved
+default session type)". Runtime: `--cli shell` → `{"cli":"shell","outcome":"started"}`; `--cli bogus`
+→ `invalid-cli` (names all three); `--dir …\no-such-dir` → `invalid-directory`; `--cli " "` →
+`invalid-argument`.
+
+**AC1 geometry T7–T12 (re-measured, served host doc).**
+- 900×600 (11 live): sidebar `200×600`; rows `199×32` each; pane `200,700,600,900,600`; share **0.78**;
+  `#root 900×600`; `docScroll 900/600`; surface==pane, host==pane; canvas 684×600 (right gutter 16);
+  grid 76×40.
+- 560×360 (11 live): sidebar `200×360`, `scrollH 469 > clientH 360`, `overflowY:auto`; rows `32` px
+  (width 194 = clientW; the 6 px delta vs `offsetW` is the thin scrollbar — full content width, no
+  clipping); pane `200,360,360,560,360`; share **0.64**; `#root 560×360`; `docScroll 560/360`; grid
+  38×24.
+- 1400×900 (1 live OpenCode): pane `1200×900`; share **0.86**; grid **131×60** (monotonic from 38×24 →
+  76×40 → 131×60); surface/host flush.
+- T7–T12 all hold. T12 disclosed: `pane.right − canvas.right` = 16–21 px ghostty scrollbar-width gutter
+  (host flush, `pane.bottom − canvas.bottom = 0`).
+
+**AC2 rename — PASS.** Renamed a LIVE shell (`e06301d8`) to `TERMINAL_RENAME_2942_a1b2c3d4` via the inline
+field (`aria-label="Session name"`): session stayed `running` (`pid`/`startedAt` byte-identical),
+`SENTINEL_RENAME_2942_deadbeef` preserved in the buffer, live row aria-label/text updated. Renamed a
+PREVIOUS record (`b27b66ec`) to `TERMINAL_RENAME_2942_e5f6a7b8`; survived a **full app restart** (row
+aria-label + record title), id/cli/work_dir/created_at unchanged, count unchanged (G-242 read-only
+SELECT). Blank `"   "` → "Name can't be empty", record title unchanged (F-65). The sidebar renders no
+`input/textarea/select` until rename (only the name is editable — F-79).
+
+**AC3 plain shell — PASS.** New-session dialog shows Terminal/OpenCode/GitHub Copilot; with the stored
+default cleared, Terminal is preselected (F-66). Accepting the default spawns a plain PowerShell in
+workdir-a (`SENTINEL_SHELL_2942_c0ffee` + `Get-Location` → `…\workdir-a`; F-67). OpenCode and Copilot
+still launch their real CLIs (F-68; OpenCode leg emitted live `telemetry_spans`).
+
+**AC4 Settings → Terminal — PASS.** Panel renders the 3 type choices (`terminal-default-type-{shell,
+opencode,copilot}`) + the work-dir input prefilled from `terminal_work_dir` (F-69). Saved
+type=Terminal + workdir-a, restarted → the dialog preselects Terminal + prefills workdir-a (F-70). Save
+left the record set byte-identical (F-72).
+
+**AC5 persistence — PASS.** Records for shell/opencode/copilot persist across a full restart (incl. the
+renamed name); reopen starts 0 processes; a persisted shell record reopens a shell in its dir with
+shell-specific copy ("Open a shell in workdir-a.") and no conversation-resume promise (F-73/F-74);
+pre-change `opencode`/`copilot` records still list + resume (F-75).
+
+**RISK F-76 — PASS (no forced `resize_pty`).** Cold `fredo open-terminal --cli opencode` rendered the
+FULL TUI (banner + "Ask anything…" + model/mode + right context/MCP panel + conversation) at 900×600 and
+after a 1400×900 resize; grid 76×40 → 131×60. A real turn answered `FREDO_QA_2942_OK`.
+
+**COLD F-77/R-24 — PASS.** Cold 3/3 (opencode ×2 + default-shell ×1) + warm control (1 new session);
+negatives all typed.
+
+**Non-functional — PASS.** N-25 (no `100vh/100vw`; no hardcoded hex/rgba in the terminal tree; no
+`var(--token)NN`; `tint()` used). N-26 (row buttons + rename 32×32, add 199×36; `aria-current`; nav
+`aria-label="Terminal sessions"`; no focus trap). N-27 (both consoles clean — only the pre-existing
+`motion()` WARN + `[ghostty-vt]` warnings). N-28 (0 orphans). N-29 (`id`/`pid`/`startedAt` identical on
+switch).
+
+**Teardown (C-5 + #2942 delta).** Pre-run: 1 record (`0144750c` copilot, fixture-root) + settings
+`{work_dir: workdir-b, default_cli: copilot, copilot_path: '', pwsh_path: ''}`. All run records were
+fixture-root; teardown run 1 deleted **7**, run 2 deleted **0** (idempotent) → **0 records**; the four
+settings keys restored; G-242: no non-fixture title mutated.
+
+Round-8 frame names: `ac1-default-live`, `ac1-f80-16rec-min`, `ac2-rename-prevrow`,
+`ac3-new-session-dialog`, `ac4-settings-terminal`, `ac5-persisted-mixed`, `f76-opencode-cold`,
+`f76-opencode-resized`.
