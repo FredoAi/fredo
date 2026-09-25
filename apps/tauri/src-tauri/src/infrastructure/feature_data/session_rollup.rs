@@ -23,6 +23,12 @@
 //!   stored raw — display normalization/truncation is the frontend's job.
 //! - `agentName` = `agentName` of the latest (by `updatedAt`, then `seq`)
 //!   agent-session row carrying a non-blank name.
+//! - `provider` = CLI token copied from the earliest NON-subagent chat row
+//!   (ordering as `derivedName`: non-null `startedAtNs` first, ascending, then
+//!   `correlationId` ascending); when no non-subagent chat row exists, the
+//!   earliest row including composited copies is used; a null/blank value
+//!   normalizes to [`PROVIDER_UNKNOWN`]. Never re-derived here — the token is
+//!   the canonical row's already-resolved field (NFR-6).
 //!
 //! **State casing.** `terminalStates` is declared in the row-model vocabulary
 //! (PascalCase `RowState`); SQLite stores the machine name (`RowState::as_str`,
@@ -47,6 +53,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value as JsonValue};
 
+use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 
 use super::declaration::SessionRollupProjection;
@@ -71,9 +78,12 @@ pub const USER_DISPATCH_COUNT: &str = "userDispatchCount";
 pub const DERIVED_NAME: &str = "derivedName";
 /// Latest non-blank agent-session `agentName`.
 pub const AGENT_NAME: &str = "agentName";
+/// Canonical CLI token of the session (provider attribution; `unknown` when
+/// absent). Copied from the canonical chat row — never re-derived (NFR-6).
+pub const PROVIDER: &str = "provider";
 
 /// The fixed fact column set the rollup produces (declaration order-independent).
-pub const FACT_COLUMNS: [&str; 9] = [
+pub const FACT_COLUMNS: [&str; 10] = [
     SESSION_ID,
     STARTED_AT_NS,
     LATEST_AT,
@@ -83,6 +93,7 @@ pub const FACT_COLUMNS: [&str; 9] = [
     USER_DISPATCH_COUNT,
     DERIVED_NAME,
     AGENT_NAME,
+    PROVIDER,
 ];
 
 // ── Canonical row projections ───────────────────────────────────────────────
@@ -100,6 +111,8 @@ pub struct RollupChatRow {
     pub agent_reply: Option<String>,
     pub parent_session_id: Option<String>,
     pub composited_child_session_id: Option<String>,
+    /// Canonical CLI token copied verbatim from `ChatRow.provider`.
+    pub provider: Option<String>,
 }
 
 impl RollupChatRow {
@@ -115,6 +128,7 @@ impl RollupChatRow {
             agent_reply: row.agent_reply.clone(),
             parent_session_id: row.parent_session_id.clone(),
             composited_child_session_id: row.composited_child_session_id.clone(),
+            provider: row.provider.clone(),
         }
     }
 
@@ -192,6 +206,9 @@ pub struct SessionRollupFacts {
     pub latest_at: Option<String>,
     pub derived_name: Option<String>,
     pub agent_name: Option<String>,
+    /// Canonical CLI token of the group's earliest non-subagent chat row;
+    /// never null (`PROVIDER_UNKNOWN` when absent/blank).
+    pub provider: String,
 }
 
 fn is_blank(value: Option<&str>) -> bool {
@@ -273,6 +290,34 @@ pub fn compute_facts(group: &RollupGroup, config: &SessionRollupProjection) -> S
         .find(|agent| !is_blank(agent.agent_name.as_deref()))
         .and_then(|agent| agent.agent_name.clone());
 
+    // provider: the canonical token of the earliest NON-subagent chat row,
+    // ordered exactly like `derivedName` (non-null `startedAtNs` first, ascending,
+    // then `correlationId`). If no non-subagent chat row exists, fall back to the
+    // earliest row INCLUDING composited copies. The token is copied verbatim from
+    // the canonical row (NFR-6) — this projection performs no extraction of its
+    // own; a null/blank value normalizes to `PROVIDER_UNKNOWN`.
+    let mut provider_candidates: Vec<&RollupChatRow> = group
+        .chats
+        .iter()
+        .filter(|chat| !chat.is_subagent())
+        .collect();
+    if provider_candidates.is_empty() {
+        provider_candidates = group.chats.iter().collect();
+    }
+    provider_candidates.sort_by(|a, b| {
+        a.started_at_ns
+            .is_none()
+            .cmp(&b.started_at_ns.is_none())
+            .then_with(|| a.started_at_ns.cmp(&b.started_at_ns))
+            .then_with(|| a.correlation_id.cmp(&b.correlation_id))
+    });
+    let provider = provider_candidates
+        .first()
+        .and_then(|chat| chat.provider.as_deref())
+        .filter(|token| !token.trim().is_empty())
+        .unwrap_or(PROVIDER_UNKNOWN)
+        .to_string();
+
     let mut user_dispatch_count = 0i64;
     for tool in &group.tools {
         if tool.is_subagent == Some(true) {
@@ -302,6 +347,7 @@ pub fn compute_facts(group: &RollupGroup, config: &SessionRollupProjection) -> S
         latest_at,
         derived_name,
         agent_name,
+        provider,
     }
 }
 
@@ -312,7 +358,7 @@ pub fn qualifies(facts: &SessionRollupFacts) -> bool {
         || (facts.non_subagent_chat_row_count > 0 && facts.user_dispatch_count > 0)
 }
 
-/// Map the facts onto the fixed declared column names (all nine).
+/// Map the facts onto the fixed declared column names (all ten).
 pub fn fact_values(facts: &SessionRollupFacts) -> Map<String, JsonValue> {
     let mut values = Map::new();
     values.insert(
@@ -357,6 +403,10 @@ pub fn fact_values(facts: &SessionRollupFacts) -> Map<String, JsonValue> {
         AGENT_NAME.to_string(),
         facts.agent_name.clone().map_or(JsonValue::Null, JsonValue::String),
     );
+    values.insert(
+        PROVIDER.to_string(),
+        JsonValue::String(facts.provider.clone()),
+    );
     values
 }
 
@@ -369,7 +419,7 @@ pub fn load_persisted_group(conn: &Connection, session_id: &str) -> Result<Rollu
         let mut stmt = conn.prepare(
             "SELECT correlation_id, seq, started_at_ns, updated_at, state,
                     user_message, agent_reply, parent_session_id,
-                    composited_child_session_id
+                    composited_child_session_id, provider
              FROM chat_rows WHERE session_id = ?1",
         )?;
         let rows = stmt.query_map(params![session_id], |row| {
@@ -383,6 +433,7 @@ pub fn load_persisted_group(conn: &Connection, session_id: &str) -> Result<Rollu
                 agent_reply: row.get(6)?,
                 parent_session_id: row.get(7)?,
                 composited_child_session_id: row.get(8)?,
+                provider: row.get(9)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()?
@@ -572,6 +623,7 @@ mod tests {
             agent_reply: reply.map(str::to_string),
             parent_session_id: None,
             composited_child_session_id: None,
+            provider: None,
         }
     }
 
@@ -778,6 +830,96 @@ mod tests {
             &config(),
         );
         assert_eq!(facts.agent_name.as_deref(), Some("newer-agent"));
+    }
+
+    #[test]
+    fn provider_is_the_earliest_non_subagent_chat_row_token() {
+        let mut later = chat("c9", "init", None);
+        later.started_at_ns = Some(9_000);
+        later.provider = Some("copilot_cli".to_string());
+        let mut earliest = chat("c2", "init", None);
+        earliest.started_at_ns = Some(2_000);
+        earliest.provider = Some("open_code".to_string());
+        let mut null_started = chat("c0", "init", None);
+        null_started.started_at_ns = None;
+        null_started.provider = Some("claude_code".to_string());
+
+        let facts = compute_facts(
+            &group(vec![later, earliest, null_started], vec![], vec![]),
+            &config(),
+        );
+        assert_eq!(facts.provider, "open_code");
+    }
+
+    #[test]
+    fn provider_ignores_subagent_rows_when_a_non_subagent_row_exists() {
+        // The subagent row is earliest by startedAtNs, but the pick must be the
+        // earliest NON-subagent row's token.
+        let mut child = chat("c1", "init", None);
+        child.started_at_ns = Some(1_000);
+        child.provider = Some("child_token".to_string());
+        child.composited_child_session_id = Some("ses_child".to_string());
+        let mut plain = chat("c2", "init", None);
+        plain.started_at_ns = Some(5_000);
+        plain.provider = Some("open_code".to_string());
+
+        let facts = compute_facts(&group(vec![child, plain], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "open_code");
+    }
+
+    #[test]
+    fn provider_falls_back_to_composited_rows_when_no_non_subagent_row_exists() {
+        let mut later = chat("c9", "init", None);
+        later.started_at_ns = Some(9_000);
+        later.provider = Some("later".to_string());
+        later.parent_session_id = Some("ses_parent".to_string());
+        let mut earliest = chat("c2", "init", None);
+        earliest.started_at_ns = Some(2_000);
+        earliest.provider = Some("copilot_cli".to_string());
+        earliest.composited_child_session_id = Some("ses_child".to_string());
+
+        let facts = compute_facts(&group(vec![later, earliest], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "copilot_cli");
+    }
+
+    #[test]
+    fn provider_ties_break_on_correlation_id_ascending() {
+        let mut b = chat("b_row", "init", None);
+        b.started_at_ns = Some(1_000);
+        b.provider = Some("from_b".to_string());
+        let mut a = chat("a_row", "init", None);
+        a.started_at_ns = Some(1_000);
+        a.provider = Some("from_a".to_string());
+
+        let facts = compute_facts(&group(vec![b, a], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "from_a");
+    }
+
+    #[test]
+    fn provider_normalizes_null_and_blank_to_unknown() {
+        let null = chat("c1", "init", None);
+        let facts = compute_facts(&group(vec![null], vec![], vec![]), &config());
+        assert_eq!(facts.provider, PROVIDER_UNKNOWN);
+        assert_eq!(facts.provider, "unknown");
+
+        let mut blank = chat("c1", "init", None);
+        blank.provider = Some("   ".to_string());
+        let facts = compute_facts(&group(vec![blank], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "unknown");
+    }
+
+    #[test]
+    fn fact_values_emits_the_provider_token() {
+        let mut row = chat("c1", "init", None);
+        row.provider = Some("copilot_cli".to_string());
+        let facts = compute_facts(&group(vec![row], vec![], vec![]), &config());
+        let values = fact_values(&facts);
+        assert_eq!(
+            values.get(PROVIDER),
+            Some(&JsonValue::String("copilot_cli".to_string()))
+        );
+        assert_eq!(FACT_COLUMNS.len(), 10);
+        assert_eq!(FACT_COLUMNS[9], PROVIDER);
     }
 
     #[test]

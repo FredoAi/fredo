@@ -39,13 +39,14 @@ export const MISSION_MONITOR_FEATURE_ID = 'mission-monitor';
 /** The declared `sessions` rollup table. */
 export const MISSION_MONITOR_DATA: FeatureDataDeclaration = {
   featureId: MISSION_MONITOR_FEATURE_ID,
-  declarationRevision: 'mm.sessions.v1',
+  declarationRevision: 'mm.sessions.v2',
   tables: [
     {
       name: 'sessions',
       primaryKey: ['sessionId'],
       columns: [
         { name: 'sessionId', type: 'TEXT', owner: 'backend' },
+        { name: 'provider', type: 'TEXT', owner: 'backend', nullable: true },
         { name: 'startedAtNs', type: 'INTEGER', owner: 'backend', nullable: true },
         { name: 'latestAt', type: 'TEXT', owner: 'backend' },
         { name: 'chatRowCount', type: 'INTEGER', owner: 'backend' },

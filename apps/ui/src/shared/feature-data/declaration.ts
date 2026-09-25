@@ -36,7 +36,7 @@ export interface RowProjection {
  * aggregate is introduced). One output row per composited chat `sessionId`.
  * Produced columns (fixed): sessionId, startedAtNs, latestAt, chatRowCount,
  * nonSubagentChatRowCount, visibleTurnCount, userDispatchCount, derivedName,
- * agentName. Facts only — the QUALIFICATION RULE stays on the frontend.
+ * agentName, provider. Facts only — the QUALIFICATION RULE stays on the frontend.
  */
 export interface SessionRollupProjection {
   kind: 'sessionRollup';

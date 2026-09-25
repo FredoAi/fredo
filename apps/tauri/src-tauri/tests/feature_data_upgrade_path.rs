@@ -52,7 +52,7 @@ use fredo_lib::infrastructure::storage::feature_store::FeatureStore;
 
 const FEATURE_ID: &str = "mission-monitor";
 const DECLARED_TABLE: &str = "sessions";
-const DECLARED_REVISION: &str = "mm.sessions.v1";
+const DECLARED_REVISION: &str = "mm.sessions.v2";
 const LEGACY_SESSIONS_TABLE: &str = "feature_mission_monitor_sessions";
 const LEGACY_DELETED_TABLE: &str = "feature_mission_monitor_deleted_sessions";
 
@@ -138,6 +138,7 @@ fn mm_declaration() -> FeatureDataDeclaration {
             "primaryKey": ["sessionId"],
             "columns": [
                 { "name": "sessionId", "type": "TEXT", "owner": "backend" },
+                { "name": "provider", "type": "TEXT", "owner": "backend", "nullable": true },
                 { "name": "startedAtNs", "type": "INTEGER", "owner": "backend", "nullable": true },
                 { "name": "latestAt", "type": "TEXT", "owner": "backend" },
                 { "name": "chatRowCount", "type": "INTEGER", "owner": "backend" },

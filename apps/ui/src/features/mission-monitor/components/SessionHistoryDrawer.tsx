@@ -3,6 +3,7 @@ import { LuHistory, LuTrash2, LuChevronLeft, LuSearch, LuPencil } from 'react-ic
 import type { MissionMonitorSession } from '../lib/graph';
 import { deriveDisplayName } from '../lib/sessionMeta';
 import { tint } from '../../../shared/utils/colorTint';
+import { CliLabel } from './CliLabel';
 
 interface SessionHistoryDrawerProps {
   sessions: MissionMonitorSession[];
@@ -305,7 +306,11 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                   key={session.sessionId}
                   role="button"
                   tabIndex={0}
+                  // #2748 regression safety: the row's accessible NAME stays
+                  // exactly `displayName` — the CLI identity rides the
+                  // accessible DESCRIPTION (#2945 ST-3), never the name.
                   aria-label={displayName}
+                  aria-describedby={`mm-cli-${session.sessionId}`}
                   className="mm-session-row"
                   style={{
                     display: 'flex', alignItems: 'flex-start', padding: '6px 10px',
@@ -402,13 +407,31 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
                         </div>
                       )}
                     </div>
-                    {/* Line 2 — compact start date-time */}
-                    <div style={{
-                      fontSize: 9, lineHeight: '12px', marginTop: 2,
-                      color: 'var(--text-secondary)',
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {formatStartTime(session.startTime)}
+                    {/* Line 2 — CLI identity chip + compact start date-time.
+                        #2945 ST-3: the chip is first, keyed by `id` so the row
+                        (aria-label = displayName, unchanged) can point at it via
+                        aria-describedby — the CLI joins the accessible
+                        DESCRIPTION, never the name (#2748 safety). */}
+                    <div
+                      className="mm-session-row-meta"
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        marginTop: 2, minWidth: 0,
+                      }}
+                    >
+                      <CliLabel
+                        provider={session.provider}
+                        variant="row"
+                        id={`mm-cli-${session.sessionId}`}
+                      />
+                      <span style={{
+                        fontSize: 9, lineHeight: '12px',
+                        color: 'var(--text-secondary)',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        minWidth: 0,
+                      }}>
+                        {formatStartTime(session.startTime)}
+                      </span>
                     </div>
                   </div>
 

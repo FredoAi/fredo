@@ -174,6 +174,10 @@ export interface MissionMonitorSession {
   derivedName?: string;
   /** #2748 ST-2 (R-2): user-renamed label — authoritative over derivedName. */
   customName?: string;
+  /** Canonical CLI token (`open_code` | `copilot_cli` | `claude_code` |
+   *  `internal` | `unknown`), resolved at rollup insert from the canonical row —
+   *  never patched later and never re-derived client-side (NFR-6). */
+  provider: string | null;
 }
 
 /** Node types for the ReactFlow graph. #2745 ST-4 (AC-5): the dead `tool`/`file`

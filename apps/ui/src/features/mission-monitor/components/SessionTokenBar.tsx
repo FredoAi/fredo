@@ -1,5 +1,6 @@
 import React from 'react';
 import { formatTokenCount } from '../lib/graph';
+import { CliLabel } from './CliLabel';
 
 /**
  * SessionTokenBar — session "Total Top Bar" (Spec #2723 R-1, #2743 ST-3).
@@ -77,7 +78,25 @@ interface SessionTokenBarProps {
    * renders byte-identical to today — R-7/D-7 invariant 5).
    */
   unattributedEvents?: number;
+  /**
+   * #2945 ST-3: canonical CLI token of the selected session (`string | null`).
+   * Renders the header identity chip in the left cluster, immediately before
+   * the `Session Token Usage` title. When OMITTED (`undefined`) no chip is
+   * rendered and the bar's DOM is byte-identical to before (AC4 / REQ-6).
+   */
+  provider?: string | null;
 }
+
+/** The `Session Token Usage` left-title style (AC-4) — shared so the
+ *  provider-present and provider-omitted branches render identical DOM. */
+const TOKEN_BAR_TITLE_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  fontSize: '9px',
+  color: 'var(--text-secondary)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  fontWeight: 600,
+};
 
 /** Fixed order — display label + full label for the aria-label (AC-3). */
 const CATEGORIES = [
@@ -102,6 +121,7 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
   estimatedCost,
   totalMessages,
   unattributedEvents,
+  provider,
 }) => {
   const values: Record<(typeof CATEGORIES)[number]['full'], number> = {
     Input: promptTokens,
@@ -134,20 +154,25 @@ export const SessionTokenBar: React.FC<SessionTokenBarProps> = ({
         flexShrink: 0,
       }}
     >
-      {/* Left title (AC-4) — same styling language as the ChatNode "Token Usage"
-          label; flex-shrink so the figures always keep their right edge. */}
-      <span
-        style={{
-          flexShrink: 0,
-          fontSize: '9px',
-          color: 'var(--text-secondary)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.06em',
-          fontWeight: 600,
-        }}
-      >
-        Session Token Usage
-      </span>
+      {/* Left cluster (AC-4 + #2945 ST-3) — the CLI identity chip (when a
+          provider is supplied) immediately precedes the "Session Token Usage"
+          title; flex-shrink so the figures always keep their right edge.
+          `provider === undefined` (prop OMITTED) renders the exact single-span
+          title as before — byte-identical DOM (AC4 / REQ-6). */}
+      {provider === undefined ? (
+        <span style={TOKEN_BAR_TITLE_STYLE}>Session Token Usage</span>
+      ) : (
+        <span
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
+        >
+          <CliLabel
+            provider={provider ?? null}
+            variant="header"
+            data-testid="mm-selected-cli-label"
+          />
+          <span style={TOKEN_BAR_TITLE_STYLE}>Session Token Usage</span>
+        </span>
+      )}
 
       {/* Figures group — margin-left:auto hugs the right edge (AC-4). */}
       <span
