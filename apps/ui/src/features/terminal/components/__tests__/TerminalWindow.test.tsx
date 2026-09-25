@@ -7,12 +7,16 @@
  * re-gated rules ("All sessions ended" must not mask resumable records; the
  * add-session prompt must not fire when records exist).
  *
- * Spec 2940 ST-3 reworks the composition (AC2): the 240 px sidebar + 32 px
- * toolbar become ONE 44 px `SessionBar` rail over the dominant `terminal-pane`,
- * and the persisted records move into a NON-modal History popover. The suite
- * asserts the C-3 canonical DOM contract (`terminal-session-bar`,
- * `terminal-previous-toggle`/`-panel`, `terminal-pane` + `data-surface`/`data-cols`
- * /`data-rows`, `terminal-canvas-host-<id>`) alongside every preserved testid.
+ * Spec 2940 ST-3 reworked the composition into ONE 44 px `SessionBar` rail; Spec
+ * 2942 ST-5 SUPERSEDES that rail with the compact VERTICAL
+ * `terminal-session-sidebar` (its `This window` + `Previous` lists render inline
+ * — no History popover, no tablist/tab roles). The suite asserts the current DOM
+ * contract (`terminal-session-sidebar`, `terminal-session-row-<id>`,
+ * `terminal-previous-session-row-<id>`, `terminal-pane` + `data-surface`/
+ * `data-cols`/`data-rows`, `terminal-canvas-host-<id>`) alongside every preserved
+ * testid, and asserts the superseded #2940 rail surfaces ABSENT so the rail
+ * cannot silently return. Spec 2942 ST-3 adds the inline-rename rows (the name
+ * is the only editable field; a blank name never writes).
  *
  * Drives the REAL `TerminalWindow` against a mocked Tauri command surface
  * (`adapterBridge`) and a mocked `ghostty-web` renderer, so the contracts are
@@ -108,6 +112,13 @@ const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => 
     case 'delete_terminal_session_record':
       persisted = persisted.filter((r) => r.id !== args?.sessionId);
       return undefined;
+    case 'rename_terminal_session_record': {
+      // The backend's atomic `title` UPDATE: one row, same id (G-242).
+      const sid = String(args?.sessionId);
+      const name = String(args?.name);
+      persisted = persisted.map((r) => (r.id === sid ? { ...r, title: name } : r));
+      return undefined;
+    }
     case 'get_pty_buffer':
       return [];
     case 'get_setting':
@@ -156,9 +167,12 @@ function renderWindow() {
   return renderWithChakra(<TerminalWindow />);
 }
 
-/** A live session's rail tab (composed `sessionAriaLabel`). */
-function tabButton(title: string, status: string) {
-  return screen.getByRole('tab', { name: `${title}, ${title}, ${status}` });
+/**
+ * A live row's select affordance — its composed `sessionAriaLabel` accessible
+ * name (`name, type label, status`).
+ */
+function rowButton(name: string, status: string, typeLabel: string = name) {
+  return screen.getByRole('button', { name: `${name}, ${typeLabel}, ${status}` });
 }
 
 beforeEach(() => {
@@ -200,30 +214,38 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     expect(screen.getByText('New session')).toBeInTheDocument();
   });
 
-  it('renders the session bar with one tab per session, composed aria-labels and status text', async () => {
+  it('renders the vertical sidebar with one compact row per session, composed aria-labels and status text', async () => {
     sessions = [
       session({ id: 'a', cli: 'opencode', status: 'running' }),
       session({ id: 'b', cli: 'copilot', status: 'starting' }),
     ];
     renderWindow();
 
-    const bar = await screen.findByTestId('terminal-session-bar');
-    const tablist = within(bar).getByRole('tablist', { name: 'Terminal sessions' });
-    expect(tablist).toBeInTheDocument();
-    expect(within(tablist).getAllByRole('tab')).toHaveLength(2);
-    // The old live-row testids are preserved (still containing a `button`).
+    const sidebar = await screen.findByTestId('terminal-session-sidebar');
+    expect(sidebar).toHaveAttribute('aria-label', 'Terminal sessions');
+    expect(within(sidebar).getByTestId('terminal-session-sidebar-live-section')).toHaveTextContent(
+      'This window (2)',
+    );
+    // The superseded #2940 rail contract is gone (no rail, no tablist/tab roles).
+    expect(screen.queryByTestId('terminal-session-bar')).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+
+    // One live row per session; the PRESERVED row testid still wraps a `button`.
+    expect(within(sidebar).getAllByTestId(/^terminal-session-row-/)).toHaveLength(2);
     expect(
       screen.getByTestId('terminal-session-row-a').querySelector('button'),
     ).toBeInTheDocument();
 
-    // Status is a dot PLUS a text label (never colour alone).
-    expect(screen.getByText('running')).toBeInTheDocument();
+    // Status is a dot PLUS a visible text label for the NON-NOMINAL states only
+    // (the compact-row concession, UI/UX §7). The accessible name always carries
+    // the status, so a running row is never colour-alone.
     expect(screen.getByText('starting')).toBeInTheDocument();
+    expect(screen.queryByText('running')).toBeNull();
 
-    // The selected tab carries aria-selected + aria-current="true".
-    await waitFor(() => expect(tabButton('OpenCode', 'running')).toHaveAttribute('aria-current', 'true'));
-    expect(tabButton('OpenCode', 'running')).toHaveAttribute('aria-selected', 'true');
-    expect(tabButton('GitHub Copilot', 'starting')).not.toHaveAttribute('aria-current');
+    // The active row carries aria-current="true"; the peer does not.
+    await waitFor(() => expect(rowButton('OpenCode', 'running')).toHaveAttribute('aria-current', 'true'));
+    expect(rowButton('GitHub Copilot', 'starting')).not.toHaveAttribute('aria-current');
   });
 
   it('exposes the C-3 pane hooks: region label, data-surface and the canvas host', async () => {
@@ -262,7 +284,7 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     );
   });
 
-  it('reacts to terminal-sessions-changed by adding tabs', async () => {
+  it('reacts to terminal-sessions-changed by adding a sidebar row', async () => {
     renderWindow();
     await screen.findByText('No sessions yet');
 
@@ -283,7 +305,7 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     await waitFor(() => expect(ghostty.constructed).toBe(2));
     const before = ghostty.constructed;
 
-    fireEvent.click(tabButton('GitHub Copilot', 'running'));
+    fireEvent.click(rowButton('GitHub Copilot', 'running'));
 
     await waitFor(() =>
       expect(screen.getByTestId('terminal-surface-b')).toHaveAttribute('data-active', 'true'),
@@ -294,29 +316,33 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     await waitFor(() => expect(ghostty.focused).toBeGreaterThan(0), { timeout: 2000 });
   });
 
-  it('supports roving-tabindex keyboard navigation across the tabs', async () => {
+  it('supports roving-tabindex keyboard navigation across the sidebar rows', async () => {
     sessions = [
       session({ id: 'a', cli: 'opencode' }),
       session({ id: 'b', cli: 'copilot' }),
     ];
     renderWindow();
 
-    const tablist = await screen.findByRole('tablist', { name: 'Terminal sessions' });
+    const rowA = await screen.findByTestId('terminal-session-row-a');
     await waitFor(() =>
       expect(screen.getByTestId('terminal-surface-a')).toHaveAttribute('data-active', 'true'),
     );
 
-    fireEvent.keyDown(tablist, { key: 'ArrowRight' });
+    fireEvent.keyDown(rowA.querySelector('button')!, { key: 'ArrowDown' });
     await waitFor(() =>
       expect(screen.getByTestId('terminal-surface-b')).toHaveAttribute('data-active', 'true'),
     );
 
-    fireEvent.keyDown(tablist, { key: 'Home' });
+    fireEvent.keyDown(screen.getByTestId('terminal-session-row-b').querySelector('button')!, {
+      key: 'Home',
+    });
     await waitFor(() =>
       expect(screen.getByTestId('terminal-surface-a')).toHaveAttribute('data-active', 'true'),
     );
 
-    fireEvent.keyDown(tablist, { key: 'End' });
+    fireEvent.keyDown(screen.getByTestId('terminal-session-row-a').querySelector('button')!, {
+      key: 'End',
+    });
     await waitFor(() =>
       expect(screen.getByTestId('terminal-surface-b')).toHaveAttribute('data-active', 'true'),
     );
@@ -417,7 +443,7 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     renderWindow();
 
     await screen.findByTestId('terminal-surface-b');
-    fireEvent.click(tabButton('OpenCode', 'exited'));
+    fireEvent.click(screen.getByTestId('terminal-session-row-a').querySelector('button')!);
 
     expect(await screen.findByText('This session has ended')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restart session' })).toBeInTheDocument();
@@ -433,20 +459,20 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
 });
 
 describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () => {
-  it('surfaces persisted records behind the History toggle and auto-selects the newest with zero clicks', async () => {
+  it('lists persisted records inline in the sidebar and auto-selects the newest with zero clicks', async () => {
     persisted = [
       record({ id: 'p-old', title: 'OpenCode', lastActiveAt: 1_000 }),
       record({ id: 'p-new', title: 'OpenCode 2', lastActiveAt: 9_000_000_000_000 }),
     ];
     renderWindow();
 
-    // No empty state (records exist); the History toggle is count-badged.
-    await screen.findByTestId('terminal-previous-toggle');
+    // The records render IN the sidebar's Previous section — no History popover.
+    const sidebar = await screen.findByTestId('terminal-session-sidebar');
     expect(screen.queryByText('No sessions yet')).toBeNull();
-    expect(screen.getByTestId('terminal-previous-toggle')).toHaveAttribute(
-      'aria-label',
-      'Previous sessions (2)',
+    expect(within(sidebar).getByTestId('terminal-session-sidebar-previous-section')).toHaveTextContent(
+      'Previous (2)',
     );
+    expect(within(sidebar).getByTestId('terminal-previous-session-row-p-old')).toBeInTheDocument();
 
     // The newest record is the default selection → the Resume card is immediate.
     expect(await screen.findByTestId('terminal-resume-state')).toBeInTheDocument();
@@ -458,26 +484,22 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     expect(screen.queryByRole('dialog', { name: 'New session' })).toBeNull();
   });
 
-  it('exposes a non-modal History panel (role=dialog) whose rows stay queryable while collapsed', async () => {
+  it('renders the Previous rows inside the sidebar, with the retired History popover gone', async () => {
     persisted = [record({ id: 'p1', title: 'OpenCode' })];
     renderWindow();
 
-    const toggle = await screen.findByTestId('terminal-previous-toggle');
-    expect(toggle).toHaveAttribute('aria-haspopup', 'dialog');
-    expect(toggle).toHaveAttribute('aria-controls', 'terminal-previous-panel');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    const sidebar = await screen.findByTestId('terminal-session-sidebar');
+    const row = await screen.findByTestId('terminal-previous-session-row-p1');
+    expect(sidebar.contains(row)).toBe(true);
 
-    const panel = screen.getByTestId('terminal-previous-panel');
-    expect(panel).toHaveAttribute('role', 'dialog');
-    expect(panel).toHaveAttribute('aria-label', 'Previous sessions');
-    // lazyMount/unmountOnExit off: the row is in the DOM while collapsed (C-3).
-    expect(screen.getByTestId('terminal-previous-session-row-p1')).toBeInTheDocument();
+    // The superseded #2940 History surfaces no longer exist anywhere.
+    expect(screen.queryByTestId('terminal-previous-toggle')).toBeNull();
+    expect(screen.queryByTestId('terminal-previous-panel')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Previous sessions' })).toBeNull();
 
-    // The popover is NON-modal (no focus trap): it is a Popover, not a Dialog.
-    expect(toggle).not.toHaveAttribute('aria-modal');
-
-    fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'));
+    // The sidebar is an in-flow `nav`, not a modal dialog → no focus trap.
+    expect(sidebar.tagName).toBe('NAV');
+    expect(sidebar).not.toHaveAttribute('aria-modal');
   });
 
   it('does not let "All sessions ended" mask resumable records (live exited + previous record)', async () => {
@@ -491,24 +513,26 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
     // The live exited session shows its per-session banner instead.
     fireEvent.click(screen.getByTestId('terminal-session-row-live-1').querySelector('button')!);
     expect(await screen.findByText('This session has ended')).toBeInTheDocument();
-    // And the Previous record stays present/actionable behind the toggle.
-    expect(screen.getByTestId('terminal-previous-toggle')).toBeInTheDocument();
+    // And the Previous record stays present/actionable in the sidebar.
+    expect(screen.getByTestId('terminal-session-sidebar')).toBeInTheDocument();
     expect(screen.getByTestId('terminal-previous-session-row-p1')).toBeInTheDocument();
   });
 
-  it('renders a previous row with title, state label, relative last-active and work-dir basename', async () => {
+  it('renders the compact previous row (title, relative last-active, state in the aria-label)', async () => {
     persisted = [record({ id: 'p1', title: 'OpenCode', workDir: 'C:\\Code\\fredo' })];
     renderWindow();
 
     const row = await screen.findByTestId('terminal-previous-session-row-p1');
     expect(row).toHaveTextContent('OpenCode');
-    expect(row).toHaveTextContent('not running');
     expect(row).toHaveTextContent('3h ago');
-    expect(row).toHaveTextContent('fredo');
+    // The compact #2942 row drops the visible work-dir line and the "not running"
+    // word — both stay in the accessible name (the pane surfaces the directory).
+    expect(row).not.toHaveTextContent('fredo');
+    expect(row.getAttribute('aria-label')).toContain('not running');
     expect(row.getAttribute('aria-label')).toContain('last active 3h ago');
   });
 
-  it('resumes a record: the live session reuses the record id and leaves the History panel', async () => {
+  it('resumes a record: the live session reuses the record id and leaves the Previous section', async () => {
     persisted = [record({ id: 'p1', cli: 'opencode' })];
     renderWindow();
 
@@ -737,19 +761,185 @@ describe('Spec 2940 ST-3 — pane fit receipt (C-2)', () => {
       renderWindow();
 
       // Switch to session b → the pane receipt must be b's fit, not a's.
-      fireEvent.click(await screen.findByRole('tab', { name: /GitHub Copilot/ }));
+      fireEvent.click((await screen.findByTestId('terminal-session-row-b')).querySelector('button')!);
 
       const pane = screen.getByTestId('terminal-pane');
       await waitFor(() => expect(pane).toHaveAttribute('data-cols', '140'));
       expect(pane).toHaveAttribute('data-rows', '40');
 
       // Switch back to a → the receipt follows the newly ACTIVE session.
-      fireEvent.click(screen.getByRole('tab', { name: /OpenCode/ }));
+      fireEvent.click(screen.getByTestId('terminal-session-row-a').querySelector('button')!);
       await waitFor(() => expect(pane).toHaveAttribute('data-cols', '100'));
       expect(pane).toHaveAttribute('data-rows', '30');
     } finally {
       if (origWidth) Object.defineProperty(Element.prototype, 'clientWidth', origWidth);
       if (origHeight) Object.defineProperty(Element.prototype, 'clientHeight', origHeight);
     }
+  });
+});
+
+/**
+ * Spec 2942 ST-3 — inline session rename (R-2.1–R-2.5). The name is the
+ * session's ONLY editable field and the persisted record's `title` is its single
+ * source of truth, so ONE atomic write renames the live row AND the
+ * previous-session row (they share the record `id`). A blank / whitespace-only
+ * name is a NO-WRITE that reverts to the prior name and shows an inline error.
+ */
+describe('Spec 2942 ST-3 — inline session rename', () => {
+  it('shows the record title on the LIVE row and renames it onto the previous row', async () => {
+    // The record's title is deliberately NOT the derived `sessionTitle` — the
+    // record map is the source of truth for a live row's name (SA §4).
+    sessions = [session({ id: 'p1', cli: 'opencode' })];
+    persisted = [record({ id: 'p1', title: 'Build agent' })];
+    renderWindow();
+
+    await waitFor(() =>
+      expect(rowButton('Build agent', 'running', 'OpenCode')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(await screen.findByTestId('terminal-session-rename-p1'));
+    const input = await screen.findByTestId('terminal-session-rename-input-p1');
+    expect(input).toHaveValue('Build agent');
+
+    // Enter commits the TRIMMED name.
+    fireEvent.change(input, { target: { value: '  My build agent  ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('rename_terminal_session_record', {
+        sessionId: 'p1',
+        name: 'My build agent',
+      }),
+    );
+    expect(screen.queryByTestId('terminal-session-rename-input-p1')).toBeNull();
+    // The DOM aria-label carries the new name too (one identity, one name).
+    await waitFor(() =>
+      expect(rowButton('My build agent', 'running', 'OpenCode')).toBeInTheDocument(),
+    );
+
+    // Close the live session: the SAME record moves to the Previous section
+    // carrying the renamed name.
+    fireEvent.click(screen.getByTestId('terminal-session-kill-p1'));
+    const previousRow = await screen.findByTestId('terminal-previous-session-row-p1');
+    expect(previousRow).toHaveTextContent('My build agent');
+    expect(previousRow.getAttribute('aria-label')).toContain('My build agent');
+  });
+
+  it('renames a previous-session record from its own row', async () => {
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    fireEvent.click(await screen.findByTestId('terminal-session-rename-p1'));
+    const input = await screen.findByTestId('terminal-session-rename-input-p1');
+    expect(input).toHaveValue('OpenCode');
+
+    fireEvent.change(input, { target: { value: 'Old work' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('rename_terminal_session_record', {
+        sessionId: 'p1',
+        name: 'Old work',
+      }),
+    );
+    const row = await screen.findByTestId('terminal-previous-session-row-p1');
+    expect(row).toHaveTextContent('Old work');
+    expect(row.getAttribute('aria-label')).toContain('Old work');
+  });
+
+  it('refuses a blank name: no write, revert to the prior name, inline error announced', async () => {
+    sessions = [session({ id: 'p1', cli: 'opencode' })];
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    fireEvent.click(await screen.findByTestId('terminal-session-rename-p1'));
+    const input = await screen.findByTestId('terminal-session-rename-input-p1');
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // R-2.3 — NO write for a blank/whitespace-only name.
+    expect(invoke).not.toHaveBeenCalledWith('rename_terminal_session_record', expect.anything());
+    // The row reverts to the prior name (never an empty row)…
+    await waitFor(() => expect(rowButton('OpenCode', 'running')).toBeInTheDocument());
+    expect(screen.queryByTestId('terminal-session-rename-input-p1')).toBeNull();
+    // …shows the inline muted error, and the live region announces it.
+    expect(await screen.findByTestId('terminal-session-rename-error-p1')).toHaveTextContent(
+      "Name can't be empty",
+    );
+    expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent("Name can't be empty");
+  });
+
+  it('cancels with Esc: no write, the prior name survives', async () => {
+    sessions = [session({ id: 'p1', cli: 'opencode' })];
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    fireEvent.click(await screen.findByTestId('terminal-session-rename-p1'));
+    const input = await screen.findByTestId('terminal-session-rename-input-p1');
+    fireEvent.change(input, { target: { value: 'Discarded' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('terminal-session-rename-input-p1')).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith('rename_terminal_session_record', expect.anything());
+    expect(rowButton('OpenCode', 'running')).toBeInTheDocument();
+    expect(screen.getByTestId('terminal-session-row-p1')).not.toHaveTextContent('Discarded');
+  });
+
+  it('renames without ending the session, re-spawning, or remounting its terminal (R-2.4)', async () => {
+    sessions = [session({ id: 'p1', cli: 'opencode' })];
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    await waitFor(() => expect(ghostty.constructed).toBe(1));
+    const terminalsBefore = ghostty.constructed;
+    invoke.mockClear();
+
+    fireEvent.click(await screen.findByTestId('terminal-session-rename-p1'));
+    const input = await screen.findByTestId('terminal-session-rename-input-p1');
+    fireEvent.change(input, { target: { value: 'Deploy bot' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('rename_terminal_session_record', {
+        sessionId: 'p1',
+        name: 'Deploy bot',
+      }),
+    );
+    // Metadata-only: the session is never closed or re-spawned, and the same
+    // terminal instance stays mounted (no scrollback loss).
+    expect(invoke).not.toHaveBeenCalledWith('close_terminal_session', expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith('spawn_terminal_session', expect.anything());
+    expect(ghostty.constructed).toBe(terminalsBefore);
+    expect(screen.getByTestId('terminal-surface-p1')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('terminal-session-row-p1').querySelector('button'),
+    ).toHaveAttribute('aria-current', 'true');
+  });
+
+  it('opens the inline editor with F2 on a focused row', async () => {
+    sessions = [session({ id: 'p1', cli: 'opencode' })];
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    const row = await screen.findByTestId('terminal-session-row-p1');
+    fireEvent.keyDown(row.querySelector('button')!, { key: 'F2' });
+
+    expect(await screen.findByTestId('terminal-session-rename-input-p1')).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('rename_terminal_session_record', expect.anything());
+  });
+
+  it('reconciles a rename from the terminal-persisted-sessions-changed event', async () => {
+    sessions = [session({ id: 'p1', cli: 'opencode' })];
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+    await waitFor(() => expect(rowButton('OpenCode', 'running')).toBeInTheDocument());
+
+    listeners['terminal-persisted-sessions-changed']?.({
+      sessions: [record({ id: 'p1', title: 'Renamed elsewhere' })],
+    });
+
+    await waitFor(() =>
+      expect(rowButton('Renamed elsewhere', 'running', 'OpenCode')).toBeInTheDocument(),
+    );
   });
 });

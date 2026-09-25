@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLI_LABEL,
+  RENAME_EMPTY_MESSAGE,
+  RENAME_MAX_LENGTH,
   displayWorkDir,
   errorStateMeta,
   lastActiveLabel,
@@ -242,5 +244,20 @@ describe('Spec 2942 ST-3 — sessionDisplayTitle (the record title is the name)'
     const after = new Map([['x', record({ id: 'x', title: 'Deploy bot' })]]);
     expect(sessionDisplayTitle(live, [live], before)).toBe('OpenCode');
     expect(sessionDisplayTitle(live, [live], after)).toBe('Deploy bot');
+  });
+
+  it('carries the display name in the row aria-label (renamed name, not the derived one)', () => {
+    const live = session({ id: 'x', cli: 'opencode', status: 'running' });
+    const map = new Map([['x', record({ id: 'x', title: 'Deploy bot' })]]);
+    expect(sessionAriaLabel(live, [live], sessionDisplayTitle(live, [live], map))).toBe(
+      'Deploy bot, OpenCode, running',
+    );
+    // The default (no override) keeps the derived title.
+    expect(sessionAriaLabel(live, [live])).toBe('OpenCode, OpenCode, running');
+  });
+
+  it('pins the rename contract constants (max length + the one empty-name copy)', () => {
+    expect(RENAME_MAX_LENGTH).toBe(64);
+    expect(RENAME_EMPTY_MESSAGE).toBe("Name can't be empty");
   });
 });

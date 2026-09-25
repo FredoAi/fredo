@@ -4,13 +4,15 @@ import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
 import {
   COPILOT_AUTH_COMMAND,
+  RENAME_EMPTY_MESSAGE,
   STATUS_LABEL,
   normalizeKind,
   resumeBlockedReason,
-  sessionTitle,
+  sessionDisplayTitle,
   sortPersistedSessions,
   type PersistedTerminalSession,
   type PreviousSessionState,
+  type RenameResult,
   type ResumeBlockedReason,
   type ResumeResult,
   type TerminalSessionKind,
@@ -110,6 +112,16 @@ export const TerminalWindow: React.FC = () => {
     () => persisted.filter((r) => !liveIds.has(r.id)),
     [persisted, liveIds],
   );
+  /**
+   * EVERY persisted record by id (including live sessions' records) — the single
+   * source of truth for a session's name (Spec #2942 ST-3, SA §4). A live row
+   * resolves its name here, so ONE rename updates the live row AND the
+   * previous-session row (they share the record's id).
+   */
+  const persistedById = useMemo(
+    () => new Map(persisted.map((r) => [r.id, r])),
+    [persisted],
+  );
   const selected = useMemo(
     () => allSessions.find((s) => s.id === selectedId) ?? null,
     [allSessions, selectedId],
@@ -153,6 +165,46 @@ export const TerminalWindow: React.FC = () => {
   }, []);
 
   const handleSelect = useCallback((id: string) => setSelectedId(id), []);
+
+  /**
+   * Rename a persisted session record (Spec #2942 ST-3, R-2.1–R-2.5).
+   *
+   * The name is the ONLY editable field. A blank / whitespace-only name is
+   * refused BEFORE any write (R-2.3): the row reverts to the prior name and
+   * shows the inline error. Otherwise the record map is patched optimistically
+   * — which renames the live row AND the previous-session row at once (they
+   * share the record's id) — and the atomic backend UPDATE is reconciled by the
+   * `terminal-persisted-sessions-changed` listener. No session is ended, no PTY
+   * touched: this is a metadata-only write.
+   */
+  const handleRename = useCallback(
+    async (id: string, name: string): Promise<RenameResult> => {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        setActionAnnouncement(RENAME_EMPTY_MESSAGE);
+        return { ok: false, message: RENAME_EMPTY_MESSAGE };
+      }
+      const prior = persisted.find((r) => r.id === id)?.title;
+      setPersisted((prev) => prev.map((r) => (r.id === id ? { ...r, title: trimmed } : r)));
+      try {
+        await adapterBridge.invoke('rename_terminal_session_record', {
+          sessionId: id,
+          name: trimmed,
+        });
+        setActionAnnouncement(`Renamed to ${trimmed}`);
+        return { ok: true };
+      } catch {
+        // Roll the optimistic patch back; the next persisted-list event is the
+        // backend truth either way.
+        if (prior !== undefined) {
+          setPersisted((prev) => prev.map((r) => (r.id === id ? { ...r, title: prior } : r)));
+        }
+        setActionAnnouncement("Couldn't rename this session");
+        return { ok: false, message: "Couldn't rename this session" };
+      }
+    },
+    [persisted],
+  );
 
   const closeSession = useCallback((session: TerminalSessionInfo) => {
     const real = isRealSession(session);
@@ -507,7 +559,7 @@ export const TerminalWindow: React.FC = () => {
   }, [focusTarget]);
 
   const statusAnnouncement = selected
-    ? `${sessionTitle(selected, allSessions)}, ${STATUS_LABEL[selected.status]}`
+    ? `${sessionDisplayTitle(selected, allSessions, persistedById)}, ${STATUS_LABEL[selected.status]}`
     : selectedRecord
       ? `${selectedRecord.title}, ${statusLabelForState(previousStateOf(selectedRecord))}`
       : '';
@@ -518,10 +570,12 @@ export const TerminalWindow: React.FC = () => {
       <TerminalSidebar
         sessions={allSessions}
         previous={previous}
+        persistedById={persistedById}
         selectedId={selectedId}
         previousStateOf={previousStateOf}
         onSelect={handleSelect}
         onClose={closeSession}
+        onRename={handleRename}
         onAdd={() => openDialog()}
         addButtonRef={addButtonRef}
       />

@@ -255,6 +255,26 @@ export function sessionDisplayTitle(
   return persistedById.get(session.id)?.title ?? sessionTitle(session, sessions);
 }
 
+// ── Rename contract (Spec 2942 ST-3) ──────────────────────────────────────────
+
+/**
+ * The client-side rename outcome. `ok: false` carries the message the row shows
+ * inline; a false result is ALWAYS a no-write (blank / refused).
+ */
+export interface RenameResult {
+  ok: boolean;
+  message?: string;
+}
+
+/** The window's rename handler: trims, refuses blank, writes atomically. */
+export type RenameHandler = (id: string, name: string) => Promise<RenameResult> | RenameResult;
+
+/** The one empty-name copy (UI/UX §2), shared by the validator and the row. */
+export const RENAME_EMPTY_MESSAGE = "Name can't be empty";
+
+/** The pinned inline-field length (UI/UX §2). */
+export const RENAME_MAX_LENGTH = 64;
+
 /**
  * Basename of a session's working directory for the sidebar's secondary line.
  * Blank / `.` / `~` render as `~` (the backend's home fallback).
@@ -266,12 +286,18 @@ export function displayWorkDir(workDir: string | null | undefined): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** Composed accessible name for a sidebar row's select affordance. */
+/**
+ * Composed accessible name for a sidebar row's select affordance. `displayName`
+ * defaults to the derived title; a row with a persisted record passes its
+ * `sessionDisplayTitle` so the accessible name carries the user-set name too
+ * (Spec 2942 R-2.2).
+ */
 export function sessionAriaLabel(
   session: TerminalSessionInfo,
   sessions: readonly TerminalSessionInfo[],
+  displayName: string = sessionTitle(session, sessions),
 ): string {
-  return `${sessionTitle(session, sessions)}, ${CLI_LABEL[session.cli]}, ${STATUS_LABEL[session.status]}`;
+  return `${displayName}, ${CLI_LABEL[session.cli]}, ${STATUS_LABEL[session.status]}`;
 }
 
 // ── Error-state contract (typed, never regex) ─────────────────────────────────
