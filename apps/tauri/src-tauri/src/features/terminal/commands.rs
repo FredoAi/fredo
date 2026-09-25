@@ -1533,6 +1533,36 @@ pub async fn delete_terminal_session_record(
     Ok(())
 }
 
+/// Rename a persisted session record — the ONLY name-mutating write (Spec #2942
+/// ST-3, R-2.1–R-2.5).
+///
+/// The name is the session's ONLY editable field. `name` is trimmed; a blank /
+/// whitespace-only value is refused with `Err` (R-2.3) and no row is touched.
+/// The write is an atomic `title` UPDATE on the record's own row
+/// ([`persistence::rename`], the same `FeatureStore::update` path as
+/// `touch`/`set_cli_session_id`) — never delete+insert — so a rename cannot end
+/// the session, clear scrollback, or change the record's key
+/// (`id`/`created_at`/`cli`/`work_dir`/`cli_session_id` unchanged, one row, no
+/// orphan/duplicate — R-2.4/G-242).
+///
+/// Re-emits `terminal-persisted-sessions-changed`, so the live row AND the
+/// previous-session row resolve the new name from the one record map (R-2.2).
+#[tauri::command]
+pub fn rename_terminal_session_record(
+    session_id: String,
+    name: String,
+    app: AppHandle,
+    feature_store: tauri::State<'_, Arc<FeatureStore>>,
+) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("A session name can't be empty".to_string());
+    }
+    persistence::rename(&feature_store, &session_id, trimmed).map_err(|e| e.to_string())?;
+    emit_persisted_sessions_changed(&app, persistence::list(&feature_store).unwrap_or_default());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
