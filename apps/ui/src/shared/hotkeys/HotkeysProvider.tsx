@@ -9,7 +9,8 @@
  * It installs the single `document` keydown listener (idempotent — React
  * StrictMode's double effect cannot double-fire a chord), hydrates the keymap
  * document from the backend KV, and renders the ONE shared polite announcer
- * (`HotkeyAnnouncer`, ST-3). It holds no key state and subscribes to nothing, so
+ * (`HotkeyAnnouncer`, ST-3) plus the which-key pending-sequence overlay
+ * (`WhichKeyOverlay`, ST-5). It holds no key state and subscribes to nothing, so
  * it never re-renders the feature tree.
  */
 
@@ -18,6 +19,7 @@ import React, { useEffect } from 'react';
 import { HotkeyAnnouncer } from './announcer';
 import { installHotkeyEngine } from './engine';
 import { hydrateKeymap } from './store';
+import { WhichKeyOverlay } from './WhichKeyOverlay';
 
 export interface HotkeysProviderProps {
   readonly children?: React.ReactNode;
@@ -37,6 +39,7 @@ export function HotkeysProvider({ children }: HotkeysProviderProps) {
     <>
       {children}
       <HotkeyAnnouncer />
+      <WhichKeyOverlay />
     </>
   );
 }
