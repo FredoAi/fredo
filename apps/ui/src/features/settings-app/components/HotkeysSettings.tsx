@@ -76,6 +76,7 @@ import type {
   RegisteredHotkeyAction,
 } from '../../../shared/hotkeys/types';
 import { HotkeyConflictDialog, type HotkeyConflictResolution } from './HotkeyConflictDialog';
+import { MacroEditor } from './MacroEditor';
 
 // ── Testids (the plan's UI/UX names block — consumed by the tester) ──────────
 
@@ -681,14 +682,6 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
     });
   }, []);
 
-  const macroNames = useMemo(
-    () => [
-      ...keymap.macros.map((macro) => macro.name),
-      ...keymap.rawMacros.map((macro) => macro.name),
-    ],
-    [revision, keymap],
-  );
-
   // ── Render ──────────────────────────────────────────────────────────────────
   const renderRow = (row: PaneRow): React.ReactNode => {
     const { action } = row;
@@ -1126,18 +1119,9 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
             </VStack>
           </Box>
 
-          {/* ── Macros (ST-8 owns the editor; this is the mount point) ── */}
+          {/* ── Macros (ST-8 owns the editor) ── */}
           <Box data-testid="hotkeys-macros-section" mt={6}>
-            <SectionLabel>Macros</SectionLabel>
-            {macroNames.length === 0 ? (
-              <Text data-testid="hotkeys-macros-empty" role="status" fontSize="sm" color="fg.muted">
-                No macros yet.
-              </Text>
-            ) : (
-              <Text data-testid="hotkeys-macros-list" fontSize="sm" color="fg.default">
-                {macroNames.join(', ')}
-              </Text>
-            )}
+            <MacroEditor />
           </Box>
 
           {/* ── Cheat sheet (minimal read-only view) ── */}
