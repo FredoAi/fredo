@@ -85,15 +85,15 @@ fredo open-app "OPEN MISSION MONITOR"
 
 ### `fredo open-terminal`
 
-Opens (or focuses) the Terminal window and, when a CLI and/or working directory is supplied, starts that CLI in that folder in the same invocation. The running app validates the arguments **before** anything opens: an invalid CLI or directory creates no window and starts no session.
+Opens (or focuses) the Terminal window and, when a session type and/or working directory is supplied, starts that session in that folder in the same invocation. The running app validates the arguments **before** anything opens: an invalid session type or directory creates no window and starts no session.
 
 ```bash
-fredo open-terminal [--cli <opencode|copilot>] [--dir <PATH>]
+fredo open-terminal [--cli <shell|opencode|copilot>] [--dir <PATH>]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--cli` | No | CLI to start: `opencode` or `copilot`. Omitted with `--dir` → the saved default CLI (`terminal_default_cli`, else `opencode`) |
+| `--cli` | No | Session type to start: `shell` (a plain OS shell — the default), `opencode`, or `copilot`. Omitted with `--dir` → the saved default session type (`terminal_default_cli`, else `shell`) |
 | `--dir` | No | Working directory to start it in. Omitted with `--cli` → the saved work directory (`terminal_work_dir`, else your home folder) |
 
 **Outcome and exit codes**
@@ -118,6 +118,9 @@ fredo open-terminal --cli opencode --dir C:\Code\fredo
 
 # Start the saved default CLI in a folder
 fredo open-terminal --dir C:\Code\fredo
+
+# Start a plain OS shell (the default session type) in a folder
+fredo open-terminal --cli shell --dir C:\Code\fredo
 
 # Start GitHub Copilot in the saved work directory
 fredo open-terminal --cli copilot
