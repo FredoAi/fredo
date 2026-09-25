@@ -8,6 +8,7 @@ import {
   persistedAriaLabel,
   resumeBlockedReason,
   sessionAriaLabel,
+  sessionDisplayTitle,
   sessionTitle,
   sortPersistedSessions,
   type PersistedTerminalSession,
@@ -175,5 +176,50 @@ describe('Spec 2935 ST-4 — persisted records + resume contract', () => {
     const b = record({ id: 'b', lastActiveAt: 900 });
     const c = record({ id: 'c', lastActiveAt: 500 });
     expect(sortPersistedSessions([a, b, c]).map((r) => r.id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('Spec 2942 ST-3 — sessionDisplayTitle (the record title is the name)', () => {
+  function record(overrides: Partial<PersistedTerminalSession>): PersistedTerminalSession {
+    return {
+      id: 'p1',
+      cli: 'opencode',
+      workDir: 'C:\\Code\\fredo',
+      title: 'OpenCode',
+      createdAt: 1,
+      lastActiveAt: 1,
+      cliSessionId: null,
+      ...overrides,
+    };
+  }
+
+  it('resolves the persisted record title over the derived ordinal title', () => {
+    const a = session({ id: 'a', cli: 'opencode' });
+    const b = session({ id: 'b', cli: 'opencode' });
+    const sessions = [a, b];
+    // In a two-OpenCode window the derived title for `a` would be "OpenCode 1".
+    expect(sessionTitle(a, sessions)).toBe('OpenCode 1');
+
+    const map = new Map([['a', record({ id: 'a', title: 'Build agent' })]]);
+    expect(sessionDisplayTitle(a, sessions, map)).toBe('Build agent');
+    // A record-less row (a failed spawn never persists a record) keeps the
+    // derived title — it cannot carry a user-set name.
+    expect(sessionDisplayTitle(b, sessions, map)).toBe('OpenCode 2');
+  });
+
+  it('resolves the live row and its previous-session row through ONE record map', () => {
+    // `resume` REUSES the record's id, so the same id resolves both the live row
+    // and the previous row — they can never disagree (one identity, one name).
+    const live = session({ id: 'x', cli: 'opencode' });
+    const map = new Map([['x', record({ id: 'x', title: 'My agent' })]]);
+    expect(sessionDisplayTitle(live, [live], map)).toBe('My agent');
+  });
+
+  it('shows the renamed name after the record map updates (rename is one column)', () => {
+    const live = session({ id: 'x', cli: 'opencode' });
+    const before = new Map([['x', record({ id: 'x', title: 'OpenCode' })]]);
+    const after = new Map([['x', record({ id: 'x', title: 'Deploy bot' })]]);
+    expect(sessionDisplayTitle(live, [live], before)).toBe('OpenCode');
+    expect(sessionDisplayTitle(live, [live], after)).toBe('Deploy bot');
   });
 });
