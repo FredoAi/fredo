@@ -13,7 +13,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getWindowSnapshot, openWindow, resetWindowStoreForTests } from '@/shared/window-system/windowStore';
-import { resetRegistryForTests, registerFeatureHotkeys, registerFredoAction } from '../registry';
+import {
+  resetRegistryForTests,
+  registerFeatureHotkeys,
+  registerFredoAction,
+  registerHotkeyHandler,
+} from '../registry';
 import { createDefaultKeymap } from '../persistence';
 import {
   getHotkeyCandidates,
@@ -442,5 +447,78 @@ describe('engine — minimal window traversal registration', () => {
 
     keydown(el, { key: '2', ctrlKey: true });
     expect(getWindowSnapshot().find((w) => w.focused)?.id).toBe('b');
+  });
+});
+
+// ── 10. Shipped non-leader g g sequence (ST-16) ──────────────────────────────
+
+describe('engine — shipped g g non-leader sequence (ST-16)', () => {
+  it('g then g focuses the FIRST open window exactly once (real shipped action)', () => {
+    installHotkeyEngine();
+    const el = mountNeutral();
+    openTestWindow('a');
+    openTestWindow('b'); // 'b' focused
+    expect(getWindowSnapshot().find((w) => w.focused)?.id).toBe('b');
+
+    const first = keydown(el, { key: 'g' });
+    expect(first.prevented).toBe(true); // consumed as a prefix
+    expect(getPendingPrefix()).toBe('g');
+    expect(document.body.getAttribute(BODY_PENDING_SEQUENCE_ATTR)).toBe('g');
+
+    const second = keydown(el, { key: 'g' });
+    expect(second.prevented).toBe(true);
+    expect(getWindowSnapshot().find((w) => w.focused)?.id).toBe('a');
+    expect(getPendingPrefix()).toBeNull();
+    expect(document.body.hasAttribute(BODY_PENDING_SEQUENCE_ATTR)).toBe(false);
+  });
+
+  it('g then g runs the fredo.window.first binding EXACTLY once', () => {
+    const run = vi.fn();
+    installHotkeyEngine();
+    registerHotkeyHandler('fredo.window.first', run);
+    const el = mountNeutral();
+
+    keydown(el, { key: 'g' });
+    expect(run).not.toHaveBeenCalled();
+    keydown(el, { key: 'g' });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('g then an invalid continuation resets with no action', () => {
+    const run = vi.fn();
+    installHotkeyEngine();
+    registerHotkeyHandler('fredo.window.first', run);
+    const el = mountNeutral();
+
+    keydown(el, { key: 'g' });
+    const { prevented } = keydown(el, { key: 'x' });
+
+    expect(prevented).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+    expect(getPendingPrefix()).toBeNull();
+    expect(document.body.hasAttribute(BODY_PENDING_SEQUENCE_ATTR)).toBe(false);
+  });
+
+  it('g stays suppressed in text-entry (never arms a sequence)', () => {
+    const run = vi.fn();
+    installHotkeyEngine();
+    registerHotkeyHandler('fredo.window.first', run);
+    const input = mountInput();
+
+    expect(keydown(input, { key: 'g' }).prevented).toBe(false);
+    expect(getPendingPrefix()).toBeNull();
+    expect(document.body.hasAttribute(BODY_PENDING_SEQUENCE_ATTR)).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('g does not arm on a native consumer (focused button)', () => {
+    const run = vi.fn();
+    installHotkeyEngine();
+    registerHotkeyHandler('fredo.window.first', run);
+    const button = mountButton();
+
+    expect(keydown(button, { key: 'g' }).prevented).toBe(false);
+    expect(getPendingPrefix()).toBeNull();
+    expect(run).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,10 @@ export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly 
   'fredo.help.cheatsheet': ['?'],
   'fredo.focus.nextWindow': ['primary+tab'],
   'fredo.focus.prevWindow': ['primary+shift+tab'],
+  // ST-16: the shipped NON-leader multi-key sequence (the AC's `g g` form).
+  // `g` is a typed character, so it is suppressed in text-entry and never arms
+  // on a native consumer — same rule set as the engine's other bare keys.
+  'fredo.window.first': ['g g'],
   'fredo.window.cycleNth': [
     'primary+1',
     'primary+2',

@@ -118,6 +118,30 @@ describe('MINIMAL_DEFAULT_BINDINGS', () => {
     ]);
   });
 
+  it('ships the non-leader g g sequence for fredo.window.first (ST-16)', () => {
+    expect(MINIMAL_DEFAULT_BINDINGS['fredo.window.first']).toEqual(['g g']);
+    const parsed = parseSequence('g g');
+    expect(parsed).toEqual([stroke({ key: 'g' }), stroke({ key: 'g' })]);
+
+    // The two-step default matches two real 'g' keydowns: the first is a PREFIX
+    // (arms the pending sequence), the second completes it EXACTLY once.
+    const first = normalizeKeyStroke(keyEvent({ key: 'g' }), 'win32') as KeyStroke;
+    const second = normalizeKeyStroke(keyEvent({ key: 'g' }), 'win32') as KeyStroke;
+    const bindings = [resolvedBinding('fredo.window.first', 'g g')];
+
+    const armed = matchSequence([first], bindings, 'win32');
+    expect(armed.kind).toBe('prefix');
+    if (armed.kind === 'prefix') {
+      expect(armed.bindings.map((b) => b.actionId)).toContain('fredo.window.first');
+    }
+
+    const completed = matchSequence([first, second], bindings, 'win32');
+    expect(completed.kind).toBe('exact');
+    if (completed.kind === 'exact') {
+      expect(completed.binding.actionId).toBe('fredo.window.first');
+    }
+  });
+
   it('ships close/settings with no default sequence', () => {
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.window.close']).toBeUndefined();
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.settings.open']).toBeUndefined();

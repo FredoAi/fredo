@@ -9,14 +9,16 @@
  * It installs the single `document` keydown listener (idempotent — React
  * StrictMode's double effect cannot double-fire a chord), hydrates the keymap
  * document from the backend KV, and renders the ONE shared polite announcer
- * (`HotkeyAnnouncer`, ST-3) plus the which-key pending-sequence overlay
- * (`WhichKeyOverlay`, ST-5). It holds no key state and subscribes to nothing, so
- * it never re-renders the feature tree.
+ * (`HotkeyAnnouncer`, ST-3), the which-key pending-sequence overlay
+ * (`WhichKeyOverlay`, ST-5) and the app-wide cheat-sheet overlay
+ * (`CheatSheetOverlay`, ST-14). It holds no key state and subscribes to nothing,
+ * so it never re-renders the feature tree.
  */
 
 import React, { useEffect } from 'react';
 
 import { HotkeyAnnouncer } from './announcer';
+import { CheatSheetOverlay } from './CheatSheetOverlay';
 import { installHotkeyEngine } from './engine';
 import { hydrateKeymap } from './store';
 import { WhichKeyOverlay } from './WhichKeyOverlay';
@@ -40,6 +42,7 @@ export function HotkeysProvider({ children }: HotkeysProviderProps) {
       {children}
       <HotkeyAnnouncer />
       <WhichKeyOverlay />
+      <CheatSheetOverlay />
     </>
   );
 }

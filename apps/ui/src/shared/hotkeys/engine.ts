@@ -68,6 +68,7 @@ export const LAUNCHER_TOGGLE_ACTION_ID = 'fredo.launcher.toggle';
 const FOCUS_NEXT_ACTION_ID = 'fredo.focus.nextWindow';
 const FOCUS_PREV_ACTION_ID = 'fredo.focus.prevWindow';
 const CYCLE_NTH_ACTION_ID = 'fredo.window.cycleNth';
+const FIRST_WINDOW_ACTION_ID = 'fredo.window.first';
 
 // ── DOM hooks (contract block 7) ─────────────────────────────────────────────
 
@@ -119,6 +120,12 @@ function focusNth(sequence: KeySequence): void {
   if (target) focusWindow(target.id);
 }
 
+/** Focus the FIRST open window (ST-16's non-leader `g g` action). */
+function focusFirstWindow(): void {
+  const target = getWindowSnapshot()[0];
+  if (target) focusWindow(target.id);
+}
+
 const DEFAULT_FREDO_ACTION_DEFS: readonly DefaultFredoActionDef[] = [
   {
     actionId: LAUNCHER_TOGGLE_ACTION_ID,
@@ -152,6 +159,12 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly DefaultFredoActionDef[] = [
     title: 'Focus window by number',
     description: 'Focus the Nth open window',
     run: (ctx) => focusNth(ctx.sequence),
+  },
+  {
+    actionId: FIRST_WINDOW_ACTION_ID,
+    title: 'Focus first window',
+    description: 'Focus the first open window',
+    run: () => focusFirstWindow(),
   },
   { actionId: 'fredo.focus.left', title: 'Focus left', description: 'Move focus left' },
   { actionId: 'fredo.focus.down', title: 'Focus down', description: 'Move focus down' },
