@@ -229,6 +229,11 @@ mod tests {
             terminal_help.contains("--dir"),
             "`fredo open-terminal --help` must name --dir:\n{terminal_help}"
         );
+        // ST-2a / F-81: the advertised value set includes the plain-shell type.
+        assert!(
+            terminal_help.contains("shell|opencode|copilot"),
+            "`fredo open-terminal --help` must advertise the `shell` value:\n{terminal_help}"
+        );
     }
 
     #[test]

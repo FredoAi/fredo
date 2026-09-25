@@ -56,8 +56,22 @@ const SIDEBAR_WIDTH = '200px';
 const ADD_HEIGHT = '36px';
 const ROW_HEIGHT = '32px';
 const SECTION_HEIGHT = '24px';
-/** The Previous header pins just below the pinned add header + live header. */
-const PREVIOUS_SECTION_TOP = '60px';
+/**
+ * The REAL outer height of the pinned add header: its 36 px button plus the
+ * 1 px `borderBottom` (measured `{y:0,h:37}` — ST-5a / F-80). Sticky section
+ * offsets are derived from the actual pinned stack so a section header never
+ * paints over the first row beneath it.
+ */
+const ADD_HEADER_STACK_HEIGHT = '37px';
+/** A section header pins directly below the pinned add header. */
+const FIRST_SECTION_TOP = ADD_HEADER_STACK_HEIGHT;
+/**
+ * The Previous header pins below the add header + the live section header.
+ * When there is NO live section (`sessions.length === 0`) the Previous header
+ * is the FIRST section and pins at the add-header stack height (37 px); with a
+ * live section present it sits below that section's 24 px header (37 + 24 = 61).
+ */
+const PREVIOUS_SECTION_TOP_WITH_LIVE = '61px';
 
 /** Vertical-only scroll with the shipped thin scrollbar (UI/UX §1). */
 const thinScrollbar = {
@@ -437,7 +451,7 @@ export const TerminalSidebar: React.FC<TerminalSidebarProps> = ({
           <SectionHeader
             testid="terminal-session-sidebar-live-section"
             label={`This window (${sessions.length})`}
-            top={ADD_HEIGHT}
+            top={FIRST_SECTION_TOP}
           />
           <chakra.ul role="list" aria-label="This window sessions" m={0} p={0} listStyleType="none">
             {sessions.map((session, index) => (
@@ -467,7 +481,7 @@ export const TerminalSidebar: React.FC<TerminalSidebarProps> = ({
           <SectionHeader
             testid="terminal-session-sidebar-previous-section"
             label={`Previous (${previous.length})`}
-            top={PREVIOUS_SECTION_TOP}
+            top={sessions.length > 0 ? PREVIOUS_SECTION_TOP_WITH_LIVE : FIRST_SECTION_TOP}
           />
           <chakra.ul role="list" aria-label="Previous sessions" m={0} p={0} listStyleType="none">
             {previous.map((record, index) => (

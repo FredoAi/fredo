@@ -248,6 +248,34 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     expect(rowButton('GitHub Copilot', 'starting')).not.toHaveAttribute('aria-current');
   });
 
+  it('pins the section headers below the REAL add-header stack (ST-5a / F-80)', async () => {
+    sessions = [session({ id: 'a', cli: 'opencode', status: 'running' })];
+    persisted = [record({ id: 'p1', title: 'OpenCode' })];
+    renderWindow();
+
+    // The pinned add header's REAL outer height is 37 px (36 px button + 1 px
+    // borderBottom). The live header pins there; the Previous header pins below
+    // the live header's 24 px (37 + 24 = 61). The prior 60 px literal painted
+    // the Previous header 23 px over its first row in the reopen state.
+    const sidebar = await screen.findByTestId('terminal-session-sidebar');
+    expect(
+      getComputedStyle(within(sidebar).getByTestId('terminal-session-sidebar-live-section')).top,
+    ).toBe('37px');
+    expect(
+      getComputedStyle(within(sidebar).getByTestId('terminal-session-sidebar-previous-section')).top,
+    ).toBe('61px');
+
+    cleanup();
+    // Reopen state (persisted records, ZERO live sessions): the Previous header
+    // is the FIRST pinned section and sticks directly below the add header.
+    sessions = [];
+    renderWindow();
+    const reopened = await screen.findByTestId('terminal-session-sidebar');
+    expect(
+      getComputedStyle(within(reopened).getByTestId('terminal-session-sidebar-previous-section')).top,
+    ).toBe('37px');
+  });
+
   it('exposes the C-3 pane hooks: region label, data-surface and the canvas host', async () => {
     sessions = [session({ id: 'a', cli: 'opencode', status: 'running' })];
     renderWindow();
