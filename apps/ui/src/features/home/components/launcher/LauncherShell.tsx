@@ -8,6 +8,12 @@ import { useConnectionStatus } from '../../../../shared/contexts/StreamContext';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureClass';
+// Spec #2946 ST-4 — the Ctrl+Space chord is owned by the ONE shared hotkey
+// dispatch engine (`HotkeysProvider`, mounted in `main.tsx`). The shell no longer
+// adds its own `document` keydown listener; it contributes the launcher-toggle
+// RUN through the action registry.
+import { registerHotkeyHandler } from '../../../../shared/hotkeys/registry';
+import { LAUNCHER_TOGGLE_ACTION_ID } from '../../../../shared/hotkeys/engine';
 
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
 // shipped grid texture (ONE definition, shared with the launcher surface).
@@ -1381,42 +1387,33 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     ],
   );
 
-  // #2823: the global Ctrl+Space shortcut — a bubble-phase `document` keydown
-  // listener (the `useKonamiCode.ts:55-60` precedent) that works from anywhere
-  // inside the Fredo window (no OS/Tauri global-shortcut plugin). It:
-  //   - matches EXACTLY Ctrl+Space (physical `code === 'Space'`, no meta/alt/shift)
-  //     so it is a distinct chord from plain Space (AC4 / NFR-5);
-  //   - is a NO-OP while typing in a text-control OUTSIDE the launcher surface
-  //     (AC3/#2823 carve-out), treating the launcher's own searchbox as a valid
-  //     target (NFR-7);
-  //   - only `preventDefault()` + `stopPropagation()` when it actually acts so the
-  //     chord NEVER reaches a second action (AC4);
-  //   - Spec #2882 ST-4 — has ONE meaning: show/focus the bar (R-1.1/R-1.2/R-1.3).
-  //     The shipped listening cascade is retired: no branch starts, stops or
-  //     cancels a dictation session, and the chord NEVER closes the bar.
-  const handleGlobalKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (!(e.ctrlKey === true && !e.metaKey && !e.altKey && !e.shiftKey && e.code === 'Space')) {
-        return;
-      }
+  // Spec #2946 ST-4 — the Ctrl+Space chord is dispatched by the ONE shared
+  // hotkeys engine. The shell contributes its RUN through the registry, reusing
+  // the SAME `selectCtrlSpaceAction` verdict the old listener used: typing in a
+  // text control OUTSIDE the launcher still passes (#2823 AC3), and an
+  // already-open launcher whose searchbox is focused stays open (#2823
+  // preserved). The engine always leaves the dispatch decision (match/consume)
+  // to `decideDispatch`; this handler only performs the side effect.
+  const handleLauncherToggle = useCallback(() => {
+    const active = document.activeElement as HTMLElement | null;
+    const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
+    const action = selectCtrlSpaceAction({
+      activeIsTextControl: isTextControl(active),
+      activeInLauncher,
+    });
 
-      const active = document.activeElement as HTMLElement | null;
-      const activeInLauncher = !!active && !!overlayRef.current && overlayRef.current.contains(active);
-      const action = selectCtrlSpaceAction({
-        activeIsTextControl: isTextControl(active),
-        activeInLauncher,
-      });
+    // #2823 AC3/AC4: a pass neither acts nor swallows the chord.
+    if (action === 'pass') return;
+    // `open` — raise the surface, focus the bar and place the caret (R-1.1).
+    openOverlay();
+  }, [openOverlay]);
 
-      // #2823 AC3/AC4: a pass neither acts nor swallows the chord.
-      if (action === 'pass') return;
-      e.preventDefault();
-      e.stopPropagation();
-
-      // `open` — raise the surface, focus the bar and place the caret (R-1.1).
-      openOverlay();
-    },
-    [openOverlay],
-  );
+  // Register the launcher-toggle RUN with the shared engine for this shell's
+  // lifetime; unmount clears it so a stale closure can never run.
+  useEffect(() => {
+    registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, handleLauncherToggle);
+    return () => registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, null);
+  }, [handleLauncherToggle]);
 
   // Spec #2882 ST-5 — the SINGLE release owner for the hold gesture (R-2.2/R-2.6/
   // R-2.7, UI/UX §5.9): one mount-once bubble-phase `document` keyup listener,
@@ -1483,19 +1480,20 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // never leaks across an unmount.
   // Spec #2882 ST-5 adds the gesture's single release owner and the window-blur
   // safety net to the same mount-once effect.
+  // Spec #2946 ST-4 REMOVES the Ctrl+Space keydown listener from here — the
+  // shared hotkeys engine owns the ONE `document` keydown listener; this shell
+  // keeps only the hold-gesture keyup owner + the blur safety net.
   useEffect(() => {
     if (globalKeydownMountedRef.current) return;
     globalKeydownMountedRef.current = true;
-    document.addEventListener('keydown', handleGlobalKeyDown);
     document.addEventListener('keyup', handleGlobalKeyUp);
     window.addEventListener('blur', handleWindowBlur);
     return () => {
       globalKeydownMountedRef.current = false;
-      document.removeEventListener('keydown', handleGlobalKeyDown);
       document.removeEventListener('keyup', handleGlobalKeyUp);
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [handleGlobalKeyDown, handleGlobalKeyUp, handleWindowBlur]);
+  }, [handleGlobalKeyUp, handleWindowBlur]);
 
   // The gesture's bounded timers must never outlive the surface (AGENTS.md #523 —
   // a single cleared handle per timer, cleared on unmount).

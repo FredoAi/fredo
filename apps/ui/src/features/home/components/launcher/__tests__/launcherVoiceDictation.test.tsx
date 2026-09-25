@@ -31,6 +31,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+// Spec #2946 ST-4 — the Ctrl+Space chord is owned by the shared hotkey engine
+// (`HotkeysProvider`), which is mounted in `main.tsx`. The shell no longer adds
+// its own `document` keydown listener, so these wiring tests mount the provider
+// with the shell (assertions unchanged — only the listener's owner moved).
+import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { FredoFeatureClass } from '@/shared/classes/FredoFeatureClass';
 import { HEARING_NOTHING_COPY, HEARING_NOTHING_MS } from '../LauncherCommandBar';
@@ -281,7 +286,11 @@ describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3; #2914 ST-9)', (
 
 describe('LauncherShell — Ctrl+Space / Escape / capture wiring', () => {
   const renderShell = (onOpenFeature = vi.fn()) => {
-    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={onOpenFeature} />);
+    renderWithChakra(
+      <HotkeysProvider>
+        <LauncherShell showableFeatures={[]} onOpenFeature={onOpenFeature} />
+      </HotkeysProvider>,
+    );
     return onOpenFeature;
   };
 
