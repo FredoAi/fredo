@@ -80,4 +80,20 @@ behaviour is wrong.
 
 ## #2946 exploratory round 1 — probe results
 
-- [ ] _(pending — the Tester records probe results here; do not pre-fill)_
+**App-wide boot failure blocked every probe.** The served webview on `spec/2946`
+tip `e823a07a` never mounts: Vite import-analysis cannot resolve
+`@/shared/utils/colorTint` from `apps/ui/src/shared/components/hotkeys/Keycap.tsx`
+(the served `apps/tauri/vite.config.ts` maps `@` → `apps/tauri/src`; the module
+lives in `apps/ui/src`). Additionally the served entry `apps/tauri/src/main.tsx`
+never mounts `HotkeysProvider`. No keydown handler, overlay, settings pane, macro
+UI, or terminal passthrough surface exists in the running app, so no E- probe could
+be exercised.
+
+- [ ] E-1: **FAIL (promoted to F-28)** — the served app does not boot; the only
+      observable is the Vite error overlay. This is a *build/served-entry* finding,
+      not the double-handler race the probe targeted.
+- [ ] E-2 .. E-15: **BLOCKED (named blocker: app never mounts / no engine).** No
+      sequence, macro, conflict, terminal, or theme surface is reachable to probe.
+- [ ] Teardown: n/a — no config was written (the engine never ran); no test bindings
+      were created. The one `fredo emit` liveness event used isolated session
+      `e2e-hotkeys-2946` and wrote no hotkey config.
