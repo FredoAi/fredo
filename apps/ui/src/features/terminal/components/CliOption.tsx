@@ -14,7 +14,9 @@ import { CLI_DESCRIPTION, CLI_LABEL, type TerminalSessionKind } from '../session
  *
  * `aria-checked` is set explicitly on the hidden radio input: it is the
  * DOM-observable selected state the QA plan reads (Ark's native radio carries a
- * `checked` property but no `aria-checked` attribute).
+ * `checked` property but no `aria-checked` attribute). The same input carries
+ * the `terminal-default-type-<value>` hook (Spec 2942), so the type control is
+ * observable in BOTH the add-session dialog and Settings.
  */
 function kindIcon(value: TerminalSessionKind) {
   if (value === 'copilot') return LuGithub;
@@ -27,7 +29,10 @@ export const CliOption: React.FC<{ value: TerminalSessionKind; selected: boolean
   selected,
 }) => (
   <RadioCard.Item value={value}>
-    <RadioCard.ItemHiddenInput aria-checked={selected} />
+    <RadioCard.ItemHiddenInput
+      aria-checked={selected}
+      data-testid={`terminal-default-type-${value}`}
+    />
     <RadioCard.ItemControl>
       <RadioCard.ItemContent>
         <HStack gap={2}>

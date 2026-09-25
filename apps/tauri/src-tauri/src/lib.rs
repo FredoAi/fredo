@@ -587,6 +587,7 @@ pub fn run() {
             features::terminal::commands::list_persisted_terminal_sessions,
             features::terminal::commands::resume_terminal_session,
             features::terminal::commands::delete_terminal_session_record,
+            features::terminal::commands::rename_terminal_session_record,
             features::setup::commands::check_cli_installations,
             features::setup::commands::install_plugin,
             features::setup::commands::get_plugin_source_path,

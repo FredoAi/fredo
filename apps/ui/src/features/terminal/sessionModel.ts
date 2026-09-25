@@ -237,6 +237,25 @@ export function sessionTitle(
 }
 
 /**
+ * The name rendered for a session row (Spec 2942 ST-3, R-2.1/R-2.2).
+ *
+ * The persisted record's `title` is the SINGLE source of truth for a session's
+ * name: a rename writes that one column, and BOTH the live row and its
+ * previous-session row resolve through the same record map — one session
+ * identity, one name (`resume` reuses the record's `id`, so the maps agree by
+ * construction). Only a record-less row falls back to the derived ordinal title
+ * (`sessionTitle`); a failed spawn never persists a record, so it cannot carry a
+ * user-set name. `TerminalSessionInfo` deliberately keeps NO title field.
+ */
+export function sessionDisplayTitle(
+  session: TerminalSessionInfo,
+  sessions: readonly TerminalSessionInfo[],
+  persistedById: ReadonlyMap<string, PersistedTerminalSession>,
+): string {
+  return persistedById.get(session.id)?.title ?? sessionTitle(session, sessions);
+}
+
+/**
  * Basename of a session's working directory for the sidebar's secondary line.
  * Blank / `.` / `~` render as `~` (the backend's home fallback).
  */

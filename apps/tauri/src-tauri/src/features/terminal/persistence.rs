@@ -177,6 +177,24 @@ pub fn set_cli_session_id(store: &FeatureStore, id: &str, cli_session_id: &str) 
     Ok(())
 }
 
+/// Rename a record's session name (Spec #2942 ST-3).
+///
+/// The name is the record's `title` and the ONLY editable field. The write is an
+/// atomic column UPDATE through `FeatureStore::update` — the SAME path as
+/// [`touch`]/[`set_cli_session_id`], never a delete+insert — so the record's key
+/// identity is untouched (`id`, `created_at`, `cli`, `work_dir`, `cli_session_id`
+/// all stay byte-identical; exactly one row keeps the same `id`, never an orphan
+/// or duplicate — G-242).
+///
+/// Returns the number of rows updated (`0` when no record has that `id`).
+pub fn rename(store: &FeatureStore, id: &str, name: &str) -> Result<u64> {
+    let mut set_cols = Map::new();
+    set_cols.insert("title".into(), json!(name));
+    let mut where_cols = Map::new();
+    where_cols.insert("id".into(), json!(id));
+    store.update(FEATURE_ID, TABLE_NAME, &set_cols, &where_cols)
+}
+
 /// Delete one record by id (user-requested removal).
 pub fn delete(store: &FeatureStore, id: &str) -> Result<u64> {
     let mut where_cols = Map::new();
@@ -493,6 +511,41 @@ mod tests {
             get(&store, "s1").unwrap().unwrap().cli_session_id.as_deref(),
             Some("ses_abc")
         );
+    }
+
+    #[test]
+    fn rename_updates_title_in_place_and_keeps_key_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_table(&dir);
+        let mut original = record("s1", SessionKind::OpenCode, "OpenCode", 7);
+        original.cli_session_id = Some("ses_abc".into());
+        insert(&store, &original).unwrap();
+
+        assert_eq!(rename(&store, "s1", "My build agent").unwrap(), 1);
+
+        let renamed = get(&store, "s1").unwrap().unwrap();
+        assert_eq!(renamed.title, "My build agent", "only the name changed");
+        // G-242 key identity: the SAME id, every other column untouched.
+        assert_eq!(renamed.id, original.id, "the id is the record key — unchanged");
+        assert_eq!(renamed.cli, original.cli);
+        assert_eq!(renamed.work_dir, original.work_dir);
+        assert_eq!(renamed.created_at, original.created_at, "created_at is immutable");
+        assert_eq!(renamed.last_active_at, original.last_active_at);
+        assert_eq!(renamed.cli_session_id, original.cli_session_id);
+        // Exactly one row keeps the same id — no orphan, no duplicate.
+        let all = list(&store).unwrap();
+        assert_eq!(all.len(), 1, "the record count is unchanged");
+        assert_eq!(all[0].id, "s1");
+    }
+
+    #[test]
+    fn rename_of_an_unknown_id_updates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_table(&dir);
+        insert(&store, &record("s1", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
+
+        assert_eq!(rename(&store, "nope", "X").unwrap(), 0);
+        assert_eq!(get(&store, "s1").unwrap().unwrap().title, "OpenCode");
     }
 
     #[test]
