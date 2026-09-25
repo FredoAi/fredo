@@ -12,8 +12,14 @@ import type { FredoFeatureClass } from '../../../../shared/classes/FredoFeatureC
 // dispatch engine (`HotkeysProvider`, mounted in `main.tsx`). The shell no longer
 // adds its own `document` keydown listener; it contributes the launcher-toggle
 // RUN through the action registry.
-import { registerHotkeyHandler } from '../../../../shared/hotkeys/registry';
+import {
+  listHotkeyActions,
+  registerHotkeyHandler,
+  runHotkeyAction,
+} from '../../../../shared/hotkeys/registry';
 import { LAUNCHER_TOGGLE_ACTION_ID } from '../../../../shared/hotkeys/engine';
+import { getKeymap, useHotkeyRevision } from '../../../../shared/hotkeys/store';
+import { ACTION_PALETTE_PREFIX } from '../../../../shared/hotkeys/types';
 
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
 // shipped grid texture (ONE definition, shared with the launcher surface).
@@ -27,6 +33,16 @@ import { useBackgroundId } from '../background/backgroundStore';
 
 import { LauncherChrome } from './LauncherChrome';
 import { LauncherAppGrid } from './LauncherAppGrid';
+// Spec #2946 ST-9 — the `>` action palette (existing command bar; no second
+// palette component ships). Pure projection/switch + the presentational list.
+import { LauncherActionList } from './LauncherActionList';
+import {
+  ACTION_PALETTE_OPEN_ACTION_ID,
+  buildLauncherActionEntries,
+  launcherActionEntryId,
+  parsePaletteQuery,
+  type LauncherActionResult,
+} from './launcherActionPalette';
 import { publishLauncherRegion } from '../../../../shared/components/companion/companionGeometry';
 import { LauncherCommandBar } from './LauncherCommandBar';
 import type { HoldCue, LauncherEnterMode } from './LauncherCommandBar';
@@ -122,6 +138,9 @@ export interface LauncherShellProps {
 
 const clampIndex = (value: number, len: number): number =>
   Math.min(Math.max(0, value), len - 1);
+
+/** Stable identity for "not in palette mode" — never a fresh array per render. */
+const EMPTY_PALETTE_ENTRIES: readonly LauncherActionResult[] = Object.freeze([]);
 
 /** The command-bar `role="searchbox"` field is the grid-navigation focus anchor.
  *  Spec #2883 ST-2: the field became a `Textarea`, so the anchor is the ROLE
@@ -431,6 +450,10 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   const [engaged, setEngaged] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Spec #2946 ST-9 — the action palette's OWN selection index. It is separate
+  // from `selectedIndex` so the app grid's roving index over apps stays
+  // index-aligned (#2826) in every non-palette query.
+  const [paletteIndex, setPaletteIndex] = useState(0);
   // #2823: shortcut-opened overlay state — DISTINCT from the #2819 `engaged`
   // grid-reveal. `open` is TRUE only when the launcher was summoned by Ctrl+Space
   // (it re-z's above the window stack + autofocuses the searchbox). When FALSE the
@@ -741,6 +764,35 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     return showableFeatures.filter((feature) => feature.name.toLowerCase().includes(q));
   }, [showableFeatures, query]);
 
+  // ── Spec #2946 ST-9 — the `>` command-palette switch ──────────────────────
+  // A query whose first non-whitespace character is `>` (`ACTION_PALETTE_PREFIX`)
+  // switches the below-bar results list from app tiles to declared hotkey
+  // actions. A query WITHOUT the prefix leaves every shipped branch untouched
+  // (byte-identical Enter/Space/arrow semantics). The overlay is PURE; the
+  // registry/hotkey store are read here (the shell is the palette host).
+  const paletteQuery = parsePaletteQuery(query);
+  const paletteActive = paletteQuery.active;
+  // Re-render on a real keymap mutation so the row chips track rebinds; the
+  // registry itself is populated at module load / engine install.
+  const hotkeyRevision = useHotkeyRevision();
+  const paletteEntries = useMemo(
+    () =>
+      paletteActive
+        ? buildLauncherActionEntries({
+            actions: listHotkeyActions(),
+            term: paletteQuery.term,
+            // Configured key wins (even `[]`); else the declared default applies —
+            // the engine's `effectiveSequences` rule, so the chips never lie.
+            configuredBindingsFor: (actionId) => getKeymap().bindings[actionId],
+          })
+        : EMPTY_PALETTE_ENTRIES,
+    // `hotkeyRevision` is intentional: the projection reads the keymap binding map.
+    [paletteActive, paletteQuery.term, hotkeyRevision],
+  );
+  const paletteCount = paletteEntries.length;
+  const paletteSafeIndex = paletteCount === 0 ? 0 : Math.min(paletteIndex, paletteCount - 1);
+  const activeActionId = paletteCount > 0 ? launcherActionEntryId(paletteSafeIndex) : undefined;
+
   // Spec #2882 ST-4 — the truthful hint, derived from ST-1's ONE Enter verdict
   // (R-6.3: "the hint always states the action Enter will take"). The old
   // independent exact-full-name rule + the `companionBusy` global gate are
@@ -760,6 +812,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     enterMode: LauncherEnterMode;
     hintLabel: string | undefined;
   }>(() => {
+    // Spec #2946 ST-9 — in palette mode the chip names the ACTION Enter will run
+    // (the shipped `resolveEnterAction` verdict never applies to a `>` query).
+    if (paletteActive) {
+      const focused = paletteEntries[paletteSafeIndex];
+      return {
+        enterMode: 'none',
+        hintLabel: focused ? `↵ run ${focused.title}` : undefined,
+      };
+    }
     const queryEmpty = query.trim() === '';
     const action = resolveEnterAction({
       query,
@@ -777,7 +838,16 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const enterMode: LauncherEnterMode =
       action.kind === 'launch' ? 'launch' : action.kind === 'send' ? 'send' : 'none';
     return { enterMode, hintLabel };
-  }, [query, filteredEntries, companionActive, companionReplying, captureLive]);
+  }, [
+    paletteActive,
+    paletteEntries,
+    paletteSafeIndex,
+    query,
+    filteredEntries,
+    companionActive,
+    companionReplying,
+    captureLive,
+  ]);
 
   // Spec #2882 ST-5-fix (UI/UX §7) — the accent-highlighted tile follows the
   // top-ranked rule match, so the tile the grid highlights is the SAME app the chip
@@ -838,6 +908,16 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     const cells = container.querySelectorAll<HTMLElement>('[role="grid"] [role="gridcell"]');
     cells[safeSelectedIndex]?.scrollIntoView({ block: 'nearest' });
   }, [engaged, safeSelectedIndex]);
+
+  // Spec #2946 ST-9 — keep the keyboard-selected ACTION row in view (the palette
+  // analogue of the grid scroll above; never runs for a non-palette query).
+  useEffect(() => {
+    if (!engaged || !paletteActive) return;
+    const container = overlayRef.current;
+    if (!container) return;
+    const rows = container.querySelectorAll<HTMLElement>('[data-testid="launcher-action-entry"]');
+    rows[paletteSafeIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [engaged, paletteActive, paletteSafeIndex]);
 
   // FREDO notch trigger: toggles the grid reveal (idle <-> engaged). The surface
   // itself stays mounted (AC5) — the notch never collapses the search bar.
@@ -987,6 +1067,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [filteredEntries, launchFeature],
   );
 
+  // Spec #2946 ST-9 — the palette row commit (click / Enter both land here).
+  // Runs the action through the ONE registry run path with `source: 'palette'`;
+  // the action's own handler decides any surface side effect (window open,
+  // settings, terminal, …), so the palette never re-implements an action.
+  const handleActionSelect = useCallback(
+    (index: number) => {
+      const entry = paletteEntries[index];
+      if (!entry) return;
+      runHotkeyAction(entry.actionId, 'palette');
+    },
+    [paletteEntries],
+  );
+
   const handleQueryChange = useCallback((q: string) => {
     // #2878 ST-1 — synchronous mirror so the release owner's ordinary-space write
     // reads the current text in the same commit (never a one-render-stale read).
@@ -994,6 +1087,8 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     setQuery(q);
     // A fresh filter restarts selection at the first tile.
     setSelectedIndex(0);
+    // Spec #2946 ST-9 — a fresh filter restarts the action-palette selection too.
+    setPaletteIndex(0);
     // A present query reveals the grid (engaged) even without surface focus.
     if (q.trim() !== '') setEngaged(true);
   }, []);
@@ -1245,6 +1340,15 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
 
       if (e.key === 'Enter') {
         e.preventDefault();
+        // Spec #2946 ST-9 — palette mode: Enter runs the focused ACTION result
+        // with `source: 'palette'`. This branch is reachable ONLY while the query
+        // carries the `>` prefix, so a non-prefix query keeps the shipped
+        // `resolveEnterAction` verdict below byte-identically.
+        if (paletteActive) {
+          const focused = paletteEntries[paletteSafeIndex];
+          if (focused) runHotkeyAction(focused.actionId, 'palette');
+          return;
+        }
         // Spec #2882 ST-5-fix (QA-10, R-6.3) — the Enter verdict comes from the SAME
         // pure `resolveEnterAction` the hint chip renders, fed the SAME `captureLive`
         // primitive. WHILE a launcher-origin capture is live the verdict is
@@ -1332,6 +1436,19 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
         // character, and to the grid's tile-open branch when a TILE has focus.
       }
 
+      // Spec #2946 ST-9 — palette mode: ↑/↓ move the ACTION selection and the
+      // app-grid navigation below (its roving index over apps) is skipped, so a
+      // `>` query can never move the app tile selection (#2826 invariant).
+      if (paletteActive) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (paletteCount > 0) {
+            setPaletteIndex((i) => clampIndex(i + (e.key === 'ArrowDown' ? 1 : -1), paletteCount));
+          }
+        }
+        return;
+      }
+
       // AC4: an empty / fully-filtered grid has no openable target — arrows and
       // Space are NO-OPs (keyboard never opens a tile that does not exist).
       if (entryCount === 0) return;
@@ -1384,6 +1501,11 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       resetHoldGesture,
       signalCancel,
       voiceEnabled,
+      // Spec #2946 ST-9 — the palette branches read these.
+      paletteActive,
+      paletteEntries,
+      paletteSafeIndex,
+      paletteCount,
     ],
   );
 
@@ -1408,12 +1530,27 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     openOverlay();
   }, [openOverlay]);
 
-  // Register the launcher-toggle RUN with the shared engine for this shell's
-  // lifetime; unmount clears it so a stale closure can never run.
+  // Spec #2946 ST-9 — the `fredo.palette.openActions` RUN (shipped default
+  // `primary+P`): raise the command bar with the action prefix PRE-FILLED so the
+  // declared-actions list is shown immediately. Reuses the SAME `openOverlay`
+  // focus/caret path as Ctrl+Space and writes the prefix through the ONE
+  // controlled-query route (`handleQueryChange`) — no second query writer.
+  const openActionsPalette = useCallback(() => {
+    openOverlay();
+    handleQueryChange(ACTION_PALETTE_PREFIX);
+  }, [openOverlay, handleQueryChange]);
+
+  // Register the launcher-toggle RUN + the palette-open RUN with the shared
+  // engine for this shell's lifetime; unmount clears them so a stale closure can
+  // never run.
   useEffect(() => {
     registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, handleLauncherToggle);
-    return () => registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, null);
-  }, [handleLauncherToggle]);
+    registerHotkeyHandler(ACTION_PALETTE_OPEN_ACTION_ID, openActionsPalette);
+    return () => {
+      registerHotkeyHandler(LAUNCHER_TOGGLE_ACTION_ID, null);
+      registerHotkeyHandler(ACTION_PALETTE_OPEN_ACTION_ID, null);
+    };
+  }, [handleLauncherToggle, openActionsPalette]);
 
   // Spec #2882 ST-5 — the SINGLE release owner for the hold gesture (R-2.2/R-2.6/
   // R-2.7, UI/UX §5.9): one mount-once bubble-phase `document` keyup listener,
@@ -1657,7 +1794,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             query={query}
             onQueryChange={handleQueryChange}
             gridOpen={engaged}
-            ariaActivedescendant={activeTileId}
+            ariaActivedescendant={paletteActive ? activeActionId : activeTileId}
             onFocus={handleBarFocus}
             onBlur={handleBarBlur}
             onMinimize={handleMinimize}
@@ -1733,14 +1870,22 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
             // passed down; ST-1 renders the caption only on 2+ visual lines.
             newlineHint={companionActive}
           />
-          {(engaged || companionMessageVisible) && (
-            <LauncherAppGrid
-              entries={filteredEntries}
-              selectedIndex={safeSelectedIndex}
-              onSelect={handleSelect}
-              containerRef={gridRef}
-            />
-          )}
+          {(engaged || companionMessageVisible) &&
+            (paletteActive ? (
+              <LauncherActionList
+                entries={paletteEntries}
+                selectedIndex={paletteSafeIndex}
+                onSelect={handleActionSelect}
+                containerRef={gridRef}
+              />
+            ) : (
+              <LauncherAppGrid
+                entries={filteredEntries}
+                selectedIndex={safeSelectedIndex}
+                onSelect={handleSelect}
+                containerRef={gridRef}
+              />
+            ))}
         </Box>
       </Box>
     </>
