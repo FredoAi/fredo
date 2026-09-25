@@ -28,6 +28,21 @@ export { themes } from './app/types/theme';
 export { Provider } from './shared/components/ui/provider';
 export { Toaster } from './shared/components/ui/toaster';
 
+// ── Hotkeys: shared Keycap primitive + single announcement channel (Spec #2946 ST-3)
+export { Keycap } from './shared/components/hotkeys/Keycap';
+export type { KeycapProps } from './shared/components/hotkeys/Keycap';
+export { describeBinding, describeSequence } from './shared/hotkeys/describe';
+export type { BindingDescription, DescribableBinding } from './shared/hotkeys/describe';
+export {
+  HotkeyAnnouncer,
+  HOTKEY_ANNOUNCER_LABEL,
+  announce,
+  getAnnouncement,
+  resetHotkeyAnnouncer,
+  subscribeAnnouncer,
+  useHotkeyAnnouncer,
+} from './shared/hotkeys/announcer';
+
 // ── Shared FREDO avatar (canonical mascot, Spec #2850) ───────────────────────
 export { FredoAvatar } from './shared/components/fredo-avatar';
 export type { FredoAvatarProps, FredoAvatarState } from './shared/components/fredo-avatar';
