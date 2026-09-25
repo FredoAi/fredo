@@ -310,3 +310,69 @@
 - [x] N-18 (NFR-3, **PASS 2026-09-19 #2896 round 3**): console clean after open/mount/measure/watch start-stop — only the pre-existing `motion() is deprecated` WARN and `[mission-monitor] auto-fit` DEBUG lines.
 - [x] N-19 (NFR-4, **PASS 2026-09-19 #2896 round 3**): MM list/canvas visually unchanged; theme tokens only.
 - [x] Legacy quarantine + no resurrection (**PASS 2026-09-19 #2896 round 3**): on the real-corpus snapshot exactly one `feature_mission_monitor_sessions__legacy_20260919071609` exists (legacy `events`/`session_names`/`deleted_sessions` preserved); 13 tombstones; declared rows whose sessionId is one of the 12 legacy-deleted sessions = **0**.
+
+---
+
+# Mission Monitor — Functional Test Cases (Spec #2945 — every supported agent CLI in one view, each labeled with its CLI)
+
+> Durable functional suite (feature domain `mission-monitor`), extended from #2791/#2792/#2795/#2835/#2896/#2933. One `- [ ]` case per AC (AC1–AC5; AC-3 split into its positive and negative legs). Marks `unknown` until executed by the Tester.
+>
+> **Evidence policy: LIVE** — the exit gate / audit fail-closed unless the tester's Evidence references `telemetry_spans` (a live-query result) AND a rendered-webview receipt (DOM snapshot / screenshot) for the same instant. A static-only PASS is a FALSE PASS.
+>
+> **Provider vocabulary oracle (Spec #2932):** canonical `provider` tokens are exactly `open_code` / `claude_code` / `copilot_cli` / `internal` / `unknown`, resolved from the OTLP resource `service.name` (`fredo-opencode-plugin → open_code`; `copilot-cli → copilot_cli`; else `unknown`). The CLI label MUST read the row's `provider` field — NEVER `telemetry_spans.provider` (a label equal to a model id such as `openai`/`anthropic` is a FAIL).
+>
+> Fixture doctrine (G-073/G-076/G-080): OpenCode = live Run CLI drive (free model, minimal tree, unique marker in the FIRST prompt), never the `opencode` binary from a shell. Copilot = the in-repo deterministic `inject-otlp-fixture.ts --copilot` producer (no paid subscription). Cross-check `telemetry_spans`/`chat_rows`/`tool_use_rows`/`agent_session_rows` at the same instant as every DOM assertion (G-073.3).
+
+## Both CLIs in one view + Copilot activity parity (AC-1)
+
+- [ ] F-46 (AC-1, `unknown`): With an OpenCode session (`open_code`) AND a Copilot-shaped session (`copilot_cli`, session `e2e-copilotsplit2933`) both present in the store, open Mission Monitor and enumerate the session list; then select the Copilot session. Cross-check the row tables + `telemetry_spans` at the same instant.
+  - EXPECTED: the list shows sessions from BOTH CLIs as distinct entries (never merged, never one hidden); selecting the Copilot session renders its activity at the SAME structural detail as an equivalent OpenCode session — chat turn node(s), user prompt (or the documented `—`/absent outcome for a null continuation `userMessage`), `── TOOLS (N) ──` (or a zero-tools node), RESPONSE, token figures.
+  - Edge: OpenCode-only store; Copilot-only store; both in one store; switching back and forth; the Copilot session renders while its split-turn rows land mid-stream.
+- [ ] F-47 (AC-1, `unknown`): Inspect the Copilot session's rendered node set and compare it field-for-field against an OpenCode session's node set from the same corpus.
+  - EXPECTED: no structural element present for OpenCode is missing for Copilot at the same data shape (same sections/labels/token rows); a split-turn continuation with a null `userMessage` still renders its node (never dropped) and does NOT yield two list entries.
+  - Edge: content-off Copilot split turn (call 1 user-text + tool-call, call 2 tool-response + assistant-text, `execute_tool view` inside call 1's window); no `task`/subagent dispatch → zero SubagentNodes, not a rendering failure.
+
+## CLI label in list row + header, from canonical provider (AC-2)
+
+- [ ] F-48 (AC-2, `unknown`): Inspect the OpenCode session's LIST ROW and the selected session's HEADER; repeat for the Copilot session. Cross-check `SELECT provider FROM chat_rows WHERE session_id = '<s>'`.
+  - EXPECTED: each list row and the header display the CLI that produced the session, resolved from canonical provider attribution — `open_code` renders the OpenCode label, `copilot_cli` renders the Copilot label; text non-blank and consistent between row and header.
+  - Edge: label survives rename / select / switch; a session whose rows carry `internal`/`claude_code` (if present) renders its own label; label is not the model provider (`openai`/`anthropic`).
+- [ ] F-49 (AC-2 negative, `unknown`): A session whose canonical `provider` is `unknown` (Resource omits `service.name`, e.g. `inject-otlp-fixture.ts --count 1 --prefix ses_prov2945`).
+  - EXPECTED: the label is an EXPLICIT, NON-BLANK fallback (the Architect-bound literal — QA-4) and is NEVER silently presented as `OpenCode`/`open_code`; the fallback is visually distinct from the OpenCode label.
+  - Edge: absent/empty provider value; a legacy pre-provider row defaulting to `unknown`; the label updates if the provider is later re-derived (never stale).
+
+## Copilot-shaped session appears once it has renderable activity (AC-3 positive)
+
+- [ ] F-50 (AC-3a, `unknown`): Replay the Copilot split-turn fixture (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-turn-split.fixture.json`); wait for the rows to land; enumerate the list and select the session. Cross-check rows at the same instant.
+  - EXPECTED: the session appears ONCE (no duplicate per split span) and renders ≥1 node once its activity lands — consistent with the #2896/#2933 renderable-activity qualification; the split turn does not produce two list entries.
+  - Edge: a continuation whose `userMessage` is null → node still renders; the session qualifying only after the continuation row lands (legitimate transient, G-074).
+
+## No-agent-activity session does not appear (AC-3 negative)
+
+- [ ] F-51 (AC-3b, `unknown`): Produce (or, if no lever exists, predicate-verify) a session that yields NO renderable agent activity — the plain-shell `Terminal` session type, which is not an agent. See QA-2 for the lever/decision.
+  - EXPECTED: the non-agent session does NOT appear in the Mission Monitor session list. If no sanctioned lever exists, the deliberate triage decision is verified instead: a declared rollup row with `visibleTurnCount = 0` and no user dispatch is not listed — the renderable-agent-activity qualification excludes it.
+  - Edge: Terminal session alongside real sessions → only real sessions listed; never receives an agent label; a session that later gains real agent activity becomes listed (transient, G-074).
+
+## Themeable CLI labeling (AC-5)
+
+- [ ] F-52 (AC-5, `unknown`): Visual check of the list-row label and the header label for both providers across light / dark / a non-default user accent.
+  - EXPECTED: labels use the theming feature's semantic tokens (→ CSS vars); no hardcoded hex/rgba; no invalid `var(--token)NN` alpha-append (use `color-mix()`/`tint()`); a theme/accent change restyles the label with zero code change.
+  - Edge: light; dark; non-default accent; both providers' labels; the fallback label.
+
+## CI parity (mandatory — the spec touches the UI build and possibly the Rust rollup)
+
+- [ ] F-53 (CI parity, F-14-style): Run the repo's CI-parity commands and report raw output tail.
+  - EXPECTED: `pnpm --filter @fredo/ui build` clean (TypeScript, zero errors); `pnpm --filter @fredo/ui test` (or the UI unit runner) green for the mission-monitor + session-history suites; if the Rust rollup/declaration is touched, `cargo check` and `cargo clippy --locked -- -D warnings` clean from `apps/tauri/src-tauri/`. Any red = FAIL for the whole spec.
+  - Edge: a UI-only change still runs the UI build + tests; a Rust change additionally requires both cargo gates with `--locked`.
+
+## Non-functional #2945 (NFR-1 / NFR-2 / NFR-3 / NFR-4)
+
+- [ ] N-23 (NFR-1, latency): Open Mission Monitor with stored history; measure Δ mount→first rendered session row with the provider label present; compare small vs large corpus. Record raw ms.
+  - EXPECTED: Δ within the #2896 A-14 bound (≤ 250 ms absolute AND ≤ 2.0× small-corpus Δ, 100 ms floor — QA-6) — provider labeling adds no measurable latency. A "feels fine" with no numbers = FAIL.
+- [ ] N-24 (NFR-2, no full-history scan): inspect the list data path (declared `sessions` rollup first read + table watch, Spec #2896) for a per-session OTLP span lookup or history scan added for the label.
+  - EXPECTED: the label is a projected row field; the list still renders on its first round-trip with no full-history scan.
+- [ ] N-25 (NFR-3, single shared provider rule, NFR-6): code-inspect the label resolution and cross-check the row's `provider` against `resolve_provider_token` output.
+  - EXPECTED: ONE shared extraction path (`rtdb/attrs.rs`, Spec #2932) feeds the row's `provider`; the UI reads the typed field directly — no `??` fallback chain, no multi-path lookup, no text filtering. FAIL if the label re-derives provider or reads `telemetry_spans.provider`.
+- [ ] N-26 (NFR-4, no re-render loop, #523): `tauri_read_logs(source="console")` after open/select/switch/rename and after a live provider patch.
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based (no `.length`/newly-created-object `useEffect`/`useMemo` deps added).
+  - Regression risk (#523): a `useEffect` depending on the session array `.length` or a newly-created label object → FAIL.
