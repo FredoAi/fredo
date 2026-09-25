@@ -914,6 +914,89 @@ mod tests {
         assert_eq!(meta.declaration_revision, "mm.sessions.v2");
     }
 
+    /// #2945 ST-4: the shipped `mm.sessions.v1 → v2` change is the additive
+    /// `provider` column. The plan MUST be `AddColumns` (never a recreate), the
+    /// existing rows and projection counters MUST survive, and the one-time
+    /// backfill MUST be re-armed (`backfill_done = false`) so every pre-existing
+    /// session gets a populated `provider`.
+    #[test]
+    fn sessions_v1_to_v2_adds_provider_and_rearms_the_backfill() {
+        let h = setup();
+        // v1 (no `provider`): a completed backfill left the marker latched and
+        // the scope version advanced.
+        h.registry
+            .declare(&declaration("mm.sessions.v1", None))
+            .unwrap();
+        h.store
+            .upsert(
+                "mission-monitor",
+                "sessions",
+                &["sessionId".to_string()],
+                &[sessions_row("s1", 3)],
+            )
+            .unwrap();
+        {
+            let meta = h
+                .registry
+                .meta
+                .get_table("mission-monitor", "sessions")
+                .unwrap()
+                .unwrap();
+            assert!(!meta.backfill_done);
+            h.registry
+                .meta
+                .put_table(&TableMeta {
+                    last_version: 7,
+                    backfill_done: true,
+                    ..meta
+                })
+                .unwrap();
+        }
+
+        // v2: the additive `provider` column.
+        let v2 = declaration(
+            "mm.sessions.v2",
+            Some(session_column("provider", DeclaredColumnType::Text)),
+        );
+        let materialized = h.registry.declare(&v2).unwrap();
+        assert_eq!(materialized.len(), 1);
+        assert!(
+            !materialized[0].created,
+            "an additive column change must apply AddColumns, never a recreate"
+        );
+
+        // The column was physically altered in ...
+        let columns = h.store.table_column_names(&full_name()).unwrap();
+        assert!(
+            columns.contains(&"provider".to_string()),
+            "the additive provider column must be present: {columns:?}"
+        );
+        // ... existing rows and their data survive ...
+        let rows = h
+            .store
+            .query("mission-monitor", "sessions", None, None, None)
+            .unwrap();
+        assert_eq!(rows.len(), 1, "AddColumns must preserve existing rows");
+        assert_eq!(rows[0].get("chatRowCount").unwrap(), 3);
+        // ... the revision advanced and the projection counter was preserved ...
+        let meta = h
+            .registry
+            .meta
+            .get_table("mission-monitor", "sessions")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.declaration_revision, "mm.sessions.v2");
+        assert_eq!(
+            meta.last_version, 7,
+            "AddColumns preserves the projection counters"
+        );
+        // ... and the one-time backfill was re-armed to populate `provider`.
+        assert!(
+            !meta.backfill_done,
+            "an additive column MUST re-arm backfill_done=false so pre-existing rows get provider"
+        );
+    }
+
     #[test]
     fn removal_is_refused_with_named_error_and_data_preserved() {
         let h = setup();

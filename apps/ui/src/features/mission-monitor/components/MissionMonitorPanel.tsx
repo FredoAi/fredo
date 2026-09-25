@@ -737,6 +737,16 @@ export const MissionMonitorPanel: React.FC = () => {
     error: sessionsError,
   } = useDeliverySessions();
 
+  // ── #2945 ST-3: the SELECTED session (for the CLI identity chip) ──────────
+  // A memoized find over the already-memoized `sessions` list + the selection
+  // id — no `.length`/newly-created-object deps (the #523 no-loop rule).
+  // `null` before the list has loaded or when nothing is selected; the header
+  // chip then renders the explicit `Unknown CLI` fallback, never OpenCode.
+  const selectedSession = useMemo(
+    () => sessions.find((s) => s.sessionId === selectedSessionId) ?? null,
+    [sessions, selectedSessionId],
+  );
+
   // ── Spec #2896 ST-6/ST-9: the SELECTED SESSION's canonical activity ───────
   // The per-session watch (`sessionId = S` query scope, `initial: true`) is the
   // canvas + session-metrics source. `sessionId === null` opens no per-session
@@ -930,6 +940,7 @@ export const MissionMonitorPanel: React.FC = () => {
                 estimatedCost={sessionMetrics.estimatedCost}
                 totalMessages={sessionMetrics.totalMessages}
                 unattributedEvents={unattributedCount}
+                provider={selectedSession?.provider ?? null}
               />
             )}
 

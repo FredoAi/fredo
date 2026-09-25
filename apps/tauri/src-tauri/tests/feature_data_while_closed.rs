@@ -77,12 +77,13 @@ impl NotificationSink for NullSink {
 fn mission_monitor_declaration() -> FeatureDataDeclaration {
     FeatureDataDeclaration::parse(json!({
         "featureId": FEATURE_ID,
-        "declarationRevision": "mm.sessions.v1",
+        "declarationRevision": "mm.sessions.v2",
         "tables": [{
             "name": DECLARED_TABLE,
             "primaryKey": ["sessionId"],
             "columns": [
                 { "name": "sessionId", "type": "TEXT", "owner": "backend" },
+                { "name": "provider", "type": "TEXT", "owner": "backend", "nullable": true },
                 { "name": "startedAtNs", "type": "INTEGER", "owner": "backend", "nullable": true },
                 { "name": "latestAt", "type": "TEXT", "owner": "backend" },
                 { "name": "chatRowCount", "type": "INTEGER", "owner": "backend" },
