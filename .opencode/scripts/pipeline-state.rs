@@ -4921,18 +4921,33 @@ fn context_read_streak(issue: u32, actor: &str) -> usize {
 /// audit is round 2). `last_failure` is the reason recorded with the most recent
 /// failed verdict — the missed-AC context the restarted agents must complete.
 fn retry_state(issue: u32) -> (u32, String) {
-    // Round = the number of times the issue has ENTERED testing (each `phase.started`
-    // for `testing` = one test round). This advances on EVERY rework (tester-FAIL →
-    // implementation → testing), not just audit.verdict failures, so a round-3 run's
-    // `## Tests Runs`/`## SI Summary` are stamped `(round 3)`, never "round 1";
-    // the `## Development Summary` is stamped the round whose testing entry is
-    // being created (count + 1 — see post_one_timeline_comment).
+    // Round = the number of times the issue has ENTERED testing (each
+    // `phase.started` for `testing` = one test round), advanced EARLY when the
+    // issue is mid-rework. A tester-FAIL rework (or an audit restart) re-enters
+    // `implementation` BEFORE the next `testing` entry, so while an agent is
+    // dispatched ONTO the rework the testing count alone still reads the
+    // PREVIOUS round and the RETRY marker was missing for the common rework path
+    // (observed #2940: the fix-round developer saw "round 1" during the round-2
+    // rework). Counting re-entries (implementation `phase.started` whose `from`
+    // is `testing` or `audit`) and taking the max keeps a first pass at round 1
+    // and stays stable once the next testing entry lands.
     // PO feedback (#2688): previous rounds showed "round 1" across many iterations.
-    let round = read_issue_events(issue)
+    let testing_entries = read_issue_events(issue)
         .into_iter()
         .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
-        .count()
-        .max(1) as u32;
+        .count();
+    let rework_re_entries = read_issue_events(issue)
+        .into_iter()
+        .filter(|e| {
+            e.event_name == "phase.started"
+                && e.phase == "implementation"
+                && matches!(
+                    e.attributes.get("from").map(|s| s.as_str()),
+                    Some("testing") | Some("audit")
+                )
+        })
+        .count();
+    let round = testing_entries.max(rework_re_entries + 1).max(1) as u32;
     let failed: Vec<(String, String)> = read_issue_events(issue)
         .into_iter()
         .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")

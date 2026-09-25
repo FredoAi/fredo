@@ -108,7 +108,7 @@ Prefix every agent comment to keep issue timelines scannable and filterable. **C
 
 **Timeline comments (the issue narrative):** the transition / `audit-record` auto-post five titled comments from `.opencode/tmp/<issue>/` drafts (templates in [templates/](templates/)): `## Triage Plan` (triage→implementation), `## Fix Plan (round N)` (rework re-entry — Architect-authored), `## Development Summary` (implementation→testing), `## Tests Runs` (testing — carries the verdict, read by the gate), `## SI Summary` (audit→done). **The issue BODY is the single PO Backlog** — no `## PO Backlog` comment is posted (it duplicated the body; PO feedback #2688).
 
-**Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (the count of `phase.started` entries for `testing` — every rework advances the round, never stuck at "round 1") and stamps it on retry-relevant comments — never the drafting agent:
+**Retry rounds are machine-stamped on the timeline.** The state machine derives the current round from the event log (the count of `phase.started` entries for `testing`, advanced early by an implementation re-entry from `testing`/`audit` so a rework in flight — before the next testing entry — is already on the new round, never stuck at "round 1") and stamps it on retry-relevant comments — never the drafting agent:
 - the restart `## Decision` comment reads `Audit verdict: **restart → <phase> (round N)**` and lists the missed ACs for round N;
 - `## Development Summary`, `## Tests Runs`, `## Fix Plan`, and `## SI Summary` post as `## <title> (round N)`.
 

@@ -53,6 +53,38 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-249: retry_marker_absent_while_a_rework_is_in_flight
+- **activation_date:** 2026-09-25
+- **observed:** #2940 round 2 — the fix-round developer's context block read `Attempt: round 1` while it was dispatched ONTO the round-2 rework: a tester-FAIL rework re-enters implementation before the next testing entry, and the round was derived from the testing-entry count alone, so the RETRY marker was absent for the common rework path.
+- **target_failure:** the retry round and marker are derived only from entries into testing, so an agent dispatched onto a rework (tester-FAIL or audit restart) before the next testing entry reads the PREVIOUS round with no RETRY marker and may re-do the whole feature instead of completing the missed acceptance criteria.
+- **guardrail:** The round derivation must advance as soon as a rework re-enters implementation — count implementation entries whose source phase is testing or audit, and take the max with the testing-entry count — so an agent dispatched mid-rework reads the current round and the RETRY marker. Keep the harness pin for both the first-pass (round 1) and the post-rework (round N plus reason) states.
+- **home:** .opencode/scripts/pipeline-state.rs + docs/agentic-pipeline/state-machine.md + docs/agentic-pipeline/github.md + .opencode/skills/pipeline-state/SKILL.md + references.md
+- **effectiveness:** Pending — the derivation change is harness-pinned (the pipeline script harness passes 112 of 112); re-validate on the next rework that dispatches an agent before the next testing entry.
+
+### G-250: cold_state_regression_row_verified_only_on_the_warm_path
+- **activation_date:** 2026-09-25
+- **observed:** #2940 round 1 — the AC5 regression row for the `fredo open-terminal` command had been marked PASS in a prior shipped spec on a WARM window; when #2940's tester exercised the COLD path (no terminal window open) the command created the window but spawned zero sessions (4 of 4), a pre-existing defect the warm-path PASS had hidden across a whole spec. The round-2 handshake fix cleared it (cold 3 of 3, one-shot proven, warm and negatives unchanged).
+- **target_failure:** a regression row for a user command that opens or creates a surface is exercised only on the WARM path (the surface already present), so a pre-existing defect on the COLD/zero-state path stays hidden and the row's PASS is not evidence about the command's real first-use path.
+- **guardrail:** A regression row for a command that opens or creates a surface MUST exercise the COLD/zero-state path (no prior instance) and state which path it drove; a warm-path-only PASS is not evidence about first use, and a prior spec's warm-only PASS must be re-driven cold before it is inherited. Pair the cold leg with a one-shot check (a re-invocation does not duplicate the created resource) and a warm control.
+- **home:** playbooks/qa-expert.md (regression-row design) + playbooks/tester.md (drive the cold path) + playbooks/self-improver.md (plan review) + references.md
+- **effectiveness:** Applied (2026-09-25, #2940 rounds 1 to 2) — the cold path was driven three times after the fix and passed with the session spawned and auto-selected, one-shot proven on reload, and the warm path plus the invalid-cli and invalid-directory negatives unchanged.
+
+### G-251: ui_layout_global_rule_missing_from_the_served_entry
+- **activation_date:** 2026-09-25
+- **observed:** #2940 — the Terminal pane rendered about 126 px tall in a 780 px window across two shipped specs. The traced root cause was not the provider tree: the SERVED app entry imported the UI library, and that library entry imported no CSS at all, while the percentage-height chain rules lived in a stylesheet imported ONLY by the standalone UI dev entry — so the root element computed to auto height and every descendant percentage collapsed (the main-window shell escaped only because it sized itself with a viewport unit).
+- **target_failure:** a UI feature whose layout depends on a global stylesheet rule (a percentage-height chain, a global reset) is verified only in the shared library or the standalone dev entry, while the SERVED host document never loads that rule — so the layout silently collapses in the shipped app and unit tests (which apply no stylesheet) cannot see it.
+- **guardrail:** When a feature's layout depends on a global CSS rule, verify the rule is declared in the SERVED host document the native window actually loads, not only in the shared library or the standalone dev entry; a library entry that imports no CSS means the host owns the rule. Make the source pin assert the host document's declaration so the class is caught statically, and measure the rendered geometry in the served app at the default, minimum and resized sizes.
+- **home:** playbooks/software-architect.md (domain model: trace the served entry and the CSS chain) + playbooks/ui-ux-expert.md (definite-height assumption) + references.md
+- **effectiveness:** Confirmed (2026-09-25, #2940) — the host-document assertion was added to the source pin (strictly stronger, and it fails when the rule is removed), and the measured pane filled the window at 900x600, 560x360 and 1400x900 in the served app.
+
+### G-252: persistence_writing_suite_leaves_records_in_the_developer_store
+- **activation_date:** 2026-09-25
+- **observed:** #2940 — the terminal test suites drove a product command that persists a session record into the developer's real store and carried no teardown, so fixture and automation records polluted the "Previous sessions" list across two shipped specs (titles like gone-- and workd--).
+- **target_failure:** a durable suite drives a product command that persists into the developer's real store (a database table, a settings key) but carries no teardown, so every run leaves residue that pollutes the developer's data and surfaces as a defect in a later spec.
+- **guardrail:** A durable suite that drives a command which persists to the developer's store MUST carry a mandatory, idempotent teardown that removes exactly what the run created (scoped to the suite's own fixtures) plus a pre-run snapshot and a post-teardown set-equality check; a teardown that overwrote settings keys must restore them to their captured values. Prefer the product's shipped delete command over a direct store edit, and keep the teardown in the version-controlled suite so every future run inherits it.
+- **home:** playbooks/qa-expert.md (suite teardown) + playbooks/tester.md (execute the teardown) + references.md
+- **effectiveness:** Applied (2026-09-25, #2940) — the tester ran the teardown twice (three records then zero, idempotent), restored the four settings keys it had overwritten, and the pre and post record sets matched with zero fixture-root rows in the store.
+
 ### G-248: on_the_go_improvement
 - **activation_date:** 2026-09-24
 - **observed:** #2935 round 1
