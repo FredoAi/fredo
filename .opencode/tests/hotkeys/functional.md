@@ -162,6 +162,31 @@
 - [ ] F-27: Diff `telemetry_spans`/`telemetry_metrics` span + metric names before vs after rebinding + replaying a macro + a conflict. **Expected:** NO span/event/metric carries shortcut usage or binding identity; the tables gain no shortcut-usage rows; only canonical app/agent spans appear. *(live receipt)*
   - **Edge:** after a rebind; after a macro replay; after a conflict resolution; after a full restart.
 
+## F-28 (promoted round 1, served-app boot) — Served app boots + engine mount
+
+- [ ] F-28: Load the SERVED app (`dev-env.ps1 -Up -Spec 2946`, port 5174, the
+      `apps/tauri` entry) and assert the React tree mounts. **Expected:** `#root` has
+      children; `document.documentElement[data-fredo-hotkeys-engine]="1"`; no
+      `vite-error-overlay`. **Actual (round 1):** FAIL — Vite import-analysis error
+      `Failed to resolve import "@/shared/utils/colorTint" from Keycap.tsx` blanks the
+      app (root 0 children, overlay present, no engine attribute). **Origin:** E-1
+      round 1 (promoted). Also: the served entry `apps/tauri/src/main.tsx` does not
+      mount `HotkeysProvider` at all; the standalone `apps/ui` entry does.
+  - **Edge:** the served `apps/tauri` Vite `@` alias points at `apps/tauri/src` while
+    `apps/ui` sources use `@/...` — a module in `apps/ui/src` must use a relative
+    import (or the served alias must be widened); CI `ui-validate` builds only
+    `apps/ui` and therefore cannot catch this.
+
+---
+
+## #2946 testing round 1 — result
+
+**Verdict: FAIL (0 of 27 QA rows verifiable).** The served app on `spec/2946` tip
+`e823a07a` does not boot: Vite fails import-analysis on `Keycap.tsx`'s unresolved
+`@/shared/utils/colorTint` (the served `apps/tauri` alias maps `@` → `apps/tauri/src`,
+whereas the module lives in `apps/ui/src`). Every F-1..F-27 live leg is therefore
+blocked — none could be driven. Rows remain unchecked; re-run after the boot fix.
+
 ---
 
 ## Requirement-ID reconciliation
