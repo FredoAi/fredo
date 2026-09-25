@@ -149,7 +149,53 @@ is wrong.
   rail re-tints, the canvas keeps its data palette, all chrome legible. (See the F-44 caveat on the
   light-leg method.)
 
+## #2942 probes — vertical sidebar, rename, plain shell
+
+> Seeded at triage for Spec #2942. Unscripted probes beyond the F-57..F-78 rows. A confirmed
+> finding PROMOTES to `functional.md` (keep the origin note). Evidence is LIVE + MEASURED.
+
+> **EARS map (Architect-authoritative):** E-31 → R-2.1/R-2.4; E-32 → R-2.2/R-2.5; E-33 →
+> R-1.5; E-34 → R-5.1; E-35 → R-4.3; E-36 → R-3.2/R-5.2; E-37 → R-1.1/R-1.5; E-38 → R-2.4;
+> E-39 → the theme-token NFR; E-40 → R-1.6 (the named fit risk). Published hooks/gates: see
+> `functional.md` → "Requirement-ID reconciliation" (bind to either published form).
+
+- [ ] E-31: **Rename while the session streams a large burst.** Rename mid-output. Does the
+      rename dialog/field steal PTY focus, drop output, or end the session? A dropped buffer or a
+      killed session promotes to F-63.
+- [ ] E-32: **Rename → cross-surface consistency.** Rename a live session, then close/reopen, then
+      `-Action Restart`. Do the live row, the previous row, and the record title stay consistent
+      (never a stale/duplicated name)? An inconsistency promotes to F-62/F-64.
+- [ ] E-33: **10+ sessions rapid churn at MIN.** At 560×360, add/close 10+ plain-shell sessions
+      quickly. Does the sidebar keep scrolling (not the window), does the pane stay flush, and does
+      the record list stay bounded (no orphan/twin)? Promotes to F-58.
+- [ ] E-34: **Same-type identity for plain shells.** Create 2+ Terminal-type sessions in the same
+      dir. Are their titles distinct (ordinal) and their records stable across reopen? A collision
+      or renumber promotes to F-73.
+- [ ] E-35: **Change the default type while a session runs.** With a session live, change the
+      Settings default type + dir and Save; restart. Is the running session unaffected, and does
+      only the NEXT new session adopt the default? A mutation of the live session promotes to F-72.
+- [ ] E-36: **Plain-shell self-exit / close lifecycle.** Self-exit a shell (Ctrl-D / `exit`) and
+      close another. Is the record retained + listed, is the window kept open while a peer lives,
+      and are there zero orphans? Promotes to F-74/R-25.
+- [ ] E-37: **Mixed-type sidebar at MIN.** With a shell + OpenCode + Copilot live at 560×360, do all
+      rows stay compact (≤ published row height) and legible, and does the pane keep dominance?
+      Promotes to F-57/F-58.
+- [ ] E-38: **Rename a record that is resuming.** Trigger a resume, then rename the same record.
+      Does the row keep `aria-current`, does the title update without aborting the resume, and is
+      the id unchanged? Promotes to F-62/F-64.
+- [ ] E-39: **Theme switch at MIN with the vertical sidebar.** Toggle light↔dark at 560×360 with
+      sessions running. Any sidebar chrome that fails to re-tint or loses contrast promotes to
+      N-25.
+- [ ] E-40: **OpenCode TUI fit under stress (the ticket risk).** Spawn an OpenCode session, resize
+      immediately (before the first byte), then resize during heavy output. Does the TUI fill the
+      pane every time, or is a forced `resize_pty` ever required? A required manual `resize_pty`
+      promotes to F-76 (the named risk).
+
 ## C-5 teardown (MANDATORY — run after this suite; BINDING, Architect C-5)
+
+> **#2942 delta:** also snapshot/restore the default-TYPE key (published; fallback
+> `terminal_default_cli`) and snapshot every pre-existing record's `{id → title}` (G-242). Full
+> detail: `functional.md` → "Teardown delta for #2942".
 
 > Suite-side, no product change. Run in the `terminal` window via `tauri_webview_execute_js`
 > after every run; then restore the four settings keys. Deletes every persisted record whose
