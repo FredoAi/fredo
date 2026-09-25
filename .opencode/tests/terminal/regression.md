@@ -457,3 +457,37 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
   first previous row by 23 px in the 0-live state (repro at 2 and 16 records).
 - C-5 + #2942-delta teardown: run 1 deleted 23 fixture-root records / run 2 deleted 0 (idempotent) → 0;
   the four settings keys restored to their captured pre-run values.
+
+### Round 8 (Spec #2942 — round 2 retry) — 2026-09-25, spec/2942 @ 97495693 (R-20..R-27 PASS; F-80/F-81 fixed)
+
+- **R-20 PASS.** Pane invariants re-measured under the vertical sidebar: 900×600 pane 700×600
+  (right 900, bottom 600, share 0.78), 560×360 pane 360×360 (share 0.64), 1400×900 pane 1200×900
+  (share 0.86); active `surface` rect == pane rect and `canvasHost` rect == pane rect (0 px);
+  `pane.bottom − canvas.bottom = 0`; `docScrollH ≤ innerH + 1`; grid tracked 38×24 → 76×40 → 131×60
+  (no 0×0 latch). Disclosed `pane.right − canvas.right` 16–21 px ghostty gutter (host flush).
+- **R-21 PASS.** One `terminal` window throughout; session-scoped `write_pty_input`/`get_pty_buffer`
+  (shell sentinels round-tripped); selecting a different row left all sessions' `id`/`pid`/`startedAt`
+  byte-identical — no re-spawn / remount.
+- **R-22 PASS.** Record payload exactly `{id,cli,workDir,title,createdAt,lastActiveAt,cliSessionId}`;
+  resume semantics unchanged (a shell record reopened a fresh shell in its dir, no false promise). The
+  new `shell` type is additive; the pre-change `opencode`/`copilot` records still parsed + listed.
+- **R-23 PASS.** `terminal_work_dir` governs (dialog prefill); the default-TYPE control is additive
+  (same `terminal_default_cli` key, domain widened `shell|opencode|copilot`); changing it + Save left
+  the record set byte-identical (G-242).
+- **R-24 PASS (G-250, cold).** Cold 3/3 + a warm control; negatives `invalid-cli` / `invalid-directory`
+  / `invalid-argument` all hold.
+- **R-25 PASS.** Closing the window with 4 live sessions (3 shells + 1 Copilot) left
+  `process-hygiene.ps1 -List` at **0 unprotected orphan candidate(s)**; the copilot/opencode trees were
+  absent. (The plain shells are `powershell.exe`, which the script does not enumerate.)
+- **R-26 PASS.** `git diff --stat main origin/spec/2942` touches no `infrastructure/rtdb/**` or
+  `infrastructure/otlp/**`; the Terminal-launched OpenCode session emitted live `telemetry_spans`
+  (`ses_f297cb118ffeeuoFcYv18S2JxM`: `fredo.session` INTERNAL OK + `fredo.llm` CLIENT OK;
+  `gen_ai.conversation.id` = that session, prompt "Reply with exactly: FREDO_QA_2942_OK").
+- **R-27 PASS.** Retired hooks ABSENT (`terminal-session-bar`, `terminal-previous-toggle`,
+  `terminal-previous-panel`, `[role=tablist]`, `[role=tab]`); preserved hooks PRESENT (`terminal-pane`
+  + `data-surface/data-cols/data-rows`, `terminal-session-row-<id>`, `terminal-previous-session-row-<id>`
+  + `persistedAriaLabel`, `terminal-canvas-host-<id>`).
+- **New row — F-80 now PASS** (sticky Previous header no longer overlaps the first previous row; 0 px vs
+  the round-1 23 px). **F-81 now PASS** (`--cli <shell|opencode|copilot>`).
+- C-5 + #2942-delta teardown: run 1 deleted 7 fixture-root records / run 2 deleted 0 (idempotent) → 0;
+  the four settings keys restored to their captured pre-run values.
