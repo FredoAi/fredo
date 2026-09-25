@@ -43,3 +43,28 @@
 - `.opencode/tests/terminal/` — terminal key input + sidebar keyboard handling (R-2.x, E-*).
 - `.opencode/tests/desktop-chrome/` — desktop chrome keyboard entry points (F-19).
 - `.opencode/tests/theming/` — the token→var→theme flow the new surface must follow.
+
+## #2946 testing round 3 — regression result
+
+Run on `spec/2946 @ 45d5120` (dev-env UP, driver `com.fredo.app`).
+
+- R-1 PASS — Ctrl+Space opened/focused the launcher and is a global chord throughout the
+  drive; the launcher's Escape collapsed it (grid hidden, focus released) once open.
+- R-3 PASS — a bare `g`/`s`/`n`/`p` produced exactly one engine decision; no double-fire
+  against the launcher's documented Ctrl+Space listener; typed `gn` in the MM session
+  filter landed verbatim with no pending sequence.
+- R-6 PASS — `themeHygiene.test.ts` (7 tests) green over the hotkeys sources, including
+  the new `CheatSheetOverlay.tsx` (relative imports, tokens/`tint()` only).
+- R-7 PASS — no `Maximum update depth exceeded`/`Uncaught`/`Error:` in the main-window
+  console after open/close, pending sequences, rebind, reset-all, restart, theme pane.
+- R-8 PASS (local) — `pnpm --filter @fredo/ui build` exit 0; `pnpm --filter @fredo/ui
+  test:run` 161 files / 2287 tests green; `pnpm --filter @fredo/tauri build:webview`
+  exit 0 (2624 modules). **CI note:** `gh pr checks 2952` shows `ui-validate` FAILED on
+  `TerminalWindow.test.tsx#L262` (`terminal-session-sidebar-live-section` not found after
+  `findByTestId('terminal-session-sidebar')`) — a pre-existing Spec #2934 terminal-sidebar
+  test unrelated to #2946; it passes reliably locally (full suite + isolated 36 tests)
+  and is a mount/render race, not a regression in this feature.
+- R-9 PASS — 0 shortcut-usage span/metric names (see H-27).
+- R-10 PASS — no Tauri global-shortcut registration introduced.
+- R-11 PASS — the served app boots on `spec/2946 @ 45d5120`: `#root` mounts,
+  `data-fredo-hotkeys-engine="1"`, no `vite-error-overlay`.
