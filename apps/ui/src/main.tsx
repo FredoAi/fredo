@@ -11,6 +11,9 @@ import { ThemeProvider } from './app/providers/ThemeProvider';
 import { CompanionProvider } from './shared/contexts/CompanionContext';
 import { FredoCompanion } from './shared/components/companion';
 import { Router } from './app/routes/Router';
+// Spec #2946 ST-4 — the ONE hotkey dispatch engine + shared announcer, mounted
+// here so BOTH webviews (main and `?view=terminal`) run it.
+import { HotkeysProvider } from './shared/hotkeys/HotkeysProvider';
 import { DevAdapter } from './app/adapters/DevAdapter';
 import { TauriAdapter } from './app/adapters/TauriAdapter';
 import { adapterBridge } from './shared/utils/adapterBridge';
@@ -42,8 +45,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <AppProvider adapter={adapter}>
             <CompanionProvider>
               <ReactFlowProvider>
-                <Router />
-                <Toaster />
+                <HotkeysProvider>
+                  <Router />
+                  <Toaster />
+                </HotkeysProvider>
               </ReactFlowProvider>
               <FredoCompanion />
             </CompanionProvider>

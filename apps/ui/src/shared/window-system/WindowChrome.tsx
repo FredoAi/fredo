@@ -180,14 +180,17 @@ export function WindowChrome(props: WindowChromeProps) {
         {icon}
       </Box>
 
-      {/* Window title — Space Grotesk, recedes when unfocused. */}
+      {/* Window title — recedes when unfocused by BOTH colour (fg.default /
+          fg.muted) and weight (Spec #2946 ST-10 R-1.3: the focus cue is never
+          colour-only). The frame adds the accent border/shadow emphasis. */}
       <Text
         flex="1"
         minWidth="0"
+        data-focused-title={focused ? 'true' : 'false'}
         color={focused ? 'fg.default' : 'fg.muted'}
         fontFamily="var(--font-primary)"
         fontSize="13px"
-        fontWeight="medium"
+        fontWeight={focused ? '700' : '500'}
         overflow="hidden"
         whiteSpace="nowrap"
         textOverflow="ellipsis"

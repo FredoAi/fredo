@@ -34,6 +34,15 @@ jobs:
           filters: |
             ui:
               - 'apps/ui/**'
+              # The SERVED webview entry is `apps/tauri` (index.html → src/main.tsx,
+              # served by `pnpm dev:webview` / built by `build:webview`). A change to
+              # the served entry must trigger ui-validate so the served build cannot
+              # break while the library-only legs stay green (ST-13, G-251).
+              - 'apps/tauri/src/**'
+              - 'apps/tauri/index.html'
+              - 'apps/tauri/vite.config.ts'
+              - 'apps/tauri/tsconfig.json'
+              - 'apps/tauri/package.json'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
@@ -60,10 +69,15 @@ jobs:
           node-version: 20
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --filter @fredo/ui...
+      - run: pnpm install --filter @fredo/ui... --filter @fredo/tauri...
       - run: pnpm --filter @fredo/ui typecheck
       - run: pnpm --filter @fredo/ui build
       - run: pnpm --filter @fredo/ui test:run
+      # Served-entry boot guard (ST-13): build the ACTUAL webview the app loads
+      # (`apps/tauri` index.html → src/main.tsx via @fredo/ui source). The library
+      # legs above cannot see a served-entry-only break (e.g. a `@/…` import or a
+      # missing provider mount); this leg does (G-251).
+      - run: pnpm --filter @fredo/tauri build:webview
 
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
   rust-validate:

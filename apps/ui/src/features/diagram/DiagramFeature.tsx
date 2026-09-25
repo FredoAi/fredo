@@ -15,6 +15,12 @@ import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { DiagramSettings } from './components/DiagramSettings';
 import { LuNetwork } from 'react-icons/lu';
 import { adapterBridge } from '../../shared/utils/adapterBridge';
+import type { FeatureHotkeyAction } from '../../shared/hotkeys/types';
+import {
+  DIAGRAM_FIT_VIEW_ACTION_ID,
+  DIAGRAM_SEARCH_ACTION_ID,
+  dispatchDiagramAction,
+} from './lib/hotkeyBridge';
 
 export class DiagramFeature extends FredoFeatureClass {
   readonly id = 'diagram';
@@ -22,6 +28,29 @@ export class DiagramFeature extends FredoFeatureClass {
   readonly icon = LuNetwork;
   readonly showable = false;
   readonly hasSettings = true;
+
+  /**
+   * Spec #2946 ST-15 (AC2 H-4/H-5/H-6): the diagram's LOCAL hotkeys, declared
+   * through the platform contract (auto-listed/rebound/persisted — no listing
+   * code here). Each `run` dispatches a namespaced event the mounted
+   * `ArchitectureDiagram` maps onto its existing search input + `fitView`.
+   */
+  readonly hotkeys: readonly FeatureHotkeyAction[] = [
+    {
+      actionId: DIAGRAM_SEARCH_ACTION_ID,
+      title: 'Search diagram',
+      description: 'Focus the diagram search input',
+      defaultSequence: 's',
+      run: () => dispatchDiagramAction(DIAGRAM_SEARCH_ACTION_ID),
+    },
+    {
+      actionId: DIAGRAM_FIT_VIEW_ACTION_ID,
+      title: 'Fit diagram to view',
+      description: 'Fit the whole diagram into the viewport',
+      defaultSequence: 'f',
+      run: () => dispatchDiagramAction(DIAGRAM_FIT_VIEW_ACTION_ID),
+    },
+  ];
 
   private focusTarget: { namespace: string; name: string } | null = null;
   private lastFocusTime = 0;

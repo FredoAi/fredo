@@ -338,6 +338,10 @@ export const SessionTerminal: React.FC<SessionTerminalProps> = ({
     <Box
       ref={containerRef}
       data-testid={`terminal-canvas-host-${sessionId}`}
+      // Spec #2946 ST-12 — the terminal passthrough detector's anchor (R-5.7).
+      // The hotkey engine classifies focus inside this root as `terminal` and
+      // suspends dispatch so every keystroke reaches the PTY.
+      data-fredo-terminal-root="true"
       w="100%"
       h="100%"
       background={GHOSTTY_THEME.background}

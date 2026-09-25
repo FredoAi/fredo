@@ -28,6 +28,45 @@ export { themes } from './app/types/theme';
 export { Provider } from './shared/components/ui/provider';
 export { Toaster } from './shared/components/ui/toaster';
 
+// ── Hotkeys: shared Keycap primitive + single announcement channel (Spec #2946 ST-3)
+export { Keycap } from './shared/components/hotkeys/Keycap';
+export type { KeycapProps } from './shared/components/hotkeys/Keycap';
+// Exported for the SERVED Tauri entry (`apps/tauri/src/main.tsx`), which mounts
+// the engine for BOTH webviews; the library entry imports it directly (ST-4 rework).
+export { HotkeysProvider } from './shared/hotkeys/HotkeysProvider';
+export { describeBinding, describeSequence } from './shared/hotkeys/describe';
+export type { BindingDescription, DescribableBinding } from './shared/hotkeys/describe';
+export {
+  HotkeyAnnouncer,
+  HOTKEY_ANNOUNCER_LABEL,
+  announce,
+  getAnnouncement,
+  resetHotkeyAnnouncer,
+  subscribeAnnouncer,
+  useHotkeyAnnouncer,
+} from './shared/hotkeys/announcer';
+
+// ── Hotkeys: terminal passthrough mode + indicator state (Spec #2946 ST-12) ───
+export {
+  TERMINAL_ROOT_SELECTOR,
+  TERMINAL_RELEASE_TESTID,
+  TERMINAL_PASSTHROUGH_TESTID,
+  BODY_PASSTHROUGH_ATTR,
+  PASSTHROUGH_ANNOUNCEMENT_PREFIX,
+  getTerminalExitChord,
+  isTerminalFocused,
+  passthroughAnnouncementText,
+  getReleaseButton,
+  syncTerminalPassthrough,
+  exitTerminalPassthrough,
+  installTerminalPassthrough,
+  uninstallTerminalPassthrough,
+  isTerminalPassthroughInstalled,
+  resetTerminalModeForTests,
+  useTerminalPassthrough,
+} from './shared/hotkeys/terminalMode';
+export type { TerminalPassthroughState } from './shared/hotkeys/terminalMode';
+
 // ── Shared FREDO avatar (canonical mascot, Spec #2850) ───────────────────────
 export { FredoAvatar } from './shared/components/fredo-avatar';
 export type { FredoAvatarProps, FredoAvatarState } from './shared/components/fredo-avatar';
@@ -87,3 +126,81 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoFeatureClass } from './shared/classes/FredoFeatureClass';
 export type { GridItemConfig } from './shared/classes/types';
+
+// ── Hotkeys (Spec #2946 ST-2) ─────────────────────────────────────────────────
+export {
+  registerFeatureHotkeys,
+  registerFredoAction,
+  registerHotkeyHandler,
+  listHotkeyActions,
+  getHotkeyAction,
+  runHotkeyAction,
+  resetRegistryForTests,
+} from './shared/hotkeys/registry';
+export type { HotkeyContributor } from './shared/hotkeys/registry';
+export {
+  subscribeHotkeys,
+  subscribeHotkeyEvents,
+  getHotkeyRevision,
+  getKeymap,
+  getBinding,
+  getHotkeyCandidates,
+  getPendingSequence,
+  getMacroRecordingState,
+  isMacroRecording,
+  isPassthroughActive,
+  applyKeymap,
+  setBinding,
+  clearBinding,
+  resetBinding,
+  resetAllBindings,
+  setLeader,
+  setVimPresetEnabled,
+  setSequenceTimeoutMs,
+  setMacros,
+  setRawMacros,
+  setPendingSequence,
+  clearPendingSequence,
+  setMacroRecording,
+  setPassthrough,
+  hydrateKeymap,
+  resetKeymapStoreForTests,
+  useHotkeyRevision,
+  useHotkeyCandidates,
+  useHotkeyBinding,
+} from './shared/hotkeys/store';
+export type { MacroRecordingState } from './shared/hotkeys/store';
+export {
+  KEYMAP_STORAGE_KEY,
+  RECORDING_LATCH_KEY,
+  CURRENT_SCHEMA_VERSION,
+} from './shared/hotkeys/types';
+export {
+  DEFAULT_KEYMAP,
+  DEFAULT_SEQUENCE_TIMEOUT_MS,
+  MIN_SEQUENCE_TIMEOUT_MS,
+  MAX_SEQUENCE_TIMEOUT_MS,
+  getDefaultBinding,
+  createDefaultBindingMap,
+  createDefaultKeymap,
+  migrateKeymap,
+  loadKeymap,
+  saveKeymap,
+  readRecordingLatch,
+  acquireRecordingLatch,
+  releaseRecordingLatch,
+} from './shared/hotkeys/persistence';
+export type { RecordingLatch } from './shared/hotkeys/persistence';
+export type {
+  FeatureHotkeyAction,
+  HotkeyActionId,
+  HotkeyCandidate,
+  HotkeyEvent,
+  HotkeyInvocationContext,
+  HotkeyResetReason,
+  HotkeyTier,
+  PersistedKeymap,
+  PersistedMacro,
+  PersistedRawMacro,
+  RegisteredHotkeyAction,
+} from './shared/hotkeys/types';
