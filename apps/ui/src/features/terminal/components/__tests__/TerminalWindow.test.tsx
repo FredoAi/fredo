@@ -223,6 +223,11 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
 
     const sidebar = await screen.findByTestId('terminal-session-sidebar');
     expect(sidebar).toHaveAttribute('aria-label', 'Terminal sessions');
+    // Hydration barrier: the nav root renders on the first (pre-load) commit
+    // (TerminalSidebar.tsx:401 unconditional) while the live section is gated on
+    // the async mount refresh (TerminalSidebar.tsx:449). Await the committed
+    // section so the synchronous read below cannot race the refresh.
+    await within(sidebar).findByTestId('terminal-session-sidebar-live-section');
     expect(within(sidebar).getByTestId('terminal-session-sidebar-live-section')).toHaveTextContent(
       'This window (2)',
     );
@@ -258,6 +263,11 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     // the live header's 24 px (37 + 24 = 61). The prior 60 px literal painted
     // the Previous header 23 px over its first row in the reopen state.
     const sidebar = await screen.findByTestId('terminal-session-sidebar');
+    // Hydration barrier: the nav root commits before the async mount refresh has
+    // populated the sections (TerminalSidebar.tsx:449/479). Await both committed
+    // sections so the synchronous getComputedStyle reads below cannot race it.
+    await within(sidebar).findByTestId('terminal-session-sidebar-live-section');
+    await within(sidebar).findByTestId('terminal-session-sidebar-previous-section');
     expect(
       getComputedStyle(within(sidebar).getByTestId('terminal-session-sidebar-live-section')).top,
     ).toBe('37px');
@@ -271,6 +281,9 @@ describe('Spec 2934 ST-3 — Terminal window', () => {
     sessions = [];
     renderWindow();
     const reopened = await screen.findByTestId('terminal-session-sidebar');
+    // Hydration barrier for the reopen state: await the committed Previous
+    // section before the synchronous getComputedStyle read.
+    await within(reopened).findByTestId('terminal-session-sidebar-previous-section');
     expect(
       getComputedStyle(within(reopened).getByTestId('terminal-session-sidebar-previous-section')).top,
     ).toBe('37px');
@@ -496,6 +509,11 @@ describe('Spec 2935 ST-4 — reopened window: persisted records + resume', () =>
 
     // The records render IN the sidebar's Previous section — no History popover.
     const sidebar = await screen.findByTestId('terminal-session-sidebar');
+    // Hydration barrier: the nav root commits before the async mount refresh has
+    // populated the Previous section (TerminalSidebar.tsx:479). Await the committed
+    // section so the synchronous `No sessions yet`/section reads below observe the
+    // hydrated tree rather than the pre-hydration empty pane.
+    await within(sidebar).findByTestId('terminal-session-sidebar-previous-section');
     expect(screen.queryByText('No sessions yet')).toBeNull();
     expect(within(sidebar).getByTestId('terminal-session-sidebar-previous-section')).toHaveTextContent(
       'Previous (2)',
