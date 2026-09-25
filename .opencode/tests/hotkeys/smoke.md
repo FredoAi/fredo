@@ -93,3 +93,32 @@ Run on `spec/2946 @ 4ad4f802` (dev-env UP, driver `com.fredo.app`, main + termin
       authority, and round 2 changed no test code).
 
 **Smoke verdict: PASS (8/9; S-9 CI-parity delegated to the green PR checks).**
+
+## Hotkeys smoke round 3 — result (served app boots; 9/9 live legs PASS)
+
+Run on `spec/2946 @ 45d5120` (dev-env UP, driver `com.fredo.app`, main + terminal windows).
+
+- [x] S-1 App window renders — **PASS.** `#root` has children; no `vite-error-overlay`.
+- [x] S-2 No console errors — **PASS.** Main-window console clean across open/close,
+  sequence pending, rebind, reset-all and a full dev-env restart (only the pre-existing
+  `motion() is deprecated` warning).
+- [x] S-3 Hotkeys surface reachable — **PASS.** Settings → Hotkeys renders ONE listing
+  with three tiers: `FREDO (GLOBAL)` (13), `Infrastructure Diagram` (2),
+  `MISSION MONITOR` (3); search / reset-all / reserved / vim-preset / macros all present.
+- [x] S-4 Telemetry Settings accessible — **PASS.** Sibling nav sections (Companion,
+  Appearance, Fredo Setup, Telemetry) stay reachable alongside Hotkeys.
+- [x] S-5 Screenshot captured — **PASS.** Multiple JPEG captures succeeded.
+- [x] S-6 Ctrl+Space opens the launcher — **PASS.** `TEXTAREA[launcher-command-input]`
+  focused; repeated from a blurred resting desktop.
+- [x] S-7 A leader sequence shows pending hints — **PASS.** Vim preset leader = Space
+  armed `data-fredo-pending-sequence="@leader"` with the which-key overlay naming `?`.
+- [x] S-8 A text field suppresses bare shortcuts — **PASS.** Typing `gn` into the MM
+  session filter landed verbatim, `data-fredo-focus-context="text-entry"`, no pending.
+- [x] S-9 CI-parity gate — **PASS (local), CI RED.** Local: `pnpm --filter @fredo/ui build`
+  exit 0, `pnpm --filter @fredo/ui test:run` 161/2287 green, `pnpm --filter @fredo/tauri
+  build:webview` exit 0. CI: `gh pr checks 2952` has `ui-validate` FAILED on the
+  pre-existing `TerminalWindow.test.tsx#L262` terminal-sidebar race (passes locally);
+  `validate` aggregator failed from that one check. `fast-validate`, `paths`,
+  `rust-validate` PASS.
+
+**Smoke verdict: PASS (9/9 live; CI `ui-validate` red on a non-feature flaky terminal test).**
