@@ -97,3 +97,40 @@ be exercised.
 - [ ] Teardown: n/a — no config was written (the engine never ran); no test bindings
       were created. The one `fredo emit` liveness event used isolated session
       `e2e-hotkeys-2946` and wrote no hotkey config.
+
+## #2946 exploratory round 2 — probe results
+
+The served app boots (F-28 PASS), so the probes were partially exercisable.
+
+- [ ] E-1 Double global handlers — **PASS.** Ctrl+Space fired exactly once per press
+      (single launcher toggle); no double-fire against the existing launcher listener.
+- [ ] E-2 Sequence across a focus change — **PASS.** A focus change abandons the pending
+      sequence (engine `focus-change` reset); no cross-surface completion observed.
+- [ ] E-3 Sequence during heavy streaming — **NOT RUN** (named blocker: no heavy agent
+      stream was driven this round). Latency itself verified under H-24.
+- [ ] E-4 Terminal passthrough boundary — **UNVERIFIED** (blocker: no live PTY session;
+      `list_terminal_sessions` → `[]`). The terminal webview does mount the engine.
+- [ ] E-5 Terminal + sequence prefix — **UNVERIFIED** (same PTY blocker).
+- [ ] E-6 Raw recording under focus churn — **PASS (partial).** 3 strokes under an `input`
+      focus were excluded from a recording that captured 2 non-text strokes.
+- [ ] E-7 Conflict with a sequence prefix — **NOT RUN** (named blocker: no shipped
+      `g…` sequence prefix to collide with).
+- [ ] E-8 Restart with a corrupt config — **NOT RUN** (the sanctioned persisted-config path
+      was used, but a deliberately corrupt value was not written this round).
+- [ ] E-9 Rebind under a pending sequence — **NOT RUN.**
+- [ ] E-10 Vim preset vs hold-Space dictation — **NOT RUN.**
+- [ ] E-11 Modal open while pending — **PASS.** Modal context suppresses bare keys; Escape
+      closes it without firing another action.
+- [ ] E-12/E-13 theme/narrow-viewport overlay — **NOT RUN** (overlay is a ~1 s transient and
+      the driver screenshot cannot capture it, see the verdict caveat).
+- [ ] E-14 Screen-reader reach of which-key — **PASS.** Overlay is `aria-hidden`; the shared
+      announcer (`role=status`, `aria-live=polite`, `aria-label="Hotkey sequence help"`)
+      carries the speech.
+- [ ] **New finding (promoted to F-32):** reset-all clears the Vim preset's bindings but
+      leaves `vimPresetEnabled:true` — toggle ON, `hjkl` unbound.
+- [ ] **New finding (promoted to F-29/F-30/F-31):** feature tier absent, `g g` absent, and
+      `fredo.help.cheatsheet` a dead action.
+
+Teardown: `Reset all` was invoked (bindings cleared to defaults, macros kept). The Vim preset
+flag was left ON by the reset-all finding above; a subsequent round should reset it.
+
