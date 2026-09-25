@@ -30,6 +30,14 @@ interface SessionHistoryDrawerProps {
    * existing behavior.
    */
   settled?: boolean;
+  /**
+   * Spec #2946 ST-15 (AC2 H-4): a monotonic signal that, when it changes,
+   * focuses the session filter input. The panel increments it when the
+   * `mission-monitor.focusSessionSearch` hotkey fires (and opens the drawer),
+   * so the action works even if the drawer was collapsed. Optional — omitting
+   * it preserves the drawer's existing behavior.
+   */
+  focusSearchToken?: number;
 }
 
 /** Deterministic short-month names for the compact start-time line (AC-1). */
@@ -95,11 +103,22 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
   onSearchChange,
   onRename,
   settled = true,
+  focusSearchToken,
 }) => {
   const DRAWER_WIDTH = 210;
   const COLLAPSED_WIDTH = 28;
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hovered, setHovered] = useState(false);
+
+  // Spec #2946 ST-15: the session filter input, focused by the
+  // `focusSessionSearch` hotkey (the panel opens the drawer first, so the input
+  // is mounted by the time this effect runs).
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!focusSearchToken) return;
+    searchInputRef.current?.focus();
+  }, [focusSearchToken]);
 
   // #2748 ST-4 (AC2) — per-row interaction state. `interactingRow` is the row
   // currently hovered OR focus-within (reveals the edit button — keyboard
@@ -274,6 +293,7 @@ export const SessionHistoryDrawer: React.FC<SessionHistoryDrawerProps> = ({
             <LuSearch size={11} color="var(--text-secondary)" />
             <input
               type="text"
+              ref={searchInputRef}
               value={searchFilter}
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Filter sessions..."

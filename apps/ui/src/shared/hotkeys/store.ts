@@ -187,10 +187,20 @@ export async function resetBinding(actionId: HotkeyActionId): Promise<void> {
 /**
  * Reset every binding to the shipped defaults (R-4.4). User-defined macros are
  * KEPT — only their triggers become unbound.
+ *
+ * Spec #2946 ST-17 (AC4 H-13 / F-32): reset-all must end at a CONSISTENT shipped
+ * state. The opt-in Vim preset sets both `vimPresetEnabled` and `leader`, so a
+ * reset that cleared only `bindings` left the toggle reading ON while the
+ * preset's `hjkl` bindings were gone. Both are therefore cleared here too. The
+ * sibling pre-preset snapshot is cleared by the caller (`HotkeysSettings`
+ * `confirmResetAll`) because `vimPreset.ts` imports this store — clearing it
+ * here would create a store → vimPreset import cycle.
  */
 export async function resetAllBindings(): Promise<void> {
   await applyKeymap({
     ...keymap,
+    leader: null,
+    vimPresetEnabled: false,
     bindings: createDefaultBindingMap(),
     macros: keymap.macros.map((macro) => (macro.trigger === null ? macro : { ...macro, trigger: null })),
     rawMacros: keymap.rawMacros.map((macro) =>

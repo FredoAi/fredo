@@ -20,8 +20,13 @@ import {
   setMacros,
 } from '@/shared/hotkeys/store';
 import type { FeatureHotkeyAction } from '@/shared/hotkeys/types';
+import { VIM_PRESET_SNAPSHOT_KEY } from '../../../../shared/hotkeys/vimPreset';
 
 import { HotkeysSettings } from '../HotkeysSettings';
+// Spec #2946 ST-15: the REAL production features declare local hotkeys; the pane
+// discovers them through the (mocked) feature registry below.
+import { missionMonitorFeature } from '../../../mission-monitor/MissionMonitorFeature';
+import { diagramFeature } from '../../../diagram/DiagramFeature';
 
 // ── Feature-registry stub (the pane + shared registry both read it) ──────────
 
@@ -112,6 +117,52 @@ describe('listing — both tiers + zero-contribution feature (R-2.1/R-2.2)', () 
     expect(rows).toHaveLength(2);
     expect(rowFor('fredo.launcher.toggle')).toHaveAttribute('data-hotkey-tier', 'global');
     expect(rowFor('terminal.newSession')).toHaveAttribute('data-hotkey-tier', 'feature:terminal');
+  });
+
+  it('auto-discovers the real production features and tiers their rows (H-4/H-5/H-6)', async () => {
+    const asStub = (feature: {
+      id: string;
+      name: string;
+      icon?: unknown;
+      hotkeys: readonly FeatureHotkeyAction[];
+    }) => ({
+      id: feature.id,
+      name: feature.name,
+      icon: feature.icon,
+      hotkeys: [...feature.hotkeys],
+    });
+    registryState.features = [
+      asStub(missionMonitorFeature),
+      asStub(diagramFeature),
+      feat('empty-feature', 'Empty Feature'),
+    ];
+    fredo('fredo.launcher.toggle', 'Open launcher', 'primary+space');
+
+    await renderPane();
+
+    // One section per declaring feature, in feature-registry order, after Fredo.
+    expect(
+      screen.getAllByTestId('hotkeys-tier-section').map((s) => s.getAttribute('data-hotkey-section')),
+    ).toEqual(['fredo', 'mission-monitor', 'diagram']);
+
+    expect(rowFor('mission-monitor.focusSessionSearch')).toHaveAttribute(
+      'data-hotkey-tier',
+      'feature:mission-monitor',
+    );
+    expect(rowFor('mission-monitor.nextSession')).toHaveAttribute(
+      'data-hotkey-tier',
+      'feature:mission-monitor',
+    );
+    expect(rowFor('mission-monitor.previousSession')).toHaveAttribute(
+      'data-hotkey-tier',
+      'feature:mission-monitor',
+    );
+    expect(rowFor('diagram.search')).toHaveAttribute('data-hotkey-tier', 'feature:diagram');
+    expect(rowFor('diagram.fitView')).toHaveAttribute('data-hotkey-tier', 'feature:diagram');
+
+    // H-5: a feature that declares none contributes no section and no rows.
+    expect(screen.queryByText('Empty Feature')).toBeNull();
+    expect(screen.getAllByTestId('hotkeys-row')).toHaveLength(6);
   });
 
   it('labels a cross-tier binding with a precedence badge (R-2.4)', async () => {
@@ -312,6 +363,41 @@ describe('reset one vs reset all (R-4.4)', () => {
     expect(getBinding('fredo.help.cheatsheet')).toEqual(['?']);
     expect(getKeymap().macros).toHaveLength(1);
     expect(getKeymap().macros[0].trigger).toBeNull();
+  });
+
+  it('reset-all leaves a consistent preset state and clears the Vim snapshot (H-13/F-32)', async () => {
+    fredo('fredo.focus.left', 'Focus left', null);
+    fredo('fredo.help.cheatsheet', 'Cheat sheet', '?');
+    await setMacros([
+      {
+        id: 'm1',
+        name: 'Macro one',
+        steps: ['fredo.launcher.toggle'],
+        trigger: 'primary+alt+m',
+        onStepError: 'abort',
+      },
+    ]);
+
+    await renderPane();
+
+    // Enable the Vim preset — this writes the sibling pre-preset snapshot.
+    fireEvent.click(screen.getByTestId('hotkeys-vim-preset-toggle'));
+    await screen.findByTestId('hotkeys-vim-preset-preview');
+    fireEvent.click(screen.getByTestId('hotkeys-vim-preset-confirm'));
+    await waitFor(() => expect(getKeymap().vimPresetEnabled).toBe(true));
+    expect(getKeymap().leader).toBe('space');
+    expect(localStorage.getItem(VIM_PRESET_SNAPSHOT_KEY)).not.toBeNull();
+
+    // Reset all — must leave a CONSISTENT shipped state, not a half-applied preset.
+    fireEvent.click(screen.getByTestId('hotkeys-reset-all-button'));
+    fireEvent.click(screen.getByTestId('hotkeys-reset-all-confirm'));
+
+    await waitFor(() => expect(getKeymap().vimPresetEnabled).toBe(false));
+    expect(getKeymap().leader).toBeNull();
+    expect(getBinding('fredo.focus.left')).toEqual([]);
+    expect(getKeymap().macros).toHaveLength(1);
+    expect(getKeymap().macros[0].trigger).toBeNull();
+    await waitFor(() => expect(localStorage.getItem(VIM_PRESET_SNAPSHOT_KEY)).toBeNull());
   });
 
   it('disables reset when a binding is already at its default, with an adjacent reason', async () => {

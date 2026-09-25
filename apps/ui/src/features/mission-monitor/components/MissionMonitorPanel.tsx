@@ -22,6 +22,14 @@ import { useSessionActivityWatch } from '../hooks/useSessionActivityWatch';
 import { computeSessionMetrics } from '../lib/counters';
 import { computeSubagentTokenTotals, computeSubagentCostTotals } from '../lib/sessionMeta';
 import { SessionHistoryDrawer } from './SessionHistoryDrawer';
+// Spec #2946 ST-15: the declared feature hotkeys dispatch a namespaced window
+// event; this panel's ONE listener maps it onto the existing session ops.
+import {
+  MISSION_MONITOR_FOCUS_SESSION_SEARCH,
+  MISSION_MONITOR_NEXT_SESSION,
+  MISSION_MONITOR_PREVIOUS_SESSION,
+  subscribeMissionMonitorActions,
+} from '../lib/hotkeyBridge';
 import { SessionTokenBar } from './SessionTokenBar';
 import { NodeFocusProvider } from './NodeFocusContext';
 import { DetailPanel } from './DetailPanel';
@@ -788,6 +796,10 @@ export const MissionMonitorPanel: React.FC = () => {
   }, [updateWindow]);
 
   const [drawerOpen, setDrawerOpen] = useState(true);
+  // Spec #2946 ST-15 (AC2 H-4): a monotonic signal the drawer watches to focus
+  // its session filter input. A counter (not a boolean) so repeated presses of
+  // the same hotkey re-focus every time.
+  const [focusSearchToken, setFocusSearchToken] = useState(0);
 
   // ── #2762 ST-3 (D-6): orphaned child-session events ────────────────────────
   // The canvas's graph builder is the authority on which collected
@@ -845,6 +857,46 @@ export const MissionMonitorPanel: React.FC = () => {
   const handleDeleteSession = useCallback((id: string) => {
     deleteSession(id);
   }, [deleteSession]);
+
+  // ── Spec #2946 ST-15 (AC2 H-4): map the declared local hotkeys ─────────────
+  // `nextSession`/`previousSession` select next/previous in the VISIBLE
+  // (`filteredSessions`) order with wrap-around, reusing the same `selectSession`
+  // the drawer rows call. No `.length`/fresh-object effect deps (#523).
+  const selectRelativeSession = useCallback(
+    (delta: number) => {
+      if (filteredSessions.length === 0) return;
+      const currentIndex = filteredSessions.findIndex(
+        (session) => session.sessionId === selectedSessionId,
+      );
+      const base = currentIndex === -1 ? (delta > 0 ? -1 : 0) : currentIndex;
+      const nextIndex = (base + delta + filteredSessions.length) % filteredSessions.length;
+      const target = filteredSessions[nextIndex];
+      if (target) selectSession(target.sessionId);
+    },
+    [filteredSessions, selectedSessionId, selectSession],
+  );
+
+  // ONE window listener for the whole panel; removed on unmount. `run` is a
+  // no-op while the feature is unmounted (no subscriber), and the engine never
+  // dispatches these feature-tier actions unless Mission Monitor is focused.
+  useEffect(
+    () =>
+      subscribeMissionMonitorActions((actionId) => {
+        switch (actionId) {
+          case MISSION_MONITOR_FOCUS_SESSION_SEARCH:
+            setDrawerOpen(true);
+            setFocusSearchToken((token) => token + 1);
+            break;
+          case MISSION_MONITOR_NEXT_SESSION:
+            selectRelativeSession(1);
+            break;
+          case MISSION_MONITOR_PREVIOUS_SESSION:
+            selectRelativeSession(-1);
+            break;
+        }
+      }),
+    [selectRelativeSession],
+  );
 
   // ── Detail Panel state (#2743 ST-6 / AC-7, AC-8) ─────────────────────────
   // The open target is a `DetailOpenTarget` union: a node (opened by ReactFlow
@@ -904,6 +956,7 @@ export const MissionMonitorPanel: React.FC = () => {
           searchFilter={searchFilter}
           onSearchChange={setSearchFilter}
           settled={listSettled}
+          focusSearchToken={focusSearchToken}
         />
 
         {/* Canvas or state — pre-read (settled false, no stored rows) renders a

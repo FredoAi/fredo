@@ -18,10 +18,12 @@ import {
   resetBinding,
   resetKeymapStoreForTests,
   setBinding,
+  setLeader,
   setMacroRecording,
   setMacros,
   setPassthrough,
   setPendingSequence,
+  setVimPresetEnabled,
   subscribeHotkeyEvents,
   subscribeHotkeys,
   useHotkeyCandidates,
@@ -129,6 +131,29 @@ describe('resets (R-4.4)', () => {
     await resetAllBindings();
 
     expect(getBinding('fredo.help.cheatsheet')).toEqual(['?']);
+    expect(getKeymap().macros).toHaveLength(1);
+    expect(getKeymap().macros[0].trigger).toBeNull();
+  });
+
+  it('reset-all clears the leader + Vim preset flag while keeping macros (ST-17 H-13/F-32)', async () => {
+    const macro: PersistedMacro = {
+      id: 'm1',
+      name: 'Macro one',
+      steps: ['fredo.launcher.toggle'],
+      trigger: 'primary+alt+m',
+      onStepError: 'abort',
+    };
+    await setMacros([macro]);
+    await setLeader('space');
+    await setVimPresetEnabled(true);
+    await setBinding('fredo.focus.left', ['h']);
+
+    await resetAllBindings();
+
+    expect(getKeymap().vimPresetEnabled).toBe(false);
+    expect(getKeymap().leader).toBeNull();
+    expect(getBinding('fredo.launcher.toggle')).toEqual(['primary+space']);
+    expect(getBinding('fredo.focus.left')).toEqual([]);
     expect(getKeymap().macros).toHaveLength(1);
     expect(getKeymap().macros[0].trigger).toBeNull();
   });

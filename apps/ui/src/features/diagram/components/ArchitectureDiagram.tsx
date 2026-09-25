@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState, useEffect, MouseEvent as ReactMouseEvent } from 'react';
+import React, { useCallback, useMemo, useRef, useState, useEffect, MouseEvent as ReactMouseEvent } from 'react';
 import { Box, Spinner, Text, VStack, Button, HStack, Input, IconButton, Collapsible, Checkbox } from '@chakra-ui/react';
 import { LuFilter } from 'react-icons/lu';
 import ReactFlow, {
@@ -23,6 +23,11 @@ import { useDiagram } from '../hooks/useDiagram';
 import { K8sNode, K8sNodeData } from './K8sNode';
 import { NodeContextMenu } from './NodeContextMenu';
 import { resolveCollisions } from '../utils/resolveCollisions';
+import {
+  DIAGRAM_FIT_VIEW_ACTION_ID,
+  DIAGRAM_SEARCH_ACTION_ID,
+  subscribeDiagramActions,
+} from '../lib/hotkeyBridge';
 
 interface ArchitectureDiagramProps {
   onFocusComplete?: () => void;
@@ -56,6 +61,26 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
   const [matchedNodeIds, setMatchedNodeIds] = useState<string[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const { fitView } = useReactFlow();
+  // Spec #2946 ST-15 (AC2 H-4): the search input, focused by the declared
+  // `diagram.search` local hotkey.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  // ONE listener for the diagram's declared local hotkeys: focus the search
+  // input, or re-fit the whole graph. Removed on unmount; `run` is a no-op while
+  // the diagram is not mounted (engine only dispatches while it is focused).
+  useEffect(
+    () =>
+      subscribeDiagramActions((actionId) => {
+        if (actionId === DIAGRAM_SEARCH_ACTION_ID) {
+          searchInputRef.current?.focus();
+        } else if (actionId === DIAGRAM_FIT_VIEW_ACTION_ID) {
+          requestAnimationFrame(() => {
+            fitView({ duration: 400, padding: 0.1 });
+          });
+        }
+      }),
+    [fitView],
+  );
   
   // Filter state
   const [showFilters, setShowFilters] = useState(false);
@@ -672,6 +697,8 @@ export const ArchitectureDiagram: React.FC<ArchitectureDiagramProps> = ({ onFocu
           {/* Search Input with Counter */}
           <HStack gap={0} position="relative">
             <Input
+              ref={searchInputRef}
+              data-testid="diagram-search-input"
               placeholder="Search nodes..."
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}

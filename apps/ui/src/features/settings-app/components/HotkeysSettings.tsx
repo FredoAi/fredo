@@ -66,6 +66,7 @@ import {
 import {
   applyVimPreset,
   buildVimPresetPreview,
+  clearVimPresetSnapshot,
   type VimPresetPreview,
 } from '../../../shared/hotkeys/vimPreset';
 import type {
@@ -642,6 +643,10 @@ export const HotkeysSettings: React.FC<HotkeysSettingsProps> = ({ focusedFeature
     setShowResetAll(false);
     try {
       await resetAllBindings();
+      // Spec #2946 ST-17 (AC4 H-13 / F-32): reset-all clears the Vim preset flag
+      // + leader, so the pre-preset snapshot is stale — drop it too. Done here,
+      // not in the store, to avoid a store → vimPreset import cycle.
+      await clearVimPresetSnapshot();
       setSaveError(null);
       setStatus('All hotkeys reset to defaults. Macros were kept.');
     } catch (error) {

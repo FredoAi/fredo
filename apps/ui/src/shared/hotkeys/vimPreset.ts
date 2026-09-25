@@ -220,7 +220,13 @@ async function writeVimPresetSnapshot(snapshot: VimPresetSnapshot | null): Promi
   }
 }
 
-async function clearVimPresetSnapshot(): Promise<void> {
+/**
+ * Remove the pre-preset snapshot (the sibling KV key). Exported for the
+ * "reset all" path (Spec #2946 ST-17): reset-all clears the preset flag and
+ * leader, so the now-stale snapshot must not survive to be restored on a later
+ * disable. Best-effort — a failure never throws.
+ */
+export async function clearVimPresetSnapshot(): Promise<void> {
   try {
     await settingsService.remove(VIM_PRESET_SNAPSHOT_KEY);
   } catch {
