@@ -784,12 +784,41 @@ fn prepare_session(
     Ok(form)
 }
 
+/// The historical PTY default, used when a caller omits the grid (Spec #2942
+/// ST-5 keeps every pre-existing caller and QA IPC recipe valid).
+const DEFAULT_PTY_COLS: u16 = 80;
+const DEFAULT_PTY_ROWS: u16 = 24;
+/// Upper bound on a UI-supplied grid: a bogus value can never ask ConPTY for an
+/// absurd scrollback-sized buffer (the UI always derives a real pane grid).
+const MAX_PTY_COLS: u16 = 1000;
+const MAX_PTY_ROWS: u16 = 1000;
+
+/// Resolve the requested `cols`/`rows` for a PTY spawn/resume.
+///
+/// Spec #2942 ST-5 (the "OpenCode TUI doesn't fill the pane" root cause): the
+/// PTY used to be born at a hardcoded 80×24 and only corrected by a later
+/// `resize_pty` — which fires solely on a CHANGED grid, so a cold mount whose
+/// fit latched the pane size could leave the CLI rendering for 80×24 until an
+/// unrelated resize event. The webview now passes the grid it last applied, so
+/// the PTY is born at pane size. `None`/`0` keeps the 80×24 default, so a
+/// caller that omits the args is byte-identical to before.
+fn resolve_grid(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {
+    (
+        cols.filter(|c| *c > 0).unwrap_or(DEFAULT_PTY_COLS).min(MAX_PTY_COLS),
+        rows.filter(|r| *r > 0).unwrap_or(DEFAULT_PTY_ROWS).min(MAX_PTY_ROWS),
+    )
+}
+
 /// Open the PTY, spawn the process (with any resume args appended), store the
 /// handles, and start the reader + exit-watcher tasks.
 ///
 /// Returns `Ok(true)` when the session is live, `Ok(false)` when it vanished
 /// mid-spawn (closed by the user), and a typed `Err` on a launch failure. The
 /// session row is expected to exist in `state`; the caller owns that row's fate.
+///
+/// `size` is the caller's resolved grid (Spec #2942 ST-5): the PTY is born at
+/// pane size and the session's recorded dims match, so the UI's first fit
+/// receipt already agrees with the PTY.
 fn spawn_and_wire(
     app: &AppHandle,
     state: &Mutex<TerminalState>,
@@ -797,11 +826,12 @@ fn spawn_and_wire(
     form: LaunchForm,
     cwd: &str,
     extra_args: &[String],
+    size: PtySize,
 ) -> Result<bool, (TerminalErrorKind, String)> {
     // ── Open the PTY and spawn ─────────────────────────────────────────────
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .openpty(size)
         .map_err(|e| {
             tracing::error!(target: "fredo::terminal", error = %e, "openpty failed");
             (TerminalErrorKind::Launch, format!("Failed to open PTY: {e}"))
@@ -854,8 +884,8 @@ fn spawn_and_wire(
                 session.killer = Some(child);
                 session.master = Some(pair.master);
                 session.status = TerminalSessionStatus::Running;
-                session.cols = 80;
-                session.rows = 24;
+                session.cols = size.cols;
+                session.rows = size.rows;
                 Arc::clone(&session.output_buffer)
             }
             None => {
@@ -1119,21 +1149,34 @@ pub struct SpawnTestOverride {
 /// the in-window error surface. Nothing is spawned on a failure path, so no
 /// orphan can exist; and no record is persisted for a failed launch (a bogus
 /// resumable record would violate AC4's "never a wrong session").
+///
+/// `cols`/`rows` (Spec #2942 ST-5): the pane grid the webview last applied, so
+/// the PTY is born at pane size instead of a hardcoded 80×24. Omitting them
+/// keeps the historical 80×24 default.
 #[tauri::command]
 pub async fn spawn_terminal_session(
     cli: String,
     work_dir: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
     test_override: Option<SpawnTestOverride>,
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
-    store: tauri::State<'_, Arc<AppStore>>,
-    feature_store: tauri::State<'_, Arc<FeatureStore>>,
 ) -> Result<String, String> {
+    // AppStore / FeatureStore are injected state, NOT wire arguments — reading
+    // them off the handle keeps the command's wire shape unchanged and its
+    // argument count under clippy's limit.
+    let store = app.state::<Arc<AppStore>>();
+    let feature_store = app.state::<Arc<FeatureStore>>();
+
     let cwd = work_dir
         .filter(|s| !s.trim().is_empty())
         .or_else(|| std::env::var("USERPROFILE").ok())
         .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_else(|| ".".to_string());
+
+    let (grid_cols, grid_rows) = resolve_grid(cols, rows);
+    let size = PtySize { rows: grid_rows, cols: grid_cols, pixel_width: 0, pixel_height: 0 };
 
     let session_id = Uuid::new_v4().to_string();
 
@@ -1143,7 +1186,13 @@ pub async fn spawn_terminal_session(
     let Some(cli) = TerminalCli::parse(&cli) else {
         {
             let mut guard = state.lock().unwrap();
-            guard.insert_starting(session_id.clone(), TerminalCli::OpenCode, cwd, 80, 24);
+            guard.insert_starting(
+                session_id.clone(),
+                TerminalCli::OpenCode,
+                cwd,
+                grid_cols,
+                grid_rows,
+            );
         }
         fail_session(
             &app,
@@ -1157,7 +1206,7 @@ pub async fn spawn_terminal_session(
 
     {
         let mut guard = state.lock().unwrap();
-        guard.insert_starting(session_id.clone(), cli, cwd.clone(), 80, 24);
+        guard.insert_starting(session_id.clone(), cli, cwd.clone(), grid_cols, grid_rows);
     }
     let sessions = {
         let guard = state.lock().unwrap();
@@ -1189,7 +1238,7 @@ pub async fn spawn_terminal_session(
     };
 
     // ── Open the PTY, spawn, and wire the reader/watcher ───────────────────
-    match spawn_and_wire(&app, &state, &session_id, form, &cwd, &[]) {
+    match spawn_and_wire(&app, &state, &session_id, form, &cwd, &[], size) {
         Ok(true) => {
             // A record is persisted ONLY for a session that actually spawned: a
             // failed launch must never leave a bogus resumable record.
@@ -1361,15 +1410,22 @@ pub fn list_persisted_terminal_sessions(
 /// record is inserted, so one logical session is exactly one record. On any
 /// failure no partial session is left behind and no fresh session is silently
 /// substituted (AC4/R-4.3).
+///
+/// `cols`/`rows` (Spec #2942 ST-5): the pane grid the webview last applied, so
+/// a resumed PTY is born at pane size; omitting them keeps 80×24.
 #[tauri::command]
 pub async fn resume_terminal_session(
     session_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
     app: AppHandle,
     state: tauri::State<'_, Mutex<TerminalState>>,
     store: tauri::State<'_, Arc<AppStore>>,
     feature_store: tauri::State<'_, Arc<FeatureStore>>,
 ) -> Result<ResumeResult, String> {
     let preflight_started = Instant::now();
+    let (grid_cols, grid_rows) = resolve_grid(cols, rows);
+    let size = PtySize { rows: grid_rows, cols: grid_cols, pixel_width: 0, pixel_height: 0 };
 
     let record = match persistence::get(&feature_store, &session_id) {
         Ok(Some(record)) => record,
@@ -1408,7 +1464,13 @@ pub async fn resume_terminal_session(
     // The record exists and passed the pre-flight: reuse its id for the live row.
     {
         let mut guard = state.lock().unwrap();
-        guard.insert_starting(session_id.clone(), record.cli, record.work_dir.clone(), 80, 24);
+        guard.insert_starting(
+            session_id.clone(),
+            record.cli,
+            record.work_dir.clone(),
+            grid_cols,
+            grid_rows,
+        );
     }
     // Flag it so a non-zero exit is surfaced as `resume-failed`, not a clean exit.
     mark_resumed(state.inner(), &session_id);
@@ -1418,7 +1480,7 @@ pub async fn resume_terminal_session(
     };
     emit_sessions_changed(&app, sessions);
 
-    match spawn_and_wire(&app, &state, &session_id, form, &record.work_dir, &args) {
+    match spawn_and_wire(&app, &state, &session_id, form, &record.work_dir, &args, size) {
         Ok(true) => {}
         Ok(false) => {
             remove_live_session(&app, &state, &session_id);

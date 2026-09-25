@@ -16,7 +16,7 @@ import {
   type TerminalCli,
   type TerminalSessionInfo,
 } from '../sessionModel';
-import { SessionBar } from './SessionBar';
+import { TerminalSidebar } from './TerminalSidebar';
 import { TerminalPane } from './TerminalPane';
 import { NewSessionDialog } from './NewSessionDialog';
 import { DeleteSessionDialog } from './ResumableSessions';
@@ -95,6 +95,12 @@ export const TerminalWindow: React.FC = () => {
   // Guards against a late/abandoned resume result clobbering newer UI state
   // (Cancel / watchdog bump the token).
   const resumeTokenRef = useRef(0);
+  // Spec #2942 ST-5: the pane grid the UI last applied. Passed into the NEXT
+  // spawn/resume so the PTY is born at pane size (the "OpenCode TUI doesn't
+  // fill the pane" root cause: it used to be born at a hardcoded 80×24 and only
+  // corrected on a CHANGED grid). A ref — not state — so a fit receipt never
+  // re-renders the window; `null` on a cold mount keeps the backend default.
+  const lastGridRef = useRef<{ cols: number; rows: number } | null>(null);
 
   // ── Derived model ──────────────────────────────────────────────────────────
   const allSessions = useMemo(() => [...sessions, ...pending], [sessions, pending]);
@@ -141,6 +147,11 @@ export const TerminalWindow: React.FC = () => {
     setOutputSeen((prev) => (prev[sessionId] ? prev : { ...prev, [sessionId]: true }));
   }, []);
 
+  // Spec #2942 ST-5 (iii): keep the last-good grid for the next spawn/resume.
+  const handleGridChange = useCallback((cols: number, rows: number) => {
+    lastGridRef.current = { cols, rows };
+  }, []);
+
   const handleSelect = useCallback((id: string) => setSelectedId(id), []);
 
   const closeSession = useCallback((session: TerminalSessionInfo) => {
@@ -175,9 +186,15 @@ export const TerminalWindow: React.FC = () => {
     setPending((prev) => [...prev, optimistic]);
     setSelectedId(tempId);
     try {
+      // Spec #2942 ST-5 (i): spawn the PTY at the pane grid the UI last applied
+      // (undefined on a cold mount → the backend's 80×24 default; the settling
+      // resize in `SessionTerminal` then corrects it).
+      const grid = lastGridRef.current;
       const realId = await adapterBridge.invoke<string>('spawn_terminal_session', {
         cli,
         workDir: workDir || undefined,
+        cols: grid?.cols,
+        rows: grid?.rows,
       });
       setPending((prev) => prev.filter((s) => s.id !== tempId));
       if (realId) {
@@ -231,8 +248,12 @@ export const TerminalWindow: React.FC = () => {
     setResumingId(record.id);
     setActionAnnouncement(`Resuming ${record.title}`);
     try {
+      // Spec #2942 ST-5 (i): a resumed PTY is born at the pane grid too.
+      const grid = lastGridRef.current;
       const result = await adapterBridge.invoke<ResumeResult>('resume_terminal_session', {
         sessionId: record.id,
+        cols: grid?.cols,
+        rows: grid?.rows,
       });
       if (token !== resumeTokenRef.current) return; // cancelled / superseded
       if (result && result.outcome === 'resumed') {
@@ -493,8 +514,8 @@ export const TerminalWindow: React.FC = () => {
   const announcement = actionAnnouncement || statusAnnouncement;
 
   return (
-    <Flex direction="column" h="100%" minH={0} w="100%" bg="bg.canvas">
-      <SessionBar
+    <Flex direction="row" h="100%" minH={0} w="100%" bg="bg.canvas">
+      <TerminalSidebar
         sessions={allSessions}
         previous={previous}
         selectedId={selectedId}
@@ -515,6 +536,7 @@ export const TerminalWindow: React.FC = () => {
         resumingId={resumingId}
         resumeFailure={resumeFailure}
         onFirstOutput={handleFirstOutput}
+        onGridChange={handleGridChange}
         onClose={closeSession}
         onRetry={handleRetry}
         onChooseDirectory={handleChooseDirectory}
