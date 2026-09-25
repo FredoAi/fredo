@@ -74,3 +74,21 @@
 - [ ] E-32 (OPEN): Field-watch isolation churn — mutate two sibling fields in alternating order across many writes; does either sibling watch ever fire spuriously (REQ-2 field isolation)? Probe (A-12): `tauri_ipc_execute_command` drives two `feature_data_watch` calls with `fields` narrowing; `tauri_ipc_monitor`/`tauri_ipc_get_captured` and the Dev Mode → Feature Data feed read the deliveries.
 - [ ] E-33 (OPEN): Very large corpus (history far exceeding one replay batch) + no session selected — does the table watch stay live and responsive, and does a newly created session appear without a full-history rescan (REQ-4/REQ-5)?
 - [ ] E-34 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` invalidates that leg's evidence (NFR-3).
+
+---
+
+# Mission Monitor — Exploratory Probes (Spec #2945 — multi-CLI sessions + CLI labeling)
+
+> Unscripted edge/failure probes for the multi-CLI session list + CLI label. A CONFIRMED finding promotes to `functional.md` as a new `F-` case (keep the origin note). Real-path classes (G-088): provider re-derivation, mid-flight provider patches, and mixed-provider corpora — fixture-only evidence is invalid where the probe is about live behavior.
+
+## Probes to run beyond the script
+
+- [ ] E-35 (OPEN): Two sessions with the SAME `session_id` but different providers (a Copilot CLI and the plugin both emitting the same id) — does the list show one merged entry with the wrong label, two entries, or the correct attribution? Cross-check `chat_rows`/`tool_use_rows` at the same instant.
+- [ ] E-36 (OPEN): A session whose provider is the fallback `unknown` at first sight and is later re-derived to a real token on a live update (Spec #2932 upgrade path) — does the label update without a flicker/blank frame, or does it stay stale? Cross-check the row's `provider` before/after.
+- [ ] E-37 (OPEN): A provider token with unusual formatting reaching the label (uppercase, hyphen, underscore, whitespace, empty string) — does the label render a sane, non-blank string or surface a raw/empty value? (Reads the row's `provider`; the classifier's normalization is `rtdb-provider-attribution` E-2.)
+- [ ] E-38 (OPEN): Rapid switching between an OpenCode and a Copilot session while BOTH stream — does the header label ever show the previous session's CLI (stale label), or lag the selection? Confirm the selected session via DOM before capture (G-035); cross-check telemetry at the same instant.
+- [ ] E-39 (OPEN): A Copilot session that later gains a `task`/subagent dispatch (if the CLI ever produces one) — does a SubagentNode appear with the same structural detail as an OpenCode subagent, and does the CLI label remain correct? (Guards the AC-1 parity claim beyond the split-turn shape.)
+- [ ] E-40 (OPEN): The list at a high mixed-provider session count (many real + several `unknown` + both CLIs) — does the label derivation stay a single map pass without lag/block, and does every row show exactly one label? (NFR-1/NFR-2.)
+- [ ] E-41 (OPEN): Rename then delete a Copilot session, and rename/delete an OpenCode session while a Copilot session is selected — is the label preserved on the renamed row and absorbed cleanly on delete (no orphan/blank row, no resurrection)? (#2945 R-51.)
+- [ ] E-42 (OPEN): Theme/accent override on the label — do both providers' labels and the fallback re-tint with the user accent (no hardcoded color)? A fixed non-token color is a defect (AC-5).
+- [ ] E-43 (OPEN): Console check on every probe — any `Maximum update depth exceeded` or `Uncaught` invalidates that leg's evidence (NFR-4). `tauri_read_logs(source="console")` clean after every interaction.
