@@ -30,11 +30,11 @@ const REQUIRED_COMBOS = [
 const BINDABLE = [
   'ctrl+shift+f10',
   'primary+space',
-  'primary+shift+p',
+  'primary+P',
   'primary+shift+tab',
   'primary+tab',
   'primary+1',
-  'primary+shift+alt+r',
+  'ctrl+shift+f9',
   '?',
   'g',
   '@leader ?',

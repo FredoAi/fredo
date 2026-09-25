@@ -251,12 +251,12 @@ describe('rebind capture — keyboard-only (R-4.3 + R-5.3)', () => {
 
     const row = rowFor('fredo.launcher.toggle');
     fireEvent.click(within(row).getByTestId('hotkeys-rebind-button'));
-    fireEvent.keyDown(document, { key: 'F9', ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(document, { key: 'F8', ctrlKey: true, shiftKey: true });
 
-    await waitFor(() => expect(getBinding('fredo.launcher.toggle')).toEqual(['primary+shift+f9']));
-    expect(screen.getByTestId('hotkeys-save-status')).toHaveTextContent('Ctrl + Shift + F9');
+    await waitFor(() => expect(getBinding('fredo.launcher.toggle')).toEqual(['primary+shift+f8']));
+    expect(screen.getByTestId('hotkeys-save-status')).toHaveTextContent('Ctrl + Shift + F8');
     expect(JSON.parse(localStorage.getItem('fredo.hotkeys.keymap') ?? '{}')).toMatchObject({
-      bindings: { 'fredo.launcher.toggle': ['primary+shift+f9'] },
+      bindings: { 'fredo.launcher.toggle': ['primary+shift+f8'] },
     });
   });
 

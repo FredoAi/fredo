@@ -16,7 +16,10 @@ import type { HotkeyActionId } from './types';
 export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly string[]>> = {
   // Preserves the shipped #2823 Ctrl+Space launcher toggle.
   'fredo.launcher.toggle': ['primary+space'],
-  'fredo.palette.openActions': ['primary+shift+p'],
+  // Typed-character model (PO#6): Ctrl+Shift+P normalizes to key 'P' with
+  // `shift:false` (Shift is folded into the character), so the shipped default
+  // must be the uppercase Character token — NOT `primary+shift+p`.
+  'fredo.palette.openActions': ['primary+P'],
   'fredo.help.cheatsheet': ['?'],
   'fredo.focus.nextWindow': ['primary+tab'],
   'fredo.focus.prevWindow': ['primary+shift+tab'],
@@ -33,7 +36,10 @@ export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly 
   ],
   // Named-key chord: the layout-stable exit hatch (NOT reserved).
   'fredo.terminal.exitPassthrough': ['ctrl+shift+f10'],
-  'fredo.macro.recordToggle': ['primary+shift+alt+r'],
+  // A named-key chord: Ctrl+Shift+Alt+R also folds Shift into the produced 'R'
+  // character, so it is unmatchable as a character binding. F9 is a named key
+  // (modifier flags preserved), so `ctrl+shift+f9` round-trips.
+  'fredo.macro.recordToggle': ['ctrl+shift+f9'],
   // NOTE: fredo.window.close, fredo.settings.open and per-feature actions ship UNBOUND.
 };
 
