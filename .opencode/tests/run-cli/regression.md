@@ -220,3 +220,26 @@ Conventions: ID prefix `R-`; observable expected outcomes. On pass keep the chec
   directory (no false conversation-resume copy).
 - **C-5 + #2942-delta teardown:** run 1 deleted 23 fixture-root records / run 2 deleted 0 (idempotent) →
   0; the four settings keys + the default-TYPE key restored to their captured pre-run values.
+
+### Round 5 (Spec #2942 — round 2 retry) — 2026-09-25, spec/2942 @ 97495693 (R-18/R-19/R-20 PASS; F-81 FIXED)
+
+- **R-18 PASS (cold leg, G-250).** With the `terminal` window CLOSED (asserted 0 windows), cold runs:
+  `fredo open-terminal --cli opencode --dir …\workdir-a` → `{"cli":"opencode","outcome":"started"}` → ONE
+  `terminal` window + a RUNNING OpenCode session auto-selected (`aria-current="true"`, `data-surface=
+  "terminal"`); `fredo open-terminal` with NO `--cli` → `{"cli":"shell","outcome":"started"}` → a RUNNING
+  plain shell in workdir-a (PowerShell prompt). **Cold 3/3** (2 OpenCode + 1 default-shell), plus a warm
+  control (`--cli shell --dir …\workdir-b`) that spawned exactly ONE new session. Negatives:
+  `--cli bogus` → `{"outcome":"invalid-cli","message":"Unknown session type \`bogus\` — use \`shell\`,
+  \`opencode\` or \`copilot\`"}`; `--dir …\no-such-dir` → `{"outcome":"invalid-directory"}`;
+  `--cli " "` → `{"outcome":"invalid-argument"}`.
+- **R-19 PASS.** With the stored default-TYPE key = `shell`, no `--cli` → a plain shell (no agent
+  process, prompt in the buffer); `--cli shell` → `{"cli":"shell","outcome":"started"}`. A plain-shell
+  launch never resolved to an OpenCode/Copilot agent. **F-81 FIXED (was round-4 defect):**
+  `fredo open-terminal --help` now prints `--cli <shell|opencode|copilot>` + "Session type to start:
+  `shell` (plain OS shell), `opencode` or `copilot` (defaults to the saved default session type)".
+- **R-20 PASS.** A plain-shell session spawned via the CLI persisted as a record
+  (`feature_terminal_sessions`, `cli='shell'`), listed in the sidebar's `Previous` group after the window
+  closed/reopened with **0 processes** started, and `Open` reopened a fresh shell in the record's
+  directory (no false conversation-resume copy).
+- **C-5 + #2942-delta teardown:** run 1 deleted 7 fixture-root records / run 2 deleted 0 (idempotent) →
+  0; the four settings keys + the default-TYPE key restored to their captured pre-run values.
