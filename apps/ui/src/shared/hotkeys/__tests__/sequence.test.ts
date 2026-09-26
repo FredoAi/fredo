@@ -275,6 +275,95 @@ describe('decideDispatch — focus contexts', () => {
   });
 });
 
+describe('decideDispatch — explicit context unwind (Spec #2958)', () => {
+  it('consumes a fresh Escape as context-back while a descent is active', () => {
+    for (const context of ['default', 'interactive'] as const) {
+      const decision = decideDispatch(
+        input({ stroke: stroke({ key: 'escape' }), context, canUnwindContext: true }),
+      );
+      expect(decision.outcome, context).toBe('context-back');
+      expect(decision.consumed).toBe(true);
+      expect(decision.reason).toBe('context-back');
+    }
+  });
+
+  it('does NOT consume Escape at the base context (R-3.2)', () => {
+    const omitted = decideDispatch(input({ stroke: stroke({ key: 'escape' }) }));
+    expect(omitted.outcome).toBe('passthrough');
+    expect(omitted.reason).toBe('unbound');
+    expect(omitted.consumed).toBe(false);
+
+    const armedFalse = decideDispatch(
+      input({ stroke: stroke({ key: 'escape' }), canUnwindContext: false }),
+    );
+    expect(armedFalse.outcome).toBe('passthrough');
+    expect(armedFalse.consumed).toBe(false);
+  });
+
+  it('a bound Escape still matches when no descent is active', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 'escape' }),
+        bindings: [binding('fredo.test.escape', 'escape')],
+      }),
+    );
+    expect(decision.outcome).toBe('match');
+    expect(decision.action?.actionId).toBe('fredo.test.escape');
+  });
+
+  it('the pending-sequence cancel WINS over the unwind (provably disjoint, R-3.3)', () => {
+    const decision = decideDispatch(
+      input({
+        stroke: stroke({ key: 'escape' }),
+        pending: parseSequence('g'),
+        canUnwindContext: true,
+        bindings: [binding('fredo.a', 'g g')],
+      }),
+    );
+    expect(decision.outcome).toBe('suppress');
+    expect(decision.reason).toBe('sequence-escape');
+    expect(decision.consumed).toBe(true);
+  });
+
+  it('terminal / modal / text-entry keep their Escape owners (R-3.4)', () => {
+    const terminal = decideDispatch(
+      input({ stroke: stroke({ key: 'escape' }), context: 'terminal', canUnwindContext: true }),
+    );
+    expect(terminal.outcome).toBe('passthrough');
+    expect(terminal.reason).toBe('terminal-passthrough');
+
+    const modal = decideDispatch(
+      input({ stroke: stroke({ key: 'escape' }), context: 'modal', canUnwindContext: true }),
+    );
+    expect(modal.outcome).toBe('passthrough');
+    expect(modal.reason).toBe('modal-escape');
+
+    const textEntry = decideDispatch(
+      input({ stroke: stroke({ key: 'escape' }), context: 'text-entry', canUnwindContext: true }),
+    );
+    expect(textEntry.outcome).toBe('passthrough');
+    expect(textEntry.reason).toBe('text-entry-passthrough');
+  });
+
+  it('leaves every non-Escape key to its existing outcome while armed', () => {
+    const unbound = decideDispatch(
+      input({ stroke: stroke({ key: 'z' }), canUnwindContext: true }),
+    );
+    expect(unbound.outcome).toBe('passthrough');
+    expect(unbound.reason).toBe('unbound');
+
+    const matched = decideDispatch(
+      input({
+        stroke: stroke({ key: 'g' }),
+        canUnwindContext: true,
+        bindings: [binding('fredo.a', 'g')],
+      }),
+    );
+    expect(matched.outcome).toBe('match');
+    expect(matched.action?.actionId).toBe('fredo.a');
+  });
+});
+
 describe('decideDispatch — raw macro recording gate', () => {
   it('suspends unbound keys while recording and keeps Escape as the cancel', () => {
     const suspended = decideDispatch(

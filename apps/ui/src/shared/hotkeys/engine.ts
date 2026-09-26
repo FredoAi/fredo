@@ -23,12 +23,26 @@
  * ST-2's transient setters intend.
  */
 
+import {
+  enterHotkeyContext,
+  exitHotkeyContext,
+  getActiveHotkeyContext,
+  getHotkeyContextDepth,
+  getHotkeyContextPath,
+  installHotkeyContextTracking,
+  syncHotkeyContextFromFocus,
+} from './contextStack';
+import {
+  getHotkeyContext,
+  registerHotkeyContext,
+  resolveBaseContextId,
+  resolveContextBindings,
+} from './contexts';
 import { isInteractiveElement, classifyFocusContext } from './focusContext';
 import {
   displayStroke,
   keyStrokeEquals,
   normalizeKeyStroke,
-  parseSequence,
   parseStrokeToken,
   serializeStroke,
 } from './keys';
@@ -46,13 +60,20 @@ import {
   setPendingSequence,
   subscribeHotkeyEvents,
 } from './store';
-import { MINIMAL_DEFAULT_BINDINGS } from './defaults';
+import {
+  MINIMAL_DEFAULT_BINDINGS,
+  REFERENCE_CONTEXT_ID,
+  REFERENCE_DESCEND_ACTION_ID,
+  REFERENCE_ONLY_ACTION_ID,
+} from './defaults';
 import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
 import {
+  ROOT_CONTEXT_ID,
   type DispatchDecision,
   type FeatureHotkeyAction,
   type FocusContext,
   type HotkeyCandidate,
+  type HotkeyContextId,
   type HotkeyResetReason,
   type KeySequence,
   type KeyStroke,
@@ -101,6 +122,10 @@ interface DefaultFredoActionDef {
   readonly title: string;
   readonly description: string;
   readonly run?: (ctx: { readonly sequence: KeySequence }) => void;
+  /** Spec #2958 — the context this action belongs to (omitted ⇒ unscoped Fredo). */
+  readonly contextId?: HotkeyContextId;
+  /** Spec #2958 — the context this action descends into on a `match` (R-2.1). */
+  readonly opensContextId?: HotkeyContextId;
 }
 
 function focusRelative(delta: number): void {
@@ -180,6 +205,26 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly DefaultFredoActionDef[] = [
     title: 'Toggle macro recording',
     description: 'Start or stop recording a keystroke macro',
   },
+  // Spec #2958 — the shipped reference context host (AC2/AC3). The descend
+  // action is resolvable at the base context; it enters `fredo.root.reference`
+  // BOTH through the engine's generic `opensContextId` execution AND through its
+  // own handler (so a palette invocation descends too). `enterHotkeyContext` is
+  // idempotent, so the two paths cannot double-push or double-announce.
+  {
+    actionId: REFERENCE_DESCEND_ACTION_ID,
+    title: 'Enter reference context',
+    description: 'Move into the shipped reference interaction context',
+    opensContextId: REFERENCE_CONTEXT_ID,
+    run: () => {
+      enterHotkeyContext(REFERENCE_CONTEXT_ID);
+    },
+  },
+  {
+    actionId: REFERENCE_ONLY_ACTION_ID,
+    title: 'Reference context action',
+    description: 'Available only while the reference interaction context is active',
+    contextId: REFERENCE_CONTEXT_ID,
+  },
 ];
 
 function defaultSequenceFor(actionId: string): string | null {
@@ -188,11 +233,26 @@ function defaultSequenceFor(actionId: string): string | null {
 }
 
 /**
- * Register the shipped Fredo actions. Idempotent across `resetRegistryForTests`
- * (an already-resolvable action is left untouched), so re-installing the engine
- * can never create a duplicate `invalid` row.
+ * Register the shipped reference interaction context (Spec #2958) once. Guarded
+ * so re-installing the engine can never create a duplicate `invalid` context.
+ */
+function registerReferenceContext(): void {
+  if (getHotkeyContext(REFERENCE_CONTEXT_ID) !== null) return;
+  registerHotkeyContext({
+    contextId: REFERENCE_CONTEXT_ID,
+    parentId: ROOT_CONTEXT_ID,
+    title: 'Reference',
+  });
+}
+
+/**
+ * Register the shipped Fredo actions + the shipped reference context. Idempotent
+ * across `resetRegistryForTests` (an already-resolvable action is left
+ * untouched), so re-installing the engine can never create a duplicate `invalid`
+ * row or a duplicate context.
  */
 export function registerDefaultFredoActions(): void {
+  registerReferenceContext();
   for (const def of DEFAULT_FREDO_ACTION_DEFS) {
     if (getHotkeyAction(def.actionId) !== null) continue;
     const action: FeatureHotkeyAction = {
@@ -200,6 +260,8 @@ export function registerDefaultFredoActions(): void {
       title: def.title,
       description: def.description,
       defaultSequence: defaultSequenceFor(def.actionId),
+      contextId: def.contextId,
+      opensContextId: def.opensContextId,
       run: (ctx) => def.run?.(ctx),
     };
     registerFredoAction(action);
@@ -225,31 +287,35 @@ function effectiveSequences(
 }
 
 /**
- * Resolve every dispatchable binding for a focus scope. Fredo-tier bindings are
- * always included (R-2.6); a feature-tier binding is included only while its
- * owning feature is focused (R-2.5). Invalid actions are never dispatchable.
+ * Resolve every dispatchable binding for a focus scope (Spec #2958: delegates to
+ * `resolveContextBindings`). Fredo-tier bindings are always included (R-2.6); a
+ * feature-tier binding is included only while its owning feature is focused
+ * (R-2.5) and only when its context is on the active path. Invalid actions are
+ * never dispatchable.
+ *
+ * KEYMAP THREADING (ST-1 contract): `contexts.ts` is keymap-free, so each action
+ * is passed as ONE entry per EFFECTIVE sequence (keymap override, else the
+ * declared default) with `defaultSequence` set to that serialized sequence. A
+ * keymap `[]` (unbound) contributes nothing; a user rebind therefore reaches the
+ * layered resolver unchanged, and at the default keymap the result is
+ * byte-identical to #2946's `resolveActiveBindings` (base parity regression).
  */
 export function resolveActiveBindings(
   focusedFeatureId: string | null = getFocusedFeatureId(),
 ): readonly ResolvedBinding[] {
   const keymap = getKeymap();
-  const resolved: ResolvedBinding[] = [];
-  for (const action of listHotkeyActions()) {
-    if (action.invalid) continue;
-    if (action.tier === 'feature' && action.featureId !== focusedFeatureId) continue;
-    for (const serialized of effectiveSequences(action, keymap)) {
-      const sequence = parseSequence(serialized);
-      if (sequence.length === 0) continue;
-      resolved.push({
-        actionId: action.actionId,
-        tier: action.tier,
-        sequence,
-        serialized,
-        action,
-      });
-    }
-  }
-  return resolved;
+  const actions: RegisteredHotkeyAction[] = listHotkeyActions().flatMap((action) =>
+    effectiveSequences(action, keymap).map((serialized) => ({
+      ...action,
+      defaultSequence: serialized,
+    })),
+  );
+  // Scope the path to the REQUESTED focus: the stack's explicit descents sit
+  // above the focus-derived base, so re-base onto `focusedFeatureId` (identical
+  // when the caller is the engine, which syncs focus before resolving).
+  const base = resolveBaseContextId(focusedFeatureId);
+  const contextPath = [base, ...getHotkeyContextPath().slice(1)];
+  return resolveContextBindings(focusedFeatureId, contextPath, actions);
 }
 
 /** The configured leader stroke, or `null` when the leader is disabled. */
@@ -401,7 +467,27 @@ function applyDecision(
       if (!action) return;
       const completed = pending !== null ? [...pending, stroke] : [stroke];
       if (pending !== null) completePending();
-      runHotkeyAction(action.actionId, 'binding', completed, focusedFeatureId);
+      // The action ran in the context that was active at match time (before any
+      // descent it triggers) — capture it for the invocation context.
+      const invocationContextId = getActiveHotkeyContext();
+      // Descent (Spec #2958, R-2.1/R-2.3): a matched action naming an openable
+      // context enters it BEFORE its own behaviour. A refused target
+      // (undeclared / not a child / not platform) is a no-op, so no action from
+      // the named context can run and the active context is unchanged.
+      if (action.opensContextId) enterHotkeyContext(action.opensContextId);
+      runHotkeyAction(
+        action.actionId,
+        'binding',
+        completed,
+        focusedFeatureId,
+        invocationContextId,
+      );
+      return;
+    }
+    case 'context-back': {
+      // Escape popped exactly ONE explicit descent (R-3.1/R-6.1). `pending` is
+      // `null` by the decision branch's contract, so there is no state to clear.
+      exitHotkeyContext();
       return;
     }
     case 'arm-sequence': {
@@ -441,6 +527,11 @@ export function handleHotkeyKeydown(event: KeyboardEvent): DispatchDecision {
   updateHooks(context);
 
   const focusedFeatureId = getFocusedFeatureId();
+  // Re-derive the interaction-context base from this webview's focus BEFORE
+  // resolving (Spec #2958, R-2.2 continuity): the stack base always matches the
+  // focused feature on the dispatch path. A same-focus sync is a no-op that
+  // preserves an active descent; a focused-feature change clears descents.
+  syncHotkeyContextFromFocus();
   const bindings = resolveActiveBindings(focusedFeatureId);
   const active = typeof document === 'undefined' ? null : document.activeElement;
 
@@ -452,6 +543,8 @@ export function handleHotkeyKeydown(event: KeyboardEvent): DispatchDecision {
     leader: getLeaderStroke(),
     macroRecording: isMacroRecording(),
     nativeConsumes: isInteractiveElement(active),
+    // Armed only while an explicit descent sits above the base (R-3.1/R-3.2).
+    canUnwindContext: getHotkeyContextDepth() > 1,
   });
 
   applyDecision(decision, stroke, bindings, focusedFeatureId);
@@ -469,6 +562,8 @@ let installed = false;
 let keydownListener: ((event: KeyboardEvent) => void) | null = null;
 let focusListener: (() => void) | null = null;
 let eventUnsubscribe: (() => void) | null = null;
+/** Spec #2958 — the interaction-context focus-tracking handle (no keydown listener). */
+let contextTrackingUninstall: (() => void) | null = null;
 
 /**
  * Install the ONE `document` keydown listener (capture phase) + focus tracking.
@@ -481,6 +576,9 @@ export function installHotkeyEngine(): () => void {
   installed = true;
 
   registerDefaultFredoActions();
+  // Track this webview's focused feature so the context base re-derives live.
+  // Adds NO keydown listener (ST-2 contract) — the engine owns the ONLY one.
+  contextTrackingUninstall = installHotkeyContextTracking();
 
   keydownListener = (event: KeyboardEvent) => {
     handleHotkeyKeydown(event);
@@ -518,6 +616,9 @@ export function uninstallHotkeyEngine(): void {
 
   eventUnsubscribe?.();
   eventUnsubscribe = null;
+
+  contextTrackingUninstall?.();
+  contextTrackingUninstall = null;
 
   clearPendingTimer();
   pending = null;
