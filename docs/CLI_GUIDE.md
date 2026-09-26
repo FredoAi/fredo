@@ -85,7 +85,9 @@ fredo open-app "OPEN MISSION MONITOR"
 
 ### `fredo open-terminal`
 
-Opens (or focuses) the Terminal window and, when a session type and/or working directory is supplied, starts that session in that folder in the same invocation. The running app validates the arguments **before** anything opens: an invalid session type or directory creates no window and starts no session.
+Opens (or focuses) the Terminal host and, when a session type and/or working directory is supplied, starts that session in that folder in the same invocation. The running app validates the arguments **before** anything opens: an invalid session type or directory creates no window and starts no session.
+
+> **Presentation mode (#2947).** Where Terminal opens is a remembered setting (Settings → Terminal → **Presentation**): **Same window** opens the workspace inside the main Fredo window as one of Fredo's own in-window apps, and **Separate window** (the default) opens/focuses the native `terminal` window exactly as before. `fredo open-terminal` honours the setting — in same-window mode the session starts inside the main window and **no native `terminal` window is created**. The per-invocation arguments, printed outcomes, and exit codes below are unchanged in both modes.
 
 ```bash
 fredo open-terminal [--cli <shell|opencode|copilot>] [--dir <PATH>]
