@@ -1,0 +1,184 @@
+{
+  "issue": 2964,
+  "task": "ST-5",
+  "acquisition_mode": "runtime-download",
+  "crate_version": "0.1.0",
+  "os": "windows",
+  "arch": "x86_64",
+  "profile": "release",
+  "process_observation_available": true,
+  "bounds": {
+    "control_ms": 180000,
+    "setup_ms": 600000,
+    "start_ms": 180000,
+    "stop_ms": 30000,
+    "connect_ms": 10000,
+    "ready_ms": 60000
+  },
+  "scenarios": [
+    {
+      "name": "pid_reuse_guard",
+      "ok": true,
+      "detail": "absent-pid=4,000,000 -> swept=None, cleared=true; own-pid=15588 (is_postgres=false) -> swept=None, cleared=true, survived=true",
+      "marker_cleared": true
+    },
+    {
+      "name": "normal_start_ready_stop",
+      "ok": true,
+      "detail": "pid=9360, setup=25567ms, start=985ms, ready=128ms, stop=398ms, dead=true",
+      "setup_ms": 25567.497199999998,
+      "start_ms": 984.8616999999999,
+      "ready_ms": 127.6271,
+      "stop_ms": 397.93859999999995,
+      "postmaster_pid": 9360,
+      "marker_persisted": true,
+      "marker_cleared": true,
+      "dead_after": true
+    },
+    {
+      "name": "hard_kill_fallback_on_stop_timeout",
+      "ok": true,
+      "detail": "pid=15384, alive_before=true, kill_pid_tree=213ms, dead=true",
+      "start_ms": 456.4957,
+      "postmaster_pid": 15384,
+      "marker_persisted": true,
+      "marker_cleared": true,
+      "dead_after": true
+    },
+    {
+      "name": "panic_path_teardown",
+      "ok": true,
+      "detail": "pid=16644, panicked=true, dead=true, sweep=None, cleared=true",
+      "start_ms": 274.2288,
+      "postmaster_pid": 16644,
+      "marker_persisted": true,
+      "marker_cleared": true,
+      "dead_after": true,
+      "panicked": true
+    },
+    {
+      "name": "startup_orphan_sweep",
+      "ok": true,
+      "detail": "pid=21164, orphan_alive=true, child_exit=Some(0), child_out=\"SUCCESS: The process with PID 23876 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 8532 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 6852 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 7544 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 13156 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 13892 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 10784 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 10008 (child process of PID 21164) has been terminated.\\r\\nSUCCESS: The process with PID 21164 (child process of PID 11296) has been terminated.\\r\\nsweep-startup: marker=Some(21164) swept=Some(21164) marker_after=None image_guard=postgres.exe\", dead=true, cleared=true",
+      "start_ms": 398.19870000000003,
+      "postmaster_pid": 21164,
+      "marker_persisted": true,
+      "marker_cleared": true,
+      "orphan_alive_before_sweep": true,
+      "dead_after": true,
+      "sweep_child_stdout": "SUCCESS: The process with PID 23876 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 8532 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 6852 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 7544 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 13156 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 13892 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 10784 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 10008 (child process of PID 21164) has been terminated.\r\nSUCCESS: The process with PID 21164 (child process of PID 11296) has been terminated.\r\nsweep-startup: marker=Some(21164) swept=Some(21164) marker_after=None image_guard=postgres.exe"
+    }
+  ],
+  "checks": [
+    {
+      "name": "guard.absent_pid_not_killed",
+      "ok": true,
+      "detail": "swept=None (expected None)"
+    },
+    {
+      "name": "guard.non_postgres_image_not_killed",
+      "ok": true,
+      "detail": "own pid 15588, is_postgres=false, swept=None"
+    },
+    {
+      "name": "guard.marker_cleared_after_inspection",
+      "ok": true,
+      "detail": "absent_cleared=true, own_cleared=true"
+    },
+    {
+      "name": "normal.start_bounded",
+      "ok": true,
+      "detail": "pg.start 985 ms <= bound 180000 ms"
+    },
+    {
+      "name": "normal.ready_bounded",
+      "ok": true,
+      "detail": "readiness 128 ms <= bound 60000 ms"
+    },
+    {
+      "name": "normal.stop_bounded",
+      "ok": true,
+      "detail": "pg.stop 398 ms <= bound 30000 ms"
+    },
+    {
+      "name": "normal.pid_marker_persisted",
+      "ok": true,
+      "detail": "marker == 9360"
+    },
+    {
+      "name": "normal.pid_marker_cleared",
+      "ok": true,
+      "detail": "marker empty after bounded stop"
+    },
+    {
+      "name": "normal.teardown_no_orphan",
+      "ok": true,
+      "detail": "postgres.exe pid 9360 gone within 20s"
+    },
+    {
+      "name": "hard_kill.live_postmaster_before",
+      "ok": true,
+      "detail": "pid 15384 was a live postgres.exe before the fallback"
+    },
+    {
+      "name": "hard_kill.fallback_tears_down_tree",
+      "ok": true,
+      "detail": "taskkill /PID 15384 /T /F removed the postmaster tree"
+    },
+    {
+      "name": "hard_kill.marker_cleared",
+      "ok": true,
+      "detail": "marker empty after the fallback"
+    },
+    {
+      "name": "panic.panic_observed",
+      "ok": true,
+      "detail": "the induced panic was caught (unwinding completed)"
+    },
+    {
+      "name": "panic.raii_drop_teardown",
+      "ok": true,
+      "detail": "postgres.exe pid 16644 gone after the panic unwind"
+    },
+    {
+      "name": "panic.marker_cleared_by_startup_sweep",
+      "ok": true,
+      "detail": "sweep returned None, marker empty"
+    },
+    {
+      "name": "orphan.real_orphan_present_before_sweep",
+      "ok": true,
+      "detail": "leaked runtime pid 21164 was still a live postgres.exe"
+    },
+    {
+      "name": "orphan.fresh_process_sweep_killed_it",
+      "ok": true,
+      "detail": "--sweep-startup exit Some(0), pid gone"
+    },
+    {
+      "name": "orphan.marker_cleared_after_sweep",
+      "ok": true,
+      "detail": "marker empty after the startup sweep"
+    },
+    {
+      "name": "process_observation_available",
+      "ok": true,
+      "detail": "tasklist can observe process images (teardown evidence is observable)"
+    },
+    {
+      "name": "no_orphan_postgres_after_exit",
+      "ok": true,
+      "detail": "started pids [9360, 15384, 16644, 21164]; still-live [] (final snapshot [8036])"
+    }
+  ],
+  "passed": 20,
+  "failed": 0,
+  "baseline_postgres_pids": [
+    15952
+  ],
+  "final_postgres_pids": [
+    8036
+  ],
+  "orphan_pids": [],
+  "total_ms": 76078
+}

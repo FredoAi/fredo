@@ -1,0 +1,84 @@
+{
+  "issue": 2964,
+  "task": "ST-3",
+  "mode": "rtdb write-behind batch + bounded-LRU reload semantics vs postgresql",
+  "acquisition_mode": "runtime-download",
+  "environment": {
+    "os": "windows",
+    "arch": "x86_64",
+    "profile": "release",
+    "crate_version": "0.1.0"
+  },
+  "modeled_constants": {
+    "default_cache_capacity": 10000,
+    "queue_capacity": 4096,
+    "writer_flush_ms": 30,
+    "source": "apps/tauri/src-tauri/src/infrastructure/rtdb/cache.rs:47,49,51"
+  },
+  "checks": [
+    {
+      "name": "production_constants_modeled",
+      "ok": true,
+      "detail": "cap=10000 queue=4096 flush_ms=30 (rtdb/cache.rs:47,49,51)"
+    },
+    {
+      "name": "write_behind_batch_flush",
+      "ok": true,
+      "detail": "pg_before_flush=0 cache_len=3 flushed=3 pg_after_flush=3 dropped=0"
+    },
+    {
+      "name": "overflow_sheds_storage_not_memory",
+      "ok": true,
+      "detail": "queue_cap=32 enqueued=40 shed=8 flushed=32 pg_rows=32 cache_len=40 shed_row_in_memory=true shed_row_in_pg=false"
+    },
+    {
+      "name": "cache_miss_reload_from_pg",
+      "ok": true,
+      "detail": "cap=1 len_before=1 reload_a=true reload_b=true len_after_a=1"
+    },
+    {
+      "name": "cache_miss_absent_returns_none",
+      "ok": true,
+      "detail": "missing_is_none=true cache_len=1"
+    },
+    {
+      "name": "lru_evicts_oldest_keeps_recent",
+      "ok": true,
+      "detail": "len_at_cap=10 len_after_overflow=9 k2=None k0=Some(0) k10=Some(10)"
+    },
+    {
+      "name": "lru_cap_one_keeps_newest",
+      "ok": true,
+      "detail": "len=1 a=None b=Some(2)"
+    },
+    {
+      "name": "writer_coalesces_burst_into_one_batch",
+      "ok": true,
+      "detail": "burst=500 batches=1 max_batch=500 rows=500 dropped=0 cache_len=500"
+    },
+    {
+      "name": "lone_write_flushed_within_flush_window",
+      "ok": true,
+      "detail": "latency_ms=5.682 rows=1 (window 30 ms + PG round-trip; bounded, no unbounded wait)"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "passed": 9,
+    "failed": 0,
+    "ok": true
+  },
+  "metrics": {
+    "coalesce_burst": 500,
+    "coalesce_batches": 1,
+    "coalesce_max_batch": 500,
+    "coalesce_rows": 500,
+    "lone_write_latency_ms": 5.6822,
+    "overflow_queue_capacity": 32,
+    "overflow_enqueued": 40,
+    "overflow_shed": 8,
+    "overflow_persisted": 32,
+    "reload_cache_cap": 1
+  },
+  "duration_ms": 13139
+}

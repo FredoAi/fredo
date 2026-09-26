@@ -1,0 +1,136 @@
+{
+  "issue": 2964,
+  "task": "ST-1",
+  "mode": "sqlite->postgresql schema + statement translation",
+  "acquisition_mode": "runtime-download",
+  "environment": {
+    "os": "windows",
+    "arch": "x86_64",
+    "profile": "release",
+    "crate_version": "0.1.0"
+  },
+  "workload": {
+    "ops": 2000,
+    "unique_keys": 1800,
+    "batch": 512,
+    "seed": 2964,
+    "reupsert_ratio": 0.1
+  },
+  "checks": [
+    {
+      "name": "pg_ddl_applies",
+      "ok": true,
+      "detail": "CREATE TABLE + CREATE INDEX executed on PostgreSQL"
+    },
+    {
+      "name": "pg_ddl_idempotent",
+      "ok": true,
+      "detail": "re-running the translated DDL is a no-op (IF NOT EXISTS)"
+    },
+    {
+      "name": "chat_rows_type_mapping",
+      "ok": true,
+      "detail": "pg=[(\"session_id\", \"text\"), (\"correlation_id\", \"text\"), (\"seq\", \"bigint\"), (\"started_at_ns\", \"bigint\"), (\"ended_at_ns\", \"bigint\"), (\"updated_at\", \"text\"), (\"state\", \"text\"), (\"user_message\", \"text\"), (\"agent_reply\", \"text\"), (\"prompt_tokens\", \"bigint\"), (\"completion_tokens\", \"bigint\"), (\"cache_read_tokens\", \"bigint\"), (\"cost_usd\", \"double precision\"), (\"model\", \"text\"), (\"parent_session_id\", \"text\"), (\"composited_child_session_id\", \"text\"), (\"raw_json\", \"text\"), (\"provider\", \"text\")] expected=[(\"session_id\", \"text\"), (\"correlation_id\", \"text\"), (\"seq\", \"bigint\"), (\"started_at_ns\", \"bigint\"), (\"ended_at_ns\", \"bigint\"), (\"updated_at\", \"text\"), (\"state\", \"text\"), (\"user_message\", \"text\"), (\"agent_reply\", \"text\"), (\"prompt_tokens\", \"bigint\"), (\"completion_tokens\", \"bigint\"), (\"cache_read_tokens\", \"bigint\"), (\"cost_usd\", \"double precision\"), (\"model\", \"text\"), (\"parent_session_id\", \"text\"), (\"composited_child_session_id\", \"text\"), (\"raw_json\", \"text\"), (\"provider\", \"text\")]"
+    },
+    {
+      "name": "chat_rows_composite_pk",
+      "ok": true,
+      "detail": "pk=[\"session_id\", \"correlation_id\"]"
+    },
+    {
+      "name": "chat_rows_indexes",
+      "ok": true,
+      "detail": "pg=[\"chat_rows_pkey\", \"idx_chat_session_time\", \"idx_chat_started\", \"idx_chat_updated\"] required=[\"idx_chat_started\", \"idx_chat_session_time\", \"idx_chat_updated\"]"
+    },
+    {
+      "name": "settings_kv_mapping",
+      "ok": true,
+      "detail": "pg=[(\"key\", \"text\", \"NO\"), (\"value\", \"text\", \"NO\")] expected=[(\"key\", \"text\", \"NO\"), (\"value\", \"text\", \"NO\")]"
+    },
+    {
+      "name": "settings_pk",
+      "ok": true,
+      "detail": "pk=[\"key\"]"
+    },
+    {
+      "name": "sqlite_master_to_regclass",
+      "ok": true,
+      "detail": "chat_rows=Some(\"chat_rows\") settings=Some(\"settings\") missing=None"
+    },
+    {
+      "name": "synchronous_commit_off",
+      "ok": true,
+      "detail": "synchronous_commit=off"
+    },
+    {
+      "name": "autoincrement_to_identity",
+      "ok": true,
+      "detail": "ids=[1, 2] explicit_id_rejected=true"
+    },
+    {
+      "name": "settings_upsert_translation",
+      "ok": true,
+      "detail": "value=v2 (expected v2 after re-upsert)"
+    },
+    {
+      "name": "insert_or_ignore_translation",
+      "ok": true,
+      "detail": "pg=keep sqlite_ok=true"
+    },
+    {
+      "name": "query_only_to_read_only_tx",
+      "ok": true,
+      "detail": "pg_write_rejected=true sqlite_write_rejected=true"
+    },
+    {
+      "name": "row_count_match",
+      "ok": true,
+      "detail": "pg=1208 sqlite=1208 distinct_keys=1208 ops=2000"
+    },
+    {
+      "name": "content_checksum_match",
+      "ok": true,
+      "detail": "pg=b7990a585a7eb88f157c700c8698580f39af8cb32ccc1b6aba8d713455ca421b sqlite=b7990a585a7eb88f157c700c8698580f39af8cb32ccc1b6aba8d713455ca421b"
+    },
+    {
+      "name": "point_read_translation",
+      "ok": true,
+      "detail": "pg=Some(\"{\\\"key\\\":634,\\\"i\\\":1999,\\\"seq\\\":2,\\\"note\\\":\\\"héllo ✅ 漢字\\\"}\") sqlite=Some(\"{\\\"key\\\":634,\\\"i\\\":1999,\\\"seq\\\":2,\\\"note\\\":\\\"héllo ✅ 漢字\\\"}\")"
+    },
+    {
+      "name": "range_read_translation",
+      "ok": true,
+      "detail": "pg=(1208, 2475521) sqlite=(1208, 2475521)"
+    },
+    {
+      "name": "settings_engine_equivalence",
+      "ok": true,
+      "detail": "pg=da265e297214219c9014919070120071b7d2f393554c2b440a5077f9921e8c7b sqlite=da265e297214219c9014919070120071b7d2f393554c2b440a5077f9921e8c7b"
+    }
+  ],
+  "summary": {
+    "total": 18,
+    "passed": 18,
+    "failed": 0,
+    "ok": true
+  },
+  "pg": {
+    "rows": 1208,
+    "checksum": "b7990a585a7eb88f157c700c8698580f39af8cb32ccc1b6aba8d713455ca421b",
+    "point_read": "{\"key\":634,\"i\":1999,\"seq\":2,\"note\":\"héllo ✅ 漢字\"}",
+    "range_count": 1208,
+    "range_sum": 2475521
+  },
+  "sqlite": {
+    "rows": 1208,
+    "checksum": "b7990a585a7eb88f157c700c8698580f39af8cb32ccc1b6aba8d713455ca421b",
+    "point_read": "{\"key\":634,\"i\":1999,\"seq\":2,\"note\":\"héllo ✅ 漢字\"}",
+    "range_count": 1208,
+    "range_sum": 2475521
+  },
+  "timings": {
+    "pg_upsert_ms": 172.70489999999998,
+    "sqlite_upsert_ms": 8.4574
+  },
+  "duration_ms": 9154
+}
