@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup } from '@testing-library/react';
+import { act, cleanup } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
@@ -23,6 +23,13 @@ import {
   LAUNCHER_TOGGLE_ACTION_ID,
   resetHotkeyEngineForTests,
 } from '@/shared/hotkeys/engine';
+import { registerHotkeyContext, resetContextRegistryForTests } from '@/shared/hotkeys/contexts';
+import { enterHotkeyContext, resetHotkeyContextForTests } from '@/shared/hotkeys/contextStack';
+import { ROOT_CONTEXT_ID } from '@/shared/hotkeys/types';
+import {
+  HOTKEY_CONTEXT_INDICATOR_LABEL_TESTID,
+  HOTKEY_CONTEXT_INDICATOR_TESTID,
+} from '@/shared/hotkeys/ContextIndicator';
 import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
 
 beforeEach(() => {
@@ -31,10 +38,14 @@ beforeEach(() => {
   resetKeymapStoreForTests();
   resetWindowStoreForTests();
   resetHotkeyEngineForTests();
+  resetContextRegistryForTests();
+  resetHotkeyContextForTests();
 });
 
 afterEach(() => {
   resetHotkeyEngineForTests();
+  resetContextRegistryForTests();
+  resetHotkeyContextForTests();
   cleanup();
   vi.restoreAllMocks();
 });
@@ -76,5 +87,35 @@ describe('HotkeysProvider', () => {
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('mounts the ONE context indicator (null while idle, shown on a change)', () => {
+    registerHotkeyContext({
+      contextId: 'fredo.test.child',
+      parentId: ROOT_CONTEXT_ID,
+      title: 'Child',
+    });
+
+    const { container, getByTestId } = renderWithChakra(
+      <HotkeysProvider>
+        <span />
+      </HotkeysProvider>,
+    );
+
+    // Mounted once (present in the tree) but idle ⇒ renders nothing.
+    expect(
+      container.querySelectorAll(`[data-testid="${HOTKEY_CONTEXT_INDICATOR_TESTID}"]`),
+    ).toHaveLength(0);
+
+    act(() => {
+      enterHotkeyContext('fredo.test.child');
+    });
+
+    expect(
+      container.querySelectorAll(`[data-testid="${HOTKEY_CONTEXT_INDICATOR_TESTID}"]`),
+    ).toHaveLength(1);
+    expect(getByTestId(HOTKEY_CONTEXT_INDICATOR_LABEL_TESTID)).toHaveTextContent('Child');
+    // Still exactly ONE live region (the shared announcer) — the pill is visual.
+    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
   });
 });
