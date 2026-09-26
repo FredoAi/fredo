@@ -160,6 +160,43 @@ describe('dispatch', () => {
   });
 });
 
+describe('context scope propagation (Spec #2958)', () => {
+  it('carries contextId/opensContextId onto the listing', () => {
+    registerFeatureHotkeys('demo', [
+      action('demo.canvas.zoom', { contextId: 'demo.canvas', opensContextId: 'demo.canvas.grid' }),
+    ]);
+    const entry = listHotkeyActions().find((row) => row.actionId === 'demo.canvas.zoom');
+    expect(entry?.contextId).toBe('demo.canvas');
+    expect(entry?.opensContextId).toBe('demo.canvas.grid');
+  });
+
+  it('leaves the context fields undefined when undeclared (#2946 shape)', () => {
+    registerFredoAction(action('fredo.test.plain'));
+    const entry = listHotkeyActions().find((row) => row.actionId === 'fredo.test.plain');
+    expect(entry?.contextId).toBeUndefined();
+    expect(entry?.opensContextId).toBeUndefined();
+  });
+
+  it('populates the invocation contextId (declared context, else base)', () => {
+    const scopedRun = vi.fn();
+    registerFeatureHotkeys('demo', [
+      action('demo.act', { run: scopedRun, contextId: 'demo.canvas' }),
+    ]);
+    runHotkeyAction('demo.act', 'binding', [], 'demo');
+    expect(scopedRun).toHaveBeenCalledWith(expect.objectContaining({ contextId: 'demo.canvas' }));
+
+    const baseRun = vi.fn();
+    registerFredoAction(action('fredo.test.ctx', { run: baseRun }));
+    runHotkeyAction('fredo.test.ctx', 'binding', [], 'demo');
+    expect(baseRun).toHaveBeenCalledWith(expect.objectContaining({ contextId: 'demo' }));
+
+    const rootRun = vi.fn();
+    registerFredoAction(action('fredo.test.rootctx', { run: rootRun }));
+    runHotkeyAction('fredo.test.rootctx', 'binding');
+    expect(rootRun).toHaveBeenCalledWith(expect.objectContaining({ contextId: 'fredo.root' }));
+  });
+});
+
 describe('feature-instance discovery (R-2.1)', () => {
   it('inherits an empty frozen default contribution', () => {
     class BareFeature extends FredoFeatureClass {
@@ -173,6 +210,8 @@ describe('feature-instance discovery (R-2.1)', () => {
     const bare = new BareFeature();
     expect(bare.hotkeys).toHaveLength(0);
     expect(Object.isFrozen(bare.hotkeys)).toBe(true);
+    expect(bare.hotkeysContexts).toHaveLength(0);
+    expect(Object.isFrozen(bare.hotkeysContexts)).toBe(true);
   });
 
   it('auto-discovers hotkeys declared on a registered feature instance', () => {
