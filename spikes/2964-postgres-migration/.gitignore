@@ -1,0 +1,4 @@
+# Build output + throwaway data dirs + the downloaded PostgreSQL distribution
+# for the spike package (never committed). The committed evidence lives in
+# results/ only.
+/target/
