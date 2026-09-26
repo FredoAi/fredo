@@ -1,6 +1,6 @@
 /**
- * Own window manager (Spec #2807 ST-1 + ST-3, tiling layer Spec #2949 ST-2) —
- * renders the window stack.
+ * Own window manager (Spec #2807 ST-1 + ST-3, tiling layer Spec #2949 ST-2,
+ * workspace toolbar ST-5) — renders the window stack.
  *
  * The manager stays a thin pivoter: it reads the kernel store via
  * `useSyncExternalStore`, sorts by z-order (focused/topmost last so it stacks on
@@ -9,7 +9,7 @@
  *   - **tiled** — an entry with an `activeSlots` placement AND neither
  *     maximized nor minimized renders as a `<WorkspacePane>` at its
  *     workspace-local rect (R1/R2);
- *   - **rest** — every other entry (no placement, maximized full-bleed, or
+ *   - **rest** — every other entry (no slot, maximized full-bleed, or
  *     minimized) renders as the existing `<WindowFrame>` (R13 — the freeform
  *     float and the full-bleed default are preserved untouched).
  *
@@ -19,28 +19,120 @@
  * truth — not part of the snapshot, so reporting never re-renders). Geometry is
  * never added to `WindowEntry`/`windowStore`.
  *
+ * ST-5 replaces the placeholder toolbar with the real `WorkspaceToolbar`: a slim
+ * strip rendered ONLY while ≥1 pane is tiled (hidden at 0, R1) that hosts the
+ * arrangement presets (`resolveRegionRect`/`addPane`/`movePane` — no separate
+ * persisted preset shape), the named-layout `LayoutMenu` (R6/R7), the arrange
+ * entry (R2), and the single `aria-live` announcer.
+ *
  * Re-render discipline (AGENTS.md #523): the partition derives in render from
  * the two stable snapshots (`useWindows()` + `useWorkspaceLayout()`); no effect
- * depends on an array `.length` or a freshly-created object reference.
+ * depends on an array `.length` or a freshly-created object reference. The
+ * announcer is a `useState` string primitive; the outside-click effect's only
+ * dep is the `open` boolean inside `LayoutMenu`.
  */
 
-import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
-import { Box, Button, Text } from '@chakra-ui/react';
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Box, chakra } from '@chakra-ui/react';
 
 import { tint } from '../utils/colorTint';
+import { LayoutMenu } from './LayoutMenu';
 import { WindowFrame } from './WindowFrame';
 import { WorkspacePane } from './WorkspacePane';
-import { addPane, setLayoutWorkspace, useWorkspaceLayout } from './workspaceLayoutStore';
+import {
+  addPane,
+  getLayoutSnapshot,
+  movePane,
+  setLayoutWorkspace,
+  useWorkspaceLayout,
+} from './workspaceLayoutStore';
 import { focusWindow, getWindowSnapshot, subscribeWindows } from './windowStore';
+import type { PaneRegion, PaneSlot } from './paneLayout';
 import type { WindowEntry } from './windowTypes';
 
-/** Height of the (ST-2 placeholder) arrangement toolbar strip. */
+/** Height of the arrangement toolbar strip. */
 const TOOLBAR_HEIGHT = 36;
+
+/** Built-in arrangement presets (no separate persisted shape). */
+export type WorkspacePreset =
+  | 'single'
+  | 'columns-2'
+  | 'columns-3'
+  | 'grid-2x2'
+  | 'main-side';
+
+/** Preset display order (the segment group). */
+const PRESET_ORDER: WorkspacePreset[] = [
+  'single',
+  'columns-2',
+  'columns-3',
+  'grid-2x2',
+  'main-side',
+];
+
+const PRESET_LABEL: Record<WorkspacePreset, string> = {
+  single: 'Single',
+  'columns-2': '2 Columns',
+  'columns-3': '3 Columns',
+  'grid-2x2': '2×2 Grid',
+  'main-side': 'Main + Side',
+};
+
+/** Thirds approximated by the region model (center resolves to the free band). */
+const COLUMN_REGIONS: PaneRegion[] = ['left', 'center', 'right'];
+/** The four region quarters = a clean 2×2. */
+const GRID_REGIONS: PaneRegion[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+
+/**
+ * Target regions for `preset` over `count` panes, in slot order. Where a
+ * pattern needs more panes than the region model can express, the mapping
+ * cycles and `movePane`'s overlap reflow resolves the remainder. Pure and
+ * deterministic.
+ */
+export function presetRegions(preset: WorkspacePreset, count: number): PaneRegion[] {
+  const regions: PaneRegion[] = [];
+  for (let index = 0; index < count; index += 1) {
+    switch (preset) {
+      case 'single':
+        regions.push('center');
+        break;
+      case 'columns-2':
+        regions.push(index % 2 === 0 ? 'left' : 'right');
+        break;
+      case 'columns-3':
+        regions.push(COLUMN_REGIONS[index % COLUMN_REGIONS.length]);
+        break;
+      case 'grid-2x2':
+        regions.push(GRID_REGIONS[index % GRID_REGIONS.length]);
+        break;
+      case 'main-side':
+        if (count <= 1) regions.push('center');
+        else if (count === 2) regions.push(index === 0 ? 'left' : 'right');
+        else {
+          regions.push(
+            index === 0 ? 'left' : index % 2 === 1 ? 'top-right' : 'bottom-right',
+          );
+        }
+        break;
+    }
+  }
+  return regions;
+}
+
+/** True when the current arrangement already sits on `preset`'s regions. */
+function matchesPreset(slots: PaneSlot[], preset: WorkspacePreset): boolean {
+  if (slots.length === 0) return false;
+  const regions = presetRegions(preset, slots.length);
+  return slots.every((slot, index) => slot.region === regions[index]);
+}
 
 export function WindowManager() {
   const windows = useSyncExternalStore(subscribeWindows, getWindowSnapshot, getWindowSnapshot);
   const layout = useWorkspaceLayout();
   const layerRef = useRef<HTMLDivElement>(null);
+  const [announcement, setAnnouncement] = useState('');
+
+  const announce = useCallback((message: string) => setAnnouncement(message), []);
 
   // Report the measured tiling region (the strip below the toolbar) to the
   // layout store. `setLayoutWorkspace` is intentionally outside the snapshot —
@@ -76,19 +168,44 @@ export function WindowManager() {
     else floating.push(win);
   }
 
-  const showToolbar = windows.length > 0;
+  // ST-5: the toolbar belongs to an ACTIVE tiling — hidden at 0 tiled panes
+  // (the dock / launcher entry is the way in before any pane exists).
+  const showToolbar = tiled.length > 0;
 
   /**
-   * Enter tiling (R2): place every open non-minimized window as a pane and
-   * clear full-bleed so the arrangement is actually visible. `addPane` is
+   * Enter / extend tiling (R2): place every open non-minimized window as a pane
+   * and clear full-bleed so the arrangement is actually visible. `addPane` is
    * idempotent per window id and reflows overlapping placements.
    */
   function arrangeOpenWindows(): void {
+    const before = getLayoutSnapshot().activeSlots.length;
     for (const win of windows) {
       if (win.isMinimized) continue;
       if (win.isMaximized) focusWindow(win.id, { maximize: false });
       addPane(win.id);
     }
+    const after = getLayoutSnapshot().activeSlots.length;
+    const added = after - before;
+    announce(
+      added > 0
+        ? `Added ${added} pane${added === 1 ? '' : 's'}`
+        : 'All open windows are already panes',
+    );
+  }
+
+  /** Apply a built-in preset over the currently tiled panes. */
+  function applyPreset(preset: WorkspacePreset): void {
+    const slots = layout.activeSlots;
+    if (slots.length === 0) return;
+    const regions = presetRegions(preset, slots.length);
+    // Apply from the LAST pane backwards: a later pane moving out of the way
+    // first keeps the intermediate arrangement from clamping into an overlap
+    // (which would trigger a full `reflowSlots` and lose the target pattern).
+    for (let index = slots.length - 1; index >= 0; index -= 1) {
+      const region = regions[index];
+      if (region) movePane(slots[index].windowId, region);
+    }
+    announce(`Applied ${PRESET_LABEL[preset]} preset`);
   }
 
   return (
@@ -122,29 +239,96 @@ export function WindowManager() {
             fontFamily="var(--font-primary)"
             pointerEvents="auto"
           >
-            <Text
-              color="fg.muted"
-              fontSize="11px"
-              fontWeight="700"
-              letterSpacing="0.08em"
-              textTransform="uppercase"
+            <LayoutMenu
+              savedLayouts={layout.savedLayouts}
+              activeLayoutId={layout.activeLayoutId}
+              onAnnounce={announce}
+            />
+
+            <Box
+              role="radiogroup"
+              aria-label="Pane arrangement presets"
+              display="flex"
+              alignItems="center"
+              gap="1"
             >
-              Workspace
-            </Text>
-            <Button
-              data-testid="workspace-arrange"
+              {PRESET_ORDER.map((preset) => {
+                const active = matchesPreset(layout.activeSlots, preset);
+                return (
+                  <chakra.button
+                    key={preset}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    aria-label={`${PRESET_LABEL[preset]} arrangement`}
+                    data-testid={`workspace-preset-${preset}`}
+                    data-active={active ? 'true' : 'false'}
+                    onClick={() => applyPreset(preset)}
+                    css={{
+                      padding: '3px 8px',
+                      borderRadius: '4px',
+                      border: '1px solid',
+                      borderColor: active ? 'var(--accent-primary)' : 'var(--border-color)',
+                      background: active ? tint('var(--accent-primary)', 14) : 'transparent',
+                      color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      fontFamily: 'var(--font-primary)',
+                      fontSize: '11px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                      '&:hover': { background: tint('var(--accent-primary)', 8) },
+                      '&:focus-visible': {
+                        outline: 'none',
+                        boxShadow: `0 0 0 2px ${tint('var(--accent-primary)', 40)}`,
+                      },
+                    }}
+                  >
+                    {PRESET_LABEL[preset]}
+                  </chakra.button>
+                );
+              })}
+            </Box>
+
+            <chakra.button
               type="button"
-              size="xs"
-              variant="ghost"
-              color="fg.default"
-              bg="var(--card-hover-bg)"
-              borderRadius="4px"
-              fontFamily="var(--font-primary)"
-              _hover={{ bg: tint('var(--accent-primary)', 12) }}
+              data-testid="workspace-arrange"
               onClick={arrangeOpenWindows}
+              css={{
+                padding: '3px 8px',
+                borderRadius: '4px',
+                border: '1px solid',
+                borderColor: 'var(--border-color)',
+                background: 'transparent',
+                color: 'var(--text-primary)',
+                fontFamily: 'var(--font-primary)',
+                fontSize: '11px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                '&:hover': { background: 'var(--card-hover-bg)' },
+                '&:focus-visible': {
+                  outline: 'none',
+                  boxShadow: `0 0 0 2px ${tint('var(--accent-primary)', 40)}`,
+                },
+              }}
             >
               Arrange windows
-            </Button>
+            </chakra.button>
+
+            <Box
+              data-testid="workspace-announcer"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              ml="auto"
+              minWidth="0"
+              maxWidth="40%"
+              fontSize="11px"
+              color="fg.muted"
+              whiteSpace="nowrap"
+              overflow="hidden"
+              textOverflow="ellipsis"
+            >
+              {announcement}
+            </Box>
           </Box>
         )}
 

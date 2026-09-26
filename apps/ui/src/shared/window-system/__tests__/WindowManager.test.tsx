@@ -224,20 +224,29 @@ describe('WindowManager — pane controls (R13)', () => {
   });
 });
 
-describe('WindowManager — arrangement entry (R2)', () => {
-  it('renders the toolbar only while a window is open', () => {
+describe('WindowManager — arrangement toolbar (R2)', () => {
+  it('renders the toolbar only while at least one pane is tiled', () => {
     renderWithChakra(<WindowManager />);
     expect(screen.queryByTestId('workspace-toolbar')).toBeNull();
 
     act(() => {
-      openFeature('a');
+      openFeature('a'); // full-bleed default, no placement
+    });
+    // ST-5: an open but un-tiled window does NOT show the toolbar.
+    expect(screen.queryByTestId('workspace-toolbar')).toBeNull();
+
+    act(() => {
+      openFeature('a', { isMaximized: false });
+      addPane('a', 'center');
     });
     expect(screen.getByTestId('workspace-toolbar')).toBeTruthy();
   });
 
   it('arrange places every open non-minimized window and clears full-bleed', () => {
-    openFeature('a'); // full-bleed default
-    openFeature('b');
+    setLayoutWorkspace(WS);
+    openFeature('a', { isMaximized: false }); // tiled → reveals the toolbar
+    addPane('a', 'center');
+    openFeature('b'); // full-bleed default
     openFeature('c', { isMaximized: true });
     focusWindow('c', { minimize: true }); // minimized ⇒ excluded
 
