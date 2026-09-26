@@ -313,22 +313,30 @@ export function WindowManager() {
               Arrange windows
             </chakra.button>
 
-            <Box
-              data-testid="workspace-announcer"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              ml="auto"
-              minWidth="0"
-              maxWidth="40%"
-              fontSize="11px"
-              color="fg.muted"
-              whiteSpace="nowrap"
-              overflow="hidden"
-              textOverflow="ellipsis"
-            >
-              {announcement}
-            </Box>
+            {/*
+              ONE announcer per workspace. ST-3's move overlay owns the announcer
+              while a move/resize gesture is live (`dragging`); the toolbar owns it
+              otherwise. They are mutually exclusive, so the DOM never carries two
+              `workspace-announcer` status regions.
+            */}
+            {!layout.dragging && (
+              <Box
+                data-testid="workspace-announcer"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                ml="auto"
+                minWidth="0"
+                maxWidth="40%"
+                fontSize="11px"
+                color="fg.muted"
+                whiteSpace="nowrap"
+                overflow="hidden"
+                textOverflow="ellipsis"
+              >
+                {announcement}
+              </Box>
+            )}
           </Box>
         )}
 
