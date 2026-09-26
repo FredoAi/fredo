@@ -11,6 +11,7 @@ import {
 } from '../../../shared/hotkeys/terminalMode';
 import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { ensureTerminalSettingsMigrated } from '../settings';
+import { TERMINAL_INTENT_AVAILABLE_EVENT } from '../presentation';
 import {
   COPILOT_AUTH_COMMAND,
   RENAME_EMPTY_MESSAGE,
@@ -479,6 +480,21 @@ export const TerminalWindow: React.FC = () => {
       adapterBridge.listen<{ cli?: string; workDir?: string }>('terminal-open-request', (ev) => {
         if (!ev) return;
         void spawnSession(normalizeKind(ev.cli), ev.workDir ?? '');
+      }),
+      // Spec #2947 ST-4 — WARM-path intent drain (R-4.2). ST-5 emits
+      // `terminal-intent-available` to the active host when a same-window CLI
+      // launch confirms `opened`. If this workspace is ALREADY mounted, its mount
+      // refresh above has long since consumed the one-shot `PendingTerminalOpen`,
+      // so re-invoking `list_terminal_sessions` IS the backend drain handshake:
+      // it `take()`s the armed intent and emits `terminal-open-request` over the
+      // listener registered just above — the SAME single spawner. No direct spawn
+      // here, no second spawner, and `take()` stays one-shot so a reload/later
+      // list call (or the cold path) can never double-spawn. Registered with the
+      // existing set, BEFORE the mount refresh below.
+      adapterBridge.listen(TERMINAL_INTENT_AVAILABLE_EVENT, () => {
+        void adapterBridge
+          .invoke<TerminalSessionInfo[]>('list_terminal_sessions')
+          .catch(() => {});
       }),
     );
 
