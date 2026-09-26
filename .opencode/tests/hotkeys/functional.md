@@ -234,6 +234,83 @@
 
 ---
 
+## Spec #2958 — named interaction contexts + Escape-back
+
+> Live-plan extension for issue #2958: the context model, parent/child link, navigation
+> stack, and Escape-back. Builds on the shipped hotkeys subsystem (#2946). Rows F-33..F-43
+> map 1:1 to the QA Plan in `.opencode/tmp/2958/triage.md` `## QA Expert` (`R-1`..`R-6`,
+> where `R-6` = the complex multi-step unwind). Names are the Architect's BINDING block
+> (`useActiveHotkeyContext()`, `getHotkeyContextSnapshot()`, `subscribeHotkeyContext()`,
+> `HotkeyContextSnapshot { contextId, depth, reason }`, root id `'fredo.root'`, base
+> `depth = 1`, `context:changed`, `ContextIndicator`, `contextAnnouncement(snapshot)`;
+> testids `hotkeys-context-indicator` / `-label` / `-depth`; body hooks
+> `data-fredo-hotkey-context` / `data-fredo-hotkey-context-depth`); the shipped
+> `hotkeys-announcer` single region carries the AT announcement. A rename updates selectors,
+> not behaviors.
+> **G-220 pre-existing Escape owners (must not be masked):** F-A pending-cancel → R-12/F-43;
+> F-B base Escape native → F-36; F-C native consumer (`<button>` Space) → F-37/F-42;
+> F-D modal owns Escape → F-42; F-E terminal passthrough → F-42.
+> **Verification policy: live** — evidence carries the DOM/a11y/screenshot assertion PLUS a
+> `telemetry_spans` live receipt from a sanctioned span-producing lever in the drive window
+> (the hotkeys layer itself emits no telemetry — #2946 F-27 / PO Q13).
+
+## F-33 (R-1 / AC1) — Key reuse across levels inside ONE focused app
+
+- [ ] F-33: Focus one app (e.g. Mission Monitor) with the app top level in force. Fire the app's top-level chord (e.g. `s`); then descend into the deeper context (S-11 recipe) and fire the SAME chord. **Expected:** the top-level chord runs the top-level action; after descent the same chord runs the DEEPER context's action — the level in force decides; no other app's action runs; `hotkeys-context-indicator-label` shows the deeper context and `hotkeys-context-indicator-depth` increments. **Data:** DOM hook + accessibility snapshot after each press; action-visible effect (e.g. which control gained focus). *(live receipt)*
+  - **Edge:** chord bound at BOTH levels; a deeper-only action; a chord bound at the parent but not the child → while descended it performs NO action (see F-37); rebind while inside a context.
+
+## F-34 (R-2 / AC2) — Descent changes what is available
+
+- [ ] F-34: From a top-level app context, descend into a deeper context, then run a deeper-only action. Separately attempt to descend from a context that has no deeper level. **Expected:** descent moves into the deeper context; the deeper context's actions are available and the deeper-only action runs; the parent remains the ancestor. Descending where no deeper level exists performs no context change (parent actions stay in force). **Data:** `hotkeys-context-indicator-label`/`-depth` before/after; action effect. *(live receipt)*
+  - **Edge:** no-deeper-level context; descend then focus another window; descend while a text field is focused (must not hijack typing); two consecutive descents.
+
+## F-35 (R-3 / AC3) — Escape returns exactly one level and restores actions
+
+- [ ] F-35: Descend two levels, then press Escape once and inspect; press Escape again. **Expected:** ONE Escape returns to the context the user came from and its actions are available again; a further Escape unwinds to that context's parent; `hotkeys-context-indicator-label`/`-depth` change one level per Escape. **Data:** `hotkeys-context-indicator-label`/`-depth` after each Escape; re-fire the parent chord to prove restoration. *(live receipt)*
+  - **Edge:** Escape at the root leaves the key native (no context change); 1-level-deep → root; Escape while a pending sequence is armed (see F-36 / R-12).
+
+## F-36 (R-6 / AC3 complex scenario) — Full unwind; base Escape is not hijacked
+
+- [ ] F-36: Given the user descended from a top-level context into a deeper context. When the user presses Escape, then returned to the context they came from and its actions are available; and a further Escape returns to that context's parent; and at the top-level context Escape is left to its existing behaviour — including the shipped pending-multi-key Esc cancel and the launcher Escape. **Expected:** the context stack unwinds exactly one level per Escape; at the root, Escape is NOT consumed by the context model (the pending sequence still cancels; the launcher ESC still closes/restores). **Data:** `hotkeys-context-indicator-label`/`-depth` + the shipped `data-fredo-pending-sequence` after each step. *(live receipt)*
+  - **Edge:** 2- and 3-level unwind; pending `g`/`g g` sequence armed at top level then Escape (`data-fredo-pending-sequence` clears, context unchanged); modal open; Escape twice at root (no extra effect).
+
+## F-37 (R-5 / AC5) — No silent fall-through; parent in force only when no deeper level
+
+- [ ] F-37: While descended, press (a) a key with no meaning in the current context, and (b) a key bound only at the PARENT context. Separately, stand in a context with no deeper level and fire the parent's action. **Expected:** (a) and (b) perform NO action and never silently fall through to the parent's/another app's binding; the no-deeper-level case leaves the parent's actions in force and the parent action fires normally. **Data:** action-effect counter; `hotkeys-context-indicator` unchanged. *(live receipt)*
+  - **Edge:** unbound key while descended; parent-only key while descended; a key bound only in another app; focus churn inside the app then repeat the key.
+
+## F-40 (R-2.2 / G-123 continuous state) — The context's actions are in force WHILE in that context
+
+- [ ] F-40: Descend, then (without leaving) wait past the sequence timeout, move focus within the app, and switch theme; then fire the deeper action and the parent-only key. **Expected:** for the whole time the context is in force the in-force action set is that context's (deeper action still resolves; parent-only key still does nothing); the context indicator persists; the state is not re-derived only at the transition. **Data:** `hotkeys-context-indicator-label`/`-depth` sampled after each perturbation; action effect. *(live receipt)*
+  - **Edge:** wait past the sequence timeout; focus move within the app; theme switch; two contexts live in two windows.
+
+## F-38 (R-4 / AC4) — Context change communicated, not colour-only
+
+- [ ] F-38: Descend and Escape, capturing the visible context indicator after each change in BOTH shipped themes. **Expected:** every change updates a visible TEXT label (`hotkeys-context-indicator-label`) plus a direction icon shape and depth pips (`hotkeys-context-indicator-depth`) — at least three non-colour channels; the meaning is read from the label/pips, not from colour alone; legible in light + dark; the indicator does not clip at a narrow viewport. **Data:** `[data-testid="hotkeys-context-indicator"]` text + screenshot per change; light + dark. *(live receipt)*
+  - **Edge:** both shipped themes; narrow/zoomed viewport; root label; rapid repeated changes.
+
+## F-39 (R-4.2 / AC4 a11y) — Announced to assistive technology on EVERY change
+
+- [ ] F-39: Descend then unwind, reading the shared announcer after each change. **Expected:** each descent and each Escape emits a distinct announcement through the shipped polite live region (`role="status"`, `aria-live="polite"`, `[data-testid="hotkeys-announcer"]`); the visual indicator is `aria-hidden` and does not double-announce; re-firing the SAME context does not re-announce stale text. **Data:** announcer textContent after each change; accessibility snapshot of the region. *(live receipt)*
+  - **Edge:** descend + unwind sequence; same-context re-fire; modal open; accessible region name present.
+
+## F-41 (NFR) — Latency + determinism of enter/leave/unwind
+
+- [ ] F-41: Instrument keydown→effect timestamps for a chord in a deeper context and a bare keystroke in a text field; then run a repeated enter/leave/unwind cycle N times. **Expected:** the deeper-context chord begins ≤100 ms after keydown (no added latency vs top level); a bare keystroke in a text field is never delayed; repeated identical cycles produce an identical context stack + action (no drift); stack depth stays bounded. **Data:** timestamp deltas; context-stack samples per cycle. *(live receipt)*
+  - **Edge:** under a pending sequence; rapid repeated Escape; under heavy streaming; many cycles.
+
+## F-42 (NFR) — Typing safety + shipped Escape precedence preserved
+
+- [ ] F-42: Focus an `input`, a `textarea`, a `contenteditable`, then a live terminal session; type bare keys and press Escape; then open a modal over a descended context and press Escape. **Expected:** bare keys typed in text-entry/terminal pass through VERBATIM (the context model never hijacks them); Escape while a text field is focused does NOT unwind a context; modal-open Escape belongs to the modal (closes it, does not unwind); terminal passthrough unchanged. **Data:** field content; no pop (indicator unchanged, no `context:changed` announcement); modal state. *(live receipt)*
+  - **Edge:** input / textarea / contenteditable; password; terminal session; modal over a descended context.
+
+## F-43 (R-3.3 pending-Esc precedence) — Pending sequence vs context unwind on Escape
+
+- [ ] F-43: Descend to `depth > 0`, arm a multi-key sequence (e.g. `g`), then press Escape once and inspect; press Escape again with no pending. **Expected:** with a sequence pending at ANY depth the shipped pending-sequence Escape cancel wins — the prefix clears (`data-fredo-pending-sequence` clears), the shipped `sequence:reset('escape')` announcement fires, and NO context level is popped (`hotkeys-context-indicator-depth` unchanged); the NEXT clean Escape pops exactly one level. The two behaviours are distinguishable in one drive. **Data:** `data-fredo-pending-sequence` + indicator depth after each Escape; announcer text. *(live receipt)*
+  - **Edge:** pending at the base (same rule, no pop); pending below the base; pending clears then clean Escape; base clean Escape left native (R-12).
+
+---
+
 ## #2946 testing round 1 — result
 
 **Verdict: FAIL (0 of 27 QA rows verifiable).** The served app on `spec/2946` tip
