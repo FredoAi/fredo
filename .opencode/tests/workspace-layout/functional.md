@@ -90,3 +90,32 @@ Scope: the customizable dockable/tileable workspace (issue #2949) — several op
 ## F-row → AC map
 
 F-1/F-2/F-13 → AC1 (simultaneous panes, add/reflow, maximize/float preserved); F-3/F-4/F-5 → AC2 (move to region, divider resize combined-extent, live gesture + no mid-gesture persist); F-6/F-7/F-8/F-14 → AC3 (named save, restore, automatic restart restore, ≤500 ms persist); F-9/F-10 → AC4 (unavailable-app degradation, sibling reflow); F-11 → AC5 (token-first under theme/accent change); F-15 → AC3 complex; F-16/F-17/F-18 → NFRs (no re-render loop, module-scoped persistence, keyboard); F-19 → regression; F-20 → CI parity.
+
+---
+
+## Test run (round 1) — Verdict: **FAIL** (AC1, AC2, AC3, AC5)
+
+> Live-driven via `pnpm dev:tauri` (spec/2949 @ `7bc8373c`; serving checkout confirmed by `dev-env.ps1 -Action Status`). Live `telemetry_spans`: 1365 → 1637 rows (max `ingested_at` 2026-09-26T19:51:09Z → 2026-09-26T20:09:33Z). Each leg DOM-snapshotted + rect-measured + screenshotted; console read after every leg (clean).
+
+- **F-1 (AC1) — FAIL (entry path).** With 3 feature windows open and 0 tiled panes there is NO arrange control: `workspace-toolbar` / `workspace-arrange` / `dock-arrange` / `layout-menu-button` all absent; the dock has no arrange well. `WindowManager.tsx:184` gates the toolbar on an existing pane/slot, so `workspace-arrange` (and the only app-code `addPane` caller) is unreachable at 0 panes. Rendering half PASSES once a pane is bootstrapped (terminal + mission-monitor rendered simultaneously).
+- **F-2 (AC1) — PASS.** `workspace-arrange` added an open app as a pane; existing panes reflowed (no overlap, no full-bleed).
+- **F-3 (AC2) — FAIL.** Move grip → 9-region overlay (single `workspace-announcer`) works, but committing `pane-region-bottom-right` (and `right`) did NOT change the pane's `data-pane-region`/rect — `movePane` falls back to a slot-order `reflowSlots` when the target region overlaps (`workspaceLayoutStore.ts:209`). No move announcement.
+- **F-4 (AC2) — PASS.** Divider keyboard resize: terminal 640→672, sibling 640→608, combined 1280 constant; min clamp 320 held under a −400 px drag.
+- **F-5 (AC2) — PASS.** Pointer drag: 2 sampled frames tracked the pointer (320/960 → 528/752); persisted value unchanged mid-gesture, written within the debounce after release.
+- **F-6 (AC3) — PASS.** Saved `threepane`; `savedLayouts` persisted; `layout-restore-*` entry appeared.
+- **F-7 (AC3) — PASS.** Restored `twopane` replaced the arrangement at the exact saved rects; `activeLayoutId` persisted.
+- **F-8 (AC3/AC5) — FAIL.** Full restart hydrated `activeSlots` as `workspace-pane-degraded-*` placeholders ("App not available"); apps are never reopened, and re-opened apps arrive full-bleed (maximized) requiring a manual Restore.
+- **F-9 (AC4) — PASS.** Closed-app and unknown-id slots degraded with siblings' rects intact, no throw, console clean.
+- **F-10 (AC4) — PASS.** Closing a pane removed its slot; the sibling absorbed the freed band; no orphan divider.
+- **F-11 (AC5) — PASS.** Computed colors trace to `--card-bg`/`--border-color`/`--accent-primary`; live theme switch (light-default → cyberpunk) re-tinted panes + divider; 0 colour literals and 0 `var(--x)NN` in changed files.
+- **F-13 (AC1/regr) — PASS.** Maximize/float left the tiles intact; restore returned the pane to its exact slot.
+- **F-14 (AC3) — PASS.** ≤500 ms debounced persist, one write per gesture end.
+- **F-15 (AC3 complex) — FAIL.** Saved Terminal-left / Mission-Monitor-right did not restore as panes with contents on first paint — two "App not available" placeholders instead.
+- **F-16/F-17/F-18/F-19 — PASS.** Console clean throughout; module-scoped `useSyncExternalStore` store survives restart/remount; divider `role="separator"` + Arrow resize + `:focus-visible` ring + pane arrow focus; window-kernel/full-bleed regression holds.
+- **F-20 — PASS.** `typecheck` 0, `build` 0, `test:run` 171 files / 2432 tests, `cargo check` + `cargo clippy -D warnings` 0 warnings.
+
+### Promoted from exploratory (round 1)
+
+- **F-21 (from E-11) — move-to-region must honour the requested region.** Chrome: `workspace-pane-move-<id>` + `pane-region-<region>`. EXPECTED: committing a region sets `data-pane-region` to it and moves the rendered rect into it (with siblings reflowing). ACTUAL (round 1): the pane keeps its region; panes repartition by slot order. A move must also announce `Moved <title> to <region>`.
+- **F-22 (entry-path reachability, from the AC1 probe) — an arrange entry MUST exist at 0 tiled panes.** Chrome: a reachable control (`dock-arrange` in the dock, or an always-rendered `workspace-arrange`). EXPECTED: with ≥1 open window and no panes, a visible control places the open windows as panes. ACTUAL (round 1): no control exists until a pane already does.
+- **F-23 (restart restores apps, from E-6/F-15) — restart must restore the arrangement WITH the apps' contents.** EXPECTED: after a full restart the saved panes render with content on first paint. ACTUAL (round 1): only the slots hydrate (degraded placeholders); apps are not reopened, and the normal open path opens them full-bleed.
