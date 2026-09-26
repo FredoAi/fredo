@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ENGINE_OWNED_TRAVERSAL,
   MINIMAL_DEFAULT_BINDINGS,
+  REFERENCE_ACTION_ANNOUNCEMENT,
   REFERENCE_CONTEXT_ID,
   REFERENCE_DESCEND_ACTION_ID,
   REFERENCE_ONLY_ACTION_ID,
@@ -180,6 +181,14 @@ describe('MINIMAL_DEFAULT_BINDINGS', () => {
     expect(REFERENCE_CONTEXT_ID).toBe('fredo.root.reference');
     expect(REFERENCE_DESCEND_ACTION_ID).toBe('fredo.context.descendReference');
     expect(REFERENCE_ONLY_ACTION_ID).toBe('fredo.context.referenceAction');
+  });
+
+  it('the reference-only action announces a DISTINCTIVE observable effect (G-257)', () => {
+    expect(REFERENCE_ACTION_ANNOUNCEMENT).toBe('Reference action ran.');
+    // Must not collide with the context-change copy, or the shared channel's
+    // identical-string de-dup would swallow the deeper-only action's effect.
+    expect(REFERENCE_ACTION_ANNOUNCEMENT).not.toBe('Entered Reference. Level 2.');
+    expect(REFERENCE_ACTION_ANNOUNCEMENT).not.toBe('Back to Reference. Level 2.');
   });
 
   it('the reference descend default primary+K matches Ctrl+Shift+K (typed-character model)', () => {

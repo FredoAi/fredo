@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getWindowSnapshot, openWindow, resetWindowStoreForTests } from '@/shared/window-system/windowStore';
-import { resetHotkeyAnnouncer } from '../announcer';
+import { getAnnouncement, resetHotkeyAnnouncer } from '../announcer';
 import {
   getHotkeyContext,
   registerFeatureHotkeyContexts,
@@ -27,6 +27,7 @@ import {
   resetHotkeyContextForTests,
 } from '../contextStack';
 import {
+  REFERENCE_ACTION_ANNOUNCEMENT,
   REFERENCE_CONTEXT_ID,
   REFERENCE_ONLY_ACTION_ID,
 } from '../defaults';
@@ -693,28 +694,29 @@ describe('engine — interaction-context wiring (Spec #2958)', () => {
     expect(getActiveHotkeyContext()).toBe(ROOT_CONTEXT_ID);
   });
 
-  it('ships a reachable LIVE reference host: primary+K descends, y resolves only there', () => {
+  it('ships a reachable LIVE reference host: primary+K descends, y runs an observable effect only there', () => {
     installHotkeyEngine(); // registers the reference context + its two actions
     expect(getHotkeyContext(REFERENCE_CONTEXT_ID)?.title).toBe('Reference');
-
-    const yRun = vi.fn();
-    registerHotkeyHandler(REFERENCE_ONLY_ACTION_ID, yRun);
     const el = mountNeutral();
 
-    // At the base context the deeper-only `y` is NOT in force.
+    // At the base context the deeper-only `y` is NOT in force and has no effect.
     const atBase = dispatch({ key: 'y' });
     expect(atBase.decision.outcome).toBe('passthrough');
-    expect(yRun).not.toHaveBeenCalled();
+    expect(getAnnouncement()).not.toBe(REFERENCE_ACTION_ANNOUNCEMENT);
 
     // Ctrl+Shift+K folds Shift into 'K' → the shipped `primary+K` descend chord.
     const descend = keydown(el, { key: 'K', ctrlKey: true, shiftKey: true });
     expect(descend.prevented).toBe(true);
     expect(getActiveHotkeyContext()).toBe(REFERENCE_CONTEXT_ID);
+    expect(getAnnouncement()).toBe('Entered Reference. Level 2.');
 
+    // Now the deeper-only action resolves AND its shipped handler produces the
+    // OBSERVABLE effect through the ONE shared announcer (the live demonstrating
+    // surface for AC2 — the announcer is the only live region).
     const inReference = dispatch({ key: 'y' });
     expect(inReference.decision.outcome).toBe('match');
     expect(inReference.decision.action?.actionId).toBe(REFERENCE_ONLY_ACTION_ID);
-    expect(yRun).toHaveBeenCalledTimes(1);
+    expect(getAnnouncement()).toBe(REFERENCE_ACTION_ANNOUNCEMENT);
   });
 });
 

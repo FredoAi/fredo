@@ -25,6 +25,15 @@ export const REFERENCE_DESCEND_ACTION_ID = 'fredo.context.descendReference';
 /** Resolves ONLY while `REFERENCE_CONTEXT_ID` is on the active path. */
 export const REFERENCE_ONLY_ACTION_ID = 'fredo.context.referenceAction';
 
+/**
+ * The DISTINCTIVE announcement the reference-only action speaks through the ONE
+ * shared announcer when it runs (G-257 — the live demonstrating surface for the
+ * deeper-only action). Deliberately unlike the context-change copy
+ * (`Entered … / Back to …`), so the shared channel's identical-string de-dup
+ * never swallows it.
+ */
+export const REFERENCE_ACTION_ANNOUNCEMENT = 'Reference action ran.';
+
 /** The minimal shipped bindings (action id → ordered serialized sequences). */
 export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly string[]>> = {
   // Preserves the shipped #2823 Ctrl+Space launcher toggle.

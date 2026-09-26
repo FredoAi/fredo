@@ -60,8 +60,10 @@ import {
   setPendingSequence,
   subscribeHotkeyEvents,
 } from './store';
+import { announce } from './announcer';
 import {
   MINIMAL_DEFAULT_BINDINGS,
+  REFERENCE_ACTION_ANNOUNCEMENT,
   REFERENCE_CONTEXT_ID,
   REFERENCE_DESCEND_ACTION_ID,
   REFERENCE_ONLY_ACTION_ID,
@@ -224,6 +226,14 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly DefaultFredoActionDef[] = [
     title: 'Reference context action',
     description: 'Available only while the reference interaction context is active',
     contextId: REFERENCE_CONTEXT_ID,
+    // The OBSERVABLE effect (G-257): a deeper-only action must be a live
+    // demonstrating surface, so its run speaks a distinctive string through the
+    // ONE shared announcer (`[data-testid="hotkeys-announcer"]`). No new DOM
+    // hook/testid is introduced (G-266 hook ownership stays intact), and the
+    // string differs from the context-change copy so it is never de-duped away.
+    run: () => {
+      announce(REFERENCE_ACTION_ANNOUNCEMENT);
+    },
   },
 ];
 
