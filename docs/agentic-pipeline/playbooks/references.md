@@ -54,6 +54,30 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 ---
 ## Known Failure Modes
 
+### G-260: create_worktree_reuse_hides_a_dirty_stale_worktree
+- **activation_date:** 2026-09-26
+- **observed:** #2947 implementation — a prior orchestrator session was interrupted mid-implementation and left `.worktrees/2947-b` and `.worktrees/2947-c` behind with partial uncommitted edits at the pre-sync base. The `create-worktree` reuse path (the G-201 idempotent-reuse fix) printed `WORKTREE EXISTS (reused)` and reported success, with NO signal that the reused tree was dirty or behind the current `origin/spec/<N>` tip. Two independent developers had to detect the residue, fast-forward to the tip, and review the partial edits before building; one reported the hazard explicitly.
+- **target_failure:** a resumable run reuses an existing worktree that silently carries uncommitted partial edits from an interrupted session at a stale base, so a developer can build against a pre-sync base or commit another capsule's half-written work unreviewed.
+- **guardrail:** On reuse of an existing worktree, the creation action must warn (or refuse) when the worktree is dirty or its HEAD is not the current `origin/spec/<N>` tip, naming what it found. Until it does, a developer resuming after an interruption inspects the reused tree's status and fast-forwards to the origin tip before building, and never commits stale partial work without review.
+- **home:** .opencode/scripts/pipeline-state.rs (create-worktree reuse path) + playbooks/developer.md + playbooks/self-improver.md + references.md (this record)
+- **effectiveness:** Pending
+
+### G-261: role_dispatch_provider_bad_request_on_an_oversized_brief
+- **activation_date:** 2026-09-26
+- **observed:** #2947 testing round 2 — two consecutive full tester dispatches failed at the model provider with a `Bad Request` naming the role's model, while the developer and architect roles on the SAME model succeeded and a trivial `READY` probe to the tester also succeeded. A compact round-2 brief that delegated the detailed strategy to the POSTED issue comments then dispatched cleanly and the round completed.
+- **target_failure:** a role dispatch carrying a very large inline brief is rejected by the model provider while the same role/model answers a trivial probe, so the orchestrator resends the same large brief and burns the round instead of shrinking it.
+- **guardrail:** If a dispatch fails with a provider-level Bad Request for a role that succeeds on a trivial probe (or on a sibling role), do NOT resend the same large brief — re-dispatch with a compact brief and point the agent at the POSTED GitHub comments (plan / fix plan / prior verdict) for detail. Keep orchestrator dispatch briefs lean; let the durable artifacts carry depth.
+- **home:** playbooks/self-improver.md (dispatch briefs) + references.md (this record)
+- **effectiveness:** Pending
+
+### G-262: native_cli_exit_code_unreadable_in_the_deny_chaining_sandbox
+- **activation_date:** 2026-09-26
+- **observed:** #2947 rounds 1-2 — the QA row asserting the `fredo open-terminal` exit-code contract could not be verified live in either round: a native process's exit status is only reachable in a FOLLOW-UP statement, and the tester sandbox forbids command chaining (semicolon, `&&`, pipe, newlines) with no `Start-Process`/`cmd` allowlist. Round 1 spent the row as UNVERIFIED; the round-2 Fix Plan classified it a named tooling blocker and the round PASSed on the statically pinned mapping (the `cargo test` exit-code unit) plus live printed outcomes.
+- **target_failure:** an AC asserting a native CLI's exit code is unreachable from a sandboxed shell, so the row is permanently UNVERIFIED and, without an adjudication, can re-FAIL rounds whose product behaviour is correct.
+- **guardrail:** Provide the sanctioned allowlisted wrapper `.opencode/scripts/run-exitcode.ps1` (runs a command, prints a machine-readable exit-code line) and grant it to the tester via `set-permission`; the granted permission applies on the NEXT opencode restart, so when it is not yet available record the numeric leg as a named tooling blocker and rely on the statically pinned mapping plus live printed outcomes — never re-FAIL a round solely on the unreadable numeric leg.
+- **home:** .opencode/scripts/run-exitcode.ps1 + .opencode/skills/dev-environment/SKILL.md + opencode.json (tester bash allowlist) + playbooks/qa-expert.md + references.md (this record)
+- **effectiveness:** Applied (2026-09-26, #2947) — the wrapper and its tester allowlist entry were added in the same pass; the round-2 PASS rested on the static mapping plus live outcomes exactly as the guardrail prescribes.
+
 ### G-257: plan_omits_the_acs_demonstrating_surface_in_production
 - **activation_date:** 2026-09-25
 - **observed:** #2946 rounds 1-2 — the plan built the declarative hotkey contract, the Settings surface, and eleven capsules of pure/UI plumbing, but NO capsule made a real feature declare hotkeys. AC2 ("a feature's declared hotkeys appear automatically") therefore could not be demonstrated in the shipped app: the listing had only the global tier and the feature tier was empty. A discoverability action (`fredo.help.cheatsheet`) was registered with a no-op run because the SI's ST-6 brief made the cheat-sheet surface optional, and the AC's literal `g g` sequence was never shipped. Round 2 FAILed 6 rows (AC2 H-4/H-5/H-6, AC3 H-8, AC3 F-31), and round 3 had to add ST-14/15/16 to ship the demonstrating surfaces. Root-cause class recorded: `scope`.
@@ -612,6 +636,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** Worktree creation must be idempotent for an already-registered worktree at the requested path when it is clean and at the expected commit (reuse it), or fail with a named, actionable message. An orchestrator resuming after an interruption sweeps registered worktrees before dispatching a wave.
 - **home:** .opencode/scripts/pipeline-state.rs (create-worktree) + .opencode/skills/pipeline-state/SKILL.md + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-19) — source fix applied: `create-worktree` now runs `git worktree prune`, REUSES an existing real worktree (a `.git` marker inside), sweeps an unregistered leftover dir, and retries once with the robust remover on a stubborn leftover. Pinned by two harness tests (`test-scripts.ps1`, 112/112): "sweeps leftover dir then is idempotent" and "reuses an existing worktree (.git marker)".
+- **re-validated:** 2026-09-26, #2947 — the reuse path behaved idempotently (no failure, no re-dispatch cost) but silently reused two DIRTY worktrees left at a stale base by an interrupted session; the complementary gap is recorded as G-260.
 
 ### G-188: ui_state_window_shorter_than_driver_cadence
 - **activation_date:** 2026-09-18

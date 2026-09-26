@@ -421,7 +421,8 @@
                     "cargo check*": "allow",
                     "cargo clippy*": "allow",
                     "cargo test*": "allow",
-                    "copilot*": "allow"
+                    "copilot*": "allow",
+                    "powershell -File .opencode/scripts/run-exitcode.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",

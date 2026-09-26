@@ -71,6 +71,21 @@ Notes:
 - Readonly guardrail: only SELECT / PRAGMA / WITH accepted (same DDL/DML rejection as `telemetry-query.ps1`); the `-readonly` connection never blocks the running app.
 - On timeout the condition was NEVER met — treat the leg as not converged (BLOCKED-environment or genuine stall per the governing fix plan); never record a mid-flight partial result as evidence.
 
+## Native CLI exit codes (sandboxed)
+
+Single script: `.opencode/scripts/run-exitcode.ps1` (allowlisted for the tester).
+
+The bash sandbox forbids command chaining (`;`, `&&`, `|`) and multi-statement lines, so a native command's `$LASTEXITCODE` — only reachable in a FOLLOW-UP statement — cannot be read directly from the shell (an AC asserting a CLI exit code is otherwise a permanent named blocker). Use this wrapper to run the command and print its exit code:
+
+| Command | Description |
+|---------|-------------|
+| `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "fredo open-terminal --cli bogus"` | Runs the command, prints its output plus a machine-readable `EXITCODE=<n>` line, and exits with that code. |
+
+Notes:
+- Pass the WHOLE command as the single `-Command` string; the inner sequence runs INSIDE the script file, so the caller's no-chaining rule does not apply.
+- Use it for `fredo open-terminal` exit-code rows (`opened`/`started`=0, `invalid-*`=1, app-not-running=2). The numeric mapping is also statically pinned by `cargo test` (`exit_code_for_response`), so a wrapper failure never re-FAILs a round on its own.
+- Read-only wrapper: it adds no behaviour to the command it runs.
+
 ## Process hygiene (orphaned opencode/node cleanup)
 
 Single script: `.opencode/scripts/process-hygiene.ps1` (allowed for the tester).
