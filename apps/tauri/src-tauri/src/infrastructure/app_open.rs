@@ -193,17 +193,28 @@ fn next_request_id() -> String {
 
 // ── IPC dispatch ──────────────────────────────────────────────────────────────
 
-/// Handle one `CliCommand::OpenApp` from the IPC server: emit the request to the
-/// main window, wait (bounded) for the frontend confirmation, and translate it
-/// into the CLI response.
-pub async fn dispatch_open_app(identity: String, app: &AppHandle) -> CliResponse {
+/// Register a feature-open request, emit it to the main window, and wait a
+/// BOUNDED [`APP_OPEN_CONFIRM_TIMEOUT`] for the frontend's confirmation.
+///
+/// This is the ONE shared round trip behind [`dispatch_open_app`] and the
+/// Terminal same-window CLI leg (`features/terminal/open_terminal.rs`, Spec
+/// #2947 ST-5), so no second resolver or event vocabulary is introduced: the
+/// Rust side NEVER resolves identities itself — the ONE resolution rule lives in
+/// the webview (R-2.7).
+///
+/// `None` when the request could not be emitted or was not confirmed in time;
+/// the pending registry is cleaned on every exit path.
+pub async fn confirm_feature_open(
+    app: &AppHandle,
+    identity: &str,
+) -> Option<AppOpenConfirmation> {
     let registry = app.state::<AppOpenRegistry>();
     let request_id = next_request_id();
     let rx = registry.register(request_id.clone());
 
     let request = AppOpenRequest {
         request_id: request_id.clone(),
-        identity: identity.clone(),
+        identity: identity.to_string(),
     };
 
     if let Err(error) = app.emit_to("main", APP_OPEN_REQUEST_EVENT, &request) {
@@ -213,18 +224,18 @@ pub async fn dispatch_open_app(identity: String, app: &AppHandle) -> CliResponse
             error = %error,
             "failed to emit app-open-request to the main window"
         );
-        return unavailable_response(&identity, None);
+        return None;
     }
 
     match tokio::time::timeout(APP_OPEN_CONFIRM_TIMEOUT, rx).await {
         Ok(Ok(confirmation)) => {
             registry.remove(&request_id);
-            response_from_confirmation(confirmation)
+            Some(confirmation)
         }
         Ok(Err(_)) => {
             // The sender was dropped (evicted by the registry bound).
             registry.remove(&request_id);
-            unavailable_response(&identity, None)
+            None
         }
         Err(_) => {
             registry.remove(&request_id);
@@ -233,8 +244,17 @@ pub async fn dispatch_open_app(identity: String, app: &AppHandle) -> CliResponse
                 identity = %identity,
                 "app-open request was not confirmed within the bound"
             );
-            unavailable_response(&identity, None)
+            None
         }
+    }
+}
+
+/// Handle one `CliCommand::OpenApp` from the IPC server: run the shared confirm
+/// round trip and translate it into the CLI response.
+pub async fn dispatch_open_app(identity: String, app: &AppHandle) -> CliResponse {
+    match confirm_feature_open(app, &identity).await {
+        Some(confirmation) => response_from_confirmation(confirmation),
+        None => unavailable_response(&identity, None),
     }
 }
 

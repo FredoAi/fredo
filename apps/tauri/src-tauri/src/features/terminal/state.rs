@@ -102,22 +102,6 @@ pub const TERMINAL_PRESENTATION_KEY: &str = "terminal_presentation_mode";
 /// armed an intent and an already-mounted workspace should drain it.
 pub const TERMINAL_INTENT_AVAILABLE_EVENT: &str = "terminal-intent-available";
 
-/// Compile-time witness that the ST-1 producer contract stays compiled and
-/// warning-free while its runtime consumers land in later waves: ST-2's
-/// `terminal_host_label` reads [`TERMINAL_PRESENTATION_KEY`] +
-/// [`TerminalPresentation::parse`], and ST-5 emits
-/// [`TERMINAL_INTENT_AVAILABLE_EVENT`]. This reference has no runtime effect; it
-/// is removed once those consumers exist.
-const _: () = {
-    let _ = TerminalPresentation::SameWindow;
-    let _ = TerminalPresentation::NewWindow;
-    let _ = TerminalPresentation::wire;
-    let _ = TerminalPresentation::parse;
-    let _ = DEFAULT_PRESENTATION;
-    let _ = TERMINAL_PRESENTATION_KEY;
-    let _ = TERMINAL_INTENT_AVAILABLE_EVENT;
-};
-
 /// Lifecycle status of a single session (wire: lowercase).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
