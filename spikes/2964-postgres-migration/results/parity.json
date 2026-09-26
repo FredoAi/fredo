@@ -1,0 +1,212 @@
+{
+  "issue": 2964,
+  "engine": {
+    "source": "sqlite:fredo.db",
+    "target": "postgresql:127.0.0.1:60004",
+    "mode": "one-shot",
+    "acquisition_mode": "runtime-download"
+  },
+  "tables": [
+    {
+      "name": "chat_rows",
+      "sqlite_rows": 17,
+      "pg_rows": 17,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "3508eb93cb6377a9aaac7b88e53a94a04e2f0be1880693fc88c496d88888d6f6",
+        "pg": "3508eb93cb6377a9aaac7b88e53a94a04e2f0be1880693fc88c496d88888d6f6",
+        "match": true
+      },
+      "primary_key": [
+        "session_id",
+        "correlation_id"
+      ],
+      "ordered_by": [
+        "session_id",
+        "correlation_id"
+      ]
+    },
+    {
+      "name": "tool_use_rows",
+      "sqlite_rows": 3,
+      "pg_rows": 3,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "8277be4df1c7dccb370ef203dfb9f2e037a1057505e142a995e037fb2a5edb81",
+        "pg": "8277be4df1c7dccb370ef203dfb9f2e037a1057505e142a995e037fb2a5edb81",
+        "match": true
+      },
+      "primary_key": [
+        "session_id",
+        "correlation_id"
+      ],
+      "ordered_by": [
+        "session_id",
+        "correlation_id"
+      ]
+    },
+    {
+      "name": "agent_session_rows",
+      "sqlite_rows": 2,
+      "pg_rows": 2,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "4d9dec98b93f3a1dc955c4d9e1793260ab814083337811c1083714bfb1e2594b",
+        "pg": "4d9dec98b93f3a1dc955c4d9e1793260ab814083337811c1083714bfb1e2594b",
+        "match": true
+      },
+      "primary_key": [
+        "session_id",
+        "correlation_id"
+      ],
+      "ordered_by": [
+        "session_id",
+        "correlation_id"
+      ]
+    },
+    {
+      "name": "telemetry_spans",
+      "read_only_source": true,
+      "sqlite_rows": 3,
+      "pg_rows": 3,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "d8535cd9edc97315122c3e1766cd2806c764182274ea274b3d8ab2146de485d6",
+        "pg": "d8535cd9edc97315122c3e1766cd2806c764182274ea274b3d8ab2146de485d6",
+        "match": true
+      },
+      "primary_key": [
+        "span_id"
+      ],
+      "ordered_by": [
+        "span_id"
+      ]
+    },
+    {
+      "name": "settings",
+      "sqlite_rows": 4,
+      "pg_rows": 4,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "bb719efde6617eb2115e276a942aca931e1270916468f88f474e6aed654afd83",
+        "pg": "bb719efde6617eb2115e276a942aca931e1270916468f88f474e6aed654afd83",
+        "match": true
+      },
+      "primary_key": [
+        "key"
+      ],
+      "ordered_by": [
+        "key"
+      ]
+    },
+    {
+      "name": "feature_data_tables",
+      "sqlite_rows": 2,
+      "pg_rows": 2,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "e523a13d8304714c77624316d767b5e94c119069cb6a5f17d7ae4c734ba2fd8e",
+        "pg": "e523a13d8304714c77624316d767b5e94c119069cb6a5f17d7ae4c734ba2fd8e",
+        "match": true
+      },
+      "primary_key": [
+        "feature_id",
+        "table_name"
+      ],
+      "ordered_by": [
+        "feature_id",
+        "table_name"
+      ]
+    },
+    {
+      "name": "feature_data_tombstones",
+      "sqlite_rows": 2,
+      "pg_rows": 2,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "02e3c9536d9305455b93d625223771bea766d49595ceab903e9c1e3d70612aa4",
+        "pg": "02e3c9536d9305455b93d625223771bea766d49595ceab903e9c1e3d70612aa4",
+        "match": true
+      },
+      "primary_key": [
+        "feature_id",
+        "table_name",
+        "key_json"
+      ],
+      "ordered_by": [
+        "feature_id",
+        "table_name",
+        "key_json"
+      ]
+    },
+    {
+      "name": "feature_*",
+      "enumerated_from": "feature_data_tables",
+      "sqlite_rows": 5,
+      "pg_rows": 5,
+      "row_count_match": true,
+      "content_checksum": {
+        "sqlite": "41856c79550dd1b3a1a1d574decd3c928263dd7bdc6ac03e79e51dd25d7b4811",
+        "pg": "41856c79550dd1b3a1a1d574decd3c928263dd7bdc6ac03e79e51dd25d7b4811",
+        "match": true
+      },
+      "match": true,
+      "primary_key": [],
+      "ordered_by": [],
+      "per_table": [
+        {
+          "feature_id": "mission-monitor",
+          "table_name": "items",
+          "name": "feature_mission_monitor_items",
+          "sqlite_rows": 2,
+          "pg_rows": 2,
+          "row_count_match": true,
+          "checksum_match": true
+        },
+        {
+          "feature_id": "notes",
+          "table_name": "entries",
+          "name": "feature_notes_entries",
+          "sqlite_rows": 3,
+          "pg_rows": 3,
+          "row_count_match": true,
+          "checksum_match": true
+        }
+      ]
+    }
+  ],
+  "one_shot_markers": {
+    "rtdb.backfill.completed": "2026-09-20T10:00:00+00:00",
+    "rtdb.backfill.provider.completed.v2": "2026-09-21T11:30:00+00:00",
+    "feature_data_tables.backfill_done": {
+      "mission-monitor.items": true,
+      "notes.entries": false
+    },
+    "carried_unchanged": true,
+    "read_only_source": true
+  },
+  "rollback": {
+    "backout": "restore fredo.db from pre-cutover copy",
+    "verified": false,
+    "mechanism": "VACUUM INTO a pre-cutover snapshot, re-open it and re-verify per-table row counts + content checksums against the source",
+    "fixture_demonstration": {
+      "backout_executed": true,
+      "restored_checksums_match": true,
+      "snapshot": "target/spike-tmp/parity/snapshot/fredo.pre-cutover.db"
+    }
+  },
+  "environment": {
+    "os": "windows",
+    "arch": "x86_64",
+    "profile": "release",
+    "crate_version": "0.1.0"
+  },
+  "summary": {
+    "tables_total": 8,
+    "tables_matched": 8,
+    "markers_carried": true,
+    "rollback_demo_ok": true,
+    "all_parity_ok": true
+  },
+  "duration_ms": 508
+}
