@@ -463,3 +463,140 @@ export function applyDividerDelta(
     return slot;
   });
 }
+
+// ── ST-6: degradation + pane-close reflow (R9/R10) ──────────────────────────
+
+/**
+ * The active slots whose `windowId` has no matching open window — the DEGRADED
+ * slots (R9). They keep their rects (siblings must be untouched) but render as
+ * an "App not available" placeholder with a Close-slot affordance. Pure so the
+ * renderer and the tests share one rule.
+ */
+export function findDegradedSlots(
+  slots: PaneSlot[],
+  openWindowIds: ReadonlySet<string>,
+): PaneSlot[] {
+  return slots.filter((slot) => !openWindowIds.has(slot.windowId));
+}
+
+/**
+ * Reflow the remaining panes after `removed` leaves the arrangement (R10).
+ *
+ * The freed space is ABSORBED by the first sibling that shares an edge with the
+ * removed pane (the same coincidence test `computeDividers` uses): a sibling to
+ * the RIGHT slides left and widens, one to the LEFT widens, one BELOW slides up
+ * and heightens, one ABOVE heightens. When no sibling is edge-adjacent the panes
+ * are repartitioned into a clean grid via `reflowSlots`, so the result is always
+ * a valid, non-overlapping arrangement with no orphan divider and no gap.
+ * Returns `[]` when nothing remains (the workspace returns to the plain
+ * desktop).
+ */
+export function absorbRemovedSlot(
+  workspace: WorkspaceSize | null,
+  removed: PaneSlot,
+  remaining: PaneSlot[],
+): PaneSlot[] {
+  if (remaining.length === 0) return [];
+  const ws = measuredWorkspace(workspace);
+  const removedRight = removed.rect.x + removed.rect.width;
+  const removedBottom = removed.rect.y + removed.rect.height;
+
+  for (let index = 0; index < remaining.length; index += 1) {
+    const pane = remaining[index];
+    const paneRight = pane.rect.x + pane.rect.width;
+    const paneBottom = pane.rect.y + pane.rect.height;
+    const yOverlap =
+      Math.min(removedBottom, paneBottom) - Math.max(removed.rect.y, pane.rect.y) >
+      OVERLAP_EPSILON;
+    const xOverlap =
+      Math.min(removedRight, paneRight) - Math.max(removed.rect.x, pane.rect.x) >
+      OVERLAP_EPSILON;
+
+    let rect: Geometry | null = null;
+    if (yOverlap && Math.abs(removedRight - pane.rect.x) <= EDGE_EPSILON) {
+      // The pane sits to the RIGHT of the removed one → slide left + absorb.
+      rect = { ...pane.rect, x: removed.rect.x, width: pane.rect.width + removed.rect.width };
+    } else if (yOverlap && Math.abs(paneRight - removed.rect.x) <= EDGE_EPSILON) {
+      // The pane sits to the LEFT → widen into the freed band.
+      rect = { ...pane.rect, width: pane.rect.width + removed.rect.width };
+    } else if (xOverlap && Math.abs(removedBottom - pane.rect.y) <= EDGE_EPSILON) {
+      // The pane sits BELOW → slide up + absorb.
+      rect = { ...pane.rect, y: removed.rect.y, height: pane.rect.height + removed.rect.height };
+    } else if (xOverlap && Math.abs(paneBottom - removed.rect.y) <= EDGE_EPSILON) {
+      // The pane sits ABOVE → heighten into the freed band.
+      rect = { ...pane.rect, height: pane.rect.height + removed.rect.height };
+    }
+
+    if (rect) {
+      const clamped = clampPaneRect(rect, ws);
+      const absorbed: PaneSlot = {
+        ...pane,
+        region: nearestRegion(clamped.x + clamped.width / 2, clamped.y + clamped.height / 2, ws),
+        rect: clamped,
+      };
+      return remaining.map((slot, i) => (i === index ? absorbed : slot));
+    }
+  }
+
+  // No edge-adjacent sibling → repartition cleanly (a lone pane fills the workspace).
+  return reflowSlots(ws, remaining);
+}
+
+// ── ST-7: keyboard pane-to-pane focus navigation (R12) ──────────────────────
+
+/** A cardinal direction for pane-to-pane keyboard focus movement. */
+export type PaneDirection = 'left' | 'right' | 'up' | 'down';
+
+/**
+ * The pane the next Arrow step from `current` should focus (R12), or `null` at a
+ * boundary. Selection is deterministic: among the panes whose centre lies in
+ * `direction`, the nearest along that axis wins; ties break on the smallest
+ * perpendicular offset, then on input order. Pure and DOM-free.
+ */
+export function findPaneNeighbor(
+  current: PaneSlot,
+  direction: PaneDirection,
+  slots: PaneSlot[],
+): PaneSlot | null {
+  const cx = current.rect.x + current.rect.width / 2;
+  const cy = current.rect.y + current.rect.height / 2;
+  let best: PaneSlot | null = null;
+  let bestPrimary = Number.POSITIVE_INFINITY;
+  let bestSecondary = Number.POSITIVE_INFINITY;
+
+  for (const slot of slots) {
+    if (slot.windowId === current.windowId) continue;
+    const dx = slot.rect.x + slot.rect.width / 2 - cx;
+    const dy = slot.rect.y + slot.rect.height / 2 - cy;
+    let primary: number;
+    let secondary: number;
+    if (direction === 'left') {
+      if (dx >= -EDGE_EPSILON) continue;
+      primary = -dx;
+      secondary = Math.abs(dy);
+    } else if (direction === 'right') {
+      if (dx <= EDGE_EPSILON) continue;
+      primary = dx;
+      secondary = Math.abs(dy);
+    } else if (direction === 'up') {
+      if (dy >= -EDGE_EPSILON) continue;
+      primary = -dy;
+      secondary = Math.abs(dx);
+    } else {
+      if (dy <= EDGE_EPSILON) continue;
+      primary = dy;
+      secondary = Math.abs(dx);
+    }
+
+    const nearer =
+      primary < bestPrimary - EDGE_EPSILON ||
+      (Math.abs(primary - bestPrimary) <= EDGE_EPSILON && secondary < bestSecondary);
+    if (nearer) {
+      bestPrimary = primary;
+      bestSecondary = secondary;
+      best = slot;
+    }
+  }
+
+  return best;
+}

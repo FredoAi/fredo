@@ -38,7 +38,7 @@ import { Box, chakra } from '@chakra-ui/react';
 import { tint } from '../utils/colorTint';
 import { LayoutMenu } from './LayoutMenu';
 import { WindowFrame } from './WindowFrame';
-import { WorkspacePane } from './WorkspacePane';
+import { WorkspaceDegradedSlot, WorkspaceEmptySlot, WorkspacePane } from './WorkspacePane';
 import {
   addPane,
   getLayoutSnapshot,
@@ -47,7 +47,7 @@ import {
   useWorkspaceLayout,
 } from './workspaceLayoutStore';
 import { focusWindow, getWindowSnapshot, subscribeWindows } from './windowStore';
-import type { PaneRegion, PaneSlot } from './paneLayout';
+import { findDegradedSlots, type PaneRegion, type PaneSlot } from './paneLayout';
 import type { WindowEntry } from './windowTypes';
 
 /** Height of the arrangement toolbar strip. */
@@ -162,15 +162,26 @@ export function WindowManager() {
   const slotByWindowId = new Map(layout.activeSlots.map((slot) => [slot.windowId, slot] as const));
   const tiled: WindowEntry[] = [];
   const floating: WindowEntry[] = [];
+  const emptySlots: { win: WindowEntry; slot: PaneSlot }[] = [];
   for (const win of ordered) {
     const slot = slotByWindowId.get(win.id);
     if (slot && !win.isMaximized && !win.isMinimized) tiled.push(win);
-    else floating.push(win);
+    else {
+      // ST-6 (R10): a minimized pane KEEPS its PaneSlot and renders an empty-slot
+      // restore affordance in the tiling layer (the hidden frame stays the
+      // kernel's minimized window).
+      if (slot && win.isMinimized) emptySlots.push({ win, slot });
+      floating.push(win);
+    }
   }
 
-  // ST-5: the toolbar belongs to an ACTIVE tiling — hidden at 0 tiled panes
-  // (the dock / launcher entry is the way in before any pane exists).
-  const showToolbar = tiled.length > 0;
+  // ST-6 (R9): placements whose window is no longer open render a degraded slot.
+  const openIds = new Set(windows.map((win) => win.id));
+  const degradedSlots = findDegradedSlots(layout.activeSlots, openIds);
+
+  // ST-5/ST-6: the toolbar belongs to an ACTIVE workspace — hidden only when it
+  // holds no panes at all (tiled / empty-minimized / degraded all count).
+  const showToolbar = tiled.length > 0 || emptySlots.length > 0 || degradedSlots.length > 0;
 
   /**
    * Enter / extend tiling (R2): place every open non-minimized window as a pane
@@ -354,6 +365,16 @@ export function WindowManager() {
             if (!slot) return null;
             return <WorkspacePane key={win.id} window={win} slot={slot} />;
           })}
+
+          {/* ST-6 (R10): minimized panes keep their slot as an empty restore slot. */}
+          {emptySlots.map(({ win: emptyWin, slot }) => (
+            <WorkspaceEmptySlot key={`empty-${slot.windowId}`} window={emptyWin} slot={slot} />
+          ))}
+
+          {/* ST-6 (R9): placements with no matching open window render degraded. */}
+          {degradedSlots.map((slot) => (
+            <WorkspaceDegradedSlot key={`degraded-${slot.windowId}`} slot={slot} />
+          ))}
         </Box>
       </Box>
 

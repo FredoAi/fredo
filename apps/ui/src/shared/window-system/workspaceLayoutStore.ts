@@ -25,6 +25,7 @@ import { useSyncExternalStore } from 'react';
 import { settingsService, serializeValue } from '../../features/settings';
 
 import {
+  absorbRemovedSlot,
   applyDividerDelta,
   parseDividerId,
   reflowSlots,
@@ -179,11 +180,20 @@ export function addPane(windowId: string, region: PaneRegion = 'center'): void {
   commit({ activeSlots: next, activeLayoutId: null });
 }
 
-/** Drop a window's pane (R10) — the renderer reflows remaining siblings. */
+/**
+ * Drop a window's pane (R10). The freed space REFLOWS into the adjacent sibling
+ * (`absorbRemovedSlot`) so the remaining panes stay a valid tiled arrangement —
+ * no overlap, no orphan divider. Removing the last pane clears the arrangement
+ * (the workspace returns to the plain desktop).
+ */
 export function removePane(windowId: string): void {
-  const next = snapshot.activeSlots.filter((slot) => slot.windowId !== windowId);
-  if (next.length === snapshot.activeSlots.length) return;
-  commit({ activeSlots: next, activeLayoutId: null });
+  const removed = snapshot.activeSlots.find((slot) => slot.windowId === windowId);
+  if (!removed) return;
+  const remaining = snapshot.activeSlots.filter((slot) => slot.windowId !== windowId);
+  commit({
+    activeSlots: absorbRemovedSlot(workspace, removed, remaining),
+    activeLayoutId: null,
+  });
 }
 
 /** Re-place a pane in `region` (R3). Overlap is resolved by a clean reflow. */

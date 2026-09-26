@@ -29,11 +29,12 @@
 
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Box, IconButton, Text } from '@chakra-ui/react';
+import { Box, IconButton, Text, chakra, type SystemStyleObject } from '@chakra-ui/react';
 
 import { tint } from '../utils/colorTint';
 import { closeWindow, focusWindow } from './windowStore';
 import { useWindowTraversal } from './useWindowActions';
+import { useWindows } from './useWindows';
 import type { WindowEntry } from './windowTypes';
 import {
   beginLayoutGesture,
@@ -47,7 +48,9 @@ import {
 import {
   computeDividers,
   FALLBACK_WORKSPACE,
+  findPaneNeighbor,
   PANE_REGIONS,
+  type PaneDirection,
   type PaneDividerSpec,
   type PaneRegion,
   type PaneSlot,
@@ -146,6 +149,28 @@ function dividerStrip(
   return { x: left, y: edge - DIVIDER_HIT_WIDTH, width, height: DIVIDER_HIT_WIDTH };
 }
 
+/** Focus the rendered pane for `windowId` (Arrow-key navigation — R12). */
+function focusPaneElement(windowId: string): void {
+  if (typeof document === 'undefined') return;
+  const el = document.querySelector<HTMLElement>(`[data-pane-window-id="${windowId}"]`);
+  el?.focus();
+}
+
+/** Token-first button chrome shared by the empty/degraded slot placeholders. */
+const PLACEHOLDER_BUTTON_CSS: SystemStyleObject = {
+  padding: '4px 10px',
+  borderRadius: '4px',
+  border: '1px solid',
+  borderColor: 'var(--border-color)',
+  background: 'transparent',
+  color: 'var(--text-primary)',
+  fontFamily: 'var(--font-primary)',
+  fontSize: '11px',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+  '&:hover': { background: 'var(--card-hover-bg)' },
+};
+
 /** Brand-logotype mono-weight glyphs (minimal, geometric, currentColor only). */
 function MoveGripIcon() {
   return (
@@ -235,6 +260,11 @@ export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePanePr
   useWindowTraversal();
 
   const layout = useWorkspaceLayout();
+  // The open-window list joins slots to rendered panes. Tiled-only slots gate
+  // both the divider set (no divider into a degraded/empty slot — R9) and the
+  // Arrow-key focus graph (R12). `useWindows` returns the stable store snapshot,
+  // so this adds no effect/memo dep and cannot loop.
+  const windows = useWindows();
   const [moving, setMoving] = useState(false);
   const [hoveredRegion, setHoveredRegion] = useState<PaneRegion>(slot.region);
   const [overlayRect, setOverlayRect] = useState<OverlayRect | null>(null);
@@ -338,12 +368,45 @@ export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePanePr
     removePane(win.id);
   }
 
+  /**
+   * R12 — Arrow keys move focus to the neighbouring pane. Only the pane ROOT is
+   * handled (`event.target === event.currentTarget`), so the divider (which
+   * resizes on Arrow keys) and feature content keep their own key handling. At a
+   * boundary there is no neighbour → no-op (never a focus trap).
+   */
+  function handlePaneKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+    if (event.target !== event.currentTarget) return;
+    const direction: PaneDirection | null =
+      event.key === 'ArrowLeft'
+        ? 'left'
+        : event.key === 'ArrowRight'
+          ? 'right'
+          : event.key === 'ArrowUp'
+            ? 'up'
+            : event.key === 'ArrowDown'
+              ? 'down'
+              : null;
+    if (!direction) return;
+    const neighbor = findPaneNeighbor(slot, direction, tiledSlots);
+    if (!neighbor) return; // boundary — leave native behaviour untouched
+    event.preventDefault();
+    focusWindow(neighbor.windowId);
+    focusPaneElement(neighbor.windowId);
+  }
+
   const boxShadow = focused
     ? `0 0 0 1px ${tint('var(--accent-primary)', 40)}, 0 8px 24px ${tint('var(--accent-primary)', 12)}`
     : `0 2px 10px ${tint('var(--accent-primary)', 10)}`;
 
-  const slotById = new Map(layout.activeSlots.map((entry) => [entry.windowId, entry] as const));
-  const ownDividers = computeDividers(layout.activeSlots).filter(
+  // Dividers and the Arrow-key focus graph span only panes that are actually
+  // rendered (open, neither maximized nor minimized) — a degraded or empty slot
+  // therefore produces NO divider (R9) and is not a focus target.
+  const tiledIds = new Set(
+    windows.filter((entry) => !entry.isMaximized && !entry.isMinimized).map((entry) => entry.id),
+  );
+  const tiledSlots = layout.activeSlots.filter((entry) => tiledIds.has(entry.windowId));
+  const slotById = new Map(tiledSlots.map((entry) => [entry.windowId, entry] as const));
+  const ownDividers = computeDividers(tiledSlots).filter(
     (divider) => divider.aWindowId === win.id,
   );
 
@@ -363,7 +426,6 @@ export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePanePr
           width: overlayRect.width,
           height: overlayRect.height,
         }}
-        outline="none"
         onKeyDown={handleOverlayKeyDown}
       >
         <Box
@@ -442,6 +504,7 @@ export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePanePr
         height: slot.rect.height,
       }}
       onPointerDown={focusIfNeeded}
+      onKeyDown={handlePaneKeyDown}
     >
       {/* Pane header — the `WindowChrome` pattern with pane controls. Double
           click floats the pane (the tile-mode maximize affordance). */}
@@ -569,6 +632,108 @@ export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePanePr
       {overlay && typeof document !== 'undefined'
         ? createPortal(overlay, document.body)
         : overlay}
+    </Box>
+  );
+}
+
+/**
+ * R10 — the empty slot left behind by a MINIMIZED pane (ST-6). The `PaneSlot`
+ * is KEPT (never removed) and this affordance restores the pane by un-minimizing
+ * the window through `focusWindow`. `WindowManager` renders it at the slot's
+ * rect so the arrangement's geometry is preserved.
+ */
+export function WorkspaceEmptySlot({ window: win, slot }: { window: WindowEntry; slot: PaneSlot }) {
+  return (
+    <Box
+      data-testid={`workspace-empty-slot-${slot.windowId}`}
+      data-pane-window-id={slot.windowId}
+      data-pane-region={slot.region}
+      data-empty-slot="true"
+      position="absolute"
+      display="flex"
+      flexDirection="column"
+      alignItems="center"
+      justifyContent="center"
+      gap="2"
+      bg="bg.surface"
+      border="1px dashed"
+      borderColor="border.default"
+      borderRadius="6px"
+      color="fg.muted"
+      fontFamily="var(--font-primary)"
+      fontSize="12px"
+      pointerEvents="auto"
+      style={{
+        top: slot.rect.y,
+        left: slot.rect.x,
+        width: slot.rect.width,
+        height: slot.rect.height,
+      }}
+    >
+      <Text color="fg.muted" fontWeight="500">
+        {`${win.title} minimized`}
+      </Text>
+      <chakra.button
+        type="button"
+        data-testid={`workspace-slot-restore-${slot.windowId}`}
+        aria-label={`Restore ${win.title}`}
+        onClick={() => focusWindow(slot.windowId)}
+        css={PLACEHOLDER_BUTTON_CSS}
+      >
+        Restore
+      </chakra.button>
+    </Box>
+  );
+}
+
+/**
+ * R9 — the DEGRADED slot: an `activeSlots` placement whose `windowId` no longer
+ * matches an open window (removed/closed/unregistered). It renders a
+ * `role="status"` placeholder with a visible "App not available" message and a
+ * Close-slot control that drops the placement (`removePane`). Sibling panes keep
+ * their exact rects; no divider is produced for it; it never throws.
+ */
+export function WorkspaceDegradedSlot({ slot }: { slot: PaneSlot }) {
+  return (
+    <Box
+      data-testid={`workspace-pane-degraded-${slot.windowId}`}
+      data-pane-window-id={slot.windowId}
+      data-pane-region={slot.region}
+      data-degraded="true"
+      role="status"
+      position="absolute"
+      display="flex"
+      flexDirection="column"
+      alignItems="center"
+      justifyContent="center"
+      gap="2"
+      bg="bg.surface"
+      border="1px dashed"
+      borderColor="border.default"
+      borderRadius="6px"
+      color="fg.muted"
+      fontFamily="var(--font-primary)"
+      fontSize="12px"
+      pointerEvents="auto"
+      style={{
+        top: slot.rect.y,
+        left: slot.rect.x,
+        width: slot.rect.width,
+        height: slot.rect.height,
+      }}
+    >
+      <Text color="fg.muted" fontWeight="500">
+        App not available
+      </Text>
+      <chakra.button
+        type="button"
+        data-testid={`workspace-degraded-close-${slot.windowId}`}
+        aria-label={`Close slot ${slot.windowId}`}
+        onClick={() => removePane(slot.windowId)}
+        css={PLACEHOLDER_BUTTON_CSS}
+      >
+        Close slot
+      </chakra.button>
     </Box>
   );
 }
