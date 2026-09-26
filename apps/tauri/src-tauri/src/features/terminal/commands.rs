@@ -14,13 +14,50 @@ use crate::features::terminal::resume::{
 };
 use crate::features::terminal::state::{
     append_capped, finalize_exited, finalize_resume_failed, mark_resumed, now_ms, SessionKind,
-    TerminalErrorKind, TerminalSession, TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
+    TerminalErrorKind, TerminalPresentation, TerminalSession, TerminalSessionStatus, TerminalState,
+    DEFAULT_PRESENTATION, OUTPUT_BUFFER_CAP, TERMINAL_PRESENTATION_KEY,
 };
 use crate::infrastructure::storage::feature_store::FeatureStore;
 use crate::infrastructure::storage::AppStore;
 
-/// The ONE terminal window label (window-targeted events + lifecycle).
-const WINDOW_LABEL: &str = "terminal";
+/// The native terminal window label (window-targeted events + lifecycle).
+pub const WINDOW_LABEL: &str = "terminal";
+
+/// The main Fredo window label — the Terminal host when the persisted
+/// presentation mode is `same-window` (Spec #2947 ST-2).
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
+// ── Terminal host resolution (Spec #2947 ST-2) ────────────────────────────────
+
+/// Map a resolved presentation mode onto the label every terminal event is
+/// emitted to. Pure — the unit-tested half of [`terminal_host_label`].
+fn host_label_for(presentation: TerminalPresentation) -> &'static str {
+    match presentation {
+        TerminalPresentation::SameWindow => MAIN_WINDOW_LABEL,
+        TerminalPresentation::NewWindow => WINDOW_LABEL,
+    }
+}
+
+/// Map a persisted raw value onto the host label, applying the
+/// absent/unrecognized → [`DEFAULT_PRESENTATION`] fallback (R-4.1). Pure — the
+/// exact parse+fallback chain [`terminal_host_label`] delegates to.
+fn host_label_for_stored(raw: Option<&str>) -> &'static str {
+    host_label_for(
+        raw.and_then(TerminalPresentation::parse).unwrap_or(DEFAULT_PRESENTATION),
+    )
+}
+
+/// The ONE label every terminal event is emitted to. Resolved from AppStore PER
+/// EMIT (never cached at spawn), so a mode change reroutes live output on the
+/// next chunk: `same-window` → [`MAIN_WINDOW_LABEL`], otherwise the native
+/// [`WINDOW_LABEL`]. An absent/unrecognized stored value falls back to
+/// [`DEFAULT_PRESENTATION`] (`new-window`).
+pub fn terminal_host_label(app: &AppHandle) -> &'static str {
+    let stored = app
+        .try_state::<Arc<AppStore>>()
+        .and_then(|store| store.get(TERMINAL_PRESENTATION_KEY).ok().flatten());
+    host_label_for_stored(stored.as_deref())
+}
 
 /// Unrendered diagnostic override: a Copilot binary used BEFORE the PATH search.
 const COPILOT_PATH_KEY: &str = "terminal_copilot_path";
@@ -550,7 +587,7 @@ fn snapshot(state: &TerminalState) -> Vec<TerminalSessionInfo> {
 /// Broadcast the current session list to the terminal window.
 fn emit_sessions_changed(app: &AppHandle, sessions: Vec<TerminalSessionInfo>) {
     if let Err(e) = app.emit_to(
-        WINDOW_LABEL,
+        terminal_host_label(app),
         "terminal-sessions-changed",
         SessionsChangedPayload { sessions },
     ) {
@@ -565,7 +602,7 @@ fn emit_sessions_changed(app: &AppHandle, sessions: Vec<TerminalSessionInfo>) {
 /// session (AC2/R-5.3).
 fn emit_session_exited(app: &AppHandle, id: &str) {
     if let Err(e) = app.emit_to(
-        WINDOW_LABEL,
+        terminal_host_label(app),
         "terminal-exited",
         TerminalExitedPayload { session_id: id.to_string() },
     ) {
@@ -612,7 +649,7 @@ fn fail_session(
 /// Broadcast the persisted-record list to the terminal window (additive).
 fn emit_persisted_sessions_changed(app: &AppHandle, sessions: Vec<PersistedSession>) {
     if let Err(e) = app.emit_to(
-        WINDOW_LABEL,
+        terminal_host_label(app),
         "terminal-persisted-sessions-changed",
         PersistedSessionsChangedPayload { sessions },
     ) {
@@ -622,7 +659,7 @@ fn emit_persisted_sessions_changed(app: &AppHandle, sessions: Vec<PersistedSessi
 
 /// Window-targeted delivery of a `fredo open-terminal` launch intent.
 fn emit_terminal_open_request(app: &AppHandle, payload: TerminalOpenRequestPayload) {
-    if let Err(e) = app.emit_to(WINDOW_LABEL, TERMINAL_OPEN_REQUEST_EVENT, payload) {
+    if let Err(e) = app.emit_to(terminal_host_label(app), TERMINAL_OPEN_REQUEST_EVENT, payload) {
         tracing::error!(target: "fredo::terminal", error = %e, "emit terminal-open-request failed");
     }
 }
@@ -970,7 +1007,7 @@ fn spawn_and_wire(
             }
 
             if let Err(e) = app_task.emit_to(
-                WINDOW_LABEL,
+                terminal_host_label(&app_task),
                 "terminal-output",
                 TerminalOutputPayload { session_id: task_id.clone(), data: chunk.to_vec() },
             ) {
@@ -2155,5 +2192,41 @@ mod tests {
         pending.arm(intent("copilot", "~"));
         pending.clear();
         assert!(pending.take().is_none(), "clear must drop the intent");
+    }
+
+    // ── Terminal host resolution (Spec #2947 ST-2) ─────────────────────────
+
+    // `AppHandle` is not constructible under `cfg(test)` (the `tauri` `test`
+    // feature is off, and enabling it would edit Cargo.toml outside this
+    // sub-task's scope), so the store-read wrapper `terminal_host_label` is
+    // pinned through its pure core `host_label_for_stored` — the exact
+    // parse+fallback chain it delegates to. R-2.2 / R-3.2.
+
+    #[test]
+    fn stored_same_window_routes_to_main() {
+        assert_eq!(host_label_for_stored(Some("same-window")), MAIN_WINDOW_LABEL);
+        assert_eq!(host_label_for_stored(Some("same-window")), "main");
+    }
+
+    #[test]
+    fn stored_new_window_routes_to_terminal() {
+        assert_eq!(host_label_for_stored(Some("new-window")), WINDOW_LABEL);
+        assert_eq!(host_label_for_stored(Some("new-window")), "terminal");
+    }
+
+    #[test]
+    fn absent_or_unrecognized_value_defaults_to_the_native_host() {
+        for raw in [None, Some(""), Some("  "), Some("garbage"), Some("Same-Window")] {
+            assert_eq!(
+                host_label_for_stored(raw),
+                WINDOW_LABEL,
+                "raw {raw:?} must fall back to DEFAULT_PRESENTATION's native host"
+            );
+        }
+    }
+
+    #[test]
+    fn default_presentation_targets_the_native_host() {
+        assert_eq!(host_label_for(DEFAULT_PRESENTATION), WINDOW_LABEL);
     }
 }
