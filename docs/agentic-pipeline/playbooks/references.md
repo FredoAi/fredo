@@ -53,6 +53,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-270: on_the_go_improvement (consolidated into G-269)
+- **activation_date:** 2026-09-26
+- **observed:** #2949 round 2 — the auto-recorded on-the-go entry for the tester compound-command ordering fix; consolidated into G-269, which carries the full record and the correct homes.
+- **target_failure:** (see G-269)
+- **guardrail:** (see G-269)
+- **home:** references.md (pointer to G-269)
+- **effectiveness:** Applied (2026-09-26, #2949) — see G-269.
+
 
 ### G-265: pre_feature_entry_trigger_unreachable
 - **activation_date:** 2026-09-26
