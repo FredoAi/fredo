@@ -1,0 +1,42 @@
+[package]
+name = "embedded-postgres-spike"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+publish = false
+description = "Spike #2948: standalone PoC + measurement harness comparing embedded PostgreSQL (theseus-rs/postgresql-embedded) with embedded SQLite on Windows. NOT a member of any workspace; never wired into production."
+
+# Deliberately a STANDALONE package. The Fredo repo has no root Cargo workspace and
+# production CI builds by explicit `--manifest-path`, so nothing here is built by CI.
+# See README.md for reproduction steps.
+
+[lib]
+name = "spike"
+path = "src/lib.rs"
+
+[[bin]]
+name = "poc"
+path = "src/main.rs"
+
+[[bin]]
+name = "bench-sqlite"
+path = "src/bin/bench-sqlite.rs"
+
+[[bin]]
+name = "bench-pg"
+path = "src/bin/bench-pg.rs"
+
+[[bin]]
+name = "measure"
+path = "src/bin/measure.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+postgres = "0.19"
+postgresql_embedded = { version = "0.21", features = ["tokio"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.33"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

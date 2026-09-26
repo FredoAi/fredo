@@ -1,0 +1,2 @@
+# Build output + throwaway data dirs for the spike package (never committed).
+/target/
