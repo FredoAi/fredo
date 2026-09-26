@@ -13,9 +13,11 @@
 
 - [ ] **E-2 — mode flip while a native `terminal` window is still open.**
   new-window with the window open → select same-window → open Terminal.
-  Expected: per UI/UX §2 the already-open window is LEFT ALONE (not re-parented,
-  closed, or duplicated); the NEXT open honours the new mode; no extra window and
-  no orphan.
+  Expected: per SI adjudication #1 the superseded host IS torn down behind the
+  confirmation (the already-open window is ended via the shipped
+  `close_terminal_window` path — tree-kill + records retained → resumable; not
+  re-parented, not duplicated); the NEXT open honours the new mode; no stale/extra
+  window and no orphan.
 
 - [ ] **E-3 — `fredo open-terminal` race with a manual mode change.**
   Fire the CLI at the same moment the mode is saved.
@@ -24,7 +26,11 @@
 - [ ] **E-4 — corrupt storage shapes.**
   Store `null`, `"Same-Window"`, `" same-window "`, and a JSON array under
   `terminal_presentation_mode`; restart each time.
-  Expected: default `new-window`, no crash, no console error.
+  Expected: `null`, `"Same-Window"`, and a JSON array fall back to the default
+  `new-window`, no crash, no console error. `" same-window "` is **recognized
+  after trim** (FS-2 corrected expectation: both the Rust `TerminalPresentation::parse`
+  and the frontend `normalizePresentationMode` trim, so the padded value resolves
+  to `same-window` on BOTH sides).
 
 - [ ] **E-5 — rapid repeated entry-point clicks.**
   Click the toolbar entry point several times quickly in each mode.
