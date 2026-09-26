@@ -533,6 +533,12 @@ Shipped defaults: `Ctrl+Space` (launcher), `Ctrl+Shift+P` (action palette in the
 | theming | ✗ | — | Theme customization (hidden from grid) |
 | model-storage | ✓ | — | Model file management |
 
+### Workspace Layout (`shared/window-system/`, Spec #2949)
+
+The main window is a customizable **dockable/tileable workspace** layered on the own window kernel. The arrangement lives in a **module-scoped store** (`apps/ui/src/shared/window-system/workspaceLayoutStore.ts`, mirroring the dock's `dockPositionStore`), exposed through `useWorkspaceLayout()` (`useSyncExternalStore`, stable snapshot ref until a real mutation); the pure region/divider math sits in `paneLayout.ts`.
+
+A **pane is a `WindowEntry` that has a `PaneSlot`** (`{ windowId, region, rect }`, workspace-local px) joined on `entry.id` — `windowStore`/`windowTypes` are unchanged, so a window without a slot keeps today's freeform float / full-bleed (#2924) behaviour. The whole arrangement (active slots plus named saved layouts) persists under ONE key (`Fredo_workspace_layout`) via `settingsService`, debounced and suppressed during a gesture; on boot the store hydrates and reopens the referenced windows un-maximized so a restored arrangement paints on the first paint. Rendering lives in `WindowManager` (`WorkspacePane` / `PaneDivider` / `LayoutMenu`), and the tiling entry is reachable from the dock's **Arrange** well. Panes are token-first (no hardcoded colours) and keyboard-reachable (`role="separator"` dividers with arrow navigation).
+
 ### FredoFeatureClass
 
 Every UI feature extends `FredoFeatureClass`:

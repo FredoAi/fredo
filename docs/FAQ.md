@@ -27,6 +27,10 @@ Raw telemetry is persisted on receipt and then classified by the **RTDB ingest c
 
 Yes — Fredo ships a keyboard-first hotkey system (Spec #2946). Press `?` anywhere outside a text field for a searchable cheat sheet. `Ctrl+Space` opens the launcher, `Ctrl+Shift+P` opens its action list (type `>` for the same list), `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+1..9`) move focus between windows, and `g g` jumps to the first window. Both app-global and feature-local shortcuts appear in one listing under **Settings → Hotkeys**, where you can search, rebind (conflicts are surfaced before they take effect), reset, and opt into a Vim preset (leader = Space, `hjkl`). Multi-key sequences and named or recorded macros are supported; typed text is never captured by a recording. Your changes persist across restarts. While a terminal session has focus every key goes to the shell except `Ctrl+Shift+F10`, which releases the keyboard back to Fredo.
 
+### Can I see several apps at once instead of one full-bleed window at a time?
+
+Yes — Fredo's main window is a customizable dockable/tileable workspace (Spec #2949). Reveal the app dock (or use the workspace toolbar once a pane exists) and choose **Arrange** to place your open apps side by side as panes instead of one full-bleed window at a time. Drag a pane's move grip to another region (edge, corner, or centre) and drag the shared divider between two adjacent panes to resize them. Save the current arrangement as a named layout and restore it later; the last arrangement is restored automatically when you restart Fredo, reopening the apps it references in their saved slots. Closing or minimizing one pane leaves the others usable, and a saved layout that references an app you no longer have shows an empty slot rather than failing. Panes follow your theme and accent (nothing is hardcoded), and today's single-window / full-bleed behaviour still works exactly as before — maximizing a pane covers the arrangement, and restoring brings it back.
+
 ---
 
 ## Development
