@@ -21,6 +21,12 @@
 - [ ] S-8: **A text field suppresses bare shortcuts.** Focus a text-entry field (e.g. `[data-testid="launcher-command-input"]`) and type a bare key bound to a feature shortcut. **Expected:** the character lands verbatim in the field and NO action fires; screenshot succeeds; console clean.
 - [ ] S-9: **CI-parity gate.** Run `pnpm --filter @fredo/ui build` (expect exit 0, zero TypeScript errors), `pnpm --filter @fredo/ui test:run` (expect green), and the repo lint/typecheck leg. **Expected:** all pass with no weakened/disabled assertion.
 
+## Spec #2958 quick paths (named interaction contexts)
+
+- [ ] S-10: **A root context exists at boot.** On the resting desktop read the active context via `getHotkeyContextSnapshot()` (or the `hotkeys-context-indicator` testid after a change). **Expected:** the platform root context is the default (`contextId 'fredo.root'`, label `'Fredo'`, `depth 1` — path length, base only); a context change renders the indicator text label (`hotkeys-context-indicator-label`, not colour-only); console clean. *(live receipt)*
+- [ ] S-11: **Descend + Escape quick path.** Focus a feature with a deeper context, descend (keyboard only), observe the context change, then press Escape once. **Expected:** `hotkeys-context-indicator-label`/`-depth` change on descent and return to the previous value on one Escape; the indicator + announcer both update; console clean. *(live receipt)*
+- [ ] S-12: **Context change is announced.** Sample `[data-testid="hotkeys-announcer"]` before and after a descent. **Expected:** the announcement text changes on the context change (polite live region, non-empty); screenshot succeeds. *(live receipt)*
+
 ## Hotkeys smoke round 1 — result (FAIL — served app does not boot)
 
 **Blocking finding (round 1):** the SERVED app (`apps/tauri` dev entry, port 5174)
