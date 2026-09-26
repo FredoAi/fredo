@@ -22,3 +22,7 @@ Unscripted edge/failure probes for the customizable workspace (issue #2949). A C
 ## Promoted findings
 
 > Record promotions here as `- E-n → F-m (reason)`.
+
+- E-11 → F-21 (round 1: committing a move to `pane-region-bottom-right`/`right` did not change `data-pane-region` — `movePane` reflows by slot order when the target region overlaps; no move announcement).
+- AC1 entry-path probe → F-22 (round 1: no arrange control exists at 0 tiled panes; `workspace-arrange` is gated on an existing slot and `dock-arrange` is absent).
+- E-6/F-15 → F-23 (round 1: full restart hydrates only the slots — apps are not reopened and render as `App not available`; re-opened apps arrive full-bleed/maximized).
