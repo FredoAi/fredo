@@ -48,6 +48,15 @@ vi.mock('@/shared/window-system/useWindowActions', () => ({
   useWindowActions: () => actionsState,
 }));
 
+// Spec #2949 AC1 — the dock's tiling entry dispatches the ONE shared layout
+// action. Mocking it here keeps this component test free of the layout store's
+// persistence seam while pinning that the well calls the shared action.
+const arrangeState = vi.hoisted(() => ({ arrangeOpenWindows: vi.fn(() => 2) }));
+
+vi.mock('@/shared/window-system/workspaceLayoutStore', () => ({
+  arrangeOpenWindows: arrangeState.arrangeOpenWindows,
+}));
+
 // The dock's position store persists through settingsService. Mock it so the
 // bottom-orientation tests can drive `setDockPosition('bottom')` without a
 // Tauri host (same seam as dockPositionStore.test.ts) — the store move + notify
@@ -495,5 +504,54 @@ describe('AppDock active-bar axis (Spec #2848 round-2 FD-2 — E-9 regression)',
     const activeBtn = buttons[0];
     expect(activeBtn.getAttribute('aria-current')).toBe('step');
     expect(getComputedStyle(activeBtn).boxShadow).toBe('inset 0 -3px 0 0 var(--accent-primary)');
+  });
+});
+
+// Spec #2949 AC1 — the tiling entry at 0 panes. The workspace toolbar only
+// appears once a pane exists, so the ALWAYS-rendered dock well is the reachable
+// entry. It must be in the DOM the whole time ≥1 window is open (the dock may
+// edge-peek visually), in BOTH orientations, and must call the shared
+// `arrangeOpenWindows` action.
+describe('AppDock — dock-arrange tiling entry (Spec #2949 AC1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDockPositionStoreForTests();
+    dockState.entries = buildEntries(2);
+  });
+
+  afterEach(() => {
+    resetDockPositionStoreForTests();
+  });
+
+  it('renders the well as the FIRST list child, present while windows are open, and calls the shared action', () => {
+    const { container } = renderWithChakra(<AppDock />);
+
+    const well = screen.getByTestId('dock-arrange');
+    expect(well.getAttribute('aria-label')).toBe('Arrange windows');
+
+    // First child of the list track (flows with the rail/pill).
+    const list = container.querySelector<HTMLElement>('[role="list"]');
+    expect(list).not.toBeNull();
+    expect(list!.firstElementChild!.contains(well)).toBe(true);
+
+    // It is NOT a roving-model dock entry (the model keeps targeting real rows).
+    expect(well.hasAttribute('data-dock-entry')).toBe(false);
+
+    fireEvent.click(well);
+    expect(arrangeState.arrangeOpenWindows).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the well in the BOTTOM orientation too', async () => {
+    await act(async () => {
+      await setDockPosition('bottom');
+    });
+    renderWithChakra(<AppDock />);
+    expect(screen.getByTestId('dock-arrange')).toBeTruthy();
+  });
+
+  it('renders no well when no window is open', () => {
+    dockState.entries = [];
+    renderWithChakra(<AppDock />);
+    expect(screen.queryByTestId('dock-arrange')).toBeNull();
   });
 });

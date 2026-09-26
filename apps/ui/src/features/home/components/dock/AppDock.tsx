@@ -41,10 +41,11 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Box } from '@chakra-ui/react';
+import { Box, chakra } from '@chakra-ui/react';
 import { useReducedMotion } from 'framer-motion';
 import { useWindows } from '../../../../shared/window-system/useWindows';
 import { useWindowActions } from '../../../../shared/window-system/useWindowActions';
+import { arrangeOpenWindows } from '../../../../shared/window-system/workspaceLayoutStore';
 import { tint } from '../../../../shared/utils/colorTint';
 import { DockEntry } from './DockEntry';
 import { useDockPosition, hydrateDockPosition, type DockPosition } from './dockPositionStore';
@@ -116,6 +117,11 @@ export const DOCK_BOTTOM_KEEP_ZONE_PX = DOCK_BOTTOM_HEIGHT_PX + DOCK_KEEP_MARGIN
  *  the 36px wells never clip when the pill scrolls (≥~9 apps). */
 export const DOCK_BOTTOM_LIST_PADDING = '2px 6px 6px 6px';
 
+/** Arrange-well footprint (px) — mirrors the `DockEntry` icon well (Spec #2949
+ *  AC1: the `dock-arrange` tiling entry lives in BOTH orientations). */
+export const DOCK_ARRANGE_WELL_WIDTH_PX = 40;
+export const DOCK_ARRANGE_WELL_HEIGHT_PX = 40;
+
 /** Pill max-width CSS (`min(560px, calc(100vw - 176px))`). The 176px
  *  horizontal reserve (88px each side) clears the bottom-right settings button
  *  and the engaged keyboard-hints row when the pill rests centered. */
@@ -153,6 +159,18 @@ const DOCK_SCROLLBAR_CSS = {
 /** Is a DOM element focusable (a11y focus-restore guard)? */
 function isFocusableElement(el: HTMLElement | null): boolean {
   return !!el && el.isConnected && el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled;
+}
+
+/** The `dock-arrange` well glyph — a minimal 2×2 grid (currentColor only). */
+function ArrangeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <rect x="2" y="2" width="4" height="4" rx="0.8" fill="currentColor" />
+      <rect x="8" y="2" width="4" height="4" rx="0.8" fill="currentColor" />
+      <rect x="2" y="8" width="4" height="4" rx="0.8" fill="currentColor" />
+      <rect x="8" y="8" width="4" height="4" rx="0.8" fill="currentColor" />
+    </svg>
+  );
 }
 
 export const AppDock: React.FC = () => {
@@ -543,6 +561,64 @@ export const AppDock: React.FC = () => {
               })}
           css={DOCK_SCROLLBAR_CSS}
         >
+          {/*
+            Spec #2949 AC1 — the ALWAYS-discoverable tiling entry. Rendered as
+            the FIRST child of the list track whenever ≥1 window is open, in
+            BOTH orientations, so the arrangement is reachable at 0 tiled panes
+            (the workspace toolbar only appears once ≥1 pane exists). It is NOT
+            `data-dock-entry` — the roving model keeps targeting real entries;
+            the well stays Tab-reachable. The dock may edge-peek visually, but
+            this element is present in the DOM at all times while hasWindows.
+          */}
+          <Box
+            role="listitem"
+            width={isBottom ? 'auto' : '100%'}
+            height={`${DOCK_ARRANGE_WELL_HEIGHT_PX}px`}
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            flexShrink={0}
+          >
+            <chakra.button
+              type="button"
+              data-testid="dock-arrange"
+              aria-label="Arrange windows"
+              title="Arrange windows"
+              onClick={() => arrangeOpenWindows()}
+              css={{
+                width: `${DOCK_ARRANGE_WELL_WIDTH_PX}px`,
+                minWidth: `${DOCK_ARRANGE_WELL_WIDTH_PX}px`,
+                height: `${DOCK_ARRANGE_WELL_HEIGHT_PX}px`,
+                borderRadius: `${DOCK_RAIL_RADIUS_PX - 4}px`,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '2px',
+                padding: 0,
+                cursor: 'pointer',
+                border: '1px dashed',
+                borderColor: 'var(--border-color)',
+                background: 'transparent',
+                color: 'var(--text-primary)',
+                fontFamily: 'var(--font-primary)',
+                fontSize: '8px',
+                lineHeight: 1.1,
+                whiteSpace: 'nowrap',
+                transition: 'background-color 0.15s ease, color 0.15s ease',
+                '&:hover': { background: 'var(--card-hover-bg)' },
+                '&:focus-visible': {
+                  outline: 'none',
+                  boxShadow: `0 0 0 2px ${tint('var(--accent-primary)', 40)}`,
+                },
+              }}
+            >
+              <ArrangeIcon />
+              <Box as="span" aria-hidden="true">
+                Arrange
+              </Box>
+            </chakra.button>
+          </Box>
           {windows.map((win) => (
             <DockEntry
               key={win.id}
