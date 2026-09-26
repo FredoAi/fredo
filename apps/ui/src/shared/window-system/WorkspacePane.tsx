@@ -68,6 +68,11 @@ export interface WorkspacePaneProps {
    * on grip press (ST-3); a parent callback is additionally invoked if provided.
    */
   onMoveGrip?: () => void;
+  /**
+   * Optional reporter for committed moves — the parent's single
+   * `workspace-announcer` reports `Moved <title> to <region>` (round-2 AC2).
+   */
+  onAnnounce?: (message: string) => void;
 }
 
 /** Hit-strip thickness of a divider (px), flush inside the `a` pane's edge. */
@@ -254,7 +259,7 @@ interface OverlayRect {
   height: number;
 }
 
-export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePaneProps) {
+export function WorkspacePane({ window: win, slot, onMoveGrip, onAnnounce }: WorkspacePaneProps) {
   // Keep keyboard window traversal armed while a pane (not a WindowFrame) is
   // the only rendered window surface — idempotent + reference-counted.
   useWindowTraversal();
@@ -331,6 +336,7 @@ export function WorkspacePane({ window: win, slot, onMoveGrip }: WorkspacePanePr
     setHoveredRegion(region);
     setMoving(false);
     endLayoutGesture();
+    onAnnounce?.(`Moved ${win.title} to ${region}`);
   }
 
   function handleOverlayKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {

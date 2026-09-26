@@ -37,6 +37,7 @@ import {
   type WorkspaceLayoutSnapshot,
 } from './paneLayout';
 import type { Geometry, WorkspaceSize } from './windowGeometry';
+import { focusWindow, getWindowSnapshot } from './windowStore';
 
 /** AppSettings key (backend AppStore SQLite KV + localStorage mirror). */
 export const WORKSPACE_LAYOUT_KEY = 'Fredo_workspace_layout';
@@ -196,20 +197,73 @@ export function removePane(windowId: string): void {
   });
 }
 
-/** Re-place a pane in `region` (R3). Overlap is resolved by a clean reflow. */
+/**
+ * Re-place a pane in `region` (R3). The REQUESTED region is AUTHORITATIVE for
+ * the moved pane: it receives the full requested band (`resolveRegionRect`),
+ * never a `nearestRegion` rewrite or an index repartition — the round-1 defect
+ * was that any overlap (always true at ≥2 panes) discarded the request.
+ *
+ * Siblings are re-homed around it in ORIGINAL slot order, each keeping its own
+ * region string; when a sibling's own band is fully claimed by the moved pane
+ * it is re-homed into the largest free area instead. `reflowSlots` is only the
+ * DEGENERATE fallback (a fully-claimed workspace), and the moved pane's region
+ * is re-stamped to the requested value rather than a computed `nearestRegion`.
+ * The commit preserves the ORIGINAL `activeSlots` order (mapped by `windowId`).
+ */
 export function movePane(windowId: string, region: PaneRegion): void {
   const existing = snapshot.activeSlots;
   const index = existing.findIndex((slot) => slot.windowId === windowId);
   if (index < 0) return;
   const others = existing.filter((_, i) => i !== index);
-  const rect = resolveRegionRect(workspace, region, others);
-  let next = existing.map((slot) =>
-    slot.windowId === windowId ? { windowId, region, rect } : slot,
-  );
-  if (overlapsAny(rect, others)) {
-    next = reflowSlots(workspace, next);
+
+  // `center` IS the whole workspace (`paneLayout.ts`): narrow it against the
+  // siblings so they stay placeable. Every other region is the moved pane's
+  // requested home regardless of what it currently overlaps.
+  const movedRect = resolveRegionRect(workspace, region, region === 'center' ? others : []);
+  const placed: PaneSlot[] = [{ windowId, region, rect: movedRect }];
+
+  for (const sibling of others) {
+    let rect = resolveRegionRect(workspace, sibling.region, placed);
+    if (overlapsAny(rect, placed)) {
+      // The sibling's own band is claimed by the moved pane (e.g. both request
+      // `right`) → re-home it into the largest free area, preserving its region.
+      rect = resolveRegionRect(workspace, 'center', placed);
+    }
+    if (overlapsAny(rect, placed)) {
+      // Fully-claimed workspace → degenerate fallback: repartition cleanly and
+      // re-stamp the moved pane's region to the REQUESTED value.
+      const repartitioned = reflowSlots(workspace, existing).map((slot) =>
+        slot.windowId === windowId ? { ...slot, region } : slot,
+      );
+      commit({ activeSlots: repartitioned, activeLayoutId: null });
+      return;
+    }
+    placed.push({ windowId: sibling.windowId, region: sibling.region, rect });
   }
-  commit({ activeSlots: next, activeLayoutId: null });
+
+  const byId = new Map(placed.map((slot) => [slot.windowId, slot] as const));
+  commit({
+    activeSlots: existing.map((slot) => byId.get(slot.windowId) ?? slot),
+    activeLayoutId: null,
+  });
+}
+
+/**
+ * Enter / extend tiling (R2) — the SINGLE implementation behind BOTH entry
+ * points: the workspace toolbar's `workspace-arrange` control and the dock's
+ * `dock-arrange` well (AC1). Places EVERY open non-minimized window as a pane,
+ * clearing full-bleed so the arrangement is actually visible, and returns the
+ * number of panes added. `addPane` is idempotent per window id and reflows
+ * overlapping placements, so a repeat call adds nothing.
+ */
+export function arrangeOpenWindows(): number {
+  const before = snapshot.activeSlots.length;
+  for (const win of getWindowSnapshot()) {
+    if (win.isMinimized) continue;
+    if (win.isMaximized) focusWindow(win.id, { maximize: false });
+    addPane(win.id);
+  }
+  return snapshot.activeSlots.length - before;
 }
 
 /** Live drag frame (R5) — updates the rect without a structural change. */
@@ -301,6 +355,45 @@ export async function hydrateWorkspaceLayout(): Promise<void> {
     notify();
   } catch {
     // Tauri absent / read failure → stay on the empty default (no crash).
+  }
+}
+
+/** Options for `reopenHydratedSlots` — injected so the boot path stays testable
+ *  without importing the feature registry (`Home.tsx` supplies the production
+ *  values: its full-lifecycle `openFeatureWindow` + the kernel `updateWindow`). */
+export interface ReopenHydratedSlotsOptions<F extends { id: string }> {
+  /** Every registered feature — the reopen only touches REGISTERED ids (R9). */
+  features: readonly F[];
+  /** Full-lifecycle open (Home's `openFeatureWindow`). */
+  open: (id: string, feature: F) => void;
+  /** Kernel patch — un-maximizes the freshly-opened window so it tiles. */
+  update: (id: string, patch: { isMaximized?: boolean }) => void;
+}
+
+/**
+ * BOOT-HYDRATION ONLY (R8 / AC5): reopen the windows the hydrated arrangement
+ * names so they land directly as panes instead of rendering as degraded
+ * "App not available" placeholders. Every slot id that (a) resolves to a
+ * REGISTERED feature and (b) is not already open is opened through the
+ * full-lifecycle `open` callback and immediately un-maximized, so it tiles into
+ * its already-hydrated slot instead of covering the workspace full-bleed.
+ *
+ * Ids that resolve to no registered feature are SKIPPED — the existing
+ * degraded-slot path renders them (R9). This MUST only be called from the boot
+ * hydration caller: an explicit `restoreLayout` never reopens, so a closed app
+ * keeps degrading gracefully (F-9 invariant).
+ */
+export function reopenHydratedSlots<F extends { id: string }>(
+  options: ReopenHydratedSlotsOptions<F>,
+): void {
+  const openIds = new Set(getWindowSnapshot().map((win) => win.id));
+  for (const slot of snapshot.activeSlots) {
+    if (openIds.has(slot.windowId)) continue;
+    const feature = options.features.find((entry) => entry.id === slot.windowId);
+    if (!feature) continue;
+    options.open(feature.id, feature);
+    openIds.add(feature.id);
+    options.update(feature.id, { isMaximized: false });
   }
 }
 

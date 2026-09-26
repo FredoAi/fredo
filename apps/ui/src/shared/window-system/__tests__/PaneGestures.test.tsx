@@ -194,9 +194,12 @@ describe('WorkspacePane — move-to-region (R3)', () => {
 
     const moved = slotOf('a');
     expect(moved.region).toBe('top');
-    expect(moved.rect).toEqual({ x: 0, y: 0, width: 500, height: 400 });
+    // Round-2 AC2: the REQUESTED region band is authoritative for the moved
+    // pane (`top` = the full top half), siblings reflow around it.
+    expect(moved.rect).toEqual({ x: 0, y: 0, width: 1000, height: 400 });
     expect(screen.queryByTestId('pane-region-top')).toBeNull();
     expect(getLayoutSnapshot().dragging).toBe(false);
+    expect(screen.getByTestId('workspace-announcer').textContent).toContain('Moved A to top');
 
     await wait(250);
     expect(setMock).toHaveBeenCalledTimes(1);

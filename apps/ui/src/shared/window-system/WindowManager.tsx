@@ -40,13 +40,12 @@ import { LayoutMenu } from './LayoutMenu';
 import { WindowFrame } from './WindowFrame';
 import { WorkspaceDegradedSlot, WorkspaceEmptySlot, WorkspacePane } from './WorkspacePane';
 import {
-  addPane,
-  getLayoutSnapshot,
+  arrangeOpenWindows as arrangeOpenWindowsAction,
   movePane,
   setLayoutWorkspace,
   useWorkspaceLayout,
 } from './workspaceLayoutStore';
-import { focusWindow, getWindowSnapshot, subscribeWindows } from './windowStore';
+import { getWindowSnapshot, subscribeWindows } from './windowStore';
 import { findDegradedSlots, type PaneRegion, type PaneSlot } from './paneLayout';
 import type { WindowEntry } from './windowTypes';
 
@@ -184,19 +183,13 @@ export function WindowManager() {
   const showToolbar = tiled.length > 0 || emptySlots.length > 0 || degradedSlots.length > 0;
 
   /**
-   * Enter / extend tiling (R2): place every open non-minimized window as a pane
-   * and clear full-bleed so the arrangement is actually visible. `addPane` is
-   * idempotent per window id and reflows overlapping placements.
+   * Enter / extend tiling (R2) via the ONE shared store action — the toolbar's
+   * `workspace-arrange` control and the dock's `dock-arrange` well both call
+   * `arrangeOpenWindows()` so there is a single implementation. The store action
+   * places every open non-minimized window and clears full-bleed.
    */
   function arrangeOpenWindows(): void {
-    const before = getLayoutSnapshot().activeSlots.length;
-    for (const win of windows) {
-      if (win.isMinimized) continue;
-      if (win.isMaximized) focusWindow(win.id, { maximize: false });
-      addPane(win.id);
-    }
-    const after = getLayoutSnapshot().activeSlots.length;
-    const added = after - before;
+    const added = arrangeOpenWindowsAction();
     announce(
       added > 0
         ? `Added ${added} pane${added === 1 ? '' : 's'}`
@@ -363,7 +356,7 @@ export function WindowManager() {
           {tiled.map((win) => {
             const slot = slotByWindowId.get(win.id);
             if (!slot) return null;
-            return <WorkspacePane key={win.id} window={win} slot={slot} />;
+            return <WorkspacePane key={win.id} window={win} slot={slot} onAnnounce={announce} />;
           })}
 
           {/* ST-6 (R10): minimized panes keep their slot as an empty restore slot. */}

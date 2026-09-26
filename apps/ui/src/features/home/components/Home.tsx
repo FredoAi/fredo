@@ -2,7 +2,8 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import { Box } from '@chakra-ui/react';
 import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
 import { WindowManager } from '../../../shared/window-system/WindowManager';
-import { hydrateWorkspaceLayout } from '../../../shared/window-system/workspaceLayoutStore';
+import { hydrateWorkspaceLayout, reopenHydratedSlots } from '../../../shared/window-system/workspaceLayoutStore';
+import { updateWindow } from '../../../shared/window-system/windowStore';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
 import { AppDock } from './dock/AppDock';
@@ -94,9 +95,24 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // not re-tile on a restart. The store is `hydrationStarted`-once +
   // dirty-guarded, so a later consumer's call is a harmless no-op and a late
   // read never clobbers an in-flight user write (mirrors `AppDock.tsx:283-285`).
-  // Mount-only ([] deps) — no listener, no re-render loop (#523 rule).
+  //
+  // Round-2 (AC3/AC5): after hydration resolves, REOPEN the arrangement's
+  // windows through the full-lifecycle `openFeatureWindow` and immediately
+  // un-maximize them (`updateWindow(id, { isMaximized: false })`) so they land
+  // directly as panes in their hydrated slots — otherwise every slot renders as
+  // a degraded "App not available" placeholder. The reopen is BOOT-HYDRATION
+  // ONLY: an explicit `restoreLayout(layoutId)` keeps degrading a closed app
+  // (F-9 invariant). Unregistered ids are skipped → the degraded path renders
+  // them (R9). Mount-only ([] deps) — `openFeatureWindowRef` is read at call
+  // time and the module functions are stable, so no re-render loop (#523).
   useEffect(() => {
-    void hydrateWorkspaceLayout();
+    void hydrateWorkspaceLayout().then(() => {
+      reopenHydratedSlots({
+        features: ALL_FEATURES,
+        open: (id, feature) => openFeatureWindowRef.current(id, feature),
+        update: (id, patch) => updateWindow(id, patch),
+      });
+    });
   }, []);
 
   // Track open features so we can route deliveries and call lifecycle hooks
