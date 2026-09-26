@@ -121,10 +121,21 @@ function commit(patch: Partial<WorkspaceLayoutSnapshot>): void {
 
 /** Debounced, gesture-suppressed best-effort write. */
 function schedulePersist(): void {
-  if (snapshot.dragging) return; // a gesture persists only on end
+  if (snapshot.dragging) {
+    // A gesture persists only on end. Cancel any timer scheduled just BEFORE
+    // the gesture began, so a structural change made moments earlier can never
+    // fire a write MID-gesture (R5/R14: never persist during a gesture). The
+    // gesture-end `commit` re-schedules the single write with the final state.
+    if (persistTimer !== null) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    return;
+  }
   if (persistTimer !== null) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
+    if (snapshot.dragging) return; // defensive: never write mid-gesture
     writePersisted();
   }, PERSIST_DEBOUNCE_MS);
 }
@@ -383,6 +394,9 @@ function parsePersistedLayout(raw: string): PersistedWorkspaceLayout | null {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     const value = parsed as Record<string, unknown>;
+    // Unknown / corrupt schema version → clean workspace (never misread a
+    // future shape). Only the documented v1 payload is accepted (R8).
+    if (value.version !== LAYOUT_VERSION) return null;
     const activeSlots = Array.isArray(value.activeSlots)
       ? value.activeSlots.filter(isPaneSlot)
       : [];

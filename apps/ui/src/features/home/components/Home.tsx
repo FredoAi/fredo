@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import { Box } from '@chakra-ui/react';
 import { WindowSystemProvider } from '../../../shared/window-system/WindowSystemProvider';
 import { WindowManager } from '../../../shared/window-system/WindowManager';
+import { hydrateWorkspaceLayout } from '../../../shared/window-system/workspaceLayoutStore';
 import { useWindowActions } from '../../../shared/window-system/useWindowActions';
 import { LauncherShell } from './launcher/LauncherShell';
 import { AppDock } from './dock/AppDock';
@@ -83,6 +84,19 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Boot-time hydration of the persisted tiled-workspace arrangement (Spec #2949
+  // ST-4 / R8 + AC5): HomeDesktop is an always-mounted consumer at app boot, so
+  // its first mount triggers the module-scoped store's idempotent, once-only
+  // `hydrateWorkspaceLayout()`. Without this the arrangement stays empty until
+  // some other consumer happens to mount, so a saved last-active layout would
+  // not re-tile on a restart. The store is `hydrationStarted`-once +
+  // dirty-guarded, so a later consumer's call is a harmless no-op and a late
+  // read never clobbers an in-flight user write (mirrors `AppDock.tsx:283-285`).
+  // Mount-only ([] deps) — no listener, no re-render loop (#523 rule).
+  useEffect(() => {
+    void hydrateWorkspaceLayout();
   }, []);
 
   // Track open features so we can route deliveries and call lifecycle hooks
