@@ -423,7 +423,8 @@
                     "*|*": "deny",
                     "* || *": "deny",
                     "* ; *": "deny",
-                    "* | *": "deny"
+                    "* | *": "deny",
+                    "cargo run*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
