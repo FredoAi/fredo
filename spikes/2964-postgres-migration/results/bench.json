@@ -1,0 +1,31 @@
+{
+  "issue": 2964,
+  "task": "ST-1",
+  "mode": "translated statements on embedded postgres",
+  "acquisition_mode": "runtime-download",
+  "environment": {
+    "os": "windows",
+    "arch": "x86_64",
+    "profile": "release",
+    "crate_version": "0.1.0"
+  },
+  "workload": {
+    "ops": 10000,
+    "unique_keys": 9000,
+    "batch": 512,
+    "seed": 2964,
+    "point_reads": 1000
+  },
+  "metrics": {
+    "upsert_ms": 833.0523,
+    "point_read_ms": 178.6655,
+    "range_read_ms": 2.8146,
+    "rows_final": 5975,
+    "distinct_keys": 5975,
+    "point_read_mismatches": 0,
+    "range_count": 5975,
+    "range_sum": 12349317
+  },
+  "content_checksum": "3bcf82ce790677e4f81256fb7de4b1ccc69e15c0239cf1731af05b5a71a84ae1",
+  "duration_ms": 10230
+}

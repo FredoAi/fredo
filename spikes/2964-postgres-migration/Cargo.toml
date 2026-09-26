@@ -1,0 +1,50 @@
+[package]
+name = "postgres-migration-spike"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+publish = false
+description = "Spike #2964: standalone PoC validating Fredo's SQLite -> embedded-PostgreSQL schema/DDL and statement translation (chat_rows + settings) against a real PostgreSQL client. NOT a workspace member; never wired into production."
+
+# Deliberately a STANDALONE package (like spikes/2948-embedded-postgres). The Fredo
+# repo has no root Cargo workspace and production CI builds by explicit
+# `--manifest-path`, so nothing here is ever built by CI.
+
+# Shared ST-1 modules only. Later tasks (ST-3/ST-4/ST-5) MUST NOT edit this list:
+# each adds ONLY its own `src/<name>.rs` binary file (already declared below) and may
+# reuse the shared code with `use postgres_migration_spike::harness;` — no Cargo.toml
+# or lib.rs edit is ever required.
+[lib]
+name = "postgres_migration_spike"
+path = "src/lib.rs"
+
+# All planned artifacts are pre-declared so a later task never touches Cargo.toml.
+[[bin]]
+name = "schema"
+path = "src/schema.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bench.rs"
+
+[[bin]]
+name = "write_behind"
+path = "src/write_behind.rs"
+
+[[bin]]
+name = "parity"
+path = "src/parity.rs"
+
+[[bin]]
+name = "supervisor"
+path = "src/supervisor.rs"
+
+[dependencies]
+anyhow = "1"
+postgres = "0.19"
+postgresql_embedded = { version = "0.21", features = ["tokio"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
