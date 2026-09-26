@@ -12,7 +12,7 @@
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { act, cleanup, screen } from '@testing-library/react';
 
 vi.mock('../../../settings', () => ({
   settingsService: {
@@ -30,14 +30,23 @@ vi.mock('../TerminalLauncher', () => ({
 }));
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
+import { adapterBridge } from '@/shared/utils/adapterBridge';
+import {
+  closeWindow,
+  openWindow,
+  resetWindowStoreForTests,
+} from '@/shared/window-system/windowStore';
 import { settingsService } from '../../../settings';
 import { TerminalEntry } from '../TerminalEntry';
 import {
   DEFAULT_PRESENTATION,
   resetTerminalPresentationStoreForTests,
+  setTerminalPresentation,
 } from '../../presentation';
 
 const getMock = settingsService.get as ReturnType<typeof vi.fn>;
+
+let invoke: ReturnType<typeof vi.fn>;
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -47,15 +56,30 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** Open the in-window `terminal` entry so `closeWindow('terminal')` reaches the callback. */
+function openTerminalWindow(): void {
+  openWindow({ id: 'terminal', title: 'Terminal', icon: null, component: null });
+}
+
+function drains(): boolean {
+  return invoke.mock.calls.some(([command]) => command === 'close_terminal_window');
+}
+
 describe('TerminalEntry (Spec #2947 ST-3 — mode-aware frontend entry)', () => {
   beforeEach(() => {
     resetTerminalPresentationStoreForTests();
+    resetWindowStoreForTests();
     getMock.mockReset();
     getMock.mockResolvedValue(DEFAULT_PRESENTATION);
+    invoke = vi.fn(async () => undefined);
+    adapterBridge.setInvoke(invoke as never);
+    openTerminalWindow();
   });
 
   afterEach(() => {
     cleanup();
+    adapterBridge.setInvoke(undefined as never);
+    resetWindowStoreForTests();
   });
 
   it('holds the bounded loading gate until hydration settles, then renders the same-window workspace (R-2.1)', async () => {
@@ -122,5 +146,70 @@ describe('TerminalEntry (Spec #2947 ST-3 — mode-aware frontend entry)', () => 
     // A fresh mount reads the now-settled store without re-holding the gate.
     renderWithChakra(<TerminalEntry />);
     expect(await screen.findByTestId('mock-terminal-window')).toBeInTheDocument();
+  });
+
+  // ── FS-1 (#2947 round 2): in-window close drains + tree-kills (R-5.2) ───────
+
+  it('drains every live session through close_terminal_window when the in-window Terminal closes (FS-1, R-5.2)', async () => {
+    getMock.mockResolvedValue('same-window');
+
+    renderWithChakra(<TerminalEntry />);
+    expect(await screen.findByTestId('mock-terminal-window')).toBeInTheDocument();
+    expect(drains()).toBe(false);
+
+    // A REAL user close (chrome X / dock close) routes through the store.
+    act(() => {
+      closeWindow('terminal');
+    });
+
+    expect(invoke).toHaveBeenCalledWith('close_terminal_window', undefined);
+  });
+
+  it('does NOT drain in new-window mode — the launcher trampoline owns the close (R-6/F-13)', async () => {
+    getMock.mockResolvedValue('new-window');
+
+    renderWithChakra(<TerminalEntry />);
+    expect(await screen.findByTestId('mock-terminal-launcher')).toBeInTheDocument();
+
+    // TerminalLauncher calls closeWindow('terminal') on every new-window open;
+    // an unguarded drain would kill the session it just opened.
+    act(() => {
+      closeWindow('terminal');
+    });
+
+    expect(drains()).toBe(false);
+  });
+
+  it('does not double-drain when the store already flipped to new-window before the close (mode-change teardown owns it)', async () => {
+    getMock.mockResolvedValue('same-window');
+
+    renderWithChakra(<TerminalEntry />);
+    expect(await screen.findByTestId('mock-terminal-window')).toBeInTheDocument();
+
+    // TerminalSettings.persistSettings: the store moves synchronously, THEN the
+    // window closes in the same tick — before React runs the effect cleanup.
+    act(() => {
+      void setTerminalPresentation('new-window');
+      closeWindow('terminal');
+    });
+
+    // The handler re-reads the mode at close time and declines; TerminalSettings
+    // invokes close_terminal_window itself.
+    expect(drains()).toBe(false);
+  });
+
+  it('unregisters on cleanup so a later close never drains a stale host (store callback, not a mount lifecycle)', async () => {
+    getMock.mockResolvedValue('same-window');
+
+    const view = renderWithChakra(<TerminalEntry />);
+    expect(await screen.findByTestId('mock-terminal-window')).toBeInTheDocument();
+
+    view.unmount();
+
+    act(() => {
+      closeWindow('terminal');
+    });
+
+    expect(drains()).toBe(false);
   });
 });

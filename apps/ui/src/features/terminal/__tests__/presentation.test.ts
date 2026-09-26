@@ -58,6 +58,21 @@ describe('terminalPresentationStore (Spec #2947 ST-1 — shared presentation con
     expect(normalizePresentationMode('new-window')).toBe('new-window');
   });
 
+  it('trims whitespace-wrapped values — mirrors TerminalPresentation::parse (FS-2, R-4.1)', () => {
+    // The Rust parse matches `raw.trim()` (unit-pinned by
+    // `presentation_parse_trims_surrounding_whitespace`), so the frontend MUST
+    // resolve the same wire value; otherwise the two sides disagree and the
+    // native host receives no events.
+    expect(normalizePresentationMode(' same-window ')).toBe('same-window');
+    expect(normalizePresentationMode('  same-window\n')).toBe('same-window');
+    expect(normalizePresentationMode('\tnew-window ')).toBe('new-window');
+    expect(normalizePresentationMode(' new-window ')).toBe('new-window');
+    // Trim must not widen the domain: whitespace-padded garbage still defaults.
+    expect(normalizePresentationMode(' not-a-mode ')).toBe('new-window');
+    // Non-string inputs are never coerced into a match.
+    expect(normalizePresentationMode(42)).toBe('new-window');
+  });
+
   it('falls back to new-window for absent/unrecognized values (R-4.1)', () => {
     expect(normalizePresentationMode(undefined)).toBe('new-window');
     expect(normalizePresentationMode(null)).toBe('new-window');

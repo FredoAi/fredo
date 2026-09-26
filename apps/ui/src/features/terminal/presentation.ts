@@ -50,11 +50,20 @@ function notify(): void {
 /**
  * Normalize any persisted value to a valid mode. Absent / unrecognized values
  * fall back to `new-window` (R-4.1) — never throws, never fails.
+ *
+ * FS-2 (#2947 round 2): a STRING input is trimmed before the exact compare,
+ * mirroring `TerminalPresentation::parse` in
+ * `apps/tauri/src-tauri/src/features/terminal/state.rs` (`raw.trim()`, unit-pinned
+ * by `presentation_parse_trims_surrounding_whitespace`). Both sides must resolve
+ * the same wire value: `" same-window "` is recognized as `same-window` on
+ * BOTH the frontend and the backend (R-4.1 consistency). Non-string inputs are
+ * never coerced.
  */
 export function normalizePresentationMode(raw: unknown): TerminalPresentation {
-  return raw === 'same-window'
+  const value = typeof raw === 'string' ? raw.trim() : raw;
+  return value === 'same-window'
     ? 'same-window'
-    : raw === 'new-window'
+    : value === 'new-window'
       ? 'new-window'
       : DEFAULT_PRESENTATION;
 }

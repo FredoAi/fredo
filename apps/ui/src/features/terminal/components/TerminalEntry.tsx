@@ -1,11 +1,17 @@
 import React, { useEffect, useSyncExternalStore } from 'react';
 import { Box, Skeleton } from '@chakra-ui/react';
 import {
+  getTerminalPresentation,
   hydrateTerminalPresentation,
   isTerminalPresentationHydrated,
   subscribeTerminalPresentation,
   useTerminalPresentation,
 } from '../presentation';
+import {
+  registerWindowCloseCallback,
+  unregisterWindowCloseCallback,
+} from '../../../shared/window-system/windowStore';
+import { adapterBridge } from '../../../shared/utils/adapterBridge';
 import { TerminalWindow } from './TerminalWindow';
 import { TerminalLauncher } from './TerminalLauncher';
 
@@ -52,6 +58,35 @@ export const TerminalEntry: React.FC = () => {
     isTerminalPresentationHydrated,
   );
   const presentation = useTerminalPresentation();
+
+  // FS-1 (R-5.2): a REAL user close of the in-window Terminal must drain and
+  // tree-kill every live backend session through the shipped
+  // `close_terminal_window` path (records retained → resumable).
+  //
+  // Registered on the module-scoped window store — NOT a React unmount cleanup
+  // — so an HMR/StrictMode/re-render unmount never fires a drain; only a real
+  // `closeWindow('terminal')` (chrome X / dock close) invokes the callback.
+  //
+  // ONLY in `same-window`: the new-window trampoline (`TerminalLauncher`) calls
+  // `closeWindow('terminal')` on EVERY launch to dismiss its transient in-window
+  // entry; registering there would drain the session the launcher just opened
+  // (regresses R-6/F-13). The cleanup unregisters on the mode flip, and the
+  // handler RE-READS the mode at close time because a mode-change teardown
+  // (`TerminalSettings`) flips the store then closes the window in the same tick,
+  // before React runs the cleanup — that teardown owns the drain and must not be
+  // double-invoked.
+  useEffect(() => {
+    if (presentation !== 'same-window') return;
+    registerWindowCloseCallback('terminal', () => {
+      if (getTerminalPresentation() !== 'same-window') return;
+      void adapterBridge.invoke('close_terminal_window').catch(() => {
+        // Best-effort: the window is already gone; a failed drain must not surface.
+      });
+    });
+    return () => {
+      unregisterWindowCloseCallback('terminal');
+    };
+  }, [presentation]);
 
   return (
     <Box data-testid="terminal-entry-root" h="100%" w="100%" minH={0}>
