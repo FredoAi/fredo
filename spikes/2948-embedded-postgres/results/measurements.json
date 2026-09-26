@@ -1,0 +1,119 @@
+{
+  "deltas": {
+    "binary_bytes": 3452928.0,
+    "cold_start_ms": 9724.757099999999,
+    "data_dir_bytes": 60565072.0,
+    "distribution_bytes": null,
+    "peak_rss_bytes": 243965952.0
+  },
+  "environment": {
+    "arch": "x86_64",
+    "commit": "283b4a3",
+    "os": "windows",
+    "profile": "release",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "sampler": "sysinfo process-tree peak working set (root process + descendants; PostgreSQL child processes matched by name)",
+    "session": "both variants measured in the same session"
+  },
+  "unknown": [],
+  "variants": [
+    {
+      "binary_bytes": 2114560,
+      "cold_start_ms": 36.1849,
+      "cold_start_ms_first_run": 38.3669,
+      "data_dir_bytes": 7225344,
+      "distribution_bytes": null,
+      "measured_at": "2026-09-26T05:22:53.925087200+00:00",
+      "mode": "bundled-sqlite",
+      "name": "sqlite-baseline",
+      "notes": "rusqlite 0.32 bundled; WAL + synchronous=NORMAL (production parity); 10000 upsert ops; 9000 final rows",
+      "peak_rss_bytes": 33734656,
+      "runs": [
+        {
+          "binary_bytes": 2114560,
+          "cold_start_ms": 38.3669,
+          "data_dir_bytes": 7225344,
+          "distribution_bytes": null,
+          "measured_at": "2026-09-26T05:22:53.452037200+00:00",
+          "mode": "bundled-sqlite",
+          "name": "sqlite-baseline",
+          "notes": "rusqlite 0.32 bundled; WAL + synchronous=NORMAL (production parity); 10000 upsert ops; 9000 final rows",
+          "peak_rss_bytes": 33734656,
+          "point_read_ms": 5.1327,
+          "range_read_ms": 5.008900000000001,
+          "rows_final": 9000,
+          "run": 1,
+          "upsert_ms": 208.1836
+        },
+        {
+          "binary_bytes": 2114560,
+          "cold_start_ms": 36.1849,
+          "data_dir_bytes": 7225344,
+          "distribution_bytes": null,
+          "measured_at": "2026-09-26T05:22:53.925087200+00:00",
+          "mode": "bundled-sqlite",
+          "name": "sqlite-baseline",
+          "notes": "rusqlite 0.32 bundled; WAL + synchronous=NORMAL (production parity); 10000 upsert ops; 9000 final rows",
+          "peak_rss_bytes": 33079296,
+          "point_read_ms": 5.6382,
+          "range_read_ms": 6.7269,
+          "rows_final": 9000,
+          "run": 2,
+          "upsert_ms": 197.6176
+        }
+      ]
+    },
+    {
+      "binary_bytes": 5567488,
+      "cold_start_ms": 9760.942,
+      "cold_start_ms_first_run": 9482.8977,
+      "data_dir_bytes": 67790416,
+      "distribution_bytes": 164026008,
+      "measured_at": "2026-09-26T05:23:16.311122700+00:00",
+      "mode": "runtime-download",
+      "name": "embedded-postgres",
+      "notes": "postgresql_embedded 0.21 runtime-download; ephemeral port; fresh data dir; 10000 upsert ops; 9000 final rows; distribution_bytes = installed postgres dir",
+      "peak_rss_bytes": 277700608,
+      "runs": [
+        {
+          "binary_bytes": 5567488,
+          "cold_start_ms": 9482.8977,
+          "data_dir_bytes": 67790424,
+          "distribution_bytes": 164026008,
+          "measured_at": "2026-09-26T05:23:05.016130300+00:00",
+          "mode": "runtime-download",
+          "name": "embedded-postgres",
+          "notes": "postgresql_embedded 0.21 runtime-download; ephemeral port; fresh data dir; 10000 upsert ops; 9000 final rows; distribution_bytes = installed postgres dir",
+          "peak_rss_bytes": 277700608,
+          "point_read_ms": 77.3271,
+          "range_read_ms": 4.2101999999999995,
+          "rows_final": 9000,
+          "run": 1,
+          "upsert_ms": 1073.1885000000002
+        },
+        {
+          "binary_bytes": 5567488,
+          "cold_start_ms": 9760.942,
+          "data_dir_bytes": 67790416,
+          "distribution_bytes": 164026008,
+          "measured_at": "2026-09-26T05:23:16.311122700+00:00",
+          "mode": "runtime-download",
+          "name": "embedded-postgres",
+          "notes": "postgresql_embedded 0.21 runtime-download; ephemeral port; fresh data dir; 10000 upsert ops; 9000 final rows; distribution_bytes = installed postgres dir",
+          "peak_rss_bytes": 249942016,
+          "point_read_ms": 68.43480000000001,
+          "range_read_ms": 4.3299,
+          "rows_final": 9000,
+          "run": 2,
+          "upsert_ms": 1139.3217
+        }
+      ]
+    }
+  ],
+  "workload": {
+    "batch": 512,
+    "reupsert_ratio": 0.1,
+    "rows": 10000,
+    "unique_keys": 9000
+  }
+}
