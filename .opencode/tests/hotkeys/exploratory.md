@@ -72,6 +72,34 @@ behaviour is wrong.
       then replay it after the target window is closed or a different feature is focused. Is the
       failure surfaced, or does it silently no-op / act on the wrong surface? Promotes to F-19.
 
+## Spec #2958 — interaction-context probes
+
+- [ ] E-16: **Escape with a pending sequence AND a descended context.** Descend, then arm a
+      pending sequence (leader/`g`), then press Escape. Which wins — context unwind, pending
+      cancel, or both? An ambiguous/order-dependent result promotes to F-36/R-12.
+- [ ] E-17: **Descend while a text field is focused.** Attempt the descent trigger with an
+      `input`/`contenteditable` focused. Does the context model hijack the keystroke, or does the
+      typed character land verbatim and no descent occur? Promotes to F-42.
+- [ ] E-18: **Descend in window A, then focus window B.** Is the active context per-window, per
+      focused feature, or global? A stale/duplicated context after the focus move promotes to
+      F-34/F-40 (and answers the Architect's scope question).
+- [ ] E-19: **Rapid repeated Escape at the root.** Press Escape 5× fast at the top-level context
+      (and with the launcher open). Does the excess leak into launcher/modal behaviour, or is it
+      left native every time? Promotes to F-36/R-12.
+- [ ] E-20: **Context change during a modal.** Descend, open a modal, press Escape. Does the modal
+      own the Escape (no context change) and the context survive the modal close? Promotes to
+      F-42/F-40.
+- [ ] E-21: **Deep nesting (3+).** Descend beyond the demonstrated depth. Deterministic unwind,
+      or drift / unbounded stack growth? Promotes to F-41/F-36 (depth cap is a probe, not a demo AC).
+- [ ] E-22: **Context change while a macro records.** Start a raw recording, descend, press Escape.
+      Is the recording suspended/stopped cleanly, or does the context Escape get captured? Promotes
+      to F-42/F-41.
+- [ ] E-23: **Screen-reader reach of the indicator.** Inspect the context indicator + announcer in
+      the accessibility tree. A colour-only or un-announced change promotes to F-38/F-39.
+- [ ] E-24: **Context lifetime.** Close the window that owns the active context, or restart the app.
+      Is the context reset to the platform root (no dangling context), or does it survive stale?
+      Promotes to F-34/F-40.
+
 ## Teardown (run after this suite)
 
 - [ ] Remove any test bindings created during the probes (reset-all to shipped defaults) and
