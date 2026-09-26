@@ -18,7 +18,29 @@
 - [ ] **R-8 (no test weakening / build gates — CI parity):** `pnpm --filter @fredo/ui build` exit 0 zero TypeScript errors; `pnpm --filter @fredo/ui test:run` green; the repo lint/typecheck leg passes; no existing assertion weakened/disabled/deleted (any refreshed assertion owned per G-125); `cargo check` zero warnings if the backend is touched (e.g. a persisted-config command).
 - [ ] **R-9 (no shortcut-usage telemetry):** the new layer emits NO span/event/metric carrying shortcut usage or binding identity (PO resolution Q13). Verify by diffing `telemetry_spans`/`telemetry_metrics` span + metric names before vs after a hotkey drive.
 - [ ] **R-10 (no OS-wide hotkeys):** no Tauri global-shortcut plugin / OS-level registration is introduced (PO out-of-scope: no OS-wide/unfocused hotkeys). The global layer remains a webview `document`/`window` listener.
-- [x] **R-11 (served app boots + engine mounts — promoted round 1):** the SERVED entry `apps/tauri/src/main.tsx` must resolve every import in the `@fredo/ui` graph (no `@/...` alias assumed from `apps/ui`; the served alias is `@` → `apps/tauri/src`) AND must mount `HotkeysProvider` (engine + announcer + which-key overlay) the way `apps/ui/src/main.tsx` does. **Actual round 2 (PASS):** on `spec/2946 @ 4ad4f802` `#root` has children, `data-fredo-hotkeys-engine="1"`, no `vite-error-overlay`; `ui-validate` now builds the served webview. (Round 1 was FAIL — blank served webview.)
+- [x] **R-11 (served app boots + engine mounts — promoted round 1):** the SERVED entry `apps/tauri/src/main.tsx` must resolve every import in the `@fredo/ui` graph (no `@/...` alias assumed from `apps/ui`; the served alias is `@` → `apps/tauri/src`) AND must mount `HotkeysProvider` (engine + announcer + which-key overlay) the way `apps/ui/src/main.tsx` does. **Actual round 2 (PASS):** on `spec/2946 @ 4ad4f802` `#root` has children, `data-fredo-hotkeys-engine="1"`, no       `vite-error-overlay`; `ui-validate` now builds the served webview. (Round 1 was FAIL — blank served webview.)
+
+## Spec #2958 additions (named interaction contexts)
+
+- [ ] **R-12 (pending-multi-key Esc cancel unchanged):** at the TOP-LEVEL context, the shipped
+      pending-sequence Escape cancel still works — arm a multi-key sequence (e.g. `g`), press
+      Escape, and the pending sequence clears with NO context unwind (`data-fredo-pending-sequence`
+      clears; the context indicator/depth unchanged, no `context:changed` announcement). Escape at the root must not be hijacked
+      by the context model. Baseline recipe: dev-env UP on `main`, arm + Escape, record; repeat on
+      `spec/2958`.
+- [ ] **R-13 (Escape precedence unchanged):** in a text-entry field Escape still passes to the
+      field/does not unwind a context; with a modal open Escape still belongs to the modal; in a
+      focused terminal Escape still reaches the PTY (no context unwind). Anchors: `sequence.ts`
+      precedence 2–4 (terminal > modal > text-entry), `.opencode/tests/terminal/` R-2.x.
+- [ ] **R-14 (focus scoping + default bindings unchanged):** `data-fredo-focus-context` still
+      classifies the focused control; a feature-tier binding still fires only while its own feature
+      is focused (R-2.5); no shipped default binding is stolen/rebound by the context model
+      (Ctrl+Space launcher, `g g`, `?`, the feature `s`/`n`/`p`/`f` sets behave as before when no
+      context is entered). Cross-ref R-1/R-2 and F-6.
+- [ ] **R-15 (no re-render loop / console clean with contexts):** descending, unwinding, focus
+      churn and theme switching introduce no `Maximum update depth exceeded`/`Uncaught`/`Error:`
+      (AGENTS.md #523 pattern); the context hook must not be consumed via a per-render changing
+      dependency. Cross-ref R-7.
 
 ## #2946 testing round 2 — regression result
 
