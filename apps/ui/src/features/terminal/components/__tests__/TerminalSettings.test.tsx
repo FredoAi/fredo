@@ -19,10 +19,17 @@ import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../../settings/SettingsSaveContext';
 import { TerminalSettings } from '../TerminalSettings';
+import type { TerminalSessionInfo } from '../../sessionModel';
+import {
+  getTerminalPresentation,
+  resetTerminalPresentationStoreForTests,
+} from '../../presentation';
 
 let settings: Record<string, string> = {};
 const saved: Array<{ key: string; value: string }> = [];
 const commands: string[] = [];
+/** Live PTY sessions the backend session list reports (the live-host probe). */
+let liveSessions: TerminalSessionInfo[] = [];
 
 const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
   commands.push(command);
@@ -31,6 +38,7 @@ const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => 
     saved.push({ key: String(args?.key), value: String(args?.value) });
     return undefined;
   }
+  if (command === 'list_terminal_sessions') return liveSessions;
   return undefined;
 });
 
@@ -69,6 +77,10 @@ beforeEach(() => {
   settings = {};
   saved.length = 0;
   commands.length = 0;
+  liveSessions = [];
+  // The presentation store is module-scoped; wipe it so one test's mode choice
+  // cannot leak into the next.
+  resetTerminalPresentationStoreForTests();
   localStorage.clear();
   adapterBridge.setInvoke(invoke as never);
   adapterBridge.setListen((async () => () => {}) as never);
@@ -183,5 +195,119 @@ describe('Spec 2942 ST-4 — TerminalSettings (default session type)', () => {
     await screen.findByText('Default session type');
     expect(screen.queryByText(/run[\s-]?cli/i)).toBeNull();
     expect(document.body.textContent ?? '').not.toMatch(/run[\s-]?cli/i);
+  });
+});
+
+function liveSession(overrides: Partial<TerminalSessionInfo> = {}): TerminalSessionInfo {
+  return {
+    id: 'live-1',
+    cli: 'opencode',
+    status: 'running',
+    error: null,
+    errorKind: null,
+    workDir: 'C:\\Code\\fredo',
+    cols: 80,
+    rows: 24,
+    pid: 4242,
+    startedAt: 1,
+    ...overrides,
+  };
+}
+
+describe('Spec #2947 ST-6 — TerminalSettings (presentation mode + mode-change teardown)', () => {
+  it('renders the discoverable "Presentation" radio with both wire options, defaulting to Separate window (R-1.1/R-4.1)', async () => {
+    renderSettings();
+
+    const group = await screen.findByTestId('terminal-presentation-mode');
+    expect(group).toBeTruthy();
+    expect(screen.getByText('Presentation')).toBeTruthy();
+    expect(screen.getByText('Where Terminal opens when you launch it.')).toBeTruthy();
+    expect(screen.getByText('Same window')).toBeTruthy();
+    expect(screen.getByText('Separate window')).toBeTruthy();
+
+    await waitFor(() => expect(radio('new-window')).toHaveAttribute('aria-checked', 'true'));
+    expect(radio('same-window')).toHaveAttribute('aria-checked', 'false');
+    // The wire value is NOT the label; the DOM hooks carry the wire value.
+    expect(radio('same-window')).toHaveAttribute(
+      'data-testid',
+      'terminal-presentation-mode-same-window',
+    );
+    expect(radio('new-window')).toHaveAttribute(
+      'data-testid',
+      'terminal-presentation-mode-new-window',
+    );
+  });
+
+  it('hydrates the persisted mode from terminal_presentation_mode (R-1.2)', async () => {
+    settings = { terminal_presentation_mode: 'same-window' };
+    renderSettings();
+
+    await screen.findByTestId('terminal-presentation-mode');
+    await waitFor(() => expect(radio('same-window')).toHaveAttribute('aria-checked', 'true'));
+    expect(radio('new-window')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('shows the switch hint and persists the mode on Save with no live host — no dialog, no teardown (R-1.1)', async () => {
+    renderSettings();
+    await screen.findByTestId('terminal-presentation-mode');
+
+    choose('same-window');
+    await waitFor(() => expect(radio('same-window')).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByTestId('terminal-presentation-mode-hint')).toHaveTextContent(
+      'Takes effect the next time Terminal opens.',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'save' }));
+
+    await waitFor(() =>
+      expect(saved).toContainEqual({
+        key: 'terminal_presentation_mode',
+        value: 'same-window',
+      }),
+    );
+    expect(getTerminalPresentation()).toBe('same-window');
+    expect(commands).not.toContain('close_terminal_window');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('confirms before ending a live host; cancelling mutates nothing (R-5.3)', async () => {
+    liveSessions = [liveSession()];
+    renderSettings();
+    await screen.findByTestId('terminal-presentation-mode');
+    choose('same-window');
+    await waitFor(() => expect(radio('same-window')).toHaveAttribute('aria-checked', 'true'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'save' }));
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Change presentation mode?' }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByTestId('terminal-presentation-mode-cancel'));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(getTerminalPresentation()).toBe('new-window');
+    expect(saved.some((s) => s.key === 'terminal_presentation_mode')).toBe(false);
+    expect(commands).not.toContain('close_terminal_window');
+  });
+
+  it('confirming persists the mode and tears the superseded host down via the shipped close_terminal_window (R-5.1)', async () => {
+    liveSessions = [liveSession()];
+    renderSettings();
+    await screen.findByTestId('terminal-presentation-mode');
+    choose('same-window');
+    await waitFor(() => expect(radio('same-window')).toHaveAttribute('aria-checked', 'true'));
+    fireEvent.click(screen.getByRole('button', { name: 'save' }));
+
+    await screen.findByRole('dialog', { name: 'Change presentation mode?' });
+    fireEvent.click(screen.getByTestId('terminal-presentation-mode-confirm'));
+
+    await waitFor(() =>
+      expect(saved).toContainEqual({
+        key: 'terminal_presentation_mode',
+        value: 'same-window',
+      }),
+    );
+    expect(getTerminalPresentation()).toBe('same-window');
+    await waitFor(() => expect(commands).toContain('close_terminal_window'));
   });
 });

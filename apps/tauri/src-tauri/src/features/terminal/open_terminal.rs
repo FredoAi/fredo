@@ -13,12 +13,17 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::features::terminal::commands::{
-    open_terminal_window_with_intent, TerminalOpenRequestPayload,
+    open_terminal_window_with_intent, terminal_host_label, PendingTerminalOpen,
+    TerminalOpenRequestPayload,
 };
-use crate::features::terminal::state::{SessionKind, DEFAULT_KIND};
+use crate::features::terminal::state::{
+    SessionKind, TerminalPresentation, DEFAULT_KIND, DEFAULT_PRESENTATION,
+    TERMINAL_INTENT_AVAILABLE_EVENT, TERMINAL_PRESENTATION_KEY,
+};
+use crate::infrastructure::app_open::{confirm_feature_open, AppOpenOutcome};
 use crate::infrastructure::ipc::CliResponse;
 use crate::infrastructure::storage::AppStore;
 
@@ -103,10 +108,59 @@ fn rejection_response(rejection: OpenTerminalRejection, message: String) -> CliR
     }
 }
 
+/// The exit-1 response for an open request that reported `failed` (both the
+/// native-window build failure and the same-window non-`opened` confirmation):
+/// nothing was spawned — validation and the intent arm/disarm are the only
+/// effects.
+fn failed_response(message: String) -> CliResponse {
+    CliResponse {
+        ok: false,
+        message: Some(message.clone()),
+        data: Some(json!({ "outcome": "failed", "message": message })),
+    }
+}
+
+/// The persisted presentation mode, applying the absent/unrecognized →
+/// [`DEFAULT_PRESENTATION`] fallback (R-4.1). Read per dispatch.
+fn persisted_presentation(app: &AppHandle) -> TerminalPresentation {
+    app.try_state::<Arc<AppStore>>()
+        .and_then(|state| state.get(TERMINAL_PRESENTATION_KEY).ok().flatten())
+        .and_then(|raw| TerminalPresentation::parse(&raw))
+        .unwrap_or(DEFAULT_PRESENTATION)
+}
+
+/// Tell the active Terminal host an armed launch intent is ready to drain (the
+/// WARM same-window path: the workspace is already mounted, so no mount
+/// handshake will run). A cold workspace already drained the one-shot intent on
+/// its mount — `take` is destructive, so exactly one spawn happens either way.
+fn emit_terminal_intent_available(app: &AppHandle) {
+    if let Err(error) = app.emit_to(
+        terminal_host_label(app),
+        TERMINAL_INTENT_AVAILABLE_EVENT,
+        (),
+    ) {
+        tracing::error!(
+            target: "fredo::terminal",
+            error = %error,
+            "emit terminal-intent-available failed"
+        );
+    }
+}
+
 /// Dispatch `CliCommand::OpenTerminal`. Validates FIRST (no window / no spawn on
-/// a refusal), then opens/focuses the window and, when a CLI and/or dir was
-/// supplied, delivers the `terminal-open-request` launch intent the webview
-/// consumes to spawn the session (single spawner).
+/// a refusal), then branches on the persisted presentation:
+///
+/// - `same-window` → arm the one-shot intent (when a flag was supplied) BEFORE
+///   the request, run the shipped `app-open-request` round trip so the in-window
+///   workspace opens/focuses its single `terminal` kernel entry, then on an
+///   `opened` confirmation emit [`TERMINAL_INTENT_AVAILABLE_EVENT`] so a warm
+///   workspace drains the intent. A non-`opened` confirmation is `failed`
+///   (exit 1) having spawned nothing.
+/// - `new-window` → the shipped [`open_terminal_window_with_intent`] path
+///   (`opened`/`started`/`failed`), byte-identical to before.
+///
+/// The backend NEVER spawns a session (single-spawner adjudication): the webview
+/// consumes the intent.
 pub async fn dispatch_open_terminal(
     cli: Option<String>,
     work_dir: Option<String>,
@@ -148,12 +202,49 @@ pub async fn dispatch_open_terminal(
         work_dir: effective_dir.clone(),
     });
 
-    if let Err(message) = open_terminal_window_with_intent(app, intent).await {
-        return CliResponse {
-            ok: false,
-            message: Some(message.clone()),
-            data: Some(json!({ "outcome": "failed", "message": message })),
+    let presentation = persisted_presentation(app);
+    // The resolved mode is the branch discriminator; `TerminalPresentation::wire`
+    // reports it in the diagnostic (the same kebab-case value the frontend
+    // persists), so the shared contract's inverse-of-parse is exercised in
+    // production, not only by tests.
+    tracing::debug!(
+        target: "fredo::terminal",
+        presentation = presentation.wire(),
+        has_args,
+        "fredo open-terminal dispatch"
+    );
+
+    if presentation == TerminalPresentation::SameWindow {
+        // Arm BEFORE the request: a cold workspace's mount handshake
+        // (`list_terminal_sessions`) drains the intent and can run before the
+        // confirmation resolves.
+        if let Some(payload) = intent {
+            app.state::<PendingTerminalOpen>().arm(payload);
+        }
+
+        return match confirm_feature_open(app, "terminal").await {
+            Some(confirmation) if confirmation.outcome == AppOpenOutcome::Opened => {
+                if has_args {
+                    emit_terminal_intent_available(app);
+                    CliResponse::ok(json!({
+                        "outcome": "started",
+                        "cli": effective_cli.wire(),
+                        "workDir": effective_dir,
+                    }))
+                } else {
+                    CliResponse::ok(json!({ "outcome": "opened" }))
+                }
+            }
+            other => failed_response(
+                other
+                    .and_then(|confirmation| confirmation.message)
+                    .unwrap_or_else(|| "Terminal did not open in the main window".to_string()),
+            ),
         };
+    }
+
+    if let Err(message) = open_terminal_window_with_intent(app, intent).await {
+        return failed_response(message);
     }
 
     if has_args {
@@ -304,5 +395,21 @@ mod tests {
     #[test]
     fn app_not_running_is_the_only_exit_two() {
         assert_eq!(exit_code_for_response(None), 2);
+    }
+
+    #[test]
+    fn failed_outcome_is_a_handled_failure_exit_one() {
+        // Spec #2947 ST-5 — BOTH the native-window build failure and the
+        // same-window non-`opened` confirmation map to `failed` (exit 1) with
+        // machine-readable data, having spawned nothing (R-4.2/R-4.3).
+        let response = failed_response("Terminal did not open in the main window".into());
+        assert!(!response.ok);
+        let data = response.data.clone().expect("a failed response carries data");
+        assert_eq!(data["outcome"], serde_json::json!("failed"));
+        assert_eq!(
+            data["message"],
+            serde_json::json!("Terminal did not open in the main window")
+        );
+        assert_eq!(exit_code_for_response(Some(&response)), 1);
     }
 }

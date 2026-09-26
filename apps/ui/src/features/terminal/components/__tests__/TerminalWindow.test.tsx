@@ -97,11 +97,21 @@ let persisted: PersistedTerminalSession[] = [];
 let settings: Record<string, string> = {};
 let spawnResult = 'real-1';
 let resumeResult: ResumeResult = { outcome: 'resumed', sessionId: null };
+// Spec 2947 ST-4 — when true, the NEXT `list_terminal_sessions` call simulates
+// the backend drain handshake: it `take()`s the armed one-shot intent and emits
+// `terminal-open-request`. One-shot: the flag clears itself on that call.
+let drainOnList = false;
 const listeners: Record<string, (payload: unknown) => void> = {};
 
 const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
   switch (command) {
     case 'list_terminal_sessions':
+      if (drainOnList) {
+        drainOnList = false;
+        // The armed `PendingTerminalOpen`: emit over the already-registered
+        // `terminal-open-request` listener (the shipped single spawner).
+        listeners['terminal-open-request']?.({ cli: 'copilot', workDir: 'C:\\repo' });
+      }
       return sessions;
     case 'list_persisted_terminal_sessions':
       return persisted;
@@ -185,6 +195,7 @@ beforeEach(() => {
   settings = {};
   spawnResult = 'real-1';
   resumeResult = { outcome: 'resumed', sessionId: null };
+  drainOnList = false;
   for (const key of Object.keys(listeners)) delete listeners[key];
   localStorage.clear();
   adapterBridge.setInvoke(invoke as never);
@@ -772,6 +783,72 @@ describe('Spec 2935 ST-5 — open-terminal launch-intent defaults + error states
     expect(state).toHaveAttribute('data-error-kind', 'invalid-cwd');
     expect(screen.getByText('Working directory not found')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Choose directory/ })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Spec 2947 ST-4 — WARM-path intent drain (R-4.2). A same-window
+ * `fredo open-terminal` launch into an ALREADY-mounted workspace: ST-5 emits
+ * `terminal-intent-available` to the active host, and the workspace re-invokes
+ * `list_terminal_sessions` — the backend drain handshake — which `take()`s the
+ * armed one-shot intent and emits `terminal-open-request`. The shipped
+ * `terminal-open-request` listener remains the ONLY spawner; the one-shot
+ * `take()` keeps the cold path (and a repeat event) from double-spawning.
+ */
+describe('Spec 2947 ST-4 — warm-path intent drain', () => {
+  it('re-drains the armed intent and spawns exactly once when intent-available fires', async () => {
+    renderWindow();
+    await waitFor(() => expect(listeners['terminal-intent-available']).toBeTypeOf('function'));
+    await waitFor(() => expect(listeners['terminal-open-request']).toBeTypeOf('function'));
+    invoke.mockClear();
+
+    // Simulate the backend: this `list_terminal_sessions` takes the armed one-shot
+    // intent and emits `terminal-open-request` (the re-drain handshake).
+    drainOnList = true;
+    listeners['terminal-intent-available']?.({});
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('list_terminal_sessions', undefined),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('spawn_terminal_session', {
+        cli: 'copilot',
+        workDir: 'C:\\repo',
+      }),
+    );
+    // Exactly ONE spawn — no second spawner, no double-spawn.
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'spawn_terminal_session'),
+    ).toHaveLength(1);
+    expect(screen.queryByRole('dialog', { name: 'New session' })).toBeNull();
+  });
+
+  it('never double-spawns when the one-shot intent is already spent', async () => {
+    renderWindow();
+    await waitFor(() => expect(listeners['terminal-intent-available']).toBeTypeOf('function'));
+    await waitFor(() => expect(listeners['terminal-open-request']).toBeTypeOf('function'));
+
+    // First event: the armed intent is drained and spawns once.
+    drainOnList = true;
+    listeners['terminal-intent-available']?.({});
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('spawn_terminal_session', {
+        cli: 'copilot',
+        workDir: 'C:\\repo',
+      }),
+    );
+
+    // Second event: `take()` now yields None (spent) → the drain emits nothing.
+    invoke.mockClear();
+    drainOnList = false;
+    listeners['terminal-intent-available']?.({});
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('list_terminal_sessions', undefined),
+    );
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'spawn_terminal_session'),
+    ).toHaveLength(0);
   });
 });
 
