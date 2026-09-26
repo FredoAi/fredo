@@ -119,3 +119,23 @@ F-1/F-2/F-13 → AC1 (simultaneous panes, add/reflow, maximize/float preserved);
 - **F-21 (from E-11) — move-to-region must honour the requested region.** Chrome: `workspace-pane-move-<id>` + `pane-region-<region>`. EXPECTED: committing a region sets `data-pane-region` to it and moves the rendered rect into it (with siblings reflowing). ACTUAL (round 1): the pane keeps its region; panes repartition by slot order. A move must also announce `Moved <title> to <region>`.
 - **F-22 (entry-path reachability, from the AC1 probe) — an arrange entry MUST exist at 0 tiled panes.** Chrome: a reachable control (`dock-arrange` in the dock, or an always-rendered `workspace-arrange`). EXPECTED: with ≥1 open window and no panes, a visible control places the open windows as panes. ACTUAL (round 1): no control exists until a pane already does.
 - **F-23 (restart restores apps, from E-6/F-15) — restart must restore the arrangement WITH the apps' contents.** EXPECTED: after a full restart the saved panes render with content on first paint. ACTUAL (round 1): only the slots hydrate (degraded placeholders); apps are not reopened, and the normal open path opens them full-bleed.
+
+---
+
+## Test run (round 2) — Verdict: **PASS** (5/5 ACs; 20/20 F-rows)
+
+> Live-driven via `pnpm dev:tauri` (spec/2949 @ `960ff034`; serving checkout confirmed before the drive and by the restart log). Live `telemetry_spans`: 1968 → 2233 rows (max `ingested_at` 2026-09-26T20:41:11Z → 2026-09-26T20:59:56Z). Full restart via `dev-env.ps1 -Action Restart -Spec 2949`. Console clean after every leg.
+
+Round-2 fixes verified (round-1 FAIL → PASS):
+
+- **F-1 (AC1) — PASS.** At 0 tiled panes (3 open full-bleed windows) `[data-testid="dock-arrange"]` is present in the DOM; revealing the left dock edge (`document pointermove clientX=2` → dock `x 0`, `visibility:visible`) and clicking it tiled **3 `workspace-pane-*` at 640-wide non-full-bleed rects** (terminal left / mission-monitor center / setup right), `frames:[]`, `degraded:[]`.
+- **F-2 (AC1) — PASS.** Query Viewer opened full-bleed (no slot) → `workspace-arrange` added it as a pane; 4 panes in a 2×2 grid, 0 overlaps, announcer "Added 1 pane".
+- **F-3 (AC2) — PASS.** 3 panes → move Terminal → `pane-region-bottom-right`: terminal `data-pane-region="bottom-right"` at `{960,527,960,491}` (exact bottom-right quarter); siblings re-homed non-overlapping; announcer **"Moved Terminal to bottom-right"**.
+- **F-4/F-5 (AC2) — PASS.** Divider drag: both adjacent panes changed, combined extent constant 1920; two distinct mid-gesture samples tracked the pointer; persisted value **unchanged mid-gesture** and written on release (<500 ms).
+- **F-6/F-7/F-14 (AC3) — PASS.** Saved `r2layout`; restore replaced the arrangement at saved rects; ≤500 ms debounced persist.
+- **F-8/F-15 (AC3/AC5) — PASS (decisive).** Persisted Terminal-left / Mission-Monitor-right → full restart → **both panes restored un-maximized with contents on first paint**, `degraded:[]`, `frames:[]`, no manual Restore.
+- **F-9/F-10 (AC4) — PASS.** Explicit restore of a closed app and of an unknown id still degrade (the boot-reopen does NOT leak into `restoreLayout`); closing a pane makes the sibling absorb, no orphan divider.
+- **F-11 (AC5) — PASS.** Live theme switch (cyberpunk → light-default) re-tints panes/borders/dividers to `--card-bg`/`--border-color`/`--accent-primary`; 0 colour literals, 0 `var(--x)NN`.
+- **F-13/F-16/F-17/F-18/F-19/F-20 — PASS.** Maximize/float/restore exact-slot return; console clean; module-scoped store survives restart; divider keyboard resize + pane arrow focus + focus ring; kernel regression holds (`windowStore`/`windowTypes`/`WindowFrame` unchanged); CI-parity green (`typecheck`/`build`/`test:run` 172 files / 2444 tests / `cargo check` / `cargo clippy -D warnings`).
+
+**Promoted F-21/F-22/F-23 now PASS** on the served tip. Round-2 observation (non-blocking): immediately after `dock-arrange` at 0 panes the panes briefly report `offsetHeight 1017` vs tiles `981`; the next structural change re-homes them to 981 — cosmetic only.
