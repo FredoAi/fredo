@@ -42,7 +42,13 @@ use serde_json::{json, Map, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use sqlx::Row as _;
 
+use fredo_lib::infrastructure::feature_data::declaration::{
+    ColumnOwner, DataSource, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration,
+    FeatureDataTableDeclaration, Retention, SessionRollupKind, SessionRollupProjection,
+};
+use fredo_lib::infrastructure::feature_data::registry::DeclarationRegistry;
 use fredo_lib::infrastructure::feature_data::store::{FeatureDataStore, TableMeta, Tombstone};
+use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
 use fredo_lib::infrastructure::storage::feature_store::{ColumnDef, ColumnType, FeatureStore};
 use fredo_lib::infrastructure::storage::{
@@ -133,6 +139,10 @@ async fn cross_engine_postgres_suite() {
     // Phase 3: the ST-2 startup schema-init registry on the candidate pool
     // (ST-6 rework — pins the boot contract whose gap failed round 1).
     schema_init_scenario(&url, &unique_schema("schema_init")).await;
+    // Phase 4: the declared-table DDL builder quotes every identifier, so a
+    // mixed-case declared table is created case-preserved on PG and the quoted
+    // upsert path agrees with it (ST-2 rework; pins the round-2 defect class).
+    declared_table_quoting_scenario(&url, &unique_schema("declared")).await;
 
     // ── G-263 teardown: finite bound + guaranteed hard-kill + no orphan ──────
     let started = Instant::now();
@@ -266,11 +276,12 @@ async fn quoted_identifier_scenario(url: &str, schema: &str) {
             .fetch_one(&pool)
             .await
             .expect("folded to_regclass");
-    let quoted: Option<String> =
-        sqlx::query_scalar("SELECT to_regclass('\"feature_CaseTest_widgets\"')::text")
-            .fetch_one(&pool)
-            .await
-            .expect("quoted to_regclass");
+    let quoted: Option<String> = sqlx::query_scalar(
+        "SELECT relname FROM pg_class WHERE oid = to_regclass('\"feature_CaseTest_widgets\"')",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("quoted to_regclass");
     assert!(
         folded.is_none(),
         "an unquoted lookup must fold to lowercase, saw {folded:?}"
@@ -371,6 +382,142 @@ async fn schema_init_scenario(url: &str, schema: &str) {
     assert_eq!(loaded.table_name, "sessions");
 
     pool.close().await;
+}
+
+// ── Phase 4: declared-table DDL quoting (mix-case identifier pin) ────────────
+
+/// The declared-table DDL builder must quote every identifier so a mixed-case
+/// declared schema is created **case-preserved** on PostgreSQL and the (already
+/// quoted) upsert path agrees with it. This is the round-2 defect class: the
+/// unquoted `create_table_sql` let PostgreSQL fold `sessionId → sessionid`, so
+/// every declared-row projection write failed `no existe la columna «sessionId»`
+/// and Mission Monitor rendered nothing on the PG-selected boot (ST-2 rework).
+async fn declared_table_quoting_scenario(url: &str, schema: &str) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
+    let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+
+    let pool = build_pool(url, schema).await;
+    handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
+        pool: pool.clone(),
+        url: url.to_string(),
+    })));
+
+    let data = Arc::new(FeatureDataStore::open(handle.clone()).expect("data store"));
+    let features = Arc::new(FeatureStore::open(handle.clone()).expect("feature store"));
+    data.ensure_schema()
+        .expect("create the feature-data schema on the candidate pool");
+
+    // Declare the MM-shaped table through the SAME registry path a live
+    // `feature_data_declare` takes (mixed-case PK `sessionId` + `chatRowCount`).
+    let registry = DeclarationRegistry::new(data.clone(), features.clone());
+    let materialized = registry
+        .declare(&mm_sessions_declaration())
+        .expect("the mixed-case declared table must materialize");
+    assert_eq!(materialized.len(), 1, "one declared table materialized");
+    assert!(
+        materialized[0].created,
+        "a fresh declared table must be created, saw {materialized:?}"
+    );
+
+    // (i) The physical columns are case-preserved on PostgreSQL (NOT folded).
+    let types = pg_column_types(&pool, schema, "feature_mission_monitor_sessions").await;
+    assert!(
+        types.contains_key("sessionId"),
+        "the declared PK column must be stored as `sessionId`, saw {types:?}"
+    );
+    assert!(
+        types.contains_key("chatRowCount"),
+        "the declared column must be stored as `chatRowCount`, saw {types:?}"
+    );
+    assert!(
+        !types.contains_key("sessionid") && !types.contains_key("chatrowcount"),
+        "PostgreSQL must NOT fold the declared mixed-case columns, saw {types:?}"
+    );
+
+    // (ii) The primary key physically keys on the case-preserved `sessionId`.
+    let pk_cols: Vec<String> = sqlx::query_scalar(
+        "SELECT a.attname
+           FROM pg_index i
+           JOIN pg_attribute a
+             ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+          WHERE i.indrelid = to_regclass($1) AND i.indisprimary
+          ORDER BY a.attname",
+    )
+    .bind(format!(
+        "\"{schema}\".\"feature_mission_monitor_sessions\""
+    ))
+    .fetch_all(&pool)
+    .await
+    .expect("pg_index primary-key probe");
+    assert_eq!(
+        pk_cols,
+        vec!["sessionId".to_string()],
+        "the declared primary key must physically key on the case-preserved `sessionId`"
+    );
+
+    // (iii) The quoted write path (FeatureStore::upsert) agrees with the created
+    // schema — the exact write that failed on the folded table.
+    let mut row = Map::new();
+    row.insert("sessionId".to_string(), json!("s1"));
+    row.insert("chatRowCount".to_string(), json!(5));
+    row.insert("_row_version".to_string(), json!(1));
+    row.insert("_updated_at".to_string(), json!(T0));
+    let written = features
+        .upsert(
+            "mission-monitor",
+            "sessions",
+            &["sessionId".to_string()],
+            &[row],
+        )
+        .expect("a declared-row upsert must succeed on the quoted declared schema");
+    assert_eq!(written, 1, "the declared-row upsert must write exactly one row");
+
+    let read_back = features
+        .query("mission-monitor", "sessions", None, None, None)
+        .expect("query the declared table");
+    assert_eq!(read_back.len(), 1, "the upserted row must read back");
+    assert_eq!(read_back[0]["sessionId"], "s1");
+    assert_eq!(read_back[0]["chatRowCount"], 5);
+
+    pool.close().await;
+}
+
+/// The MM-shaped declaration whose unquoted DDL PostgreSQL folded — mirrors the
+/// registry unit-test declaration (`registry.rs` `declaration(..)`): mixed-case
+/// PK `sessionId`, mixed-case column `chatRowCount`.
+fn mm_sessions_declaration() -> FeatureDataDeclaration {
+    FeatureDataDeclaration {
+        feature_id: "mission-monitor".to_string(),
+        declaration_revision: "mm.sessions.v1".to_string(),
+        tables: vec![FeatureDataTableDeclaration {
+            name: "sessions".to_string(),
+            primary_key: vec!["sessionId".to_string()],
+            columns: vec![
+                DeclaredColumn {
+                    name: "sessionId".to_string(),
+                    col_type: DeclaredColumnType::Text,
+                    nullable: false,
+                    owner: ColumnOwner::Backend,
+                },
+                DeclaredColumn {
+                    name: "chatRowCount".to_string(),
+                    col_type: DeclaredColumnType::Integer,
+                    nullable: true,
+                    owner: ColumnOwner::Backend,
+                },
+            ],
+            source: Some(DataSource::SessionRollup(SessionRollupProjection {
+                kind: SessionRollupKind::SessionRollup,
+                exclude_dispatch_names: vec!["build".to_string(), "plan".to_string()],
+                terminal_states: vec![RowState::Response, RowState::Timeout],
+            })),
+            retention: Some(Retention {
+                max_rows: Some(500),
+                ttl_days: None,
+            }),
+        }],
+    }
 }
 
 // ── The shared fixture (identical operations on both engines) ────────────────

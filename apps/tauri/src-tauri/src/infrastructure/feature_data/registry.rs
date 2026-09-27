@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 
+use crate::infrastructure::storage::engine::quote_ident;
 use crate::infrastructure::storage::feature_store::{ColumnType, FeatureStore, PhysicalColumn};
 
 use super::declaration::{
@@ -371,8 +372,8 @@ impl DeclarationRegistry {
                     for column in pending {
                         sql.push_str(&format!(
                             "ALTER TABLE {} ADD COLUMN {} {};\n",
-                            full,
-                            column.name,
+                            quote_ident(&full),
+                            quote_ident(&column.name),
                             column.col_type.as_sql_type()
                         ));
                     }
@@ -406,7 +407,8 @@ impl DeclarationRegistry {
                 let moved = self.store.row_count(&full)?;
                 self.store.execute_batch(&format!(
                     "ALTER TABLE {} RENAME TO {};",
-                    full, quarantine
+                    quote_ident(&full),
+                    quote_ident(&quarantine)
                 ))?;
                 self.store.execute_batch(&create_table_sql(&full, table))?;
                 self.meta.put_table(&TableMeta {
@@ -700,17 +702,27 @@ fn create_table_sql(full: &str, table: &FeatureDataTableDeclaration) -> String {
         };
         defs.push(format!(
             "{} {}{}",
-            column.name,
+            quote_ident(&column.name),
             column.col_type.as_sql_type(),
             not_null
         ));
     }
-    defs.push("_row_version INTEGER NOT NULL".to_string());
-    defs.push("_updated_at TEXT NOT NULL".to_string());
+    defs.push(format!("{} INTEGER NOT NULL", quote_ident("_row_version")));
+    defs.push(format!("{} TEXT NOT NULL", quote_ident("_updated_at")));
     if !table.primary_key.is_empty() {
-        defs.push(format!("PRIMARY KEY ({})", table.primary_key.join(", ")));
+        let keys = table
+            .primary_key
+            .iter()
+            .map(|pk| quote_ident(pk))
+            .collect::<Vec<_>>()
+            .join(", ");
+        defs.push(format!("PRIMARY KEY ({keys})"));
     }
-    format!("CREATE TABLE IF NOT EXISTS {} ({});", full, defs.join(", "))
+    format!(
+        "CREATE TABLE IF NOT EXISTS {} ({});",
+        quote_ident(full),
+        defs.join(", ")
+    )
 }
 
 #[cfg(test)]
