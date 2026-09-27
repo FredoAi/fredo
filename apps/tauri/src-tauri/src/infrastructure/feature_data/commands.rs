@@ -1060,7 +1060,7 @@ pub(crate) mod tests {
         let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
         let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = Arc::new(DeclarationRegistry::new(meta.clone(), tables.clone()));
         registry.declare(&sessions_declaration()).unwrap();
         let engine = Arc::new(

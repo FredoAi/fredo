@@ -111,15 +111,10 @@ pub fn run() {
     );
 
     builder.setup(|app| {
-            // -- SQLite settings store -----------------------------------------
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("Failed to resolve app data dir");
-            let app_store = Arc::new(
-                AppStore::open(data_dir.clone()).expect("Failed to open settings store"),
-            );
-            app.manage(app_store.clone());
 
             // -- Shared storage-engine seam (Spec #2975 ST-2) ------------------
             // ONE shared SQLite engine + the swap-once `EngineHandle`, built
@@ -133,7 +128,18 @@ pub fn run() {
                 .expect("Failed to open the shared storage engine");
             let engine_choice = select_engine(&sqlite_engine);
             let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine));
-            app.manage(StorageEngineState::new(engine_handle, engine_choice));
+            app.manage(StorageEngineState::new(engine_handle.clone(), engine_choice));
+
+            // -- SQLite settings store (Spec #2975 ST-3) -----------------------
+            // The KV store sits ON the shared handle: the async data plane
+            // (`get`/`set`) is engine-selected, while the synchronous control
+            // plane (`control_get`/`control_set`) stays on SQLite. The setup
+            // closure below stays synchronous and reads config via the control
+            // API — never `block_on`.
+            let app_store = Arc::new(
+                AppStore::open(engine_handle).expect("Failed to open settings store"),
+            );
+            app.manage(app_store.clone());
 
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
             // Disabled by default (`postgres.enabled` absent ⇒ no lock, no
@@ -162,7 +168,7 @@ pub fn run() {
             // which is set after LogCollector creation below.
             {
                 let logging_level = app.state::<Arc<AppStore>>()
-                    .get("tracing.logging_level").ok().flatten()
+                    .control_get("tracing.logging_level").ok().flatten()
                     .unwrap_or_else(|| "INFO".to_string());
 
                 let env_filter = EnvFilter::try_new(&logging_level)
@@ -220,32 +226,32 @@ pub fn run() {
             // REQ-11: Set telemetry defaults if not already configured.
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get("tracing.enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.enabled", "true");
+                if store_ref.control_get("tracing.enabled").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.enabled", "true");
                 }
-                if store_ref.get("tracing.retention_days").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.retention_days", "7");
+                if store_ref.control_get("tracing.retention_days").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.retention_days", "7");
                 }
                 // REQ-13: Set metrics defaults if not already configured.
-                if store_ref.get("tracing.metrics_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.metrics_enabled", "true");
+                if store_ref.control_get("tracing.metrics_enabled").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.metrics_enabled", "true");
                 }
-                if store_ref.get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.metrics_aggregation_s", "60");
+                if store_ref.control_get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.metrics_aggregation_s", "60");
                 }
                 // REQ-7: Set logging defaults if not already configured.
-                if store_ref.get("tracing.logging_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.logging_enabled", "true");
+                if store_ref.control_get("tracing.logging_enabled").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.logging_enabled", "true");
                 }
-                if store_ref.get("tracing.logging_level").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.logging_level", "INFO");
+                if store_ref.control_get("tracing.logging_level").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.logging_level", "INFO");
                 }
             }
 
             // REQ-9: Run retention cleanup on startup.
             let store_ref = app.state::<Arc<AppStore>>();
             let retention_days: i64 = store_ref
-                .get("tracing.retention_days")
+                .control_get("tracing.retention_days")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse().ok())
@@ -496,12 +502,12 @@ pub fn run() {
             // KV keys — the binding config-first mechanism).
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
+                if store_ref.control_get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
                     let _ = store_ref
-                        .set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
+                        .control_set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
                 }
-                if store_ref.get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
+                if store_ref.control_get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref.control_set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
                 }
             }
 

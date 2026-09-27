@@ -178,7 +178,7 @@ enum Bootstrap {
 /// pre-ST-2 caller); in production the resolved engine choice supersedes it.
 fn pg_enabled(store: &AppStore) -> bool {
     matches!(
-        store.get(PG_ENABLED_KEY).ok().flatten().as_deref(),
+        store.control_get(PG_ENABLED_KEY).ok().flatten().as_deref(),
         Some("true")
     )
 }
@@ -219,13 +219,13 @@ fn bootstrap(app_data_dir: &Path, store: &AppStore, enabled: bool) -> Bootstrap 
 
 /// The password for the loopback-only cluster, generated once and reused.
 fn ensure_password(store: &AppStore) -> String {
-    if let Ok(Some(password)) = store.get(PG_PASSWORD_KEY) {
+    if let Ok(Some(password)) = store.control_get(PG_PASSWORD_KEY) {
         if !password.is_empty() {
             return password;
         }
     }
     let password = uuid::Uuid::new_v4().simple().to_string();
-    let _ = store.set(PG_PASSWORD_KEY, &password);
+    let _ = store.control_set(PG_PASSWORD_KEY, &password);
     password
 }
 
@@ -554,7 +554,9 @@ mod tests {
     };
 
     fn open_store(dir: &Path) -> AppStore {
-        AppStore::open(dir.to_path_buf()).expect("open app store")
+        use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
+        let sqlite = SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine");
+        AppStore::open(EngineHandle::new(StoreEngine::Sqlite(sqlite))).expect("open app store")
     }
 
     #[test]
@@ -564,10 +566,10 @@ mod tests {
 
         assert!(!pg_enabled(&store), "an absent flag is disabled (R-1.4)");
         for raw in ["false", "TRUE", "True", "1", "yes", "", "  true"] {
-            store.set(PG_ENABLED_KEY, raw).expect("seed flag");
+            store.control_set(PG_ENABLED_KEY, raw).expect("seed flag");
             assert!(!pg_enabled(&store), "{raw:?} must not enable the engine");
         }
-        store.set(PG_ENABLED_KEY, "true").expect("enable");
+        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
         assert!(pg_enabled(&store));
     }
 
@@ -576,7 +578,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
         // A stale marker must survive the disabled path untouched (R-1.4).
-        store.set(PG_PID_KEY, "4242").expect("seed marker");
+        store.control_set(PG_PID_KEY, "4242").expect("seed marker");
 
         assert!(matches!(
             bootstrap(dir.path(), &store, false),
@@ -599,7 +601,7 @@ mod tests {
     fn enabled_bootstrap_acquires_the_lock_before_sweeping() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.set(PG_ENABLED_KEY, "true").expect("enable");
+        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
 
         match bootstrap(dir.path(), &store, true) {
             Bootstrap::Locked(lock, data_dir) => {
@@ -619,7 +621,7 @@ mod tests {
     fn a_second_bootstrap_reports_failed_with_a_structured_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.set(PG_ENABLED_KEY, "true").expect("enable");
+        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
         let held = PgDataDirLock::acquire(dir.path()).expect("hold the lock");
 
         match bootstrap(dir.path(), &store, true) {

@@ -39,7 +39,7 @@ pub fn telemetry_toggle(
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
     app_store
-        .set("tracing.enabled", value)
+        .control_set("tracing.enabled", value)
         .map_err(|e| e.to_string())?;
     collector.refresh_enabled();
     Ok(())
@@ -55,7 +55,7 @@ pub fn telemetry_metrics_toggle(
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
     app_store
-        .set("tracing.metrics_enabled", value)
+        .control_set("tracing.metrics_enabled", value)
         .map_err(|e| e.to_string())?;
     if enabled {
         metric_collector.refresh_enabled();
@@ -76,7 +76,7 @@ pub fn telemetry_logging_toggle(
 ) -> Result<(), String> {
     let value = if enabled { "true" } else { "false" };
     app_store
-        .set("tracing.logging_enabled", value)
+        .control_set("tracing.logging_enabled", value)
         .map_err(|e| e.to_string())?;
     if enabled {
         log_collector.refresh_enabled();
@@ -101,7 +101,7 @@ pub fn telemetry_logging_set_level(
         ));
     }
     app_store
-        .set("tracing.logging_level", &level)
+        .control_set("tracing.logging_level", &level)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -120,28 +120,28 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
         store.ensure_schema().unwrap();
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let collector = Arc::new(SpanCollector::new(store.clone(), app_store.clone()));
 
         // Initially enabled (default)
         assert_eq!(
-            app_store.get("tracing.enabled").unwrap(),
+            app_store.control_get("tracing.enabled").unwrap(),
             None,
             "no default set"
         );
 
         // Toggle off
-        app_store.set("tracing.enabled", "false").unwrap();
+        app_store.control_set("tracing.enabled", "false").unwrap();
         collector.refresh_enabled();
 
-        let val = app_store.get("tracing.enabled").unwrap();
+        let val = app_store.control_get("tracing.enabled").unwrap();
         assert_eq!(val, Some("false".to_string()));
 
         // Toggle on
-        app_store.set("tracing.enabled", "true").unwrap();
+        app_store.control_set("tracing.enabled", "true").unwrap();
         collector.refresh_enabled();
 
-        let val = app_store.get("tracing.enabled").unwrap();
+        let val = app_store.control_get("tracing.enabled").unwrap();
         assert_eq!(val, Some("true".to_string()));
     }
 

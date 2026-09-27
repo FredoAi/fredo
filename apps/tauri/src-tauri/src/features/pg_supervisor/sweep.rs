@@ -38,13 +38,13 @@ use super::{PG_PID_KEY, POSTGRES_IMAGE};
 /// state.
 pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
-    let _ = store.set(PG_PID_KEY, &value);
+    let _ = store.control_set(PG_PID_KEY, &value);
 }
 
 /// Read the persisted postmaster PID marker (blank / malformed => `None`).
 pub fn persisted_pid(store: &AppStore) -> Option<u32> {
     store
-        .get(PG_PID_KEY)
+        .control_get(PG_PID_KEY)
         .ok()
         .flatten()
         .and_then(|value| value.trim().parse().ok())
@@ -183,7 +183,9 @@ mod tests {
     }
 
     fn open_store(dir: &Path) -> AppStore {
-        AppStore::open(dir.to_path_buf()).expect("open app store")
+        use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
+        let sqlite = SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine");
+        AppStore::open(EngineHandle::new(StoreEngine::Sqlite(sqlite))).expect("open app store")
     }
 
     #[test]
@@ -204,7 +206,7 @@ mod tests {
         let store = open_store(dir.path());
 
         for raw in ["", "   ", "not-a-pid", "12abc", "-1", "0x10"] {
-            store.set(PG_PID_KEY, raw).expect("seed marker");
+            store.control_set(PG_PID_KEY, raw).expect("seed marker");
             assert_eq!(
                 persisted_pid(&store),
                 None,
@@ -274,7 +276,7 @@ mod tests {
         clear_kills();
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        store.set(PG_PID_KEY, "not-a-pid").expect("seed marker");
+        store.control_set(PG_PID_KEY, "not-a-pid").expect("seed marker");
 
         let reclaimed =
             sweep_orphan_with(&store, |_| Some(POSTGRES_IMAGE.to_string()), record_kill);

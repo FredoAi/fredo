@@ -108,7 +108,7 @@ impl LogCollector {
     /// Reads `tracing.logging_enabled` from AppStore to initialize the cache.
     pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
         let enabled = app_store
-            .get("tracing.logging_enabled")
+            .control_get("tracing.logging_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -128,7 +128,7 @@ impl LogCollector {
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
-            .get("tracing.logging_enabled")
+            .control_get("tracing.logging_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -421,8 +421,8 @@ mod tests {
         let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
         store.ensure_schema().unwrap();
         store.ensure_logs_schema().unwrap();
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
-        app_store.set("tracing.logging_enabled", "true").unwrap();
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        app_store.control_set("tracing.logging_enabled", "true").unwrap();
         let collector = Arc::new(LogCollector::new(store.clone(), app_store.clone()));
         (store, app_store, collector)
     }
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn test_log_collector_disabled() {
         let (store, app_store, collector) = make_collector();
-        app_store.set("tracing.logging_enabled", "false").unwrap();
+        app_store.control_set("tracing.logging_enabled", "false").unwrap();
         collector.refresh_enabled();
 
         collector.push(make_record());
@@ -548,12 +548,12 @@ mod tests {
         assert!(collector.enabled_cache.load(Ordering::SeqCst));
 
         // Change in AppStore and refresh
-        app_store.set("tracing.logging_enabled", "false").unwrap();
+        app_store.control_set("tracing.logging_enabled", "false").unwrap();
         collector.refresh_enabled();
         assert!(!collector.enabled_cache.load(Ordering::SeqCst));
 
         // Change back
-        app_store.set("tracing.logging_enabled", "true").unwrap();
+        app_store.control_set("tracing.logging_enabled", "true").unwrap();
         collector.refresh_enabled();
         assert!(collector.enabled_cache.load(Ordering::SeqCst));
     }
