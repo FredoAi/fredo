@@ -66,7 +66,11 @@ import {
   KEYBOARD_BAR_Z_INDEX,
   KeyboardBar,
 } from '../KeyboardBar';
-import { KEYBOARD_BAR_FADE_MS } from '../keyboardBarGeometry';
+import {
+  KEYBOARD_BAR_FADE_MS,
+  KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX,
+  KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX,
+} from '../keyboardBarGeometry';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -335,6 +339,62 @@ describe('KeyboardBar — unavailable rows with reasons (R-5.1/R-5.2)', () => {
       `[data-testid="${KEYBOARD_BAR_ROW_TESTID}"][data-availability="available"]`,
     );
     expect(available.length).toBeGreaterThan(0);
+  });
+
+  it('gives the unavailable chip its own budget, floors the title, and protects the full reason (F-2 round 3)', () => {
+    mountInput();
+    const { container } = renderWithChakra(<KeyboardBar reducedMotion />);
+    act(() => {
+      enterKeyboardMode();
+    });
+
+    const unavailable = container.querySelectorAll<HTMLElement>(
+      `[data-testid="${KEYBOARD_BAR_ROW_TESTID}"][data-availability="unavailable"]`,
+    );
+    expect(unavailable.length).toBeGreaterThan(0);
+    const first = unavailable[0];
+
+    // The unavailable chip uses the dedicated 480 px budget (pinned exactly); an
+    // available chip keeps the round-2 240 px clamp.
+    expect(KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX).toBe(480);
+    expect(getComputedStyle(first).maxWidth).toBe('480px');
+    const available = container.querySelector<HTMLElement>(
+      `[data-testid="${KEYBOARD_BAR_ROW_TESTID}"][data-availability="available"]`,
+    );
+    expect(available).not.toBeNull();
+    expect(getComputedStyle(available as HTMLElement).maxWidth).toBe('240px');
+
+    // The title is the ONLY ellipsis target and carries a 48 px floor so it can
+    // never collapse to a 0 px box.
+    const title = Array.from(first.querySelectorAll('p')).find(
+      (node) =>
+        node.getAttribute('data-testid') !== KEYBOARD_BAR_ROW_REASON_TESTID &&
+        node.textContent !== 'unavailable',
+    );
+    expect(title).not.toBeUndefined();
+    expect(KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX).toBe(48);
+    expect(getComputedStyle(title as HTMLElement).minWidth).toBe('48px');
+    expect(getComputedStyle(title as HTMLElement).textOverflow).toBe('ellipsis');
+
+    // The reason is EXEMPT from the clamp: full declared text, no own
+    // overflow-hidden / ellipsis / max-width (so `while typing` stays readable).
+    const reason = first.querySelector<HTMLElement>(
+      `[data-testid="${KEYBOARD_BAR_ROW_REASON_TESTID}"]`,
+    );
+    expect(reason).not.toBeNull();
+    expect(reason as HTMLElement).toHaveTextContent('Unavailable while typing');
+    const reasonStyle = getComputedStyle(reason as HTMLElement);
+    expect(reasonStyle.overflow).not.toBe('hidden');
+    expect(reasonStyle.textOverflow).not.toBe('ellipsis');
+    expect(reasonStyle.maxWidth).not.toBe('480px');
+
+    // No interaction is introduced: the bar stays non-focusable, with ONE announcer
+    // (the bar carries none) and the TOTAL-count body hook.
+    const root = bar(container)!;
+    expect(root.querySelectorAll('button, [tabindex], [href]')).toHaveLength(0);
+    expect(root.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0);
+    const totalRows = resolveActiveBindings().filter((binding) => binding.sequence.length > 0).length;
+    expect(document.body.getAttribute(BODY_KEYBOARD_MODE_COUNT_ATTR)).toBe(String(totalRows));
   });
 });
 

@@ -41,6 +41,36 @@ export const KEYBOARD_BAR_ROW_MAX_WIDTH_PX = 240;
 /** The width (px) reserved for the pinned `+N more` overflow chip. */
 export const KEYBOARD_BAR_MORE_RESERVE_PX = 72;
 
+/**
+ * Spec #2959 round 3 (F-1) — the dedicated width budget for an UNAVAILABLE chip
+ * (px). An unavailable row carries fixed content the available chip does not: the
+ * `LuCircleSlash` status icon, the literal `unavailable` keyword and the declared
+ * reason string (`unavailableReasonFor`, `keyboardBarModel.ts`). This budget is
+ * sized to hold the longest declared reason (`'The focused control captures this
+ * key'`, ~37 chars ≈ 190 px) plus the keyword, the icon, up to a 3-key `Keycap`,
+ * the title floor and gaps/padding (~438 px worst case) — with margin. Only the
+ * unavailable chip class uses it; the available clamp stays
+ * `KEYBOARD_BAR_ROW_MAX_WIDTH_PX` (240) so the round-2 capacity arithmetic is
+ * unaffected for available rows.
+ */
+export const KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX = 480;
+/**
+ * The minimum width (px) of an action chip's title. The title is the ONLY
+ * ellipsis target; this floor guarantees it can never collapse to a 0 px box when
+ * an over-budget sibling (the un-ellipsized reason) claims the shrink.
+ */
+export const KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX = 48;
+/**
+ * The capacity arithmetic's row budget (px): the widest row class, so every slot
+ * is large enough for EITHER an available (240 px) or an unavailable (480 px) chip.
+ * Feeding this to `resolveKeyboardBarCapacity` keeps the bound deterministic and
+ * clipping-free — no rendered chip can exceed its allotted slot.
+ */
+export const KEYBOARD_BAR_ROW_BUDGET_PX = Math.max(
+  KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+  KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX,
+);
+
 export interface KeyboardBarLayoutInput {
   /** `measureBottomOffsetPx()` — the dock's live bottom offset, or `null` when absent. */
   readonly dockTopPx: number | null;

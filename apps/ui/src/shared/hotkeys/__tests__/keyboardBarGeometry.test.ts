@@ -14,8 +14,11 @@ import {
   KEYBOARD_BAR_MAX_VISIBLE_ROWS,
   KEYBOARD_BAR_MIN_BOTTOM_PX,
   KEYBOARD_BAR_MORE_RESERVE_PX,
+  KEYBOARD_BAR_ROW_BUDGET_PX,
   KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+  KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX,
   KEYBOARD_BAR_STACK_GAP_PX,
+  KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX,
   resolveKeyboardBarCapacity,
   resolveKeyboardBarLayout,
 } from '../keyboardBarGeometry';
@@ -126,5 +129,40 @@ describe('resolveKeyboardBarCapacity — bounded overflow (F-2)', () => {
       reservePx: 0,
     });
     expect(withoutReserve - withReserve).toBe(1);
+  });
+});
+
+// ── Unavailable-row budget (F-1 round 3) ─────────────────────────────────────
+
+describe('keyboardBarGeometry — unavailable-row budget (F-1 round 3)', () => {
+  it('declares the exact new constants', () => {
+    expect(KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX).toBe(480);
+    expect(KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX).toBe(48);
+    expect(KEYBOARD_BAR_ROW_BUDGET_PX).toBe(
+      Math.max(KEYBOARD_BAR_ROW_MAX_WIDTH_PX, KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX),
+    );
+    expect(KEYBOARD_BAR_ROW_BUDGET_PX).toBe(480);
+  });
+
+  it('keeps the available clamp at 240 so the round-2 arithmetic is unaffected', () => {
+    expect(KEYBOARD_BAR_ROW_MAX_WIDTH_PX).toBe(240);
+    expect(KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX).toBeGreaterThan(
+      KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+    );
+  });
+
+  it('yields no more rows for the widened budget than the available budget (monotone)', () => {
+    const args = { listWidthPx: 1574, gapPx: 8, reservePx: KEYBOARD_BAR_MORE_RESERVE_PX };
+    const widened = resolveKeyboardBarCapacity({ ...args, rowWidthPx: KEYBOARD_BAR_ROW_BUDGET_PX });
+    const available = resolveKeyboardBarCapacity({
+      ...args,
+      rowWidthPx: KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+    });
+    expect(widened).toBeLessThanOrEqual(available);
+    expect(widened).toBeGreaterThanOrEqual(1);
+    // Both derivations are deterministic for identical input.
+    expect(resolveKeyboardBarCapacity({ ...args, rowWidthPx: KEYBOARD_BAR_ROW_BUDGET_PX })).toBe(
+      widened,
+    );
   });
 });

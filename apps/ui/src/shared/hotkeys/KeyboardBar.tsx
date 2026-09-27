@@ -50,7 +50,10 @@ import {
   KEYBOARD_BAR_HEIGHT_PX,
   KEYBOARD_BAR_MAX_VISIBLE_ROWS,
   KEYBOARD_BAR_MORE_RESERVE_PX,
+  KEYBOARD_BAR_ROW_BUDGET_PX,
   KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+  KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX,
+  KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX,
   resolveKeyboardBarCapacity,
   resolveKeyboardBarLayout,
 } from './keyboardBarGeometry';
@@ -162,7 +165,11 @@ function ActionChip({ row, platform }: { readonly row: KeyboardBarRow; readonly 
       borderRadius="sm"
       bg={unavailable ? 'bg.muted' : undefined}
       flexShrink={0}
-      maxWidth={`${KEYBOARD_BAR_ROW_MAX_WIDTH_PX}px`}
+      maxWidth={`${
+        unavailable
+          ? KEYBOARD_BAR_UNAVAILABLE_ROW_MAX_WIDTH_PX
+          : KEYBOARD_BAR_ROW_MAX_WIDTH_PX
+      }px`}
       minWidth="0"
       overflow="hidden"
     >
@@ -173,7 +180,7 @@ function ActionChip({ row, platform }: { readonly row: KeyboardBarRow; readonly 
         color={unavailable ? 'fg.muted' : 'fg.default'}
         whiteSpace="nowrap"
         flex="1"
-        minWidth="0"
+        minWidth={`${KEYBOARD_BAR_ROW_TITLE_MIN_WIDTH_PX}px`}
         overflow="hidden"
         textOverflow="ellipsis"
       >
@@ -184,6 +191,9 @@ function ActionChip({ row, platform }: { readonly row: KeyboardBarRow; readonly 
           <Text fontSize="xs" color="fg.subtle" whiteSpace="nowrap">
             unavailable
           </Text>
+          {/* F-2 (round 3): the reason is EXEMPT from the clamp — it is the
+              un-shrinkable, un-ellipsized child so it renders the declared reason
+              IN FULL inside the wider unavailable budget; the title yields to it. */}
           <Text
             data-testid={KEYBOARD_BAR_ROW_REASON_TESTID}
             fontSize="xs"
@@ -276,7 +286,9 @@ export function KeyboardBar({
   }, [visible]);
 
   // Overflow capacity (F-2/F-3): live-measure the row list's width and derive how
-  // many chips fit. Unmeasurable (jsdom / SSR / zero-width) ⇒ the deterministic
+  // many chips fit. The row budget is the WIDEST row class
+  // (`KEYBOARD_BAR_ROW_BUDGET_PX`) so a slot always fits either an available or an
+  // unavailable chip. Unmeasurable (jsdom / SSR / zero-width) ⇒ the deterministic
   // fallback ceiling (`maxVisibleRows ?? KEYBOARD_BAR_MAX_VISIBLE_ROWS`). The
   // measurement is primed synchronously and kept current with a `ResizeObserver`;
   // it never subscribes to the keydown path (#523 — capacity keys off the measured
@@ -309,7 +321,7 @@ export function KeyboardBar({
       listWidthPx !== null
         ? resolveKeyboardBarCapacity({
             listWidthPx,
-            rowWidthPx: KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+            rowWidthPx: KEYBOARD_BAR_ROW_BUDGET_PX,
             gapPx: KEYBOARD_BAR_LIST_GAP_PX,
             reservePx: KEYBOARD_BAR_MORE_RESERVE_PX,
           })
