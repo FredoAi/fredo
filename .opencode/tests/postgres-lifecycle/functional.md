@@ -151,3 +151,38 @@ Durable functional suite for the **embedded-PostgreSQL lifecycle supervisor** fe
 PASS = F-1..F-16 all green and N-1..N-5 hold. Any unbounded wait, any started `postgres.exe`
 surviving normal quit / induced error / panic, a kill of a non-`postgres.exe` PID, a
 never-cleared marker, any CI gate red, or F-15 failing = **FAIL**.
+
+## Run — #2974 round 1 (2026-09-27, live)
+
+Serving `spec/2974 @ 714a3a4a`, app via `dev-env.ps1 -Action Up -Spec 2974`. Live receipts:
+`telemetry_spans` queries + `Get-Process -Name postgres` / `Get-NetTCPConnection` (the sandbox
+has no `tasklist` allowlist entry; `run-exitcode.ps1 -Command` was used for process/port reads).
+
+| Case | Verdict | Receipt |
+|------|---------|---------|
+| F-1 | PASS | `pg_supervisor_status` ready; KV marker == pid (5676/6264/…); ephemeral `127.0.0.1:5xxxx`; 9 `postgres.exe` PIDs |
+| F-2 | UNVERIFIED | Cannot induce an un-ready server from the sandbox (data/install dir not writable, ephemeral port unpredictable). Unit-pinned: `readiness_failure_transitions_to_failed_with_a_structured_error`; PoC `lifecycle.json` |
+| F-3 | PASS | Graceful window close → `Get-Process postgres` empty, marker cleared, port released, within the exit-hook bound |
+| F-4 | UNVERIFIED | Cannot induce a hung `pg.stop()`. Unit-pinned watchdog + `taskkill /T /F`; PoC `hard_kill_fallback_on_stop_timeout` (213 ms) |
+| F-5 | PASS | Shell renders (non-empty body, interactive IPC) with PG enabled; `setup` never awaits `run_start` (spawned task) |
+| F-6 | PASS | `dev-env Down` hard-kill orphaned postmaster 5676/12484; next enabled start's sweep reclaimed it (PIDs absent) |
+| F-7 | PASS | Marker seeded 4,000,000 → next start: no kill, marker cleared/replaced |
+| F-8 | PASS | Marker seeded with live `explorer.exe` 24404 → survived; marker cleared/replaced (18732) |
+| F-9 | PASS | `cargo test --locked` includes `run_bounded_errors_fast_on_an_unbounded_wait` (Err, < 5 s) |
+| F-10 | PASS | `Drop` teardown unit tests (normal/error/panic unwind); Cargo default `unwind`; no `panic = "abort"` |
+| F-11 | UNVERIFIED | Cannot wipe the app data dir (sandbox denies writes outside `.opencode/`). Unit-pinned `wiped_data_dir_with_a_stale_marker_never_kills_an_unrelated_process` |
+| F-12 | PASS | Re-measured shell-ready +12 s (PG disabled) vs +8–12 s (PG enabled); MITIGATE + RE-MEASURE |
+| F-13 | PASS | Re-measured stop ≤ bound (graceful close teardown + live sweep); MITIGATE + ACCEPT (residual) |
+| F-14 | PASS | `cargo check/test/clippy --locked` all green, 0 warnings |
+| F-15 | PASS | Mission Monitor renders session/tools/tokens; `telemetry_spans` = 111 for the rendered session; spans grew 5060→5125 live |
+| F-16 | PASS | Ephemeral ports 51433/51544/51841/52024/52217 ≠ 4317/4318/9223; OTLP+MCP still bound |
+| N-1..N-5 | PASS | Boundedness/teardown/build/Windows-first/row-pipeline (F-15 + `git diff` shows no rtdb/UI hunk) |
+
+### Promoted exploratory cases (round 1)
+
+- [x] **F-17 (promoted from E-9) — crash/hard-kill orphan is reclaimed by the next start's sweep.**
+  Confirmed live: `dev-env -Action Down` hard-kills the app (no `RunEvent::Exit`), leaving a live
+  `postgres.exe` and a stale marker; the next PG-enabled start's `sweep_orphan` reclaims it and the
+  marker is replaced. PASS.
+- [x] **F-18 (promoted from E-10) — ephemeral port changes across restarts (no fixed-port leak).**
+  Confirmed live: 51433 → 51544 → 51841 → 52024 → 52217 → 52418 across restarts. PASS.
