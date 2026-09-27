@@ -197,6 +197,12 @@ src-tauri/src/
 |   +-- telemetry/              — Telemetry Tauri commands
 |       +-- mod.rs              — TelemetryFeature (DesktopCapable)
 |       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
+|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor (slice 1 of the migration; PostgreSQL is DISABLED by default — no store is migrated yet)
+|       +-- mod.rs              — constants (wall-clock bounds, AppStore KV keys, env-gated test overrides) + module tree
+|       +-- runtime.rs          — bounded `PgRuntime` (setup/start/readiness/stop) + synchronous watchdog hard-kill + RAII `Drop` teardown
+|       +-- sweep.rs            — PID-marker + `postmaster.pid` image-guarded orphan sweep (kill only a live `postgres.exe`)
+|       +-- lock.rs             — exclusive PG data-dir lock (single-instance guard, acquired before the sweep)
+|       +-- state.rs            — `start_supervisor`/`stop_on_exit` wiring, `await_ready` gate, `pg_supervisor_status` command
 +-- infrastructure/
     +-- comm/                   — Canonical wire types + the single IPC emitter
     |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
