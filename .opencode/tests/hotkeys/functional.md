@@ -311,6 +311,72 @@
 
 ---
 
+## Spec #2959 — keyboard mode + persistent contextual key bar
+
+> Live-plan extension for issue #2959 (S2 of the keyboard-first effort; builds on the merged
+> S1 context model #2958). Rows F-44..F-52 map 1:1 to the QA Plan in
+> `.opencode/tmp/2959/triage.md` `## QA Expert` (`REQ-1`..`REQ-5` = AC1..AC5 + `NFR-1`..`NFR-4`).
+> Binding/testid names bind to the Architect's BINDING block (mode entry/exit chord + bar
+> indicator) and the shipped S1 anchors (`data-fredo-hotkey-context` / `-depth`,
+> `hotkeys-context-indicator[-label|-depth|-pip|-icon]`,
+> `[data-testid="hotkeys-announcer"]`, `data-fredo-pending-sequence`,
+> `data-fredo-focus-context`, `data-fredo-hotkeys-engine`); a rename updates selectors, not
+> behaviors. **Out of scope (must not be re-specced):** S3 typing-vs-navigating signal /
+> zero-knowledge discovery / first-run intro; S4 per-app action sets; S5 deep nesting /
+> cross-level key reuse; no new bindable actions beyond the mode chord; no re-spec of
+> which-key / cheat sheet; no new Settings surface.
+>
+> **Verification policy: live** — evidence carries the DOM/a11y/measured-rect/screenshot
+> assertion PLUS a `telemetry_spans` live receipt from a sanctioned span-producing lever in
+> the drive window (the hotkeys layer itself emits no telemetry — #2946 F-27 / PO Q13).
+
+## F-44 (REQ-1 / AC1) — Entry/exit chord with a clearly-indicated mode
+
+- [ ] F-44: On the resting desktop fire the keyboard-mode ENTRY chord; capture the indication; fire the EXIT chord. **Expected:** mode enters on ONE dedicated chord with a persistent NON-colour-only indication (a text label + an icon/shape channel, ≥2 channels); exit hides the bar, clears the mode hook, and `document.activeElement` equals the pre-entry element (focus where it was). **Data:** `document.activeElement` before/after entry+exit; the mode hook + indicator DOM; screenshot. *(live receipt)*
+  - **Edge:** chord from a focused text field (a modifier chord stays global per R-5.5; a bare-key chord is suppressed); chord with a modal open (modal owns the keyboard → suppressed, modal unaffected); chord while a terminal is focused (passthrough → suppressed); rapid double-press = exactly one toggle; the pre-entry focus origin unmounts between entry and exit; entry while a sequence is pending.
+
+## F-45 (REQ-2 / AC2) — Persistent bar lists the current context's actions (not only mid-sequence)
+
+- [ ] F-45: Enter mode, then WAIT past the sequence timeout with `data-fredo-pending-sequence` null (no multi-key sequence armed); sample the bar rows; dwell ~10 s and re-sample. **Expected:** the bar is CONTINUOUSLY present while mode is on and lists the current context's available actions each with its key label — present with NO pending sequence (not only a mid-sequence which-key hint); survives the idle dwell; absent when mode is off and at boot. **Data:** `data-fredo-pending-sequence` (null), bar row count/text, two timed samples. *(live receipt)*
+  - **Edge:** a one-action context; a many-action context (rows scroll / do not clip); re-entering mode does not duplicate rows; mode off during a context change leaves no stale bar.
+
+## F-46 (REQ-3 / AC3) — Live context follow without re-entering mode
+
+- [ ] F-46: Enter mode; capture bar rows; descend (`primary+K` → `fredo.root.reference`); Escape to return; then change the focused app (focus another feature window) — all WITHOUT re-entering mode (complex scenario). **Expected:** on descent the bar rows switch to the deeper context's actions; one Escape restores the prior context's rows; a focused-app change switches to the new app's actions — mode stays ON throughout; the context change is announced to AT. **Data:** `hotkeys-context-indicator-label`/`-depth` + bar rows after each step; announcer text. *(live receipt)*
+  - **Edge:** descending into a context with ZERO actions; focused-app change while a sequence is pending; rapid descend/unwind (no stale rows); two windows with different contexts; mode toggled off then on across a context change.
+
+## F-47 (REQ-4 / AC4) — Non-intrusive + accessible + non-colour-only
+
+- [ ] F-47: Enter mode; attempt Tab into and a click at the bar; read `document.activeElement` across entry and every context change; read the announcer; render both themes. **Expected:** the bar is NOT focusable (never in the tab order) and its pointer region does not steal interaction (a click at the bar's RESTING rect reaches the element beneath); `activeElement` never changes because of the bar; the shared polite live region announces ENTRY and EVERY context change; the bar's meaning is readable from text + icon shape + keycaps — not colour alone; legible in light + dark. **Data:** `document.activeElement` samples; `elementFromPoint(barRect centre)`; accessibility snapshot; announcer text; light + dark screenshots. *(live receipt)*
+  - **Edge:** bar overlapping an adjacent control — assert the adjacent content's rect vs the bar's RESTING box = zero overlap/clip (G-170/G-253); narrow/zoomed viewport; accessibility-tree names for the bar and any empty/unavailable state; both shipped themes.
+
+## F-48 (REQ-5 / AC5) — Unavailable-with-reason / hidden-by-rule + empty state
+
+- [ ] F-48: In a context with a declared-but-unavailable action, inspect the bar; then force a context with NO actions. **Expected:** the unavailable action is either shown UNAVAILABLE-WITH-REASON (a visible reason string) or hidden by the DECLARED rule — never a dead actionable entry (activating it, mouse or keyboard, performs nothing); the empty context renders a DEFINED empty-state element carrying text (and an announcement), never a blank bar. **Data:** the unavailable row's text/state + an activation attempt result; the empty-state element text/role; screenshot. *(live receipt)*
+  - **Edge:** ALL actions unavailable; a long reason string; availability flips after a context change (the row updates); a greyed entry is not keyboard-activatable; the empty state is announced and non-colour-only.
+
+## F-49 (NFR-1 / performance) — No perceptible latency + no re-render storm
+
+- [ ] F-49: Instrument keydown→bar-update timestamps for entry and for a context change; count bar + feature-tree renders. **Expected:** entry-chord effect begins ≤100 ms after keydown; a context-change bar update lands within ~1 frame; NO per-keystroke re-render storm and no `Maximum update depth exceeded` (epoch-keyed memo; no `.length`/new-object deps — AGENTS.md #523). **Data:** timestamp deltas; render counts; console. *(live receipt)*
+  - **Edge:** under heavy agent streaming; rapid context changes; a large action set; repeated toggles.
+
+## F-50 (NFR-2 / reduced-motion) — Reduced-motion respected
+
+- [ ] F-50: Set `prefers-reduced-motion: reduce`; enter/exit and change context. **Expected:** with reduce, the bar's appear/update/exit transitions are instant/non-animated (no transform/opacity animation) while fully functional; the announcement still fires; focus non-stealing still holds. **Data:** computed animation/transition properties + rendered-over-time screenshot pair; announcer text. *(live receipt)*
+  - **Edge:** reduce enabled at boot vs toggled live mid-transition; mode entry transition; context-change update animation; reduced-motion off = motion allowed.
+
+## F-51 (NFR-3 / theming) — Token/CSS-var hygiene
+
+- [ ] F-51: Static grep of the changed files + a live light/dark + accent pass. **Expected:** ZERO hardcoded hex/rgba/hsla and ZERO `var(--x)NN` alpha-append in the new bar/mode files; colours come from theme tokens / CSS vars / `tint()`; the bar restyles by changing only token definitions; legend + keycaps legible in light AND dark. **Data:** grep output; light/dark/accent screenshots. *(live receipt)*
+  - **Edge:** both shipped themes; a user accent change; narrow/zoomed viewport; keycap foreground/contrast.
+
+## F-52 (NFR-4 / reliability) — Bar never disagrees with the engine
+
+- [ ] F-52: Drive entry → descend → return → focused-app change → unwind; after EACH step compare the bar's displayed context id/label against the engine snapshot (`getHotkeyContextSnapshot()` / `data-fredo-hotkey-context`). **Expected:** the bar's listed context ALWAYS equals the engine's current context — no stale rows after an unwind, no disagreement, deterministic across identical cycles. **Data:** per-step bar context + `data-fredo-hotkey-context` / snapshot. *(live receipt)*
+  - **Edge:** same-context re-fire; rapid descend/unwind; entry during a pending sequence; a context change while mode is off.
+
+---
+
 ## #2946 testing round 1 — result
 
 **Verdict: FAIL (0 of 27 QA rows verifiable).** The served app on `spec/2946` tip
