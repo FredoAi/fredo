@@ -20,6 +20,7 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,13 +30,36 @@ use postgresql_embedded::{PostgreSQL, Settings};
 use sqlx::Connection as _;
 
 use super::{
-    PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_DATA_SUBDIR, PG_INSTALL_SUBDIR, PG_READY_BOUND,
-    PG_SETUP_BOUND, PG_START_BOUND,
+    PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_INSTALL_SUBDIR, PG_READY_BOUND, PG_SETUP_BOUND,
+    PG_START_BOUND,
 };
 
 /// Kill primitive seam used by the teardown paths; defaults to [`kill_pid_tree`].
 /// Injectable in tests so teardown can be proven without spawning a server.
 pub type KillTreeFn = fn(u32);
+
+/// Graceful-stop primitive seam (**FS-2**), mirroring [`KillTreeFn`]: it takes
+/// the crate handle and returns the graceful-stop future. Defaults to
+/// [`pg_stop_with_env_hook`]; injectable so the expiry → hard-kill branch of
+/// [`PgRuntime::stop_bounded`] is provable WITHOUT a real server.
+pub type StopFn =
+    for<'a> fn(&'a mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+/// Default graceful stop: honour the **FS-3** [`super::PG_STOP_HANG_ENV`] hook
+/// (sleep the requested, capped duration) then call the real
+/// `PostgreSQL::stop()`. With the env unset the hook is a no-op, so behaviour is
+/// byte-identical to the pre-seam path.
+fn pg_stop_with_env_hook(
+    pg: &mut PostgreSQL,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+    Box::pin(async move {
+        if let Some(hang) = super::stop_hang_duration() {
+            tokio::time::sleep(hang).await;
+        }
+        pg.stop().await?;
+        Ok(())
+    })
+}
 
 /// Hard-kill a process and its children (`taskkill /PID <pid> /T /F` on Windows;
 /// a no-op on other platforms, which this Windows-first slice does not support).
@@ -105,22 +129,45 @@ pub struct PgRuntime {
     data_dir: PathBuf,
     stopped: bool,
     kill: KillTreeFn,
+    stop: StopFn,
 }
 
 impl PgRuntime {
-    /// Build a runtime rooted at `app_data_dir` (data dir `<app>/postgres`,
-    /// install dir `<app>/postgres-install`) using the production kill primitive.
+    /// Build a runtime rooted at `app_data_dir` (data dir `<app>/postgres`, or
+    /// the **FS-1** [`super::PG_DATA_DIR_ENV`] override when set; install dir
+    /// `<app>/postgres-install`) using the production kill primitive.
     pub fn new(app_data_dir: &Path, password: String) -> Self {
         Self::with_kill(app_data_dir, password, kill_pid_tree)
     }
 
-    /// Build a runtime with an injected kill primitive (test seam).
+    /// Build a runtime with an injected kill primitive (test seam). The data dir
+    /// honours the FS-1 override; the install dir deliberately does NOT (the
+    /// `<app_data_dir>/postgres-install` distribution is always reused, so an
+    /// override needs no new download).
     pub fn with_kill(app_data_dir: &Path, password: String, kill: KillTreeFn) -> Self {
-        let data_dir = app_data_dir.join(PG_DATA_SUBDIR);
-        let install_dir = app_data_dir.join(PG_INSTALL_SUBDIR);
+        Self::with_dirs(
+            &super::resolve_data_dir(app_data_dir),
+            &app_data_dir.join(PG_INSTALL_SUBDIR),
+            password,
+            kill,
+            pg_stop_with_env_hook,
+        )
+    }
+
+    /// Full constructor with explicit data/install dirs and BOTH injectable seams
+    /// (**FS-1**/**FS-2**). Private: [`Self::new`]/[`Self::with_kill`] are the
+    /// production and retained seams; the unit tests reach it as a child module.
+    fn with_dirs(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        kill: KillTreeFn,
+        stop: StopFn,
+    ) -> Self {
+        let data_dir = data_dir.to_path_buf();
         let mut settings = Settings::new();
         settings.data_dir = data_dir.clone();
-        settings.installation_dir = install_dir;
+        settings.installation_dir = install_dir.to_path_buf();
         // Ephemeral loopback: `port = 0` requests an OS-assigned port, so no
         // fixed-port collision is possible with OTLP 4317/4318 or the MCP 9223.
         settings.port = 0;
@@ -138,6 +185,7 @@ impl PgRuntime {
             data_dir,
             stopped: false,
             kill,
+            stop,
         }
     }
 
@@ -248,8 +296,13 @@ impl PgRuntime {
             }
         });
 
+        // FS-2: the graceful attempt goes through the injectable `StopFn` so a
+        // hung stop can be induced deterministically (unit) and live (FS-3),
+        // while the synchronous watchdog above still hard-kills on expiry.
+        let stop = self.stop;
+        let pg = &mut self.pg;
         let _ = run_bounded(bound, "pg.stop", async {
-            self.pg.stop().await?;
+            stop(pg).await?;
             Ok::<(), anyhow::Error>(())
         })
         .await;
@@ -290,6 +343,7 @@ impl Drop for PgRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::pg_supervisor::PG_DATA_SUBDIR;
     use std::sync::Mutex;
 
     static KILLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
@@ -301,6 +355,13 @@ mod tests {
 
     fn recorded_kills() -> Vec<u32> {
         KILLS.lock().expect("kill recorder").clone()
+    }
+
+    /// A graceful-stop seam that never completes — the exact #2948 hang, made
+    /// deterministic for the bounded-watchdog test (the hang is bounded by
+    /// `run_bounded` + the synchronous watchdog, never awaited unbounded).
+    fn hang_stop(_pg: &mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(std::future::pending::<Result<()>>())
     }
 
     /// Build a runtime with the recording kill seam and a seeded
@@ -401,6 +462,45 @@ mod tests {
         assert!(
             recorded_kills().is_empty(),
             "an already-stopped runtime must not be killed again"
+        );
+    }
+
+    /// FS-2 / F-4: a graceful stop that never completes must be bounded and
+    /// hard-killed — exactly the AC2 expiry → hard-kill branch, no real server.
+    #[tokio::test]
+    async fn stop_bounded_hard_kills_when_graceful_stop_hangs() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(data_dir.join("postmaster.pid"), "7373\n").expect("write pid");
+
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+
+        let started = Instant::now();
+        let outcome = runtime.stop_bounded(Duration::from_millis(50)).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(outcome, StopOutcome::HardKilled { .. }),
+            "a hung graceful stop must fall back to HardKilled, got {outcome:?}"
+        );
+        assert!(
+            recorded_kills().contains(&7373),
+            "the watchdog/backstop must hard-kill the seeded postmaster PID, saw {:?}",
+            recorded_kills()
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the 50 ms bound must fire well under 5 s, took {elapsed:?}"
         );
     }
 }

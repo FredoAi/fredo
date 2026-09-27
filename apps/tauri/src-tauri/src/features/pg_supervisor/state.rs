@@ -43,8 +43,8 @@ use super::lock::PgDataDirLock;
 use super::runtime::{wait_until, PgRuntime, StopOutcome};
 use super::sweep::{persist_pid, sweep_orphan, sweep_postmaster_pid_file};
 use super::{
-    DEFAULT_PG_HOST, PG_DATA_SUBDIR, PG_DEATH_WAIT_BOUND, PG_ENABLED_KEY, PG_EXIT_HOOK_BOUND,
-    PG_PASSWORD_KEY, PG_STOP_BOUND,
+    DEFAULT_PG_HOST, PG_DEATH_WAIT_BOUND, PG_ENABLED_KEY, PG_EXIT_HOOK_BOUND, PG_PASSWORD_KEY,
+    PG_STOP_BOUND,
 };
 
 /// Lifecycle state exposed by [`pg_supervisor_status`] / the readiness gate.
@@ -73,7 +73,8 @@ pub struct PgStatusView {
     pub pid: Option<u32>,
     /// Structured failure detail, once `Failed`.
     pub error: Option<String>,
-    /// The PostgreSQL data directory (`<app_data_dir>/postgres`).
+    /// The PostgreSQL data directory (`<app_data_dir>/postgres`, or the FS-1
+    /// `FREDO_PG_DATA_DIR` override when set).
     pub data_dir: String,
 }
 
@@ -178,10 +179,15 @@ fn pg_enabled(store: &AppStore) -> bool {
 }
 
 /// Synchronous, bounded bootstrap: decide → lock → sweep. NEVER starts the server.
+///
+/// The lock stays at `<app_data_dir>/<PG_LOCK_FILENAME>`; only the **data dir**
+/// honours the FS-1 [`super::PG_DATA_DIR_ENV`] override (`super::resolve_data_dir`).
 fn bootstrap(app_data_dir: &Path, store: &AppStore) -> Bootstrap {
     if !pg_enabled(store) {
         return Bootstrap::Disabled;
     }
+    // FS-1: one shared rule also used by `PgRuntime` and the status view.
+    let data_dir = super::resolve_data_dir(app_data_dir);
     // R-4.5: the exclusive data-dir lock is acquired BEFORE any sweep, so a
     // second instance can never kill this instance's live postmaster.
     match PgDataDirLock::acquire(app_data_dir) {
@@ -189,8 +195,8 @@ fn bootstrap(app_data_dir: &Path, store: &AppStore) -> Bootstrap {
             // Reclaim a prior-run orphan only under the `postgres.exe` image guard,
             // then the data-dir `postmaster.pid` backstop (R-3.1/R-3.4).
             sweep_orphan(store);
-            sweep_postmaster_pid_file(&app_data_dir.join(PG_DATA_SUBDIR));
-            Bootstrap::Locked(lock, app_data_dir.join(PG_DATA_SUBDIR).display().to_string())
+            sweep_postmaster_pid_file(&data_dir);
+            Bootstrap::Locked(lock, data_dir.display().to_string())
         }
         Err(error) => Bootstrap::Failed(structured_error("lock", &error)),
     }
@@ -246,7 +252,7 @@ pub fn start_supervisor(app: &AppHandle) {
             );
             app.manage(Arc::new(PgSupervisorState::failed_only(
                 error,
-                app_data_dir.join(PG_DATA_SUBDIR).display().to_string(),
+                super::resolve_data_dir(&app_data_dir).display().to_string(),
             )));
         }
         Bootstrap::Locked(lock, data_dir) => {
@@ -444,11 +450,11 @@ pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
         return state.status.borrow().clone();
     }
     // No managed supervisor ⇒ disabled (the default) — resolve the data dir for
-    // informational purposes only.
+    // informational purposes only (honours the FS-1 override like the live path).
     let data_dir = app
         .path()
         .app_data_dir()
-        .map(|dir| dir.join(PG_DATA_SUBDIR).display().to_string())
+        .map(|dir| super::resolve_data_dir(&dir).display().to_string())
         .unwrap_or_default();
     PgStatusView {
         state: PgState::Disabled,
@@ -463,7 +469,7 @@ pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
 mod tests {
     use super::*;
     use crate::features::pg_supervisor::sweep::persisted_pid;
-    use crate::features::pg_supervisor::{PG_LOCK_FILENAME, PG_PID_KEY};
+    use crate::features::pg_supervisor::{PG_DATA_SUBDIR, PG_LOCK_FILENAME, PG_PID_KEY};
 
     fn open_store(dir: &Path) -> AppStore {
         AppStore::open(dir.to_path_buf()).expect("open app store")
