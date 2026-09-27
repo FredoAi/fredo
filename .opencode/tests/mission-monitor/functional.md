@@ -376,3 +376,59 @@
 - [x] N-26 (NFR-4, no re-render loop, #523, **PASS 2026-09-25 #2945 round 1**): `tauri_read_logs(source="console")` after open/select/switch/rename/delete/theme change showed NO `Error:` / `Uncaught` / `Maximum update depth exceeded` — only the pre-existing `motion() is deprecated` WARN, `[mission-monitor] auto-fit` DEBUG lines, and the tester's own synthetic-open probe WARN (`confirm_app_open_request failed … "lat*"` — a fixture-seam artifact of the latency lever, not a product defect; no user path emits it). Derivation is `useMemo` on the row-store `epoch` + stable map (`useSessionHistory.ts:154-172`), no `.length`/newly-created-object deps.
   - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based (no `.length`/newly-created-object `useEffect`/`useMemo` deps added).
   - Regression risk (#523): a `useEffect` depending on the session array `.length` or a newly-created label object → FAIL.
+
+---
+
+# Mission Monitor — Functional Test Cases (Slice 3, #2976 — migrated PostgreSQL RTDB/SpanStore, end-to-end acceptance)
+
+> Durable functional suite (feature domain `mission-monitor`), extended for slice 3 of the PostgreSQL
+> migration (#2976): `RtdbStore` + `SpanStore` move onto the shared PG pool behind an unchanged
+> write-behind/LRU row pipeline. Mission Monitor is the end-to-end acceptance surface — a store-migration
+> bug surfaces here even when the unit gates are green.
+>
+> **Evidence policy: LIVE (mandatory).** The exit gate / audit fail-closed unless the tester's Evidence
+> references `telemetry_spans` (an OTLP-ingested live receipt — the CLI `fredo emit` path writes NO
+> spans, G-256) AND a rendered-webview receipt (DOM snapshot / screenshot) for the SAME instant, on the
+> migrated store. A static-only PASS is a FALSE PASS.
+>
+> **G-263 SAFETY:** every live leg is bounded and torn down via
+> `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2976` / `-Action Down`; never a bare
+> `postgres`/`pg_ctl`; the named failure mode is the #2948 ~11 h `pg.stop()` hang. An unbounded wait is
+> a FAIL, not a skip.
+>
+> Fixture doctrine (G-073/G-076/G-080): OpenCode = a live Terminal-driven session (never the `opencode`
+> binary from a shell); Copilot = the committed in-repo split-turn producer
+> (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture <fixture>`), never a filesystem
+> hunt (G-172). Cross-check `telemetry_spans` / `chat_rows` / `tool_use_rows` / `agent_session_rows` at
+> the SAME instant as every DOM assertion (G-073.3).
+
+## Migrated store end-to-end acceptance (HUMAN DIRECTIVE — MANDATORY)
+
+- [ ] **F-54 (HUMAN DIRECTIVE, slice 3 #2976 — duplicate of `postgres-stores` F-39). Boot the app on the migrated PostgreSQL store and verify Mission Monitor still renders LIVE agent sessions / tools / tokens / graph for BOTH an OpenCode session AND a Copilot session at ONE instant, cross-checked against `telemetry_spans` and the migrated row tables — NO regression vs the pre-migration rendering.**
+  Procedure: start PG-selected on the migrated store (`FREDO_STORAGE_ENGINE=postgres`); drive a live
+  OpenCode session through the **Terminal** feature (`write_pty_input` with a trailing `\r`) AND inject
+  a Copilot split-turn session via the in-repo producer; open Mission Monitor; select each session in
+  turn at one instant; snapshot the DOM + screenshot; query `telemetry_spans` +
+  `chat_rows`/`tool_use_rows`/`agent_session_rows` + `pg_stat_activity` at the SAME instant.
+  - EXPECTED: BOTH sessions are listed as distinct entries (never merged, never one hidden); selecting
+    each renders its chat node(s) + `── USER ──` + `── TOOLS (N) ──` + `── RESPONSE ──` + token
+    figures + the graph at the SAME structural detail as the pre-migration OpenCode baseline; the
+    rendered session/tool/token values equal the same-instant `telemetry_spans` rows AND the columns
+    of the migrated `*_rows` tables (the rows are served by PostgreSQL, not the SQLite fallback);
+    `pg_stat_activity` / `storage_engine_status` confirm the PG engine is active. No regression vs the
+    pre-migration rendering.
+  - Edge: OpenCode-only; Copilot-only; both in one store; switching back and forth; rows landing
+    mid-stream; a stale SQLite fallback (FAIL); a blank/partial panel while rows exist (FAIL); the
+    Copilot split-turn null `userMessage` still rendering its node.
+  - Evidence: the same-instant DOM snapshot + screenshot + `telemetry_spans`/row query output +
+    `storage_engine_status` (the live receipt). A static-only or single-provider receipt = **FALSE
+    PASS**.
+
+## Non-functional — slice 3 (#2976)
+
+- [ ] **N-27 (NFR, no regression under the migrated store, #523):** `tauri_read_logs(source="console")`
+  after PG-selected boot, session select/switch, and the dual-provider drive.
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based; the
+    migrated store adds no round-trip or full-history scan to the list path.
+  - Regression risk (#523): a `useEffect`/`useMemo` dep on `.length` or a newly-created object; a new
+    synchronous scan introduced by the store swap.
