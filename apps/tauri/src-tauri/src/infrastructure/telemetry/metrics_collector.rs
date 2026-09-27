@@ -74,7 +74,7 @@ pub(crate) struct CollectorInner {
 impl MetricCollector {
     pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
         let enabled = app_store
-            .get("tracing.metrics_enabled")
+            .control_get("tracing.metrics_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -99,7 +99,7 @@ impl MetricCollector {
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
-            .get("tracing.metrics_enabled")
+            .control_get("tracing.metrics_enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -213,7 +213,7 @@ impl MetricCollector {
 
         let aggregation_window_s = self
             .app_store
-            .get("tracing.metrics_aggregation_s")
+            .control_get("tracing.metrics_aggregation_s")
             .ok()
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
@@ -241,7 +241,7 @@ impl MetricCollector {
             // Get aggregation window from settings
             let aggregation_window_s = self
                 .app_store
-                .get("tracing.metrics_aggregation_s")
+                .control_get("tracing.metrics_aggregation_s")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse::<i64>().ok())
@@ -453,9 +453,9 @@ mod tests {
         let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
         store.ensure_schema().unwrap();
         store.ensure_metrics_schema().unwrap();
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
-        app_store.set("tracing.metrics_enabled", "true").unwrap();
-        app_store.set("tracing.metrics_aggregation_s", "60").unwrap();
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        app_store.control_set("tracing.metrics_enabled", "true").unwrap();
+        app_store.control_set("tracing.metrics_aggregation_s", "60").unwrap();
         let collector = Arc::new(MetricCollector::new(store.clone(), app_store.clone()));
         (store, app_store, collector)
     }
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_metrics_disabled_no_op() {
         let (_store, app_store, collector) = make_collector();
-        app_store.set("tracing.metrics_enabled", "false").unwrap();
+        app_store.control_set("tracing.metrics_enabled", "false").unwrap();
         collector.refresh_enabled();
 
         // Process events — should be a no-op since disabled
@@ -1103,7 +1103,7 @@ mod tests {
     #[test]
     fn test_record_orphan_disabled_no_op() {
         let (_store, app_store, collector) = make_collector();
-        app_store.set("tracing.metrics_enabled", "false").unwrap();
+        app_store.control_set("tracing.metrics_enabled", "false").unwrap();
         collector.refresh_enabled();
 
         collector.record_orphan_count(5);
@@ -1165,12 +1165,12 @@ mod tests {
         assert!(collector.enabled_cache.load(std::sync::atomic::Ordering::SeqCst));
 
         // Change in AppStore and refresh
-        app_store.set("tracing.metrics_enabled", "false").unwrap();
+        app_store.control_set("tracing.metrics_enabled", "false").unwrap();
         collector.refresh_enabled();
         assert!(!collector.enabled_cache.load(std::sync::atomic::Ordering::SeqCst));
 
         // Change back
-        app_store.set("tracing.metrics_enabled", "true").unwrap();
+        app_store.control_set("tracing.metrics_enabled", "true").unwrap();
         collector.refresh_enabled();
         assert!(collector.enabled_cache.load(std::sync::atomic::Ordering::SeqCst));
     }

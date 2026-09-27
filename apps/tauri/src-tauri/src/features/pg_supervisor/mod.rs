@@ -69,6 +69,38 @@ pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
 /// [`runtime::PgRuntime::stop_bounded`] is observable on a live quit. The hang
 /// is finitely bounded by that same watchdog (G-263). Inert when unset.
 pub const PG_STOP_HANG_ENV: &str = "FREDO_PG_STOP_HANG_MS";
+/// **FS-4** injectable fault seam (Spec #2975 ST-2): when set (non-blank) the
+/// shared PostgreSQL pool build is forced to fail at a named stage (`connect` |
+/// `schemaInit`; `1`/`true` => `connect`), so the fail-closed SQLite fallback is
+/// observable WITHOUT corrupting a real data dir (G-275). The value is parsed by
+/// [`crate::infrastructure::storage::engine::PgPoolStage::parse`]. Inert when
+/// unset — the default build is byte-identical to the un-forced path.
+pub const PG_POOL_FORCE_FAIL_ENV: &str = "FREDO_PG_POOL_FORCE_FAIL";
+/// **FS-5** test hook (Spec #2975 ST-7, AC5): when set to a non-blank,
+/// non-`0`/`false` value the managed PostgreSQL server is started WITHOUT the
+/// [`PG_SERVER_KNOBS`] overlay, so the **untuned** baseline (the AC5 "before"
+/// leg) is live-drivable in-repo (G-275). [`runtime::PgRuntime::apply_server_knobs`]
+/// becomes a no-op; the server runs on the `initdb` defaults. Inert when unset —
+/// the default path appends the overlay byte-identically.
+///
+/// NOTE: the overlay is guarded by `PG_KNOB_MARKER` idempotence, so an
+/// already-knobbed data dir is NOT un-knobbed. A FRESH `FREDO_PG_DATA_DIR`
+/// (initdb defaults) is required for the "before" measurement.
+pub const PG_SKIP_SERVER_KNOBS_ENV: &str = "FREDO_PG_SKIP_SERVER_KNOBS";
+
+/// Resolve the **FS-5** untuned-baseline lever (mirrors [`stop_hang_duration`]):
+/// `true` when [`PG_SKIP_SERVER_KNOBS_ENV`] is set to a non-blank value other
+/// than `0`/`false`, else `false`. One shared rule so `apply_server_knobs` and
+/// any future status/telemetry read agree; inert by default.
+pub fn skip_server_knobs() -> bool {
+    match std::env::var(PG_SKIP_SERVER_KNOBS_ENV) {
+        Ok(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        Err(_) => false,
+    }
+}
 
 /// Resolve the managed data dir (**FS-1**): the non-blank [`PG_DATA_DIR_ENV`]
 /// override when set, else `<app_data_dir>/<PG_DATA_SUBDIR>`. One shared rule so
@@ -88,6 +120,21 @@ pub fn stop_hang_duration() -> Option<Duration> {
     let millis: u64 = std::env::var(PG_STOP_HANG_ENV).ok()?.trim().parse().ok()?;
     (millis > 0).then(|| Duration::from_millis(millis).min(PG_CONTROL_TIMEOUT))
 }
+
+// ── Server memory knobs (Spec #2975 ST-2, REQ-5/EARS-5.1) ─────────────────────
+
+/// Server-memory knobs appended to `<data_dir>/postgresql.conf` after `setup()`
+/// and before `start()` (ST-2), then verified live via `SHOW` (ST-7/QA).
+/// `max_connections = 8` matches the pool-sizing band (`PG_POOL_MAX_CONNECTIONS`);
+/// `synchronous_commit = off` replaces SQLite's `PRAGMA synchronous=NORMAL`
+/// (store-migration.md §3); the memory sizes are the desktop profile.
+pub const PG_SERVER_KNOBS: &[(&str, &str)] = &[
+    ("shared_buffers", "32MB"),
+    ("work_mem", "4MB"),
+    ("maintenance_work_mem", "32MB"),
+    ("max_connections", "8"),
+    ("synchronous_commit", "off"),
+];
 
 // ── Wall-clock bounds (G-263: every wait is finite; the #2948 `None` is banned) ─
 

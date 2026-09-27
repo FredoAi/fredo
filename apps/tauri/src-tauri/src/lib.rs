@@ -3,6 +3,22 @@ pub mod infrastructure;
 mod runtime;
 mod utils;
 
+// Spec #2975 ST-6 — test seam. The cross-engine integration binary
+// (`tests/storage_engine_pg.rs`) drives the SAME bounded `PgRuntime` the app
+// uses, so the G-263 start/stop/teardown contract is exercised by the real
+// primitive (finite timeouts, hard-kill fallback, RAII teardown) instead of a
+// test-local copy. `#[doc(hidden)]`: not part of the app's surface.
+#[doc(hidden)]
+pub use features::pg_supervisor::runtime::PgRuntime;
+
+// Spec #2975 ST-6 — test seam. The ST-2 startup schema-init registry is populated
+// with `features::terminal::persistence::ensure_table_on_pg` (a `mod features`
+// item, otherwise unreachable from an integration test). The gated cross-engine
+// suite drives the SAME terminal initializer through the registry so the boot
+// schema-set contract is pinned. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use features::terminal::persistence::ensure_table_on_pg as ensure_terminal_table_on_pg;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::TerminalState;
@@ -26,6 +42,9 @@ use infrastructure::rtdb::store::{
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
+use infrastructure::storage::engine::{
+    select_engine, EngineHandle, SqliteEngine, StorageEngineState, StoreEngine,
+};
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
@@ -108,13 +127,46 @@ pub fn run() {
     );
 
     builder.setup(|app| {
-            // -- SQLite settings store -----------------------------------------
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("Failed to resolve app data dir");
+
+            // -- Shared storage-engine seam (Spec #2975 ST-2) ------------------
+            // ONE shared SQLite engine + the swap-once `EngineHandle`, built
+            // BEFORE the supervisor starts. The supervisor's background pool
+            // build installs PostgreSQL into this handle once the managed server
+            // is ready; any failure leaves the handle on SQLite (fail-closed,
+            // REQ-3/EARS-3.2). The state is managed so `storage_engine_status`
+            // can report the live dialect + the fail-closed reason, and so the
+            // supervisor can read the resolved selection.
+            let sqlite_engine = SqliteEngine::open(&data_dir.join("fredo.db"))
+                .expect("Failed to open the shared storage engine");
+            let engine_choice = select_engine(&sqlite_engine);
+            let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine));
+            let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
+            // Spec #2975 ST-2 rework: register the startup schema initializers
+            // BEFORE the supervisor starts, so the registry is populated before
+            // the background task can reach pool-ready (no timing race). They run
+            // against the candidate PostgreSQL pool pre-install, so the full
+            // startup schema set exists before any feature op. The SQLite path
+            // below keeps creating the same schema on SQLite.
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                FeatureDataStore::ensure_schema_on_pg(pool)
+            }));
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                features::terminal::persistence::ensure_table_on_pg(pool)
+            }));
+            app.manage(storage_state);
+
+            // -- SQLite settings store (Spec #2975 ST-3) -----------------------
+            // The KV store sits ON the shared handle: the async data plane
+            // (`get`/`set`) is engine-selected, while the synchronous control
+            // plane (`control_get`/`control_set`) stays on SQLite. The setup
+            // closure below stays synchronous and reads config via the control
+            // API — never `block_on`.
             let app_store = Arc::new(
-                AppStore::open(data_dir.clone()).expect("Failed to open settings store"),
+                AppStore::open(engine_handle.clone()).expect("Failed to open settings store"),
             );
             app.manage(app_store.clone());
 
@@ -127,9 +179,12 @@ pub fn run() {
             // renders while PostgreSQL starts.
             features::pg_supervisor::start_supervisor(app.handle());
 
-            // -- FeatureStore (generic typed-column SQLite store for features) --
+            // -- FeatureStore (generic typed-column store for features) --------
+            // Spec #2975 ST-4: the store holds an `Arc<EngineHandle>` clone of the
+            // ONE shared engine; its SQLite statements are byte-identical to the
+            // incumbent path, PostgreSQL is the 1:1 translated dialect.
             let feature_store = Arc::new(
-                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore"),
+                FeatureStore::open(engine_handle.clone()).expect("Failed to open FeatureStore"),
             );
             app.manage(feature_store.clone());
 
@@ -145,7 +200,7 @@ pub fn run() {
             // which is set after LogCollector creation below.
             {
                 let logging_level = app.state::<Arc<AppStore>>()
-                    .get("tracing.logging_level").ok().flatten()
+                    .control_get("tracing.logging_level").ok().flatten()
                     .unwrap_or_else(|| "INFO".to_string());
 
                 let env_filter = EnvFilter::try_new(&logging_level)
@@ -203,32 +258,32 @@ pub fn run() {
             // REQ-11: Set telemetry defaults if not already configured.
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get("tracing.enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.enabled", "true");
+                if store_ref.control_get("tracing.enabled").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.enabled", "true");
                 }
-                if store_ref.get("tracing.retention_days").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.retention_days", "7");
+                if store_ref.control_get("tracing.retention_days").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.retention_days", "7");
                 }
                 // REQ-13: Set metrics defaults if not already configured.
-                if store_ref.get("tracing.metrics_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.metrics_enabled", "true");
+                if store_ref.control_get("tracing.metrics_enabled").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.metrics_enabled", "true");
                 }
-                if store_ref.get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.metrics_aggregation_s", "60");
+                if store_ref.control_get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.metrics_aggregation_s", "60");
                 }
                 // REQ-7: Set logging defaults if not already configured.
-                if store_ref.get("tracing.logging_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.logging_enabled", "true");
+                if store_ref.control_get("tracing.logging_enabled").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.logging_enabled", "true");
                 }
-                if store_ref.get("tracing.logging_level").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.logging_level", "INFO");
+                if store_ref.control_get("tracing.logging_level").ok().flatten().is_none() {
+                    let _ = store_ref.control_set("tracing.logging_level", "INFO");
                 }
             }
 
             // REQ-9: Run retention cleanup on startup.
             let store_ref = app.state::<Arc<AppStore>>();
             let retention_days: i64 = store_ref
-                .get("tracing.retention_days")
+                .control_get("tracing.retention_days")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse().ok())
@@ -372,7 +427,8 @@ pub fn run() {
             // open UI — R-4.2), and make the watch registry the declared-row
             // sink. Canonical-table watches are fed by the same observer.
             let feature_meta = Arc::new(
-                FeatureDataStore::open(data_dir.clone()).expect("Failed to open FeatureDataStore"),
+                FeatureDataStore::open(engine_handle.clone())
+                    .expect("Failed to open FeatureDataStore"),
             );
             feature_meta
                 .ensure_schema()
@@ -398,7 +454,7 @@ pub fn run() {
             }
             let feature_engine = Arc::new(
                 ProjectionEngine::new(
-                    data_dir.clone(),
+                    engine_handle.clone(),
                     feature_meta.clone(),
                     feature_store.clone(),
                 )
@@ -432,13 +488,11 @@ pub fn run() {
             });
             // One-time declared-table projection backfill (A-17): spawned,
             // never awaited on the read path.
-            let backfill_dir = data_dir.clone();
             let backfill_meta = feature_meta.clone();
             let backfill_engine = feature_engine.clone();
             let backfill_store = rtdb_store.clone();
             tauri::async_runtime::spawn(async move {
                 infrastructure::feature_data::backfill::run_backfill(
-                    backfill_dir,
                     backfill_meta,
                     backfill_engine,
                     backfill_store,
@@ -479,12 +533,12 @@ pub fn run() {
             // KV keys — the binding config-first mechanism).
             {
                 let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
+                if store_ref.control_get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
                     let _ = store_ref
-                        .set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
+                        .control_set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
                 }
-                if store_ref.get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
+                if store_ref.control_get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
+                    let _ = store_ref.control_set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
                 }
             }
 
@@ -650,6 +704,9 @@ pub fn run() {
             // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
             // read-only observability hook (no state mutation).
             features::pg_supervisor::state::pg_supervisor_status,
+            // Storage engine seam (Spec #2975 ST-2): the live-observable,
+            // read-only engine status (dialect + fail-closed reason).
+            infrastructure::storage::engine::storage_engine_status,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
             feature_store::feature_store_insert,

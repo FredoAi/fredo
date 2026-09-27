@@ -64,7 +64,7 @@ pub fn resolve_companion_dir(app: &AppHandle) -> Result<PathBuf, String> {
     );
     let store = app.state::<Arc<AppStore>>();
     let configured = store
-        .get(LLAMA_SERVER_COMPANION_DIR_KEY)
+        .control_get(LLAMA_SERVER_COMPANION_DIR_KEY)
         .ok()
         .flatten()
         .map(|value| value.trim().to_string())
@@ -91,13 +91,13 @@ const LLAMA_SERVER_IMAGE: &str = "llama-server.exe";
 /// marker is best-effort recovery metadata, never load-bearing state.
 pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
-    let _ = store.set(LLAMA_SERVER_PID_KEY, &value);
+    let _ = store.control_set(LLAMA_SERVER_PID_KEY, &value);
 }
 
 /// Read the persisted managed server PID marker (blank / malformed => `None`).
 pub fn persisted_pid(store: &AppStore) -> Option<u32> {
     store
-        .get(LLAMA_SERVER_PID_KEY)
+        .control_get(LLAMA_SERVER_PID_KEY)
         .ok()
         .flatten()
         .and_then(|value| value.trim().parse().ok())
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn persist_pid_round_trips_and_clears() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = AppStore::open(dir.path().to_path_buf()).expect("open app store");
+        let store = AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("open app store");
 
         persist_pid(&store, Some(4242));
         assert_eq!(persisted_pid(&store), Some(4242));
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(persisted_pid(&store), None);
 
         // A blank / malformed marker is not a PID (never parsed as 0).
-        let _ = store.set(
+        let _ = store.control_set(
             crate::features::llm_server::LLAMA_SERVER_PID_KEY,
             "not-a-pid",
         );

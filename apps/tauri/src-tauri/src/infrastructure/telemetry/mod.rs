@@ -213,7 +213,7 @@ impl SpanCollector {
     /// Create a new SpanCollector.
     pub fn new(store: Arc<SpanStore>, app_store: Arc<AppStore>) -> Self {
         let enabled = app_store
-            .get("tracing.enabled")
+            .control_get("tracing.enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -235,7 +235,7 @@ impl SpanCollector {
     pub fn refresh_enabled(&self) {
         let enabled = self
             .app_store
-            .get("tracing.enabled")
+            .control_get("tracing.enabled")
             .ok()
             .flatten()
             .map(|v| v == "true")
@@ -510,8 +510,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
         store.ensure_schema().unwrap();
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
-        app_store.set("tracing.enabled", "true").unwrap();
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        app_store.control_set("tracing.enabled", "true").unwrap();
         let collector = Arc::new(SpanCollector::new(store.clone(), app_store.clone()));
         (store, app_store, collector)
     }
@@ -725,8 +725,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
         store.ensure_schema().unwrap();
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
-        app_store.set("tracing.enabled", "false").unwrap();
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        app_store.control_set("tracing.enabled", "false").unwrap();
 
         let collector = SpanCollector::new(store.clone(), app_store);
         collector.refresh_enabled();

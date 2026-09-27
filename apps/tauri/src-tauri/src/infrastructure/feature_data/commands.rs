@@ -911,7 +911,6 @@ pub fn feature_data_declare(
     let state = Arc::clone(state.inner());
     tauri::async_runtime::spawn(async move {
         backfill::run_backfill(
-            state.data_dir.clone(),
             state.meta.clone(),
             state.engine.clone(),
             state.rtdb_store.clone(),
@@ -1057,14 +1056,14 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
         rtdb_store.ensure_schema().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
-        let app_store = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = Arc::new(DeclarationRegistry::new(meta.clone(), tables.clone()));
         registry.declare(&sessions_declaration()).unwrap();
         let engine = Arc::new(
-            ProjectionEngine::new(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap(),
+            ProjectionEngine::new_sqlite_for_tests(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap(),
         );
         let collector = Arc::new(Collector::default());
         let watches = Arc::new(WatchRegistry::new(collector.clone()));

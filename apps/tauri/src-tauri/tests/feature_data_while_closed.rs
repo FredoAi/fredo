@@ -43,6 +43,7 @@ use fredo_lib::infrastructure::rtdb::project::RowDelivery;
 use fredo_lib::infrastructure::rtdb::rows::{ChatRow, RowState, ToolUseRow};
 use fredo_lib::infrastructure::rtdb::store::RtdbStore;
 use fredo_lib::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
+use fredo_lib::infrastructure::storage::{EngineHandle, SqliteEngine, StoreEngine};
 use fredo_lib::infrastructure::storage::feature_store::FeatureStore;
 
 const FEATURE_ID: &str = "mission-monitor";
@@ -170,11 +171,13 @@ fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open
     let dir = tempfile::tempdir().expect("tempdir");
 
     // ── Stores (the same set lib.rs opens over one fredo.db) ────────────────
+    let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("shared engine");
+    let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
     let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("rtdb store"));
     rtdb_store.ensure_schema().expect("rtdb schema");
-    let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).expect("feature data store"));
+    let meta = Arc::new(FeatureDataStore::open(engine_handle.clone()).expect("feature data store"));
     meta.ensure_schema().expect("feature data schema");
-    let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).expect("feature store"));
+    let tables = Arc::new(FeatureStore::open(engine_handle.clone()).expect("feature store"));
 
     // ── Persisted Mission-Monitor-shaped declaration ────────────────────────
     let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
@@ -191,7 +194,7 @@ fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open
 
     // ── Engine + an EMPTY watch registry (the feature UI is closed) ─────────
     let engine = Arc::new(
-        ProjectionEngine::new(dir.path().to_path_buf(), meta.clone(), tables.clone())
+        ProjectionEngine::new(engine_handle.clone(), meta.clone(), tables.clone())
             .expect("projection engine"),
     );
     let watches = Arc::new(WatchRegistry::new(Arc::new(NullSink)));

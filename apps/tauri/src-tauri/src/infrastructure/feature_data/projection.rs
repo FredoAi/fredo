@@ -33,13 +33,12 @@
 //!
 //! ## Canonical reads are read-only
 //!
-//! The engine opens its OWN `fredo.db` connection with `PRAGMA query_only=ON`
-//! and only ever SELECTs the canonical `*_rows` tables (NFR-6 — canonical
-//! contents and the classifier's extraction rules are untouched). Declared-table
-//! writes go through [`FeatureStore`]'s connection.
+//! The engine uses the SHARED read-only SQLite connection (Spec #2975 ST-5) and
+//! only ever SELECTs the canonical `*_rows` tables (NFR-6 — canonical contents
+//! and the classifier's extraction rules are untouched). Declared-table writes
+//! go through [`FeatureStore`] on the active engine.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -50,6 +49,7 @@ use serde_json::{json, Map, Value as JsonValue};
 
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::project::rfc3339_now;
+use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine};
 use crate::infrastructure::storage::feature_store::FeatureStore;
 
 use super::declaration::{
@@ -176,7 +176,11 @@ struct ObservedState {
 /// The backend-owned projection engine: canonical upserts → declared-table
 /// writes, with the declared-row change seam (ST-4).
 pub struct ProjectionEngine {
-    conn: Mutex<Connection>,
+    /// The SHARED read-only SQLite engine (Spec #2975 ST-5): canonical
+    /// `*_rows` reads use its `PRAGMA query_only=ON` connection — never a
+    /// per-engine `Connection::open`. Declared-table writes go through
+    /// [`FeatureStore`] (the active engine).
+    canonical: Arc<SqliteEngine>,
     meta: Arc<FeatureDataStore>,
     tables: Arc<FeatureStore>,
     observer: Mutex<Option<Arc<dyn DeclaredRowObserver>>>,
@@ -188,20 +192,20 @@ pub struct ProjectionEngine {
 }
 
 impl ProjectionEngine {
-    /// Open the engine's own (read-only) canonical connection over `fredo.db`.
+    /// Wrap the shared engine handle. Canonical reads use the shared read-only
+    /// SQLite connection; declared writes go through the shared `FeatureStore`.
     pub fn new(
-        data_dir: PathBuf,
+        engine: Arc<EngineHandle>,
         meta: Arc<FeatureDataStore>,
         tables: Arc<FeatureStore>,
     ) -> Result<Self> {
-        std::fs::create_dir_all(&data_dir)?;
-        let conn = Connection::open(data_dir.join("fredo.db"))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        // Canonical reads are read-only by contract (canonical table contents
-        // are never modified by the projection engine).
-        conn.execute_batch("PRAGMA query_only=ON;")?;
+        let canonical = engine.engine().sqlite().cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "ProjectionEngine requires the shared SQLite engine for canonical reads"
+            )
+        })?;
         Ok(ProjectionEngine {
-            conn: Mutex::new(conn),
+            canonical,
             meta,
             tables,
             observer: Mutex::new(None),
@@ -209,6 +213,21 @@ impl ProjectionEngine {
             dispatch: Mutex::new(()),
             rollup_recomputes: AtomicUsize::new(0),
         })
+    }
+
+    /// Test-only convenience: build over a fresh SQLite engine at `<data_dir>/fredo.db`.
+    #[cfg(test)]
+    pub fn new_sqlite_for_tests(
+        data_dir: std::path::PathBuf,
+        meta: Arc<FeatureDataStore>,
+        tables: Arc<FeatureStore>,
+    ) -> Result<Self> {
+        let sqlite = SqliteEngine::open(&data_dir.join("fredo.db"))?;
+        Self::new(
+            EngineHandle::new(crate::infrastructure::storage::engine::StoreEngine::Sqlite(sqlite)),
+            meta,
+            tables,
+        )
     }
 
     /// Install the declared-row change sink (ST-4's watch registry).
@@ -488,7 +507,7 @@ impl ProjectionEngine {
     /// Recompute source: bounded per-key canonical SQL + the in-flight overlay.
     fn load_group(&self, session_id: &str) -> Result<session_rollup::RollupGroup> {
         let mut group = {
-            let conn = self.lock_conn();
+            let conn = self.canonical.read_only_conn();
             session_rollup::load_persisted_group(&conn, session_id)?
         };
         let state = self.lock_observed();
@@ -661,11 +680,10 @@ impl ProjectionEngine {
 
     // ── lock helpers (poison recovery — no unwrap) ──────────────────────────
 
-    fn lock_conn(&self) -> MutexGuard<'_, Connection> {
-        match self.conn.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    /// The SHARED read-only canonical connection (`PRAGMA query_only=ON`), used
+    /// by the declared-table backfill's distinct-session enumeration.
+    pub(crate) fn canonical_conn(&self) -> MutexGuard<'_, Connection> {
+        self.canonical.read_only_conn()
     }
 
     fn lock_observer(&self) -> MutexGuard<'_, Option<Arc<dyn DeclaredRowObserver>>> {
@@ -886,12 +904,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rtdb = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
         rtdb.ensure_schema().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
         registry.declare(declaration).unwrap();
-        let engine = ProjectionEngine::new(
+        let engine = ProjectionEngine::new_sqlite_for_tests(
             dir.path().to_path_buf(),
             meta.clone(),
             tables.clone(),

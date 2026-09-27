@@ -164,7 +164,7 @@ pub(crate) fn parse_device_id(value: Option<&str>) -> Option<String> {
 pub(crate) fn voice_enabled(app: &AppHandle) -> bool {
     let value = app
         .state::<std::sync::Arc<AppStore>>()
-        .get(VOICE_ENABLED_KEY)
+        .control_get(VOICE_ENABLED_KEY)
         .ok()
         .flatten();
     parse_enabled(value.as_deref())
@@ -178,7 +178,7 @@ pub(crate) fn voice_enabled(app: &AppHandle) -> bool {
 pub(crate) fn persisted_device(app: &AppHandle) -> Option<String> {
     let value = app
         .state::<std::sync::Arc<AppStore>>()
-        .get(VOICE_DEVICE_KEY)
+        .control_get(VOICE_DEVICE_KEY)
         .ok()
         .flatten();
     parse_device_id(value.as_deref())

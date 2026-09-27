@@ -19,6 +19,7 @@
 //! it is NOT a dependency on the spike crate (no cross-crate reference).
 
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +34,10 @@ use super::{
     PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_INSTALL_SUBDIR, PG_READY_BOUND, PG_SETUP_BOUND,
     PG_START_BOUND,
 };
+
+/// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
+/// idempotent (never appended twice).
+const PG_KNOB_MARKER: &str = "# fredo server-memory knobs (Spec #2975)";
 
 /// Kill primitive seam used by the teardown paths; defaults to [`kill_pid_tree`].
 /// Injectable in tests so teardown can be proven without spawning a server.
@@ -221,6 +226,49 @@ impl PgRuntime {
         .await
     }
 
+    /// Append the [`super::PG_SERVER_KNOBS`] to `<data_dir>/postgresql.conf`
+    /// (REQ-5/EARS-5.1). Called after `setup()` (which creates the file via
+    /// `initdb`) and before `start()`.
+    ///
+    /// Idempotent: a marker line guards the append, so a second call — or a
+    /// restart over an existing data dir — is a no-op. PostgreSQL applies later
+    /// settings last, so the overlay wins over the `initdb` defaults; the live
+    /// values are verified with `SHOW` by ST-7/QA. If a future crate version
+    /// rewrote `postgresql.conf` in `start()`, that live `SHOW` check would catch
+    /// it and the crate `Settings` hook is the fallback (plan risk row).
+    ///
+    /// **FS-5** (Spec #2975 ST-7, AC5): when [`super::PG_SKIP_SERVER_KNOBS_ENV`]
+    /// is set, this is a no-op, so the managed server starts UNTUNED — the
+    /// live-drivable "before" leg. Inert when unset (default byte-identical).
+    pub fn apply_server_knobs(&self) -> Result<()> {
+        if super::skip_server_knobs() {
+            return Ok(());
+        }
+        let path = self.data_dir.join("postgresql.conf");
+        let existing = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if existing.contains(PG_KNOB_MARKER) {
+            return Ok(());
+        }
+        let mut block = String::new();
+        block.push('\n');
+        block.push_str(PG_KNOB_MARKER);
+        block.push('\n');
+        for (name, value) in super::PG_SERVER_KNOBS {
+            block.push_str(name);
+            block.push_str(" = ");
+            block.push_str(value);
+            block.push('\n');
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {} for append", path.display()))?
+            .write_all(block.as_bytes())
+            .with_context(|| format!("appending server-memory knobs to {}", path.display()))?;
+        Ok(())
+    }
+
     /// Bounded `start()`; returns the postmaster PID once it has been written.
     pub async fn start(&mut self) -> Result<u32> {
         let pg = &mut self.pg;
@@ -343,11 +391,26 @@ impl Drop for PgRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::pg_supervisor::PG_DATA_SUBDIR;
+    use crate::features::pg_supervisor::{
+        skip_server_knobs, PG_DATA_SUBDIR, PG_SERVER_KNOBS, PG_SKIP_SERVER_KNOBS_ENV,
+    };
     use std::sync::Mutex;
 
     static KILLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
     static KILL_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes every test that sets the **FS-5** knob-skip env var (a
+    /// process-global) against the tests that call `apply_server_knobs`, so the
+    /// overlay assertions are deterministic under any suite order (G-222).
+    static KNOB_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the FS-5 lever to unset on drop (even on a panic).
+    struct KnobEnvGuard;
+
+    impl Drop for KnobEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        }
+    }
 
     fn record_kill(pid: u32) {
         KILLS.lock().expect("kill recorder").push(pid);
@@ -502,5 +565,178 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "the 50 ms bound must fire well under 5 s, took {elapsed:?}"
         );
+    }
+
+    /// A graceful-stop seam that completes immediately (the normal path).
+    fn noop_stop(_pg: &mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// ST-6 / REQ-6/EARS-6.1 (G-263): the NORMAL exit path is graceful, bounded,
+    /// and does not hard-kill — `stop_bounded` returns `Graceful` within its
+    /// bound when no postmaster survives the graceful stop. Together with the
+    /// hang/panic/error tests this closes the teardown-on-every-exit-path set.
+    #[tokio::test]
+    async fn stop_bounded_reports_graceful_within_bound_when_no_postmaster_survives() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-empty");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+
+        let started = Instant::now();
+        let outcome = runtime.stop_bounded(Duration::from_millis(200)).await;
+
+        assert!(
+            matches!(outcome, StopOutcome::Graceful { .. }),
+            "a completed graceful stop with no surviving postmaster must be Graceful, got {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the 200 ms bound must fire well under 5 s, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            recorded_kills().is_empty(),
+            "the graceful path must not hard-kill anything, saw {:?}",
+            recorded_kills()
+        );
+    }
+
+    /// ST-2 / REQ-5/EARS-5.1: the overlay is appended exactly once and carries
+    /// every declared server-memory knob.
+    #[test]
+    fn apply_server_knobs_appends_the_overlay_once() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        std::fs::write(&conf, "# initdb defaults\n").expect("seed postgresql.conf");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        runtime.apply_server_knobs().expect("append the overlay");
+
+        let first = std::fs::read_to_string(&conf).expect("read conf");
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                first.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{first}"
+            );
+        }
+
+        // Idempotent: a second call must not append a duplicate overlay.
+        runtime.apply_server_knobs().expect("second call is a no-op");
+        let second = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(first, second, "the overlay must be appended exactly once");
+    }
+
+    /// ST-2: a missing `postgresql.conf` is a clean error (bounded, no panic) —
+    /// `apply_server_knobs` must never take the app down.
+    #[test]
+    fn apply_server_knobs_errors_when_postgresql_conf_is_absent() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-no-conf");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        assert!(runtime.apply_server_knobs().is_err());
+    }
+
+    /// ST-7 / FS-5 (AC5): the untuned-baseline lever. With the lever set,
+    /// `apply_server_knobs` is a clean no-op (`postgresql.conf` untouched); with
+    /// it unset, the overlay is appended exactly as before — so the AC5 "before"
+    /// (untuned) leg is live-drivable and the default is byte-identical.
+    #[test]
+    fn skip_server_knobs_lever_leaves_the_overlay_untuned_and_is_inert_when_unset() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        assert!(
+            !skip_server_knobs(),
+            "an unset lever must resolve to the tuned default"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-untuned");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        let initdb_defaults = "# initdb defaults\n";
+        std::fs::write(&conf, initdb_defaults).expect("seed postgresql.conf");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+
+        // Lever set: the server is left on the initdb defaults (the "before" leg).
+        std::env::set_var(PG_SKIP_SERVER_KNOBS_ENV, "1");
+        let _guard = KnobEnvGuard;
+        assert!(skip_server_knobs(), "the lever must read as set");
+        runtime
+            .apply_server_knobs()
+            .expect("a lever-set apply is a clean no-op");
+        let untuned = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(
+            untuned, initdb_defaults,
+            "the lever must leave postgresql.conf byte-identical"
+        );
+        assert!(
+            !untuned.contains(PG_KNOB_MARKER),
+            "no knob marker may be written while the lever is set"
+        );
+
+        // Lever cleared: the default tuned overlay returns (byte-identical path).
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        assert!(!skip_server_knobs(), "clearing the lever restores tuned");
+        runtime
+            .apply_server_knobs()
+            .expect("the default path appends the overlay");
+        let tuned = std::fs::read_to_string(&conf).expect("read conf");
+        assert!(
+            tuned.contains(PG_KNOB_MARKER),
+            "with the lever unset the overlay must be appended again"
+        );
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                tuned.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{tuned}"
+            );
+        }
     }
 }

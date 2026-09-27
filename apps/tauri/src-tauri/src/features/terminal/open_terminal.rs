@@ -124,7 +124,7 @@ fn failed_response(message: String) -> CliResponse {
 /// [`DEFAULT_PRESENTATION`] fallback (R-4.1). Read per dispatch.
 fn persisted_presentation(app: &AppHandle) -> TerminalPresentation {
     app.try_state::<Arc<AppStore>>()
-        .and_then(|state| state.get(TERMINAL_PRESENTATION_KEY).ok().flatten())
+        .and_then(|state| state.control_get(TERMINAL_PRESENTATION_KEY).ok().flatten())
         .and_then(|raw| TerminalPresentation::parse(&raw))
         .unwrap_or(DEFAULT_PRESENTATION)
 }
@@ -182,11 +182,11 @@ pub async fn dispatch_open_terminal(
     let store = app.try_state::<Arc<AppStore>>();
     let stored_cli = store
         .as_ref()
-        .and_then(|state| state.get(TERMINAL_DEFAULT_CLI_KEY).ok().flatten())
+        .and_then(|state| state.control_get(TERMINAL_DEFAULT_CLI_KEY).ok().flatten())
         .and_then(|value| SessionKind::parse(value.trim()));
     let stored_dir = store
         .as_ref()
-        .and_then(|state| state.get(TERMINAL_WORK_DIR_KEY).ok().flatten())
+        .and_then(|state| state.control_get(TERMINAL_WORK_DIR_KEY).ok().flatten())
         .filter(|value| !value.trim().is_empty());
 
     // `--cli` omitted → the saved default (else a plain shell, the shipped

@@ -297,7 +297,7 @@ pub fn backfill_from_telemetry(
 /// skipped inside [`backfill_from_telemetry`], never a panic.
 pub fn run_startup_backfill(app: &tauri::AppHandle, data_dir: &Path) {
     let app_store = app.state::<Arc<AppStore>>();
-    if matches!(app_store.get(BACKFILL_COMPLETED_KEY), Ok(Some(_))) {
+    if matches!(app_store.control_get(BACKFILL_COMPLETED_KEY), Ok(Some(_))) {
         tracing::debug!(
             target: "fredo::rtdb::backfill",
             "rtdb canonical backfill already completed — skipping"
@@ -323,7 +323,7 @@ pub fn run_startup_backfill(app: &tauri::AppHandle, data_dir: &Path) {
             // on the next startup instead of latching done.
             if summary.spans_read > 0 {
                 let stamped = chrono::Utc::now().to_rfc3339();
-                if let Err(e) = app_store.set(BACKFILL_COMPLETED_KEY, &stamped) {
+                if let Err(e) = app_store.control_set(BACKFILL_COMPLETED_KEY, &stamped) {
                     tracing::warn!(
                         target: "fredo::rtdb::backfill",
                         error = %e,
@@ -359,7 +359,7 @@ fn provider_rebackfill_pass(
     classifier: &IngestClassifier,
     data_dir: &Path,
 ) -> Result<Option<ProviderReattributionSummary>> {
-    if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
+    if matches!(app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
         return Ok(None);
     }
 
@@ -439,7 +439,7 @@ fn provider_rebackfill_pass(
 
     if summary.spans_read > 0 {
         let stamped = chrono::Utc::now().to_rfc3339();
-        app_store.set(BACKFILL_PROVIDER_COMPLETED_KEY, &stamped)?;
+        app_store.control_set(BACKFILL_PROVIDER_COMPLETED_KEY, &stamped)?;
     }
     Ok(Some(summary))
 }
@@ -454,7 +454,7 @@ fn provider_rebackfill_pass(
 /// Never blocks startup; tolerates a missing/empty telemetry tier.
 pub fn run_startup_provider_rebackfill(app: &tauri::AppHandle, data_dir: &Path) {
     let app_store = app.state::<Arc<AppStore>>();
-    if matches!(app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
+    if matches!(app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
         tracing::debug!(
             target: "fredo::rtdb::backfill",
             "rtdb provider re-derivation already completed — skipping"
@@ -1028,13 +1028,13 @@ mod tests {
                 chat_attrs_with_service("ses_pr", "fredo-opencode-plugin", 100),
             )])
             .expect("insert spans");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         // Simulate a pre-#2932 install: the ORIGINAL marker is already latched.
         app_store
-            .set(BACKFILL_COMPLETED_KEY, "2026-01-01T00:00:00+00:00")
+            .control_set(BACKFILL_COMPLETED_KEY, "2026-01-01T00:00:00+00:00")
             .expect("latch old marker");
         assert!(app_store
-            .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+            .control_get(BACKFILL_PROVIDER_COMPLETED_KEY)
             .expect("read new marker")
             .is_none());
 
@@ -1047,13 +1047,13 @@ mod tests {
         // The NEW marker latched; the OLD marker's value is untouched.
         assert!(
             app_store
-                .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+                .control_get(BACKFILL_PROVIDER_COMPLETED_KEY)
                 .expect("read new marker")
                 .is_some(),
             "a successful pass latches its own marker"
         );
         assert_eq!(
-            app_store.get(BACKFILL_COMPLETED_KEY).expect("read old marker").as_deref(),
+            app_store.control_get(BACKFILL_COMPLETED_KEY).expect("read old marker").as_deref(),
             Some("2026-01-01T00:00:00+00:00"),
             "existing marker semantics untouched"
         );
@@ -1068,7 +1068,7 @@ mod tests {
     fn provider_rebackfill_is_a_no_op_without_spans_and_does_not_latch() {
         // Present-but-empty telemetry tier.
         let stack = make_stack();
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
         let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
             .expect("pass")
@@ -1076,7 +1076,7 @@ mod tests {
         assert_eq!(summary.spans_read, 0);
         assert!(
             app_store
-                .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+                .control_get(BACKFILL_PROVIDER_COMPLETED_KEY)
                 .expect("read")
                 .is_none(),
             "an empty telemetry tier re-checks next startup instead of latching done"
@@ -1092,7 +1092,7 @@ mod tests {
             Arc::new(SubscriptionRegistry::new()),
             Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery], _: Option<&str>| {}))),
         ));
-        let app_store = AppStore::open(dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
         let summary = provider_rebackfill_pass(&app_store, &classifier, dir.path())
             .expect("pass")
@@ -1100,7 +1100,7 @@ mod tests {
         assert_eq!(summary.spans_read, 0, "missing table → zero summary, no error");
         assert!(
             app_store
-                .get(BACKFILL_PROVIDER_COMPLETED_KEY)
+                .control_get(BACKFILL_PROVIDER_COMPLETED_KEY)
                 .expect("read")
                 .is_none(),
             "a missing table does not latch the marker"
@@ -1211,7 +1211,7 @@ mod tests {
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_nf", "ses_nf_7", "unknown")])
             .expect("seed pre-existing migrated row");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1291,7 +1291,7 @@ mod tests {
                 3_000_000_000,
             )])
             .expect("seed session");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1340,7 +1340,7 @@ mod tests {
             .store
             .upsert_chat_rows(&[no_span, cli_row])
             .expect("seed");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1386,7 +1386,7 @@ mod tests {
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_amb", "ses_amb_1", "unknown")])
             .expect("seed");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1421,7 +1421,7 @@ mod tests {
         let mut copy = pre_existing_chat_row("ses_parent", "ses_child_1", "unknown");
         copy.composited_child_session_id = Some("ses_child".to_string());
         stack.store.upsert_chat_rows(&[copy]).expect("seed composited copy");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1459,9 +1459,9 @@ mod tests {
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_v1", "ses_v1_1", "unknown")])
             .expect("seed");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         app_store
-            .set("rtdb.backfill.provider.completed", "2026-01-01T00:00:00+00:00")
+            .control_set("rtdb.backfill.provider.completed", "2026-01-01T00:00:00+00:00")
             .expect("latch the superseded v1 marker");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
@@ -1470,11 +1470,11 @@ mod tests {
             .expect("the corrected pass runs even though the v1 marker is latched");
         assert_eq!(summary.upgraded, 1);
         assert!(
-            app_store.get(BACKFILL_PROVIDER_COMPLETED_KEY).expect("read v2").is_some(),
+            app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY).expect("read v2").is_some(),
             "the corrected pass latches its own .v2 marker"
         );
         assert_eq!(
-            app_store.get("rtdb.backfill.provider.completed").expect("read v1").as_deref(),
+            app_store.control_get("rtdb.backfill.provider.completed").expect("read v1").as_deref(),
             Some("2026-01-01T00:00:00+00:00"),
             "the superseded v1 value is never rewritten"
         );
@@ -1503,7 +1503,7 @@ mod tests {
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_idem", "ses_idem_1", "unknown")])
             .expect("seed");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let first = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1558,7 +1558,7 @@ mod tests {
             .upsert_chat_rows(&[pre_existing_chat_row("ses_ro", "ses_ro_1", "unknown")])
             .expect("seed");
         let spans_before = stack.span_store.stats().expect("stats").span_count;
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1596,7 +1596,7 @@ mod tests {
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_pre", "ses_pre_1", "unknown")])
             .expect("seed pre-existing migrated row");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
         provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
@@ -1650,7 +1650,7 @@ mod tests {
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_r7", "ses_r7_1", "unknown")])
             .expect("seed pre-existing migrated row");
-        let app_store = AppStore::open(stack.dir.path().to_path_buf()).expect("app store");
+        let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
         let first = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())

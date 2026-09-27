@@ -49,6 +49,7 @@ use fredo_lib::infrastructure::feature_data::store::{FeatureDataStore, TableMeta
 use fredo_lib::infrastructure::rtdb::rows::{ChatRow, RowState};
 use fredo_lib::infrastructure::rtdb::store::RtdbStore;
 use fredo_lib::infrastructure::storage::feature_store::FeatureStore;
+use fredo_lib::infrastructure::storage::{EngineHandle, SqliteEngine, StoreEngine};
 
 const FEATURE_ID: &str = "mission-monitor";
 const DECLARED_TABLE: &str = "sessions";
@@ -64,6 +65,7 @@ const LEGACY_MM_DDL: &str = "CREATE TABLE feature_mission_monitor_sessions (sess
 struct Harness {
     _dir: tempfile::TempDir,
     data_dir: PathBuf,
+    engine: Arc<EngineHandle>,
     rtdb_store: Arc<RtdbStore>,
     meta: Arc<FeatureDataStore>,
     tables: Arc<FeatureStore>,
@@ -72,14 +74,17 @@ struct Harness {
 fn harness() -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let data_dir = dir.path().to_path_buf();
+    let sqlite = SqliteEngine::open(&data_dir.join("fredo.db")).expect("shared engine");
+    let engine = EngineHandle::new(StoreEngine::Sqlite(sqlite));
     let rtdb_store = Arc::new(RtdbStore::open(data_dir.clone()).expect("rtdb store"));
     rtdb_store.ensure_schema().expect("rtdb schema");
-    let meta = Arc::new(FeatureDataStore::open(data_dir.clone()).expect("feature data store"));
+    let meta = Arc::new(FeatureDataStore::open(engine.clone()).expect("feature data store"));
     meta.ensure_schema().expect("feature data schema");
-    let tables = Arc::new(FeatureStore::open(data_dir.clone()).expect("feature store"));
+    let tables = Arc::new(FeatureStore::open(engine.clone()).expect("feature store"));
     Harness {
         _dir: dir,
         data_dir,
+        engine,
         rtdb_store,
         meta,
         tables,
@@ -408,10 +413,10 @@ fn legacy_upgrade_path_repairs_the_declared_sessions_table() {
         "the declared table is empty before the one-time backfill"
     );
     let engine = Arc::new(
-        ProjectionEngine::new(h.data_dir.clone(), h.meta.clone(), h.tables.clone())
+        ProjectionEngine::new(h.engine.clone(), h.meta.clone(), h.tables.clone())
             .expect("projection engine"),
     );
-    let fed = backfill_pending(&h.data_dir, &h.meta, &engine, &h.rtdb_store)
+    let fed = backfill_pending(&h.meta, &engine, &h.rtdb_store)
         .expect("the backfill runs");
     assert_eq!(
         fed, 3,
@@ -532,10 +537,10 @@ fn broken_declared_table_does_not_suppress_a_sibling_or_set_its_marker() {
     }
 
     let engine = Arc::new(
-        ProjectionEngine::new(h.data_dir.clone(), h.meta.clone(), h.tables.clone())
+        ProjectionEngine::new(h.engine.clone(), h.meta.clone(), h.tables.clone())
             .expect("projection engine"),
     );
-    let fed = backfill_pending(&h.data_dir, &h.meta, &engine, &h.rtdb_store)
+    let fed = backfill_pending(&h.meta, &engine, &h.rtdb_store)
         .expect("the backfill runs despite the broken table");
     assert_eq!(fed, 2, "both canonical rows are fed through the engine");
 

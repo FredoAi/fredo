@@ -127,7 +127,7 @@ pub fn resolve_retention(
 }
 
 fn knob_u64(app: &AppStore, key: &str) -> Result<Option<u64>> {
-    Ok(match app.get(key)? {
+    Ok(match app.control_get(key)? {
         Some(raw) => raw.trim().parse::<u64>().ok(),
         None => None,
     })
@@ -399,10 +399,10 @@ mod tests {
 
     fn setup(retention: Option<Retention>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
-        let app = Arc::new(AppStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        let app = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
         registry.declare(&sessions_declaration(retention)).unwrap();
         Harness {
@@ -601,7 +601,7 @@ mod tests {
         let knobbed = setup(None);
         knobbed
             .app
-            .set(KNOB_DEFAULT_MAX_ROWS, "1")
+            .control_set(KNOB_DEFAULT_MAX_ROWS, "1")
             .unwrap();
         insert(
             &knobbed,
@@ -731,13 +731,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rtdb = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
         rtdb.ensure_schema().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
         registry.declare(&probe_declaration()).unwrap();
         let engine =
-            ProjectionEngine::new(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap();
+            ProjectionEngine::new_sqlite_for_tests(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap();
         ProjectionHarness {
             _dir: dir,
             engine,

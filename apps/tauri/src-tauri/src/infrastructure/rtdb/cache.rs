@@ -524,13 +524,13 @@ pub fn read_knobs(app_store: &AppStore) -> (i64, i64) {
         RTDB_RETENTION_DAYS_KEY,
     };
     let retention_days = app_store
-        .get(RTDB_RETENTION_DAYS_KEY)
+        .control_get(RTDB_RETENTION_DAYS_KEY)
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(RTDB_DEFAULT_RETENTION_DAYS);
     let max_rows = app_store
-        .get(RTDB_MAX_ROWS_KEY)
+        .control_get(RTDB_MAX_ROWS_KEY)
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
@@ -762,7 +762,8 @@ mod tests {
     #[test]
     fn read_knobs_defaults_when_unset_and_reads_configured_values() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let app_store = AppStore::open(dir.path().to_path_buf()).expect("appstore");
+        let app_store =
+            AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("appstore");
 
         // Unset → defaults (7 days / 100k rows).
         let (days, rows) = read_knobs(&app_store);
@@ -771,10 +772,10 @@ mod tests {
 
         // Configured → the configured values win (read fresh each cycle).
         app_store
-            .set(crate::infrastructure::rtdb::store::RTDB_RETENTION_DAYS_KEY, "3")
+            .control_set(crate::infrastructure::rtdb::store::RTDB_RETENTION_DAYS_KEY, "3")
             .expect("set");
         app_store
-            .set(crate::infrastructure::rtdb::store::RTDB_MAX_ROWS_KEY, "5000")
+            .control_set(crate::infrastructure::rtdb::store::RTDB_MAX_ROWS_KEY, "5000")
             .expect("set");
         let (days, rows) = read_knobs(&app_store);
         assert_eq!(days, 3);
@@ -782,7 +783,7 @@ mod tests {
 
         // Unparseable → back to defaults, never a panic.
         app_store
-            .set(crate::infrastructure::rtdb::store::RTDB_RETENTION_DAYS_KEY, "bogus")
+            .control_set(crate::infrastructure::rtdb::store::RTDB_RETENTION_DAYS_KEY, "bogus")
             .expect("set");
         let (days, _) = read_knobs(&app_store);
         assert_eq!(days, crate::infrastructure::rtdb::store::RTDB_DEFAULT_RETENTION_DAYS);
