@@ -3,6 +3,14 @@ pub mod infrastructure;
 mod runtime;
 mod utils;
 
+// Spec #2975 ST-6 — test seam. The cross-engine integration binary
+// (`tests/storage_engine_pg.rs`) drives the SAME bounded `PgRuntime` the app
+// uses, so the G-263 start/stop/teardown contract is exercised by the real
+// primitive (finite timeouts, hard-kill fallback, RAII teardown) instead of a
+// test-local copy. `#[doc(hidden)]`: not part of the app's surface.
+#[doc(hidden)]
+pub use features::pg_supervisor::runtime::PgRuntime;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::TerminalState;

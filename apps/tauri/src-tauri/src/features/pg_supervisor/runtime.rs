@@ -545,6 +545,51 @@ mod tests {
         );
     }
 
+    /// A graceful-stop seam that completes immediately (the normal path).
+    fn noop_stop(_pg: &mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// ST-6 / REQ-6/EARS-6.1 (G-263): the NORMAL exit path is graceful, bounded,
+    /// and does not hard-kill — `stop_bounded` returns `Graceful` within its
+    /// bound when no postmaster survives the graceful stop. Together with the
+    /// hang/panic/error tests this closes the teardown-on-every-exit-path set.
+    #[tokio::test]
+    async fn stop_bounded_reports_graceful_within_bound_when_no_postmaster_survives() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-empty");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+
+        let started = Instant::now();
+        let outcome = runtime.stop_bounded(Duration::from_millis(200)).await;
+
+        assert!(
+            matches!(outcome, StopOutcome::Graceful { .. }),
+            "a completed graceful stop with no surviving postmaster must be Graceful, got {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the 200 ms bound must fire well under 5 s, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            recorded_kills().is_empty(),
+            "the graceful path must not hard-kill anything, saw {:?}",
+            recorded_kills()
+        );
+    }
+
     /// ST-2 / REQ-5/EARS-5.1: the overlay is appended exactly once and carries
     /// every declared server-memory knob.
     #[test]

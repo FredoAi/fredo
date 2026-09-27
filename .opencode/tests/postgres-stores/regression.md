@@ -61,6 +61,24 @@
   the slice-1 bounded stop + watchdog + fallback + sweep layers still hold behind the new pool.
   **Edge / FAIL:** any await without a finite bound.
 
+- [ ] **R-13 (PG integration suite stays OFFLINE by default):** the cross-engine binary
+  `apps/tauri/src-tauri/tests/storage_engine_pg.rs` is gated behind `FREDO_TEST_PG=1`; a plain
+  `cargo test --locked` / `cargo nextest run` executes it as an immediate no-op — no embedded server,
+  no network, no `.opencode/tmp` writes. The real suite runs ONLY via
+  `FREDO_TEST_PG=1 cargo test --locked --test storage_engine_pg`, against ONE embedded server with
+  per-scenario `CREATE SCHEMA` + `search_path` isolation.
+  **Edge / FAIL:** the gated tests start a server (or create a data dir) without `FREDO_TEST_PG=1`,
+  or default `cargo test` regresses to requiring PostgreSQL.
+
+- [ ] **R-14 (cross-engine test harness is itself bounded — G-263 induction):** every external-runtime
+  leg of the PG suite uses the slice-1 bounded `PgRuntime` (`Settings::timeout` + `run_bounded` +
+  stop watchdog + `taskkill` fallback) and `FREDO_PG_DATA_DIR` under `.opencode/tmp/2975/`; teardown is
+  guaranteed on the normal / error / panic paths (RAII `Drop`), the stop is finite, and a post-stop
+  port re-probe proves no orphan postmaster. Tests assert the SQLite↔PG fixture is byte-equal (row
+  count + content checksum) across `settings` / `feature_*` / `feature_data_*`.
+  **Edge / FAIL:** an unbounded start/stop, a PG suite leg without a finite bound, an orphan
+  postmaster after teardown, or a count/checksum divergence.
+
 ## Linked suites (overlapping surface — run alongside)
 
 - [ ] **R-10:** inherit and run `.opencode/tests/postgres-lifecycle/regression.md` (R-1..R-12) — the
