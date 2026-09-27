@@ -37,6 +37,9 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::infrastructure::storage::engine::{
+    build_pg_pool, EngineChoice, PgPoolStage, StorageEngineState,
+};
 use crate::infrastructure::storage::AppStore;
 
 use super::lock::PgDataDirLock;
@@ -169,8 +172,10 @@ enum Bootstrap {
     Locked(PgDataDirLock, String),
 }
 
-/// The enable flag: ONLY the literal `"true"` enables the engine; absent, blank,
-/// or any other value leaves persistence unchanged (R-1.4).
+/// The slice-1 KV enable flag: ONLY the literal `"true"` enables the engine;
+/// absent, blank, or any other value leaves persistence unchanged (R-1.4). Used
+/// as the fallback when no shared engine state is managed (unit tests / a
+/// pre-ST-2 caller); in production the resolved engine choice supersedes it.
 fn pg_enabled(store: &AppStore) -> bool {
     matches!(
         store.get(PG_ENABLED_KEY).ok().flatten().as_deref(),
@@ -178,12 +183,22 @@ fn pg_enabled(store: &AppStore) -> bool {
     )
 }
 
+/// The **FS-4** fault seam resolved to a named pool-build stage: the non-blank
+/// value of [`super::PG_POOL_FORCE_FAIL_ENV`] parsed by
+/// [`PgPoolStage::parse`]. Inert when unset (the default build is unchanged).
+pub fn pool_force_fail_stage() -> Option<PgPoolStage> {
+    let raw = std::env::var(super::PG_POOL_FORCE_FAIL_ENV).ok()?;
+    PgPoolStage::parse(&raw)
+}
+
 /// Synchronous, bounded bootstrap: decide → lock → sweep. NEVER starts the server.
 ///
-/// The lock stays at `<app_data_dir>/<PG_LOCK_FILENAME>`; only the **data dir**
-/// honours the FS-1 [`super::PG_DATA_DIR_ENV`] override (`super::resolve_data_dir`).
-fn bootstrap(app_data_dir: &Path, store: &AppStore) -> Bootstrap {
-    if !pg_enabled(store) {
+/// `enabled` is the already-resolved boot decision (the shared engine choice, or
+/// the slice-1 KV rule when no state is managed). The lock stays at
+/// `<app_data_dir>/<PG_LOCK_FILENAME>`; only the **data dir** honours the FS-1
+/// [`super::PG_DATA_DIR_ENV`] override (`super::resolve_data_dir`).
+fn bootstrap(app_data_dir: &Path, store: &AppStore, enabled: bool) -> Bootstrap {
+    if !enabled {
         return Bootstrap::Disabled;
     }
     // FS-1: one shared rule also used by `PgRuntime` and the status view.
@@ -236,15 +251,31 @@ pub fn start_supervisor(app: &AppHandle) {
         }
     };
 
-    match bootstrap(&app_data_dir, &store) {
+    // Spec #2975 ST-2: the resolved engine choice drives the boot decision. The
+    // env lever `FREDO_STORAGE_ENGINE` (resolved by `select_engine` at setup and
+    // carried on the managed engine state) OVERRIDES the control-plane
+    // `postgres.enabled`; with no override the slice-1 KV rule applies
+    // (absent ⇒ disabled, so persistence is unchanged — R-1.4).
+    let enabled = match app.try_state::<Arc<StorageEngineState>>() {
+        Some(state) => state.choice() == EngineChoice::Postgres,
+        None => pg_enabled(&store),
+    };
+
+    match bootstrap(&app_data_dir, &store, enabled) {
         Bootstrap::Disabled => {
             tracing::info!(
                 target: "fredo::pg_supervisor",
-                "embedded PostgreSQL disabled (postgres.enabled is not \"true\"); persistence unchanged"
+                "embedded PostgreSQL disabled (not selected); persistence unchanged"
             );
         }
         Bootstrap::Failed(error) => {
-            // The data dir is owned elsewhere: report Failed and start nothing.
+            // The data dir is owned elsewhere: record the fail-closed reason,
+            // report Failed, and start nothing.
+            if let Some(state) = app.try_state::<Arc<StorageEngineState>>() {
+                if state.choice() == EngineChoice::Postgres {
+                    state.set_fallback_reason(error.clone());
+                }
+            }
             tracing::error!(
                 target: "fredo::pg_supervisor",
                 error = %error,
@@ -288,6 +319,11 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
         Some(store) => store.inner().clone(),
         None => return,
     };
+    // Spec #2975 ST-2: the shared engine state the pool installs into. Optional
+    // so the supervisor still runs on the slice-1 path when no seam is managed.
+    let engine = app
+        .try_state::<Arc<StorageEngineState>>()
+        .map(|state| state.inner().clone());
 
     let password = ensure_password(&store);
     let mut runtime = PgRuntime::new(&app_data_dir, password);
@@ -300,6 +336,12 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
 
     let started = async {
         runtime.setup().await.map_err(|error| ("setup", error))?;
+        // Spec #2975 ST-2 (REQ-5/EARS-5.1): overlay the desktop server-memory
+        // knobs onto the `initdb`-created postgresql.conf AFTER setup and BEFORE
+        // start, so the running server picks them up (verified live via `SHOW`).
+        runtime
+            .apply_server_knobs()
+            .map_err(|error| ("knobs", error))?;
         let pid = runtime.start().await.map_err(|error| ("start", error))?;
         // Persist the PID marker after the spawn, before the readiness poll (R-1.1).
         persist_pid(&store, Some(pid));
@@ -314,6 +356,37 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
     match started {
         Ok(pid) => {
             let port = runtime.port();
+
+            // Spec #2975 ST-2 pool-ready callback (REQ-1/EARS-1.2): after the
+            // readiness probe resolves, build ONE bounded pool and install it
+            // into the shared handle EXACTLY once. ANY failure/timeout installs
+            // NOTHING and records the reason — the app stays on SQLite
+            // (fail-closed, REQ-3/EARS-3.2). The FS-4 seam forces this
+            // deterministically for QA (REQ-3/EARS-3.3).
+            if let Some(engine) = engine.as_ref() {
+                if engine.choice() == EngineChoice::Postgres {
+                    let url = runtime.connection_url();
+                    match build_pg_pool(&url, pool_force_fail_stage()).await {
+                        Ok(pg) => {
+                            engine.install_postgres(pg);
+                            tracing::info!(
+                                target: "fredo::pg_supervisor",
+                                "storage engine installed: postgres"
+                            );
+                        }
+                        Err(error) => {
+                            let reason = format!("{error:#}");
+                            tracing::error!(
+                                target: "fredo::pg_supervisor",
+                                reason = %reason,
+                                "pool build failed; storage engine stays on SQLite (fail-closed)"
+                            );
+                            engine.set_fallback_reason(reason);
+                        }
+                    }
+                }
+            }
+
             if let Ok(mut guard) = state.runtime.lock() {
                 *guard = Some(runtime);
             }
@@ -338,6 +411,13 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
             );
         }
         Err((stage, error)) => {
+            // Spec #2975 ST-2: a selection/setup/start/readiness failure leaves
+            // the engine on SQLite — record why (fail-closed, REQ-3/EARS-3.2).
+            if let Some(engine) = engine.as_ref() {
+                if engine.choice() == EngineChoice::Postgres {
+                    engine.set_fallback_reason(structured_error(stage, &error));
+                }
+            }
             // R-1.3: bounded teardown, marker cleared, structured error, no hang.
             let outcome = runtime.stop_bounded(PG_STOP_BOUND).await;
             let (how, elapsed_ms) = match outcome {
@@ -469,7 +549,9 @@ pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
 mod tests {
     use super::*;
     use crate::features::pg_supervisor::sweep::persisted_pid;
-    use crate::features::pg_supervisor::{PG_DATA_SUBDIR, PG_LOCK_FILENAME, PG_PID_KEY};
+    use crate::features::pg_supervisor::{
+        PG_DATA_SUBDIR, PG_LOCK_FILENAME, PG_PID_KEY, PG_POOL_FORCE_FAIL_ENV,
+    };
 
     fn open_store(dir: &Path) -> AppStore {
         AppStore::open(dir.to_path_buf()).expect("open app store")
@@ -496,7 +578,10 @@ mod tests {
         // A stale marker must survive the disabled path untouched (R-1.4).
         store.set(PG_PID_KEY, "4242").expect("seed marker");
 
-        assert!(matches!(bootstrap(dir.path(), &store), Bootstrap::Disabled));
+        assert!(matches!(
+            bootstrap(dir.path(), &store, false),
+            Bootstrap::Disabled
+        ));
 
         assert!(
             !dir.path().join(PG_LOCK_FILENAME).exists(),
@@ -516,7 +601,7 @@ mod tests {
         let store = open_store(dir.path());
         store.set(PG_ENABLED_KEY, "true").expect("enable");
 
-        match bootstrap(dir.path(), &store) {
+        match bootstrap(dir.path(), &store, true) {
             Bootstrap::Locked(lock, data_dir) => {
                 assert!(lock.path().exists(), "the lock file is created");
                 assert_eq!(lock.path(), dir.path().join(PG_LOCK_FILENAME).as_path());
@@ -537,7 +622,7 @@ mod tests {
         store.set(PG_ENABLED_KEY, "true").expect("enable");
         let held = PgDataDirLock::acquire(dir.path()).expect("hold the lock");
 
-        match bootstrap(dir.path(), &store) {
+        match bootstrap(dir.path(), &store, true) {
             Bootstrap::Failed(error) => {
                 assert!(error.starts_with("[lock]"), "structured error: {error}");
             }
@@ -592,5 +677,34 @@ mod tests {
             serde_json::to_value(PgState::Failed).expect("serialize"),
             "failed"
         );
+    }
+
+    // -- ST-2: FS-4 fault seam -------------------------------------------------
+
+    static SEAM_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct SeamEnvGuard;
+
+    impl Drop for SeamEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(PG_POOL_FORCE_FAIL_ENV);
+        }
+    }
+
+    #[test]
+    fn pool_force_fail_stage_is_inert_when_unset_and_parses_when_set() {
+        let _lock = SEAM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var(PG_POOL_FORCE_FAIL_ENV);
+        assert_eq!(pool_force_fail_stage(), None, "unset must be inert");
+
+        std::env::set_var(PG_POOL_FORCE_FAIL_ENV, "1");
+        let _guard = SeamEnvGuard;
+        assert_eq!(pool_force_fail_stage(), Some(PgPoolStage::Connect));
+
+        std::env::set_var(PG_POOL_FORCE_FAIL_ENV, "schemaInit");
+        assert_eq!(pool_force_fail_stage(), Some(PgPoolStage::SchemaInit));
+
+        std::env::set_var(PG_POOL_FORCE_FAIL_ENV, "   ");
+        assert_eq!(pool_force_fail_stage(), None, "blank must be inert");
     }
 }

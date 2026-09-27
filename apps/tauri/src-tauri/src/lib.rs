@@ -26,6 +26,9 @@ use infrastructure::rtdb::store::{
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
+use infrastructure::storage::engine::{
+    select_engine, EngineHandle, SqliteEngine, StorageEngineState, StoreEngine,
+};
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
@@ -117,6 +120,20 @@ pub fn run() {
                 AppStore::open(data_dir.clone()).expect("Failed to open settings store"),
             );
             app.manage(app_store.clone());
+
+            // -- Shared storage-engine seam (Spec #2975 ST-2) ------------------
+            // ONE shared SQLite engine + the swap-once `EngineHandle`, built
+            // BEFORE the supervisor starts. The supervisor's background pool
+            // build installs PostgreSQL into this handle once the managed server
+            // is ready; any failure leaves the handle on SQLite (fail-closed,
+            // REQ-3/EARS-3.2). The state is managed so `storage_engine_status`
+            // can report the live dialect + the fail-closed reason, and so the
+            // supervisor can read the resolved selection.
+            let sqlite_engine = SqliteEngine::open(&data_dir.join("fredo.db"))
+                .expect("Failed to open the shared storage engine");
+            let engine_choice = select_engine(&sqlite_engine);
+            let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine));
+            app.manage(StorageEngineState::new(engine_handle, engine_choice));
 
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
             // Disabled by default (`postgres.enabled` absent ⇒ no lock, no
@@ -650,6 +667,9 @@ pub fn run() {
             // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
             // read-only observability hook (no state mutation).
             features::pg_supervisor::state::pg_supervisor_status,
+            // Storage engine seam (Spec #2975 ST-2): the live-observable,
+            // read-only engine status (dialect + fail-closed reason).
+            infrastructure::storage::engine::storage_engine_status,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
             feature_store::feature_store_insert,

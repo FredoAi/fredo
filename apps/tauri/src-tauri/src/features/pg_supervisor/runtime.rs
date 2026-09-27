@@ -19,6 +19,7 @@
 //! it is NOT a dependency on the spike crate (no cross-crate reference).
 
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +34,10 @@ use super::{
     PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_INSTALL_SUBDIR, PG_READY_BOUND, PG_SETUP_BOUND,
     PG_START_BOUND,
 };
+
+/// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
+/// idempotent (never appended twice).
+const PG_KNOB_MARKER: &str = "# fredo server-memory knobs (Spec #2975)";
 
 /// Kill primitive seam used by the teardown paths; defaults to [`kill_pid_tree`].
 /// Injectable in tests so teardown can be proven without spawning a server.
@@ -221,6 +226,42 @@ impl PgRuntime {
         .await
     }
 
+    /// Append the [`super::PG_SERVER_KNOBS`] to `<data_dir>/postgresql.conf`
+    /// (REQ-5/EARS-5.1). Called after `setup()` (which creates the file via
+    /// `initdb`) and before `start()`.
+    ///
+    /// Idempotent: a marker line guards the append, so a second call — or a
+    /// restart over an existing data dir — is a no-op. PostgreSQL applies later
+    /// settings last, so the overlay wins over the `initdb` defaults; the live
+    /// values are verified with `SHOW` by ST-7/QA. If a future crate version
+    /// rewrote `postgresql.conf` in `start()`, that live `SHOW` check would catch
+    /// it and the crate `Settings` hook is the fallback (plan risk row).
+    pub fn apply_server_knobs(&self) -> Result<()> {
+        let path = self.data_dir.join("postgresql.conf");
+        let existing = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if existing.contains(PG_KNOB_MARKER) {
+            return Ok(());
+        }
+        let mut block = String::new();
+        block.push('\n');
+        block.push_str(PG_KNOB_MARKER);
+        block.push('\n');
+        for (name, value) in super::PG_SERVER_KNOBS {
+            block.push_str(name);
+            block.push_str(" = ");
+            block.push_str(value);
+            block.push('\n');
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {} for append", path.display()))?
+            .write_all(block.as_bytes())
+            .with_context(|| format!("appending server-memory knobs to {}", path.display()))?;
+        Ok(())
+    }
+
     /// Bounded `start()`; returns the postmaster PID once it has been written.
     pub async fn start(&mut self) -> Result<u32> {
         let pg = &mut self.pg;
@@ -343,7 +384,7 @@ impl Drop for PgRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::pg_supervisor::PG_DATA_SUBDIR;
+    use crate::features::pg_supervisor::{PG_DATA_SUBDIR, PG_SERVER_KNOBS};
     use std::sync::Mutex;
 
     static KILLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
@@ -502,5 +543,58 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "the 50 ms bound must fire well under 5 s, took {elapsed:?}"
         );
+    }
+
+    /// ST-2 / REQ-5/EARS-5.1: the overlay is appended exactly once and carries
+    /// every declared server-memory knob.
+    #[test]
+    fn apply_server_knobs_appends_the_overlay_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        std::fs::write(&conf, "# initdb defaults\n").expect("seed postgresql.conf");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        runtime.apply_server_knobs().expect("append the overlay");
+
+        let first = std::fs::read_to_string(&conf).expect("read conf");
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                first.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{first}"
+            );
+        }
+
+        // Idempotent: a second call must not append a duplicate overlay.
+        runtime.apply_server_knobs().expect("second call is a no-op");
+        let second = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(first, second, "the overlay must be appended exactly once");
+    }
+
+    /// ST-2: a missing `postgresql.conf` is a clean error (bounded, no panic) —
+    /// `apply_server_knobs` must never take the app down.
+    #[test]
+    fn apply_server_knobs_errors_when_postgresql_conf_is_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-no-conf");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        assert!(runtime.apply_server_knobs().is_err());
     }
 }

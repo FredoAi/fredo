@@ -252,6 +252,212 @@ fn lock_write<T>(rwlock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     rwlock.write().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+// -- PostgreSQL pool build (Spec #2975, ST-2) ---------------------------------
+
+/// Wall-clock bound on the WHOLE pool build + schema init (G-263). Every leg of
+/// the build is additionally bounded by the pool's own acquire timeout.
+pub const PG_POOL_BUILD_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A named stage of the bounded pool build. The **FS-4** injectable fault seam
+/// (`FREDO_PG_POOL_FORCE_FAIL`, owned by `features::pg_supervisor`) forces the
+/// build to fail AT one of these stages, so the fail-closed SQLite fallback is
+/// observable without corrupting a real data dir (G-275).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PgPoolStage {
+    /// Establish the pool (real connections to the managed server).
+    Connect,
+    /// Create the shared `settings` KV schema on the new pool.
+    SchemaInit,
+}
+
+impl PgPoolStage {
+    /// Parse a fault-seam value into a stage. `None` for blank/unset;
+    /// `1`/`true`/`yes`/`connect` => [`PgPoolStage::Connect`]; a schema spelling
+    /// => [`PgPoolStage::SchemaInit`]; any other non-blank value still forces a
+    /// failure (at `Connect`), so a simple truthy toggle is enough.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" => None,
+            "schema" | "schema-init" | "schema_init" | "schemainit" => Some(PgPoolStage::SchemaInit),
+            _ => Some(PgPoolStage::Connect),
+        }
+    }
+
+    /// The stage's stable name, used in the structured failure reason.
+    pub fn name(self) -> &'static str {
+        match self {
+            PgPoolStage::Connect => "connect",
+            PgPoolStage::SchemaInit => "schemaInit",
+        }
+    }
+}
+
+/// Build ONE bounded `sqlx::PgPool` against `url`, then run the shared schema
+/// init.
+///
+/// Fail-closed contract (REQ-3/EARS-3.2): ANY error or timeout returns `Err` and
+/// no pool — the caller installs nothing and the app stays on SQLite. `force_fail`
+/// is the **FS-4** fault seam (G-275): when `Some`, the build fails at that named
+/// stage without touching a real data dir (REQ-3/EARS-3.3).
+pub async fn build_pg_pool(url: &str, force_fail: Option<PgPoolStage>) -> Result<PgEngine> {
+    match tokio::time::timeout(PG_POOL_BUILD_BOUND, build_pg_pool_inner(url, force_fail)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "[pool] the pool build exceeded its {PG_POOL_BUILD_BOUND:?} wall-clock bound"
+        )),
+    }
+}
+
+async fn build_pg_pool_inner(url: &str, force_fail: Option<PgPoolStage>) -> Result<PgEngine> {
+    // FS-4: fail at the named stage, deterministically, before connecting.
+    if force_fail == Some(PgPoolStage::Connect) {
+        return Err(forced_pool_failure(PgPoolStage::Connect));
+    }
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(PG_POOL_MIN_CONNECTIONS)
+        .max_connections(PG_POOL_MAX_CONNECTIONS)
+        .acquire_timeout(PG_POOL_ACQUIRE_TIMEOUT)
+        .idle_timeout(Some(PG_POOL_IDLE_TIMEOUT))
+        .max_lifetime(Some(PG_POOL_MAX_LIFETIME))
+        .connect(url)
+        .await
+        .map_err(|error| anyhow::anyhow!("[pool:connect] {error}"))?;
+
+    // FS-4: fail after the pool connected but before schema init.
+    if force_fail == Some(PgPoolStage::SchemaInit) {
+        return Err(forced_pool_failure(PgPoolStage::SchemaInit));
+    }
+
+    ensure_settings_schema(&pool)
+        .await
+        .map_err(|error| anyhow::anyhow!("[pool:schemaInit] {error}"))?;
+
+    Ok(PgEngine {
+        pool,
+        url: url.to_string(),
+    })
+}
+
+fn forced_pool_failure(stage: PgPoolStage) -> anyhow::Error {
+    anyhow::anyhow!(
+        "[pool:{}] forced failure via the FS-4 fault seam",
+        stage.name()
+    )
+}
+
+/// Create the shared `settings` KV schema on a PostgreSQL pool (idempotent).
+pub async fn ensure_settings_schema(pool: &sqlx::PgPool) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// -- Engine status (Spec #2975, ST-2) -----------------------------------------
+
+/// Serialize [`Dialect`] as its lowercase wire name (`"sqlite"` | `"postgres"`),
+/// the shape `storage_engine_status` exposes to the webview.
+impl serde::Serialize for Dialect {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Dialect::Sqlite => "sqlite",
+            Dialect::Postgres => "postgres",
+        })
+    }
+}
+
+/// Read-only observable storage-engine status (the live hook for the fail-closed
+/// seam). `engine` is the ACTIVE dialect; `fallback_reason` is set only when
+/// PostgreSQL was selected but the engine stayed on SQLite.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageEngineStatus {
+    /// The active engine's dialect.
+    pub engine: Dialect,
+    /// Why the engine stayed on SQLite, when it did.
+    pub fallback_reason: Option<String>,
+}
+
+/// Shared engine state handed to the supervisor's background pool build and
+/// exposed by [`storage_engine_status`]: the swap-once handle, the resolved
+/// selection, and the fail-closed reason recorded when the engine stays on
+/// SQLite.
+pub struct StorageEngineState {
+    handle: Arc<EngineHandle>,
+    choice: EngineChoice,
+    fallback_reason: Mutex<Option<String>>,
+}
+
+impl StorageEngineState {
+    /// Wrap the handle + the resolved selection and share it as Tauri state.
+    pub fn new(handle: Arc<EngineHandle>, choice: EngineChoice) -> Arc<Self> {
+        Arc::new(Self {
+            handle,
+            choice,
+            fallback_reason: Mutex::new(None),
+        })
+    }
+
+    /// The swap-once handle (cloned into the supervisor's pool build).
+    pub fn handle(&self) -> Arc<EngineHandle> {
+        Arc::clone(&self.handle)
+    }
+
+    /// The resolved engine selection (before the pool is ever built).
+    pub fn choice(&self) -> EngineChoice {
+        self.choice
+    }
+
+    /// Install the ONE PostgreSQL engine (first-wins on the swap-once handle).
+    pub fn install_postgres(&self, pg: PgEngine) {
+        self.handle.install(StoreEngine::Postgres(Arc::new(pg)));
+    }
+
+    /// Record why the engine stayed on SQLite. The FIRST reason wins, so the
+    /// original failure is never masked by a later one.
+    pub fn set_fallback_reason(&self, reason: String) {
+        let mut guard = lock(&self.fallback_reason);
+        if guard.is_none() {
+            *guard = Some(reason);
+        }
+    }
+
+    /// The recorded fail-closed reason, if any.
+    pub fn fallback_reason(&self) -> Option<String> {
+        lock(&self.fallback_reason).clone()
+    }
+
+    /// The read-only status snapshot.
+    pub fn status(&self) -> StorageEngineStatus {
+        StorageEngineStatus {
+            engine: self.handle.engine().dialect(),
+            fallback_reason: self.fallback_reason(),
+        }
+    }
+}
+
+/// The live-observable engine-status hook (read-only, no state mutation).
+#[tauri::command]
+pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus {
+    use tauri::Manager as _;
+    match app.try_state::<Arc<StorageEngineState>>() {
+        Some(state) => state.status(),
+        None => StorageEngineStatus {
+            engine: Dialect::Sqlite,
+            fallback_reason: None,
+        },
+    }
+}
+
 // -- Tests --------------------------------------------------------------------
 
 #[cfg(test)]
@@ -565,5 +771,96 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM probe", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    // -- ST-2: pool-build fault seam -----------------------------------------
+
+    #[test]
+    fn pg_pool_stage_parse_maps_the_fault_seam_values() {
+        assert_eq!(PgPoolStage::parse(""), None);
+        assert_eq!(PgPoolStage::parse("   "), None);
+        assert_eq!(PgPoolStage::parse("1"), Some(PgPoolStage::Connect));
+        assert_eq!(PgPoolStage::parse("true"), Some(PgPoolStage::Connect));
+        assert_eq!(PgPoolStage::parse("connect"), Some(PgPoolStage::Connect));
+        assert_eq!(PgPoolStage::parse("Connect"), Some(PgPoolStage::Connect));
+        assert_eq!(
+            PgPoolStage::parse("schemaInit"),
+            Some(PgPoolStage::SchemaInit)
+        );
+        assert_eq!(
+            PgPoolStage::parse("schema_init"),
+            Some(PgPoolStage::SchemaInit)
+        );
+        // An unrecognized non-blank value still forces a failure (at connect).
+        assert_eq!(PgPoolStage::parse("bogus"), Some(PgPoolStage::Connect));
+    }
+
+    #[tokio::test]
+    async fn build_pg_pool_forced_connect_failure_returns_err_without_connecting() {
+        // Port 1 is never dialled: the FS-4 seam fails BEFORE any network attempt,
+        // so this is bounded and deterministic without a live server.
+        let result =
+            build_pg_pool("postgres://postgres:pw@127.0.0.1:1/none", Some(PgPoolStage::Connect))
+                .await;
+        assert!(result.is_err(), "the FS-4 seam must fail the build");
+        let error = result.err().expect("error");
+        let text = error.to_string();
+        assert!(text.contains("[pool:connect]"), "{text}");
+        assert!(text.contains("FS-4"), "{text}");
+    }
+
+    // -- ST-2: engine status --------------------------------------------------
+
+    #[test]
+    fn storage_engine_state_starts_on_sqlite_without_a_fallback_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let state = StorageEngineState::new(handle, EngineChoice::Sqlite);
+        let status = state.status();
+        assert_eq!(status.engine, Dialect::Sqlite);
+        assert_eq!(status.fallback_reason, None);
+    }
+
+    #[test]
+    fn storage_engine_state_keeps_the_first_fallback_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        state.set_fallback_reason("[pool:connect] forced".to_string());
+        state.set_fallback_reason("[start] later".to_string());
+        assert_eq!(
+            state.status().fallback_reason.as_deref(),
+            Some("[pool:connect] forced"),
+            "the FIRST failure reason must survive"
+        );
+        // A failed build leaves the engine on SQLite (fail-closed).
+        assert_eq!(state.status().engine, Dialect::Sqlite);
+    }
+
+    #[tokio::test]
+    async fn storage_engine_state_installs_postgres_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo"));
+        assert_eq!(state.status().engine, Dialect::Postgres);
+        // A second install is a no-op (first-wins on the swap-once handle).
+        state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/other"));
+        assert_eq!(state.status().engine, Dialect::Postgres);
+    }
+
+    #[test]
+    fn storage_engine_status_serializes_camel_case_with_lowercase_dialect() {
+        let status = StorageEngineStatus {
+            engine: Dialect::Postgres,
+            fallback_reason: Some("[pool:connect] forced".to_string()),
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["engine"], "postgres");
+        assert_eq!(json["fallbackReason"], "[pool:connect] forced");
+        assert_eq!(
+            serde_json::to_value(Dialect::Sqlite).unwrap(),
+            serde_json::json!("sqlite")
+        );
     }
 }
