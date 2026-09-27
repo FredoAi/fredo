@@ -778,9 +778,9 @@ mod tests {
 
     fn setup() -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let store = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
+        let store = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         Harness {
             dir,
             registry: DeclarationRegistry::new(meta, store.clone()),

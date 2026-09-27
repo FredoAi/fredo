@@ -1,8 +1,8 @@
-//! Shared feature-data metadata storage (Spec #2896, ST-2).
+//! Shared feature-data metadata storage (Spec #2896, ST-2; engine-selected in
+//! Spec #2975 ST-5).
 //!
-//! Owns the two process-global metadata tables in the same `fredo.db` as
-//! `AppStore` / `FeatureStore` / `RtdbStore`, behind its own `Mutex<Connection>`
-//! (the `RtdbStore` pattern — WAL, poison-recovering lock helper):
+//! Owns the two process-global metadata tables on the shared [`EngineHandle`]
+//! (no per-store `Mutex<Connection>`):
 //!
 //! - `feature_data_tables` — one row per declared table: the declaration JSON,
 //!   the feature-declared revision, the last delivered scope version and the
@@ -10,17 +10,58 @@
 //! - `feature_data_tombstones` — one row per explicitly deleted record key, so
 //!   the projection never resurrects it (ST-7 consumes these).
 //!
+//! `backfill_done` is carried as DATA (never re-derived). On PostgreSQL the
+//! composite-key upserts use `EXCLUDED.` and the shared column set.
+//!
 //! This module also owns the **reserved-column guard** for feature-originated
 //! writes: a feature may never name `_row_version` / `_updated_at`, nor a
 //! `backend`-owned column, nor an undeclared column.
 
 use anyhow::Result;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde_json::{Map, Value as JsonValue};
-use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Arc;
+
+use crate::infrastructure::storage::engine::{EngineHandle, StoreEngine};
+use crate::infrastructure::storage::feature_store::block_on_pg;
 
 use super::declaration::{is_reserved_column, ColumnOwner, FeatureDataTableDeclaration};
+
+/// The two metadata tables, SQLite DDL (byte-identical to the incumbent).
+const TABLES_DDL_SQLITE: &str = "CREATE TABLE IF NOT EXISTS feature_data_tables (
+        feature_id            TEXT NOT NULL,
+        table_name            TEXT NOT NULL,
+        declaration_json      TEXT NOT NULL,
+        declaration_revision  TEXT NOT NULL,
+        last_version          INTEGER NOT NULL DEFAULT 0,
+        backfill_done         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (feature_id, table_name)
+    );
+    CREATE TABLE IF NOT EXISTS feature_data_tombstones (
+        feature_id  TEXT NOT NULL,
+        table_name  TEXT NOT NULL,
+        key_json    TEXT NOT NULL,
+        deleted_at  TEXT NOT NULL,
+        PRIMARY KEY (feature_id, table_name, key_json)
+    );";
+
+/// The PostgreSQL DDL (C1 type map: `INTEGER → bigint`).
+const TABLES_DDL_PG: &str = "CREATE TABLE IF NOT EXISTS feature_data_tables (
+        feature_id            text NOT NULL,
+        table_name            text NOT NULL,
+        declaration_json      text NOT NULL,
+        declaration_revision  text NOT NULL,
+        last_version          bigint NOT NULL DEFAULT 0,
+        backfill_done         bigint NOT NULL DEFAULT 0,
+        PRIMARY KEY (feature_id, table_name)
+    );
+    CREATE TABLE IF NOT EXISTS feature_data_tombstones (
+        feature_id  text NOT NULL,
+        table_name  text NOT NULL,
+        key_json    text NOT NULL,
+        deleted_at  text NOT NULL,
+        PRIMARY KEY (feature_id, table_name, key_json)
+    );";
 
 /// Metadata row for one declared table (`feature_data_tables`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,142 +83,304 @@ pub struct Tombstone {
     pub deleted_at: String,
 }
 
-/// SQLite-backed metadata store for the feature-owned data layer.
+/// Engine-selected metadata store for the feature-owned data layer.
 pub struct FeatureDataStore {
-    conn: Mutex<Connection>,
+    engine: Arc<EngineHandle>,
 }
 
 impl FeatureDataStore {
-    /// Open (or create) `fredo.db` with WAL journal mode + `synchronous=NORMAL`.
-    pub fn open(data_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&data_dir)?;
-        let db_path = data_dir.join("fredo.db");
-        let conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
-        Ok(FeatureDataStore {
-            conn: Mutex::new(conn),
-        })
+    /// Wrap the shared engine handle.
+    pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
+        Ok(FeatureDataStore { engine })
+    }
+
+    /// Test-only convenience: a SQLite-backed store at `<data_dir>/fredo.db`.
+    #[cfg(test)]
+    pub fn open_sqlite_for_tests(data_dir: std::path::PathBuf) -> Result<Self> {
+        let sqlite = crate::infrastructure::storage::engine::SqliteEngine::open(
+            &data_dir.join("fredo.db"),
+        )?;
+        Self::open(EngineHandle::new(StoreEngine::Sqlite(sqlite)))
     }
 
     /// Create the metadata + tombstone tables if they don't exist.
     pub fn ensure_schema(&self) -> Result<()> {
-        let conn = self.lock_conn();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS feature_data_tables (
-                feature_id            TEXT NOT NULL,
-                table_name            TEXT NOT NULL,
-                declaration_json      TEXT NOT NULL,
-                declaration_revision  TEXT NOT NULL,
-                last_version          INTEGER NOT NULL DEFAULT 0,
-                backfill_done         INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (feature_id, table_name)
-            );
-            CREATE TABLE IF NOT EXISTS feature_data_tombstones (
-                feature_id  TEXT NOT NULL,
-                table_name  TEXT NOT NULL,
-                key_json    TEXT NOT NULL,
-                deleted_at  TEXT NOT NULL,
-                PRIMARY KEY (feature_id, table_name, key_json)
-            );",
-        )?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                engine.write_conn().execute_batch(TABLES_DDL_SQLITE)?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                block_on_pg(async {
+                    sqlx::raw_sql(TABLES_DDL_PG).execute(&pg.pool).await.map(|_| ())
+                })?;
+                Ok(())
+            }
+        }
     }
 
     /// Load the metadata row for one declared table.
     pub fn get_table(&self, feature_id: &str, table_name: &str) -> Result<Option<TableMeta>> {
-        let conn = self.lock_conn();
-        conn.query_row(
-            "SELECT feature_id, table_name, declaration_json, declaration_revision,
-                    last_version, backfill_done
-             FROM feature_data_tables
-             WHERE feature_id = ?1 AND table_name = ?2",
-            params![feature_id, table_name],
-            row_to_meta,
-        )
-        .optional()
-        .map_err(Into::into)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                conn.query_row(
+                    "SELECT feature_id, table_name, declaration_json, declaration_revision,
+                            last_version, backfill_done
+                     FROM feature_data_tables
+                     WHERE feature_id = ?1 AND table_name = ?2",
+                    params![feature_id, table_name],
+                    row_to_meta,
+                )
+                .optional()
+                .map_err(Into::into)
+            }
+            StoreEngine::Postgres(pg) => {
+                let row: Option<(String, String, String, String, i64, i64)> = block_on_pg(async {
+                    sqlx::query_as(
+                        "SELECT feature_id, table_name, declaration_json, declaration_revision,
+                                last_version, backfill_done
+                         FROM feature_data_tables
+                         WHERE feature_id = $1 AND table_name = $2",
+                    )
+                    .bind(feature_id)
+                    .bind(table_name)
+                    .fetch_optional(&pg.pool)
+                    .await
+                })?;
+                Ok(row.map(
+                    |(
+                        feature_id,
+                        table_name,
+                        declaration_json,
+                        declaration_revision,
+                        last_version,
+                        backfill_done,
+                    )| TableMeta {
+                        feature_id,
+                        table_name,
+                        declaration_json,
+                        declaration_revision,
+                        last_version,
+                        backfill_done: backfill_done != 0,
+                    },
+                ))
+            }
+        }
     }
 
     /// Load every persisted declaration metadata row (startup materialization).
     pub fn list_tables(&self) -> Result<Vec<TableMeta>> {
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare(
-            "SELECT feature_id, table_name, declaration_json, declaration_revision,
-                    last_version, backfill_done
-             FROM feature_data_tables
-             ORDER BY feature_id, table_name",
-        )?;
-        let rows = stmt
-            .query_map([], row_to_meta)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let mut stmt = conn.prepare(
+                    "SELECT feature_id, table_name, declaration_json, declaration_revision,
+                            last_version, backfill_done
+                     FROM feature_data_tables
+                     ORDER BY feature_id, table_name",
+                )?;
+                let rows = stmt
+                    .query_map([], row_to_meta)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            }
+            StoreEngine::Postgres(pg) => {
+                let rows: Vec<(String, String, String, String, i64, i64)> = block_on_pg(async {
+                    sqlx::query_as(
+                        "SELECT feature_id, table_name, declaration_json, declaration_revision,
+                                last_version, backfill_done
+                         FROM feature_data_tables
+                         ORDER BY feature_id, table_name",
+                    )
+                    .fetch_all(&pg.pool)
+                    .await
+                })?;
+                Ok(rows
+                    .into_iter()
+                    .map(
+                        |(
+                            feature_id,
+                            table_name,
+                            declaration_json,
+                            declaration_revision,
+                            last_version,
+                            backfill_done,
+                        )| TableMeta {
+                            feature_id,
+                            table_name,
+                            declaration_json,
+                            declaration_revision,
+                            last_version,
+                            backfill_done: backfill_done != 0,
+                        },
+                    )
+                    .collect())
+            }
+        }
     }
 
     /// Insert or update the metadata row for a declared table.
     pub fn put_table(&self, meta: &TableMeta) -> Result<()> {
-        let conn = self.lock_conn();
-        conn.execute(
-            "INSERT INTO feature_data_tables
-                (feature_id, table_name, declaration_json, declaration_revision,
-                 last_version, backfill_done)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(feature_id, table_name) DO UPDATE SET
-                declaration_json     = excluded.declaration_json,
-                declaration_revision = excluded.declaration_revision,
-                last_version         = excluded.last_version,
-                backfill_done        = excluded.backfill_done",
-            params![
-                meta.feature_id,
-                meta.table_name,
-                meta.declaration_json,
-                meta.declaration_revision,
-                meta.last_version,
-                i64::from(meta.backfill_done),
-            ],
-        )?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                conn.execute(
+                    "INSERT INTO feature_data_tables
+                        (feature_id, table_name, declaration_json, declaration_revision,
+                         last_version, backfill_done)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(feature_id, table_name) DO UPDATE SET
+                        declaration_json     = excluded.declaration_json,
+                        declaration_revision = excluded.declaration_revision,
+                        last_version         = excluded.last_version,
+                        backfill_done        = excluded.backfill_done",
+                    params![
+                        meta.feature_id,
+                        meta.table_name,
+                        meta.declaration_json,
+                        meta.declaration_revision,
+                        meta.last_version,
+                        i64::from(meta.backfill_done),
+                    ],
+                )?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                block_on_pg(async {
+                    sqlx::query(
+                        "INSERT INTO feature_data_tables
+                            (feature_id, table_name, declaration_json, declaration_revision,
+                             last_version, backfill_done)
+                         VALUES ($1, $2, $3, $4, $5, $6)
+                         ON CONFLICT(feature_id, table_name) DO UPDATE SET
+                            declaration_json     = EXCLUDED.declaration_json,
+                            declaration_revision = EXCLUDED.declaration_revision,
+                            last_version         = EXCLUDED.last_version,
+                            backfill_done        = EXCLUDED.backfill_done",
+                    )
+                    .bind(&meta.feature_id)
+                    .bind(&meta.table_name)
+                    .bind(&meta.declaration_json)
+                    .bind(&meta.declaration_revision)
+                    .bind(meta.last_version)
+                    .bind(i64::from(meta.backfill_done))
+                    .execute(&pg.pool)
+                    .await
+                    .map(|_| ())
+                })?;
+                Ok(())
+            }
+        }
     }
 
     /// Update only the projection backfill marker for a declared table.
     pub fn set_backfill_done(&self, feature_id: &str, table_name: &str, done: bool) -> Result<()> {
-        let conn = self.lock_conn();
-        conn.execute(
-            "UPDATE feature_data_tables SET backfill_done = ?3
-             WHERE feature_id = ?1 AND table_name = ?2",
-            params![feature_id, table_name, i64::from(done)],
-        )?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                conn.execute(
+                    "UPDATE feature_data_tables SET backfill_done = ?3
+                     WHERE feature_id = ?1 AND table_name = ?2",
+                    params![feature_id, table_name, i64::from(done)],
+                )?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                block_on_pg(async {
+                    sqlx::query(
+                        "UPDATE feature_data_tables SET backfill_done = $3
+                         WHERE feature_id = $1 AND table_name = $2",
+                    )
+                    .bind(feature_id)
+                    .bind(table_name)
+                    .bind(i64::from(done))
+                    .execute(&pg.pool)
+                    .await
+                    .map(|_| ())
+                })?;
+                Ok(())
+            }
+        }
     }
 
     /// Update only the last delivered scope version for a declared table.
     pub fn set_last_version(&self, feature_id: &str, table_name: &str, version: i64) -> Result<()> {
-        let conn = self.lock_conn();
-        conn.execute(
-            "UPDATE feature_data_tables SET last_version = ?3
-             WHERE feature_id = ?1 AND table_name = ?2",
-            params![feature_id, table_name, version],
-        )?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                conn.execute(
+                    "UPDATE feature_data_tables SET last_version = ?3
+                     WHERE feature_id = ?1 AND table_name = ?2",
+                    params![feature_id, table_name, version],
+                )?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                block_on_pg(async {
+                    sqlx::query(
+                        "UPDATE feature_data_tables SET last_version = $3
+                         WHERE feature_id = $1 AND table_name = $2",
+                    )
+                    .bind(feature_id)
+                    .bind(table_name)
+                    .bind(version)
+                    .execute(&pg.pool)
+                    .await
+                    .map(|_| ())
+                })?;
+                Ok(())
+            }
+        }
     }
 
     /// Insert (or refresh) a tombstone for an explicitly deleted record key.
     pub fn put_tombstone(&self, tombstone: &Tombstone) -> Result<()> {
-        let conn = self.lock_conn();
-        conn.execute(
-            "INSERT INTO feature_data_tombstones
-                (feature_id, table_name, key_json, deleted_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(feature_id, table_name, key_json) DO UPDATE SET
-                deleted_at = excluded.deleted_at",
-            params![
-                tombstone.feature_id,
-                tombstone.table_name,
-                tombstone.key_json,
-                tombstone.deleted_at,
-            ],
-        )?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                conn.execute(
+                    "INSERT INTO feature_data_tombstones
+                        (feature_id, table_name, key_json, deleted_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(feature_id, table_name, key_json) DO UPDATE SET
+                        deleted_at = excluded.deleted_at",
+                    params![
+                        tombstone.feature_id,
+                        tombstone.table_name,
+                        tombstone.key_json,
+                        tombstone.deleted_at,
+                    ],
+                )?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                block_on_pg(async {
+                    sqlx::query(
+                        "INSERT INTO feature_data_tombstones
+                            (feature_id, table_name, key_json, deleted_at)
+                         VALUES ($1, $2, $3, $4)
+                         ON CONFLICT(feature_id, table_name, key_json) DO UPDATE SET
+                            deleted_at = EXCLUDED.deleted_at",
+                    )
+                    .bind(&tombstone.feature_id)
+                    .bind(&tombstone.table_name)
+                    .bind(&tombstone.key_json)
+                    .bind(&tombstone.deleted_at)
+                    .execute(&pg.pool)
+                    .await
+                    .map(|_| ())
+                })?;
+                Ok(())
+            }
+        }
     }
 
     /// `true` iff the record key is tombstoned (never re-project it).
@@ -187,46 +390,84 @@ impl FeatureDataStore {
         table_name: &str,
         key_json: &str,
     ) -> Result<bool> {
-        let conn = self.lock_conn();
-        let found: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM feature_data_tombstones
-                 WHERE feature_id = ?1 AND table_name = ?2 AND key_json = ?3",
-                params![feature_id, table_name, key_json],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(found.is_some())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let found: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM feature_data_tombstones
+                         WHERE feature_id = ?1 AND table_name = ?2 AND key_json = ?3",
+                        params![feature_id, table_name, key_json],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                Ok(found.is_some())
+            }
+            StoreEngine::Postgres(pg) => {
+                let found: Option<i32> = block_on_pg(async {
+                    sqlx::query_scalar(
+                        "SELECT 1 FROM feature_data_tombstones
+                         WHERE feature_id = $1 AND table_name = $2 AND key_json = $3",
+                    )
+                    .bind(feature_id)
+                    .bind(table_name)
+                    .bind(key_json)
+                    .fetch_optional(&pg.pool)
+                    .await
+                })?;
+                Ok(found.is_some())
+            }
+        }
     }
 
     /// Load every tombstone for one declared table.
     pub fn list_tombstones(&self, feature_id: &str, table_name: &str) -> Result<Vec<Tombstone>> {
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare(
-            "SELECT feature_id, table_name, key_json, deleted_at
-             FROM feature_data_tombstones
-             WHERE feature_id = ?1 AND table_name = ?2
-             ORDER BY key_json",
-        )?;
-        let rows = stmt
-            .query_map(params![feature_id, table_name], |row| {
-                Ok(Tombstone {
-                    feature_id: row.get(0)?,
-                    table_name: row.get(1)?,
-                    key_json: row.get(2)?,
-                    deleted_at: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    // ── Lock helper (poison recovery — no unwrap) ───────────────────────────
-
-    fn lock_conn(&self) -> MutexGuard<'_, Connection> {
-        match self.conn.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let mut stmt = conn.prepare(
+                    "SELECT feature_id, table_name, key_json, deleted_at
+                     FROM feature_data_tombstones
+                     WHERE feature_id = ?1 AND table_name = ?2
+                     ORDER BY key_json",
+                )?;
+                let rows = stmt
+                    .query_map(params![feature_id, table_name], |row| {
+                        Ok(Tombstone {
+                            feature_id: row.get(0)?,
+                            table_name: row.get(1)?,
+                            key_json: row.get(2)?,
+                            deleted_at: row.get(3)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            }
+            StoreEngine::Postgres(pg) => {
+                let rows: Vec<(String, String, String, String)> = block_on_pg(async {
+                    sqlx::query_as(
+                        "SELECT feature_id, table_name, key_json, deleted_at
+                         FROM feature_data_tombstones
+                         WHERE feature_id = $1 AND table_name = $2
+                         ORDER BY key_json",
+                    )
+                    .bind(feature_id)
+                    .bind(table_name)
+                    .fetch_all(&pg.pool)
+                    .await
+                })?;
+                Ok(rows
+                    .into_iter()
+                    .map(|(feature_id, table_name, key_json, deleted_at)| Tombstone {
+                        feature_id,
+                        table_name,
+                        key_json,
+                        deleted_at,
+                    })
+                    .collect())
+            }
         }
     }
 }
@@ -283,13 +524,11 @@ mod tests {
     use super::*;
     use crate::infrastructure::feature_data::declaration::{DeclaredColumn, DeclaredColumnType};
 
-    fn make_store() -> FeatureDataStore {
-        let conn = Connection::open_in_memory().unwrap();
-        let store = FeatureDataStore {
-            conn: Mutex::new(conn),
-        };
+    fn make_store() -> (tempfile::TempDir, FeatureDataStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap();
         store.ensure_schema().unwrap();
-        store
+        (dir, store)
     }
 
     fn sample_meta() -> TableMeta {
@@ -305,7 +544,7 @@ mod tests {
 
     #[test]
     fn metadata_round_trips_and_upserts() {
-        let store = make_store();
+        let (_dir, store) = make_store();
         assert_eq!(
             store.get_table("mission-monitor", "sessions").unwrap(),
             None
@@ -332,16 +571,12 @@ mod tests {
         assert_eq!(loaded.declaration_revision, "mm.sessions.v2");
         assert_eq!(loaded.last_version, 42);
         assert!(loaded.backfill_done);
-        assert_eq!(
-            store.list_tables().unwrap().len(),
-            1,
-            "upsert must not duplicate"
-        );
+        assert_eq!(store.list_tables().unwrap().len(), 1);
     }
 
     #[test]
     fn tombstone_round_trips() {
-        let store = make_store();
+        let (_dir, store) = make_store();
         assert!(!store.is_tombstoned("f", "t", "[\"k\"]").unwrap());
 
         store

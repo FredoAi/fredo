@@ -399,9 +399,9 @@ mod tests {
 
     fn setup(retention: Option<Retention>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let app = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
         registry.declare(&sessions_declaration(retention)).unwrap();
@@ -731,13 +731,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rtdb = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
         rtdb.ensure_schema().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
         registry.declare(&probe_declaration()).unwrap();
         let engine =
-            ProjectionEngine::new(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap();
+            ProjectionEngine::new_sqlite_for_tests(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap();
         ProjectionHarness {
             _dir: dir,
             engine,

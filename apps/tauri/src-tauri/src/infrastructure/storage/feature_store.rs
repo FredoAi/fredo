@@ -1,12 +1,14 @@
 ﻿use anyhow::{bail, Result};
-use rusqlite::{params, Connection, OptionalExtension, types::Value as SqlValue};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{Map, Value as JsonValue};
+use sqlx::{Column as _, PgPool, Postgres, Row as _, TypeInfo as _};
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
-// â”€â”€ Column Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+use super::engine::{quote_ident, EngineHandle, StoreEngine};
+
+// ── Column Types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,9 +38,50 @@ impl ColumnType {
             ColumnType::BLOB => "BLOB",
         }
     }
+
+    /// The PostgreSQL type (Spec #2975 ST-4, the C1 map):
+    /// `TEXT→text`, `INTEGER→bigint`, `REAL→double precision`, `BLOB→bytea`.
+    fn as_pg_type(&self) -> &str {
+        match self {
+            ColumnType::TEXT => "text",
+            ColumnType::INTEGER => "bigint",
+            ColumnType::REAL => "double precision",
+            ColumnType::BLOB => "bytea",
+        }
+    }
 }
 
-// â”€â”€ IPC Command Arg Structs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/// Map a PostgreSQL `information_schema.columns.data_type` to the shared
+/// [`ColumnType`] affinity, mirroring [`FeatureStore::normalize_column_type`].
+fn pg_data_type_to_column_type(data_type: &str) -> ColumnType {
+    match data_type {
+        "bigint" | "integer" | "smallint" => ColumnType::INTEGER,
+        "double precision" | "real" | "numeric" => ColumnType::REAL,
+        "bytea" => ColumnType::BLOB,
+        _ => ColumnType::TEXT,
+    }
+}
+
+/// Run one PostgreSQL future from a synchronous caller.
+///
+/// The migrated stores keep synchronous signatures because the RTDB canonical
+/// ingest path and the `lib.rs` setup closure are synchronous boundaries that
+/// this slice does not own. SQLite is executed fully synchronously on the shared
+/// write connection (no bridge); the PostgreSQL branch is the only place the
+/// bridge is entered, and it always runs inside the Tauri multi-threaded
+/// runtime. The pool's own `acquire_timeout` (5 s) bounds every call (G-263).
+pub(crate) fn block_on_pg<F: std::future::Future>(future: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a runtime for a synchronous PostgreSQL call")
+            .block_on(future),
+    }
+}
+
+// ── IPC Command Arg Structs ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,25 +129,24 @@ pub struct DeleteArgs {
     pub where_cols: serde_json::Map<String, JsonValue>,
 }
 
-// â”€â”€ FeatureStore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── FeatureStore ──────────────────────────────────────────────────────────────
 
-/// A generic SQLite-backed keyâ€“value store for feature-scoped tables.
+/// A generic, engine-selected store for feature-scoped tables (Spec #2975 ST-4).
 ///
 /// Each feature gets its own namespace via `feature_{featureId}_{tableName}`.
-/// All operations validate that the table name matches the feature's namespace.
+/// All operations validate that the table name matches the feature's namespace
+/// and route through the ONE shared [`EngineHandle`] — no per-store
+/// `Mutex<Connection>`. SQLite keeps the exact incumbent statements; PostgreSQL
+/// uses the 1:1 translation (`TEXT→text`, `INTEGER→bigint`, `REAL→double
+/// precision`, `BLOB→bytea`; `INSERT OR IGNORE → ON CONFLICT DO NOTHING`;
+/// `excluded. → EXCLUDED.`; `sqlite_master → to_regclass`;
+/// `pragma_table_info → information_schema.columns`; quoted identifiers).
 pub struct FeatureStore {
-    conn: Mutex<Connection>,
+    engine: Arc<EngineHandle>,
 }
 
 /// One physical column of a feature-namespaced table, as reported by
-/// `pragma_table_info`.
-///
-/// `sql_type` is the raw declared SQLite type (used in diagnostics); `col_type`
-/// is the normalized affinity produced by the single
-/// [`FeatureStore::normalize_column_type`] rule that [`FeatureStore::column_types`]
-/// also uses. `not_null` / `primary_key` expose the DDL constraints so the
-/// declared-table layer can tell its own tables apart from a foreign/legacy table
-/// that happens to share the name.
+/// `pragma_table_info` / `information_schema.columns`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PhysicalColumn {
     pub name: String,
@@ -115,30 +157,27 @@ pub(crate) struct PhysicalColumn {
 }
 
 impl FeatureStore {
-    /// Open (or create) fredo.db with WAL journal mode.
-    pub fn open(data_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&data_dir)?;
-        let db_path = data_dir.join("fredo.db");
-        let conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        Ok(FeatureStore {
-            conn: Mutex::new(conn),
-        })
+    /// Wrap the shared engine handle.
+    pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
+        Ok(FeatureStore { engine })
+    }
+
+    /// Test-only convenience: a SQLite-backed store at `<data_dir>/fredo.db`.
+    #[cfg(test)]
+    pub fn open_sqlite_for_tests(data_dir: std::path::PathBuf) -> Result<Self> {
+        let sqlite =
+            crate::infrastructure::storage::engine::SqliteEngine::open(&data_dir.join("fredo.db"))?;
+        Self::open(EngineHandle::new(StoreEngine::Sqlite(sqlite)))
     }
 
     /// Build the full table name: `feature_{featureId}_{tableName}`.
-    /// Hyphens in `feature_id` are replaced with underscores since SQLite
-    /// does not allow hyphens in identifiers.
     fn full_table_name(feature_id: &str, table_name: &str) -> String {
         let sanitized = feature_id.replace('-', "_");
         format!("feature_{}_{}", sanitized, table_name)
     }
 
-    /// Validate that the given full table name is properly namespaced to the feature.
-    ///
-    /// Crate-internal so the feature-owned data layer (`infrastructure::feature_data`)
-    /// reuses the EXACT namespace rule for declared tables — one implementation,
-    /// no drift.
+    /// Validate that the given full table name is properly namespaced to the
+    /// feature. The ONLY source of a dynamic identifier.
     pub(crate) fn validate_namespace(feature_id: &str, table_name: &str) -> Result<String> {
         let sanitized = feature_id.replace('-', "_");
         let full = Self::full_table_name(feature_id, table_name);
@@ -153,12 +192,7 @@ impl FeatureStore {
         Ok(full)
     }
 
-    /// Normalize a raw `pragma_table_info.type` string to a [`ColumnType`].
-    ///
-    /// The ONE shared normalization rule — [`Self::column_types`] and
-    /// [`Self::table_schema`] both use it, so the physical/declared type
-    /// comparison in the feature-data registry cannot drift from the physical
-    /// type mapping used by insert/upsert.
+    /// Normalize a raw physical type string to a [`ColumnType`].
     fn normalize_column_type(type_str: &str) -> ColumnType {
         match type_str.to_uppercase().as_str() {
             "INTEGER" => ColumnType::INTEGER,
@@ -168,27 +202,8 @@ impl FeatureStore {
         }
     }
 
-    /// Look up the column-name â†’ ColumnType mapping for a feature-namespaced table.
-    fn column_types(
-        conn: &Connection,
-        full_table: &str,
-    ) -> Result<HashMap<String, ColumnType>> {
-        let mut stmt = conn.prepare("SELECT name, type FROM pragma_table_info(?1)")?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map(params![full_table], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut map = HashMap::new();
-        for (name, type_str) in rows {
-            map.insert(name, Self::normalize_column_type(&type_str));
-        }
-        Ok(map)
-    }
+    // ── SQLite value bridge (unchanged) ────────────────────────────────────────
 
-    /// Convert a `serde_json::Value` to a `rusqlite::types::Value`.
-    /// When `col_type` is `Some(BLOB)` and the value is a JSON array of numbers,
-    /// the array elements are packed into a byte vector (SqlValue::Blob).
     fn json_to_sql(val: &JsonValue, col_type: Option<&ColumnType>) -> SqlValue {
         match val {
             JsonValue::String(s) => SqlValue::Text(s.clone()),
@@ -212,14 +227,10 @@ impl FeatureStore {
                     SqlValue::Text(val.to_string())
                 }
             }
-            JsonValue::Object(_) => {
-                // Objects are always stored as JSON text
-                SqlValue::Text(val.to_string())
-            }
+            JsonValue::Object(_) => SqlValue::Text(val.to_string()),
         }
     }
 
-    /// Convert a `rusqlite::types::Value` back to a `serde_json::Value`.
     fn sql_to_json(val: &SqlValue) -> JsonValue {
         match val {
             SqlValue::Null => JsonValue::Null,
@@ -232,11 +243,15 @@ impl FeatureStore {
                 }
             }
             SqlValue::Text(s) => JsonValue::String(s.clone()),
-            SqlValue::Blob(b) => JsonValue::Array(b.iter().map(|&x| JsonValue::Number(x.into())).collect()),
+            SqlValue::Blob(b) => {
+                JsonValue::Array(b.iter().map(|&x| JsonValue::Number(x.into())).collect())
+            }
         }
     }
 
-    /// REQ-1: Create a feature-namespaced table with typed columns.
+    // ── REQ-1: ensure_table ────────────────────────────────────────────────────
+
+    /// Create a feature-namespaced table with typed columns (idempotent).
     pub fn ensure_table(
         &self,
         feature_id: &str,
@@ -244,33 +259,107 @@ impl FeatureStore {
         columns: &[ColumnDef],
     ) -> Result<()> {
         let full = Self::validate_namespace(feature_id, table_name)?;
-
-        let col_defs: Vec<String> = columns
-            .iter()
-            .map(|c| {
-                let sql_type = c.col_type.as_sql_type();
-                let pk = if c.primary_key { " PRIMARY KEY" } else { "" };
-                let nn = if !c.nullable && !c.primary_key {
-                    " NOT NULL"
-                } else {
-                    ""
-                };
-                format!("{} {}{}{}", c.name, sql_type, pk, nn)
-            })
-            .collect();
-
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} ({});",
-            full,
-            col_defs.join(", ")
-        );
-
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch(&sql)?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let defs: Vec<String> = columns
+                    .iter()
+                    .map(|c| {
+                        let pk = if c.primary_key { " PRIMARY KEY" } else { "" };
+                        let nn = if !c.nullable && !c.primary_key {
+                            " NOT NULL"
+                        } else {
+                            ""
+                        };
+                        format!("{} {}{}{}", c.name, c.col_type.as_sql_type(), pk, nn)
+                    })
+                    .collect();
+                let conn = engine.write_conn();
+                conn.execute_batch(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} ({});",
+                    full,
+                    defs.join(", ")
+                ))?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                let defs: Vec<String> = columns
+                    .iter()
+                    .map(|c| {
+                        let pk = if c.primary_key { " PRIMARY KEY" } else { "" };
+                        let nn = if !c.nullable && !c.primary_key {
+                            " NOT NULL"
+                        } else {
+                            ""
+                        };
+                        format!(
+                            "{} {}{}{}",
+                            quote_ident(&c.name),
+                            c.col_type.as_pg_type(),
+                            pk,
+                            nn
+                        )
+                    })
+                    .collect();
+                let sql = format!(
+                    "CREATE TABLE IF NOT EXISTS {} ({});",
+                    quote_ident(&full),
+                    defs.join(", ")
+                );
+                block_on_pg(async { sqlx::query(&sql).execute(&pg.pool).await.map(|_| ()) })?;
+                Ok(())
+            }
+        }
     }
 
-    /// REQ-2: Insert rows. Returns count of inserted rows.
+    /// Column-name → [`ColumnType`] for a feature-namespaced table.
+    fn column_types(&self, full_table: &str) -> Result<HashMap<String, ColumnType>> {
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                Self::column_types_sqlite(&conn, full_table)
+            }
+            StoreEngine::Postgres(pg) => Self::column_types_pg(&pg.pool, full_table),
+        }
+    }
+
+    fn column_types_sqlite(
+        conn: &Connection,
+        full_table: &str,
+    ) -> Result<HashMap<String, ColumnType>> {
+        let mut stmt = conn.prepare("SELECT name, type FROM pragma_table_info(?1)")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map(params![full_table], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, type_str)| (name, Self::normalize_column_type(&type_str)))
+            .collect())
+    }
+
+    fn column_types_pg(pool: &PgPool, full_table: &str) -> Result<HashMap<String, ColumnType>> {
+        let rows: Vec<(String, String)> = block_on_pg(async {
+            sqlx::query_as(
+                "SELECT column_name, data_type FROM information_schema.columns
+                 WHERE table_name = $1",
+            )
+            .bind(full_table)
+            .fetch_all(pool)
+            .await
+        })?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, data_type)| (name, pg_data_type_to_column_type(&data_type)))
+            .collect())
+    }
+
+    // ── REQ-2: insert (idempotent on a duplicate primary key) ──────────────────
+
+    /// Insert rows. Returns the count of inserted rows. A duplicate primary key
+    /// is silently ignored on both engines.
     pub fn insert(
         &self,
         feature_id: &str,
@@ -280,51 +369,79 @@ impl FeatureStore {
         if rows.is_empty() {
             return Ok(0);
         }
-
         let full = Self::validate_namespace(feature_id, table_name)?;
-        let conn = self.conn.lock().unwrap();
-
-        // Look up column types from the table schema so we can handle BLOB columns.
-        let col_types = Self::column_types(&conn, &full)?;
-
-        // Collect column names from the first row
+        let col_types = self.column_types(&full)?;
         let col_names: Vec<&str> = rows[0].keys().map(|s| s.as_str()).collect();
-        let placeholders: Vec<String> = col_names.iter().map(|_| "?".to_string()).collect();
-
-        let sql = format!(
-            "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
-            full,
-            col_names.join(", "),
-            placeholders.join(", ")
-        );
-
-        let mut total = 0u64;
-        for row in rows {
-            let values: Vec<SqlValue> = col_names
-                .iter()
-                .map(|&name| {
-                    let col_type = col_types.get(name);
-                    Self::json_to_sql(row.get(name).unwrap_or(&JsonValue::Null), col_type)
-                })
-                .collect();
-
-            let params: Vec<&dyn rusqlite::types::ToSql> =
-                values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-
-            let count = conn.execute(&sql, params.as_slice())? as u64;
-            total += count;
+        if col_names.is_empty() {
+            return Ok(0);
         }
 
-        Ok(total)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let placeholders: Vec<String> =
+                    col_names.iter().map(|_| "?".to_string()).collect();
+                let sql = format!(
+                    "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
+                    full,
+                    col_names.join(", "),
+                    placeholders.join(", ")
+                );
+                let mut total = 0u64;
+                for row in rows {
+                    let values: Vec<SqlValue> = col_names
+                        .iter()
+                        .map(|&name| {
+                            Self::json_to_sql(
+                                row.get(name).unwrap_or(&JsonValue::Null),
+                                col_types.get(name),
+                            )
+                        })
+                        .collect();
+                    let params: Vec<&dyn rusqlite::types::ToSql> =
+                        values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                    total += conn.execute(&sql, params.as_slice())? as u64;
+                }
+                Ok(total)
+            }
+            StoreEngine::Postgres(pg) => {
+                let placeholders: Vec<String> =
+                    (1..=col_names.len()).map(|i| format!("${i}")).collect();
+                let cols = col_names
+                    .iter()
+                    .map(|c| quote_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING",
+                    quote_ident(&full),
+                    cols,
+                    placeholders.join(", ")
+                );
+                block_on_pg(async {
+                    let mut total = 0u64;
+                    for row in rows {
+                        let mut query = sqlx::query(&sql);
+                        for name in &col_names {
+                            query = pg_bind(
+                                query,
+                                row.get(*name).unwrap_or(&JsonValue::Null),
+                                col_types.get(*name).copied(),
+                            );
+                        }
+                        total += query.execute(&pg.pool).await?.rows_affected();
+                    }
+                    Ok(total)
+                })
+            }
+        }
     }
 
-    /// Upsert rows keyed by `primary_key` (`INSERT ... ON CONFLICT(pk) DO UPDATE`).
-    ///
-    /// Unlike [`Self::insert`] (an `INSERT OR IGNORE`), an existing row is
-    /// UPDATED. The written column set is the union of the keys present across
-    /// `rows` (deterministic order); a column absent from a row is bound as NULL.
-    /// The caller supplies the backend-managed reserved columns (`_row_version`,
-    /// `_updated_at`) where required. Returns the number of affected rows.
+    // ── REQ-2: upsert (INSERT ... ON CONFLICT DO UPDATE) ───────────────────────
+
+    /// Upsert rows keyed by `primary_key`. Existing rows are UPDATED; the written
+    /// column set is the deterministic union of the keys present across `rows`.
     pub fn upsert(
         &self,
         feature_id: &str,
@@ -335,12 +452,9 @@ impl FeatureStore {
         if rows.is_empty() {
             return Ok(0);
         }
-
         let full = Self::validate_namespace(feature_id, table_name)?;
-        let conn = self.lock_conn();
-        let col_types = Self::column_types(&conn, &full)?;
+        let col_types = self.column_types(&full)?;
 
-        // Deterministic union of the columns present across all rows.
         let mut columns: Vec<&str> = Vec::new();
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for row in rows {
@@ -351,110 +465,251 @@ impl FeatureStore {
             }
         }
 
-        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
-        let sql = if primary_key.is_empty() {
-            // No declared key — a plain insert (nothing to conflict on).
-            format!(
-                "INSERT INTO {} ({}) VALUES ({})",
-                full,
-                columns.join(", "),
-                placeholders.join(", ")
-            )
-        } else {
-            let updates: Vec<String> = columns
-                .iter()
-                .filter(|c| !primary_key.iter().any(|pk| pk.as_str() == **c))
-                .map(|c| format!("{c} = excluded.{c}"))
-                .collect();
-            let conflict_action = if updates.is_empty() {
-                "DO NOTHING".to_string()
-            } else {
-                format!("DO UPDATE SET {}", updates.join(", "))
-            };
-            format!(
-                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) {}",
-                full,
-                columns.join(", "),
-                placeholders.join(", "),
-                primary_key.join(", "),
-                conflict_action
-            )
-        };
-
-        let mut stmt = conn.prepare(&sql)?;
-        let mut total = 0u64;
-        for row in rows {
-            let values: Vec<SqlValue> = columns
-                .iter()
-                .map(|&name| {
-                    let col_type = col_types.get(name);
-                    Self::json_to_sql(row.get(name).unwrap_or(&JsonValue::Null), col_type)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let placeholders: Vec<String> =
+                    (1..=columns.len()).map(|i| format!("?{i}")).collect();
+                let sql = if primary_key.is_empty() {
+                    format!(
+                        "INSERT INTO {} ({}) VALUES ({})",
+                        full,
+                        columns.join(", "),
+                        placeholders.join(", ")
+                    )
+                } else {
+                    let updates: Vec<String> = columns
+                        .iter()
+                        .filter(|c| !primary_key.iter().any(|pk| pk.as_str() == **c))
+                        .map(|c| format!("{c} = excluded.{c}"))
+                        .collect();
+                    let conflict_action = if updates.is_empty() {
+                        "DO NOTHING".to_string()
+                    } else {
+                        format!("DO UPDATE SET {}", updates.join(", "))
+                    };
+                    format!(
+                        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) {}",
+                        full,
+                        columns.join(", "),
+                        placeholders.join(", "),
+                        primary_key.join(", "),
+                        conflict_action
+                    )
+                };
+                let mut stmt = conn.prepare(&sql)?;
+                let mut total = 0u64;
+                for row in rows {
+                    let values: Vec<SqlValue> = columns
+                        .iter()
+                        .map(|&name| {
+                            Self::json_to_sql(
+                                row.get(name).unwrap_or(&JsonValue::Null),
+                                col_types.get(name),
+                            )
+                        })
+                        .collect();
+                    let params: Vec<&dyn rusqlite::types::ToSql> =
+                        values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                    total += stmt.execute(params.as_slice())? as u64;
+                }
+                Ok(total)
+            }
+            StoreEngine::Postgres(pg) => {
+                let placeholders: Vec<String> =
+                    (1..=columns.len()).map(|i| format!("${i}")).collect();
+                let cols = columns
+                    .iter()
+                    .map(|c| quote_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = if primary_key.is_empty() {
+                    format!(
+                        "INSERT INTO {} ({}) VALUES ({})",
+                        quote_ident(&full),
+                        cols,
+                        placeholders.join(", ")
+                    )
+                } else {
+                    let updates: Vec<String> = columns
+                        .iter()
+                        .filter(|c| !primary_key.iter().any(|pk| pk.as_str() == **c))
+                        .map(|c| {
+                            let quoted = quote_ident(c);
+                            format!("{quoted} = EXCLUDED.{quoted}")
+                        })
+                        .collect();
+                    let conflict_action = if updates.is_empty() {
+                        "DO NOTHING".to_string()
+                    } else {
+                        format!("DO UPDATE SET {}", updates.join(", "))
+                    };
+                    let key_cols = primary_key
+                        .iter()
+                        .map(|k| quote_ident(k))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) {}",
+                        quote_ident(&full),
+                        cols,
+                        placeholders.join(", "),
+                        key_cols,
+                        conflict_action
+                    )
+                };
+                block_on_pg(async {
+                    let mut total = 0u64;
+                    for row in rows {
+                        let mut query = sqlx::query(&sql);
+                        for name in &columns {
+                            query = pg_bind(
+                                query,
+                                row.get(*name).unwrap_or(&JsonValue::Null),
+                                col_types.get(*name).copied(),
+                            );
+                        }
+                        total += query.execute(&pg.pool).await?.rows_affected();
+                    }
+                    Ok(total)
                 })
-                .collect();
-
-            let params: Vec<&dyn rusqlite::types::ToSql> =
-                values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-
-            total += stmt.execute(params.as_slice())? as u64;
+            }
         }
-
-        Ok(total)
     }
 
-    /// Execute a raw DDL/DML batch against this store's connection.
+    // ── DDL/DML batch ─────────────────────────────────────────────────────────
+
+    /// Execute a raw DDL/DML batch against the shared engine.
     ///
-    /// Crate-internal: the feature-owned data layer builds declared-table DDL —
-    /// callers must only pass identifiers obtained from [`Self::validate_namespace`].
+    /// Crate-internal: callers must only pass identifiers obtained from
+    /// [`Self::validate_namespace`].
     pub(crate) fn execute_batch(&self, sql: &str) -> Result<()> {
-        let conn = self.lock_conn();
-        conn.execute_batch(sql)?;
-        Ok(())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                engine.write_conn().execute_batch(sql)?;
+                Ok(())
+            }
+            StoreEngine::Postgres(pg) => {
+                block_on_pg(async { sqlx::raw_sql(sql).execute(&pg.pool).await.map(|_| ()) })?;
+                Ok(())
+            }
+        }
     }
+
+    // ── Probes ─────────────────────────────────────────────────────────────────
 
     /// `true` iff the given (already validated, fully-qualified) table exists.
     pub(crate) fn table_exists(&self, full_table: &str) -> Result<bool> {
-        let conn = self.lock_conn();
-        let found: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![full_table],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(found.is_some())
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let found: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        params![full_table],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                Ok(found.is_some())
+            }
+            StoreEngine::Postgres(pg) => {
+                let found: Option<String> = block_on_pg(async {
+                    sqlx::query_scalar("SELECT to_regclass($1)::text")
+                        .bind(full_table)
+                        .fetch_one(&pg.pool)
+                        .await
+                })?;
+                Ok(found.is_some())
+            }
+        }
     }
 
     /// Physical schema of the given (fully-qualified) table: one entry per column
-    /// in `pragma_table_info` order. An absent table yields an empty `Vec`, which
-    /// callers treat as "table absent".
+    /// in definition order. An absent table yields an empty `Vec`.
     pub(crate) fn table_schema(&self, full_table: &str) -> Result<Vec<PhysicalColumn>> {
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare("SELECT name, type, `notnull`, pk FROM pragma_table_info(?1)")?;
-        let columns = stmt
-            .query_map(params![full_table], |row| {
-                let name: String = row.get(0)?;
-                let sql_type: String = row.get(1)?;
-                Ok(PhysicalColumn {
-                    name,
-                    col_type: Self::normalize_column_type(&sql_type),
-                    sql_type,
-                    not_null: row.get::<_, i64>(2)? != 0,
-                    primary_key: row.get::<_, i64>(3)? != 0,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(columns)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let mut stmt =
+                    conn.prepare("SELECT name, type, `notnull`, pk FROM pragma_table_info(?1)")?;
+                let columns = stmt
+                    .query_map(params![full_table], |row| {
+                        let name: String = row.get(0)?;
+                        let sql_type: String = row.get(1)?;
+                        Ok(PhysicalColumn {
+                            name,
+                            col_type: Self::normalize_column_type(&sql_type),
+                            sql_type,
+                            not_null: row.get::<_, i64>(2)? != 0,
+                            primary_key: row.get::<_, i64>(3)? != 0,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(columns)
+            }
+            StoreEngine::Postgres(pg) => {
+                let rows: Vec<(String, String, String, bool)> = block_on_pg(async {
+                    sqlx::query_as(
+                        "SELECT c.column_name, c.data_type, c.is_nullable, COALESCE(pk.is_pk, false)
+                         FROM information_schema.columns c
+                         LEFT JOIN (
+                             SELECT kcu.column_name, TRUE AS is_pk
+                             FROM information_schema.table_constraints tc
+                             JOIN information_schema.key_column_usage kcu
+                               ON tc.constraint_name = kcu.constraint_name
+                              AND tc.table_schema = kcu.table_schema
+                             WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1
+                         ) pk ON pk.column_name = c.column_name
+                         WHERE c.table_name = $1
+                         ORDER BY c.ordinal_position",
+                    )
+                    .bind(full_table)
+                    .fetch_all(&pg.pool)
+                    .await
+                })?;
+                Ok(rows
+                    .into_iter()
+                    .map(|(name, data_type, is_nullable, primary_key)| PhysicalColumn {
+                        col_type: pg_data_type_to_column_type(&data_type),
+                        sql_type: data_type,
+                        name,
+                        not_null: is_nullable == "NO",
+                        primary_key,
+                    })
+                    .collect())
+            }
+        }
     }
 
     /// Row count of the given (fully-qualified) table.
     pub(crate) fn row_count(&self, full_table: &str) -> Result<i64> {
-        let conn = self.lock_conn();
-        let count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM {}", full_table),
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let count: i64 = conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {}", full_table),
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(count)
+            }
+            StoreEngine::Postgres(pg) => {
+                let count = block_on_pg(async {
+                    sqlx::query_scalar(&format!(
+                        "SELECT COUNT(*) FROM {}",
+                        quote_ident(full_table)
+                    ))
+                    .fetch_one(&pg.pool)
+                    .await
+                })?;
+                Ok(count)
+            }
+        }
     }
 
     /// Physical column names of the given (fully-qualified) table.
@@ -466,15 +721,9 @@ impl FeatureStore {
             .collect())
     }
 
-    /// Lock helper with poison recovery (no `unwrap`).
-    fn lock_conn(&self) -> MutexGuard<'_, Connection> {
-        match self.conn.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
+    // ── REQ-3: query ───────────────────────────────────────────────────────────
 
-    /// REQ-3: Query rows with optional WHERE, ORDER BY, and LIMIT.
+    /// Query rows with optional WHERE, ORDER BY, and LIMIT.
     pub fn query(
         &self,
         feature_id: &str,
@@ -484,63 +733,96 @@ impl FeatureStore {
         limit: Option<u64>,
     ) -> Result<Vec<serde_json::Map<String, JsonValue>>> {
         let full = Self::validate_namespace(feature_id, table_name)?;
-        let conn = self.conn.lock().unwrap();
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let conn = engine.write_conn();
+                let mut sql = format!("SELECT * FROM {}", full);
+                let mut values: Vec<SqlValue> = Vec::new();
 
-        let mut sql = format!("SELECT * FROM {}", full);
-        let mut values: Vec<SqlValue> = Vec::new();
-
-        if let Some(wc) = where_cols {
-            if !wc.is_empty() {
-                let clauses: Vec<String> = wc
-                    .keys()
-                    .enumerate()
-                    .map(|(i, k)| format!("{} = ?{}", k, i + 1))
-                    .collect();
-                sql.push_str(&format!(" WHERE {}", clauses.join(" AND ")));
-                for val in wc.values() {
-                    values.push(Self::json_to_sql(val, None));
+                if let Some(wc) = where_cols {
+                    if !wc.is_empty() {
+                        let clauses: Vec<String> = wc
+                            .keys()
+                            .enumerate()
+                            .map(|(i, k)| format!("{} = ?{}", k, i + 1))
+                            .collect();
+                        sql.push_str(&format!(" WHERE {}", clauses.join(" AND ")));
+                        for val in wc.values() {
+                            values.push(Self::json_to_sql(val, None));
+                        }
+                    }
                 }
+                if let Some(ob) = order_by {
+                    if !ob.is_empty() {
+                        sql.push_str(&format!(" ORDER BY {}", ob));
+                    }
+                }
+                if let Some(lim) = limit {
+                    sql.push_str(&format!(" LIMIT {}", lim));
+                }
+
+                let mut stmt = conn.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::types::ToSql> =
+                    values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                let column_count = stmt.column_count();
+                let column_names: Vec<String> = (0..column_count)
+                    .map(|i| stmt.column_name(i).unwrap().to_string())
+                    .collect();
+                let rows_iter = stmt.query_map(params.as_slice(), |row| {
+                    let mut map = serde_json::Map::new();
+                    for (idx, name) in column_names.iter().enumerate() {
+                        let sql_val: SqlValue = row.get::<_, SqlValue>(idx)?;
+                        map.insert(name.clone(), Self::sql_to_json(&sql_val));
+                    }
+                    Ok(map)
+                })?;
+                let mut result = Vec::new();
+                for row in rows_iter {
+                    result.push(row?);
+                }
+                Ok(result)
+            }
+            StoreEngine::Postgres(pg) => {
+                let col_types = Self::column_types_pg(&pg.pool, &full)?;
+                let mut sql = format!("SELECT * FROM {}", quote_ident(&full));
+                if let Some(wc) = where_cols {
+                    if !wc.is_empty() {
+                        let clauses: Vec<String> = wc
+                            .keys()
+                            .enumerate()
+                            .map(|(i, k)| format!("{} = ${}", quote_ident(k), i + 1))
+                            .collect();
+                        sql.push_str(&format!(" WHERE {}", clauses.join(" AND ")));
+                    }
+                }
+                if let Some(ob) = order_by {
+                    if !ob.is_empty() {
+                        sql.push_str(&format!(" ORDER BY {}", ob));
+                    }
+                }
+                if let Some(lim) = limit {
+                    sql.push_str(&format!(" LIMIT {}", lim));
+                }
+                block_on_pg(async {
+                    let mut query = sqlx::query(&sql);
+                    if let Some(wc) = where_cols {
+                        if !wc.is_empty() {
+                            for (k, val) in wc {
+                                query = pg_bind(query, val, col_types.get(k).copied());
+                            }
+                        }
+                    }
+                    let rows = query.fetch_all(&pg.pool).await?;
+                    rows.iter().map(pg_row_to_json).collect()
+                })
             }
         }
-
-        if let Some(ob) = order_by {
-            if !ob.is_empty() {
-                sql.push_str(&format!(" ORDER BY {}", ob));
-            }
-        }
-
-        if let Some(lim) = limit {
-            sql.push_str(&format!(" LIMIT {}", lim));
-        }
-
-        let mut stmt = conn.prepare(&sql)?;
-
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-
-        let column_count = stmt.column_count();
-        let column_names: Vec<String> = (0..column_count)
-            .map(|i| stmt.column_name(i).unwrap().to_string())
-            .collect();
-
-        let rows_iter = stmt.query_map(params.as_slice(), |row| {
-            let mut map = serde_json::Map::new();
-            for (idx, name) in column_names.iter().enumerate() {
-                let sql_val: SqlValue = row.get::<_, SqlValue>(idx)?;
-                map.insert(name.clone(), Self::sql_to_json(&sql_val));
-            }
-            Ok(map)
-        })?;
-
-        let mut result = Vec::new();
-        for row in rows_iter {
-            result.push(row?);
-        }
-
-        Ok(result)
     }
 
-    /// REQ-4: Update rows matching WHERE clause. Returns count of updated rows.
+    // ── REQ-4: update ──────────────────────────────────────────────────────────
+
+    /// Update rows matching WHERE. Returns the count of updated rows.
     pub fn update(
         &self,
         feature_id: &str,
@@ -549,48 +831,75 @@ impl FeatureStore {
         where_cols: &serde_json::Map<String, JsonValue>,
     ) -> Result<u64> {
         let full = Self::validate_namespace(feature_id, table_name)?;
-
         if set_cols.is_empty() {
             return Ok(0);
         }
-
-        let set_clauses: Vec<String> = set_cols
-            .keys()
-            .enumerate()
-            .map(|(i, k)| format!("{} = ?{}", k, i + 1))
-            .collect();
-
-        let offset = set_cols.len();
-        let where_clauses: Vec<String> = where_cols
-            .keys()
-            .enumerate()
-            .map(|(i, k)| format!("{} = ?{}", k, offset + i + 1))
-            .collect();
-
-        let mut sql = format!("UPDATE {} SET {}", full, set_clauses.join(", "));
-        if !where_clauses.is_empty() {
-            sql.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let set_clauses: Vec<String> = set_cols
+                    .keys()
+                    .enumerate()
+                    .map(|(i, k)| format!("{} = ?{}", k, i + 1))
+                    .collect();
+                let offset = set_cols.len();
+                let where_clauses: Vec<String> = where_cols
+                    .keys()
+                    .enumerate()
+                    .map(|(i, k)| format!("{} = ?{}", k, offset + i + 1))
+                    .collect();
+                let mut sql = format!("UPDATE {} SET {}", full, set_clauses.join(", "));
+                if !where_clauses.is_empty() {
+                    sql.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
+                }
+                let conn = engine.write_conn();
+                let mut stmt = conn.prepare(&sql)?;
+                let mut all_values: Vec<SqlValue> = Vec::new();
+                for val in set_cols.values() {
+                    all_values.push(Self::json_to_sql(val, None));
+                }
+                for val in where_cols.values() {
+                    all_values.push(Self::json_to_sql(val, None));
+                }
+                let params: Vec<&dyn rusqlite::types::ToSql> =
+                    all_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                Ok(stmt.execute(params.as_slice())? as u64)
+            }
+            StoreEngine::Postgres(pg) => {
+                let col_types = Self::column_types_pg(&pg.pool, &full)?;
+                let set_clauses: Vec<String> = set_cols
+                    .keys()
+                    .enumerate()
+                    .map(|(i, k)| format!("{} = ${}", quote_ident(k), i + 1))
+                    .collect();
+                let offset = set_cols.len();
+                let where_clauses: Vec<String> = where_cols
+                    .keys()
+                    .enumerate()
+                    .map(|(i, k)| format!("{} = ${}", quote_ident(k), offset + i + 1))
+                    .collect();
+                let mut sql =
+                    format!("UPDATE {} SET {}", quote_ident(&full), set_clauses.join(", "));
+                if !where_clauses.is_empty() {
+                    sql.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
+                }
+                block_on_pg(async {
+                    let mut query = sqlx::query(&sql);
+                    for (k, val) in set_cols {
+                        query = pg_bind(query, val, col_types.get(k).copied());
+                    }
+                    for (k, val) in where_cols {
+                        query = pg_bind(query, val, col_types.get(k).copied());
+                    }
+                    Ok(query.execute(&pg.pool).await?.rows_affected())
+                })
+            }
         }
-
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&sql)?;
-
-        let mut all_values: Vec<SqlValue> = Vec::new();
-        for val in set_cols.values() {
-            all_values.push(Self::json_to_sql(val, None));
-        }
-        for val in where_cols.values() {
-            all_values.push(Self::json_to_sql(val, None));
-        }
-
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            all_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-
-        let affected = stmt.execute(params.as_slice())?;
-        Ok(affected as u64)
     }
 
-    /// REQ-5: Delete rows matching WHERE clause. Returns count of deleted rows.
+    // ── REQ-5: delete ──────────────────────────────────────────────────────────
+
+    /// Delete rows matching WHERE. Returns the count of deleted rows.
     pub fn delete(
         &self,
         feature_id: &str,
@@ -598,36 +907,196 @@ impl FeatureStore {
         where_cols: &serde_json::Map<String, JsonValue>,
     ) -> Result<u64> {
         let full = Self::validate_namespace(feature_id, table_name)?;
-
         if where_cols.is_empty() {
             return Ok(0);
         }
-
-        let where_clauses: Vec<String> = where_cols
-            .keys()
-            .enumerate()
-            .map(|(i, k)| format!("{} = ?{}", k, i + 1))
-            .collect();
-
-        let sql = format!("DELETE FROM {} WHERE {}", full, where_clauses.join(" AND "));
-
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&sql)?;
-
-        let values: Vec<SqlValue> = where_cols
-            .values()
-            .map(|v| Self::json_to_sql(v, None))
-            .collect();
-
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-
-        let affected = stmt.execute(params.as_slice())?;
-        Ok(affected as u64)
+        let active = self.engine.engine();
+        match active.as_ref() {
+            StoreEngine::Sqlite(engine) => {
+                let where_clauses: Vec<String> = where_cols
+                    .keys()
+                    .enumerate()
+                    .map(|(i, k)| format!("{} = ?{}", k, i + 1))
+                    .collect();
+                let sql = format!("DELETE FROM {} WHERE {}", full, where_clauses.join(" AND "));
+                let conn = engine.write_conn();
+                let mut stmt = conn.prepare(&sql)?;
+                let values: Vec<SqlValue> = where_cols
+                    .values()
+                    .map(|v| Self::json_to_sql(v, None))
+                    .collect();
+                let params: Vec<&dyn rusqlite::types::ToSql> =
+                    values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                Ok(stmt.execute(params.as_slice())? as u64)
+            }
+            StoreEngine::Postgres(pg) => {
+                let col_types = Self::column_types_pg(&pg.pool, &full)?;
+                let where_clauses: Vec<String> = where_cols
+                    .keys()
+                    .enumerate()
+                    .map(|(i, k)| format!("{} = ${}", quote_ident(k), i + 1))
+                    .collect();
+                let sql = format!(
+                    "DELETE FROM {} WHERE {}",
+                    quote_ident(&full),
+                    where_clauses.join(" AND ")
+                );
+                block_on_pg(async {
+                    let mut query = sqlx::query(&sql);
+                    for (k, val) in where_cols {
+                        query = pg_bind(query, val, col_types.get(k).copied());
+                    }
+                    Ok(query.execute(&pg.pool).await?.rows_affected())
+                })
+            }
+        }
     }
 }
 
-// â”€â”€ IPC Commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/// Bind one JSON value onto a PostgreSQL query, using the column's physical
+/// affinity so NULLs and coerced values carry the right wire type.
+fn pg_bind<'q>(
+    query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
+    value: &'q JsonValue,
+    col_type: Option<ColumnType>,
+) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
+    if value.is_null() {
+        return match col_type {
+            Some(ColumnType::INTEGER) => query.bind(None::<i64>),
+            Some(ColumnType::REAL) => query.bind(None::<f64>),
+            Some(ColumnType::BLOB) => query.bind(None::<Vec<u8>>),
+            _ => query.bind(None::<String>),
+        };
+    }
+    match col_type {
+        Some(ColumnType::INTEGER) => query.bind(json_as_i64(value)),
+        Some(ColumnType::REAL) => query.bind(json_as_f64(value)),
+        Some(ColumnType::BLOB) => query.bind(json_as_blob(value)),
+        Some(ColumnType::TEXT) => query.bind(json_as_text(value)),
+        None => match value {
+            JsonValue::String(s) => query.bind(s.clone()),
+            JsonValue::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    query.bind(i)
+                } else {
+                    query.bind(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            JsonValue::Bool(b) => query.bind(*b),
+            JsonValue::Array(_) | JsonValue::Object(_) => query.bind(value.to_string()),
+            JsonValue::Null => query.bind(None::<String>),
+        },
+    }
+}
+
+fn json_as_i64(value: &JsonValue) -> i64 {
+    match value {
+        JsonValue::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(0),
+        JsonValue::Bool(b) => i64::from(*b),
+        JsonValue::String(s) => s.parse::<i64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn json_as_f64(value: &JsonValue) -> f64 {
+    match value {
+        JsonValue::Number(n) => n.as_f64().unwrap_or(0.0),
+        JsonValue::Bool(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        JsonValue::String(s) => s.parse::<f64>().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+fn json_as_blob(value: &JsonValue) -> Vec<u8> {
+    match value {
+        JsonValue::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect(),
+        JsonValue::String(s) => s.as_bytes().to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+fn json_as_text(value: &JsonValue) -> String {
+    match value {
+        JsonValue::String(s) => s.clone(),
+        JsonValue::Bool(b) => {
+            if *b {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            }
+        }
+        JsonValue::Number(n) => n.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Convert one PostgreSQL row to the JSON row shape the IPC surface returns.
+fn pg_row_to_json(row: &sqlx::postgres::PgRow) -> Result<Map<String, JsonValue>> {
+    let mut map = Map::new();
+    for (idx, column) in row.columns().iter().enumerate() {
+        let name = column.name().to_string();
+        let type_name = column.type_info().name();
+        let value: JsonValue = match type_name {
+            "BOOL" => row
+                .try_get::<Option<bool>, _>(idx)?
+                .map(JsonValue::Bool)
+                .unwrap_or(JsonValue::Null),
+            "INT2" => row
+                .try_get::<Option<i16>, _>(idx)?
+                .map(|v| JsonValue::from(i64::from(v)))
+                .unwrap_or(JsonValue::Null),
+            "INT4" => row
+                .try_get::<Option<i32>, _>(idx)?
+                .map(|v| JsonValue::from(i64::from(v)))
+                .unwrap_or(JsonValue::Null),
+            "INT8" => row
+                .try_get::<Option<i64>, _>(idx)?
+                .map(JsonValue::from)
+                .unwrap_or(JsonValue::Null),
+            "FLOAT4" => row
+                .try_get::<Option<f32>, _>(idx)?
+                .and_then(|v| serde_json::Number::from_f64(f64::from(v)))
+                .map(JsonValue::Number)
+                .unwrap_or(JsonValue::Null),
+            "FLOAT8" => row
+                .try_get::<Option<f64>, _>(idx)?
+                .and_then(serde_json::Number::from_f64)
+                .map(JsonValue::Number)
+                .unwrap_or(JsonValue::Null),
+            "BYTEA" => row
+                .try_get::<Option<Vec<u8>>, _>(idx)?
+                .map(|bytes| {
+                    JsonValue::Array(
+                        bytes
+                            .into_iter()
+                            .map(|x| JsonValue::from(i64::from(x)))
+                            .collect(),
+                    )
+                })
+                .unwrap_or(JsonValue::Null),
+            _ => row
+                .try_get::<Option<String>, _>(idx)?
+                .map(JsonValue::String)
+                .unwrap_or(JsonValue::Null),
+        };
+        map.insert(name, value);
+    }
+    Ok(map)
+}
+
+// ── IPC Commands ──────────────────────────────────────────────────────────────
 
 /// REQ-1: Create a feature-namespaced table.
 #[tauri::command]
@@ -703,47 +1172,48 @@ pub fn feature_store_delete(
         .map_err(|e| e.to_string())
 }
 
-// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
 
-    /// Helper: create a FeatureStore backed by an in-memory SQLite database.
-    fn make_store() -> FeatureStore {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
-        FeatureStore {
-            conn: Mutex::new(conn),
+    /// Helper: a FeatureStore over a tempdir-backed shared SQLite engine.
+    fn make_store() -> (tempfile::TempDir, FeatureStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+        (dir, FeatureStore::open(handle).unwrap())
+    }
+
+    fn conn(engine: &Arc<SqliteEngine>) -> std::sync::MutexGuard<'_, Connection> {
+        engine.write_conn()
+    }
+
+    fn col(name: &str, ty: ColumnType, nullable: bool, pk: bool) -> ColumnDef {
+        ColumnDef {
+            name: name.to_string(),
+            col_type: ty,
+            nullable,
+            primary_key: pk,
         }
     }
 
     #[test]
     fn test_ensure_table_creates_schema() {
-        // AC-1: ensure_table with typed columns creates the correct schema
-        let store = make_store();
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "count".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: false,
-                primary_key: false,
-            },
+            col("id", ColumnType::TEXT, false, true),
+            col("count", ColumnType::INTEGER, false, false),
         ];
-
         store
             .ensure_table("myfeature", "mytable", &columns)
             .unwrap();
 
-        // Verify schema via PRAGMA table_info
-        let conn = store.conn.lock().unwrap();
-        let mut stmt = conn
+        let engine = store.engine.engine().sqlite().unwrap().clone();
+        let c = conn(&engine);
+        let mut stmt = c
             .prepare("SELECT name, type, pk, `notnull` FROM pragma_table_info(?1)")
             .unwrap();
         let rows: Vec<(String, String, i32, i32)> = stmt
@@ -758,49 +1228,27 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-
         assert_eq!(rows.len(), 2);
-        // id column: TEXT, PK, not null
         assert_eq!(rows[0].0, "id");
         assert_eq!(rows[0].1, "TEXT");
-        assert_eq!(rows[0].2, 1); // pk
-        assert_eq!(rows[0].3, 0); // notnull (0 = nullable)
-        // count column: INTEGER, not PK, not null
+        assert_eq!(rows[0].2, 1);
+        assert_eq!(rows[0].3, 0);
         assert_eq!(rows[1].0, "count");
         assert_eq!(rows[1].1, "INTEGER");
-        assert_eq!(rows[1].2, 0); // not pk
-        assert_eq!(rows[1].3, 1); // notnull
+        assert_eq!(rows[1].2, 0);
+        assert_eq!(rows[1].3, 1);
     }
 
     #[test]
     fn test_crud_round_trip() {
-        // AC-2: Full CRUD round-trip
-        let store = make_store();
-
-        // Create the table
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "label".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: false,
-            },
-            ColumnDef {
-                name: "value".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: false,
-                primary_key: false,
-            },
+            col("id", ColumnType::TEXT, false, true),
+            col("label", ColumnType::TEXT, false, false),
+            col("value", ColumnType::INTEGER, false, false),
         ];
         store.ensure_table("crudtest", "items", &columns).unwrap();
 
-        // Insert 3 rows
         let rows = vec![
             serde_json::json!({"id": "a", "label": "alpha", "value": 10})
                 .as_object()
@@ -815,16 +1263,12 @@ mod tests {
                 .unwrap()
                 .clone(),
         ];
-        let inserted = store.insert("crudtest", "items", &rows).unwrap();
-        assert_eq!(inserted, 3);
+        assert_eq!(store.insert("crudtest", "items", &rows).unwrap(), 3);
+        assert_eq!(
+            store.query("crudtest", "items", None, None, None).unwrap().len(),
+            3
+        );
 
-        // Query all rows
-        let all = store
-            .query("crudtest", "items", None, None, None)
-            .unwrap();
-        assert_eq!(all.len(), 3);
-
-        // Query with WHERE
         let beta_rows = store
             .query(
                 "crudtest",
@@ -837,7 +1281,6 @@ mod tests {
         assert_eq!(beta_rows.len(), 1);
         assert_eq!(beta_rows[0].get("id").unwrap(), "b");
 
-        // Update
         let updated = store
             .update(
                 "crudtest",
@@ -847,8 +1290,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(updated, 1);
-
-        // Verify update
         let updated_row = store
             .query(
                 "crudtest",
@@ -860,7 +1301,6 @@ mod tests {
             .unwrap();
         assert_eq!(updated_row[0].get("value").unwrap(), 25);
 
-        // Delete
         let deleted = store
             .delete(
                 "crudtest",
@@ -869,29 +1309,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(deleted, 1);
-
-        // Verify deletion
-        let remaining = store
-            .query("crudtest", "items", None, None, None)
-            .unwrap();
-        assert_eq!(remaining.len(), 2);
+        assert_eq!(
+            store.query("crudtest", "items", None, None, None).unwrap().len(),
+            2
+        );
     }
 
     #[test]
     fn test_cross_feature_isolation() {
-        // AC-3: Cross-feature access returns an error
-        let store = make_store();
-
-        // Create table for feature "bar"
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
+        let (_dir, store) = make_store();
+        let columns = vec![col("id", ColumnType::TEXT, false, true)];
         store.ensure_table("bar", "mytable", &columns).unwrap();
-
-        // Try to query with feature "foo" â€” should error
         let result = store.query("foo", "mytable", None, None, None);
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
@@ -903,23 +1331,12 @@ mod tests {
 
     #[test]
     fn test_query_with_order_by_and_limit() {
-        let store = make_store();
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "name".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: false,
-            },
-            ColumnDef {
-                name: "rank".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: false,
-                primary_key: false,
-            },
+            col("name", ColumnType::TEXT, false, false),
+            col("rank", ColumnType::INTEGER, false, false),
         ];
         store.ensure_table("ranked", "entries", &columns).unwrap();
-
         let rows = vec![
             serde_json::json!({"name": "c", "rank": 3})
                 .as_object()
@@ -939,8 +1356,6 @@ mod tests {
                 .clone(),
         ];
         store.insert("ranked", "entries", &rows).unwrap();
-
-        // ORDER BY rank DESC LIMIT 2
         let result = store
             .query("ranked", "entries", None, Some("rank DESC"), Some(2))
             .unwrap();
@@ -951,16 +1366,9 @@ mod tests {
 
     #[test]
     fn test_update_delete_count_zero() {
-        // Update with no matching rows returns 0
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
+        let (_dir, store) = make_store();
+        let columns = vec![col("id", ColumnType::TEXT, false, true)];
         store.ensure_table("empty", "table", &columns).unwrap();
-
         let updated = store
             .update(
                 "empty",
@@ -973,7 +1381,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(updated, 0);
-
         let deleted = store
             .delete(
                 "empty",
@@ -986,53 +1393,25 @@ mod tests {
 
     #[test]
     fn test_empty_where_query_returns_all() {
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
+        let (_dir, store) = make_store();
+        let columns = vec![col("id", ColumnType::TEXT, false, true)];
         store.ensure_table("emptywhere", "t", &columns).unwrap();
-
-        let rows = vec![
-            serde_json::json!({"id": "a"}).as_object().unwrap().clone(),
-        ];
+        let rows = vec![serde_json::json!({"id": "a"}).as_object().unwrap().clone()];
         store.insert("emptywhere", "t", &rows).unwrap();
-
-        // Empty WHERE should still be treated as no filter
         let result = store
-            .query(
-                "emptywhere",
-                "t",
-                Some(&serde_json::Map::new()),
-                None,
-                None,
-            )
+            .query("emptywhere", "t", Some(&serde_json::Map::new()), None, None)
             .unwrap();
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn test_blob_round_trip() {
-        let store = make_store();
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "data".to_string(),
-                col_type: ColumnType::BLOB,
-                nullable: true,
-                primary_key: false,
-            },
+            col("id", ColumnType::TEXT, false, true),
+            col("data", ColumnType::BLOB, true, false),
         ];
         store.ensure_table("blobtest", "t", &columns).unwrap();
-
-        // Insert with blob value
         let rows = vec![
             serde_json::json!({"id": "1", "data": [0, 1, 2, 255]})
                 .as_object()
@@ -1040,7 +1419,6 @@ mod tests {
                 .clone(),
         ];
         store.insert("blobtest", "t", &rows).unwrap();
-
         let result = store.query("blobtest", "t", None, None, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(
@@ -1050,71 +1428,15 @@ mod tests {
     }
 
     #[test]
-    fn test_hyphenated_feature_id_ensure_table() {
-        // AC-4a: ensure_table with hyphenated feature_id works
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
-        store
-            .ensure_table("mission-monitor", "sessions", &columns)
-            .unwrap();
-    }
-
-    #[test]
-    fn test_hyphenated_feature_id_insert_and_query() {
-        // AC-4b: insert and query with hyphenated feature_id
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
-        store
-            .ensure_table("mission-monitor", "sessions", &columns)
-            .unwrap();
-
-        let rows = vec![serde_json::json!({"id": "1"})
-            .as_object()
-            .unwrap()
-            .clone()];
-        let inserted = store
-            .insert("mission-monitor", "sessions", &rows)
-            .unwrap();
-        assert_eq!(inserted, 1);
-
-        let all = store
-            .query("mission-monitor", "sessions", None, None, None)
-            .unwrap();
-        assert_eq!(all.len(), 1);
-    }
-
-    #[test]
-    fn test_hyphenated_feature_id_update_delete() {
-        // AC-4c: full CRUD with hyphenated feature_id
-        let store = make_store();
+    fn test_hyphenated_feature_id_full_crud() {
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "value".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: false,
-                primary_key: false,
-            },
+            col("id", ColumnType::TEXT, false, true),
+            col("value", ColumnType::INTEGER, false, false),
         ];
         store
             .ensure_table("mission-monitor", "sessions", &columns)
             .unwrap();
-
         let rows = vec![
             serde_json::json!({"id": "1", "value": 42})
                 .as_object()
@@ -1125,10 +1447,12 @@ mod tests {
                 .unwrap()
                 .clone(),
         ];
-        store
-            .insert("mission-monitor", "sessions", &rows)
-            .unwrap();
-
+        assert_eq!(
+            store
+                .insert("mission-monitor", "sessions", &rows)
+                .unwrap(),
+            2
+        );
         let updated = store
             .update(
                 "mission-monitor",
@@ -1138,7 +1462,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(updated, 1);
-
         let deleted = store
             .delete(
                 "mission-monitor",
@@ -1148,50 +1471,9 @@ mod tests {
             .unwrap();
         assert_eq!(deleted, 1);
 
-        let remaining = store
-            .query("mission-monitor", "sessions", None, None, None)
-            .unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].get("value").unwrap(), 100);
-    }
-
-    #[test]
-    fn test_hyphenated_feature_id_cross_feature_isolation() {
-        // AC-4d: cross-feature isolation still works with hyphenated IDs
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
-        store
-            .ensure_table("mission-monitor", "sessions", &columns)
-            .unwrap();
-
-        let result = store.query("other-feature", "sessions", None, None, None);
-        assert!(result.is_err());
-        let err = result.err().unwrap().to_string();
-        // The table name "feature_other_feature_sessions" doesn't exist
-        assert!(err.contains("no such table"));
-    }
-
-    #[test]
-    fn test_hyphenated_feature_id_verify_table_name() {
-        // AC-4e: verify the internal table name uses underscores
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
-        store
-            .ensure_table("mission-monitor", "sessions", &columns)
-            .unwrap();
-
-        let conn = store.conn.lock().unwrap();
-        let mut stmt = conn
+        let engine = store.engine.engine().sqlite().unwrap().clone();
+        let c = conn(&engine);
+        let mut stmt = c
             .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?1")
             .unwrap();
         let tables: Vec<String> = stmt
@@ -1201,126 +1483,122 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0], "feature_mission_monitor_sessions");
+        assert_eq!(tables, vec!["feature_mission_monitor_sessions"]);
+    }
+
+    #[test]
+    fn test_hyphenated_feature_id_cross_feature_isolation() {
+        let (_dir, store) = make_store();
+        let columns = vec![col("id", ColumnType::TEXT, false, true)];
+        store
+            .ensure_table("mission-monitor", "sessions", &columns)
+            .unwrap();
+        let result = store.query("other-feature", "sessions", None, None, None);
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("no such table"));
     }
 
     #[test]
     fn test_idempotent_insert_duplicate_primary_key() {
-        // AC-3: Duplicate inserts with the same primary key silently succeed
-        // without error, returning 0 for ignored rows, and the row count stays at 1.
-        let store = make_store();
-        let columns = vec![ColumnDef {
-            name: "id".to_string(),
-            col_type: ColumnType::TEXT,
-            nullable: false,
-            primary_key: true,
-        }];
-        store
-            .ensure_table("idempotent", "test", &columns)
-            .unwrap();
-
-        // First insert â€” should return 1
+        let (_dir, store) = make_store();
+        let columns = vec![col("id", ColumnType::TEXT, false, true)];
+        store.ensure_table("idempotent", "test", &columns).unwrap();
         let row = serde_json::json!({"id": "dup-1"})
             .as_object()
             .unwrap()
             .clone();
-        let first = store.insert("idempotent", "test", &[row.clone()]).unwrap();
-        assert_eq!(first, 1, "first insert of new primary key should return 1");
-
-        // Second insert with same primary key â€” should return 0 (silently ignored)
-        let second = store.insert("idempotent", "test", &[row]).unwrap();
         assert_eq!(
-            second, 0,
-            "duplicate insert should be silently ignored and return 0"
+            store.insert("idempotent", "test", &[row.clone()]).unwrap(),
+            1
         );
-
-        // Verify only one row exists in the table
-        let all = store
-            .query("idempotent", "test", None, None, None)
-            .unwrap();
-        assert_eq!(all.len(), 1, "table should still contain exactly one row");
+        assert_eq!(store.insert("idempotent", "test", &[row]).unwrap(), 0);
         assert_eq!(
-            all[0].get("id").unwrap(),
-            "dup-1",
-            "the existing row should have the correct id"
+            store
+                .query("idempotent", "test", None, None, None)
+                .unwrap()
+                .len(),
+            1
         );
     }
 
     #[test]
-    fn test_upsert_updates_existing_row_on_conflict() {
-        // The projection path needs UPDATE-on-conflict, not INSERT OR IGNORE.
-        let store = make_store();
+    fn test_idempotent_insert_mixed_unique_and_duplicate() {
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "value".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: false,
-                primary_key: false,
-            },
+            col("id", ColumnType::TEXT, false, true),
+            col("value", ColumnType::INTEGER, false, false),
         ];
-        store.ensure_table("upserttest", "t", &columns).unwrap();
-
-        let first = store
-            .upsert(
-                "upserttest",
-                "t",
-                &["id".to_string()],
-                &[serde_json::json!({"id": "a", "value": 1})
-                    .as_object()
-                    .unwrap()
-                    .clone()],
-            )
-            .unwrap();
-        assert_eq!(first, 1);
-
-        // Same key, new value — UPDATE, not ignore.
-        let second = store
-            .upsert(
-                "upserttest",
-                "t",
-                &["id".to_string()],
-                &[serde_json::json!({"id": "a", "value": 42})
-                    .as_object()
-                    .unwrap()
-                    .clone()],
-            )
-            .unwrap();
-        assert_eq!(second, 1);
-
-        let rows = store.query("upserttest", "t", None, None, None).unwrap();
-        assert_eq!(rows.len(), 1, "conflict must update in place, not duplicate");
-        assert_eq!(rows[0].get("value").unwrap(), 42);
-
-        // A new key inserts.
-        store
-            .upsert(
-                "upserttest",
-                "t",
-                &["id".to_string()],
-                &[serde_json::json!({"id": "b", "value": 7})
-                    .as_object()
-                    .unwrap()
-                    .clone()],
-            )
-            .unwrap();
+        store.ensure_table("idempotent", "multi", &columns).unwrap();
+        let row_a = serde_json::json!({"id": "a", "value": 1})
+            .as_object()
+            .unwrap()
+            .clone();
         assert_eq!(
-            store.query("upserttest", "t", None, None, None).unwrap().len(),
+            store.insert("idempotent", "multi", &[row_a.clone()]).unwrap(),
+            1
+        );
+        let row_b = serde_json::json!({"id": "b", "value": 2})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            store.insert("idempotent", "multi", &[row_a, row_b]).unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .query("idempotent", "multi", None, None, None)
+                .unwrap()
+                .len(),
             2
         );
     }
 
     #[test]
+    fn test_upsert_updates_existing_row_on_conflict() {
+        let (_dir, store) = make_store();
+        let columns = vec![
+            col("id", ColumnType::TEXT, false, true),
+            col("value", ColumnType::INTEGER, false, false),
+        ];
+        store.ensure_table("upserttest", "t", &columns).unwrap();
+        assert_eq!(
+            store
+                .upsert(
+                    "upserttest",
+                    "t",
+                    &["id".to_string()],
+                    &[serde_json::json!({"id": "a", "value": 1})
+                        .as_object()
+                        .unwrap()
+                        .clone()],
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .upsert(
+                    "upserttest",
+                    "t",
+                    &["id".to_string()],
+                    &[serde_json::json!({"id": "a", "value": 42})
+                        .as_object()
+                        .unwrap()
+                        .clone()],
+                )
+                .unwrap(),
+            1
+        );
+        let rows = store.query("upserttest", "t", None, None, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("value").unwrap(), 42);
+    }
+
+    #[test]
     fn test_upsert_composite_primary_key() {
-        let store = make_store();
-        // `ensure_table` only expresses per-column PRIMARY KEY, so build the
-        // composite-key table the way a declared table is created.
+        let (_dir, store) = make_store();
         store
             .execute_batch(
                 "CREATE TABLE feature_upsertmulti_rows (
@@ -1331,7 +1609,6 @@ mod tests {
                 );",
             )
             .unwrap();
-
         let key = vec!["session_id".to_string(), "correlation_id".to_string()];
         store
             .upsert(
@@ -1355,110 +1632,36 @@ mod tests {
                     .clone()],
             )
             .unwrap();
-
         let rows = store.query("upsertmulti", "rows", None, None, None).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("agent_reply").unwrap(), "two");
     }
 
     #[test]
-    fn test_idempotent_insert_mixed_unique_and_duplicate() {
-        // AC-3 (extended): Insert multiple rows where some have duplicate
-        // primary keys and some are new. Only new rows should be counted.
-        let store = make_store();
-        let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "value".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: false,
-                primary_key: false,
-            },
-        ];
-        store
-            .ensure_table("idempotent", "multi", &columns)
-            .unwrap();
-
-        // Insert initial row
-        let row_a = serde_json::json!({"id": "a", "value": 1})
-            .as_object()
-            .unwrap()
-            .clone();
-        let inserted = store.insert("idempotent", "multi", &[row_a.clone()]).unwrap();
-        assert_eq!(inserted, 1);
-
-        // Insert two rows: one duplicate ("a"), one new ("b")
-        let row_b = serde_json::json!({"id": "b", "value": 2})
-            .as_object()
-            .unwrap()
-            .clone();
-        let mixed = store
-            .insert("idempotent", "multi", &[row_a, row_b])
-            .unwrap();
-        assert_eq!(
-            mixed, 1,
-            "only the new row should be counted; the duplicate should be ignored"
-        );
-
-        // Verify exactly 2 rows exist
-        let all = store
-            .query("idempotent", "multi", None, None, None)
-            .unwrap();
-        assert_eq!(all.len(), 2);
-    }
-
-    #[test]
     fn test_table_schema_reports_type_nullability_and_primary_key() {
-        let store = make_store();
+        let (_dir, store) = make_store();
         let columns = vec![
-            ColumnDef {
-                name: "id".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: true,
-            },
-            ColumnDef {
-                name: "count".to_string(),
-                col_type: ColumnType::INTEGER,
-                nullable: true,
-                primary_key: false,
-            },
-            ColumnDef {
-                name: "label".to_string(),
-                col_type: ColumnType::TEXT,
-                nullable: false,
-                primary_key: false,
-            },
+            col("id", ColumnType::TEXT, false, true),
+            col("count", ColumnType::INTEGER, true, false),
+            col("label", ColumnType::TEXT, false, false),
         ];
-        store
-            .ensure_table("myfeature", "mytable", &columns)
-            .unwrap();
+        store.ensure_table("myfeature", "mytable", &columns).unwrap();
 
         let schema = store.table_schema("feature_myfeature_mytable").unwrap();
         assert_eq!(schema.len(), 3);
         assert_eq!(schema[0].name, "id");
         assert_eq!(schema[0].sql_type, "TEXT");
         assert_eq!(schema[0].col_type, ColumnType::TEXT);
-        assert!(!schema[0].not_null); // PK, declared without NOT NULL here
+        assert!(!schema[0].not_null);
         assert!(schema[0].primary_key);
-        assert_eq!(schema[1].name, "count");
         assert_eq!(schema[1].col_type, ColumnType::INTEGER);
-        assert_eq!(schema[2].name, "label");
         assert!(schema[2].not_null, "declared non-nullable");
         assert!(!schema[2].primary_key);
 
-        // `table_column_names` delegates to the same physical inspection.
         assert_eq!(
             store.table_column_names("feature_myfeature_mytable").unwrap(),
             vec!["id", "count", "label"]
         );
-
-        // An absent table yields an empty physical schema.
         assert!(store
             .table_schema("feature_myfeature_missing")
             .unwrap()
@@ -1468,9 +1671,7 @@ mod tests {
             .as_object()
             .unwrap()
             .clone();
-        store
-            .insert("myfeature", "mytable", &[row])
-            .unwrap();
+        store.insert("myfeature", "mytable", &[row]).unwrap();
         assert_eq!(store.row_count("feature_myfeature_mytable").unwrap(), 1);
     }
 }

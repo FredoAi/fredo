@@ -32,12 +32,10 @@
 //! returns whatever is currently persisted and never blocks on the backfill.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use rusqlite::Connection;
 
 use crate::infrastructure::feature_data::declaration::{
     ActivitySource, DataSource, FeatureDataTableDeclaration,
@@ -54,7 +52,6 @@ const PROGRESS_EVERY: usize = 5_000;
 /// unset. Returns the number of fed units: canonical rows fed through the row
 /// leg plus one recompute per distinct session fed through the rollup leg.
 pub fn backfill_pending(
-    data_dir: &Path,
     meta: &Arc<FeatureDataStore>,
     engine: &Arc<ProjectionEngine>,
     rtdb_store: &Arc<RtdbStore>,
@@ -156,7 +153,7 @@ pub fn backfill_pending(
     if !rollup_tables.is_empty() {
         let rollup_leg_start = Instant::now();
         let mut rollup_fed = 0usize;
-        for session_id in distinct_session_ids(data_dir)? {
+        for session_id in distinct_session_ids(engine)? {
             rollup_fed += 1;
             fed += 1;
             if rollup_fed.is_multiple_of(PROGRESS_EVERY) {
@@ -238,12 +235,11 @@ fn record_outcomes(
 
 /// Spawned startup/declare wrapper: logs and never propagates.
 pub async fn run_backfill(
-    data_dir: std::path::PathBuf,
     meta: Arc<FeatureDataStore>,
     engine: Arc<ProjectionEngine>,
     rtdb_store: Arc<RtdbStore>,
 ) {
-    match backfill_pending(&data_dir, &meta, &engine, &rtdb_store) {
+    match backfill_pending(&meta, &engine, &rtdb_store) {
         Ok(fed) if fed > 0 => tracing::info!(
             target: "fredo::feature_data",
             fed,
@@ -283,9 +279,11 @@ fn to_ingest_row(row: &StoredRow) -> IngestRow {
 }
 
 /// Distinct canonical sessionIds across all three row tables (read-only).
-fn distinct_session_ids(data_dir: &Path) -> Result<Vec<String>> {
-    let conn = Connection::open(data_dir.join("fredo.db"))?;
-    conn.execute_batch("PRAGMA query_only=ON;")?;
+///
+/// Uses the SHARED read-only SQLite connection owned by the projection engine
+/// (Spec #2975 ST-5) — never a per-run `Connection::open`.
+fn distinct_session_ids(engine: &ProjectionEngine) -> Result<Vec<String>> {
+    let conn = engine.canonical_conn();
     let mut stmt = conn.prepare(
         "SELECT session_id FROM chat_rows
          UNION SELECT session_id FROM tool_use_rows
@@ -376,7 +374,6 @@ mod tests {
 
     struct Harness {
         _dir: tempfile::TempDir,
-        data_dir: std::path::PathBuf,
         meta: Arc<FeatureDataStore>,
         engine: Arc<ProjectionEngine>,
         rtdb_store: Arc<RtdbStore>,
@@ -387,15 +384,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
         rtdb_store.ensure_schema().unwrap();
-        let meta = Arc::new(FeatureDataStore::open(dir.path().to_path_buf()).unwrap());
+        let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
-        let tables = Arc::new(FeatureStore::open(dir.path().to_path_buf()).unwrap());
+        let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let registry = DeclarationRegistry::new(meta.clone(), tables.clone());
         registry.declare(&full).unwrap();
         let engine =
-            Arc::new(ProjectionEngine::new(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap());
+            Arc::new(ProjectionEngine::new_sqlite_for_tests(dir.path().to_path_buf(), meta.clone(), tables.clone()).unwrap());
         Harness {
-            data_dir: dir.path().to_path_buf(),
             _dir: dir,
             meta,
             engine,
@@ -500,7 +496,7 @@ mod tests {
             .upsert_chat_rows(&[chat_row("ses_1", "ses_1_1", 1, "one"), chat_row("ses_1", "ses_1_2", 2, "two")])
             .unwrap();
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(fed, 2, "every canonical chat row is fed once");
         let rows = declared(&h, "turns");
         assert_eq!(rows.len(), 2);
@@ -508,7 +504,7 @@ mod tests {
         assert!(marker(&h, "turns"), "the backfill marker is set");
 
         // A second run is a no-op (marker gated).
-        let again = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let again = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(again, 0, "backfill is one-time");
         assert_eq!(declared(&h, "turns").len(), 2, "no duplicate projection");
     }
@@ -521,7 +517,7 @@ mod tests {
             .unwrap();
         let (chats_before, _, _) = h.rtdb_store.row_counts().unwrap();
 
-        backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
 
         let (chats_after, _, _) = h.rtdb_store.row_counts().unwrap();
         assert_eq!(chats_before, chats_after, "canonical rows are read-only to backfill");
@@ -537,7 +533,7 @@ mod tests {
             ])
             .unwrap();
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(fed, 2, "one representative row per distinct session");
         let rows = declared(&h, "sessions");
         assert_eq!(rows.len(), 2, "both sessions qualify");
@@ -580,7 +576,7 @@ mod tests {
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
 
         assert_eq!(
             h.engine.rollup_recompute_count(),
@@ -628,7 +624,7 @@ mod tests {
             ])
             .unwrap();
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(
             fed,
             3 + 2,
@@ -668,7 +664,7 @@ mod tests {
             )
             .unwrap();
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(fed, 3 + 2, "both legs are fed in one run");
         assert_eq!(
             declared(&h, "turns").len(),
@@ -686,7 +682,7 @@ mod tests {
 
         // A second run retries ONLY the damaged rollup table: the row leg has no
         // pending row-sourced table left, so it feeds nothing.
-        let retry = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let retry = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(retry, 2, "only the still-pending rollup table is re-fed");
         assert_eq!(
             declared(&h, "turns").len(),
@@ -722,7 +718,7 @@ mod tests {
             )
             .unwrap();
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(fed, 2, "both canonical chat rows are fed through the engine");
 
         assert_eq!(
@@ -739,7 +735,7 @@ mod tests {
         // A retry retries the still-pending broken table and does not duplicate
         // the healthy sibling's rows.
         let before = declared(&h, "healthy").len();
-        backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(
             declared(&h, "healthy").len(),
             before,
@@ -757,7 +753,7 @@ mod tests {
         });
         // No canonical tool rows exist.
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(fed, 0, "nothing to feed");
         assert!(declared(&h, "empty").is_empty());
         assert!(
@@ -780,7 +776,7 @@ mod tests {
             }],
         });
 
-        let fed = backfill_pending(&h.data_dir, &h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
         assert_eq!(fed, 0);
         assert!(marker(&h, "manual"), "a source:None table completes");
     }

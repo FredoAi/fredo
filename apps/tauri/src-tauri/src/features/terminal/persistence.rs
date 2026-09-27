@@ -289,7 +289,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn store_with_table(dir: &tempfile::TempDir) -> FeatureStore {
-        let store = FeatureStore::open(PathBuf::from(dir.path())).unwrap();
+        let store = FeatureStore::open_sqlite_for_tests(PathBuf::from(dir.path())).unwrap();
         ensure_table(&store).unwrap();
         store
     }

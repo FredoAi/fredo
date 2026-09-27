@@ -137,7 +137,7 @@ pub fn run() {
             // closure below stays synchronous and reads config via the control
             // API — never `block_on`.
             let app_store = Arc::new(
-                AppStore::open(engine_handle).expect("Failed to open settings store"),
+                AppStore::open(engine_handle.clone()).expect("Failed to open settings store"),
             );
             app.manage(app_store.clone());
 
@@ -150,9 +150,12 @@ pub fn run() {
             // renders while PostgreSQL starts.
             features::pg_supervisor::start_supervisor(app.handle());
 
-            // -- FeatureStore (generic typed-column SQLite store for features) --
+            // -- FeatureStore (generic typed-column store for features) --------
+            // Spec #2975 ST-4: the store holds an `Arc<EngineHandle>` clone of the
+            // ONE shared engine; its SQLite statements are byte-identical to the
+            // incumbent path, PostgreSQL is the 1:1 translated dialect.
             let feature_store = Arc::new(
-                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore"),
+                FeatureStore::open(engine_handle.clone()).expect("Failed to open FeatureStore"),
             );
             app.manage(feature_store.clone());
 
@@ -395,7 +398,8 @@ pub fn run() {
             // open UI — R-4.2), and make the watch registry the declared-row
             // sink. Canonical-table watches are fed by the same observer.
             let feature_meta = Arc::new(
-                FeatureDataStore::open(data_dir.clone()).expect("Failed to open FeatureDataStore"),
+                FeatureDataStore::open(engine_handle.clone())
+                    .expect("Failed to open FeatureDataStore"),
             );
             feature_meta
                 .ensure_schema()
@@ -421,7 +425,7 @@ pub fn run() {
             }
             let feature_engine = Arc::new(
                 ProjectionEngine::new(
-                    data_dir.clone(),
+                    engine_handle.clone(),
                     feature_meta.clone(),
                     feature_store.clone(),
                 )
@@ -455,13 +459,11 @@ pub fn run() {
             });
             // One-time declared-table projection backfill (A-17): spawned,
             // never awaited on the read path.
-            let backfill_dir = data_dir.clone();
             let backfill_meta = feature_meta.clone();
             let backfill_engine = feature_engine.clone();
             let backfill_store = rtdb_store.clone();
             tauri::async_runtime::spawn(async move {
                 infrastructure::feature_data::backfill::run_backfill(
-                    backfill_dir,
                     backfill_meta,
                     backfill_engine,
                     backfill_store,
