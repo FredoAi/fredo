@@ -27,8 +27,21 @@ app-boot + core-path sanity plus the store quick paths. Full detail lives in `fu
 - [ ] **S-8:** Mission Monitor renders a live session / tools / tokens from the store (functional
   F-16) — cross-check `telemetry_spans` at the same instant.
 
+## Store quick paths — Slice 3 (#2976, RtdbStore + SpanStore on the pool)
+
+- [ ] **S-9:** Boot PG-selected on a fresh data dir — `RtdbStore` + `SpanStore` are served by the ONE
+  shared pool; `chat_rows`/`tool_use_rows`/`agent_session_rows` + `telemetry_spans`/
+  `telemetry_logs`/`telemetry_metrics` exist on PG (F-21/F-22).
+- [ ] **S-10:** Mission Monitor renders a live session's chat / tools / tokens / graph from the
+  migrated store — cross-check `telemetry_spans` + the migrated row tables at the same instant
+  (F-39/F-54).
+- [ ] **S-11:** `fredo emit` a bounded burst — the rows land and coalesce into fewer batches than
+  rows; the app stays responsive (F-28).
+- [ ] **S-12:** Screenshot capture — `tauri_webview_screenshot(format="jpeg", quality=80,
+  filePath=".opencode/tmp/2976/e2e/smoke.jpeg")` succeeds.
+
 ## Smoke-level pass/fail
 
-PASS = S-1..S-3 and S-6..S-8 green; S-4/S-5 green or a named blocker. Any per-store connection, any
-unbounded wait, a mutated `fredo.db` on PG failure, or a blank Mission Monitor while live rows exist
-= **FAIL**.
+PASS = S-1..S-3, S-6..S-12 green; S-4/S-5 green or a named blocker. Any per-store connection, any
+unbounded wait, a mutated `fredo.db` on PG failure, a row-pipeline semantic change, a write reaching
+`telemetry_spans`, or a blank Mission Monitor while live rows exist = **FAIL**.
