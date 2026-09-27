@@ -1,5 +1,14 @@
+pub mod engine;
 pub mod feature_store;
 pub mod span_store;
+
+// The storage engine seam (Spec #2975 ST-1) re-exported at the module root so
+// consumers read `storage::{EngineHandle, StoreEngine, ...}`.
+pub use engine::{
+    quote_ident, select_engine, Dialect, EngineChoice, EngineHandle, PgEngine, SqliteEngine,
+    StoreEngine, PG_POOL_ACQUIRE_TIMEOUT, PG_POOL_IDLE_TIMEOUT, PG_POOL_MAX_CONNECTIONS,
+    PG_POOL_MAX_LIFETIME, PG_POOL_MIN_CONNECTIONS, STORAGE_ENGINE_ENV,
+};
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
