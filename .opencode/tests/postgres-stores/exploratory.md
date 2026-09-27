@@ -37,3 +37,11 @@ Unscripted edge/failure probes for the storage engine seam + shared async Postgr
   `max_connections`/memory tuning hold steady, or does RSS drift with pool churn?
 - [ ] **E-10:** Is the async fan-out (sync store methods → async) free of a re-render/lock-order
   regression — does the RTDB writer task still coalesce (~30 ms) and never block on the pool?
+
+- [ ] **E-11 (CONFIRMED #2975 round 2 — promoted to functional F-20):** does a declared table with a
+  mixed-case column/PK survive PostgreSQL's identifier folding? **No** — the declared-table DDL
+  (`registry.rs::create_table_sql`) interpolates identifiers unquoted, so `sessionId` → `sessionid` on
+  PG and the quoted write path fails `no existe la columna «sessionId»`. Probe: boot PG-selected with a
+  fresh data dir, open Mission Monitor, read `information_schema.columns` for
+  `feature_mission_monitor_sessions` (all lowercase) + the backend WARN `declared-table projection
+  failed`. Promoted as F-20; regression pin R-17.
