@@ -15,6 +15,11 @@ import { parseSequence } from '../keys';
 import { decideDispatch } from '../sequence';
 import type { FocusSnapshot } from '../engine';
 import {
+  REFERENCE_CONTEXT_ID,
+  REFERENCE_DESCEND_ACTION_ID,
+  REFERENCE_ONLY_ACTION_ID,
+} from '../defaults';
+import {
   KEYBOARD_BAR_MAX_ANNOUNCED,
   buildKeyboardBarModel,
   keyboardBarAnnouncement,
@@ -277,6 +282,71 @@ describe('unbound hidden + empty model (R-5.6/R-5.4)', () => {
     };
     const model = buildKeyboardBarModel(modelInput({ bindings: [unbound] }));
     expect(model.empty).toBe(true);
+  });
+});
+
+// ── Context-first display ordering (F-1) ─────────────────────────────────────
+
+describe('buildKeyboardBarModel — context-first ordering (F-1)', () => {
+  const alwaysOn = makeBinding('fredo.keyboardMode.toggle', 'ctrl+shift+f8');
+  const scopedFredo = makeBinding(REFERENCE_ONLY_ACTION_ID, 'y', {
+    contextId: REFERENCE_CONTEXT_ID,
+  });
+  const featureScoped = makeBinding('demo-widget.focus', 'g');
+  const alwaysOnSecond = makeBinding('fredo.launcher.toggle', 'primary+space');
+
+  it('orders context-scoped rows first, preserving relative order, then always-on', () => {
+    const model = buildKeyboardBarModel(
+      modelInput({ bindings: [alwaysOn, scopedFredo, featureScoped, alwaysOnSecond] }),
+    );
+    expect(model.rows.map((row) => row.actionId)).toEqual([
+      REFERENCE_ONLY_ACTION_ID,
+      'demo-widget.focus',
+      'fredo.keyboardMode.toggle',
+      'fredo.launcher.toggle',
+    ]);
+    expect(model.scopedCount).toBe(2);
+  });
+
+  it('flags a Fredo context-scoped action and a feature action as scoped; ROOT Fredo as always-on', () => {
+    const model = buildKeyboardBarModel(
+      modelInput({ bindings: [alwaysOn, scopedFredo, featureScoped] }),
+    );
+    const byId = new Map(model.rows.map((row) => [row.actionId, row]));
+    expect(byId.get(REFERENCE_ONLY_ACTION_ID)?.contextScoped).toBe(true);
+    expect(byId.get('demo-widget.focus')?.contextScoped).toBe(true);
+    expect(byId.get('fredo.keyboardMode.toggle')?.contextScoped).toBe(false);
+  });
+
+  it('keeps the FULL total row count unchanged by the ordering', () => {
+    const model = buildKeyboardBarModel(
+      modelInput({ bindings: [alwaysOn, scopedFredo, featureScoped, alwaysOnSecond] }),
+    );
+    expect(model.rows).toHaveLength(4);
+    expect(model.scopedCount).toBe(2);
+    expect(model.empty).toBe(false);
+  });
+
+  it('treats a Fredo descent action (opensContextId) as context-scoped and leads with it', () => {
+    const descent = makeBinding(REFERENCE_DESCEND_ACTION_ID, 'primary+K', {
+      opensContextId: REFERENCE_CONTEXT_ID,
+    });
+    const model = buildKeyboardBarModel(modelInput({ bindings: [alwaysOn, descent] }));
+    expect(model.rows.map((row) => row.actionId)).toEqual([
+      REFERENCE_DESCEND_ACTION_ID,
+      'fredo.keyboardMode.toggle',
+    ]);
+    expect(model.rows[0].contextScoped).toBe(true);
+    expect(model.scopedCount).toBe(1);
+  });
+
+  it('reports scopedCount 0 when every row is always-on', () => {
+    const model = buildKeyboardBarModel(modelInput({ bindings: [alwaysOn, alwaysOnSecond] }));
+    expect(model.scopedCount).toBe(0);
+    expect(model.rows.map((row) => row.actionId)).toEqual([
+      'fredo.keyboardMode.toggle',
+      'fredo.launcher.toggle',
+    ]);
   });
 });
 

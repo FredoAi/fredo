@@ -28,6 +28,7 @@
 
 import { displaySequence, parseSequence } from './keys';
 import { decideDispatch } from './sequence';
+import { ROOT_CONTEXT_ID } from './types';
 import type { FocusSnapshot } from './engine';
 import type {
   DispatchDecision,
@@ -53,6 +54,15 @@ export interface KeyboardBarRow {
   readonly availability: BarAvailability;
   /** Present iff `availability === 'unavailable'`. */
   readonly unavailableReason?: string;
+  /**
+   * Spec #2959 round 2 (F-1) — whether this row is scoped to the active context
+   * (a feature-tier action, a Fredo-tier action scoped `contextId`-wise to a
+   * non-ROOT context, or a Fredo-tier descent action whose `opensContextId` is a
+   * non-ROOT context) rather than an always-on ROOT binding. Context-scoped rows
+   * are ordered FIRST, so an overflow rule can never drop the actions specific to
+   * where the user is.
+   */
+  readonly contextScoped: boolean;
 }
 
 /** The bar's read-only projection of the active context's actions. */
@@ -61,7 +71,14 @@ export interface KeyboardBarModel {
   readonly contextTitle: string;
   /** Path length; base context = 1 (see DEPTH semantics in `contexts.ts`). */
   readonly depth: number;
+  /**
+   * The FULL ordered list: context-scoped rows first (F-1), then always-on.
+   * `rows.length` is the total resolved-action count (the body hook + announcement
+   * count semantics are unchanged by the ordering).
+   */
   readonly rows: readonly KeyboardBarRow[];
+  /** How many of `rows` are context-scoped (the leading segment of `rows`). */
+  readonly scopedCount: number;
   /** `rows.length === 0` — the defined empty state (R-5.4). */
   readonly empty: boolean;
 }
@@ -193,16 +210,46 @@ function availabilityFor(
   return { availability: 'unavailable', unavailableReason: unavailableReasonFor(decision.reason) };
 }
 
+// ── Display ordering (F-1) ───────────────────────────────────────────────────
+
+/**
+ * Whether the binding is SCOPED to the active interaction context rather than an
+ * always-on ROOT binding (F-1). True for:
+ *  - a feature-tier action (only present for the focused feature / an on-path
+ *    context);
+ *  - a Fredo-tier action explicitly scoped (`contextId`) to a non-ROOT context;
+ *  - a Fredo-tier action that DESCENDS (`opensContextId`) into a non-ROOT context
+ *    — it is definitionally specific to where the user is (the way deeper), and
+ *    the round-2 fix plan names it as the motivating example whose overflow the
+ *    fix must eliminate. `fredo.context.descendReference` is registered with
+ *    `opensContextId` (not `contextId`), so keying only off `contextId` would
+ *    leave it as the last always-on row and off-screen — contradicting F-5.
+ * False for a plain always-on ROOT Fredo binding.
+ */
+function isContextScoped(binding: ResolvedBinding): boolean {
+  if (binding.tier === 'feature') return true;
+  const { contextId, opensContextId } = binding.action;
+  return (
+    (contextId !== undefined && contextId !== ROOT_CONTEXT_ID) ||
+    (opensContextId !== undefined && opensContextId !== ROOT_CONTEXT_ID)
+  );
+}
+
 // ── The model builder ────────────────────────────────────────────────────────
 
 /**
  * Build the bar model for the active context. PURE: no store reads, no listing
  * re-derivation (the input IS `resolveActiveBindings`), no mutation.
+ *
+ * Ordering (F-1): context-scoped rows first, preserving the resolver's existing
+ * relative order, then the always-on group. `rows` remains the FULL list — the
+ * count hook and the announcement digest keep their total-count semantics.
  */
 export function buildKeyboardBarModel(input: KeyboardBarModelInput): KeyboardBarModel {
   const { bindings, contextId, contextTitle, depth, focus, macroRecording, platform } = input;
 
-  const rows: KeyboardBarRow[] = [];
+  const contextScopedRows: KeyboardBarRow[] = [];
+  const alwaysOnRows: KeyboardBarRow[] = [];
   for (const binding of bindings) {
     // R-5.6 — an action with no effective sequence is HIDDEN (defined rule).
     if (binding.sequence.length === 0) continue;
@@ -218,15 +265,23 @@ export function buildKeyboardBarModel(input: KeyboardBarModelInput): KeyboardBar
       ...(projected.availability === 'unavailable'
         ? { unavailableReason: projected.unavailableReason ?? 'Not available right now' }
         : {}),
+      contextScoped: isContextScoped(binding),
     };
-    rows.push(row);
+    if (row.contextScoped) {
+      contextScopedRows.push(row);
+    } else {
+      alwaysOnRows.push(row);
+    }
   }
+
+  const rows = [...contextScopedRows, ...alwaysOnRows];
 
   return {
     contextId,
     contextTitle,
     depth,
     rows,
+    scopedCount: contextScopedRows.length,
     empty: rows.length === 0,
   };
 }

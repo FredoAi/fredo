@@ -26,6 +26,21 @@ export const KEYBOARD_BAR_MIN_BOTTOM_PX = 24;
 /** Fade duration (opacity/transform only; none under `prefers-reduced-motion`). */
 export const KEYBOARD_BAR_FADE_MS = 150;
 
+/**
+ * Spec #2959 round 2 (F-2) — the deterministic visible-row ceiling used when the
+ * list width cannot be measured (jsdom / SSR). When the width IS measurable the
+ * capacity is derived from it; this is only the fallback.
+ */
+export const KEYBOARD_BAR_MAX_VISIBLE_ROWS = 8;
+/**
+ * The maximum width of one action chip (px). Every chip is clamped to this so the
+ * capacity arithmetic (`listWidth / (rowWidth + gap)`) is exact and no chip can
+ * blow past its allotted slot.
+ */
+export const KEYBOARD_BAR_ROW_MAX_WIDTH_PX = 240;
+/** The width (px) reserved for the pinned `+N more` overflow chip. */
+export const KEYBOARD_BAR_MORE_RESERVE_PX = 72;
+
 export interface KeyboardBarLayoutInput {
   /** `measureBottomOffsetPx()` — the dock's live bottom offset, or `null` when absent. */
   readonly dockTopPx: number | null;
@@ -45,4 +60,41 @@ export function resolveKeyboardBarLayout(input: KeyboardBarLayoutInput): Keyboar
   return {
     bottomInsetPx: base + KEYBOARD_BAR_HEIGHT_PX + KEYBOARD_BAR_STACK_GAP_PX,
   };
+}
+
+export interface KeyboardBarCapacityInput {
+  /**
+   * The measured width of the row list (px). `null`/`undefined` (unmeasurable —
+   * jsdom, SSR, or a detached/zero-width list) ⇒ the fallback ceiling.
+   */
+  readonly listWidthPx: number | null | undefined;
+  /** The width budget of ONE row (px) — the chip clamp. */
+  readonly rowWidthPx: number;
+  /** The gap between adjacent rows (px). */
+  readonly gapPx: number;
+  /** The width (px) reserved for the pinned `+N more` chip. */
+  readonly reservePx: number;
+}
+
+/**
+ * Resolve how many action chips fit in `listWidthPx` (F-2). PURE and TOTAL: an
+ * unknown / non-positive / non-finite width returns `KEYBOARD_BAR_MAX_VISIBLE_ROWS`
+ * (the deterministic fallback); otherwise
+ * `max(1, floor((listWidthPx - reservePx) / (rowWidthPx + gapPx)))`. Never `< 1`,
+ * so the bar always shows at least one action when it has rows.
+ */
+export function resolveKeyboardBarCapacity(input: KeyboardBarCapacityInput): number {
+  const { listWidthPx, rowWidthPx, gapPx, reservePx } = input;
+  if (
+    typeof listWidthPx !== 'number' ||
+    !Number.isFinite(listWidthPx) ||
+    listWidthPx <= 0
+  ) {
+    return KEYBOARD_BAR_MAX_VISIBLE_ROWS;
+  }
+  const perRow = rowWidthPx + gapPx;
+  if (!Number.isFinite(perRow) || perRow <= 0) {
+    return KEYBOARD_BAR_MAX_VISIBLE_ROWS;
+  }
+  return Math.max(1, Math.floor((listWidthPx - reservePx) / perRow));
 }

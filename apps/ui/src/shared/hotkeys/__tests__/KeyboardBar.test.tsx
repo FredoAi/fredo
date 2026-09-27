@@ -26,10 +26,15 @@ import {
   exitHotkeyContext,
   resetHotkeyContextForTests,
 } from '@/shared/hotkeys/contextStack';
-import { REFERENCE_CONTEXT_ID, REFERENCE_ONLY_ACTION_ID } from '@/shared/hotkeys/defaults';
+import {
+  REFERENCE_CONTEXT_ID,
+  REFERENCE_DESCEND_ACTION_ID,
+  REFERENCE_ONLY_ACTION_ID,
+} from '@/shared/hotkeys/defaults';
 import {
   installHotkeyEngine,
   resetHotkeyEngineForTests,
+  resolveActiveBindings,
 } from '@/shared/hotkeys/engine';
 import {
   resetRegistryForTests,
@@ -53,6 +58,7 @@ import {
   KEYBOARD_BAR_EXIT_TESTID,
   KEYBOARD_BAR_HEADER_TESTID,
   KEYBOARD_BAR_LIST_TESTID,
+  KEYBOARD_BAR_MORE_TESTID,
   KEYBOARD_BAR_PIP_TESTID,
   KEYBOARD_BAR_ROW_REASON_TESTID,
   KEYBOARD_BAR_ROW_TESTID,
@@ -161,10 +167,15 @@ describe('KeyboardBar — ON render', () => {
     expect(rows(container).length).toBeGreaterThan(0);
     expect(container.querySelector(`[data-testid="${KEYBOARD_BAR_EXIT_TESTID}"]`)).not.toBeNull();
 
-    // The ST-3 body hook mirrors the rows shown; ST-1's mode hook stays 'true'.
-    expect(document.body.getAttribute(BODY_KEYBOARD_MODE_COUNT_ATTR)).toBe(
-      String(rows(container).length),
-    );
+    // F-3: the body hook keeps TOTAL-count semantics (the full resolved count),
+    // even though the bounded render shows at most the capacity.
+    const totalRows = resolveActiveBindings().filter(
+      (binding) => binding.sequence.length > 0,
+    ).length;
+    expect(totalRows).toBeGreaterThan(0);
+    expect(document.body.getAttribute(BODY_KEYBOARD_MODE_COUNT_ATTR)).toBe(String(totalRows));
+    expect(rows(container).length).toBeLessThanOrEqual(totalRows);
+    // ST-1's mode hook stays 'true'.
     expect(document.body.getAttribute(BODY_KEYBOARD_MODE_ATTR)).toBe('true');
   });
 
@@ -206,6 +217,74 @@ describe('KeyboardBar — ON render', () => {
     expect(
       container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_PIP_TESTID}"]`),
     ).toHaveLength(2);
+  });
+});
+
+// ── Many-action overflow (F-3) ───────────────────────────────────────────────
+
+describe('KeyboardBar — many-action overflow (F-3)', () => {
+  it('bounds the rendered rows and pins a +N more affordance carrying the total count', () => {
+    const { container } = renderWithChakra(<KeyboardBar reducedMotion maxVisibleRows={3} />);
+    act(() => {
+      enterKeyboardMode();
+    });
+
+    const total = resolveActiveBindings().filter((binding) => binding.sequence.length > 0).length;
+    expect(total).toBeGreaterThan(3);
+
+    // Exactly three action chips are rendered — one per capacity slot.
+    expect(rows(container)).toHaveLength(3);
+
+    // The hidden remainder is surfaced by the pinned `+N more` chip.
+    const more = container.querySelector(`[data-testid="${KEYBOARD_BAR_MORE_TESTID}"]`);
+    expect(more).not.toBeNull();
+    expect(more).toHaveTextContent(`+${total - 3} more`);
+
+    // The count hook keeps TOTAL semantics, not the bounded visible count.
+    expect(document.body.getAttribute(BODY_KEYBOARD_MODE_COUNT_ATTR)).toBe(String(total));
+
+    // The overflow affordance is static: still no focusable descendant / live region.
+    const root = bar(container)!;
+    expect(root.querySelectorAll('button, [tabindex], [href]')).toHaveLength(0);
+    expect(root.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0);
+    expect(root.style.pointerEvents).toBe('none');
+  });
+
+  it('keeps the context-scoped action inside the visible set (F-1 ordering)', () => {
+    const { container } = renderWithChakra(<KeyboardBar reducedMotion maxVisibleRows={3} />);
+    act(() => {
+      enterKeyboardMode();
+    });
+    act(() => {
+      enterHotkeyContext(REFERENCE_CONTEXT_ID);
+    });
+
+    const visible = rows(container);
+    const scoped = container.querySelector(
+      `[data-testid="${KEYBOARD_BAR_ROW_TESTID}"][data-hotkey-action="${REFERENCE_ONLY_ACTION_ID}"]`,
+    );
+    expect(scoped).not.toBeNull();
+    // Context-scoped rows lead, so the deeper action is inside the visible set.
+    expect(Array.from(visible)).toContain(scoped);
+  });
+
+  it('keeps the descent action inside the visible set at the reference context', () => {
+    // Static counterpart of the F-5 live assertion: the action the tester found
+    // off-screen (fredo.context.descendReference) now renders inside the bounded,
+    // context-scoped-first visible set at a many-action context.
+    const { container } = renderWithChakra(<KeyboardBar reducedMotion maxVisibleRows={3} />);
+    act(() => {
+      enterKeyboardMode();
+    });
+    act(() => {
+      enterHotkeyContext(REFERENCE_CONTEXT_ID);
+    });
+
+    const descend = container.querySelector(
+      `[data-testid="${KEYBOARD_BAR_ROW_TESTID}"][data-hotkey-action="${REFERENCE_DESCEND_ACTION_ID}"]`,
+    );
+    expect(descend).not.toBeNull();
+    expect(rows(container)).toContain(descend);
   });
 });
 

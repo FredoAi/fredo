@@ -48,6 +48,10 @@ import { resolveActiveBindings, useFocusSnapshot } from './engine';
 import {
   KEYBOARD_BAR_FADE_MS,
   KEYBOARD_BAR_HEIGHT_PX,
+  KEYBOARD_BAR_MAX_VISIBLE_ROWS,
+  KEYBOARD_BAR_MORE_RESERVE_PX,
+  KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+  resolveKeyboardBarCapacity,
   resolveKeyboardBarLayout,
 } from './keyboardBarGeometry';
 import {
@@ -76,6 +80,15 @@ export const KEYBOARD_BAR_LIST_TESTID = 'hotkeys-keyboard-bar-list';
 export const KEYBOARD_BAR_ROW_TESTID = 'hotkeys-keyboard-bar-row';
 export const KEYBOARD_BAR_ROW_REASON_TESTID = 'hotkeys-keyboard-bar-row-unavailable';
 export const KEYBOARD_BAR_EMPTY_TESTID = 'hotkeys-keyboard-bar-empty';
+/**
+ * Spec #2959 round 2 (F-3) — the pinned, non-focusable `+N more` overflow chip.
+ * A sibling AFTER the row list (outside the clipped region), shown only when the
+ * bounded render hides actions. Static text — it introduces no interaction.
+ */
+export const KEYBOARD_BAR_MORE_TESTID = 'hotkeys-keyboard-bar-more';
+
+/** The row-list flex gap (px) — mirrors the Chakra `gap="2"` (0.5rem) below. */
+const KEYBOARD_BAR_LIST_GAP_PX = 8;
 /** One non-colour depth pip; `count === depth` (base = 1). */
 export const KEYBOARD_BAR_PIP_TESTID = 'hotkeys-keyboard-bar-pip';
 /** The defined empty-state copy (R-5.4) — never a blank bar. */
@@ -149,10 +162,21 @@ function ActionChip({ row, platform }: { readonly row: KeyboardBarRow; readonly 
       borderRadius="sm"
       bg={unavailable ? 'bg.muted' : undefined}
       flexShrink={0}
+      maxWidth={`${KEYBOARD_BAR_ROW_MAX_WIDTH_PX}px`}
+      minWidth="0"
+      overflow="hidden"
     >
       {unavailable ? <Icon as={LuCircleSlash} boxSize="3.5" color="fg.subtle" /> : null}
       <Keycap sequence={row.sequence} platform={platform} />
-      <Text fontSize="xs" color={unavailable ? 'fg.muted' : 'fg.default'} whiteSpace="nowrap">
+      <Text
+        fontSize="xs"
+        color={unavailable ? 'fg.muted' : 'fg.default'}
+        whiteSpace="nowrap"
+        flex="1"
+        minWidth="0"
+        overflow="hidden"
+        textOverflow="ellipsis"
+      >
         {row.title}
       </Text>
       {unavailable ? (
@@ -179,6 +203,12 @@ export interface KeyboardBarProps {
   readonly platform?: Platform;
   /** Test override for `prefers-reduced-motion` (falls back to the media query). */
   readonly reducedMotion?: boolean;
+  /**
+   * Test override for the visible-row ceiling used when the list width cannot be
+   * measured (jsdom / SSR). Live, the capacity is derived from the measured width;
+   * this is the fallback (`?? KEYBOARD_BAR_MAX_VISIBLE_ROWS`).
+   */
+  readonly maxVisibleRows?: number;
 }
 
 /**
@@ -189,6 +219,7 @@ export interface KeyboardBarProps {
 export function KeyboardBar({
   platform,
   reducedMotion,
+  maxVisibleRows,
 }: KeyboardBarProps = {}): React.ReactElement | null {
   const mode = useKeyboardMode();
   const snapshot = useActiveHotkeyContext();
@@ -244,6 +275,48 @@ export function KeyboardBar({
     return () => window.removeEventListener('resize', onResize);
   }, [visible]);
 
+  // Overflow capacity (F-2/F-3): live-measure the row list's width and derive how
+  // many chips fit. Unmeasurable (jsdom / SSR / zero-width) ⇒ the deterministic
+  // fallback ceiling (`maxVisibleRows ?? KEYBOARD_BAR_MAX_VISIBLE_ROWS`). The
+  // measurement is primed synchronously and kept current with a `ResizeObserver`;
+  // it never subscribes to the keydown path (#523 — capacity keys off the measured
+  // width and `maxVisibleRows` only).
+  const listRef = React.useRef<HTMLDivElement | null>(null);
+  const [listWidthPx, setListWidthPx] = useState<number | null>(null);
+  const measureListWidth = React.useCallback((): void => {
+    const element = listRef.current;
+    if (!element) return;
+    const width = element.getBoundingClientRect().width;
+    setListWidthPx((previous) => {
+      const next = width > 0 ? width : null;
+      return previous === next ? previous : next;
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!visible || model.empty) return;
+    measureListWidth();
+    if (typeof ResizeObserver === 'undefined') return;
+    const element = listRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => measureListWidth());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [visible, model.empty, measureListWidth]);
+
+  const capacity = useMemo(
+    () =>
+      listWidthPx !== null
+        ? resolveKeyboardBarCapacity({
+            listWidthPx,
+            rowWidthPx: KEYBOARD_BAR_ROW_MAX_WIDTH_PX,
+            gapPx: KEYBOARD_BAR_LIST_GAP_PX,
+            reservePx: KEYBOARD_BAR_MORE_RESERVE_PX,
+          })
+        : (maxVisibleRows ?? KEYBOARD_BAR_MAX_VISIBLE_ROWS),
+    [listWidthPx, maxVisibleRows],
+  );
+
   // The ST-3-owned body hook: the number of rows the bar is currently showing
   // (absent while OFF or hidden under passthrough). Mirrors ST-1's own hook style.
   const rowCount = model.rows.length;
@@ -289,6 +362,11 @@ export function KeyboardBar({
   if (!visible) return null;
 
   const pipCount = Math.max(1, model.depth);
+  // F-3 — bounded render: show the first `capacity` rows (context-scoped first,
+  // F-1), and surface the hidden remainder through the pinned `+N more` chip so a
+  // many-action context can never clip silently.
+  const visibleRows = model.rows.slice(0, capacity);
+  const hiddenCount = model.rows.length - visibleRows.length;
 
   return (
     <Box
@@ -381,6 +459,7 @@ export function KeyboardBar({
       ) : (
         <Box
           data-testid={KEYBOARD_BAR_LIST_TESTID}
+          ref={listRef}
           display="flex"
           alignItems="center"
           gap="2"
@@ -388,11 +467,41 @@ export function KeyboardBar({
           minWidth="0"
           overflow="hidden"
         >
-          {model.rows.map((row) => (
-            <ActionChip key={`${row.actionId}:${row.sequence}`} row={row} platform={platform} />
+          {visibleRows.map((row, index) => (
+            <React.Fragment key={`${row.actionId}:${row.sequence}`}>
+              {/* F-1/F-3 — a subtle separator between the context-scoped group and
+                  the always-on group (only when both groups are non-empty). */}
+              {index === model.scopedCount &&
+              model.scopedCount > 0 &&
+              model.scopedCount < model.rows.length ? (
+                <Text as="span" fontSize="xs" color="fg.subtle" whiteSpace="nowrap" flexShrink={0}>
+                  |
+                </Text>
+              ) : null}
+              <ActionChip row={row} platform={platform} />
+            </React.Fragment>
           ))}
         </Box>
       )}
+
+      {/* F-3 — the pinned, non-focusable overflow affordance. A SIBLING after the
+          list (outside the clipped region), so hidden actions are never silent. */}
+      {hiddenCount > 0 ? (
+        <Box
+          data-testid={KEYBOARD_BAR_MORE_TESTID}
+          display="flex"
+          alignItems="center"
+          paddingX="1.5"
+          paddingY="0.5"
+          borderRadius="sm"
+          bg="bg.subtle"
+          flexShrink={0}
+        >
+          <Text fontSize="xs" color="fg.muted" whiteSpace="nowrap">
+            +{hiddenCount} more
+          </Text>
+        </Box>
+      ) : null}
 
       {/* The pinned, non-interactive exit chord. */}
       <Box
