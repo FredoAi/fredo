@@ -22,6 +22,7 @@ import { HotkeyAnnouncer } from './announcer';
 import { CheatSheetOverlay } from './CheatSheetOverlay';
 import { ContextIndicator } from './ContextIndicator';
 import { installHotkeyEngine } from './engine';
+import { KeyboardBar } from './KeyboardBar';
 import { hydrateKeymap } from './store';
 import { WhichKeyOverlay } from './WhichKeyOverlay';
 
@@ -46,6 +47,7 @@ export function HotkeysProvider({ children }: HotkeysProviderProps) {
       <WhichKeyOverlay />
       <CheatSheetOverlay />
       <ContextIndicator />
+      <KeyboardBar />
     </>
   );
 }

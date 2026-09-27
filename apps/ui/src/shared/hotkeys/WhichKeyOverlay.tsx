@@ -43,6 +43,12 @@ import { LuCircleX, LuTriangleAlert } from 'react-icons/lu';
 import { Keycap } from '../components/hotkeys/Keycap';
 import { tint } from '../utils/colorTint';
 import { announce } from './announcer';
+import {
+  BOTTOM_STACK_DOCK_SELECTOR,
+  BOTTOM_STACK_GAP_PX,
+  BOTTOM_STACK_MIN_PX,
+  measureBottomOffsetPx,
+} from './bottomStack';
 import { displaySequence, parseSequence } from './keys';
 import {
   getPendingSequence,
@@ -72,15 +78,11 @@ export const WHICHKEY_MAX_ANNOUNCED_CANDIDATES = 8;
 /** Above the dock (z=1200) and the launcher overlay (z=1300). */
 export const WHICHKEY_Z_INDEX = 1400;
 /** Gap between the measured dock top and the overlay's bottom edge (px). */
-export const WHICHKEY_BOTTOM_GAP_PX = 16;
+export const WHICHKEY_BOTTOM_GAP_PX = BOTTOM_STACK_GAP_PX;
 /** Base bottom inset when no bottom-anchored dock is rendered (px). */
-export const WHICHKEY_MIN_BOTTOM_PX = 24;
+export const WHICHKEY_MIN_BOTTOM_PX = BOTTOM_STACK_MIN_PX;
 /** The dock root the offset is measured from; absent when zero windows. */
-export const WHICHKEY_DOCK_SELECTOR = '[data-testid="app-dock"]';
-/** Tolerance for "is the dock anchored at the bottom edge" (px). The bottom pill
- *  rests `12px` above the viewport edge, so the window is generous enough to
- *  admit a bottom inset while still excluding a mid-viewport side rail. */
-const WHICHKEY_DOCK_BOTTOM_TOLERANCE_PX = 64;
+export const WHICHKEY_DOCK_SELECTOR = BOTTOM_STACK_DOCK_SELECTOR;
 
 const NUDGE_KEYFRAMES = {
   '@keyframes hotkeys-whichkey-nudge': {
@@ -100,29 +102,11 @@ type ResetReason = Extract<HotkeyResetReason, 'invalid' | 'timeout'>;
 
 /**
  * The bottom inset for the overlay, DERIVED from the ACTUAL rendered dock stack
- * (G-253). Measures the dock's live `getBoundingClientRect().top` (so its real
- * height including border/padding is used, never a sum of nominal constants) when
- * — and only when — a dock is rendered, visible, and anchored to the bottom edge.
- * A side-rail dock, a hidden (edge-peek) dock, or no dock at all yields the base
- * inset. Exported so the derivation can be pinned directly.
+ * (G-253). The ONE shared derivation now lives in `bottomStack.ts` (Spec #2959
+ * ST-3) so the which-key overlay and the persistent keyboard bar cannot drift;
+ * this re-export preserves the shipped overlay API and behaviour byte-for-byte.
  */
-export function measureBottomOffsetPx(): number {
-  if (typeof document === 'undefined' || typeof window === 'undefined') {
-    return WHICHKEY_MIN_BOTTOM_PX;
-  }
-  const dock = document.querySelector<HTMLElement>(WHICHKEY_DOCK_SELECTOR);
-  if (!dock) return WHICHKEY_MIN_BOTTOM_PX;
-
-  const style = window.getComputedStyle(dock);
-  if (style.visibility === 'hidden' || style.display === 'none') return WHICHKEY_MIN_BOTTOM_PX;
-
-  const viewportH = window.innerHeight;
-  const rect = dock.getBoundingClientRect();
-  // Only a dock anchored at the bottom edge clears the overlay; a left rail does not.
-  if (rect.bottom < viewportH - WHICHKEY_DOCK_BOTTOM_TOLERANCE_PX) return WHICHKEY_MIN_BOTTOM_PX;
-
-  return Math.max(WHICHKEY_MIN_BOTTOM_PX, viewportH - rect.top + WHICHKEY_BOTTOM_GAP_PX);
-}
+export { measureBottomOffsetPx };
 
 /** The announcer digest for a pending prefix (UI/UX §1: first N + "and M more"). */
 export function pendingAnnouncement(

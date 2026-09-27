@@ -197,6 +197,21 @@ describe('context scope propagation (Spec #2958)', () => {
   });
 });
 
+describe('additive unavailableReason contract (Spec #2959 ST-2)', () => {
+  it('carries an optional unavailableReason through the listing', () => {
+    registerFredoAction(action('fredo.test.needsDoc', { unavailableReason: 'Needs an open document' }));
+    const entry = listHotkeyActions().find((row) => row.actionId === 'fredo.test.needsDoc');
+    expect(entry?.unavailableReason).toBe('Needs an open document');
+  });
+
+  it('leaves unavailableReason undefined when undeclared (additive only)', () => {
+    registerFredoAction(action('fredo.test.noReason'));
+    const entry = listHotkeyActions().find((row) => row.actionId === 'fredo.test.noReason');
+    expect(entry).toBeDefined();
+    expect(entry?.unavailableReason).toBeUndefined();
+  });
+});
+
 describe('feature-instance discovery (R-2.1)', () => {
   it('inherits an empty frozen default contribution', () => {
     class BareFeature extends FredoFeatureClass {

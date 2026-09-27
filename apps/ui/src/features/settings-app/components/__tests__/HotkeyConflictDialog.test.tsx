@@ -266,9 +266,9 @@ describe('cross-tier collision is labelled, never blocking (R-5.4)', () => {
         {
           actionId: 'terminal.newSession',
           title: 'New session',
-          // `F8` is a named key and is NOT a shipped Fredo default, so Ctrl+Shift+F8
+          // `F7` is a named key and is NOT a shipped Fredo default, so Ctrl+Shift+F7
           // collides only ACROSS tiers — the case that must never block.
-          defaultSequence: 'primary+shift+f8',
+          defaultSequence: 'primary+shift+f7',
           run: () => {},
         },
       ]),
@@ -279,10 +279,10 @@ describe('cross-tier collision is labelled, never blocking (R-5.4)', () => {
 
     const row = rowFor('fredo.help.cheatsheet');
     fireEvent.click(within(row).getByTestId('hotkeys-rebind-button'));
-    fireEvent.keyDown(document, { key: 'F8', ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(document, { key: 'F7', ctrlKey: true, shiftKey: true });
 
     await waitFor(() =>
-      expect(getBinding('fredo.help.cheatsheet')).toEqual(['primary+shift+f8']),
+      expect(getBinding('fredo.help.cheatsheet')).toEqual(['primary+shift+f7']),
     );
     // No dialog: a cross-tier collision is not a blocking conflict.
     expect(screen.queryByTestId('hotkeys-conflict-dialog')).toBeNull();

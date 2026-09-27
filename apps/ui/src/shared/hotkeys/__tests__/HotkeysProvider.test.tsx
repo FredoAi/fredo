@@ -31,6 +31,12 @@ import {
   HOTKEY_CONTEXT_INDICATOR_TESTID,
 } from '@/shared/hotkeys/ContextIndicator';
 import { HotkeysProvider } from '@/shared/hotkeys/HotkeysProvider';
+import { KEYBOARD_BAR_TESTID } from '@/shared/hotkeys/KeyboardBar';
+import {
+  enterKeyboardMode,
+  exitKeyboardMode,
+  resetKeyboardModeForTests,
+} from '@/shared/hotkeys/keyboardMode';
 
 beforeEach(() => {
   localStorage.clear();
@@ -40,12 +46,14 @@ beforeEach(() => {
   resetHotkeyEngineForTests();
   resetContextRegistryForTests();
   resetHotkeyContextForTests();
+  resetKeyboardModeForTests();
 });
 
 afterEach(() => {
   resetHotkeyEngineForTests();
   resetContextRegistryForTests();
   resetHotkeyContextForTests();
+  resetKeyboardModeForTests();
   cleanup();
   vi.restoreAllMocks();
 });
@@ -116,6 +124,29 @@ describe('HotkeysProvider', () => {
     ).toHaveLength(1);
     expect(getByTestId(HOTKEY_CONTEXT_INDICATOR_LABEL_TESTID)).toHaveTextContent('Child');
     // Still exactly ONE live region (the shared announcer) — the pill is visual.
+    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
+  });
+
+  it('mounts the keyboard bar ONCE (null while off, exactly one on mode)', () => {
+    const { container } = renderWithChakra(
+      <HotkeysProvider>
+        <span />
+      </HotkeysProvider>,
+    );
+
+    // Mounted once (present in the tree) but OFF ⇒ renders nothing.
+    expect(container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_TESTID}"]`)).toHaveLength(0);
+
+    act(() => {
+      enterKeyboardMode();
+    });
+    expect(container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_TESTID}"]`)).toHaveLength(1);
+
+    act(() => {
+      exitKeyboardMode();
+    });
+    expect(container.querySelectorAll(`[data-testid="${KEYBOARD_BAR_TESTID}"]`)).toHaveLength(0);
+    // No second live region was introduced by the bar.
     expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
   });
 });

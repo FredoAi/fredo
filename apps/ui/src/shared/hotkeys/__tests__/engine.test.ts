@@ -30,12 +30,20 @@ import {
   REFERENCE_ACTION_ANNOUNCEMENT,
   REFERENCE_CONTEXT_ID,
   REFERENCE_ONLY_ACTION_ID,
+  KEYBOARD_MODE_ACTION_ID,
+  KEYBOARD_MODE_CHORD,
 } from '../defaults';
+import {
+  BODY_KEYBOARD_MODE_ATTR,
+  isKeyboardModeOn,
+  resetKeyboardModeForTests,
+} from '../keyboardMode';
 import {
   resetRegistryForTests,
   registerFeatureHotkeys,
   registerFredoAction,
   registerHotkeyHandler,
+  getHotkeyAction,
 } from '../registry';
 import { createDefaultKeymap } from '../persistence';
 import {
@@ -50,11 +58,13 @@ import {
   BODY_PASSTHROUGH_ATTR,
   BODY_PENDING_SEQUENCE_ATTR,
   LAUNCHER_TOGGLE_ACTION_ID,
+  getFocusSnapshot,
   getPendingPrefix,
   handleHotkeyKeydown,
   installHotkeyEngine,
   resetHotkeyEngineForTests,
   isHotkeyEngineInstalled,
+  subscribeFocusSnapshot,
 } from '../engine';
 import { ROOT_CONTEXT_ID, type DispatchDecision, type FeatureHotkeyAction } from '../types';
 
@@ -164,17 +174,20 @@ beforeEach(() => {
   resetHotkeyAnnouncer();
   resetHotkeyContextForTests();
   resetHotkeyEngineForTests();
+  resetKeyboardModeForTests();
   document.body.innerHTML = '';
   document.body.removeAttribute(BODY_FOCUS_CONTEXT_ATTR);
   document.body.removeAttribute(BODY_PENDING_SEQUENCE_ATTR);
   document.body.removeAttribute(BODY_PASSTHROUGH_ATTR);
   document.body.removeAttribute(BODY_MACRO_RECORDING_ATTR);
   document.body.removeAttribute(BODY_HOTKEY_CONTEXT_ATTR);
+  document.body.removeAttribute(BODY_KEYBOARD_MODE_ATTR);
 });
 
 afterEach(() => {
   resetHotkeyEngineForTests();
   resetHotkeyContextForTests();
+  resetKeyboardModeForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = '';
@@ -796,5 +809,106 @@ describe('engine — pre-existing Escape owners remain live (G-220)', () => {
     expect(decision.reason).toBe('terminal-passthrough');
     expect(prevented).toBe(false);
     expect(getActiveHotkeyContext()).toBe('fredo.test.deep');
+  });
+});
+
+// ── 13. Keyboard mode entry/exit chord (Spec #2959 ST-1) ─────────────────────
+
+describe('engine — keyboard mode chord (Spec #2959)', () => {
+  it('R-1.1/R-1.2: the ONE chord toggles keyboard mode and its body hook', () => {
+    installHotkeyEngine();
+    const el = mountNeutral();
+
+    const on = keydown(el, { key: 'F8', ctrlKey: true, shiftKey: true });
+    expect(on.prevented).toBe(true);
+    expect(isKeyboardModeOn()).toBe(true);
+    expect(document.body.getAttribute(BODY_KEYBOARD_MODE_ATTR)).toBe('true');
+
+    const off = keydown(el, { key: 'F8', ctrlKey: true, shiftKey: true });
+    expect(off.prevented).toBe(true);
+    expect(isKeyboardModeOn()).toBe(false);
+    expect(document.body.hasAttribute(BODY_KEYBOARD_MODE_ATTR)).toBe(false);
+  });
+
+  it('ships the mode toggle as a resolvable Fredo action bound to ctrl+shift+f8', () => {
+    installHotkeyEngine();
+    const action = getHotkeyAction(KEYBOARD_MODE_ACTION_ID);
+    expect(action).not.toBeNull();
+    expect(action?.title).toBe('Toggle keyboard mode');
+    expect(action?.description).toBe('Show or hide the persistent keyboard action bar');
+    expect(action?.defaultSequence).toBe(KEYBOARD_MODE_CHORD);
+    expect(action?.tier).toBe('fredo');
+  });
+
+  it('the modifier chord stays global in text-entry (R-5.5)', () => {
+    installHotkeyEngine();
+    const input = mountInput();
+
+    keydown(input, { key: 'F8', ctrlKey: true, shiftKey: true });
+
+    expect(isKeyboardModeOn()).toBe(true);
+    expect(document.body.getAttribute(BODY_FOCUS_CONTEXT_ATTR)).toBe('text-entry');
+  });
+
+  it('R-1.4: entry/exit never move focus', () => {
+    installHotkeyEngine();
+    const el = mountNeutral();
+    expect(document.activeElement).toBe(el);
+
+    keydown(el, { key: 'F8', ctrlKey: true, shiftKey: true });
+    expect(document.activeElement).toBe(el);
+
+    keydown(el, { key: 'F8', ctrlKey: true, shiftKey: true });
+    expect(document.activeElement).toBe(el);
+  });
+});
+
+// ── 14. Live focus snapshot (Spec #2959 ST-1) ────────────────────────────────
+
+describe('engine — live focus snapshot (Spec #2959 ST-1)', () => {
+  it('publishes the ONE focus classification with a stable identity', () => {
+    installHotkeyEngine();
+    const initial = getFocusSnapshot();
+    expect(initial.context).toBe('default');
+    expect(initial.nativeConsumes).toBe(false);
+
+    mountInput();
+    const textEntry = getFocusSnapshot();
+    expect(textEntry.context).toBe('text-entry');
+    expect(textEntry.nativeConsumes).toBe(false);
+    expect(textEntry).not.toBe(initial);
+
+    const button = mountButton();
+    const interactive = getFocusSnapshot();
+    expect(interactive.context).toBe('interactive');
+    expect(interactive.nativeConsumes).toBe(true);
+
+    // A keystroke that leaves focus unchanged keeps the SAME frozen identity.
+    keydown(button, { key: 'g' });
+    expect(getFocusSnapshot()).toBe(interactive);
+  });
+
+  it('notifies subscribers on a real change and not on a no-op refresh', () => {
+    installHotkeyEngine();
+    mountInput(); // settle focus before subscribing
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeFocusSnapshot(listener);
+
+    // A keydown that leaves focus unchanged republishes the SAME classification
+    // → identical snapshot identity, no notification.
+    dispatch({ key: 'g' });
+    expect(listener).not.toHaveBeenCalled();
+
+    // A real focus move is a real change → at least one notification.
+    mountButton();
+    expect(listener).toHaveBeenCalled();
+    expect(getFocusSnapshot().context).toBe('interactive');
+    expect(getFocusSnapshot().nativeConsumes).toBe(true);
+
+    unsubscribe();
+    const callsBeforeUnsubscribe = listener.mock.calls.length;
+    mountNeutral();
+    expect(listener.mock.calls.length).toBe(callsBeforeUnsubscribe);
   });
 });

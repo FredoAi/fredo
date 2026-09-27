@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 
 import {
   ENGINE_OWNED_TRAVERSAL,
+  KEYBOARD_MODE_ACTION_ID,
+  KEYBOARD_MODE_CHORD,
   MINIMAL_DEFAULT_BINDINGS,
   REFERENCE_ACTION_ANNOUNCEMENT,
   REFERENCE_CONTEXT_ID,
@@ -9,7 +11,8 @@ import {
   REFERENCE_ONLY_ACTION_ID,
   VIM_PRESET,
 } from '../defaults';
-import { keyStrokeEquals, normalizeKeyStroke, parseSequence } from '../keys';
+import { keyStrokeEquals, normalizeKeyStroke, parseSequence, sequenceEquals } from '../keys';
+import { reservedReason } from '../reserved';
 import { matchSequence } from '../sequence';
 import {
   isValidHotkeyActionId,
@@ -99,6 +102,11 @@ const MATCHABLE_DEFAULTS: readonly {
     serialized: 'ctrl+shift+f9',
     event: { key: 'F9', ctrlKey: true, shiftKey: true },
   },
+  {
+    actionId: KEYBOARD_MODE_ACTION_ID,
+    serialized: KEYBOARD_MODE_CHORD,
+    event: { key: 'F8', ctrlKey: true, shiftKey: true },
+  },
 ];
 
 describe('MINIMAL_DEFAULT_BINDINGS', () => {
@@ -110,6 +118,7 @@ describe('MINIMAL_DEFAULT_BINDINGS', () => {
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.focus.prevWindow']).toEqual(['primary+shift+tab']);
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.terminal.exitPassthrough']).toEqual(['ctrl+shift+f10']);
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.macro.recordToggle']).toEqual(['ctrl+shift+f9']);
+    expect(MINIMAL_DEFAULT_BINDINGS[KEYBOARD_MODE_ACTION_ID]).toEqual([KEYBOARD_MODE_CHORD]);
   });
 
   it('binds window.cycleNth to primary+1..primary+9', () => {
@@ -155,8 +164,8 @@ describe('MINIMAL_DEFAULT_BINDINGS', () => {
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.settings.open']).toBeUndefined();
   });
 
-  it('adds EXACTLY the two Spec #2958 reference-context bindings (the shipped 9 untouched)', () => {
-    // The #2946 table had exactly these 9 action ids; the reference host adds 2.
+  it('ships the nine #2946 defaults + the two #2958 reference bindings + the #2959 mode chord', () => {
+    // The #2946 table had exactly these 9 action ids; #2958 added 2 and #2959 added 1.
     const shippedNine = [
       'fredo.launcher.toggle',
       'fredo.palette.openActions',
@@ -168,13 +177,14 @@ describe('MINIMAL_DEFAULT_BINDINGS', () => {
       'fredo.terminal.exitPassthrough',
       'fredo.macro.recordToggle',
     ];
-    expect(Object.keys(MINIMAL_DEFAULT_BINDINGS)).toHaveLength(11);
+    expect(Object.keys(MINIMAL_DEFAULT_BINDINGS)).toHaveLength(12);
     expect(Object.keys(MINIMAL_DEFAULT_BINDINGS)).toEqual(
       expect.arrayContaining(shippedNine),
     );
 
     expect(MINIMAL_DEFAULT_BINDINGS[REFERENCE_DESCEND_ACTION_ID]).toEqual(['primary+K']);
     expect(MINIMAL_DEFAULT_BINDINGS[REFERENCE_ONLY_ACTION_ID]).toEqual(['y']);
+    expect(MINIMAL_DEFAULT_BINDINGS[KEYBOARD_MODE_ACTION_ID]).toEqual([KEYBOARD_MODE_CHORD]);
   });
 
   it('exposes the shipped reference-context identity', () => {
@@ -321,6 +331,34 @@ describe('shipped defaults match a real keydown (typed-character model)', () => 
     if (match.kind === 'exact') {
       expect(match.binding.actionId).toBe('fredo.macro.recordToggle');
     }
+  });
+
+  it('the #2959 mode chord is unreserved and disjoint from every shipped default', () => {
+    expect(KEYBOARD_MODE_ACTION_ID).toBe('fredo.keyboardMode.toggle');
+    expect(KEYBOARD_MODE_CHORD).toBe('ctrl+shift+f8');
+    expect(MINIMAL_DEFAULT_BINDINGS[KEYBOARD_MODE_ACTION_ID]).toEqual([KEYBOARD_MODE_CHORD]);
+
+    const modeSequence = parseSequence(KEYBOARD_MODE_CHORD);
+    expect(modeSequence).toEqual([stroke({ key: 'f8', ctrl: true, shift: true })]);
+    expect(reservedReason(modeSequence, 'win32')).toBeNull();
+
+    const normalized = normalizeKeyStroke(
+      keyEvent({ key: 'F8', ctrlKey: true, shiftKey: true }),
+      'win32',
+    );
+    expect(normalized).toEqual(stroke({ key: 'f8', primary: true, shift: true }));
+    expect(keyStrokeEquals(modeSequence[0], normalized as KeyStroke, 'win32')).toBe(true);
+
+    const collisions: string[] = [];
+    for (const [actionId, sequences] of Object.entries(MINIMAL_DEFAULT_BINDINGS)) {
+      if (actionId === KEYBOARD_MODE_ACTION_ID) continue;
+      for (const serialized of sequences) {
+        if (sequenceEquals(modeSequence, parseSequence(serialized), 'win32')) {
+          collisions.push(`${actionId}: ${serialized}`);
+        }
+      }
+    }
+    expect(collisions).toEqual([]);
   });
 
   it('the previously-shipped forms can never match (documented regression)', () => {

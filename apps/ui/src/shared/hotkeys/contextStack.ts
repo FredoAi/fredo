@@ -32,6 +32,7 @@ import { useSyncExternalStore } from 'react';
 
 import { announce } from './announcer';
 import { getHotkeyContext, isPlatformContext, resolveBaseContextId } from './contexts';
+import { isKeyboardModeOn } from './keyboardMode';
 import {
   ROOT_CONTEXT_ID,
   type HotkeyContextChangeReason,
@@ -119,7 +120,11 @@ function commit(reason: HotkeyContextChangeReason, announceChange: boolean): boo
   snapshot = next;
   publishBodyHooks(next.contextId, next.depth);
   notify();
-  if (announceChange) announce(contextAnnouncement(next));
+  // Spec #2959 ST-3 — single-announcement determinism: while keyboard mode is ON
+  // the persistent keyboard bar speaks the ONE mode-aware digest per context
+  // change (R-4.2/R-4.3), so this stack suppresses its own copy and the shared
+  // `announce()` channel never carries two competing writes for one change.
+  if (announceChange && !isKeyboardModeOn()) announce(contextAnnouncement(next));
   return true;
 }
 
