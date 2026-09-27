@@ -128,3 +128,21 @@ Run on `spec/2946 @ 45d5120` (dev-env UP, driver `com.fredo.app`, main + termina
   `rust-validate` PASS.
 
 **Smoke verdict: PASS (9/9 live; CI `ui-validate` red on a non-feature flaky terminal test).**
+
+## #2958 testing round 1 — quick-path results (spec/2958 @ ea0db5c)
+
+Run on the served app (dev-env UP, `spec/2958 @ ea0db5ca`, driver `com.fredo.app`). Live receipt:
+195 `telemetry_spans` in the drive window 2026-09-26 23:52:46 → 2026-09-27 00:08:54.
+
+- [x] **S-10 PASS** — a base context is active at boot: `data-fredo-hotkey-context` /
+      `data-fredo-hotkey-context-depth` publish the focus-derived base (`setup`, depth 1; after
+      `g g` the base re-derived to `terminal`, depth 1). A context CHANGE renders the indicator
+      text label (`hotkeys-context-indicator-label`) — not colour-only. Console clean.
+- [x] **S-11 PASS** — descend + Escape quick path: `primary+K` changed the indicator to
+      `Reference` / `data-depth=2` (2 pips); one Escape returned it to the previous base
+      (`terminal` / 1 pip) and the announcer updated on both changes.
+- [x] **S-12 PASS** — `[data-testid="hotkeys-announcer"]` text changed on the context change
+      (`Entered setup. Level 1.` → `Entered Reference. Level 2.` → `Back to terminal. Top level.`);
+      the region is `role="status" aria-live="polite"` and non-empty. Screenshots captured.
+
+**Smoke verdict for #2958: PASS (S-10/S-11/S-12).**
