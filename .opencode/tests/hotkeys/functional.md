@@ -375,6 +375,23 @@
 - [ ] F-52: Drive entry → descend → return → focused-app change → unwind; after EACH step compare the bar's displayed context id/label against the engine snapshot (`getHotkeyContextSnapshot()` / `data-fredo-hotkey-context`). **Expected:** the bar's listed context ALWAYS equals the engine's current context — no stale rows after an unwind, no disagreement, deterministic across identical cycles. **Data:** per-step bar context + `data-fredo-hotkey-context` / snapshot. *(live receipt)*
   - **Edge:** same-context re-fire; rapid descend/unwind; entry during a pending sequence; a context change while mode is off.
 
+## F-53 (REQ-2 edge, promoted round 1) — many-action context clips; context-scoped action dropped
+
+- [ ] F-53: Enter keyboard mode on the resting desktop (a realistic root context: shipped
+      `primary+1..9` cycleNth + the fredo tier + feature rows) and inspect the bar list.
+      **Expected (QA edge "rows scroll / do not clip"; UI/UX §3 context-first ordering + §6
+      `more` chip):** the rows scroll or are not clipped, and the context-scoped chips are
+      not dropped by overflow. **Round 1 (FAIL, `spec/2959 @ 4238d8c`):** the list is
+      `overflow: hidden`; at 1920 px `scrollWidth=4976` vs `clientWidth=1574` → 3402 px
+      (68%) clipped, no scroll, no "more" chip; `fredo.context.descendReference` (the
+      context-relevant descent action) is the LAST row (rect.right=5152) and is entirely
+      off-screen behind the exit chip (rect.left=1763). At 1280 px the same applies.
+      **Repro:** enter mode → read
+      `getComputedStyle(document.querySelector('[data-testid="hotkeys-keyboard-bar-list"]'))`
+      (`overflowX === 'hidden'`, `scrollWidth > clientWidth`); compare the last
+      `[data-testid="hotkeys-keyboard-bar-row"]` rect to
+      `[data-testid="hotkeys-keyboard-bar-exit"]`. Origin: E-34 round 1.
+
 ---
 
 ## #2946 testing round 1 — result
