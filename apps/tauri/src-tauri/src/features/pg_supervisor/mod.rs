@@ -85,3 +85,5 @@ pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
 pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
 
 pub mod runtime; // ST-1
+pub mod sweep; // ST-2
+pub mod lock; // ST-2
