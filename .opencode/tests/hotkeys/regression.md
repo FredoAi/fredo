@@ -42,6 +42,33 @@
       (AGENTS.md #523 pattern); the context hook must not be consumed via a per-render changing
       dependency. Cross-ref R-7.
 
+## Spec #2959 additions (persistent contextual key bar)
+
+- [ ] **R-16 (S1 context model unchanged):** the merged #2958 behaviour must not change — the
+      focus-derived base (`fredo.root`, `depth 1`), `primary+K` descent to `fredo.root.reference`
+      (`depth 2`), one-Escape-per-level unwind, the `hotkeys-context-indicator` (label/pips/icon),
+      and the single `hotkeys-announcer` announcements all behave as they did before the bar.
+      Baseline recipe: dev-env UP on `main`, record descend/unwind + announcer; repeat on `spec/2959`.
+      Cross-ref F-33..F-43.
+- [ ] **R-17 (existing bindings not stolen):** the mode chord is ADDITIVE. Ctrl+Space (launcher),
+      `g g` (`fredo.window.first`), `?` (cheat sheet), the feature `s`/`n`/`p`/`f` sets,
+      `primary+K` (descent) and `y` (reference-only) still resolve exactly as before when keyboard
+      mode is OFF; entering mode must not rebind or swallow a shipped binding. Cross-ref R-1/R-14,
+      F-25/F-33.
+- [ ] **R-18 (which-key overlay + cheat sheet unchanged):** the bar must not replace, suppress or
+      re-spec the shipped pending which-key overlay or the `?` cheat sheet; a pending multi-key
+      sequence still shows its own hint and Escape still cancels it with no context unwind (R-12).
+      Cross-ref F-7/F-30/F-31/F-43.
+- [ ] **R-19 (no OS-wide hotkeys, no shortcut-usage telemetry):** the new bar/mode layer registers
+      no Tauri global-shortcut / OS-level hotkey and emits NO span/event/metric carrying shortcut
+      usage, binding identity, or mode state (PO Q13). Diff `telemetry_spans`/`telemetry_metrics`
+      names before vs after a mode drive. Carry-forward of R-9/R-10.
+- [ ] **R-20 (token contract + no re-render loop / console clean + build gates):** the new
+      bar/mode files introduce no hardcoded hex/rgba/hsla and no `var(--x)NN` alpha-append; no
+      `Maximum update depth exceeded`/`Uncaught`/`Error:` across entry/exit/context-change/theming
+      operations; `pnpm --filter @fredo/ui build` exit 0 (zero TS errors) and the served
+      `build:webview` leg passes (H-11/G-251 class). Cross-ref R-6/R-7/R-8/R-11/R-15.
+
 ## #2946 testing round 2 — regression result
 
 - R-1 PASS — Ctrl+Space opens/focuses the launcher when closed, keeps it open when the
