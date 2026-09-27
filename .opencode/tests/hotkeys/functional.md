@@ -392,6 +392,46 @@
       `[data-testid="hotkeys-keyboard-bar-row"]` rect to
       `[data-testid="hotkeys-keyboard-bar-exit"]`. Origin: E-34 round 1.
 
+## F-54 (promoted round 2, REQ-5 regression) — unavailable reason hard-clipped by the row clamp
+
+- [ ] F-54: Enter keyboard mode, focus a text-entry field so bare-key rows flip to
+      `data-availability="unavailable"`, and read the unavailable row's reason. **Expected:**
+      the declared reason is readable (REQ-5 "a visible reason string"; QA edge "a long reason
+      string"). **Round 2 (FAIL, `spec/2959 @ a693d30`):** the round-2 F-3 chip clamp
+      (`KeyboardBar.tsx:165` `maxWidth={KEYBOARD_BAR_ROW_MAX_WIDTH_PX}` 240 px + `overflow:hidden`;
+      reason `<Text>` at `:187-194` with no min-width/ellipsis) hard-clips the default reason
+      `Unavailable while typing` to **8/25** characters (`Unavaila`) — the reason `<p>` measures
+      x `1069..1198` (129 px) against a row content clip edge of `1117`; the explaining
+      `while typing` is unreadable, and the action title collapses to `0px` width. Round 1
+      (`4238d8c`) rendered the reason in full (no `maxWidth`), so this is a regression.
+      Non-activatable safety holds (row is a non-focusable `DIV`). **Repro:** enter mode →
+      focus `TEXTAREA[data-testid="launcher-command-input"]` → locate
+      `[data-testid="hotkeys-keyboard-bar-row-unavailable"]` → compare its
+      `getBoundingClientRect()` / visible chars (Range bisection) against the parent row's
+      content right edge. Origin: E-34 round 1, re-raised round 2.
+
+---
+
+## #2959 testing round 2 — result (served spec/2959 @ a693d30)
+
+**Verdict: FAIL (8/9 plan rows PASS; REQ-5 FAIL — regression; NFR-2 UNVERIFIED pin-only blocker).**
+Driven live (dev-env UP, `spec/2959 @ a693d30`, driver `com.fredo.app`). Live receipt: 204
+`telemetry_spans` in the drive window 2026-09-27 02:20:07 → 02:32:34 (`otlp_grpc`). Console clean.
+
+- **REQ-1 PASS**, **REQ-3 PASS**, **REQ-4 PASS**, **NFR-1/3/4 PASS** — see the `## Tests Runs`
+  verdict on the issue for full measurements.
+- **REQ-2 / F-45 / F-53 — PASS (the round-1 FAIL is fixed).** At `fredo.root.reference`:
+  1920-wide → total 24, visible 5, `+19 more` (5+19=24), list `scrollWidth==clientWidth`
+  (no clip), `descendReference` rect `{213,920,212,29}` in viewport and not behind the exit
+  chip; 1280×800 → total 24, visible 2, `+22 more` (2+22=24), no clip, `descendReference`
+  `{213,703,212,29}` visible. Dwell stable over 21.3 s with `pending=null`; re-entry 0
+  duplicates; context change while OFF leaves no stale bar.
+- **REQ-5 / F-48 — FAIL.** See F-54 (unavailable reason hard-clipped). The empty-context leg
+  remains a named blocker (no live zero-binding context).
+- **NFR-2 / F-50 — UNVERIFIED (named pin-only blocker):** live media = no-preference; no
+  media-emulation lever in the Tauri MCP driver. Residual pin: `KeyboardBar.test.tsx`
+  `reducedMotion` render asserts `root.style.animation === 'none'`.
+
 ---
 
 ## #2946 testing round 1 — result

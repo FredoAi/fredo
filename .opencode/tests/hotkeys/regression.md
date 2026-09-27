@@ -143,3 +143,24 @@ Run on the served app (dev-env UP, `spec/2958 @ ea0db5ca`, driver `com.fredo.app
   pass, `paths` pass, `rust-validate` skipping (no Rust change).
 - **R-6 PASS** — no hex/rgb/hsl literal and no `var(--x)NN` alpha-append in the new hotkeys JSX
   (grep hits are issue-reference comments only; `ContextIndicator.test.tsx` pins it).
+
+## #2959 testing round 2 — regression result (spec/2959 @ a693d30)
+
+Run on the served app (dev-env UP, `spec/2959 @ a693d30`, driver `com.fredo.app`). Live receipt:
+204 `telemetry_spans` in the drive window 2026-09-27 02:20:07 → 02:32:34 (`otlp_grpc`). Console clean.
+
+- **R-16 PASS** — the merged #2958 context model is unchanged: focus-derived base (`setup`/
+  `terminal`/`settings`, depth 1), `primary+K` → `fredo.root.reference` (depth 2), one-Escape
+  unwind, the `hotkeys-context-indicator` label/pips, and the single `hotkeys-announcer`
+  announcements all behave as before the bar.
+- **R-17 PASS** — the mode chord is ADDITIVE: `Ctrl+Space`, `g g`, `?`, `primary+K`, `y` and the
+  focus chords resolve as before while mode is OFF (verified entering mode on a resting desktop,
+  a context change with mode OFF, and the `Ctrl+Tab` focus change).
+- **R-18 PASS** — the bar does not suppress the shipped which-key/cheat-sheet surfaces; the ONE
+  announcer and pending-sequence channel are intact.
+- **R-19 PASS** — no OS-wide hotkey and no shortcut-usage telemetry (0 shortcut/keymap metric names;
+  the 16 `%keyboard%` span hits are the tester's own `tauri_webview_keyboard` tool spans).
+- **R-20 PASS** — zero hardcoded colour literal / `var(--x)NN` in the changed files; console clean
+  across entry/exit/context-change/theming; `gh pr checks 2973` green (ui-validate, validate,
+  fast-validate, paths). **Caveat:** R-20's "no clip" spirit is violated for the
+  unavailable-with-reason row (REQ-5 regression — see F-54), though the token/build legs pass.
