@@ -1,0 +1,406 @@
+//! Bounded control of the managed embedded-PostgreSQL server (Spec #2974, ST-1).
+//!
+//! This is the guaranteed-teardown primitive: every control/start/readiness/stop
+//! wait carries a finite wall-clock cap, the graceful stop falls back to
+//! `taskkill /PID <pid> /T /F` on expiry, and the RAII [`Drop`] hard-kills a
+//! surviving postmaster on the normal, error, and panic-unwind paths.
+//!
+//! # G-263 SAFETY (named failure mode: #2948's ~11 h `pg.stop()`)
+//!
+//! * `Settings::timeout` is ALWAYS `Some(PG_CONTROL_TIMEOUT)` — never `None`.
+//! * EVERY blocking await routes through [`run_bounded`]; there is no bare
+//!   `.await` on a server wait.
+//! * [`PgRuntime::stop_bounded`] runs a synchronous watchdog thread that
+//!   hard-kills the postmaster PID tree if the graceful `pg.stop()` has not
+//!   signalled within the bound, then re-checks `postmaster.pid` as a backstop.
+//! * [`Drop`] hard-kills the postmaster tree unless the runtime was stopped.
+//!
+//! The mechanism is ported from spike #2964 (`harness.rs` / `supervisor.rs`) —
+//! it is NOT a dependency on the spike crate (no cross-crate reference).
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, Context, Result};
+use postgresql_embedded::{PostgreSQL, Settings};
+use sqlx::Connection as _;
+
+use super::{
+    PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_DATA_SUBDIR, PG_INSTALL_SUBDIR, PG_READY_BOUND,
+    PG_SETUP_BOUND, PG_START_BOUND,
+};
+
+/// Kill primitive seam used by the teardown paths; defaults to [`kill_pid_tree`].
+/// Injectable in tests so teardown can be proven without spawning a server.
+pub type KillTreeFn = fn(u32);
+
+/// Hard-kill a process and its children (`taskkill /PID <pid> /T /F` on Windows;
+/// a no-op on other platforms, which this Windows-first slice does not support).
+pub fn kill_pid_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Bound a future to `bound` wall-clock time, mapping expiry to a structured
+/// error. EVERY blocking wait in this module goes through here (G-263); a bare
+/// `.await` on a server wait is a defect.
+pub async fn run_bounded<T, F>(bound: Duration, what: &'static str, fut: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match tokio::time::timeout(bound, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("{what} exceeded its {bound:?} wall-clock bound")),
+    }
+}
+
+/// Bounded poll of a synchronous predicate, sleeping `poll` between tests.
+/// Returns `true` on the first success, `false` once `bound` elapses.
+pub async fn wait_until<F: Fn() -> bool>(pred: F, bound: Duration, poll: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    loop {
+        if pred() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// How a bounded stop finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The graceful `pg.stop()` completed within the bound.
+    Graceful { elapsed_ms: u128 },
+    /// The graceful stop expired and the PID tree was hard-killed.
+    HardKilled { elapsed_ms: u128 },
+}
+
+/// Read the postmaster PID from `<data_dir>/postmaster.pid` (first line).
+pub fn read_postmaster_pid(data_dir: &Path) -> Option<u32> {
+    let contents = std::fs::read_to_string(data_dir.join("postmaster.pid")).ok()?;
+    contents.lines().next()?.trim().parse::<u32>().ok()
+}
+
+/// Owns the embedded server. Constructed before `setup`, dropped last.
+pub struct PgRuntime {
+    pg: PostgreSQL,
+    data_dir: PathBuf,
+    stopped: bool,
+    kill: KillTreeFn,
+}
+
+impl PgRuntime {
+    /// Build a runtime rooted at `app_data_dir` (data dir `<app>/postgres`,
+    /// install dir `<app>/postgres-install`) using the production kill primitive.
+    pub fn new(app_data_dir: &Path, password: String) -> Self {
+        Self::with_kill(app_data_dir, password, kill_pid_tree)
+    }
+
+    /// Build a runtime with an injected kill primitive (test seam).
+    pub fn with_kill(app_data_dir: &Path, password: String, kill: KillTreeFn) -> Self {
+        let data_dir = app_data_dir.join(PG_DATA_SUBDIR);
+        let install_dir = app_data_dir.join(PG_INSTALL_SUBDIR);
+        let mut settings = Settings::new();
+        settings.data_dir = data_dir.clone();
+        settings.installation_dir = install_dir;
+        // Ephemeral loopback: `port = 0` requests an OS-assigned port, so no
+        // fixed-port collision is possible with OTLP 4317/4318 or the MCP 9223.
+        settings.port = 0;
+        settings.temporary = false;
+        settings.password = password;
+        // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
+        // `None` is exactly what let `pg_ctl -w stop` wait ~11 h in #2948.
+        settings.timeout = Some(PG_CONTROL_TIMEOUT);
+        // NOTE: `settings.username` is intentionally left at the crate default
+        // ("postgres") — see the spike's empirically verified finding: the field
+        // only builds `url()`, while `initdb` still creates the `postgres`
+        // superuser, so overriding it yields a URL whose user does not exist.
+        Self {
+            pg: PostgreSQL::new(settings),
+            data_dir,
+            stopped: false,
+            kill,
+        }
+    }
+
+    /// The resolved PostgreSQL data directory.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// The connection URL the readiness probe (and later slices' pools) must use
+    /// — authoritative because the bound ephemeral port lives in these settings.
+    pub fn connection_url(&self) -> String {
+        self.pg.settings().url("postgres")
+    }
+
+    /// The port the server is bound to; `0` before `start()` requests an
+    /// ephemeral OS-assigned port, after which the crate resolves it here.
+    pub fn port(&self) -> u16 {
+        self.pg.settings().port
+    }
+
+    /// The postmaster PID read from `postmaster.pid`, or `None` if absent.
+    pub fn postmaster_pid(&self) -> Option<u32> {
+        read_postmaster_pid(&self.data_dir)
+    }
+
+    /// Bounded `setup()` (download/extract + initdb on first run).
+    pub async fn setup(&mut self) -> Result<()> {
+        let pg = &mut self.pg;
+        run_bounded(PG_SETUP_BOUND, "pg.setup", async move {
+            pg.setup().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+    }
+
+    /// Bounded `start()`; returns the postmaster PID once it has been written.
+    pub async fn start(&mut self) -> Result<u32> {
+        let pg = &mut self.pg;
+        run_bounded(PG_START_BOUND, "pg.start", async move {
+            pg.start().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?;
+        self.postmaster_pid()
+            .context("postmaster.pid is missing after a successful pg.start()")
+    }
+
+    /// Bounded readiness probe: a real `sqlx` client connect on the crate URL,
+    /// each attempt capped by `PG_CONNECT_TIMEOUT`, the whole poll wrapped in
+    /// `run_bounded(PG_READY_BOUND + 2 s)`. This proves the exact URL/credentials
+    /// later slices' pools will use — deliberately not the crate's `is_ready`.
+    pub async fn probe_ready(&self) -> Result<()> {
+        let url = self.connection_url();
+        run_bounded(
+            PG_READY_BOUND + Duration::from_secs(2),
+            "readiness poll",
+            async move {
+                let deadline = Instant::now() + PG_READY_BOUND;
+                loop {
+                    let error = match tokio::time::timeout(
+                        PG_CONNECT_TIMEOUT,
+                        sqlx::PgConnection::connect(&url),
+                    )
+                    .await
+                    {
+                        Ok(Ok(connection)) => {
+                            drop(connection);
+                            return Ok(());
+                        }
+                        Ok(Err(error)) => anyhow::Error::from(error),
+                        Err(_) => {
+                            anyhow!("connect attempt exceeded its {PG_CONNECT_TIMEOUT:?} bound")
+                        }
+                    };
+                    if Instant::now() >= deadline {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            },
+        )
+        .await
+    }
+
+    /// Bounded graceful stop with a guaranteed hard-kill fallback (G-263).
+    ///
+    /// A synchronous watchdog thread hard-kills the postmaster PID tree if the
+    /// graceful stop has not signalled within `bound` — defence against a
+    /// `pg.stop()` that blocks the async task and would otherwise defeat
+    /// `tokio::time::timeout`. A surviving `postmaster.pid` after the attempt is
+    /// a final backstop hard-kill. `stopped` is set on every path.
+    pub async fn stop_bounded(&mut self, bound: Duration) -> StopOutcome {
+        if self.stopped {
+            return StopOutcome::Graceful { elapsed_ms: 0 };
+        }
+        let started = Instant::now();
+        let pid = self.postmaster_pid();
+        let kill = self.kill;
+        let hard_killed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&hard_killed);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if done_rx.recv_timeout(bound).is_err() {
+                if let Some(pid) = pid {
+                    kill(pid);
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+
+        let _ = run_bounded(bound, "pg.stop", async {
+            self.pg.stop().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        let _ = done_tx.send(());
+        let _ = watchdog.join();
+
+        // Backstop: a still-present `postmaster.pid` means a postmaster survived
+        // the graceful attempt — hard-kill its tree so no orphan is left behind.
+        if let Some(pid) = self.postmaster_pid() {
+            kill(pid);
+            hard_killed.store(true, Ordering::SeqCst);
+        }
+
+        self.stopped = true;
+        let elapsed_ms = started.elapsed().as_millis();
+        if hard_killed.load(Ordering::SeqCst) {
+            StopOutcome::HardKilled { elapsed_ms }
+        } else {
+            StopOutcome::Graceful { elapsed_ms }
+        }
+    }
+}
+
+impl Drop for PgRuntime {
+    fn drop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        // Panic / early-return path: no async work is allowed here — hard-kill
+        // the postmaster PID tree directly so no orphan survives.
+        if let Some(pid) = self.postmaster_pid() {
+            (self.kill)(pid);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static KILLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    static KILL_LOCK: Mutex<()> = Mutex::new(());
+
+    fn record_kill(pid: u32) {
+        KILLS.lock().expect("kill recorder").push(pid);
+    }
+
+    fn recorded_kills() -> Vec<u32> {
+        KILLS.lock().expect("kill recorder").clone()
+    }
+
+    /// Build a runtime with the recording kill seam and a seeded
+    /// `postmaster.pid`, so teardown paths are observable without a server.
+    fn seeded_runtime(app_data_dir: &Path, pid: u32) -> PgRuntime {
+        let data_dir = app_data_dir.join(PG_DATA_SUBDIR);
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(data_dir.join("postmaster.pid"), format!("{pid}\n")).expect("write pid");
+        PgRuntime::with_kill(app_data_dir, "test-password".to_string(), record_kill)
+    }
+
+    #[tokio::test]
+    async fn run_bounded_errors_fast_on_an_unbounded_wait() {
+        let started = Instant::now();
+        let result: Result<()> = run_bounded(
+            Duration::from_millis(50),
+            "pending",
+            std::future::pending::<Result<()>>(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a never-completing future must be bounded into an error"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the 50 ms bound must fire well under 5 s"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_bounded_passes_through_a_completed_value() {
+        let result: Result<u32> = run_bounded(Duration::from_secs(1), "ok", async { Ok(7) }).await;
+        assert_eq!(result.expect("completed value passes through"), 7);
+    }
+
+    #[tokio::test]
+    async fn control_timeout_is_some_and_port_is_requested_ephemeral() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = PgRuntime::new(dir.path(), "pw".to_string());
+        assert_eq!(
+            runtime.port(),
+            0,
+            "port 0 must request an OS-assigned ephemeral port"
+        );
+        assert_eq!(
+            runtime.pg.settings().timeout,
+            Some(PG_CONTROL_TIMEOUT),
+            "Settings::timeout must never be None (the #2948 stop hang)"
+        );
+        let expected = dir.path().join(PG_DATA_SUBDIR);
+        assert_eq!(runtime.data_dir(), expected.as_path());
+    }
+
+    #[tokio::test]
+    async fn drop_hard_kills_the_postmaster_tree_on_panic_unwind() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().to_path_buf();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _runtime = seeded_runtime(&app_data_dir, 4242);
+            panic!("induced panic: RAII Drop must still run during unwind");
+        }));
+
+        assert!(outcome.is_err(), "the induced panic must unwind");
+        assert_eq!(recorded_kills(), vec![4242]);
+    }
+
+    #[tokio::test]
+    async fn teardown_runs_on_an_error_return() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().to_path_buf();
+
+        fn work(app_data_dir: &Path) -> Result<()> {
+            let _runtime = seeded_runtime(app_data_dir, 5150);
+            // Return early with an error before any bounded stop — `Drop` must
+            // still tear the postmaster down.
+            anyhow::bail!("induced error before stop")
+        }
+
+        assert!(work(&app_data_dir).is_err());
+        assert_eq!(recorded_kills(), vec![5150]);
+    }
+
+    #[tokio::test]
+    async fn drop_does_not_kill_after_a_bounded_stop() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().to_path_buf();
+        let mut runtime = seeded_runtime(&app_data_dir, 6060);
+        runtime.stopped = true;
+        drop(runtime);
+        assert!(
+            recorded_kills().is_empty(),
+            "an already-stopped runtime must not be killed again"
+        );
+    }
+}

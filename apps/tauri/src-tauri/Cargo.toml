@@ -49,6 +49,11 @@ sha2 = "0.10"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
+# Managed embedded-PostgreSQL lifecycle (Spec #2974, ST-1). Acquisition mode is
+# the crate default `runtime-download`; the `bundled` feature is deliberately NOT
+# enabled (packaging scope is a later slice). `settings.timeout` must always be
+# `Some(PG_CONTROL_TIMEOUT)` — leaving it `None` is the #2948 ~11 h stop hang.
+postgresql_embedded = { version = "0.21", features = ["tokio"] }
 # Structured logging (tracing ecosystem)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
