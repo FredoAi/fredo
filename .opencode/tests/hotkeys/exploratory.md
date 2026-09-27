@@ -273,3 +273,37 @@ Teardown: the spawned shell terminal session was closed (`list_terminal_sessions
 persisted keymap (pre-existing test residue) was left unchanged; the context stack unwound to the
 base (depth 1).
 
+## #2959 exploratory round 1 — probe results
+
+Run on the served app `spec/2959 @ 4238d8c` (dev-env UP, driver `com.fredo.app`, main window).
+Live `telemetry_spans` receipt 2026-09-27 01:33:06 → 01:52:44 (`otlp_grpc`, providers
+`fredo-opencode-plugin` / `opencode-go`). Console clean.
+
+- [ ] E-25 (entry chord under a suppressed focus) — **PARTIAL PASS.** In a focused text
+      `input` the `ctrl+shift+f8` MODIFIER chord still toggles the mode (per R-5.5 the
+      modifier chord stays global in text-entry); no typed character was hijacked. Terminal/
+      modal legs not driven this round.
+- [ ] E-26 (availability flips live) — **PASS.** Focusing the session-filter input flipped 6
+      rows to `data-availability="unavailable"` with reason `Unavailable while typing`
+      (sequence + bare keys); blurring returned them to `available`. No stale dead entry.
+- [ ] E-27 (reachability of the empty context) — **UNVERIFIED — named blocker:** no shipped
+      zero-binding context (Fredo tier always in force). Residual pin: `KeyboardBar.test.tsx`
+      "defined empty state (R-5.4)" renders `hotkeys-keyboard-bar-empty` /
+      `No actions in this context`. (Promotes to F-48, already listed.)
+- [ ] E-28 (bar vs pending sequence) — **NOT RUN** this round (covered by F-45 / R-18 pins).
+- [ ] E-29 / E-30 / E-31 (window close / rapid staleness / reduced-motion toggle) — **NOT RUN**
+      this round (E-31 live toggle is the NFR-2 named blocker).
+- [ ] E-32 (narrow / zoomed viewport) — **PASS.** At 1280×800 the bar stayed full-bleed
+      (`left 0`, `right 1280`, `bottom 66`) with no dock intersection; no clamp/hide.
+- [ ] E-33 (screen-reader reach of bar states) — **PASS.** The bar root is `aria-hidden="true"`
+      with NO `aria-live` and NO focusable descendant; entry/context/exit are spoken via the ONE
+      shared `[data-testid="hotkeys-announcer"]` (`role="status"`, `aria-live="polite"`).
+- [ ] **New finding (promoted to F-53):** a many-action context CLIPS — `overflow: hidden`,
+      `scrollWidth 4976` vs `clientWidth 1574` at 1920 px (68% unreachable), no scroll and no
+      `more` chip, and `fredo.context.descendReference` (the context-scoped action) is the last,
+      off-screen row. Contradicts the QA edge "rows scroll / do not clip" and the UI/UX overflow
+      rule (context-first ordering + `more` chip).
+
+Teardown: theme preset restored to `light-default`; keyboard mode toggled OFF; the persisted
+keymap was left unchanged.
+
