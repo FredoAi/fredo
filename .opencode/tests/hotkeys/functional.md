@@ -377,7 +377,7 @@
 
 ## F-53 (REQ-2 edge, promoted round 1) — many-action context clips; context-scoped action dropped
 
-- [ ] F-53: Enter keyboard mode on the resting desktop (a realistic root context: shipped
+- [x] F-53: Enter keyboard mode on the resting desktop (a realistic root context: shipped
       `primary+1..9` cycleNth + the fredo tier + feature rows) and inspect the bar list.
       **Expected (QA edge "rows scroll / do not clip"; UI/UX §3 context-first ordering + §6
       `more` chip):** the rows scroll or are not clipped, and the context-scoped chips are
@@ -391,10 +391,17 @@
       (`overflowX === 'hidden'`, `scrollWidth > clientWidth`); compare the last
       `[data-testid="hotkeys-keyboard-bar-row"]` rect to
       `[data-testid="hotkeys-keyboard-bar-exit"]`. Origin: E-34 round 1.
+      **Round 3 (PASS, `spec/2959 @ 0ead7b0`):** at `fredo.root.reference` the bar is
+      bounded with an explicit `+N more` affordance and no silent clip — 1920×1080:
+      total 24, visible 2, `+22 more` (2+22=24), list `scrollWidth==clientWidth==1445`,
+      `descendReference` rect `{213,983,212,29}` in viewport and not behind the exit chip
+      (`{left:1747}`); 1280×800: total 24, visible 1, `+23 more` (1+23=24), list `805==805`,
+      `descendReference` `{213,703,212,29}` in viewport, exit left `1107`. Context-first
+      ordering holds (`descendReference` is row #1 at both widths). Origin: E-34 round 1.
 
 ## F-54 (promoted round 2, REQ-5 regression) — unavailable reason hard-clipped by the row clamp
 
-- [ ] F-54: Enter keyboard mode, focus a text-entry field so bare-key rows flip to
+- [x] F-54: Enter keyboard mode, focus a text-entry field so bare-key rows flip to
       `data-availability="unavailable"`, and read the unavailable row's reason. **Expected:**
       the declared reason is readable (REQ-5 "a visible reason string"; QA edge "a long reason
       string"). **Round 2 (FAIL, `spec/2959 @ a693d30`):** the round-2 F-3 chip clamp
@@ -409,6 +416,15 @@
       `[data-testid="hotkeys-keyboard-bar-row-unavailable"]` → compare its
       `getBoundingClientRect()` / visible chars (Range bisection) against the parent row's
       content right edge. Origin: E-34 round 1, re-raised round 2.
+      **Round 3 (PASS, `spec/2959 @ 0ead7b0`):** the unavailable chip uses the dedicated
+      480 px budget; on the live text-entry lever (`TEXTAREA[launcher-command-input]`) the
+      reason `<p>` renders the FULL `Unavailable while typing` (**24/24** chars via Range
+      bisection; 8/25 in round 2) with its right edge `818` ≤ chip clip edge `824` (≤ content
+      edge `818`); the action title width is **130.5 px** (0 px in round 2, `minWidth:48px`).
+      Second context re-check (mission-monitor / `mission-monitor.focusSessionSearch`): chip
+      `{l:464.6,w:369,r:833.6}`, title `109.2`, reason right `827.6 ≤ clip 833.6`. Safety half
+      holds (row is a non-focusable `DIV`; a bare `y` in text-entry runs nothing). Origin:
+      E-26 round 2.
 
 ---
 
@@ -567,3 +583,39 @@ Env note: a persisted non-default keymap (test residue) binds the cheat sheet to
   events don't synthesise browser default activation); F-D cheat sheet closed by its own handler
   with NO unwind (base + descended); F-E terminal root focused → `data-fredo-passthrough="true"`,
   Escape not consumed, real key `x` reached the PTY (buffer 279→288, `ESC[93mxESC[m`).
+
+---
+
+## #2959 testing round 3 — result (served spec/2959 @ 0ead7b0)
+
+**Verdict: PASS (9/9 plan rows: REQ-1..5 PASS, NFR-1/3/4 PASS; NFR-2 UNVERIFIED with a
+named pin-only blocker; REQ-5 empty-context leg = pre-authorised named blocker).**
+Driven live (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main window). Live receipt: 180
+`telemetry_spans` in the drive window 2026-09-27 02:55:34 → 03:05:54 (`otlp_grpc`). Console clean.
+Round-3 focus (F-5) is PASS — the REQ-5 regression is closed.
+
+- **REQ-1 PASS.** `ctrl+shift+f8` enters (mode `"true"`, count 23, bar `{0,917,1920,34}`,
+  `aria-hidden`, `pointer-events:none`, non-colour channels: `Keyboard` word + icon + strip +
+  exit chip + pip); exit clears mode/count/bar and restores `activeElement` (BODY).
+- **REQ-2 / F-45 / F-53 PASS.** `fredo.root.reference` 1920×1080 → total 24, visible 2,
+  `+22 more` (2+22=24), list `scrollWidth==clientWidth==1445`, `descendReference` visible &
+  clear of the exit chip; 1280×800 → total 24, visible 1, `+23 more` (1+23=24), list `805==805`,
+  `descendReference` visible. No silent clip.
+- **REQ-3 / F-46 PASS.** `primary+K` → `fredo.root.reference`/2 (24 rows); one Escape →
+  `setup`/1 (23 rows); launcher **Mission Monitor** tile → `mission-monitor`/1 (26 rows incl.
+  S/N/P). Mode stayed ON throughout (no re-entry); announcer updated each change.
+- **REQ-4 / F-47 PASS.** 0 focusables, `Tab` leaves `activeElement` BODY, `elementFromPoint`
+  at the bar centre is outside, ONE announcer (`role=status`/`aria-live=polite`), keep-out vs
+  `app-dock` = no intersection at 1920×1080 AND 1280×800; light + dark legible.
+- **REQ-5 / F-48 / F-54 PASS (the round-2 FAIL is fixed).** On the live text-entry lever the
+  reason `Unavailable while typing` renders **24/24** chars (right `818` ≤ clip `824`) and the
+  title is **130.5 px** (was 0). Safety half holds (non-focusable `DIV`; bare `y` runs nothing).
+  Empty-context leg = named blocker (no shipped zero-binding context; residual pin).
+- **NFR-1 PASS.** Entry 0.2 ms / descent 0.3 ms; 20 bare keys → 0 bar mutations.
+- **NFR-2 / F-50 UNVERIFIED (named pin-only blocker):** live media `no-preference`; no
+  media-emulation lever in the Tauri MCP driver. Residual pin: `KeyboardBar.test.tsx:521-526`.
+- **NFR-3 / F-51 PASS.** Zero hex/rgb/hsl/`var()NN` in the hotkeys sources; live
+  `light-default`→`dark` restyled the bar's computed colours with no code change.
+- **NFR-4 / F-52 PASS.** Bar context/depth == engine context/depth at every step; 3 rapid
+  descend/unwind cycles deterministic.
+
