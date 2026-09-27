@@ -363,17 +363,35 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
             // NOTHING and records the reason — the app stays on SQLite
             // (fail-closed, REQ-3/EARS-3.2). The FS-4 seam forces this
             // deterministically for QA (REQ-3/EARS-3.3).
+            //
+            // ST-2 rework: AFTER the pool builds and BEFORE the install, run the
+            // registered startup schema initializers against the candidate pool,
+            // so the full startup schema set (feature-data metadata tables + the
+            // terminal record table, beyond `settings` created by
+            // `build_pg_pool`) exists on PostgreSQL BEFORE any feature op. A
+            // schema-init failure installs NOTHING (fail-closed).
             if let Some(engine) = engine.as_ref() {
                 if engine.choice() == EngineChoice::Postgres {
                     let url = runtime.connection_url();
                     match build_pg_pool(&url, pool_force_fail_stage()).await {
-                        Ok(pg) => {
-                            engine.install_postgres(pg);
-                            tracing::info!(
-                                target: "fredo::pg_supervisor",
-                                "storage engine installed: postgres"
-                            );
-                        }
+                        Ok(pg) => match engine.run_pg_schema_inits(&pg.pool) {
+                            Ok(()) => {
+                                engine.install_postgres(pg);
+                                tracing::info!(
+                                    target: "fredo::pg_supervisor",
+                                    "storage engine installed: postgres"
+                                );
+                            }
+                            Err(error) => {
+                                let reason = format!("[pool:schemaInit] {error:#}");
+                                tracing::error!(
+                                    target: "fredo::pg_supervisor",
+                                    reason = %reason,
+                                    "schema init failed; storage engine stays on SQLite (fail-closed)"
+                                );
+                                engine.set_fallback_reason(reason);
+                            }
+                        },
                         Err(error) => {
                             let reason = format!("{error:#}");
                             tracing::error!(

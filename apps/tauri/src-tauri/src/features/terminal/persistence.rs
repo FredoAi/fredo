@@ -121,6 +121,14 @@ pub fn ensure_table(store: &FeatureStore) -> Result<()> {
     store.ensure_table(FEATURE_ID, TABLE_NAME, &PersistedSession::columns())
 }
 
+/// Create the record table on a PostgreSQL pool (idempotent) — the startup
+/// schema-init registry entry (`lib.rs`), delegating to the ONE DDL-builder
+/// source on [`FeatureStore`] so the terminal table exists on PostgreSQL before
+/// any terminal operation (Spec #2975 ST-2 rework).
+pub fn ensure_table_on_pg(pool: &sqlx::PgPool) -> Result<()> {
+    FeatureStore::ensure_table_on_pg(pool, FEATURE_ID, TABLE_NAME, &PersistedSession::columns())
+}
+
 /// Every persisted record, newest `last_active_at` first.
 pub fn list(store: &FeatureStore) -> Result<Vec<PersistedSession>> {
     let rows = store.query(

@@ -136,7 +136,20 @@ pub fn run() {
                 .expect("Failed to open the shared storage engine");
             let engine_choice = select_engine(&sqlite_engine);
             let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine));
-            app.manage(StorageEngineState::new(engine_handle.clone(), engine_choice));
+            let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
+            // Spec #2975 ST-2 rework: register the startup schema initializers
+            // BEFORE the supervisor starts, so the registry is populated before
+            // the background task can reach pool-ready (no timing race). They run
+            // against the candidate PostgreSQL pool pre-install, so the full
+            // startup schema set exists before any feature op. The SQLite path
+            // below keeps creating the same schema on SQLite.
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                FeatureDataStore::ensure_schema_on_pg(pool)
+            }));
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                features::terminal::persistence::ensure_table_on_pg(pool)
+            }));
+            app.manage(storage_state);
 
             // -- SQLite settings store (Spec #2975 ST-3) -----------------------
             // The KV store sits ON the shared handle: the async data plane

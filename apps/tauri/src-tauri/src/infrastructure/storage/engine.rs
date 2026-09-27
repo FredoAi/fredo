@@ -387,14 +387,23 @@ pub struct StorageEngineStatus {
     pub fallback_reason: Option<String>,
 }
 
+/// A PostgreSQL schema initializer run against the **candidate** pool BEFORE it
+/// is installed into the swap-once handle (Spec #2975 ST-2 rework).
+///
+/// Registered at startup in `lib.rs` (the feature-data metadata tables + the
+/// terminal record table). `Fn` (not `FnMut`) so it can be cloned out of the
+/// registry and run without holding the registry lock.
+pub type PgSchemaInit = Arc<dyn Fn(&sqlx::PgPool) -> Result<()> + Send + Sync>;
+
 /// Shared engine state handed to the supervisor's background pool build and
 /// exposed by [`storage_engine_status`]: the swap-once handle, the resolved
-/// selection, and the fail-closed reason recorded when the engine stays on
-/// SQLite.
+/// selection, the fail-closed reason recorded when the engine stays on SQLite,
+/// and the startup schema initializers run on the candidate pool pre-install.
 pub struct StorageEngineState {
     handle: Arc<EngineHandle>,
     choice: EngineChoice,
     fallback_reason: Mutex<Option<String>>,
+    schema_inits: Mutex<Vec<PgSchemaInit>>,
 }
 
 impl StorageEngineState {
@@ -404,7 +413,26 @@ impl StorageEngineState {
             handle,
             choice,
             fallback_reason: Mutex::new(None),
+            schema_inits: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Register a schema initializer to run against the candidate pool BEFORE
+    /// the engine is installed. Populated at startup so the full startup schema
+    /// set exists on PostgreSQL before any feature operation.
+    pub fn register_pg_schema_init(&self, init: PgSchemaInit) {
+        lock(&self.schema_inits).push(init);
+    }
+
+    /// Run every registered initializer against `pool`, in registration order.
+    /// The FIRST error wins and stops the run, so the caller installs NOTHING
+    /// (fail-closed). The registry lock is released before any initializer runs.
+    pub fn run_pg_schema_inits(&self, pool: &sqlx::PgPool) -> Result<()> {
+        let inits: Vec<PgSchemaInit> = lock(&self.schema_inits).clone();
+        for init in inits {
+            init(pool)?;
+        }
+        Ok(())
     }
 
     /// The swap-once handle (cloned into the supervisor's pool build).
@@ -847,6 +875,62 @@ mod tests {
         // A second install is a no-op (first-wins on the swap-once handle).
         state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/other"));
         assert_eq!(state.status().engine, Dialect::Postgres);
+    }
+
+    // -- ST-2 rework: startup schema-init registry ----------------------------
+
+    #[tokio::test]
+    async fn run_pg_schema_inits_runs_every_initializer_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+
+        // A fresh registry is empty: running it is a no-op.
+        let pg = make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo");
+        state.run_pg_schema_inits(&pg.pool).unwrap();
+
+        let order = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let first = Arc::clone(&order);
+        state.register_pg_schema_init(Arc::new(move |_pool| {
+            first.lock().unwrap().push(1);
+            Ok(())
+        }));
+        let second = Arc::clone(&order);
+        state.register_pg_schema_init(Arc::new(move |_pool| {
+            second.lock().unwrap().push(2);
+            Ok(())
+        }));
+
+        state.run_pg_schema_inits(&pg.pool).unwrap();
+        assert_eq!(*order.lock().unwrap(), vec![1, 2], "registration order");
+        // The registry is retained: a re-run executes every initializer again.
+        state.run_pg_schema_inits(&pg.pool).unwrap();
+        assert_eq!(*order.lock().unwrap(), vec![1, 2, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn run_pg_schema_inits_stops_at_the_first_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+
+        state.register_pg_schema_init(Arc::new(|_pool| Err(anyhow::anyhow!("[init] boom"))));
+        let ran = Arc::new(AtomicBool::new(false));
+        let trailing = Arc::clone(&ran);
+        state.register_pg_schema_init(Arc::new(move |_pool| {
+            trailing.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+
+        let pg = make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo");
+        let error = state.run_pg_schema_inits(&pg.pool).unwrap_err();
+        assert!(error.to_string().contains("[init] boom"), "{error}");
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "an initializer after the first error must not run"
+        );
     }
 
     #[test]

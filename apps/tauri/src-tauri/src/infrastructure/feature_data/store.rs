@@ -111,13 +111,18 @@ impl FeatureDataStore {
                 engine.write_conn().execute_batch(TABLES_DDL_SQLITE)?;
                 Ok(())
             }
-            StoreEngine::Postgres(pg) => {
-                block_on_pg(async {
-                    sqlx::raw_sql(TABLES_DDL_PG).execute(&pg.pool).await.map(|_| ())
-                })?;
-                Ok(())
-            }
+            StoreEngine::Postgres(pg) => Self::ensure_schema_on_pg(&pg.pool),
         }
+    }
+
+    /// Create the metadata + tombstone tables on a PostgreSQL pool (idempotent).
+    ///
+    /// The ONE PostgreSQL DDL source: [`Self::ensure_schema`]'s PostgreSQL arm
+    /// and the startup schema-init registry (`lib.rs`) both route here, so the
+    /// boot contract's schema set is never re-declared (NFR-6 spirit).
+    pub fn ensure_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
+        block_on_pg(async { sqlx::raw_sql(TABLES_DDL_PG).execute(pool).await.map(|_| ()) })?;
+        Ok(())
     }
 
     /// Load the metadata row for one declared table.

@@ -283,33 +283,50 @@ impl FeatureStore {
                 Ok(())
             }
             StoreEngine::Postgres(pg) => {
-                let defs: Vec<String> = columns
-                    .iter()
-                    .map(|c| {
-                        let pk = if c.primary_key { " PRIMARY KEY" } else { "" };
-                        let nn = if !c.nullable && !c.primary_key {
-                            " NOT NULL"
-                        } else {
-                            ""
-                        };
-                        format!(
-                            "{} {}{}{}",
-                            quote_ident(&c.name),
-                            c.col_type.as_pg_type(),
-                            pk,
-                            nn
-                        )
-                    })
-                    .collect();
-                let sql = format!(
-                    "CREATE TABLE IF NOT EXISTS {} ({});",
-                    quote_ident(&full),
-                    defs.join(", ")
-                );
-                block_on_pg(async { sqlx::query(&sql).execute(&pg.pool).await.map(|_| ()) })?;
-                Ok(())
+                Self::ensure_table_on_pg(&pg.pool, feature_id, table_name, columns)
             }
         }
+    }
+
+    /// Create a feature-namespaced table on a PostgreSQL pool (idempotent).
+    ///
+    /// The ONE PostgreSQL DDL-builder source: [`Self::ensure_table`]'s
+    /// PostgreSQL arm and the startup schema-init registry (`lib.rs`, via
+    /// `features::terminal::persistence::ensure_table_on_pg`) both route here,
+    /// so the table definition is never duplicated (NFR-6 spirit). The full
+    /// table name is namespace-validated on entry.
+    pub fn ensure_table_on_pg(
+        pool: &PgPool,
+        feature_id: &str,
+        table_name: &str,
+        columns: &[ColumnDef],
+    ) -> Result<()> {
+        let full = Self::validate_namespace(feature_id, table_name)?;
+        let defs: Vec<String> = columns
+            .iter()
+            .map(|c| {
+                let pk = if c.primary_key { " PRIMARY KEY" } else { "" };
+                let nn = if !c.nullable && !c.primary_key {
+                    " NOT NULL"
+                } else {
+                    ""
+                };
+                format!(
+                    "{} {}{}{}",
+                    quote_ident(&c.name),
+                    c.col_type.as_pg_type(),
+                    pk,
+                    nn
+                )
+            })
+            .collect();
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} ({});",
+            quote_ident(&full),
+            defs.join(", ")
+        );
+        block_on_pg(async { sqlx::query(&sql).execute(pool).await.map(|_| ()) })?;
+        Ok(())
     }
 
     /// Column-name → [`ColumnType`] for a feature-namespaced table.
