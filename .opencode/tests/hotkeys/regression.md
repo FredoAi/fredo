@@ -164,3 +164,27 @@ Run on the served app (dev-env UP, `spec/2959 @ a693d30`, driver `com.fredo.app`
   across entry/exit/context-change/theming; `gh pr checks 2973` green (ui-validate, validate,
   fast-validate, paths). **Caveat:** R-20's "no clip" spirit is violated for the
   unavailable-with-reason row (REQ-5 regression — see F-54), though the token/build legs pass.
+
+## #2959 testing round 3 — regression result (spec/2959 @ 0ead7b0)
+
+Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main window). Live receipt:
+180 `telemetry_spans` in the drive window 2026-09-27 02:55:34 → 03:05:54 (`otlp_grpc`). Console clean.
+
+- **R-16 PASS** — the merged #2958 context model is unchanged: focus-derived base (`setup`,
+  `mission-monitor`, `settings` — depth 1), `primary+K` → `fredo.root.reference` (depth 2),
+  one-Escape unwind, the `hotkeys-context-indicator` label/pips, and the single `hotkeys-announcer`
+  announcements all behave as before the bar.
+- **R-17 PASS** — the mode chord is ADDITIVE: `Ctrl+Space`, `primary+K` and `Escape` resolve as
+  before; entering mode rebinds/swallows nothing (the +N more bounded render shows the same
+  resolved actions, merely capped for display).
+- **R-18 PASS** — the bar does not suppress the shipped which-key/cheat-sheet surfaces; the ONE
+  announcer and the `data-fredo-pending-sequence` channel are intact (REQ-5 text-entry drive left
+  `pending=null`).
+- **R-19 PASS** — no OS-wide hotkey and no shortcut-usage telemetry (0 shortcut/keymap metric
+  names; the 2 `%keyboard%` span hits are the tester's own `tauri_webview_keyboard` tool spans).
+- **R-20 PASS (local)** — zero hardcoded colour literal / `var(--x)NN` in the changed files;
+  console clean across entry/exit/context-change/theming; local `ui-validate` parity green
+  (`typecheck` exit 0, `test:run` 179 files / 2622 tests, `build:webview` exit 0). **Caveat:** the
+  CI `ui-validate` check for PR #2973 reports FAILURE (unresolved; job log not retrievable in the
+  tester sandbox — see the `## Tests Runs` caveats), which does not reproduce locally.
+
