@@ -27,6 +27,7 @@
 //! wiring in place the module is live, so it carries NO `#![allow(dead_code)]`
 //! (AGENTS.md forbids a permanent suppression).
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ── AppStore `settings` KV keys (AppStore remains the single source of truth) ──
@@ -52,6 +53,41 @@ pub const PG_INSTALL_SUBDIR: &str = "postgres-install";
 pub const PG_LOCK_FILENAME: &str = "postgres.lock";
 /// Ephemeral loopback bind host (never `0.0.0.0`).
 pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
+
+// ── Test hooks (Spec #2974 fix round: inert when unset — default behaviour is
+//    byte-identical to the slice-1 path) ───────────────────────────────────────
+
+/// **FS-1** test hook: when set (non-blank) the managed PostgreSQL data dir is
+/// this path instead of `<app_data_dir>/<PG_DATA_SUBDIR>`. The distribution
+/// (install) dir and the `<app_data_dir>/postgres.lock` file are deliberately
+/// NOT overridable, so the existing download is reused (no network) and the
+/// exclusive lock keeps its stable location. Inert when unset.
+pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
+/// **FS-3** test hook: when set to a positive millisecond count the graceful
+/// stop sleeps that long (capped at [`PG_CONTROL_TIMEOUT`]) before calling the
+/// real `pg.stop()`, so the bounded hard-kill watchdog in
+/// [`runtime::PgRuntime::stop_bounded`] is observable on a live quit. The hang
+/// is finitely bounded by that same watchdog (G-263). Inert when unset.
+pub const PG_STOP_HANG_ENV: &str = "FREDO_PG_STOP_HANG_MS";
+
+/// Resolve the managed data dir (**FS-1**): the non-blank [`PG_DATA_DIR_ENV`]
+/// override when set, else `<app_data_dir>/<PG_DATA_SUBDIR>`. One shared rule so
+/// the sweep, the [`runtime::PgRuntime`] settings, and the reported `data_dir`
+/// can never diverge.
+pub fn resolve_data_dir(app_data_dir: &Path) -> PathBuf {
+    match std::env::var(PG_DATA_DIR_ENV) {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.join(PG_DATA_SUBDIR),
+    }
+}
+
+/// The **FS-3** stop-hang duration, capped at [`PG_CONTROL_TIMEOUT`]; `None` when
+/// [`PG_STOP_HANG_ENV`] is unset, blank, unparseable, or zero — so the default
+/// path is unchanged.
+pub fn stop_hang_duration() -> Option<Duration> {
+    let millis: u64 = std::env::var(PG_STOP_HANG_ENV).ok()?.trim().parse().ok()?;
+    (millis > 0).then(|| Duration::from_millis(millis).min(PG_CONTROL_TIMEOUT))
+}
 
 // ── Wall-clock bounds (G-263: every wait is finite; the #2948 `None` is banned) ─
 
