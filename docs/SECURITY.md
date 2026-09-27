@@ -55,7 +55,7 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 ## Embedded PostgreSQL (`features/pg_supervisor`)
 
-Slice 1 of the SQLite → embedded-PostgreSQL migration is a **lifecycle supervisor only**; it is **disabled by default** (`postgres.enabled` absent) and no store is migrated, so persistence is unchanged until a later slice.
+Slices 1-2 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle supervisor + the storage engine seam**: it is **disabled by default** (`postgres.enabled` absent; opt in via `FREDO_STORAGE_ENGINE=postgres`) and PostgreSQL is selected only for the migrated KV/feature store family, so the live default persistence is unchanged (`fredo.db`). The pool DSN embeds the slice-1 generated loopback secret held in the control-plane KV (`postgres.password`) — never logged, never in code; the role is the crate's local `postgres` superuser this slice (least-privilege packaging is a later slice). Data migration/parity is a later slice, so a PG-selected run presents an empty database and is a test/QA lever only.
 
 **Protections:**
 - The managed postmaster is started only when the engine is explicitly enabled; it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)

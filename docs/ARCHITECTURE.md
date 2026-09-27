@@ -197,7 +197,7 @@ src-tauri/src/
 |   +-- telemetry/              — Telemetry Tauri commands
 |       +-- mod.rs              — TelemetryFeature (DesktopCapable)
 |       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
-|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor (slice 1 of the migration; PostgreSQL is DISABLED by default — no store is migrated yet)
+|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor + shared-pool installer (slices 1-2; PostgreSQL is DISABLED by default and selected only via the engine seam — the KV/feature store family is migrated, the RTDB/Span stores are not)
 |       +-- mod.rs              — constants (wall-clock bounds, AppStore KV keys, env-gated test overrides) + module tree
 |       +-- runtime.rs          — bounded `PgRuntime` (setup/start/readiness/stop) + synchronous watchdog hard-kill + RAII `Drop` teardown
 |       +-- sweep.rs            — PID-marker + `postmaster.pid` image-guarded orphan sweep (kill only a live `postgres.exe`)
@@ -237,7 +237,7 @@ src-tauri/src/
     +-- feature_data/           — feature-owned declared tables (declaration → projection → read/watch)
     |   +-- declaration.rs      — declaration model + hard named validation
     |   +-- registry.rs         — persistence, schema-aware materialization, additive migration
-    |   +-- store.rs            — FeatureDataStore (metadata + tombstones; own SQLite connection)
+    |   +-- store.rs            — FeatureDataStore (metadata + tombstones; shares the storage engine seam)
     |   +-- projection.rs       — projection engine (row-source + rollup entry points)
     |   +-- session_rollup.rs   — the closed sessionRollup aggregate
     |   +-- watch.rs            — global watch registry (table/record/query + field narrowing)
@@ -246,9 +246,10 @@ src-tauri/src/
     |   +-- lifecycle.rs        — declared-table retention + tombstone guard
     |   +-- commands.rs         — feature_data_declare/read/watch/unwatch/write/delete
     +-- storage/
-    |   +-- mod.rs              — AppStore (SQLite KV store) + FeatureStore
-    |   +-- feature_store.rs    — FeatureStore (typed feature-level SQLite)
-    |   +-- span_store.rs       — SpanStore (telemetry span persistence)
+    |   +-- engine.rs           — the storage engine seam: Dialect/StoreEngine/SqliteEngine/PgEngine + swap-once EngineHandle + pool constants (slice 2)
+    |   +-- mod.rs              — AppStore (KV store on the shared engine: synchronous control plane + async data plane)
+    |   +-- feature_store.rs    — FeatureStore (typed feature-level tables on the shared engine)
+    |   +-- span_store.rs       — SpanStore (telemetry span persistence; still SQLite — slice 3)
     +-- telemetry/              — Telemetry tracing + metrics + logging
     |   +-- mod.rs              — SpanCollector + SpanBuffer
     |   +-- metrics_collector.rs — MetricCollector
@@ -294,7 +295,7 @@ The `FeatureStore` (`infrastructure/storage/feature_store.rs`) provides a generi
 
 **Frontend client**: `shared/lib/featureStore.ts` wraps each command via `adapterBridge.invoke()`.
 
-The FeatureStore opens its own connection (WAL mode) to the same `fredo.db` file used by `AppStore`. No cross-store data sharing is required.
+**Storage engine seam (slice 2 of the PostgreSQL migration).** The KV/feature store family (`AppStore`, `FeatureStore`, `FeatureDataStore`, and the read-only `ProjectionEngine` + declared-table backfill) no longer opens its own SQLite connection. They share ONE `EngineHandle` (`infrastructure/storage/engine.rs`) — a swap-once handle that starts on SQLite and is installed to PostgreSQL exactly once, on the background task after the slice-1 supervisor's `await_ready` resolves and the startup schema set has been created on the candidate pool. The engine is selected by `FREDO_STORAGE_ENGINE` (env) over the `postgres.enabled` KV key; the default is SQLite. If PostgreSQL selection/start/pool/schema-init fails, nothing is installed and the app stays on SQLite, leaving `fredo.db` untouched (fail-closed). SQLite DDL/statements are translated 1:1 (`TEXT→text`, `INTEGER→bigint`, `REAL→double precision`, `BLOB→bytea`; `INSERT OR IGNORE→ON CONFLICT DO NOTHING`; `sqlite_master→to_regclass`; `pragma_table_info→information_schema.columns`; `?n→$n`) and dynamic identifiers are double-quoted and namespace-validated. `AppStore` keeps a synchronous control plane (the three `postgres.*` keys) and an engine-selected async data plane. `SpanStore`/`RtdbStore` and the write-behind/LRU path are slice 3 and remain SQLite. PostgreSQL is NOT enabled by default (data migration is a later slice); its pool is sized for a single-client desktop (`max_connections` 8).
 
 **Idempotency**: `feature_store_insert` uses `INSERT OR IGNORE`. Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. Delivery-level idempotency in the row pipeline is guaranteed by the RTDB durable per-key `seq` (`rtdb/store.rs` `next_seq`, seeded from MAX(seq) in storage — store.rs:628) plus the merge rules (`rtdb/merge.rs`) that drop stale patches — no adapter re-delivers events.
 
