@@ -307,3 +307,40 @@ Live `telemetry_spans` receipt 2026-09-27 01:33:06 → 01:52:44 (`otlp_grpc`, pr
 Teardown: theme preset restored to `light-default`; keyboard mode toggled OFF; the persisted
 keymap was left unchanged.
 
+## #2959 exploratory round 2 — probe results
+
+Run on the served app `spec/2959 @ a693d30` (dev-env UP, driver `com.fredo.app`, main window).
+Live `telemetry_spans` receipt 2026-09-27 02:20:07 → 02:32:34 (`otlp_grpc`, 204 spans;
+providers `fredo-opencode-plugin` / `opencode-go`). Console clean.
+
+- [ ] E-25 (entry chord under a suppressed focus) — **PASS.** With the launcher textarea focused
+      (`data-fredo-focus-context="text-entry"`) the `ctrl+shift+f8` MODIFIER chord still toggles
+      the mode (R-5.5); no typed character hijacked.
+- [ ] E-26 (availability flips live) — **PASS (flip)** / **FAIL (render).** Focusing
+      `TEXTAREA[launcher-command-input]` flipped rows to `data-availability="unavailable"` with
+      the text reason; blurring would return them. **The rendered reason is hard-clipped** — see
+      the promoted **F-54** (8/25 chars visible). Promotes to F-48/F-54.
+- [ ] E-27 (reachability of the empty context) — **UNVERIFIED — named blocker:** no shipped
+      zero-binding context. Residual pin: `KeyboardBar.test.tsx` "defined empty state (R-5.4)".
+- [ ] E-28 (bar vs pending sequence) — **PASS.** With mode ON, arming/clearing sequences did not
+      hide or unwedge the bar; the bar and the which-key/pending channel coexist (pending stayed
+      readable via `data-fredo-pending-sequence`).
+- [ ] E-30 (rapid descend/unwind staleness) — **PASS.** After the synthetic entry+descend+exit
+      and the real descend/Escape cycles the bar context always equalled the engine (NFR-4); no
+      stale rows.
+- [ ] E-31 (reduced-motion live toggle) — **UNVERIFIED — named blocker:** no live
+      media-emulation lever (same as NFR-2); residual pin = the shipped `NO_MOTION_STYLE` branch
+      + the `reducedMotion` unit render.
+- [ ] E-32 (narrow / zoomed viewport) — **PASS.** At 1280×800 the bar stayed full-bleed
+      (`{0,700,1280,34}`) with no dock intersection and no silent clip: bounded rows (`+N more`)
+      reconcile with the total (`2 + 22 = 24`).
+- [ ] E-33 (screen-reader reach of bar states) — **PASS.** The bar root is `aria-hidden="true"`
+      with NO `aria-live` and 0 focusable descendants; entry/change/exit spoken via the ONE
+      shared `[data-testid="hotkeys-announcer"]` (`role="status"`, `aria-live="polite"`).
+- [ ] **New finding (promoted to F-54):** the round-2 row clamp hard-clips the
+      unavailable-with-reason text to 8/25 chars (`Unavaila`), regressing REQ-5. Origin: E-26
+      round 2.
+
+Teardown: keyboard mode toggled OFF; appearance preset restored to `light-default`; the persisted
+keymap was left unchanged (test residue).
+
