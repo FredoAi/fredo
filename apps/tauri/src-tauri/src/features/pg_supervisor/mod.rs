@@ -23,20 +23,9 @@
 //!
 //! `ST-1` creates this root and [`runtime`]; `ST-2` appends `sweep`/`lock`;
 //! `ST-3` appends `state` and wires `lib.rs` (the `requires:` chain sequences
-//! the shared-root appends so they are never concurrent).
-//!
-//! # Why `allow(dead_code)` is scoped to this module root
-//!
-//! This slice declares the module's complete bounded-lifecycle contract (the
-//! AppStore keys, path constants, and wall-clock bounds) and [`runtime`]'s API
-//! for `ST-2`/`ST-3` to consume. `lib.rs` is owned by `ST-3` and is deliberately
-//! untouched here, so until that wiring lands NOTHING in the crate references
-//! these items and rustc reports every one as dead code. This is the same
-//! staged-feature situation already handled the same way in sibling modules
-//! (`features/setup/mod.rs`, `features/terminal/mod.rs`,
-//! `features/settings/mod.rs`, `runtime/capability.rs`). The attribute is
-//! removed by `ST-3` when its `lib.rs` wiring makes the module live.
-#![allow(dead_code)]
+//! the shared-root appends so they are never concurrent). With the `lib.rs`
+//! wiring in place the module is live, so it carries NO `#![allow(dead_code)]`
+//! (AGENTS.md forbids a permanent suppression).
 
 use std::time::Duration;
 
@@ -87,3 +76,11 @@ pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2
 pub mod lock; // ST-2
+pub mod state; // ST-3
+
+// The supervisor entry points live in `state`; re-export the two `lib.rs`
+// wiring functions at the module root so `lib.rs` reads
+// `features::pg_supervisor::{start_supervisor, stop_on_exit}`. The rest of the
+// public contract (`PgState`, `PgStatusView`, `PgSupervisorState`, `await_ready`,
+// `pg_supervisor_status`) is reached through `state::`.
+pub use state::{start_supervisor, stop_on_exit};
