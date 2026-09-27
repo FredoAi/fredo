@@ -90,3 +90,29 @@ Run on `spec/2946 @ 45d5120` (dev-env UP, driver `com.fredo.app`).
 - R-10 PASS — no Tauri global-shortcut registration introduced.
 - R-11 PASS — the served app boots on `spec/2946 @ 45d5120`: `#root` mounts,
   `data-fredo-hotkeys-engine="1"`, no `vite-error-overlay`.
+
+## #2958 testing round 1 — regression result (spec/2958 @ ea0db5c)
+
+Run on the served app (dev-env UP, `spec/2958 @ ea0db5ca`, driver `com.fredo.app`). Live receipt:
+195 `telemetry_spans` in the drive window 2026-09-26 23:52:46 → 2026-09-27 00:08:54.
+
+- **R-12 PASS** — at the TOP-LEVEL context, `g` armed `data-fredo-pending-sequence="g"` and
+  Escape cleared it (`null`) with NO context unwind (`depth` unchanged) and no `context:changed`
+  announcement. Escape at the root is not hijacked. (The same rule held while descended —
+  F-A/F-43.)
+- **R-13 PASS** — text-entry: Escape does not unwind (depth unchanged), bare keys pass through;
+  modal (cheat sheet, `role="dialog" aria-modal="true"`): Escape closed the sheet via its own
+  handler with no unwind; terminal: focus context `terminal`, `data-fredo-passthrough="true"`,
+  Escape not consumed and a real key reached the PTY.
+- **R-14 PASS** — `data-fredo-focus-context` still classifies `default`/`interactive`/`text-entry`/
+  `terminal`/`modal` live; the shipped `g g` sequence is intact (`g` arms, second `g` focuses the
+  first window, which re-derived the context base to `terminal` — the focus-derived base rule);
+  `primary+space` still toggles the launcher; the only new default bindings are the two additive
+  #2958 entries (`primary+K` descent, `y` reference-only).
+- **R-15 PASS** — console clean across all descent/unwind/focus-churn/theme operations: no
+  `Maximum update depth exceeded` / `Uncaught` / `Error:` (only the pre-existing `motion() is
+  deprecated` and `ghostty-vt` warnings).
+- **R-8 PASS (CI)** — `gh pr checks 2967`: `ui-validate` pass, `validate` pass, `fast-validate`
+  pass, `paths` pass, `rust-validate` skipping (no Rust change).
+- **R-6 PASS** — no hex/rgb/hsl literal and no `var(--x)NN` alpha-append in the new hotkeys JSX
+  (grep hits are issue-reference comments only; `ContextIndicator.test.tsx` pins it).
