@@ -127,8 +127,77 @@
 - [ ] **R-12:** inherit and run `.opencode/tests/event-persistence/` and `.opencode/tests/realtime-data/`
   regression legs (when present) — the RTDB row-pipeline / feature-data surface.
 
+## Must NOT change — Slice 3 (#2976): RTDB + SpanStore write-behind/LRU preservation contract
+
+> This is the slice's **#1 invariant**. The store swap MUST NOT change row-pipeline semantics. Every
+> constant below is load-bearing: a change to any one is a slice-wide FAIL, even if the feature
+> "works". Source of truth: `rtdb/cache.rs:47-54`, `rtdb/store.rs`, `rtdb/ingest.rs`.
+
+- [ ] **R-19 (write-behind + LRU constants EXACT):** `DEFAULT_CACHE_CAPACITY == 10_000` per row type,
+  `QUEUE_CAPACITY == 4096`, enqueue is non-blocking `try_send` (never `send().await`),
+  `WRITER_FLUSH_MS == 30` (~30 ms coalescing), `WRITER_PRUNE_INTERVAL == 60 min`, one transaction per
+  kind per batch; the cache update + enqueue stay SYNCHRONOUS; on overflow the STORAGE write is shed
+  (counted+logged) while the in-memory row is never lost.
+  **Edge / FAIL:** a blocking enqueue; a per-row transaction; a changed cap/interval; a memory row
+  lost on overflow.
+
+- [ ] **R-20 (durable seq):** `next_seq` seeds from `COALESCE(MAX(seq),0)` per
+  `(kind, session_id, correlation_id)` and never resets across a restart; gaps are acceptable,
+  monotonicity is not.
+  **Edge / FAIL:** a reset to 1 after restart, or a non-monotonic storage seq.
+
+- [ ] **R-21 (wire contract + sole emission path):** rows cross IPC only as `RowDeliveryBatch` on
+  `"fredo-stream-event"`; emission is ONLY via `EventBus.emit_row_delivery_batch` — no
+  `app_handle.emit()`; `useEventRows(eventType, args, options)` signature + merge semantics unchanged.
+  **Edge / FAIL:** a new event type/payload field; a direct emit; a second emission path.
+
+- [ ] **R-22 (merge/seq/remove semantics):** `insert` spread-merges (init-time fields survive),
+  `update` is seq-guarded with stale-patch drops, `remove` is ONLY ever retention eviction (the prune
+  is the SOLE `kind: remove` producer); a re-key NEVER removes rows; the compositing first-wins stamp
+  is preserved.
+  **Edge / FAIL:** a re-key/update emitting remove; a full-replacement patch.
+
+- [ ] **R-23 (`telemetry_spans` strictly READ-ONLY to RTDB/backfill):** the RTDB/backfill canonical
+  path never writes `telemetry_spans`; it acquires a read-only handle/tx from the shared pool.
+  **Edge / FAIL:** a write reaching `telemetry_spans`, or a read path requiring write perms.
+
+- [ ] **R-24 (NFR-6 single extraction implementation):** `rtdb/attrs.rs` remains the ONE shared
+  extract-rule implementation for the live classifier AND the canonical backfill — no fork, no
+  duplicate extraction.
+  **Edge / FAIL:** a duplicated extraction path in backfill code.
+
+- [ ] **R-25 (RTDB row/domain types + provider semantics unchanged):** `ChatRow` / `ToolUseRow` /
+  `AgentSessionRow` / `TelemetrySpan` fields and the composite key are unchanged; the physical
+  `provider` column stays `NOT NULL DEFAULT 'unknown'` with `provider_token` mapping `None` →
+  `'unknown'`; no field added/removed/reordered by the store swap.
+  **Edge / FAIL:** a domain-type field change, or a `provider` NULL/empty write.
+
+- [ ] **R-26 (upsert keying + full-row write semantics):** full-row upserts keyed on the composite PK
+  with `ON CONFLICT(<pk>) DO UPDATE … EXCLUDED`; a re-upsert updates in place (no duplicate); empty
+  batches are no-ops returning 0.
+  **Edge / FAIL:** a whole-row replacement that drops a column; a duplicate on re-upsert.
+
+- [ ] **R-27 (build gates + no second extraction path):** `cargo check --locked` zero warnings AND
+  `cargo clippy --locked -- -D warnings` AND `cargo test --locked` green (Windows-first); no
+  `#[allow(...)]`.
+  **Edge / FAIL:** check green but clippy red (does NOT clear the gate).
+
+## Linked suites (overlapping surface — run alongside)
+
+- [ ] **R-10:** inherit and run `.opencode/tests/postgres-lifecycle/regression.md` (R-1..R-12) — the
+  supervisor this slice builds on; the pool is built on the background task after `await_ready` and
+  must not disturb the lifecycle.
+- [ ] **R-11:** inherit and run `.opencode/tests/mission-monitor/regression.md` — the row-pipeline /
+  Mission Monitor surface this store swap must not disturb (incl. R-61, the slice-3 preservation
+  contract on the MM surface, and F-54).
+- [ ] **R-12:** inherit and run `.opencode/tests/event-persistence/` and `.opencode/tests/realtime-data/`
+  regression legs (when present) — the RTDB row-pipeline / feature-data surface.
+- [ ] **R-28 (slice 3):** inherit and run `.opencode/tests/copilot-capture/` regression legs — the
+  Copilot split-turn producer the F-39/F-54 mandate consumes.
+
 ## Notes
 
-- This suite is reusable across the remaining Postgres store slices. Slice 2 migrates only the
-  `AppStore` / `FeatureStore` / `FeatureDataStore` + read-only paths onto the shared pool;
-  `SpanStore` / `RtdbStore` and the write-behind/LRU path are slice 3 and must remain untouched here.
+- This suite is reusable across the remaining Postgres store slices. Slice 2 migrated
+  `AppStore` / `FeatureStore` / `FeatureDataStore` + read-only paths onto the shared pool; **slice 3
+  (#2976) migrates `RtdbStore` / `SpanStore` and the write-behind/LRU path** (F-21..F-39, R-19..R-27);
+  slices 4–6 (`postgres-lifecycle` follow-ons) inherit the pool + these invariants.
