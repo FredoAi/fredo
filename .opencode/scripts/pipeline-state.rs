@@ -4037,6 +4037,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             append_event_attrs(issue, "audit.verdict", "self-improver", phase,
                 if verdict == "success" { "passed" } else { "failed" },
                 reason, &verdict_attrs)?;
+            // Post any pending timeline-comment drafts (a restart's authored
+            // `fix-plan.md`, the SI Summary, ...) BEFORE the destination
+            // `phase.started` is appended below. The plan-comment decision counts
+            // prior `implementation` `phase.started` entries to stamp
+            // `## Fix Plan (round N)`; flushing AFTER the restart's own
+            // `implementation` entry double-counted it and stamped an off-by-one
+            // round (#2974: the header read `round 3` while the retry context read
+            // `round 2`). Mirror the `transition` handler's ordering.
+            post_pending_comments(issue, &a.actor, "audit", None)?;
             // The verdict IS the decision — drive the next phase automatically.
             if verdict == "success" {
                 // Success transitions audit → cleanup (the teardown-only phase). The
@@ -4073,8 +4082,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("AUDIT -> {} (auto restart)", to.as_str());
             }
             println!("AUDIT RECORDED: {} on #{}", verdict, issue);
-            // Post any pending timeline-comment drafts (SI Summary, Tests Runs, ...).
-            post_pending_comments(issue, &a.actor, "audit", None)?;
         }
         "upload-evidence" => {
             // Uploads a screenshot to GitHub as a `user-attachments` asset via the
