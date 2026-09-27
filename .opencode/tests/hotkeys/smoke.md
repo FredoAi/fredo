@@ -27,6 +27,13 @@
 - [ ] S-11: **Descend + Escape quick path.** Focus a feature with a deeper context, descend (keyboard only), observe the context change, then press Escape once. **Expected:** `hotkeys-context-indicator-label`/`-depth` change on descent and return to the previous value on one Escape; the indicator + announcer both update; console clean. *(live receipt)*
 - [ ] S-12: **Context change is announced.** Sample `[data-testid="hotkeys-announcer"]` before and after a descent. **Expected:** the announcement text changes on the context change (polite live region, non-empty); screenshot succeeds. *(live receipt)*
 
+## Spec #2959 quick paths (keyboard mode + persistent key bar)
+
+- [ ] S-13: **Entry/exit chord round-trips.** On the resting desktop fire the mode entry chord, then the exit chord. **Expected:** the mode indication appears (non-colour-only label/icon) and the bar renders; on exit the bar hides and focus is where it was; console clean. *(live receipt)*
+- [ ] S-14: **Bar persists with no pending sequence.** Enter mode and wait past the sequence timeout with `data-fredo-pending-sequence` null. **Expected:** the bar is STILL present listing the current context's actions + keys (not only a mid-sequence hint); screenshot succeeds. *(live receipt)*
+- [ ] S-15: **Bar follows a context change.** With mode on, descend (`primary+K`) then Escape. **Expected:** the bar rows change to the deeper context's actions and back, with mode still on and no re-entry; console clean. *(live receipt)*
+- [ ] S-16: **Entry is announced.** Sample `[data-testid="hotkeys-announcer"]` before and after entering mode, and after a context change. **Expected:** a non-empty announcement fires on entry and on the context change through the single polite live region; screenshot succeeds. *(live receipt)*
+
 ## Hotkeys smoke round 1 — result (FAIL — served app does not boot)
 
 **Blocking finding (round 1):** the SERVED app (`apps/tauri` dev entry, port 5174)
