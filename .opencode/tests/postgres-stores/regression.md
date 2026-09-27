@@ -79,6 +79,44 @@
   **Edge / FAIL:** an unbounded start/stop, a PG suite leg without a finite bound, an orphan
   postmaster after teardown, or a count/checksum divergence.
 
+- [ ] **R-15 (PG-selected boot serves feature-data — FAIL #2975 round 1):** after the engine swap,
+  EVERY global schema the SQLite boot creates (`feature_data_tables`, `feature_data_tombstones`,
+  declared `feature_*`) MUST exist on the PostgreSQL pool, so a feature-data read/write/declare on PG
+  succeeds and Mission Monitor renders. A schema ensured only in the synchronous setup closure (while
+  the handle is still SQLite) and never re-ensured on the installed pool is the round-1 defect.
+  **Edge / FAIL:** `public` holds only `settings`; "no existe la relación «feature_data_tables»"; an
+  empty Mission Monitor on a PG-selected boot.
+  **Round 2:** the schema-set half is FIXED (PG `public` = `settings` + `feature_data_tables` +
+  `feature_data_tombstones` + `feature_terminal_sessions` + the declared `feature_mission_monitor_sessions`;
+  the `no existe la relación` error is gone). The MM half STILL FAILS via a second, deeper defect —
+  see R-17 (unquoted declared-table DDL → lowercase PG columns).
+
+- [ ] **R-17 (declared-table DDL must quote identifiers on PostgreSQL — FAIL #2975 round 2):**
+  `feature_data/registry.rs::create_table_sql` MUST `quote_ident` every declared column, the physical
+  table name, and the PK list (as `FeatureStore::ensure_table_on_pg` does). SQLite folds case
+  insensitively, so raw identifiers work there; PostgreSQL folds unquoted camelCase to lowercase, so a
+  declared `sessionId`/`latestAt` column becomes `sessionid`/`latestat` and the quoted write path
+  (`FeatureStore::upsert`) fails `no existe la columna «sessionId»`.
+  **Edge / FAIL:** a PG declared table whose `information_schema.columns` do not match the declared
+  names; any projection write error on a mixed-case declared column; an empty Mission Monitor on PG.
+
+- [ ] **R-16 (gated cross-engine suite green + hex-case normalized — FAIL #2975 round 1):** the
+  `FREDO_TEST_PG=1` cross-engine content checksum MUST normalize representation (hex case) so a
+  BLOB-bearing table compares equal across engines. **Edge / FAIL:** a red suite from a case-only
+  rendering difference (SQLite `hex()` uppercase vs PG `encode(…,'hex')` lowercase).
+  **Round 2:** the hex-case fix WORKED — Phase 1 (row-count + SHA-256 content checksum + all AC4 edges)
+  passes. The suite is STILL red, now at `tests/storage_engine_pg.rs:278` (`quoted_identifier_scenario`):
+  `to_regclass('"feature_CaseTest_widgets"')::text` yields `"feature_CaseTest_widgets"` (PG quotes the
+  mixed-case identifier in regclass text) but the assertion expects the unquoted form — a test
+  expectation defect. Phase 3 (`schema_init_scenario`) never ran.
+
+- [ ] **R-18 (teardown leaves no orphan postmaster — G-263):** after every live leg's
+  `dev-env.ps1 -Action Down`, no `postgres.exe` may survive. **Round 2 observation:** the FINAL tuned
+  leg (no subsequent boot to reclaim it) left 9 `postgres.exe` (postmaster pid 13800, port 49911) alive
+  40 s+ after Down (no `fredo.exe` present) — `Down` hard-kills the app (`taskkill /F /T /IM fredo.exe`)
+  and the managed postmaster survived; earlier legs were reclaimed by the next boot's sweep.
+  **Edge / FAIL:** any `postgres.exe` alive after teardown with no owning app.
+
 ## Linked suites (overlapping surface — run alongside)
 
 - [ ] **R-10:** inherit and run `.opencode/tests/postgres-lifecycle/regression.md` (R-1..R-12) — the
