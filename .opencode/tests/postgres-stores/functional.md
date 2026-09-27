@@ -121,6 +121,14 @@ extended by every following Postgres store slice.
   **Expected:** raw tuned before/after peak-RSS numbers recorded and compared to the #2948 baseline
   (**8.2× / +232.7 MiB**); the position is stated verbatim **MITIGATE + RE-MEASURE**; pool sizing is
   implemented, not just described. A restatement of #2948 with no re-measurement = FAIL.
+  **Round 2 (spec/2975 @ 4c3741a6): PASS — the `FREDO_PG_SKIP_SERVER_KNOBS` lever (ST-7 rework) makes
+  the before/after drivable.** "Before" (lever set, FRESH `pgdata-r2-untuned`, initdb defaults:
+  `max_connections=100`, `shared_buffers=128MB`, `maintenance_work_mem=64MB`, `synchronous_commit=on`):
+  PG 210,001,920 B (200.3 MiB) / fredo 56,061,952 B (53.5 MiB). "After" (FRESH `pgdata-r2-tuned`,
+  tuned: `max_connections=8`, `shared_buffers=32MB`, `work_mem=4MB`, `maintenance_work_mem=32MB`,
+  `synchronous_commit=off`): PG 168,808,448 B (161.0 MiB) / fredo 55,767,040 B (53.2 MiB).
+  Delta ≈ −39.3 MiB PG RSS. Position: **MITIGATE + RE-MEASURE** (vs #2948 8.2× / +232.7 MiB).
+  Caveat: steady-state WorkingSet sums (transient client backends included), not full-cycle peaks.
 
 - [ ] **F-15 (AC5, QA-5.2) — carried regression positions (coverage, G-271).**
   Enumerate the §10 rows 2/4/5.
@@ -156,6 +164,18 @@ extended by every following Postgres store slice.
   closure while the shared handle is still SQLite; the PG pool installs later
   (`pg_supervisor/state.rs:366-388`) and the schema is never ensured on the new engine.
   **FAIL** = any feature-data op error, or a blank Mission Monitor, on the PG-selected boot.
+  **Round 2 (spec/2975 @ 4c3741a6): PARTIAL — the missing-relation error is FIXED, MM still blank.**
+  The ST-2 schema-init registry now creates `settings` + `feature_data_tables` + `feature_data_tombstones`
+  + `feature_terminal_sessions` on the candidate pool BEFORE install (PG `public` = 5 tables incl. the
+  declared `feature_mission_monitor_sessions`; `feature_data_tables` row = `mission-monitor/sessions`);
+  `feature_data_declare` no longer errors. **But** the declared-table projection FAILS on PG:
+  `WARN fredo::feature_data: declared-table projection failed; canonical ingest unaffected
+  feature_id=mission-monitor table=sessions error=error returned from database: no existe la columna «sessionId»`.
+  PG `information_schema.columns` shows the physical `feature_mission_monitor_sessions` columns are all
+  LOWERCASED (`sessionid`, `startedatns`, `latestat`, …) while `FeatureStore::upsert` writes QUOTED
+  (`"sessionId"`). Root cause: `feature_data/registry.rs:693-714` `create_table_sql` builds the DDL with
+  UNQUOTED identifiers (`column.name`, `full`, `table.primary_key`) — SQLite folds case-insensitively, PG
+  folds to lowercase. MM renders "No sessions yet" on PG (`mm_sessions_rows = 0`). See F-20.
 
 - [ ] **F-19 (promoted from E-1/E-4, FAIL #2975 round 1) — the gated cross-engine suite must be green
   and its content checksum must normalize hex case.**
@@ -166,6 +186,29 @@ extended by every following Postgres store slice.
   `hex(payload)` (UPPERCASE: `0001027F80FEFF`) with PG `encode(payload,'hex')` (lowercase
   `0001027f80feff`). The store-level `blob.a` observable matched on both engines — the defect is the
   test's SQL normalization, not data loss. **FAIL** = a red gated suite.
+  **Round 2 (spec/2975 @ 4c3741a6): STILL RED — moved past the hex defect to a new assertion defect.**
+  `FREDO_TEST_PG=1 cargo test --locked --test storage_engine_pg` → exit 101, `FAILED` at
+  `tests/storage_engine_pg.rs:278`:
+  `assertion left == right failed: the identifier must be stored double-quoted and case-preserving
+  left: Some("\"feature_CaseTest_widgets\"")  right: Some("feature_CaseTest_widgets")`.
+  The hex fix WORKED (Phase 1 — the cross-engine row-count + SHA-256 content checksum and all AC4
+  edges — now passes); the suite now aborts in Phase 2 (`quoted_identifier_scenario`) because
+  `to_regclass('"feature_CaseTest_widgets"')::text` returns the name WITH its quoting (`"feature_…"`,
+  PG's regclass text for a mixed-case identifier) and the assertion expects it without quotes. Test
+  defect; the case-preservation intent is proven by the preceding assertions (unquoted lookup folds to
+  lowercase → `None`; quoted lookup resolves). Phase 3 (`schema_init_scenario`) therefore never ran.
+  **FAIL** = a red gated suite.
+
+- [ ] **F-20 (promoted from E-11 round 2, FAIL #2975 round 2) — a declared-table with a mixed-case PK
+  must be created on PostgreSQL with QUOTED (case-preserving) identifiers.**
+  Declare the MM `sessions` table (PK `sessionId`) on the PG engine and write a row.
+  **Expected:** the physical `feature_mission_monitor_sessions` columns are `"sessionId"`, `"latestAt"`,
+  … (case-preserved, i.e. `information_schema.columns` shows `sessionId`); the projection upsert
+  succeeds and rows land. **Actual:** PG creates them lowercased; every projection write fails
+  `no existe la columna «sessionId»`; the table stays empty and Mission Monitor renders nothing on PG.
+  **Root cause:** `infrastructure/feature_data/registry.rs:693-714` (`create_table_sql`) interpolates
+  raw identifiers instead of `quote_ident` (unlike `FeatureStore::ensure_table_on_pg`), so PostgreSQL
+  folds the camelCase names. **FAIL** = any mixed-case declared column/PK on PG.
 
 ## Non-functional
 
