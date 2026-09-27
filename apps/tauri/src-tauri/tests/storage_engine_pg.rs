@@ -435,6 +435,40 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
         "PostgreSQL must NOT fold the declared mixed-case columns, saw {types:?}"
     );
 
+    // (i-b) ST-4 rework: the declared physical types must come from the AC2 C1
+    // map, NOT the SQLite names — an `int4`/`real` regression fails here (the
+    // live defect: `startedAtNs INTEGER → int4` overflowed on the ns epoch).
+    assert_eq!(
+        types.get("sessionId").map(String::as_str),
+        Some("text"),
+        "declared TEXT must be `text` on PG, saw {types:?}"
+    );
+    assert_eq!(
+        types.get("startedAtNs").map(String::as_str),
+        Some("bigint"),
+        "declared INTEGER must be `bigint` on PG (not int4), saw {types:?}"
+    );
+    assert_eq!(
+        types.get("tokenRatio").map(String::as_str),
+        Some("double precision"),
+        "declared REAL must be `double precision` on PG (not real), saw {types:?}"
+    );
+    assert_eq!(
+        types.get("chatRowCount").map(String::as_str),
+        Some("bigint"),
+        "declared INTEGER must be `bigint` on PG, saw {types:?}"
+    );
+    assert_eq!(
+        types.get("_row_version").map(String::as_str),
+        Some("bigint"),
+        "the reserved `_row_version` must be `bigint` on PG, saw {types:?}"
+    );
+    assert_eq!(
+        types.get("_updated_at").map(String::as_str),
+        Some("text"),
+        "the reserved `_updated_at` must be `text` on PG, saw {types:?}"
+    );
+
     // (ii) The primary key physically keys on the case-preserved `sessionId`.
     let pk_cols: Vec<String> = sqlx::query_scalar(
         "SELECT a.attname
@@ -461,6 +495,12 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
     let mut row = Map::new();
     row.insert("sessionId".to_string(), json!("s1"));
     row.insert("chatRowCount".to_string(), json!(5));
+    // ST-4 rework: the EXACT ns epoch that overflowed int4 in the live defect.
+    row.insert(
+        "startedAtNs".to_string(),
+        json!(1_790_380_389_452_000_000i64),
+    );
+    row.insert("tokenRatio".to_string(), json!(0.25));
     row.insert("_row_version".to_string(), json!(1));
     row.insert("_updated_at".to_string(), json!(T0));
     let written = features
@@ -479,6 +519,21 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
     assert_eq!(read_back.len(), 1, "the upserted row must read back");
     assert_eq!(read_back[0]["sessionId"], "s1");
     assert_eq!(read_back[0]["chatRowCount"], 5);
+
+    // (iv) ST-4 rework: the ns-epoch round-trip. With `startedAtNs` created as
+    // `int4` this upsert would already have failed `entero fuera de rango`; the
+    // i64 must survive the PG write + read byte-equal.
+    assert_eq!(
+        read_back[0]["startedAtNs"].as_i64(),
+        Some(1_790_380_389_452_000_000),
+        "the declared `startedAtNs` bigint must round-trip the ns epoch, saw {:?}",
+        read_back[0]["startedAtNs"]
+    );
+    assert_eq!(
+        read_back[0]["tokenRatio"].as_f64(),
+        Some(0.25),
+        "the declared `tokenRatio` double precision must round-trip"
+    );
 
     pool.close().await;
 }
@@ -503,6 +558,21 @@ fn mm_sessions_declaration() -> FeatureDataDeclaration {
                 DeclaredColumn {
                     name: "chatRowCount".to_string(),
                     col_type: DeclaredColumnType::Integer,
+                    nullable: true,
+                    owner: ColumnOwner::Backend,
+                },
+                // ST-4 rework: a ns-epoch timestamp (Integer → bigint on PG) and
+                // a ratio (Real → double precision on PG). Mixed case is kept so
+                // the quoting pin above still holds.
+                DeclaredColumn {
+                    name: "startedAtNs".to_string(),
+                    col_type: DeclaredColumnType::Integer,
+                    nullable: true,
+                    owner: ColumnOwner::Backend,
+                },
+                DeclaredColumn {
+                    name: "tokenRatio".to_string(),
+                    col_type: DeclaredColumnType::Real,
                     nullable: true,
                     owner: ColumnOwner::Backend,
                 },

@@ -6,7 +6,7 @@ use sqlx::{Column as _, PgPool, Postgres, Row as _, TypeInfo as _};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use super::engine::{quote_ident, EngineHandle, StoreEngine};
+use super::engine::{quote_ident, Dialect, EngineHandle, StoreEngine};
 
 // ── Column Types ──────────────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ pub enum ColumnType {
 }
 
 impl ColumnType {
-    fn as_sql_type(&self) -> &str {
+    fn as_sql_type(&self) -> &'static str {
         match self {
             ColumnType::TEXT => "TEXT",
             ColumnType::INTEGER => "INTEGER",
@@ -41,12 +41,26 @@ impl ColumnType {
 
     /// The PostgreSQL type (Spec #2975 ST-4, the C1 map):
     /// `TEXT→text`, `INTEGER→bigint`, `REAL→double precision`, `BLOB→bytea`.
-    fn as_pg_type(&self) -> &str {
+    fn as_pg_type(&self) -> &'static str {
         match self {
             ColumnType::TEXT => "text",
             ColumnType::INTEGER => "bigint",
             ColumnType::REAL => "double precision",
             ColumnType::BLOB => "bytea",
+        }
+    }
+
+    /// The physical SQL type for the active [`Dialect`] (Spec #2975 ST-4 rework).
+    ///
+    /// This is the ONE dialect-aware type selector: SQLite keeps the incumbent
+    /// physical names (`pragma_table_info` must stay `INTEGER`/`REAL`/`TEXT`),
+    /// while PostgreSQL uses the existing C1 map (`bigint`/`double precision`/
+    /// `text` — a ns-epoch `startedAtNs` cannot fit int4). It delegates to the
+    /// two maps already in this module; it is **not** a second type map.
+    pub(crate) fn as_sql_type_for(&self, dialect: Dialect) -> &'static str {
+        match dialect {
+            Dialect::Sqlite => self.as_sql_type(),
+            Dialect::Postgres => self.as_pg_type(),
         }
     }
 }
@@ -160,6 +174,16 @@ impl FeatureStore {
     /// Wrap the shared engine handle.
     pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
         Ok(FeatureStore { engine })
+    }
+
+    /// The SQL dialect the active engine speaks (Spec #2975 ST-4 rework).
+    ///
+    /// Delegates to the isolated [`EngineHandle::engine`] snapshot's
+    /// [`StoreEngine::dialect`], so a caller that must emit dialect-specific SQL
+    /// (the declared-table DDL type token) branches on the SAME engine the DML
+    /// path targets.
+    pub(crate) fn dialect(&self) -> Dialect {
+        self.engine.engine().dialect()
     }
 
     /// Test-only convenience: a SQLite-backed store at `<data_dir>/fredo.db`.

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 
-use crate::infrastructure::storage::engine::quote_ident;
+use crate::infrastructure::storage::engine::{quote_ident, Dialect};
 use crate::infrastructure::storage::feature_store::{ColumnType, FeatureStore, PhysicalColumn};
 
 use super::declaration::{
@@ -338,13 +338,17 @@ impl DeclarationRegistry {
         let full = FeatureStore::validate_namespace(feature_id, &table.name)?;
         let existed_before = self.store.table_exists(&full)?;
         let declaration_json = serde_json::to_string(table)?;
+        // The active engine's dialect, read ONCE, selects the physical type
+        // token for every declared DDL branch below (Spec #2975 ST-4 rework).
+        let dialect = self.store.dialect();
         // A rebuild creates the declared schema anew (the name was occupied by a
         // foreign/legacy table that is moved aside, not by the declared layer).
         let created = matches!(plan, MigrationPlan::RebuildLegacy { .. }) || !existed_before;
 
         match plan {
             MigrationPlan::Create => {
-                self.store.execute_batch(&create_table_sql(&full, table))?;
+                self.store
+                    .execute_batch(&create_table_sql(&full, table, dialect))?;
                 self.meta.put_table(&TableMeta {
                     feature_id: feature_id.to_string(),
                     table_name: table.name.clone(),
@@ -357,7 +361,8 @@ impl DeclarationRegistry {
             MigrationPlan::EnsureOnly => {
                 // Unchanged declaration → ensure the table exists, never touch
                 // the stored revision/data (R-4.3 no-op).
-                self.store.execute_batch(&create_table_sql(&full, table))?;
+                self.store
+                    .execute_batch(&create_table_sql(&full, table, dialect))?;
             }
             MigrationPlan::AddColumns(additions) => {
                 // Drift defense: only ALTER columns that are not physically there
@@ -374,7 +379,7 @@ impl DeclarationRegistry {
                             "ALTER TABLE {} ADD COLUMN {} {};\n",
                             quote_ident(&full),
                             quote_ident(&column.name),
-                            column.col_type.as_sql_type()
+                            declared_sql_type(column.col_type, dialect)
                         ));
                     }
                     self.store.execute_batch(&sql)?;
@@ -410,7 +415,8 @@ impl DeclarationRegistry {
                     quote_ident(&full),
                     quote_ident(&quarantine)
                 ))?;
-                self.store.execute_batch(&create_table_sql(&full, table))?;
+                self.store
+                    .execute_batch(&create_table_sql(&full, table, dialect))?;
                 self.meta.put_table(&TableMeta {
                     feature_id: feature_id.to_string(),
                     table_name: table.name.clone(),
@@ -690,9 +696,25 @@ fn declared_affinity(col_type: DeclaredColumnType) -> ColumnType {
     }
 }
 
+/// The dialect-aware physical SQL type for a declared column (Spec #2975 ST-4).
+///
+/// Routes through the SHARED affinity ([`declared_affinity`]) and the ONE
+/// dialect-aware type map ([`ColumnType::as_sql_type_for`]) — it introduces no
+/// second map. SQLite keeps `INTEGER`/`REAL`/`TEXT`; PostgreSQL uses the C1 map
+/// (`bigint`/`double precision`/`text`).
+fn declared_sql_type(col_type: DeclaredColumnType, dialect: Dialect) -> &'static str {
+    declared_affinity(col_type).as_sql_type_for(dialect)
+}
+
 /// The declared-table DDL: declared columns + the backend-managed reserved
 /// columns + the composite primary key.
-fn create_table_sql(full: &str, table: &FeatureDataTableDeclaration) -> String {
+///
+/// Identifier quoting is UNCONDITIONAL and single-string (`quote_ident`); only
+/// the physical TYPE token is selected by `dialect` (Spec #2975 ST-4), because
+/// SQLite's observed physical schema must stay `INTEGER`/`REAL`/`TEXT` while
+/// PostgreSQL must use the C1 map to hold the data (a ns-epoch `startedAtNs`
+/// cannot fit int4).
+fn create_table_sql(full: &str, table: &FeatureDataTableDeclaration, dialect: Dialect) -> String {
     let mut defs: Vec<String> = Vec::with_capacity(table.columns.len() + 3);
     for column in &table.columns {
         let not_null = if table.is_primary_key(&column.name) || !column.nullable {
@@ -703,12 +725,20 @@ fn create_table_sql(full: &str, table: &FeatureDataTableDeclaration) -> String {
         defs.push(format!(
             "{} {}{}",
             quote_ident(&column.name),
-            column.col_type.as_sql_type(),
+            declared_sql_type(column.col_type, dialect),
             not_null
         ));
     }
-    defs.push(format!("{} INTEGER NOT NULL", quote_ident("_row_version")));
-    defs.push(format!("{} TEXT NOT NULL", quote_ident("_updated_at")));
+    defs.push(format!(
+        "{} {} NOT NULL",
+        quote_ident("_row_version"),
+        ColumnType::INTEGER.as_sql_type_for(dialect)
+    ));
+    defs.push(format!(
+        "{} {} NOT NULL",
+        quote_ident("_updated_at"),
+        ColumnType::TEXT.as_sql_type_for(dialect)
+    ));
     if !table.primary_key.is_empty() {
         let keys = table
             .primary_key
@@ -838,6 +868,23 @@ mod tests {
         assert!(columns.contains(&"chatRowCount".to_string()), "{columns:?}");
         assert!(columns.contains(&"_row_version".to_string()), "{columns:?}");
         assert!(columns.contains(&"_updated_at".to_string()), "{columns:?}");
+
+        // ST-4 rework pin: the SQLite physical schema is UNCHANGED by the
+        // dialect-aware type selection — the declared `INTEGER` column keeps its
+        // INTEGER affinity and the reserved columns keep INTEGER / TEXT
+        // (an accidental PG-type emission on SQLite would break this).
+        let schema = h.store.table_schema(&full_name()).unwrap();
+        let physical = |name: &str| {
+            schema
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("column {name} missing from {schema:?}"))
+        };
+        assert_eq!(physical("chatRowCount").col_type, ColumnType::INTEGER);
+        assert_eq!(physical("_row_version").sql_type, "INTEGER");
+        assert_eq!(physical("_row_version").col_type, ColumnType::INTEGER);
+        assert_eq!(physical("_updated_at").sql_type, "TEXT");
+        assert_eq!(physical("_updated_at").col_type, ColumnType::TEXT);
 
         let meta = h
             .registry
