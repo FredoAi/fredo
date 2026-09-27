@@ -118,6 +118,15 @@ pub fn run() {
             );
             app.manage(app_store.clone());
 
+            // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
+            // Disabled by default (`postgres.enabled` absent ⇒ no lock, no
+            // sweep, no spawn; SQLite persistence unchanged — R-1.4). When
+            // enabled it acquires the exclusive data-dir lock BEFORE the orphan
+            // sweep and LAZILY starts the postmaster on a background task:
+            // `setup` NEVER awaits the boot (G-273/R-2.3), so the webview shell
+            // renders while PostgreSQL starts.
+            features::pg_supervisor::start_supervisor(app.handle());
+
             // -- FeatureStore (generic typed-column SQLite store for features) --
             let feature_store = Arc::new(
                 FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore"),
@@ -638,6 +647,9 @@ pub fn run() {
             // never probed per turn.
             features::llm_server::probe::companion_status_capability,
             features::screenshot::commands::capture_screen_region,
+            // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
+            // read-only observability hook (no state mutation).
+            features::pg_supervisor::state::pg_supervisor_status,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
             feature_store::feature_store_insert,
@@ -667,6 +679,11 @@ pub fn run() {
             // startup PID sweep + the kill-on-exit test are ST-7's.
             if let tauri::RunEvent::Exit = event {
                 features::llm_server::commands::stop_llama_server_on_exit(app);
+                // Spec #2974 ST-3: bounded embedded-PostgreSQL teardown. The
+                // graceful stop is wall-clock capped by PG_EXIT_HOOK_BOUND (5 s)
+                // with a `taskkill /T /F` hard-kill fallback, then a marker sweep
+                // backstop — quit never blocks on a hung server (R-2.1/G-263).
+                features::pg_supervisor::stop_on_exit(app);
             }
         });
 }
