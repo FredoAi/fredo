@@ -207,3 +207,58 @@
 - `.opencode/tests/rtdb-provider-attribution/` — the `provider` column + `resolve_provider_token` the CLI label depends on; run R-1..R-9 unchanged.
 - `mission-monitor` R-45..R-49 (#2933 Copilot provider coexistence) — run as the direct precedence for this spec's AC-1/AC-2/AC-4.
 - `mission-monitor` R-33..R-44 (#2896 feature-owned realtime data layer) — run the unaffected legs; the label must not regress first-paint/list behavior.
+
+---
+
+# Mission Monitor — Regression Baseline (Slice 3, #2976 — RtdbStore + SpanStore on the shared PostgreSQL pool)
+
+> The store swap occurs BEHIND an unchanged row contract — Mission Monitor must render exactly as it did
+> before, from rows now served by PostgreSQL. Every invariant below is a FAIL if the spec branch changes
+> it. Run on every testing phase that touches mission-monitor, the row pipeline, or the store layer.
+
+## Must NOT change (regression invariants) — Slice 3 (#2976)
+
+- [ ] **R-61 (CRITICAL PRESERVATION CONTRACT — RTDB row-pipeline semantics unchanged):** the ~30 ms
+  write-behind queue + bounded LRU cache (cache cap 10,000 / queue 4,096 / non-blocking `try_send` /
+  60-min prune), the merge/seq semantics (`insert` spread-merge, `update` seq-guarded stale-patch drop,
+  `remove` only retention eviction, durable seq `COALESCE(MAX(seq),0)`), the `telemetry_spans`
+  read-only stance, and `EventBus.emit_row_delivery_batch` as the ONLY emission path are all unchanged;
+  rows cross IPC only as `RowDeliveryBatch` on `"fredo-stream-event"`; `useEventRows(eventType, args,
+  options)` is unchanged. Cross-check `rtdb/cache.rs:47-54` constants + the wire types.
+  **Edge / FAIL:** any changed constant, a blocking enqueue, a re-key/update emitting remove, a direct
+  `app_handle.emit()`, a new event type/payload field.
+
+- [ ] **R-62 (dual-provider rendering on the migrated store — mandate, F-54):** after the store swap,
+  Mission Monitor still lists live agent sessions and renders chat / tools / tokens / graph for an
+  OpenCode session AND a Copilot session at one instant, from rows served by PostgreSQL — identical
+  structural detail to the pre-migration baseline; zero mission-monitor code change required. Cross-check
+  `telemetry_spans` + the migrated `*_rows` tables at the same instant.
+  **Edge / FAIL:** a blank/partial panel while rows exist; only one provider rendering; a stale SQLite
+  fallback serving the rows.
+
+- [ ] **R-63 (ingest/classification + NFR-6 unchanged):** the IngestClassifier's rows and the shared
+  `rtdb/attrs.rs` extract implementation (live classifier + canonical backfill) are unchanged by the
+  store swap — no reclassification, no second extraction path; provider semantic-convention keys
+  (`gen_ai.*`) unchanged.
+  **Edge / FAIL:** a duplicated extraction path; a row shape/field change; a provider token flip.
+
+- [ ] **R-64 (contract-trust + no new fallback):** the panel consumes the projected single-path row
+  fields — no `??` fallback chains / multi-path lookups / v1 hydration reintroduced (#568 cleanup not
+  regressed). The store swap adds no frontend extraction path.
+  **Edge / FAIL:** a defensive fallback added while chasing a store migration symptom.
+
+- [ ] **R-65 (no re-render loop, #523):** epoch-based recomputation preserved; no `.length` /
+  newly-created object-ref `useEffect`/`useMemo` deps; no `Maximum update depth exceeded` after the
+  migrated store starts serving.
+
+## Overlapping prior-feature suites (Slice 3, #2976)
+
+- `.opencode/tests/postgres-stores/` — this slice's own suite (functional F-21..F-39, regression
+  R-19..R-27, smoke S-9..S-12); inherits the slice-2 pool/seam suite.
+- `.opencode/tests/postgres-lifecycle/` — the supervisor the pool builds on; run its regression legs.
+- `mission-monitor` F-46..F-53 / N-23..N-26 (#2945 multi-CLI) — run the unaffected legs; the migrated
+  store must not change the multi-CLI list/label behavior.
+- `.opencode/tests/copilot-capture/` — the Copilot split-turn producer F-54 consumes; run its
+  regression legs.
+- `.opencode/tests/realtime-data/` — the feature-owned realtime data layer over the row store.
+- This spec's functional suite: `functional.md` F-54 + N-27.
