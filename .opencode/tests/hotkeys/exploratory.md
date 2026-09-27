@@ -195,3 +195,47 @@ Teardown: reset-all applied (`vimPresetEnabled:false`, `leader:null`, defaults, 
 kept); the Vim preset was re-enabled for the H-14 restart leg and persisted across the
 restart, matching the shipped behavior.
 
+## #2958 exploratory round 1 — probe results
+
+Run on the served app `spec/2958 @ ea0db5ca` (dev-env UP, driver `com.fredo.app`). Live receipt:
+195 `telemetry_spans` in the drive window. Console clean.
+
+- [ ] E-16 (Escape with pending AND descended) — **PASS.** Descended (depth 2), `g` armed
+      `data-fredo-pending-sequence="g"`; Escape cleared the pending prefix with the context
+      UNCHANGED (depth stayed 2); the next clean Escape popped one level. Pending-cancel wins.
+      (Promotes to F-43, already listed.)
+- [ ] E-17 (descend while a text field is focused) — **PASS (design).** With the launcher textarea
+      focused (`data-fredo-focus-context="text-entry"`), a bare typed character passes through
+      verbatim; the `primary+K` descent chord is a MODIFIER chord and remains global in text-entry
+      per R-5.5, so it descended (depth 1→2) — no typed CHARACTER was hijacked. Escape in
+      text-entry did NOT unwind (depth unchanged; R-3.4).
+- [ ] E-18 (descend in window A, then focus window B) — **PASS (partial, observed).** The context
+      base is derived from the focused feature: firing the shipped `g g` focused the first window,
+      which re-derived the base to `terminal` (`ctx="terminal"`, depth 1) and cleared descents —
+      the documented focus-derived base reset (R-2.2/reliability). No stale/duplicated context.
+- [ ] E-19 (rapid repeated Escape at the root) — **PASS.** 5 consecutive Escapes at the top-level
+      context were ALL left native (`defaultPrevented=false` ×5), depth stayed 1; no leak into
+      launcher/modal behaviour.
+- [ ] E-20 (context change during a modal) — **PASS.** Descended (depth 2), opened the cheat sheet
+      (`role="dialog" aria-modal="true"`, focus context `modal`); Escape closed the sheet via its
+      own handler with NO context change (depth stayed 2); the descent survived the modal close
+      and the next clean Escape popped it.
+- [ ] E-21 (deep nesting 3+) — **UNVERIFIED — named blocker:** the shipped context tree declares a
+      single explicit deeper context (`fredo.root.reference`); no shipped 2-level feature context
+      exists, so a 3-frame stack is not reachable live. The 8-frame cap is pinned by the
+      `contextStack` unit tests. Probe, not an AC.
+- [ ] E-22 (context change while a macro records) — **UNVERIFIED — named blocker:** not driven this
+      round (no live macro recording was started alongside a descent); the macro-recording Escape
+      precedence is pinned by `sequence.ts` precedence 1 + its unit tests.
+- [ ] E-23 (screen-reader reach of the indicator) — **PASS.** The `ContextIndicator` root is
+      `aria-hidden="true"` and declares NO `aria-live`/`role="status"`; the change is spoken via
+      the shipped single `[data-testid="hotkeys-announcer"]` region. No second live region.
+- [ ] E-24 (context lifetime on restart / window close) — **UNVERIFIED — named blocker:** not
+      driven this round (a dev-env restart mid-round was out of budget); the stack is transient
+      module state reconstructed from focus at boot (`installHotkeyContextTracking`), pinned by
+      unit tests.
+
+Teardown: the spawned shell terminal session was closed (`list_terminal_sessions` → `[]`); the
+persisted keymap (pre-existing test residue) was left unchanged; the context stack unwound to the
+base (depth 1).
+
