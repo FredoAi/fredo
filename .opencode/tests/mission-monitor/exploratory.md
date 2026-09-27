@@ -92,3 +92,34 @@
 - [x] E-41 (PASS 2026-09-25 #2945 round 1): renamed the OpenCode session (`OC-2945-LIVE-RENAME`) — the `◈OpenCode` chip stayed on the renamed row; deleted a Copilot session — the row was absorbed cleanly (no orphan/blank row, durable tombstone `["e2e-copilotsplit2945"]`), the sibling sessions' labels unaffected; no resurrection on the next read.
 - [x] E-42 (PASS 2026-09-25 #2945 round 1 → promoted to F-52): both providers' labels + the fallback re-tint with the user theme/accent — dark, Light Default, and a `#ff3b30`/`#ff9500` accent override all recomputed the chips' `color-mix` values live; zero hardcoded colour. Confirmed finding; F-52 carries the evidence.
 - [x] E-43 (PASS 2026-09-25 #2945 round 1): `tauri_read_logs(source="console")` after every interaction — no `Maximum update depth exceeded`, no `Uncaught`, no `Error:`. The only non-product line is the synthetic-open probe WARN (`confirm_app_open_request failed … "lat*"`), disclosed as a fixture-seam artifact of the latency lever.
+
+---
+
+# Mission Monitor — Exploratory Probes (Slice 3, #2976 — migrated PostgreSQL RTDB/SpanStore)
+
+> Unscripted edge/failure probes for the migrated store behind Mission Monitor. A confirmed finding
+> **promotes** to `functional.md` as a new `F-` row (keep the origin note). Real-path classes (G-088):
+> sustained live streaming, write-behind overflow, and mid-switch timing — fixture-only evidence is
+> invalid where the probe is about live behavior. **G-263 SAFETY:** every probe is time-bounded and torn
+> down via `dev-env.ps1`; never an unbounded run.
+
+## Probes to run beyond the script (Slice 3)
+
+- [ ] **E-44:** While Mission Monitor is open on the migrated store, stream a live OpenCode session
+  continuously and compare the panel's live updates against `telemetry_spans` at intervals — does any
+  change lag/drop, or does a row-shape difference surface from PostgreSQL? Cross-check the migrated
+  `chat_rows`/`tool_use_rows`/`agent_session_rows` at the same instant.
+- [ ] **E-45:** With MM open, run a burst of canonical mutations via `fredo emit` — does the panel
+  update live, and does the delivered batch count stay below the row count (coalescing preserved on the
+  migrated store)?
+- [ ] **E-46:** Switch selection rapidly between a streaming session and a static one during active
+  writes — any stale/wrong-session graph or missed update introduced by the store swap?
+- [ ] **E-47:** Restart the app on the migrated store (same PG data dir) and reopen MM — do all
+  sessions and the current values return, with no duplicate and no reset seq visible in the rows?
+- [ ] **E-48:** Induce a PG store failure (`FREDO_PG_POOL_FORCE_FAIL=1` / a corrupt `FREDO_PG_DATA_DIR`
+  under `.opencode/tmp/2976/`) — does MM stay functional on the SQLite fallback with `fredo.db` untouched,
+  or does it blank?
+- [ ] **E-49:** A large live corpus (many sessions / rows) on the migrated store — does MM's first paint
+  and interaction latency stay bounded (no full-history scan introduced by the store swap)?
+- [ ] **E-50 (console):** `tauri_read_logs(source="console")` after every probe — any `Error:` /
+  `Uncaught` / `Maximum update depth exceeded` invalidates that leg's evidence (#523).
