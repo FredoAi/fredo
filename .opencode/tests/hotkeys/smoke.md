@@ -153,3 +153,23 @@ Run on the served app (dev-env UP, `spec/2958 @ ea0db5ca`, driver `com.fredo.app
       the region is `role="status" aria-live="polite"` and non-empty. Screenshots captured.
 
 **Smoke verdict for #2958: PASS (S-10/S-11/S-12).**
+
+## #2959 testing round 2 — quick-path results (spec/2959 @ a693d30)
+
+Run on the served app (dev-env UP, `spec/2959 @ a693d30`, driver `com.fredo.app`). Live receipt:
+204 `telemetry_spans` in the drive window 2026-09-27 02:20:07 → 02:32:34 (`otlp_grpc`). Console clean.
+
+- [x] **S-1 PASS** — `#root` has 2 children; `data-fredo-hotkeys-engine="1"`; no `vite-error-overlay`.
+- [x] **S-2 PASS** — no `Error:`/`Uncaught`/`Maximum update depth exceeded` before or after the drive.
+- [x] **S-13 PASS** — entry/exit chord round-trips: `ctrl+shift+f8` enters (bar renders, mode hook
+      set), exits (bar gone, mode hook cleared, focus restored).
+- [x] **S-14 PASS** — bar persists with `data-fredo-pending-sequence` null (dwell 21.3 s stable).
+- [x] **S-15 PASS** — with mode on, `primary+K` descends and one Escape restores the prior context;
+      the bar rows follow; mode stays ON (no re-entry).
+- [x] **S-16 PASS** — the ONE `hotkeys-announcer` fires a non-empty announcement on entry and on
+      each context change (`Keyboard mode on. terminal. 23 actions: …`).
+- [x] **S-9 PASS (CI)** — `gh pr checks 2973`: `ui-validate` pass, `validate` pass, `fast-validate`
+      pass, `paths` pass, `rust-validate` skipping.
+
+**Smoke verdict for #2959 round 2: PASS (all quick paths); the feature verdict is FAIL on REQ-5
+(see the issue's `## Tests Runs`).**
