@@ -76,6 +76,31 @@ pub const PG_STOP_HANG_ENV: &str = "FREDO_PG_STOP_HANG_MS";
 /// [`crate::infrastructure::storage::engine::PgPoolStage::parse`]. Inert when
 /// unset — the default build is byte-identical to the un-forced path.
 pub const PG_POOL_FORCE_FAIL_ENV: &str = "FREDO_PG_POOL_FORCE_FAIL";
+/// **FS-5** test hook (Spec #2975 ST-7, AC5): when set to a non-blank,
+/// non-`0`/`false` value the managed PostgreSQL server is started WITHOUT the
+/// [`PG_SERVER_KNOBS`] overlay, so the **untuned** baseline (the AC5 "before"
+/// leg) is live-drivable in-repo (G-275). [`runtime::PgRuntime::apply_server_knobs`]
+/// becomes a no-op; the server runs on the `initdb` defaults. Inert when unset —
+/// the default path appends the overlay byte-identically.
+///
+/// NOTE: the overlay is guarded by `PG_KNOB_MARKER` idempotence, so an
+/// already-knobbed data dir is NOT un-knobbed. A FRESH `FREDO_PG_DATA_DIR`
+/// (initdb defaults) is required for the "before" measurement.
+pub const PG_SKIP_SERVER_KNOBS_ENV: &str = "FREDO_PG_SKIP_SERVER_KNOBS";
+
+/// Resolve the **FS-5** untuned-baseline lever (mirrors [`stop_hang_duration`]):
+/// `true` when [`PG_SKIP_SERVER_KNOBS_ENV`] is set to a non-blank value other
+/// than `0`/`false`, else `false`. One shared rule so `apply_server_knobs` and
+/// any future status/telemetry read agree; inert by default.
+pub fn skip_server_knobs() -> bool {
+    match std::env::var(PG_SKIP_SERVER_KNOBS_ENV) {
+        Ok(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        Err(_) => false,
+    }
+}
 
 /// Resolve the managed data dir (**FS-1**): the non-blank [`PG_DATA_DIR_ENV`]
 /// override when set, else `<app_data_dir>/<PG_DATA_SUBDIR>`. One shared rule so

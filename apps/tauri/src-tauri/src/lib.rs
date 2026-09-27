@@ -11,6 +11,14 @@ mod utils;
 #[doc(hidden)]
 pub use features::pg_supervisor::runtime::PgRuntime;
 
+// Spec #2975 ST-6 — test seam. The ST-2 startup schema-init registry is populated
+// with `features::terminal::persistence::ensure_table_on_pg` (a `mod features`
+// item, otherwise unreachable from an integration test). The gated cross-engine
+// suite drives the SAME terminal initializer through the registry so the boot
+// schema-set contract is pinned. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use features::terminal::persistence::ensure_table_on_pg as ensure_terminal_table_on_pg;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::TerminalState;

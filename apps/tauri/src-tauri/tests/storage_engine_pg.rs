@@ -43,10 +43,10 @@ use sha2::{Digest, Sha256};
 use sqlx::Row as _;
 
 use fredo_lib::infrastructure::feature_data::store::{FeatureDataStore, TableMeta, Tombstone};
-use fredo_lib::infrastructure::storage::engine::ensure_settings_schema;
+use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
 use fredo_lib::infrastructure::storage::feature_store::{ColumnDef, ColumnType, FeatureStore};
 use fredo_lib::infrastructure::storage::{
-    AppStore, EngineHandle, PgEngine, SqliteEngine, StoreEngine,
+    AppStore, EngineChoice, EngineHandle, PgEngine, SqliteEngine, StoreEngine,
 };
 use fredo_lib::PgRuntime;
 
@@ -130,6 +130,9 @@ async fn cross_engine_postgres_suite() {
     cross_engine_scenario(&url, &unique_schema("baseline")).await;
     // Phase 2: quoted identifiers (case-preserving dynamic DDL).
     quoted_identifier_scenario(&url, &unique_schema("quoted")).await;
+    // Phase 3: the ST-2 startup schema-init registry on the candidate pool
+    // (ST-6 rework — pins the boot contract whose gap failed round 1).
+    schema_init_scenario(&url, &unique_schema("schema_init")).await;
 
     // ── G-263 teardown: finite bound + guaranteed hard-kill + no orphan ──────
     let started = Instant::now();
@@ -291,6 +294,81 @@ async fn quoted_identifier_scenario(url: &str, schema: &str) {
         .expect("query");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0]["id"], "w1");
+
+    pool.close().await;
+}
+
+// ── Phase 3: ST-2 startup schema-init registry (boot-gap pin) ────────────────
+
+/// The startup schema-init registry creates the FULL startup schema set on the
+/// **candidate** PostgreSQL pool BEFORE install, so a feature-data operation
+/// succeeds with NO pre-called `ensure_schema()` — the exact boot gap that made
+/// the PG-selected app fail `no existe la relación «feature_data_tables»`
+/// (ST-6 rework, ST-2 contract).
+async fn schema_init_scenario(url: &str, schema: &str) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
+    let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+
+    // The candidate pool, exactly what `build_pg_pool` hands the registry.
+    let pool = build_pool(url, schema).await;
+
+    // The ST-2 registry, populated exactly as `lib.rs` does at startup.
+    let state = StorageEngineState::new(handle.clone(), EngineChoice::Postgres);
+    state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+        FeatureDataStore::ensure_schema_on_pg(pool)
+    }));
+    state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+        fredo_lib::ensure_terminal_table_on_pg(pool)
+    }));
+
+    // Before the registry runs, the candidate pool holds ONLY `settings`
+    // (`build_pg_pool` creates just that) — this is the round-1 defect state.
+    assert!(
+        pg_has_table(&pool, schema, "settings").await,
+        "the candidate pool must carry the `settings` schema before the registry"
+    );
+    assert!(
+        !pg_has_table(&pool, schema, "feature_data_tables").await,
+        "the feature-data schema must NOT exist on the candidate pool pre-registry"
+    );
+
+    state
+        .run_pg_schema_inits(&pool)
+        .expect("the schema-init registry must run cleanly on the candidate pool");
+
+    // The full startup schema set now exists on PostgreSQL, pre-install.
+    for table in [
+        "settings",
+        "feature_data_tables",
+        "feature_data_tombstones",
+        "feature_terminal_sessions",
+    ] {
+        assert!(
+            pg_has_table(&pool, schema, table).await,
+            "{table} must exist on the candidate pool after the registry runs"
+        );
+    }
+
+    // Idempotent: the DDL is `CREATE TABLE IF NOT EXISTS`, so a re-run is clean.
+    state
+        .run_pg_schema_inits(&pool)
+        .expect("a registry re-run must be an idempotent no-op");
+
+    // Install, then a feature-data op must succeed WITHOUT any prior
+    // `ensure_schema()` — the boot contract the round-1 defect violated.
+    let data = FeatureDataStore::open(handle.clone()).expect("data store");
+    handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
+        pool: pool.clone(),
+        url: url.to_string(),
+    })));
+    data.put_table(&meta(FEATURE_ID, "sessions", false, 0))
+        .expect("put_table must succeed on the registry-created schema");
+    let loaded = data
+        .get_table(FEATURE_ID, "sessions")
+        .expect("get_table must succeed with no pre-called ensure_schema")
+        .expect("the row must be present");
+    assert_eq!(loaded.table_name, "sessions");
 
     pool.close().await;
 }
@@ -556,6 +634,21 @@ async fn current_search_path(pool: &sqlx::PgPool) -> String {
         .expect("current_setting('search_path')")
 }
 
+/// `true` when `table` exists in `schema` on the PostgreSQL pool (catalog probe,
+/// not `sqlite_master`).
+async fn pg_has_table(pool: &sqlx::PgPool, schema: &str, table: &str) -> bool {
+    let found: Option<String> = sqlx::query_scalar(
+        "SELECT table_name FROM information_schema.tables
+         WHERE table_schema = $1 AND table_name = $2",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_optional(pool)
+    .await
+    .expect("information_schema.tables probe");
+    found.is_some()
+}
+
 async fn pg_column_types(pool: &sqlx::PgPool, schema: &str, table: &str) -> HashMap<String, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT column_name, data_type FROM information_schema.columns
@@ -572,10 +665,14 @@ async fn pg_column_types(pool: &sqlx::PgPool, schema: &str, table: &str) -> Hash
 // ── Row count + content checksum (SQLite vs PostgreSQL) ──────────────────────
 
 const SETTINGS_SQL: &str = "SELECT key, value FROM settings ORDER BY key";
+// The BLOB is hex-encoded on BOTH sides and lower-cased so the comparison is
+// case-insensitive: SQLite's `hex()` emits UPPERCASE while PostgreSQL's
+// `encode(..,'hex')` emits lowercase (ST-6 rework; the round-1 checksum
+// mismatch at this table was this case difference, not data loss).
 const ITEMS_SQL_SQLITE: &str = "SELECT id, label, CAST(count AS TEXT), CAST(ratio AS TEXT), \
-     hex(payload), CAST(_row_version AS TEXT), _updated_at \
+     lower(hex(payload)), CAST(_row_version AS TEXT), _updated_at \
      FROM feature_mission_monitor_items ORDER BY id";
-const ITEMS_SQL_PG: &str = "SELECT id, label, count::text, ratio::text, encode(payload, 'hex'), \
+const ITEMS_SQL_PG: &str = "SELECT id, label, count::text, ratio::text, lower(encode(payload, 'hex')), \
      _row_version::text, _updated_at \
      FROM feature_mission_monitor_items ORDER BY id";
 const META_SQL: &str = "SELECT feature_id, table_name, declaration_json, declaration_revision, \
