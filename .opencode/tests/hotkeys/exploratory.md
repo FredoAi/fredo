@@ -344,3 +344,38 @@ providers `fredo-opencode-plugin` / `opencode-go`). Console clean.
 Teardown: keyboard mode toggled OFF; appearance preset restored to `light-default`; the persisted
 keymap was left unchanged (test residue).
 
+## #2959 exploratory round 3 — probe results
+
+Run on the served app `spec/2959 @ 0ead7b0` (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main
+window). Live `telemetry_spans` receipt 2026-09-27 02:55:34 → 03:05:54 (`otlp_grpc`, 180 spans;
+providers `fredo-opencode-plugin` / `opencode-go`). Console clean.
+
+- [ ] E-25 (entry chord under a suppressed focus) — **PASS.** With the launcher textarea focused
+      (`data-fredo-focus-context="text-entry"`) the `ctrl+shift+f8` MODIFIER chord still toggles the
+      mode (R-5.5); no typed character hijacked.
+- [ ] E-26 (availability flips live) — **PASS (flip + render).** Focusing
+      `TEXTAREA[launcher-command-input]` flipped rows to `data-availability="unavailable"`; the
+      reason now renders FULL (`Unavailable while typing`, 24/24 chars) and the title is non-zero
+      (F-54 fixed). Blurring returns them to `available`.
+- [ ] E-27 (reachability of the empty context) — **UNVERIFIED — named blocker:** no shipped
+      zero-binding context (Fredo tier always in force). Residual pin: `KeyboardBar.test.tsx`
+      "defined empty state (R-5.4)".
+- [ ] E-28 (bar vs pending sequence) — **PASS.** Bare keys in text-entry left
+      `data-fredo-pending-sequence` null; the bar and pending channel coexist.
+- [ ] E-30 (rapid descend/unwind staleness) — **PASS.** 3 rapid `primary+K`/`Escape` cycles →
+      deterministic `fredo.root.reference`/2 ↔ `settings`/1; bar context always equalled the engine
+      (NFR-4); no stale rows.
+- [ ] E-31 (reduced-motion live toggle) — **UNVERIFIED — named blocker:** no live media-emulation
+      lever; residual pin = the shipped `NO_MOTION_STYLE` branch + the `reducedMotion` unit render.
+- [ ] E-32 (narrow / zoomed viewport) — **PASS.** At 1280×800 the bar stayed full-bleed
+      (`{0,700,1280,34}`) with no dock intersection and no silent clip: bounded rows (`+N more`)
+      reconcile with the total (`1 + 23 = 24`).
+- [ ] E-33 (screen-reader reach of bar states) — **PASS.** The bar root is `aria-hidden="true"`
+      with NO `aria-live` and 0 focusable descendants; entry/change/exit spoken via the ONE shared
+      `[data-testid="hotkeys-announcer"]` (`role="status"`, `aria-live="polite"`).
+- [ ] **Promoted-round-2 finding F-54: now RESOLVED** at `0ead7b0` (full reason + non-zero title).
+
+Teardown: keyboard mode toggled OFF; appearance preset restored to `light-default`; the persisted
+keymap was left unchanged (test residue).
+
+

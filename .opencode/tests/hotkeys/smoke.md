@@ -173,3 +173,27 @@ Run on the served app (dev-env UP, `spec/2959 @ a693d30`, driver `com.fredo.app`
 
 **Smoke verdict for #2959 round 2: PASS (all quick paths); the feature verdict is FAIL on REQ-5
 (see the issue's `## Tests Runs`).**
+
+## #2959 testing round 3 — quick-path results (spec/2959 @ 0ead7b0)
+
+Run on the served app (dev-env UP `-Spec 2959`, driver `com.fredo.app`, main window). Live receipt:
+180 `telemetry_spans` in the drive window 2026-09-27 02:55:34 → 03:05:54 (`otlp_grpc`). Console clean.
+
+- [x] **S-1 PASS** — `#root` has 2 children; `data-fredo-hotkeys-engine="1"`; no `vite-error-overlay`
+      (after a full `Down → Up`, G-046, to clear the cold-start `about:blank`).
+- [x] **S-2 PASS** — no `Error:`/`Uncaught`/`Maximum update depth exceeded` before or after the drive.
+- [x] **S-13 PASS** — entry/exit chord round-trips: `ctrl+shift+f8` enters (bar renders, mode hook
+      set, count 23), exits (bar gone, mode/count hooks cleared, focus restored to BODY).
+- [x] **S-14 PASS** — bar persists with `data-fredo-pending-sequence` null across the drive.
+- [x] **S-15 PASS** — with mode on, `primary+K` descends and one Escape restores the prior context;
+      the bar rows follow; mode stays ON (no re-entry).
+- [x] **S-16 PASS** — the ONE `hotkeys-announcer` fires a non-empty announcement on entry and on
+      each context change (`Keyboard mode on. setup. 23 actions: …`; `mission-monitor. Level 1. 26
+      actions: …`).
+- [ ] **S-9 PARTIAL (CI red, local green)** — local `ui-validate` parity green (`typecheck` exit 0,
+      `test:run` 179 files / 2622 tests, `build:webview` exit 0); `gh pr checks 2973` reports
+      `ui-validate` FAILURE (job log not retrievable in the tester sandbox — see the verdict caveats).
+
+**Smoke verdict for #2959 round 3: PASS (all live quick paths); the feature verdict is PASS on
+REQ-1..5 + NFR-1/3/4 (REQ-5 fixed), with NFR-2 carried as a named pin-only blocker.**
+
