@@ -1874,6 +1874,63 @@ Root cause class: defect
   }
 }
 
+# Audit-restart Fix Plan round (#2974): the audit-record restart flushes pending
+# drafts BEFORE appending the destination `phase.started` (mirroring the
+# transition handler). A prior ordering bug flushed AFTER the restart's own
+# `implementation` entry, so the plan-comment decision counted it twice and
+# stamped an off-by-one `## Fix Plan (round 3)` while the retry context read
+# `round 2`. This locks the ordering: the header must equal the retry round.
+Test-Script "audit-restart fix plan stamps the retry round, not an off-by-one" {
+  $url = Mock-IssueCreate "temp: audit-restart fixplan round" "audit-restart fix-plan round scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draftDir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    $authored = @'
+Root cause class: scope
+
+## Failed ACs
+
+- AC1: a failure-injection leg is UNVERIFIED in the audit-restart round.
+
+## Root Cause (file:line)
+
+- features/pg_supervisor/state.rs:221 - data dir hard-wired; no induction lever.
+
+## Fix Scope
+
+- [ ] FS-1 env-gated data-dir override seam.
+
+*Authored by Software Architect*
+'@
+    [System.IO.File]::WriteAllText((Join-Path $draftDir "fix-plan.md"), $authored, [System.Text.UTF8Encoding]::new($false))
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    $impl = '{"ts":"2026-08-10T00:00:01.000000000+00:00","event_id":"arfix-impl-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attributes":{"phase":"implementation","from":"planning"},"message":"started implementation"}'
+    $test = '{"ts":"2026-08-10T00:00:02.000000000+00:00","event_id":"arfix-test-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"testing","outcome":"success","attributes":{"phase":"testing","from":"implementation"},"message":"started testing"}'
+    $aud  = '{"ts":"2026-08-10T00:00:03.000000000+00:00","event_id":"arfix-audit-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"audit","outcome":"success","attributes":{"phase":"audit","from":"testing"},"message":"started audit"}'
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$impl`n$test`n$aud`n", [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --root-cause scope --reason "complete the missed AC evidence" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record restart failed (exit $LASTEXITCODE): $outStr" }
+
+    $comments = @(Mock-IssueComments $issueNum)
+    $joined = $comments -join "`n"
+    if ($joined -notmatch "## Fix Plan \(round 2\)") { throw "Expected '## Fix Plan (round 2)' on the audit-restart leg, got: $joined" }
+    if ($joined -match "## Fix Plan \(round 3\)") { throw "Off-by-one fix-plan round recurred: $joined" }
+    if (Test-Path "$draftDir/fix-plan.md") { throw "fix-plan.md draft should be consumed after posting" }
+    return "audit-restart fix plan stamped round 2 on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # An UNCLASSIFIED fix-plan (no valid `Root cause class:` line) is refused on a
 # rework re-entry — the draft is kept until the Architect classifies the round.
 Test-Script "Unclassified fix-plan is refused (root-cause class mandatory)" {
