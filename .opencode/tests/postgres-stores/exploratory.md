@@ -45,3 +45,36 @@ Unscripted edge/failure probes for the storage engine seam + shared async Postgr
   fresh data dir, open Mission Monitor, read `information_schema.columns` for
   `feature_mission_monitor_sessions` (all lowercase) + the backend WARN `declared-table projection
   failed`. Promoted as F-20; regression pin R-17.
+
+---
+
+# postgres-stores — Exploratory Probes (Slice 3, #2976 — RtdbStore + SpanStore on the pool)
+
+> Unscripted edge/failure probes for the RTDB/SpanStore migration. A confirmed finding **promotes** to
+> `functional.md` as a new `F-` row (keep the origin note). **Verification policy: live** — probes
+> observe a running store layer / app under a finite timeout. **G-263 SAFETY:** every probe is
+> time-bounded and torn down via `dev-env.ps1`; never an unbounded run; the named failure mode is the
+> #2948 ~11 h `pg.stop()` hang.
+
+## Probes to run beyond the script (Slice 3)
+
+- [ ] **E-12:** Under a sustained write-behind burst, does the pool ever exhaust `max_connections`
+  (5–10) or queue cleanly without deadlock? Does the synchronous cache update + `try_send` ever block
+  awaiting a pooled connection?
+- [ ] **E-13:** Cache-miss point-read latency with a COLD cache vs a WARM cache on PG — does a miss
+  reload from PG within the expected range, and does the reload re-populate under the cap?
+- [ ] **E-14:** Range-read aggregation over a value that overflows `i32` (large seq / token count) —
+  does `sum(bigint)::bigint` stay `bigint`, or drift to `numeric`/text vs SQLite?
+- [ ] **E-15:** After a shed write then an app restart, does the in-memory-only row disappear while
+  the seq continues from the persisted `MAX(seq)` (a gap, not a reset)? Confirm monotonicity.
+- [ ] **E-16:** Prune on PG (`DELETE … RETURNING` across the three `*_rows` tables): does the eviction
+  routing still emit `kind: remove` for exactly the deleted keys, once each, and never for a re-key?
+- [ ] **E-17:** Does the read-only transaction truly reject a write on PG (not just by convention),
+  and does the rejection leave the shared pool usable for writers afterwards?
+- [ ] **E-18:** A burst larger than `RTDB_MAX_EMISSION_BATCH = 512` — is it chunked correctly with no
+  dropped/duplicated envelope, and does the coalescing window still merge rows into fewer batches?
+- [ ] **E-19:** Does a PG store failure (induced via `FREDO_PG_POOL_FORCE_FAIL=1` / `FREDO_PG_DATA_DIR`
+  under `.opencode/tmp/2976/`) fall back to SQLite WITHOUT mutating `fredo.db`, and does the RTDB row
+  pipeline keep serving from SQLite?
+- [ ] **E-20 (console):** `tauri_read_logs(source="console")` after every probe — any `Error:` /
+  `Uncaught` / `Maximum update depth exceeded` is a defect that invalidates that leg's evidence.
