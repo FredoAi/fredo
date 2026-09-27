@@ -133,6 +133,13 @@ export interface FeatureHotkeyAction {
   readonly opensContextId?: HotkeyContextId;
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
+  /**
+   * Spec #2959 (ST-2) — human-readable copy the key bar shows when `enabled()`
+   * returns false. ADDITIVE/optional: absent ⇒ the engine-derived copy from
+   * `unavailableReasonFor` (i.e. `'Not available right now'`) is used. Never
+   * required, so every existing declaration is unaffected.
+   */
+  readonly unavailableReason?: string;
 }
 
 /**
@@ -179,6 +186,8 @@ export interface RegisteredHotkeyAction {
   readonly opensContextId?: HotkeyContextId;
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
+  /** Spec #2959 (ST-2) — carried through from the declaration (additive only). */
+  readonly unavailableReason?: string;
   readonly invalid?: string;
 }
 

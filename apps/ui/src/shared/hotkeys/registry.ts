@@ -191,6 +191,8 @@ function buildList(): readonly RegisteredHotkeyAction[] {
       opensContextId: action.opensContextId,
       run: handlers.get(action.actionId) ?? action.run,
       enabled: action.enabled,
+      // Spec #2959 ST-2 — additive contract: carry the optional reason through.
+      unavailableReason: action.unavailableReason,
       invalid,
     });
   }
