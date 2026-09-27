@@ -144,6 +144,29 @@ extended by every following Postgres store slice.
   (counts + checksums) between engines; check 0 warnings, clippy clean, tests green with SQLite
   selected; the PG path is exercised by tests. **FAIL** = a checksum/count mismatch, or a red gate.
 
+- [ ] **F-18 (promoted from E-1/E-7, FAIL #2975 round 1) — PG-selected boot must initialize the
+  feature-data schema on the pool and render Mission Monitor.**
+  Boot with `FREDO_STORAGE_ENGINE=postgres`; open Mission Monitor; read the PG catalogs.
+  **Expected:** `feature_data_tables` / `feature_data_tombstones` (and the declared `feature_*` tables)
+  exist on the PG pool after the swap; feature-data declare/read/watch succeed; Mission Monitor lists
+  the live sessions. **Actual (round 1, `spec/2975 @ 9638a3d9`):** live PG boot `public` holds ONLY
+  `settings`; `[feature-data] feature_data_declare failed … no existe la relación «feature_data_tables»`;
+  `feature_data_read`/`feature_data_watch` fail identically; Mission Monitor `.mm-session-row` = 0.
+  **Root cause:** `lib.rs:408-414` runs `FeatureDataStore::ensure_schema()` in the synchronous setup
+  closure while the shared handle is still SQLite; the PG pool installs later
+  (`pg_supervisor/state.rs:366-388`) and the schema is never ensured on the new engine.
+  **FAIL** = any feature-data op error, or a blank Mission Monitor, on the PG-selected boot.
+
+- [ ] **F-19 (promoted from E-1/E-4, FAIL #2975 round 1) — the gated cross-engine suite must be green
+  and its content checksum must normalize hex case.**
+  Run `FREDO_TEST_PG=1 cargo test --locked --test storage_engine_pg`.
+  **Expected:** the SQLite↔PG row-count + content checksum is byte-equal for every named table.
+  **Actual (round 1):** `FAILED` at `tests/storage_engine_pg.rs:201` — `feature_items:count=3`
+  but `sum=26744f82…` (PG) ≠ `ae80b291…` (SQLite), because the observation SQL compares SQLite
+  `hex(payload)` (UPPERCASE: `0001027F80FEFF`) with PG `encode(payload,'hex')` (lowercase
+  `0001027f80feff`). The store-level `blob.a` observable matched on both engines — the defect is the
+  test's SQL normalization, not data loss. **FAIL** = a red gated suite.
+
 ## Non-functional
 
 - [ ] **N-1 (pool sizing / RSS):** `max_connections` 5–10 + tuned server memory knobs, measured
