@@ -392,3 +392,55 @@ by the engine. This is a harness fidelity note, not a product defect.
 `.opencode/tmp/2946/triage.md` `## QA Expert`. The SI realigns these to the Architect's
 `REQ-n` at convergence; until then bind to either the published `REQ-n` or the `QREQ-n`
 above.
+
+---
+
+## #2958 testing round 1 — result (served spec/2958 @ ea0db5c)
+
+**Verdict: PASS.** Driven live on the served app (dev-env UP, `spec/2958 @ ea0db5ca`, driver
+`com.fredo.app`, main window + embedded Terminal pane). **Live receipt:** 195 `telemetry_spans`
+landed in the drive window 2026-09-26 23:52:46 → 2026-09-27 00:08:54 (`fredo.tool.*` / `fredo.llm`;
+providers `fredo-opencode-plugin` / `opencode-go`; transport `otlp_grpc`; status `OK`). Console
+clean — only the pre-existing `motion() is deprecated` + `ghostty-vt` unimplemented-mode warnings.
+Env note: a persisted non-default keymap (test residue) binds the cheat sheet to `@leader ?`
+(leader = Space), so F-D opened it with that chord (not bare `?`); all #2958 bindings
+(`primary+K`, `y`) were the shipped defaults.
+
+- **F-33 / R-1 — PASS.** At the base context bare `y` is inert (`defaultPrevented=false`, no
+  announcer change, context unchanged) although `y` is bound deeper; after `primary+K` descends to
+  `fredo.root.reference` the SAME `y` runs `fredo.context.referenceAction` (shared announcer →
+  `Reference action ran.`; consumed=true). The level in force decides.
+- **F-34 / R-2 — PASS.** `primary+K` → `data-fredo-hotkey-context="fredo.root.reference"`,
+  `data-fredo-hotkey-context-depth="2"`, indicator label `Reference`, 2 pips; deeper-only `y`
+  runs; re-invoking `primary+K` is idempotent (depth stays 2, no new announcement).
+- **F-35 / F-36 / R-3 + R-6 — PASS.** One Escape pops exactly one descent (2→1) and restores the
+  base; announcement `Back to <label>. Top level.`; at depth 1 a further Escape is NOT consumed
+  (`defaultPrevented=false`), no `context:changed`. R-6.1 N≥1 satisfied (the shipped tree offers
+  one explicit descent).
+- **F-37 / R-5 — PASS.** `y` is bound only in `fredo.root.reference`; at the base it performs no
+  action and never falls through. `primary+K` stays resolvable while descended (ancestor/base
+  bindings remain in force). Row note: single shipped deeper context — the sibling-context matrix
+  is covered by the resolver rule, not a second live feature context.
+- **F-38 / R-4 — PASS.** Indicator render: `hotkeys-context-indicator` with icon
+  (`hotkeys-context-indicator-icon`, `data-direction="enter"|"back"`), label
+  (`hotkeys-context-indicator-label` = `Reference`/`terminal`) and depth pips
+  (`hotkeys-context-indicator-depth` `data-depth` + N `hotkeys-context-indicator-pip`); root is
+  `aria-hidden="true"` and declares NO `aria-live`.
+- **F-39 / R-4.2 — PASS.** `[data-testid="hotkeys-announcer"]` (`role="status"`,
+  `aria-live="polite"`, `aria-label="Hotkey sequence help"`) text transitioned
+  `Entered setup. Level 1.` → `Entered Reference. Level 2.` → `Back to setup. Top level.` →
+  `Reference action ran.` No second live region added by the context model (the other `aria-live`
+  nodes are pre-existing app regions).
+- **F-40 / R-2.2 — PASS.** Descended; focus moved to a real `<button>` and back (depth stayed 2);
+  `y` still resolved (consumed=true) after the churn.
+- **F-41 — PASS.** 5 identical enter/leave/unwind cycles: enter 0–0.2 ms (synchronous, ≪100 ms),
+  depth sequence 1→2→1 each cycle, no drift.
+- **F-42 — PASS.** Text-entry: Escape does not unwind (depth unchanged); descended + text-entry:
+  Escape still does not unwind (depth stays 2). Modal/terminal covered by F-D/F-E.
+- **F-43 / R-3.3 — PASS.** Descended (depth 2), `g` arms `data-fredo-pending-sequence="g"`;
+  Escape clears pending with context UNCHANGED (depth 2); the next clean Escape pops one level.
+- **G-220 F-A..F-E — PASS.** F-A pending-cancel (base + descended); F-B base Escape not consumed;
+  F-C `<button>` Space → native-consumer passthrough (not consumed; harness: driver synthetic
+  events don't synthesise browser default activation); F-D cheat sheet closed by its own handler
+  with NO unwind (base + descended); F-E terminal root focused → `data-fredo-passthrough="true"`,
+  Escape not consumed, real key `x` reached the PTY (buffer 279→288, `ESC[93mxESC[m`).
