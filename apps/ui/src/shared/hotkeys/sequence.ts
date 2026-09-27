@@ -13,6 +13,8 @@
  *   3. modal — Escape belongs to the modal; modifier chords stay global; bare
  *      keys and multi-key sequences are suspended
  *   4. text-entry — typed characters pass verbatim; only modifier chords are global
+ *   4b. interaction-context unwind (Spec #2958) — a fresh Escape while an
+ *       explicit descent is active pops ONE level and is consumed
  *   5. native consumer — a focused control acting on a bare key wins; never arm
  *   6. pending sequence continuation (exact / pending / invalid)
  *   7. fresh key — leader arming, single-chord match, sequence arming
@@ -47,6 +49,12 @@ export interface DispatchInput {
   readonly macroRecording: boolean;
   /** The focused control would itself act on this bare key (tile/button/separator). */
   readonly nativeConsumes: boolean;
+  /**
+   * An explicit interaction-context descent is active (Spec #2958). `true` arms
+   * the bounded Escape-unwind branch; `false`/omitted leaves Escape to its
+   * existing owner (R-3.2).
+   */
+  readonly canUnwindContext?: boolean;
   readonly platform?: Platform;
 }
 
@@ -109,6 +117,11 @@ function arm(reason: string): DispatchDecision {
   return { outcome: 'arm-sequence', consumed: true, reason };
 }
 
+/** Spec #2958 — Escape unwound ONE explicit interaction-context descent. */
+function contextBack(reason: string): DispatchDecision {
+  return { outcome: 'context-back', consumed: true, reason };
+}
+
 /** Find a single-stroke binding for `stroke`, optionally scoped to one action. */
 function findSingleBinding(
   stroke: KeyStroke,
@@ -137,8 +150,17 @@ function hasLeaderPrefix(bindings: readonly ResolvedBinding[]): boolean {
  * the binding precedence.
  */
 export function decideDispatch(input: DispatchInput): DispatchDecision {
-  const { stroke, context, pending, bindings, leader, macroRecording, nativeConsumes, platform } =
-    input;
+  const {
+    stroke,
+    context,
+    pending,
+    bindings,
+    leader,
+    macroRecording,
+    nativeConsumes,
+    canUnwindContext,
+    platform,
+  } = input;
 
   // 1. Raw macro recording: R-3.9 — suspend all dispatch except the
   //    recording-stop binding and Escape.
@@ -176,6 +198,24 @@ export function decideDispatch(input: DispatchInput): DispatchDecision {
     const chord = matchSequence([stroke], bindings, platform);
     if (chord.kind === 'exact') return matchDecision(chord.binding);
     return passthrough('text-entry-chord-unbound');
+  }
+
+  // 4b. Explicit interaction-context unwind (Spec #2958, R-3.1/R-3.2/R-3.3/
+  //     R-3.4): a FRESH Escape with no pending sequence and an active explicit
+  //     descent pops exactly ONE level and is consumed. It sits AFTER the
+  //     terminal/modal/text-entry guards (those owners keep Escape — R-3.4) and
+  //     BEFORE the native-consumer guard, and is provably disjoint from the
+  //     pending-sequence cancel (which requires `pending !== null` — R-3.3).
+  //     The caller arms it only while a descent is active (`canUnwindContext`),
+  //     so at the base context Escape keeps its existing `passthrough('unbound')`
+  //     owner (R-3.2).
+  if (
+    stroke.key === 'escape' &&
+    canUnwindContext === true &&
+    pending === null &&
+    (context === 'default' || context === 'interactive')
+  ) {
+    return contextBack('context-back');
   }
 
   // 5. Native consumer (R-5.5/R-3.10): a focused control acting on a bare key

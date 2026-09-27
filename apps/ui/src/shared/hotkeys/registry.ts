@@ -19,11 +19,14 @@
 
 import { getFeatures } from '../../features/featureRegistry';
 import { parseSequence } from './keys';
+import { resolveBaseContextId } from './contexts';
 import {
   isValidHotkeyActionId,
   tierForActionId,
   type FeatureHotkeyAction,
+  type FeatureHotkeyContext,
   type HotkeyActionId,
+  type HotkeyContextId,
   type HotkeyInvocationContext,
   type HotkeyTier,
   type KeySequence,
@@ -34,6 +37,8 @@ import {
 export interface HotkeyContributor {
   readonly id: string;
   readonly hotkeys?: readonly FeatureHotkeyAction[];
+  /** Spec #2958 — the feature's declared interaction contexts. */
+  readonly hotkeysContexts?: readonly FeatureHotkeyContext[];
 }
 
 type HotkeyRun = (ctx: HotkeyInvocationContext) => void | Promise<void>;
@@ -182,6 +187,8 @@ function buildList(): readonly RegisteredHotkeyAction[] {
       title: action.title,
       description: action.description,
       defaultSequence: action.defaultSequence,
+      contextId: action.contextId,
+      opensContextId: action.opensContextId,
       run: handlers.get(action.actionId) ?? action.run,
       enabled: action.enabled,
       invalid,
@@ -223,6 +230,7 @@ export function runHotkeyAction(
   source: HotkeyInvocationContext['source'],
   sequence: KeySequence = [],
   focusedFeatureId: string | null = null,
+  contextId?: HotkeyContextId,
 ): void {
   const action = getHotkeyAction(id);
   if (!action) return;
@@ -234,6 +242,9 @@ export function runHotkeyAction(
     sequence,
     source,
     focusedFeatureId,
+    // The active context when supplied by the engine (ST-3); else the action's
+    // declared context, else the focused feature's base context.
+    contextId: contextId ?? action.contextId ?? resolveBaseContextId(focusedFeatureId),
     at: Date.now(),
   };
 

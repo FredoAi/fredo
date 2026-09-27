@@ -10,7 +10,29 @@
  * PURE: constants only.
  */
 
-import type { HotkeyActionId } from './types';
+import type { HotkeyActionId, HotkeyContextId } from './types';
+
+// ── Spec #2958 — the shipped platform reference context (the reachable LIVE ────
+//    host for AC2/AC3). `fredo.root.reference` is a platform top-level child of
+//    `fredo.root`; the descend action is resolvable at the base context and the
+//    deeper-only action resolves ONLY while the reference context is active.
+//    The context itself is REGISTERED by the engine (`registerDefaultFredoActions`).
+
+/** The shipped reference interaction-context id (platform child of `fredo.root`). */
+export const REFERENCE_CONTEXT_ID: HotkeyContextId = 'fredo.root.reference';
+/** Enters `REFERENCE_CONTEXT_ID` (declares `opensContextId`; executable too). */
+export const REFERENCE_DESCEND_ACTION_ID = 'fredo.context.descendReference';
+/** Resolves ONLY while `REFERENCE_CONTEXT_ID` is on the active path. */
+export const REFERENCE_ONLY_ACTION_ID = 'fredo.context.referenceAction';
+
+/**
+ * The DISTINCTIVE announcement the reference-only action speaks through the ONE
+ * shared announcer when it runs (G-257 — the live demonstrating surface for the
+ * deeper-only action). Deliberately unlike the context-change copy
+ * (`Entered … / Back to …`), so the shared channel's identical-string de-dup
+ * never swallows it.
+ */
+export const REFERENCE_ACTION_ANNOUNCEMENT = 'Reference action ran.';
 
 /** The minimal shipped bindings (action id → ordered serialized sequences). */
 export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly string[]>> = {
@@ -44,6 +66,13 @@ export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly 
   // character, so it is unmatchable as a character binding. F9 is a named key
   // (modifier flags preserved), so `ctrl+shift+f9` round-trips.
   'fredo.macro.recordToggle': ['ctrl+shift+f9'],
+  // Spec #2958 — the shipped reference context's two ADDITIVE bindings. The
+  // shipped #2946 defaults above are untouched; these are the only two new
+  // entries. Ctrl+Shift+K folds Shift into the 'K' character → `primary+K`.
+  [REFERENCE_DESCEND_ACTION_ID]: ['primary+K'],
+  // Bound ONLY while `fredo.root.reference` is on the active path (scoped by the
+  // action's `contextId`), so this bare `y` never leaks to another context.
+  [REFERENCE_ONLY_ACTION_ID]: ['y'],
   // NOTE: fredo.window.close, fredo.settings.open and per-feature actions ship UNBOUND.
 };
 

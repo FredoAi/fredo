@@ -47,7 +47,12 @@
 import type { ReactElement } from 'react';
 import type { IconType } from 'react-icons';
 import type { GridItemConfig } from './types';
-import { EMPTY_HOTKEYS, type FeatureHotkeyAction } from '../hotkeys/types';
+import {
+  EMPTY_HOTKEYS,
+  EMPTY_HOTKEY_CONTEXTS,
+  type FeatureHotkeyAction,
+  type FeatureHotkeyContext,
+} from '../hotkeys/types';
 
 export abstract class FredoFeatureClass<TProps = {}> {
   // === REQUIRED IMPLEMENTATIONS ===
@@ -128,6 +133,18 @@ export abstract class FredoFeatureClass<TProps = {}> {
    * `renderSettings`/`registerOpenCallback`.
    */
   readonly hotkeys: readonly FeatureHotkeyAction[] = EMPTY_HOTKEYS;
+
+  /**
+   * Named interaction contexts this feature declares (Spec #2958, R-1/R-2).
+   *
+   * A feature's BASE context is synthesized automatically (its context id is
+   * this feature's `id` and its parent is the platform ROOT), so a feature only
+   * declares DEEPER contexts here — each `contextId` must be `<featureId>.`-
+   * prefixed and its `parentId` must name the base or another declared context.
+   * A feature that declares none inherits the empty frozen default. Overriding
+   * this is additive and does not affect `hotkeys`.
+   */
+  readonly hotkeysContexts: readonly FeatureHotkeyContext[] = EMPTY_HOTKEY_CONTEXTS;
   
   // === INTERNAL CALLBACKS (managed by Home.tsx) ===
   

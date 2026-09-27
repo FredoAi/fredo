@@ -13,6 +13,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getWindowSnapshot, openWindow, resetWindowStoreForTests } from '@/shared/window-system/windowStore';
+import { getAnnouncement, resetHotkeyAnnouncer } from '../announcer';
+import {
+  getHotkeyContext,
+  registerFeatureHotkeyContexts,
+  registerHotkeyContext,
+  resetContextRegistryForTests,
+} from '../contexts';
+import {
+  BODY_HOTKEY_CONTEXT_ATTR,
+  enterHotkeyContext,
+  getActiveHotkeyContext,
+  resetHotkeyContextForTests,
+} from '../contextStack';
+import {
+  REFERENCE_ACTION_ANNOUNCEMENT,
+  REFERENCE_CONTEXT_ID,
+  REFERENCE_ONLY_ACTION_ID,
+} from '../defaults';
 import {
   resetRegistryForTests,
   registerFeatureHotkeys,
@@ -33,11 +51,12 @@ import {
   BODY_PENDING_SEQUENCE_ATTR,
   LAUNCHER_TOGGLE_ACTION_ID,
   getPendingPrefix,
+  handleHotkeyKeydown,
   installHotkeyEngine,
   resetHotkeyEngineForTests,
   isHotkeyEngineInstalled,
 } from '../engine';
-import type { FeatureHotkeyAction } from '../types';
+import { ROOT_CONTEXT_ID, type DispatchDecision, type FeatureHotkeyAction } from '../types';
 
 // ── Harness helpers ──────────────────────────────────────────────────────────
 
@@ -61,6 +80,36 @@ function keydown(target: EventTarget, init: KeyboardEventInit): { prevented: boo
   const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
   const notCancelled = target.dispatchEvent(event);
   return { prevented: !notCancelled };
+}
+
+/** Run the ONE decision directly and expose both the outcome and the event. */
+function dispatch(init: KeyboardEventInit): { decision: DispatchDecision; prevented: boolean } {
+  const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+  const decision = handleHotkeyKeydown(event);
+  return { decision, prevented: event.defaultPrevented };
+}
+
+/** Register a Fredo-tier action that can carry a context scope / descent target. */
+function fredoContextAction(
+  actionId: string,
+  options: {
+    readonly defaultSequence?: string | null;
+    readonly contextId?: string;
+    readonly opensContextId?: string;
+    readonly run?: ReturnType<typeof vi.fn>;
+  } = {},
+): ReturnType<typeof vi.fn> {
+  const run = options.run ?? vi.fn();
+  const action: FeatureHotkeyAction = {
+    actionId,
+    title: `Action ${actionId}`,
+    defaultSequence: options.defaultSequence ?? null,
+    contextId: options.contextId,
+    opensContextId: options.opensContextId,
+    run,
+  };
+  registerFredoAction(action);
+  return run;
 }
 
 /** A focused, non-text, non-native-consumer element (context `default`). */
@@ -109,18 +158,23 @@ function openTestWindow(id: string): void {
 beforeEach(() => {
   localStorage.clear();
   resetRegistryForTests();
+  resetContextRegistryForTests();
   resetKeymapStoreForTests();
   resetWindowStoreForTests();
+  resetHotkeyAnnouncer();
+  resetHotkeyContextForTests();
   resetHotkeyEngineForTests();
   document.body.innerHTML = '';
   document.body.removeAttribute(BODY_FOCUS_CONTEXT_ATTR);
   document.body.removeAttribute(BODY_PENDING_SEQUENCE_ATTR);
   document.body.removeAttribute(BODY_PASSTHROUGH_ATTR);
   document.body.removeAttribute(BODY_MACRO_RECORDING_ATTR);
+  document.body.removeAttribute(BODY_HOTKEY_CONTEXT_ATTR);
 });
 
 afterEach(() => {
   resetHotkeyEngineForTests();
+  resetHotkeyContextForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = '';
@@ -520,5 +574,227 @@ describe('engine — shipped g g non-leader sequence (ST-16)', () => {
     expect(keydown(button, { key: 'g' }).prevented).toBe(false);
     expect(getPendingPrefix()).toBeNull();
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+// ── 11. Interaction-context wiring (Spec #2958) ──────────────────────────────
+
+describe('engine — interaction-context wiring (Spec #2958)', () => {
+  it('R-2.1: a matched action with opensContextId enters the context AND runs its own behaviour', () => {
+    registerHotkeyContext({
+      contextId: 'fredo.test.deep',
+      parentId: ROOT_CONTEXT_ID,
+      title: 'Deep',
+    });
+    const run = fredoContextAction('fredo.test.descend', {
+      defaultSequence: 'primary+J',
+      opensContextId: 'fredo.test.deep',
+    });
+    installHotkeyEngine();
+    const el = mountNeutral();
+
+    const { prevented } = keydown(el, { key: 'J', ctrlKey: true, shiftKey: true });
+
+    expect(prevented).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(getActiveHotkeyContext()).toBe('fredo.test.deep');
+    expect(document.body.getAttribute(BODY_HOTKEY_CONTEXT_ATTR)).toBe('fredo.test.deep');
+  });
+
+  it('R-2.3: an undeclared descent target changes nothing and no named-context action runs', () => {
+    const run = fredoContextAction('fredo.test.descendMiss', {
+      defaultSequence: 'primary+U',
+      opensContextId: 'nope.missing',
+    });
+    installHotkeyEngine();
+    const el = mountNeutral();
+
+    const { prevented } = keydown(el, { key: 'U', ctrlKey: true, shiftKey: true });
+
+    // The action's OWN behaviour runs; the named context never becomes active.
+    expect(prevented).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(getActiveHotkeyContext()).toBe(ROOT_CONTEXT_ID);
+    expect(document.body.hasAttribute(BODY_HOTKEY_CONTEXT_ATTR)).toBe(false);
+  });
+
+  it('R-1.1: the DEEPEST binding on the path wins for a reused key', () => {
+    registerFeatureHotkeyContexts('demo', [
+      { contextId: 'demo.canvas', parentId: 'demo', title: 'Canvas' },
+    ]);
+    const baseRun = vi.fn();
+    const deepRun = vi.fn();
+    registerFeatureHotkeys('demo', [
+      { actionId: 'demo.base', title: 'Base z', defaultSequence: 'z', run: baseRun },
+      {
+        actionId: 'demo.deep',
+        title: 'Deep z',
+        defaultSequence: 'z',
+        contextId: 'demo.canvas',
+        run: deepRun,
+      },
+    ]);
+    installHotkeyEngine();
+    const el = mountNeutral();
+    openTestWindow('demo');
+
+    keydown(el, { key: 'z' });
+    expect(baseRun).toHaveBeenCalledTimes(1);
+    expect(deepRun).not.toHaveBeenCalled();
+
+    expect(enterHotkeyContext('demo.canvas')).toBe(true);
+    keydown(el, { key: 'z' });
+    expect(deepRun).toHaveBeenCalledTimes(1);
+    expect(baseRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('R-1.3: a Fredo-tier binding wins over a feature-tier binding for the same key', () => {
+    const fredoRun = vi.fn();
+    const featureRun = vi.fn();
+    fredoContextAction('fredo.test.z', { defaultSequence: 'z', run: fredoRun });
+    registerFeatureHotkeys('demo', [
+      { actionId: 'demo.z', title: 'Demo z', defaultSequence: 'z', run: featureRun },
+    ]);
+    installHotkeyEngine();
+    const el = mountNeutral();
+    openTestWindow('demo');
+
+    keydown(el, { key: 'z' });
+
+    expect(fredoRun).toHaveBeenCalledTimes(1);
+    expect(featureRun).not.toHaveBeenCalled();
+  });
+
+  it('R-3.1/R-6.1: each Escape pops ONE explicit descent; at the base it is left native', () => {
+    registerHotkeyContext({ contextId: 'fredo.test.a', parentId: ROOT_CONTEXT_ID, title: 'A' });
+    registerHotkeyContext({ contextId: 'fredo.test.b', parentId: 'fredo.test.a', title: 'B' });
+    installHotkeyEngine();
+    mountNeutral();
+
+    expect(enterHotkeyContext('fredo.test.a')).toBe(true);
+    expect(enterHotkeyContext('fredo.test.b')).toBe(true);
+    expect(getActiveHotkeyContext()).toBe('fredo.test.b');
+
+    const first = dispatch({ key: 'Escape' });
+    expect(first.decision.outcome).toBe('context-back');
+    expect(first.prevented).toBe(true);
+    expect(getActiveHotkeyContext()).toBe('fredo.test.a');
+
+    const second = dispatch({ key: 'Escape' });
+    expect(second.decision.outcome).toBe('context-back');
+    expect(second.prevented).toBe(true);
+    expect(getActiveHotkeyContext()).toBe(ROOT_CONTEXT_ID);
+
+    // At the base the context model must not consume Escape (R-3.2).
+    const third = dispatch({ key: 'Escape' });
+    expect(third.decision.outcome).toBe('passthrough');
+    expect(third.decision.reason).toBe('unbound');
+    expect(third.decision.consumed).toBe(false);
+    expect(third.prevented).toBe(false);
+    expect(getActiveHotkeyContext()).toBe(ROOT_CONTEXT_ID);
+  });
+
+  it('ships a reachable LIVE reference host: primary+K descends, y runs an observable effect only there', () => {
+    installHotkeyEngine(); // registers the reference context + its two actions
+    expect(getHotkeyContext(REFERENCE_CONTEXT_ID)?.title).toBe('Reference');
+    const el = mountNeutral();
+
+    // At the base context the deeper-only `y` is NOT in force and has no effect.
+    const atBase = dispatch({ key: 'y' });
+    expect(atBase.decision.outcome).toBe('passthrough');
+    expect(getAnnouncement()).not.toBe(REFERENCE_ACTION_ANNOUNCEMENT);
+
+    // Ctrl+Shift+K folds Shift into 'K' → the shipped `primary+K` descend chord.
+    const descend = keydown(el, { key: 'K', ctrlKey: true, shiftKey: true });
+    expect(descend.prevented).toBe(true);
+    expect(getActiveHotkeyContext()).toBe(REFERENCE_CONTEXT_ID);
+    expect(getAnnouncement()).toBe('Entered Reference. Level 2.');
+
+    // Now the deeper-only action resolves AND its shipped handler produces the
+    // OBSERVABLE effect through the ONE shared announcer (the live demonstrating
+    // surface for AC2 — the announcer is the only live region).
+    const inReference = dispatch({ key: 'y' });
+    expect(inReference.decision.outcome).toBe('match');
+    expect(inReference.decision.action?.actionId).toBe(REFERENCE_ONLY_ACTION_ID);
+    expect(getAnnouncement()).toBe(REFERENCE_ACTION_ANNOUNCEMENT);
+  });
+});
+
+// ── 12. Pre-existing Escape owners remain live (G-220) ───────────────────────
+
+describe('engine — pre-existing Escape owners remain live (G-220)', () => {
+  function descendInto(id: string): void {
+    registerHotkeyContext({ contextId: id, parentId: ROOT_CONTEXT_ID, title: id });
+    installHotkeyEngine();
+    mountNeutral();
+    expect(enterHotkeyContext(id)).toBe(true);
+  }
+
+  it('F-A: pending Escape cancel clears the sequence and does NOT unwind a descent', () => {
+    descendInto('fredo.test.deep');
+    const el = mountNeutral();
+
+    keydown(el, { key: 'g' });
+    expect(getPendingPrefix()).toBe('g');
+
+    const { prevented } = keydown(el, { key: 'Escape' });
+    expect(prevented).toBe(true);
+    expect(getPendingPrefix()).toBeNull();
+    expect(document.body.hasAttribute(BODY_PENDING_SEQUENCE_ATTR)).toBe(false);
+    expect(getActiveHotkeyContext()).toBe('fredo.test.deep');
+  });
+
+  it('F-B: at the base context Escape is not consumed by the context model', () => {
+    installHotkeyEngine();
+    mountNeutral();
+
+    const { decision, prevented } = dispatch({ key: 'Escape' });
+    expect(decision.outcome).toBe('passthrough');
+    expect(decision.reason).toBe('unbound');
+    expect(decision.consumed).toBe(false);
+    expect(prevented).toBe(false);
+    expect(document.body.hasAttribute(BODY_HOTKEY_CONTEXT_ATTR)).toBe(false);
+  });
+
+  it('F-C: a focused <button> natively consumes a bare key (Space)', () => {
+    const spaceRun = fredoContextAction('fredo.test.space', { defaultSequence: 'space' });
+    installHotkeyEngine();
+    mountButton();
+
+    const { decision, prevented } = dispatch({ key: ' ' });
+    expect(decision.outcome).toBe('passthrough');
+    expect(decision.reason).toBe('native-consumes');
+    expect(decision.consumed).toBe(false);
+    expect(prevented).toBe(false);
+    expect(spaceRun).not.toHaveBeenCalled();
+  });
+
+  it('F-D: an open modal owns Escape (no context unwind)', () => {
+    descendInto('fredo.test.deep');
+
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const input = document.createElement('input');
+    dialog.appendChild(input);
+    document.body.appendChild(dialog);
+    input.focus();
+
+    const { decision, prevented } = dispatch({ key: 'Escape' });
+    expect(decision.outcome).toBe('passthrough');
+    expect(decision.reason).toBe('modal-escape');
+    expect(prevented).toBe(false);
+    expect(getActiveHotkeyContext()).toBe('fredo.test.deep');
+  });
+
+  it('F-E: terminal passthrough owns Escape (no context unwind)', () => {
+    descendInto('fredo.test.deep');
+    mountTerminal();
+
+    const { decision, prevented } = dispatch({ key: 'Escape' });
+    expect(decision.outcome).toBe('passthrough');
+    expect(decision.reason).toBe('terminal-passthrough');
+    expect(prevented).toBe(false);
+    expect(getActiveHotkeyContext()).toBe('fredo.test.deep');
   });
 });

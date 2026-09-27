@@ -80,6 +80,23 @@ export function tierForActionId(id: HotkeyActionId): HotkeyTier {
   return id.startsWith('fredo.') ? 'fredo' : 'feature';
 }
 
+/**
+ * A named interaction-context id (Spec #2958 ST-1). Same grammar as
+ * `HotkeyActionId`: `fredo.*` for platform contexts, `<featureId>.*` for a
+ * feature's declared contexts. A feature's BASE context carries the feature id
+ * as its context id (no dot) — it is SYNTHESIZED by the context registry, not
+ * declared, so `isValidHotkeyContextId` is not applied to it.
+ */
+export type HotkeyContextId = string;
+
+/**
+ * The platform ROOT context (Spec #2958). It is always registered with
+ * `{ contextId: ROOT_CONTEXT_ID, parentId: ROOT_CONTEXT_ID, title: 'Fredo' }`
+ * (a self-parent sentinel), so `getHotkeyContext(ROOT_CONTEXT_ID)` always
+ * resolves and the indicator/announcer always have a label.
+ */
+export const ROOT_CONTEXT_ID: HotkeyContextId = 'fredo.root';
+
 /** The ambient context in which an action was invoked. */
 export interface HotkeyInvocationContext {
   readonly actionId: HotkeyActionId;
@@ -87,6 +104,8 @@ export interface HotkeyInvocationContext {
   readonly sequence: KeySequence;
   readonly source: 'binding' | 'macro' | 'palette' | 'cheatsheet';
   readonly focusedFeatureId: string | null;
+  /** The active interaction context when the action ran (Spec #2958). */
+  readonly contextId: HotkeyContextId;
   readonly at: number;
 }
 
@@ -101,8 +120,38 @@ export interface FeatureHotkeyAction {
   readonly title: string;
   readonly description?: string;
   readonly defaultSequence: string | null;
+  /**
+   * The interaction context this action belongs to (Spec #2958). Omitted ⇒ the
+   * declaring feature's BASE context (`<featureId>`), so #2946's focused-feature
+   * scoping is preserved exactly (R-1.2).
+   */
+  readonly contextId?: HotkeyContextId;
+  /**
+   * The interaction context this action descends into when it matches
+   * (Spec #2958, executed on the `match` outcome by ST-3).
+   */
+  readonly opensContextId?: HotkeyContextId;
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
+}
+
+/**
+ * The empty context contribution a feature with no declared contexts inherits
+ * (Spec #2958 ST-1). Frozen so every feature instance points at the SAME object.
+ */
+export const EMPTY_HOTKEY_CONTEXTS: readonly FeatureHotkeyContext[] = Object.freeze([]);
+
+/**
+ * A named interaction context a feature (or the platform) declares (Spec #2958).
+ * `contextId` is `'fredo.*'` for a platform context or `'<featureId>.*'` for a
+ * feature context; `parentId` is `ROOT_CONTEXT_ID`, another `'fredo.*'`, or the
+ * same feature's `<featureId>.*`. The per-feature BASE context is synthesized by
+ * the context registry and does not need declaring.
+ */
+export interface FeatureHotkeyContext {
+  readonly contextId: HotkeyContextId;
+  readonly parentId: HotkeyContextId;
+  readonly title: string;
 }
 
 /**
@@ -124,6 +173,10 @@ export interface RegisteredHotkeyAction {
   readonly title: string;
   readonly description?: string;
   readonly defaultSequence: string | null;
+  /** The declared context scope (Spec #2958); omitted ⇒ the feature base / ROOT. */
+  readonly contextId?: HotkeyContextId;
+  /** The declared descent target (Spec #2958). */
+  readonly opensContextId?: HotkeyContextId;
   readonly run: (ctx: HotkeyInvocationContext) => void | Promise<void>;
   readonly enabled?: () => boolean;
   readonly invalid?: string;
@@ -160,10 +213,26 @@ export type FocusContext = 'text-entry' | 'terminal' | 'modal' | 'interactive' |
  *  - `passthrough`  — no action and the key is left native
  */
 export interface DispatchDecision {
-  readonly outcome: 'match' | 'arm-sequence' | 'pending' | 'suppress' | 'passthrough';
+  readonly outcome: 'match' | 'arm-sequence' | 'pending' | 'suppress' | 'passthrough' | 'context-back';
   readonly action?: RegisteredHotkeyAction;
   readonly consumed: boolean;
   readonly reason: string;
+}
+
+/** Why the active interaction context last changed (Spec #2958). */
+export type HotkeyContextChangeReason = 'enter' | 'back' | 'focus';
+
+/**
+ * The stable snapshot of the active interaction context (Spec #2958). Identity
+ * stable (a module-cached frozen object) so `useSyncExternalStore` never sees a
+ * fresh object; it deliberately does NOT carry the label — resolve the label
+ * from the registry via `getHotkeyContext(snapshot.contextId)?.title`.
+ */
+export interface HotkeyContextSnapshot {
+  readonly contextId: HotkeyContextId;
+  /** Path length; `1` = base only (see DEPTH semantics in `contexts.ts`). */
+  readonly depth: number;
+  readonly reason: HotkeyContextChangeReason;
 }
 
 /** Why a pending sequence was reset (matches the `HotkeyEvent` reset reasons). */
@@ -189,7 +258,13 @@ export type HotkeyEvent =
   | { type: 'sequence:pending'; prefix: string; candidates: readonly HotkeyCandidate[] }
   | { type: 'sequence:reset'; reason: HotkeyResetReason }
   | { type: 'macro:recording'; recording: boolean; macroId: string | null; startedAt: number | null }
-  | { type: 'passthrough:changed'; active: boolean };
+  | { type: 'passthrough:changed'; active: boolean }
+  | {
+      type: 'context:changed';
+      contextId: HotkeyContextId;
+      depth: number;
+      reason: HotkeyContextChangeReason;
+    };
 
 /** The one settingsService key that owns the keymap document. */
 export const KEYMAP_STORAGE_KEY = 'fredo.hotkeys.keymap';

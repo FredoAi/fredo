@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 
-import { ENGINE_OWNED_TRAVERSAL, MINIMAL_DEFAULT_BINDINGS, VIM_PRESET } from '../defaults';
+import {
+  ENGINE_OWNED_TRAVERSAL,
+  MINIMAL_DEFAULT_BINDINGS,
+  REFERENCE_ACTION_ANNOUNCEMENT,
+  REFERENCE_CONTEXT_ID,
+  REFERENCE_DESCEND_ACTION_ID,
+  REFERENCE_ONLY_ACTION_ID,
+  VIM_PRESET,
+} from '../defaults';
 import { keyStrokeEquals, normalizeKeyStroke, parseSequence } from '../keys';
 import { matchSequence } from '../sequence';
 import {
@@ -145,6 +153,61 @@ describe('MINIMAL_DEFAULT_BINDINGS', () => {
   it('ships close/settings with no default sequence', () => {
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.window.close']).toBeUndefined();
     expect(MINIMAL_DEFAULT_BINDINGS['fredo.settings.open']).toBeUndefined();
+  });
+
+  it('adds EXACTLY the two Spec #2958 reference-context bindings (the shipped 9 untouched)', () => {
+    // The #2946 table had exactly these 9 action ids; the reference host adds 2.
+    const shippedNine = [
+      'fredo.launcher.toggle',
+      'fredo.palette.openActions',
+      'fredo.help.cheatsheet',
+      'fredo.focus.nextWindow',
+      'fredo.focus.prevWindow',
+      'fredo.window.first',
+      'fredo.window.cycleNth',
+      'fredo.terminal.exitPassthrough',
+      'fredo.macro.recordToggle',
+    ];
+    expect(Object.keys(MINIMAL_DEFAULT_BINDINGS)).toHaveLength(11);
+    expect(Object.keys(MINIMAL_DEFAULT_BINDINGS)).toEqual(
+      expect.arrayContaining(shippedNine),
+    );
+
+    expect(MINIMAL_DEFAULT_BINDINGS[REFERENCE_DESCEND_ACTION_ID]).toEqual(['primary+K']);
+    expect(MINIMAL_DEFAULT_BINDINGS[REFERENCE_ONLY_ACTION_ID]).toEqual(['y']);
+  });
+
+  it('exposes the shipped reference-context identity', () => {
+    expect(REFERENCE_CONTEXT_ID).toBe('fredo.root.reference');
+    expect(REFERENCE_DESCEND_ACTION_ID).toBe('fredo.context.descendReference');
+    expect(REFERENCE_ONLY_ACTION_ID).toBe('fredo.context.referenceAction');
+  });
+
+  it('the reference-only action announces a DISTINCTIVE observable effect (G-257)', () => {
+    expect(REFERENCE_ACTION_ANNOUNCEMENT).toBe('Reference action ran.');
+    // Must not collide with the context-change copy, or the shared channel's
+    // identical-string de-dup would swallow the deeper-only action's effect.
+    expect(REFERENCE_ACTION_ANNOUNCEMENT).not.toBe('Entered Reference. Level 2.');
+    expect(REFERENCE_ACTION_ANNOUNCEMENT).not.toBe('Back to Reference. Level 2.');
+  });
+
+  it('the reference descend default primary+K matches Ctrl+Shift+K (typed-character model)', () => {
+    const parsed = parseSequence(MINIMAL_DEFAULT_BINDINGS[REFERENCE_DESCEND_ACTION_ID][0]);
+    expect(parsed).toEqual([stroke({ key: 'K', primary: true })]);
+
+    const normalized = normalizeKeyStroke(
+      keyEvent({ key: 'K', ctrlKey: true, shiftKey: true }),
+      'win32',
+    );
+    expect(normalized).toEqual(stroke({ key: 'K', primary: true }));
+    expect(keyStrokeEquals(parsed[0], normalized as KeyStroke, 'win32')).toBe(true);
+
+    const match = matchSequence(
+      [normalized as KeyStroke],
+      [resolvedBinding(REFERENCE_DESCEND_ACTION_ID, 'primary+K')],
+      'win32',
+    );
+    expect(match.kind).toBe('exact');
   });
 });
 

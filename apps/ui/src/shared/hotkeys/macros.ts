@@ -53,6 +53,7 @@ import {
 import { getWindowSnapshot } from '../window-system/windowStore';
 import {
   MACRO_RECORD_TOGGLE_ACTION_ID,
+  ROOT_CONTEXT_ID,
   type HotkeyActionId,
   type HotkeyInvocationContext,
   type KeyStroke,
@@ -209,6 +210,7 @@ export async function runNamedMacro(
           sequence: [],
           source,
           focusedFeatureId: focusedFeatureId(),
+          contextId: action.contextId ?? action.featureId ?? ROOT_CONTEXT_ID,
           at: Date.now(),
         });
         results.push({ actionId: stepId, status: 'ran' });
