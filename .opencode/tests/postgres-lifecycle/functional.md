@@ -186,3 +186,47 @@ has no `tasklist` allowlist entry; `run-exitcode.ps1 -Command` was used for proc
   marker is replaced. PASS.
 - [x] **F-18 (promoted from E-10) — ephemeral port changes across restarts (no fixed-port leak).**
   Confirmed live: 51433 → 51544 → 51841 → 52024 → 52217 → 52418 across restarts. PASS.
+
+## Run — #2974 round 2 (2026-09-27, live)
+
+Serving `spec/2974 @ 4cd7b818`, app via `dev-env.ps1 -Action Up -Spec 2974 [-EnvVar ...]`. The three
+round-1 UNVERIFIED legs were made drivable by the FS-1..FS-3 env seams and re-tested **live**.
+Live receipts: `telemetry_spans` / `telemetry_logs` / `settings` queries + `Get-Process -Name
+postgres|explorer` / `Get-NetTCPConnection` (`run-exitcode.ps1`; no `tasklist` allowlist entry).
+Env seams used: `FREDO_PG_DATA_DIR` (F-2/F-11), `FREDO_PG_STOP_HANG_MS=60000` (F-4); regression rows
+ran with the env vars UNSET.
+
+| Case | Verdict | Receipt |
+|------|---------|---------|
+| F-1 | PASS | override boot `ready {port:54835,pid:11012}`; KV marker == `postmaster.pid` line 1, port == line 4; ready ~7 s after shell |
+| F-2 | **PASS (live)** | corrupt override dir → `failed` with structured `[setup]` error (initdb: directory not empty), no port/pid, teardown 35 ms, 0 `postgres.exe`, ~10 s vs 600 s cap |
+| F-3 | PASS | graceful close → `outcome=Graceful { elapsed_ms: 151 }`, 0 `postgres.exe`, marker cleared (also 150 ms on the override cycle) |
+| F-4 | **PASS (live)** | `FREDO_PG_STOP_HANG_MS=60000` → `outcome=HardKilled { elapsed_ms: 5176 }`, quit 5.20 s, 0 `postgres.exe`, marker cleared |
+| F-5 | PASS | non-empty shell DOM while the postmaster boots; `setup` never awaits the start task |
+| F-6 | PASS | marker-named live postmaster killed + cleared, next start ready (reproduced) — see F-19 caveat |
+| F-7 | PASS | marker 4,000,000 → no kill, marker replaced (`25304`), ready, no error |
+| F-8 | PASS | marker = live `explorer.exe` 24404 → survived, marker replaced (`13860`), ready |
+| F-9 | PASS | `cargo test --locked pg_supervisor` 26/26 incl. `run_bounded_errors_fast_on_an_unbounded_wait` + FS-2 `stop_bounded_hard_kills_when_graceful_stop_hangs` |
+| F-10 | PASS | Drop pins (panic/error) + live normal-return teardown; no `panic = "abort"` |
+| F-11 | **PASS (live)** | wiped dir + stale explorer marker → explorer alive, marker cleared; corrupt-dir variant → marker literally empty; unset-env control → explorer alive, marker replaced |
+| F-12 | PASS | shell-ready 12 s in BOTH PG-enabled and PG-disabled boots; postmaster boots on a background task; **MITIGATE + RE-MEASURE** |
+| F-13 | PASS | `Graceful 151 ms` + `HardKilled 5176 ms`; all 6 mitigation elements demonstrated; **MITIGATE + ACCEPT (residual)** |
+| F-14 | PASS | `cargo check/test/clippy --locked` all green, 0 warnings (lib 989 passed; pg_supervisor 26 passed) |
+| F-15 | PASS | Mission Monitor 46 nodes / 45 edges / 243 tool-call dots / session token bar; `telemetry_spans` 111 for the rendered session (total 5,751); reproduced on the PG-disabled boot (total 5,899) |
+| F-16 | PASS | ports 54835…57298 all ephemeral `127.0.0.1`, ≠ 4317/4318/9223; OTLP + MCP still bound |
+| F-17/F-18 | PASS | re-confirmed (orphan reclaim; 8 distinct ephemeral ports) |
+| N-1..N-5 / R-1..R-8 | PASS | boundedness / teardown / build / Windows-first / row-pipeline; diff touches only `features/pg_supervisor/*` |
+| S-1..S-3, S-5..S-8 | PASS | shell renders, console clean, Mission Monitor reachable, PG cold start, normal quit, live rows + spans |
+| S-4 | n/a | Settings→Telemetry not exercised (G-145 wedge risk; unchanged surface) |
+
+### Promoted exploratory cases (round 2)
+
+- [ ] **F-19 (promoted from E-11) — a chained hard-kill recovery can wedge the next start.**
+  Observed once (not reproduced): after a hard `Down` of a PG-ready app, a cold `Up` reclaimed the
+  marker-named orphan (all 9 old PIDs gone, marker cleared) but `pg.start()` failed with
+  `[start] Command error: stdout=; stderr=` (~60 s); a single stuck `postgres` PID survived the
+  reclaim and blocked the data dir until it was cleared manually, after which the next start was
+  `ready`. The canonical F-6 path was then reproduced green. The FS-1..FS-3 seams are inert on this
+  path (env unset), so this is pre-existing default-path robustness, not a round-2 regression.
+  **Needs a dedicated hardening item** (reclaim a stuck survivor / wait for full tree death before
+  `pg.start()`).
