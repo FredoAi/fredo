@@ -100,6 +100,40 @@ behaviour is wrong.
       Is the context reset to the platform root (no dangling context), or does it survive stale?
       Promotes to F-34/F-40.
 
+## Spec #2959 — persistent key-bar probes
+
+- [ ] E-25: **Entry chord under a suppressed focus.** Fire the mode entry chord (a) in a focused
+      `input`/`contenteditable`, (b) in a focused terminal session, (c) with a modal open. Does the
+      modal/terminal/text-entry precedence hold (no mode entry, or a documented allowance for a
+      modifier chord), and is any typed character hijacked? A hijacked keystroke or a mode entered
+      inside a modal promotes to F-44/R-13.
+- [ ] E-26: **Availability flips live.** Enter mode in a context with an unavailable action, then
+      make that action available via a sanctioned state change (or the reverse). Does the bar row
+      update in place (available ⇄ unavailable-with-reason) with no stale dead entry? Promotes to
+      F-48.
+- [ ] E-27: **Reachability of the empty context.** Try to reach a context with ZERO actions on the
+      SHIPPED path. If no shipped context is empty, does the bar still render a defined empty state
+      (e.g. after an unwind to a transient state)? An unreachable empty state is a named blocker
+      for F-48 (record the residual unit/static pin). Promotes to F-48.
+- [ ] E-28: **Bar vs pending sequence.** With mode ON, arm a multi-key sequence (`g`). Do the
+      which-key hint and the bar coexist coherently (no duplicated/conflicting rows, no flicker),
+      and does Escape cancel the pending without hiding the bar or unwinding? Promotes to
+      F-45/F-47/R-18.
+- [ ] E-29: **Owning window closes / context disappears.** With mode on, close the focused feature
+      window or restart the app. Does the bar reset to the platform root's actions (no dangling
+      context, no stale rows), and is mode still on if it was on? Promotes to F-46/F-52.
+- [ ] E-30: **Rapid descend/unwind staleness.** Toggle mode on and hammer descend/unwind
+      (`primary+K` / Escape) rapidly. Does the bar ever show a stale context or a row from a
+      previous context? A stale row promotes to F-52/F-49.
+- [ ] E-31: **Reduced-motion live toggle.** Toggle `prefers-reduced-motion` while mode is on and
+      across an entry/exit. Does the transition respect the CURRENT setting (no half-animated
+      surface)? Promotes to F-50.
+- [ ] E-32: **Narrow / zoomed viewport.** At a narrow viewport and at >100% zoom, does the
+      persistent bar clip, overlap an adjacent control, or push the layout? Promotes to F-47/F-51.
+- [ ] E-33: **Screen-reader reach of bar states.** Inspect the bar, its empty state, and an
+      unavailable row in the accessibility tree. A colour-only or un-announced state promotes to
+      F-47/F-48.
+
 ## Teardown (run after this suite)
 
 - [ ] Remove any test bindings created during the probes (reset-all to shipped defaults) and
