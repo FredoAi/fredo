@@ -24,7 +24,20 @@ function readSource(relativePath: string): string {
 const KEYCAP = 'src/shared/components/hotkeys/Keycap.tsx';
 const DESCRIBE = 'src/shared/hotkeys/describe.ts';
 const ANNOUNCER = 'src/shared/hotkeys/announcer.tsx';
-const FILES = [KEYCAP, DESCRIBE, ANNOUNCER];
+// Spec #2959 ST-3 — the persistent key bar + its pure geometry + the shared
+// dock-derived inset all obey the SAME token/var hygiene and single-live-region
+// discipline as the shipped surfaces.
+const KEYBOARD_BAR = 'src/shared/hotkeys/KeyboardBar.tsx';
+const KEYBOARD_BAR_GEOMETRY = 'src/shared/hotkeys/keyboardBarGeometry.ts';
+const BOTTOM_STACK = 'src/shared/hotkeys/bottomStack.ts';
+const FILES = [
+  KEYCAP,
+  DESCRIBE,
+  ANNOUNCER,
+  KEYBOARD_BAR,
+  KEYBOARD_BAR_GEOMETRY,
+  BOTTOM_STACK,
+];
 
 describe('ST-3 source audit — token hygiene', () => {
   it('scans the real new files (guards against an empty glob passing vacuously)', () => {
