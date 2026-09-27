@@ -23,6 +23,8 @@
  * ST-2's transient setters intend.
  */
 
+import { useSyncExternalStore } from 'react';
+
 import {
   enterHotkeyContext,
   exitHotkeyContext,
@@ -62,12 +64,14 @@ import {
 } from './store';
 import { announce } from './announcer';
 import {
+  KEYBOARD_MODE_ACTION_ID,
   MINIMAL_DEFAULT_BINDINGS,
   REFERENCE_ACTION_ANNOUNCEMENT,
   REFERENCE_CONTEXT_ID,
   REFERENCE_DESCEND_ACTION_ID,
   REFERENCE_ONLY_ACTION_ID,
 } from './defaults';
+import { toggleKeyboardMode } from './keyboardMode';
 import { focusWindow, getWindowSnapshot } from '../window-system/windowStore';
 import {
   ROOT_CONTEXT_ID,
@@ -206,6 +210,16 @@ const DEFAULT_FREDO_ACTION_DEFS: readonly DefaultFredoActionDef[] = [
     actionId: 'fredo.macro.recordToggle',
     title: 'Toggle macro recording',
     description: 'Start or stop recording a keystroke macro',
+  },
+  // Spec #2959 — the keyboard-mode toggle. The ONE entry/exit chord (default
+  // `ctrl+shift+f8`, `defaults.ts`) registered through this shipped engine; the
+  // run flips the module-scoped mode (`keyboardMode.ts`) and publishes its body
+  // hook. It performs NO focus movement (R-1.4) and no other store write.
+  {
+    actionId: KEYBOARD_MODE_ACTION_ID,
+    title: 'Toggle keyboard mode',
+    description: 'Show or hide the persistent keyboard action bar',
+    run: () => toggleKeyboardMode(),
   },
   // Spec #2958 — the shipped reference context host (AC2/AC3). The descend
   // action is resolvable at the base context; it enters `fredo.root.reference`
@@ -444,10 +458,63 @@ export function computeFocusContext(): FocusContext {
   return classifyFocusContext(active, { modalOpen });
 }
 
+// ── Live focus snapshot (Spec #2959 ST-1) ────────────────────────────────────
+//
+// The bar's ONE focus source for honest availability (R-5.5): the current focus
+// context plus whether the focused control natively consumes the key, both
+// derived by the ONE focus classifier (`focusContext.ts`). Frozen + module-cached
+// so `useSyncExternalStore` never sees a fresh identity; published from
+// `updateHooks` (any focus/keydown change) and `onFocusChange`.
+
+/** The stable snapshot of the current focus classification (Spec #2959). */
+export interface FocusSnapshot {
+  readonly context: FocusContext;
+  readonly nativeConsumes: boolean;
+}
+
+const FOCUS_SNAPSHOT_DEFAULT: FocusSnapshot = Object.freeze({
+  context: 'default',
+  nativeConsumes: false,
+});
+
+let focusSnapshot: FocusSnapshot = FOCUS_SNAPSHOT_DEFAULT;
+const focusSnapshotListeners = new Set<() => void>();
+
+/** The current focus snapshot — identical identity between real changes. */
+export function getFocusSnapshot(): FocusSnapshot {
+  return focusSnapshot;
+}
+
+/** Subscribe to focus-snapshot changes; returns the unsubscribe handle. */
+export function subscribeFocusSnapshot(listener: () => void): () => void {
+  focusSnapshotListeners.add(listener);
+  return () => {
+    focusSnapshotListeners.delete(listener);
+  };
+}
+
+/** The live focus snapshot, re-rendering only on a real change. */
+export function useFocusSnapshot(): FocusSnapshot {
+  return useSyncExternalStore(subscribeFocusSnapshot, getFocusSnapshot, getFocusSnapshot);
+}
+
+/** Commit a new snapshot only when the classification actually changed. */
+function publishFocusSnapshot(context: FocusContext, nativeConsumes: boolean): void {
+  if (focusSnapshot.context === context && focusSnapshot.nativeConsumes === nativeConsumes) return;
+  focusSnapshot = Object.freeze({ context, nativeConsumes });
+  for (const listener of [...focusSnapshotListeners]) listener();
+}
+
+/** The webview's active element, or `null` off-DOM. */
+function readActiveElement(): Element | null {
+  return typeof document === 'undefined' ? null : document.activeElement;
+}
+
 function updateHooks(context: FocusContext): void {
   setBodyAttr(BODY_FOCUS_CONTEXT_ATTR, context);
   setBodyAttr(BODY_PASSTHROUGH_ATTR, context === 'terminal' ? 'true' : null);
   setBodyAttr(BODY_MACRO_RECORDING_ATTR, isMacroRecording() ? 'true' : null);
+  publishFocusSnapshot(context, isInteractiveElement(readActiveElement()));
 }
 
 function clearBodyHooks(): void {
@@ -642,11 +709,13 @@ export function isHotkeyEngineInstalled(): boolean {
   return installed;
 }
 
-/** Test-only: uninstall + drop transient pending state. */
+/** Test-only: uninstall + drop transient pending state + reset the focus snapshot. */
 export function resetHotkeyEngineForTests(): void {
   uninstallHotkeyEngine();
   clearPendingTimer();
   pending = null;
+  focusSnapshot = FOCUS_SNAPSHOT_DEFAULT;
+  focusSnapshotListeners.clear();
 }
 
 /** Test/reporter only: the serialized pending prefix, or `null` when idle. */

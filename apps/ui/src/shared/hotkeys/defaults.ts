@@ -18,6 +18,17 @@ import type { HotkeyActionId, HotkeyContextId } from './types';
 //    deeper-only action resolves ONLY while the reference context is active.
 //    The context itself is REGISTERED by the engine (`registerDefaultFredoActions`).
 
+// ── Spec #2959 — the keyboard-mode entry/exit chord (ONE dedicated chord) ─────
+//    A named (non-printable) key, so the chord round-trips layout-stably like the
+//    shipped `ctrl+shift+f9`/`f10` family; f8 is NOT platform-reserved and is
+//    disjoint from every other shipped default. The mode state + body hook are
+//    owned by `keyboardMode.ts`.
+
+/** The keyboard-mode toggle action id (Fredo tier). */
+export const KEYBOARD_MODE_ACTION_ID = 'fredo.keyboardMode.toggle';
+/** The canonical serialized keyboard-mode chord (named key, layout-stable). */
+export const KEYBOARD_MODE_CHORD = 'ctrl+shift+f8';
+
 /** The shipped reference interaction-context id (platform child of `fredo.root`). */
 export const REFERENCE_CONTEXT_ID: HotkeyContextId = 'fredo.root.reference';
 /** Enters `REFERENCE_CONTEXT_ID` (declares `opensContextId`; executable too). */
@@ -73,6 +84,11 @@ export const MINIMAL_DEFAULT_BINDINGS: Readonly<Record<HotkeyActionId, readonly 
   // Bound ONLY while `fredo.root.reference` is on the active path (scoped by the
   // action's `contextId`), so this bare `y` never leaks to another context.
   [REFERENCE_ONLY_ACTION_ID]: ['y'],
+  // Spec #2959 — the keyboard-mode entry/exit chord. A modifier chord, so the
+  // engine matches it in text-entry/modal and the native-consumer guard never
+  // withholds it; `F8` is a named key (modifier flags preserved), so
+  // `ctrl+shift+f8` round-trips. The ONLY shipped-default addition in this slice.
+  [KEYBOARD_MODE_ACTION_ID]: [KEYBOARD_MODE_CHORD],
   // NOTE: fredo.window.close, fredo.settings.open and per-feature actions ship UNBOUND.
 };
 
