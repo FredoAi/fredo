@@ -1,5 +1,7 @@
 # embedded-postgres-migration — Functional
 
+> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+
 Feature: the concrete migration approach for moving Fredo's local persistence from embedded
 SQLite (`fredo.db`, `rusqlite 0.32` bundled) to embedded PostgreSQL
 (`theseus-rs/postgresql-embedded`). Issue #2964 — a **spike** whose deliverable is a written
@@ -12,15 +14,15 @@ PoC was produced, its execution under a finite timeout. There is no telemetry/sp
 surface for this feature, so NO `telemetry_spans` evidence applies.
 
 Required artifact paths are a hard dependency — the Developer/Architect commits: the design
-doc at `docs/research/2964-postgres-migration-approach.md` (+ section files under
-`docs/research/2964-postgres-migration-approach/`) and, if produced, an isolated PoC crate at
+doc at `spikes/2964-postgres-migration-approach.md` (+ section files under
+`spikes/2964-postgres-migration/2964-postgres-migration-approach/`) and, if produced, an isolated PoC crate at
 `spikes/2964-postgres-migration/` with committed `results/` and a committed `README.md`
 carrying the exact reproducible command + its finite wall-clock bound. `.opencode/tmp/` is
 gitignored and is NOT evidence.
 
 Regression numbers are reconciled against the prior spike's committed data:
 `spikes/2948-embedded-postgres/results/measurements.json` (+ `QUESTIONS.md`,
-`docs/research/2948-embedded-postgres-spike.md`).
+`spikes/2948-embedded-postgres-spike.md`).
 
 ## Cases
 

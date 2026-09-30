@@ -16,7 +16,7 @@ Feature issue (implementation phase), the Implementation Plan (task decompositio
 1. **Create a worktree detached at `spec/<N>`** — request the `create-worktree` action (`--worktree-path <path>`); it checks the worktree out detached at the tip of the feature's `spec/<N>` branch. Detached worktrees allow many developers in parallel. **A fresh worktree has no `node_modules`** — run `pnpm install --frozen-lockfile --prefer-offline` inside it before any build/typecheck/test, or the checks fail for want of dependencies (G-004).
 2. Implement in scope (the plan's task decomposition + acceptance criteria) → verify (build/check/tests). **After editing, verify the changes are present in the WORKTREE before running tests (G-061):** run `git status`/`git diff` from inside `.worktrees/<N>-a` — an empty worktree diff after editing means the edits landed in the MAIN checkout (`C:\Code\fredo`), not your worktree. Never leave the main checkout with uncommitted changes (the serving frontend and SI doc-sync depend on it staying clean); if edits land there, revert them and re-apply in the worktree, then verify.
 3. **Commit and push with `git push origin HEAD:spec/<N>`** (your one allowed direct write; `main`/`master` and `HEAD:main` are denied). If the push is rejected (another developer pushed first), pull/merge `spec/<N>` and rebase, then push again.
-4. `Status` comment **using the [Verification Comment template](artifacts.md#verification-comment-developer)** on the FEATURE issue: files changed, build PASSED/FAILED, tests passed/failed, acceptance criteria X/Y met, scope notes. The bare status is not enough — the verification results are what the Self-Improver (orchestrator) reviews against.
+4. `Status` comment **using the [Verification Comment template](../artifacts.md#verification-comment-developer)** on the FEATURE issue: files changed, build PASSED/FAILED, tests passed/failed, acceptance criteria X/Y met, scope notes. The bare status is not enough — the verification results are what the Self-Improver (orchestrator) reviews against.
 5. **Remove the worktree** — request the `remove-worktree` action once pushed. After reviewing your push, the Self-Improver marks the work complete (via a `Status` comment on the feature); the feature cannot move to testing until the spec branch has commits (the implementation exit gate).
 6. Retry: re-enter the worktree, pull the latest `spec/<N>`, fix exactly what was requested, commit + push, request `Status: <work> updated` via the `comment` action. When blocked on a dependency: request the `block` action (label `blocked`) and report to the Self-Improver — never stall silently.
 
@@ -24,7 +24,7 @@ Feature issue (implementation phase), the Implementation Plan (task decompositio
 
 ## Artifacts produced
 - Verified changes pushed to `spec/<N>` (github.md#branch-naming)
-- Verification comment (artifacts.md#verification-comment-developer)
+- Verification comment ([artifacts.md](../artifacts.md#verification-comment-developer))
 
 ## GitHub conventions
 - Worktree detached at the spec integration branch `spec/<N>` (via state machine `create-worktree`)

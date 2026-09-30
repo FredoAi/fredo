@@ -2,9 +2,9 @@
 
 - **Issue:** #2948 (spike: SQLite → embedded-PostgreSQL evaluation)
 - **Date:** 2026-09-26
-- **PoC artifact:** [`spikes/2948-embedded-postgres/`](../../spikes/2948-embedded-postgres/) (standalone crate)
-- **Raw numbers:** [`spikes/2948-embedded-postgres/results/measurements.json`](../../spikes/2948-embedded-postgres/results/measurements.json)
-- **9-question set:** [`spikes/2948-embedded-postgres/QUESTIONS.md`](../../spikes/2948-embedded-postgres/QUESTIONS.md)
+- **PoC artifact:** `spikes/2948-embedded-postgres/` (standalone crate — **no longer committed**; the spike was a disposable PoC)
+- **Raw numbers:** `spikes/2948-embedded-postgres/results/measurements.json` (withdrawn with the crate; the findings it produced are summarised inline below)
+- **9-question set:** `spikes/2948-embedded-postgres/QUESTIONS.md` (withdrawn with the crate)
 
 **Status: NO-GO** (for migrating Fredo's local persistence to embedded PostgreSQL as evaluated).
 
@@ -57,7 +57,7 @@ The PoC also verified `raw_json` byte-equality on read-back, a non-ASCII round-t
 ## The 9 Questions
 
 Full answers (with evidence or `Unknown` + blocker) are in
-[`QUESTIONS.md`](../../spikes/2948-embedded-postgres/QUESTIONS.md). Summary:
+`spikes/2948-embedded-postgres/QUESTIONS.md` (withdrawn with the crate). Summary:
 
 1. **Packaging/distribution** — runtime-download installs a 164,026,008 B PostgreSQL 18.6.0
    distribution and needs network on first run; `bundled` mode `Unknown` (not exercised).
@@ -160,11 +160,10 @@ Ordered by impact × likelihood. Each item has its impact and a mitigation or ac
 
 **No production migration occurred.** This spike changed **no file under `apps/tauri/**`** and did
 not touch `fredo.db`, the RTDB row-pipeline contract, or the observability `sqlx` dependency.
-`spikes/2948-embedded-postgres/` is a standalone package (not a workspace member; CI builds by
-explicit `--manifest-path`, so the PoC is never built by CI). The changed-file set versus `main`
-is exactly `spikes/2948-embedded-postgres/**` plus this `docs/research/` record. Both production
-gates remain green — see
-[`results/production-safety.txt`](../../spikes/2948-embedded-postgres/results/production-safety.txt).
+`spikes/2948-embedded-postgres/` was a standalone package (not a workspace member; CI built it by
+explicit `--manifest-path`). It was a **disposable** PoC and is no longer committed — this record is
+the durable output. Both production gates were green at the time; the captured evidence lived in
+`spikes/2948-embedded-postgres/results/production-safety.txt` (withdrawn with the crate).
 
 ## Reproduction Steps
 
@@ -177,8 +176,7 @@ cargo run --release --bin poc         # AC1 smoke: write-then-read, exits 0
 cargo run --release --bin measure     # ST-2: writes results/measurements.json
 ```
 
-Full prerequisites/expected output are in
-[`README.md`](../../spikes/2948-embedded-postgres/README.md).
+Full prerequisites/expected output were in the crate's `README.md` (withdrawn with the crate).
 
 ## PoC Artifact Path
 

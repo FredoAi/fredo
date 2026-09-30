@@ -1,12 +1,14 @@
 # embedded-postgres-migration — Regression
 
+> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+
 Feature: local persistence (embedded SQLite `fredo.db`, RTDB row store, observability
 `sqlx`). Issue #2964 is a **spike** whose migration approach must have ZERO production
 impact. This suite's regression here is the "must not change" baseline plus linked suites
 whose surface overlaps persistence.
 
 > The spike's only permitted changes are additive research/evidence artifacts (a design doc
-> under `docs/research/2964-postgres-migration-approach.md` and, optionally, an isolated
+> under `spikes/2964-postgres-migration/` and, optionally, an isolated
 > `spikes/2964-postgres-migration/` crate). Any deviation is a regression FAIL.
 
 ## No-change baseline
@@ -43,7 +45,7 @@ whose surface overlaps persistence.
   **FAIL:** any error or warning.
 
 - [ ] **R-7: prior #2948 artifacts unmodified.**
-  `spikes/2948-embedded-postgres/**` and `docs/research/2948-embedded-postgres-spike.md` are
+  `spikes/2948-embedded-postgres/**` and `spikes/2948-embedded-postgres-spike.md` are
   byte-identical to `main` (the spike is evidence input, not a target for revision).
   **FAIL:** any hunk under those paths.
 
