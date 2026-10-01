@@ -217,7 +217,12 @@ impl FeatureStore {
     }
 
     /// Normalize a raw physical type string to a [`ColumnType`].
-    fn normalize_column_type(type_str: &str) -> ColumnType {
+    ///
+    /// The ONE source-affinity map: the engine-selected store and the one-shot
+    /// `fredo.db` → PostgreSQL migration (`storage::migration`) both read a
+    /// physical type string through this function, so a source table's derived
+    /// target DDL can never diverge from the store's own table creation.
+    pub(crate) fn normalize_column_type(type_str: &str) -> ColumnType {
         match type_str.to_uppercase().as_str() {
             "INTEGER" => ColumnType::INTEGER,
             "REAL" => ColumnType::REAL,

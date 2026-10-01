@@ -726,6 +726,9 @@ pub fn run() {
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,
+            // One-shot `fredo.db` → PostgreSQL data migration (Spec #2977):
+            // the read-only live status hook (ST-6).
+            infrastructure::storage::migration::run::migration_status,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
             feature_store::feature_store_insert,

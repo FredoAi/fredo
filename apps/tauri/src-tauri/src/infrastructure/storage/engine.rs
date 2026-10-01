@@ -20,6 +20,8 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+use super::migration::{MigrationGate, MigrationOutcome, MigrationStatusView};
+
 // -- Selection input names ----------------------------------------------------
 
 /// **FS-2** test/QA hook: `FREDO_STORAGE_ENGINE` (`sqlite` | `postgres`)
@@ -665,6 +667,12 @@ pub struct StorageEngineState {
     choice: EngineChoice,
     fallback_reason: Mutex<Option<String>>,
     schema_inits: Mutex<Vec<PgSchemaInit>>,
+    /// The exclusive pre-install migration barrier (Spec #2977 ST-4). Held by
+    /// the migration leg across snapshot → copy → parity → install; writers
+    /// quiesce through [`Self::migration_gate`].
+    migration_gate: Arc<MigrationGate>,
+    /// The last migration outcome, for the read-only `migration_status` hook.
+    migration_outcome: Mutex<Option<MigrationOutcome>>,
 }
 
 impl StorageEngineState {
@@ -675,6 +683,8 @@ impl StorageEngineState {
             choice,
             fallback_reason: Mutex::new(None),
             schema_inits: Mutex::new(Vec::new()),
+            migration_gate: MigrationGate::new(),
+            migration_outcome: Mutex::new(None),
         })
     }
 
@@ -737,6 +747,36 @@ impl StorageEngineState {
         StorageEngineStatus {
             engine: self.handle.engine().dialect(),
             fallback_reason: self.fallback_reason(),
+        }
+    }
+
+    /// The ONE exclusive pre-install migration barrier (Spec #2977 ST-4).
+    ///
+    /// Writer call-sites (`writer_enter`) quiesce against it; the migration leg
+    /// (`migration_enter`) holds it across snapshot → copy → parity → install.
+    pub fn migration_gate(&self) -> Arc<MigrationGate> {
+        Arc::clone(&self.migration_gate)
+    }
+
+    /// Record the terminal outcome of the last migration leg (first-write is not
+    /// enforced — the supervisor runs the leg at most once per boot).
+    pub fn record_migration_outcome(&self, outcome: MigrationOutcome) {
+        *lock(&self.migration_outcome) = Some(outcome);
+    }
+
+    /// The read-only migration status view (derived from the recorded outcome).
+    pub fn migration_status_view(&self) -> MigrationStatusView {
+        match lock(&self.migration_outcome).as_ref() {
+            Some(outcome) => MigrationStatusView {
+                status: outcome.status,
+                tables: outcome.tables.clone(),
+                snapshot_path: outcome
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.path.display().to_string()),
+                completed: outcome.completed(),
+            },
+            None => MigrationStatusView::default(),
         }
     }
 }
