@@ -53,6 +53,38 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-281: compiler_coupled_migration_waves_leave_the_branch_unbuildable
+- **activation_date:** 2026-10-01
+- **observed:** #2976 (PG slice 3, resume) — the plan decomposed the async store migration into 7 logical sub-tasks (ST-1..ST-7) dispatched in 4 dependency-ordered waves, but the change is compiler-coupled: once ST-2 made the canonical store async, `lib.rs` and every store caller stopped compiling, so NO intermediate wave built and neither a wave-2 developer nor the tester could produce a green local receipt. The SI consolidated the remaining work into two COMPILABLE units (the RTDB cluster + the SpanStore half), each driven to a green `cargo check`/`clippy`/`test`, and the round passed.
+- **target_failure:** a plan decomposes a compiler-driven sweep (an async/signature change propagating across a crate) into logical sub-tasks dispatched as separate pushes, so each intermediate branch state fails to build and every developer/tester receipt for that wave is unverifiable — a silent quality hole masked by "the plan said wave 2".
+- **guardrail:** For a compiler-driven sweep, decompose and dispatch by COMPILABLE UNIT, not by logical sub-task: group the sub-tasks whose changes must land together for the crate to build, and require each unit's developer to produce a green CI-parity receipt. A plan whose waves leave the branch non-building between pushes is a plan defect; state the compilable units explicitly at convergence.
+- **home:** playbooks/software-architect.md (decomposition) + playbooks/self-improver.md (staffing/dispatch) + references.md (this record)
+- **effectiveness:** Confirmed (2026-10-01, #2976) — the SI re-grouped ST-3/4/6 + wiring into one unit (`23188b6`, 1051 tests green) and ST-5 + wiring into a second (`c83a0b6`, 1051 tests green); both receipts were real and the round passed with zero rework.
+
+### G-282: local_toolchain_lags_ci_so_a_lint_gate_fails_only_in_ci
+- **activation_date:** 2026-10-01
+- **observed:** #2976 — the developer's and tester's local receipts ran the machine's `stable` (1.94.1) while CI ran `stable` (1.99.0). `clippy::double_must_use` fires under 1.99 on `#[async_trait]`-generated async trait methods when `async-trait < 0.1.90` pushes a bare `#[must_use]` onto the desugared `Pin<Box<dyn Future>>`; the lint never appeared locally, so the required `rust-validate` check went red after a green local receipt and cost a scoped CI-fix round. Fixed by bumping `async-trait` to 0.1.92.
+- **target_failure:** a local lint/build receipt is produced under a different toolchain than the judging CI gate, so a lint that exists only in the newer toolchain (or only in the gate's dependency resolution) is invisible locally — the round burns on a CI-only failure a CI-parity receipt would have caught. (Same family as G-174.)
+- **guardrail:** A CI-parity receipt MUST run the SAME toolchain the gate uses (read/pin the CI toolchain; use `cargo +<version>`), and when the gate's clippy fails while local is green, suspect a toolchain/dependency-resolution skew before a source defect. CI may also run `cargo nextest` rather than `cargo test` — name the actual gate command.
+- **home:** playbooks/developer.md (verification) + playbooks/tester.md + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
+- **effectiveness:** Confirmed (2026-10-01, #2976) — reproducing under the CI toolchain (`cargo +1.99.0 clippy --locked -- -D warnings`) reproduced the 8 errors, and the dependency bump cleared them with a positive control (same toolchain, same source, only the dependency changed: 8 errors → 0); CI then went green.
+
+### G-283: plan_pins_an_ac_fallback_asset_a_concurrent_main_commit_deletes
+- **activation_date:** 2026-10-01
+- **observed:** #2976 — the QA plan's pre-authorized AC5 BEFORE fallback named the spike result files under `spikes/2964-postgres-migration/results/`. Between planning and the testing round, the `main` tip advanced with a docs/spikes consolidation commit that DELETED those paths, so the fallback was unreachable from the tested tree; the tester substituted a different recorded baseline and disclosed it. The PRIMARY BEFORE leg (`dev-env -At <pre-change-tip>`, still reachable in spec history) remained valid, so no row failed.
+- **target_failure:** a plan pins an AC fallback (a recorded baseline, a fixture, an evidence asset) to a repo path that a concurrent `main` commit can move or delete, so the fallback is gone by the time the round runs and the tester must improvise — or the row ships UNVERIFIED.
+- **guardrail:** A plan's fallback for an AC must reference a path reachable from the SPEC BRANCH'S OWN HISTORY (pin the SHA and read it via `git show <sha>:<path>`) or an in-repo asset under `.opencode/tests/**`/`.opencode/tmp/<issue>/` that the branch controls — never a bare path on `main` that a later commit can delete. State the pinned SHA at convergence.
+- **home:** playbooks/qa-expert.md + playbooks/software-architect.md + playbooks/self-improver.md (convergence) + references.md (this record)
+- **effectiveness:** Pending — created 2026-10-01 from the #2976 observation; the fallback was substituted and disclosed this round with no UNVERIFIED row. Re-validate on the next plan that names an AC fallback.
+
+### G-284: sqlite_only_telemetry_read_lever_unrunnable_once_the_store_migrates
+- **activation_date:** 2026-10-01
+- **observed:** #2976 — the live-policy plan's read lever is the `telemetry-query` skill (a read-only `sqlite3` wrapper over `fredo.db`). This slice migrates `telemetry_spans`/`chat_rows`/`tool_use_rows`/`agent_session_rows` to the shared PostgreSQL pool, so on a PG-selected boot the skill reads an empty/stale SQLite file; the tester substituted the managed `psql` (connection URI from `pg_supervisor_status` + the `postgres.password` AppStore key) and disclosed the substitution. No row failed, but the plan's named lever was unrunnable.
+- **target_failure:** a live-policy plan (or a standing QA recipe) names a read lever bound to the OLD storage engine, so once a store-migration slice lands the lever reads the wrong/empty store and the tester must improvise a new read path mid-round.
+- **guardrail:** Before a store-migration slice, the plan must name an engine-appropriate read lever (or the `telemetry-query` skill must gain a PostgreSQL mode), and the tester brief must state the PG read path (the managed `psql` with the supervisor's connection URI) so no round improvises it. A live-policy read gate that depends on a single-engine tool is a plan defect.
+- **home:** .opencode/skills/telemetry-query/SKILL.md (add a PG mode) + playbooks/qa-expert.md + playbooks/self-improver.md (tester brief) + references.md (this record)
+- **effectiveness:** Pending — created 2026-10-01 from the #2976 tester disclosure; the PG read mode is the open follow-up.
+
 ### G-277: migration_plan_creates_schema_only_on_the_pre_swap_engine
 - **activation_date:** 2026-09-27
 - **observed:** #2975 round 1 (live FAIL) — a storage-engine migration created the startup schema set (feature-data metadata + a feature table) inside the SYNCHRONOUS setup closure while the shared engine handle was still the incumbent (SQLite); the target-engine pool installed later on a background task and nothing re-created the schema on it. The target engine therefore had only the one table created during the pool build, every feature-data operation failed with a missing-relation error, and Mission Monitor rendered zero sessions on the migrated engine. One implementation round was burned before the fix (re-run the full startup schema set on the CANDIDATE pool BEFORE installing the handle, fail-closed on error).
@@ -921,6 +953,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Confirmed (2026-09-17, #2887) — the private-target + positive-control receipt found and cleared the real CI lint on the first attempt.
 - **re-validated:** 2026-09-18, #2888 — the receipt came from a cold worktree with a stated toolchain, an explicit positive control (a stubbed projection failed 97 assertions before the restore re-ran green) and a suspicious-speed check; the judging gate went green on the first attempt.
 - **re-validated:** 2026-09-18, #2893 — every Rust receipt stated the toolchain, used a worktree-private target directory and a positive control (a forced-fail assertion or lint), and stated the no-Rust rounds explicitly; all CI checks passed on the first run of the spec PR.
+- **recurred:** 2026-10-01, #2976 — the toolchain-skew half of this failure recurred: the developer's and tester's receipts ran local `stable` (1.94.1) while CI ran `stable` (1.99.0), so a clippy lint (`double_must_use` on `async-trait` output) fired only in CI and the green local receipts missed it; a scoped CI-fix round was needed. The generalised lesson is now recorded as **G-282** (a CI-parity receipt must run the CI toolchain). The private-target + positive-control half was applied by the CI-fix round and worked.
 
 ### G-173: dev_env_up_fast_path_serves_the_stale_build
 - **activation_date:** 2026-09-17

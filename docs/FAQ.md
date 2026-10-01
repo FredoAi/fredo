@@ -4,7 +4,7 @@
 
 ### What is Fredo?
 
-Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical SQLite rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and a companion backed by a managed out-of-process `llama-server`.
+Fredo is a desktop platform for working with AI coding agents. It packages a Rust backend (Tauri v2) and a reactive React 19 UI into a single desktop app. Agents send telemetry to local OTLP receivers, which persist every raw span/metric/log on receipt and then classify each one onto canonical rows. Those rows stream to the UI in real time as row deliveries, and declarative frontend features subscribe to them via `useEventRows` — no polling. Fredo also includes local OTLP receivers (gRPC :4317, HTTP :4318) and a companion backed by a managed out-of-process `llama-server`.
 
 ### Is this a commercial product?
 
@@ -21,7 +21,7 @@ Agents integrate through two paths:
 1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) using the OpenTelemetry SDK.
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools.
 
-Raw telemetry is persisted on receipt and then classified by the **RTDB ingest classifier** into canonical SQLite rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries. The `fredo` CLI can also inject CLI events through the same classifier path.
+Raw telemetry is persisted on receipt and then classified by the **RTDB ingest classifier** into canonical rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries. The `fredo` CLI can also inject CLI events through the same classifier path.
 
 ### Can I use Fredo entirely with the keyboard?
 
@@ -189,13 +189,13 @@ The production event pipeline (`infrastructure/rtdb/`):
 
 - **`ingest.rs`** — the IngestClassifier maps every OTLP span / CLI event onto canonical row upserts unconditionally (this is what makes replay work). Owns the correlation maps and the parent-child relationship registry.
 - **`attrs.rs`** — the single shared implementation of the GenAI-attribute extract helpers used by both the live classifier and the canonical backfill.
-- **`store.rs` / `cache.rs`** — SQLite-authoritative rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) behind an LRU cache + write-behind queue.
+- **`store.rs` / `cache.rs`** — engine-selected rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`; SQLite by default, the managed PostgreSQL cluster when the storage engine is enabled) behind an LRU cache + write-behind queue.
 - **`flush.rs`** — coalescing windows, batch chunking, and per-query replay-complete settle markers.
 - **`query/`** — the GraphQL-inspired typed query language, e.g. `chat(sessionId = "s1") { userMessage }`.
 
 ### What is the feature-owned data layer?
 
-A feature-owned, durable data layer ON TOP of the canonical rows (`infrastructure/feature_data/`). A feature declares the structure it owns plus a source mapping (a field projection over a canonical table, or a closed `sessionRollup` aggregate); the backend materializes the declared tables idempotently on every launch and owns their writes, so the data is correct while the feature's UI is closed. Declared tables live in the same `fredo.db` as `feature_<sanitized featureId>_<table>`, isolated per `featureId`, and survive restarts.
+A feature-owned, durable data layer ON TOP of the canonical rows (`infrastructure/feature_data/`). A feature declares the structure it owns plus a source mapping (a field projection over a canonical table, or a closed `sessionRollup` aggregate); the backend materializes the declared tables idempotently on every launch and owns their writes, so the data is correct while the feature's UI is closed. Declared tables live on the same active engine as `feature_<sanitized featureId>_<table>` (`fredo.db` by default), isolated per `featureId`, and survive restarts.
 
 Features then **read on demand** (`feature_data_read` — rows plus the scope version and the resolved retention bound) and **watch at table / record / field granularity** (`feature_data_watch` with optional field narrowing and an optional atomic initial snapshot; `feature_data_unwatch` per watch). Notifications ride the `"fredo-stream-event"` channel as `FeatureDeliveryBatch` (`{"featureBatch": …}`) carrying the changed fields and their CURRENT values at a version; a removal is a distinct `remove` with no value. Writes go through `feature_data_write` (feature-owned columns only; an unchanged value is a silent no-op) and deletions through `feature_data_delete` (tombstoned — never resurrected). Retention is declared per table and evicts oldest-first with a removal per evicted row. Materialization is schema-aware: a foreign same-named table is quarantined, never dropped, and a column removal/retype is refused with a hard named error.
 

@@ -323,7 +323,10 @@
                     "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
                     "sqlite3 -readonly*": "allow",
                     "git checkout -- *": "allow",
-                    "copilot*": "allow"
+                    "copilot*": "allow",
+                    "gh run view*": "allow",
+                    "git worktree list*": "allow",
+                    "git rev-parse*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"
@@ -424,7 +427,8 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny",
-                    "cargo run*": "allow"
+                    "cargo run*": "allow",
+                    "gh run view*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
@@ -556,7 +560,8 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Remove-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
-                    "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny"
+                    "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
+                    "gh run view*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny"

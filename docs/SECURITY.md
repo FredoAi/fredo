@@ -29,7 +29,7 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 **Protections:**
 - Loopback-only binding prevents external access
 - No authentication required — same threat model as IPC socket (local user only)
-- OTLP telemetry is persisted on receipt to the local `fredo.db` (`telemetry_spans`/`telemetry_metrics`/`telemetry_logs`) and classified into canonical rows by the RTDB ingest classifier (`infrastructure/rtdb/ingest.rs`). All persisted telemetry stays local — nothing leaves the machine. Retention is bounded by the existing `delete_expired` sweep (default 7 days).
+- OTLP telemetry is persisted on receipt to the active store (`fredo.db` by default; the managed PostgreSQL cluster when the storage engine is enabled) (`telemetry_spans`/`telemetry_metrics`/`telemetry_logs`) and classified into canonical rows by the RTDB ingest classifier (`infrastructure/rtdb/ingest.rs`). All persisted telemetry stays local — nothing leaves the machine. Retention is bounded by the existing `delete_expired` sweep (default 7 days).
 - Capturing a **GitHub Copilot CLI** session requires no credential held or handled by Fredo: the CLI authenticates itself and exports to plaintext loopback (`http://127.0.0.1:4318`) with no headers. Fredo sets no `OTEL_EXPORTER_OTLP_HEADERS`, adds no token store, and never logs or persists Copilot auth material.
 
 **Limitations:**
@@ -55,7 +55,7 @@ The companion's inference runtime is a managed `llama-server` **child process**,
 
 ## Embedded PostgreSQL (`features/pg_supervisor`)
 
-Slices 1-2 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle supervisor + the storage engine seam**: it is **disabled by default** (`postgres.enabled` absent; opt in via `FREDO_STORAGE_ENGINE=postgres`) and PostgreSQL is selected only for the migrated KV/feature store family, so the live default persistence is unchanged (`fredo.db`). The pool DSN embeds the slice-1 generated loopback secret held in the control-plane KV (`postgres.password`) — never logged, never in code; the role is the crate's local `postgres` superuser this slice (least-privilege packaging is a later slice). Data migration/parity is a later slice, so a PG-selected run presents an empty database and is a test/QA lever only.
+Slices 1-3 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle supervisor, the storage engine seam, and the migration of the KV/feature family, the RTDB canonical store, and the SpanStore (telemetry spans/metrics/logs)**: it is **disabled by default** (`postgres.enabled` absent; opt in via `FREDO_STORAGE_ENGINE=postgres`) and PostgreSQL is selected only for the migrated store family, so the live default persistence is unchanged (`fredo.db`). The pool DSN embeds the slice-1 generated loopback secret held in the control-plane KV (`postgres.password`) — never logged, never in code; the role is the crate's local `postgres` superuser this slice (least-privilege packaging is a later slice). Data migration/parity is a later slice, so a PG-selected run presents an empty database and is a test/QA lever only.
 
 **Protections:**
 - The managed postmaster is started only when the engine is explicitly enabled; it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)
@@ -137,7 +137,7 @@ Settings are persisted as plain key-value pairs in an SQLite database managed by
 
 - No credentials or secrets are stored in the settings database — OS keychain integration is planned for future phases
 - All SQL queries use parameterized statements via `rusqlite` — no string interpolation
-- Session history in the Mission Monitor is persisted in SQLite via the RTDB row store, applied to the module-scoped `StreamContext` row store in-memory. Live rows are unbounded; persistence retention is bounded by the `rtdb.retention_days` / `rtdb.max_rows` knobs.
+- Session history in the Mission Monitor is persisted via the RTDB row store on the active engine (SQLite by default; PostgreSQL when the storage engine is enabled), applied to the module-scoped `StreamContext` row store in-memory. Live rows are unbounded; persistence retention is bounded by the `rtdb.retention_days` / `rtdb.max_rows` knobs.
 
 ---
 
@@ -165,7 +165,7 @@ The React UI renders all agent-provided content via React's JSX (no `dangerously
 - The Rust backend and the React webview run in separate processes (Tauri architecture)
 - The webview has no access to the filesystem, PTY, or IPC socket — only to declared Tauri commands and events
 - The communication layer (`infrastructure/comm/`) and the RTDB row pipeline (`infrastructure/rtdb/`) provide the security boundary between agent input and frontend features. OTLP receivers persist raw spans and the ingest classifier maps them onto canonical rows; `fredo emit` CLI events are enriched by `InternalAdapter` and fed through the same classifier. `EventBus.emit_row_delivery_batch` emits `RowDeliveryBatch` envelopes on the `fredo-stream-event` IPC channel; raw `FredoEvent` never crosses IPC.
-- The feature-owned data layer (`infrastructure/feature_data/`) sits ON TOP of the canonical rows: a feature declares its structure and source mapping, and the backend materializes/writes its declared tables in the same `fredo.db` (`feature_<sanitized featureId>_<table>`). Every read/watch/write is validated against the requesting `featureId`, so one feature never observes or mutates another's data; canonical rows are READ-ONLY to the projection. Notifications ride the same `fredo-stream-event` channel as `FeatureDeliveryBatch` envelopes, discriminated in `AppProvider` before the RTDB validators.
+- The feature-owned data layer (`infrastructure/feature_data/`) sits ON TOP of the canonical rows: a feature declares its structure and source mapping, and the backend materializes/writes its declared tables on the same active engine (`feature_<sanitized featureId>_<table>`; `fredo.db` by default). Every read/watch/write is validated against the requesting `featureId`, so one feature never observes or mutates another's data; canonical rows are READ-ONLY to the projection. Notifications ride the same `fredo-stream-event` channel as `FeatureDeliveryBatch` envelopes, discriminated in `AppProvider` before the RTDB validators.
 - The PTY terminal spawns child processes as the same OS user; no privilege escalation occurs
 - OTLP receivers run as separate tokio tasks within the same process; no additional processes spawned
 

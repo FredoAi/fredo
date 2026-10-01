@@ -275,8 +275,8 @@ exports are idempotent: rows upsert on `(session_id, correlation_id)` with no
 
 ## 5. Source of truth + how to query
 
-- **Database:** `fredo.db` (`telemetry_spans`, `telemetry_metrics`, `telemetry_logs`).
-- **Query tool:** `.opencode/skills/telemetry-query/telemetry-query.ps1` (read-only sqlite3 wrapper).
+- **Database:** the active store — `fredo.db` by default, or the managed PostgreSQL cluster when the storage engine is enabled (`FREDO_STORAGE_ENGINE=postgres`) — holding `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`.
+- **Query tool:** `.opencode/skills/telemetry-query/telemetry-query.ps1` (read-only sqlite3 wrapper — SQLite path only; when the storage engine is PostgreSQL, query the managed cluster with its `psql`).
 - **Emission side:** `apps/opencode-plugin/` (fredo plugin) — spans/metrics/logs.
 - **Adapter (consumption side):** `apps/tauri/src-tauri/src/infrastructure/comm/adapters/otlp.rs` — maps `gen_ai.input.messages`/`gen_ai.output.messages` (parsed JSON-string message arrays) to `userMessage`/`agentReply` (the frontend contract).
 - **Registry (source of truth for `gen_ai.*` names):** OTel GenAI semantic conventions — https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/

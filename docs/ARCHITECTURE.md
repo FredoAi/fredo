@@ -9,7 +9,7 @@ Agents integrate through two paths:
 1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`:4317`) using the OpenTelemetry SDK
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools
 
-OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no span dropped) and then classified by the **RTDB ingest classifier** into typed SQLite rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries over the `"fredo-stream-event"` IPC channel (the RTDB is the only delivery path; the v1 contract-engine pipeline was deleted). The React UI reacts in real time — no polling.
+OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no span dropped) and then classified by the **RTDB ingest classifier** into typed rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`; SQLite by default, the managed PostgreSQL cluster when the storage engine is enabled) that stream to the frontend as row deliveries over the `"fredo-stream-event"` IPC channel (the RTDB is the only delivery path; the v1 contract-engine pipeline was deleted). The React UI reacts in real time — no polling.
 
 ---
 
@@ -111,7 +111,7 @@ No raw `FredoEvent` crosses IPC (it is the CLI wire format only); the `"fredo-st
 
 ### Feature-Owned Data Layer (`infrastructure/feature_data/`)
 
-A feature declares, on the frontend, the data structure it owns plus the source mapping onto already-captured canonical activity (or a closed `sessionRollup` aggregate over it). The backend materializes the declared tables idempotently on every launch, owns the writes, and persists them in the SAME `fredo.db` as `feature_<sanitized featureId>_<table>` (declaration metadata in `feature_data_tables`, deletion tombstones in `feature_data_tombstones`).
+A feature declares, on the frontend, the data structure it owns plus the source mapping onto already-captured canonical activity (or a closed `sessionRollup` aggregate over it). The backend materializes the declared tables idempotently on every launch, owns the writes, and persists them on the SAME active engine (`fredo.db` by default) as `feature_<sanitized featureId>_<table>` (declaration metadata in `feature_data_tables`, deletion tombstones in `feature_data_tombstones`).
 
 - **Materialization is schema-aware.** A same-named table that is not declaration-shaped is quarantined under a `__legacy_<timestamp>` name (never dropped) and the declared schema is created; additive column changes are applied in place, and a column removal/retype is refused with a hard named error. Declarations and their rows survive restarts; a one-time read-only projection backfill seeds a new declared table from canonical history (marker-gated, per-table, set only on success).
 - **Projection is unconditional.** A canonical row upsert updates the declared rows whether or not a feature UI, read, or watch is open (`R-4.2`). A row-sourced projection costs O(rows of its source); an aggregate recomputes once per distinct group, not once per input row.
@@ -135,11 +135,11 @@ Parent-child session merging happens in the **ingest classifier's relationship r
 
 ## RTDB Row Store
 
-SQLite-authoritative typed rows behind an LRU cache — the production event pipeline.
+Engine-selected typed rows (SQLite by default; PostgreSQL when the storage engine is enabled) behind an LRU cache — the production event pipeline.
 
 ### Row types + queries
 
-Three canonical tables in `fredo.db` — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`. Every row carries a **`provider`** attribution derived from the OTLP resource identity `service.name` (`fredo-opencode-plugin` → `open_code`, `copilot-cli` → `copilot_cli`, else the documented `unknown` fallback — never the model provider carried by `telemetry_spans.provider`), resolved by ONE shared rule (`rtdb/attrs.rs::resolve_provider_token`) used by both the live classifier and a one-shot re-derivation pass (`rtdb/backfill.rs`, gated by its own marker under an independent key) that upgrades a pre-existing migration-defaulted row **in place at the row's own `(session_id, correlation_id)`** — it never re-mints a key, so it creates no parallel rows. The column is appended by an idempotent migration as `provider TEXT NOT NULL DEFAULT 'unknown'`.
+Three canonical tables on the active engine (`fredo.db` by default) — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`. Every row carries a **`provider`** attribution derived from the OTLP resource identity `service.name` (`fredo-opencode-plugin` → `open_code`, `copilot-cli` → `copilot_cli`, else the documented `unknown` fallback — never the model provider carried by `telemetry_spans.provider`), resolved by ONE shared rule (`rtdb/attrs.rs::resolve_provider_token`) used by both the live classifier and a one-shot re-derivation pass (`rtdb/backfill.rs`, gated by its own marker under an independent key) that upgrades a pre-existing migration-defaulted row **in place at the row's own `(session_id, correlation_id)`** — it never re-mints a key, so it creates no parallel rows. The column is appended by an idempotent migration as `provider TEXT NOT NULL DEFAULT 'unknown'`.
 
 The orphaned `contract_events` table (a pre-RTDB v1 data artifact) stays in `fredo.db` — it has zero code references and destructive data cleanup is out of scope; it is left in place.
 
@@ -197,7 +197,7 @@ src-tauri/src/
 |   +-- telemetry/              — Telemetry Tauri commands
 |       +-- mod.rs              — TelemetryFeature (DesktopCapable)
 |       +-- commands.rs         — telemetry_get_stats, telemetry_purge, telemetry_toggle, telemetry_metrics_toggle, telemetry_logging_toggle, telemetry_logging_set_level
-|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor + shared-pool installer (slices 1-2; PostgreSQL is DISABLED by default and selected only via the engine seam — the KV/feature store family is migrated, the RTDB/Span stores are not)
+|   +-- pg_supervisor/          — Embedded-PostgreSQL lifecycle supervisor + shared-pool installer (slices 1-3; PostgreSQL is DISABLED by default and selected only via the engine seam — the KV/feature family AND the RTDB/Span stores are migrated)
 |       +-- mod.rs              — constants (wall-clock bounds, AppStore KV keys, env-gated test overrides) + module tree
 |       +-- runtime.rs          — bounded `PgRuntime` (setup/start/readiness/stop) + synchronous watchdog hard-kill + RAII `Drop` teardown
 |       +-- sweep.rs            — PID-marker + `postmaster.pid` image-guarded orphan sweep (kill only a live `postgres.exe`)
@@ -225,7 +225,7 @@ src-tauri/src/
     |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
     |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables
     |   +-- merge.rs            — KeepFirst / LastNonZero / LastWins merge rules
-    |   +-- store.rs            — RtdbStore (SQLite; never touches telemetry_spans)
+    |   +-- store.rs            — RtdbStore (engine-selected; never touches telemetry_spans)
     |   +-- cache.rs            — LRU row cache + write-behind queue + retention knobs
     |   +-- project.rs          — RowDelivery / RowDeliveryBatch projection
     |   +-- query/              — the RTDB query language (parse + schema validation)
@@ -246,10 +246,10 @@ src-tauri/src/
     |   +-- lifecycle.rs        — declared-table retention + tombstone guard
     |   +-- commands.rs         — feature_data_declare/read/watch/unwatch/write/delete
     +-- storage/
-    |   +-- engine.rs           — the storage engine seam: Dialect/StoreEngine/SqliteEngine/PgEngine + swap-once EngineHandle + pool constants (slice 2)
+    |   +-- engine.rs           — the storage engine seam: Dialect/StoreEngine/SqliteEngine/PgEngine + swap-once EngineHandle + pool constants + the read-only canonical handle (slices 2-3)
     |   +-- mod.rs              — AppStore (KV store on the shared engine: synchronous control plane + async data plane)
     |   +-- feature_store.rs    — FeatureStore (typed feature-level tables on the shared engine)
-    |   +-- span_store.rs       — SpanStore (telemetry span persistence; still SQLite — slice 3)
+    |   +-- span_store.rs       — SpanStore (telemetry span persistence; engine-selected)
     +-- telemetry/              — Telemetry tracing + metrics + logging
     |   +-- mod.rs              — SpanCollector + SpanBuffer
     |   +-- metrics_collector.rs — MetricCollector
@@ -295,7 +295,7 @@ The `FeatureStore` (`infrastructure/storage/feature_store.rs`) provides a generi
 
 **Frontend client**: `shared/lib/featureStore.ts` wraps each command via `adapterBridge.invoke()`.
 
-**Storage engine seam (slice 2 of the PostgreSQL migration).** The KV/feature store family (`AppStore`, `FeatureStore`, `FeatureDataStore`, and the read-only `ProjectionEngine` + declared-table backfill) no longer opens its own SQLite connection. They share ONE `EngineHandle` (`infrastructure/storage/engine.rs`) — a swap-once handle that starts on SQLite and is installed to PostgreSQL exactly once, on the background task after the slice-1 supervisor's `await_ready` resolves and the startup schema set has been created on the candidate pool. The engine is selected by `FREDO_STORAGE_ENGINE` (env) over the `postgres.enabled` KV key; the default is SQLite. If PostgreSQL selection/start/pool/schema-init fails, nothing is installed and the app stays on SQLite, leaving `fredo.db` untouched (fail-closed). SQLite DDL/statements are translated 1:1 (`TEXT→text`, `INTEGER→bigint`, `REAL→double precision`, `BLOB→bytea`; `INSERT OR IGNORE→ON CONFLICT DO NOTHING`; `sqlite_master→to_regclass`; `pragma_table_info→information_schema.columns`; `?n→$n`) and dynamic identifiers are double-quoted and namespace-validated. `AppStore` keeps a synchronous control plane (the three `postgres.*` keys) and an engine-selected async data plane. `SpanStore`/`RtdbStore` and the write-behind/LRU path are slice 3 and remain SQLite. PostgreSQL is NOT enabled by default (data migration is a later slice); its pool is sized for a single-client desktop (`max_connections` 8).
+**Storage engine seam (slices 2-3 of the PostgreSQL migration).** The KV/feature store family (`AppStore`, `FeatureStore`, `FeatureDataStore`, and the read-only `ProjectionEngine` + declared-table backfill) no longer opens its own SQLite connection. They share ONE `EngineHandle` (`infrastructure/storage/engine.rs`) — a swap-once handle that starts on SQLite and is installed to PostgreSQL exactly once, on the background task after the slice-1 supervisor's `await_ready` resolves and the startup schema set has been created on the candidate pool. The engine is selected by `FREDO_STORAGE_ENGINE` (env) over the `postgres.enabled` KV key; the default is SQLite. If PostgreSQL selection/start/pool/schema-init fails, nothing is installed and the app stays on SQLite, leaving `fredo.db` untouched (fail-closed). SQLite DDL/statements are translated 1:1 (`TEXT→text`, `INTEGER→bigint`, `REAL→double precision`, `BLOB→bytea`; `INSERT OR IGNORE→ON CONFLICT DO NOTHING`; `sqlite_master→to_regclass`; `pragma_table_info→information_schema.columns`; `?n→$n`) and dynamic identifiers are double-quoted and namespace-validated. `AppStore` keeps a synchronous control plane (the three `postgres.*` keys) and an engine-selected async data plane. Slice 3 puts `RtdbStore` and `SpanStore` on the same `EngineHandle` (plus a read-only canonical handle for the backfill/projection paths): all six canonical/telemetry tables are created 1:1 on the active engine and the perf-sensitive write-behind/LRU contract is preserved verbatim (cache 10,000 / queue 4,096 / non-blocking `try_send` / ~30 ms coalescing / one transaction per kind per batch / 60-minute prune / durable `COALESCE(MAX(seq),0)`). PostgreSQL is NOT enabled by default (data migration is a later slice); its pool is sized for a single-client desktop (`max_connections` 8).
 
 **Idempotency**: `feature_store_insert` uses `INSERT OR IGNORE`. Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. Delivery-level idempotency in the row pipeline is guaranteed by the RTDB durable per-key `seq` (`rtdb/store.rs` `next_seq`, seeded from MAX(seq) in storage — store.rs:628) plus the merge rules (`rtdb/merge.rs`) that drop stale patches — no adapter re-delivers events.
 
@@ -353,7 +353,7 @@ Observes the non-OTLP FredoEvent stream. Derives:
 | `span_duration_ms` | Histogram | Span duration recorded on completion, bucketed: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000] ms |
 
 ### MetricCollection
-The `MetricCollector` buffers aggregated metrics in-memory. Counters accumulate; histogram buckets accumulate; gauge values are snapshotted. Pre-aggregated `MetricPoint` rows are flushed to SQLite at configurable intervals (default 60s, configurable via `tracing.metrics_aggregation_s` setting). Flush writes one row per metric label combination — no per-event DB writes.
+The `MetricCollector` buffers aggregated metrics in-memory. Counters accumulate; histogram buckets accumulate; gauge values are snapshotted. Pre-aggregated `MetricPoint` rows are flushed to the active engine at configurable intervals (default 60s, configurable via `tracing.metrics_aggregation_s` setting). Flush writes one row per metric label combination — no per-event DB writes.
 
 ### SpanStore Extension
 
@@ -385,7 +385,7 @@ The `telemetry` module also collects structured logs from the Rust backend via t
 
 ### LogCollector
 
-Observes `tracing` events through a custom `LogBridgeLayer` implementing `tracing_subscriber::Layer<S>`. Converts `tracing::Event` records into `LogRecord` structs (level, target, message, attributes_json, trace_id, span_id, session_id, timestamp). Buffered in a `LogBuffer` (Mutex-protected Vec) that flushes to SQLite at 5-second intervals or when 500 records accumulate.
+Observes `tracing` events through a custom `LogBridgeLayer` implementing `tracing_subscriber::Layer<S>`. Converts `tracing::Event` records into `LogRecord` structs (level, target, message, attributes_json, trace_id, span_id, session_id, timestamp). Buffered in a `LogBuffer` (Mutex-protected Vec) that flushes to the active engine at 5-second intervals or when 500 records accumulate.
 
 ### LogBridgeLayer
 
