@@ -18,15 +18,19 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
+use rusqlite::Connection;
 use sqlx::PgPool;
 
-use crate::infrastructure::storage::engine::StorageEngineState;
+use crate::infrastructure::storage::engine::{quote_ident, StorageEngineState};
 
-use super::copy::copy_table;
+use super::copy::copy_table_with_fault;
 use super::gate::MigrationGate;
-use super::snapshot::{open_snapshot_read_only, take_snapshot};
-use super::tables::enumerate_tables;
-use super::{MigrationOutcome, MigrationStatus, MIGRATION_BOUND, MIGRATION_COMPLETED_KEY};
+use super::snapshot::{open_snapshot_read_only, take_snapshot_with_fault};
+use super::tables::{enumerate_tables, TableSpec};
+use super::{
+    current_migration_fault, MigrationFault, MigrationOutcome, MigrationStatus, MIGRATION_BOUND,
+    MIGRATION_COMPLETED_KEY,
+};
 
 /// The read-only status view the `migration_status` command exposes.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -87,10 +91,13 @@ pub async fn run_pre_install(
     //    writer can wait out a full leg before giving up.
     let _guard = gate.migration_enter().await?;
 
-    // 3-5. The whole leg under the wall-clock bound (G-263).
+    // 3-5. The whole leg under the wall-clock bound (G-263). The G-275 fault
+    //      seam is read ONCE here; unset ⇒ `None` ⇒ the default path is
+    //      byte-identical.
+    let fault = current_migration_fault();
     match tokio::time::timeout(
         MIGRATION_BOUND,
-        run_locked(source_db, migration_dir, pool, started),
+        run_locked(source_db, migration_dir, pool, started, fault.as_ref()),
     )
     .await
     {
@@ -106,14 +113,20 @@ async fn run_locked(
     migration_dir: &Path,
     pool: &PgPool,
     started: Instant,
+    fault: Option<&MigrationFault>,
 ) -> Result<MigrationOutcome> {
-    let snapshot = take_snapshot(source_db, migration_dir)?;
+    let snapshot = take_snapshot_with_fault(source_db, migration_dir, fault)?;
     let mut conn = open_snapshot_read_only(&snapshot.path)?;
     let tables = enumerate_tables(&conn)?;
 
+    // Resolve `1`/`true` to the first non-empty table (sorted name), so the copy
+    // seam only ever sees a concrete table.
+    let resolved_fault = resolve_fault(fault, &conn, &tables)?;
+    let fault = resolved_fault.as_ref();
+
     let mut parities = Vec::with_capacity(tables.len());
     for spec in &tables {
-        let parity = copy_table(&mut conn, pool, spec).await?;
+        let parity = copy_table_with_fault(&mut conn, pool, spec, fault).await?;
         if !parity.count_match || !parity.checksum_match {
             return Err(anyhow!(
                 "[migration] parity mismatch on '{}': rows {}/{} checksums {}/{}",
@@ -147,6 +160,40 @@ async fn run_locked(
     })
 }
 
+/// Resolve the fault seam against the enumerated source tables.
+///
+/// [`MigrationFault::DropRowFirstNonEmpty`] (`1`/`true`) becomes a concrete
+/// [`MigrationFault::DropRow`] for the first non-empty table in name order (the
+/// enumeration is already name-sorted). Any other fault is passed through. The
+/// count query runs ONLY for the first-non-empty form, so the default and every
+/// other fault path is untouched.
+fn resolve_fault(
+    fault: Option<&MigrationFault>,
+    conn: &Connection,
+    tables: &[TableSpec],
+) -> Result<Option<MigrationFault>> {
+    match fault {
+        Some(MigrationFault::DropRowFirstNonEmpty) => {
+            for spec in tables {
+                let count: i64 = conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {}", quote_ident(&spec.name)),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .with_context(|| {
+                        format!("[migration] count source table '{}'", spec.name)
+                    })?;
+                if count > 0 {
+                    return Ok(Some(MigrationFault::DropRow(spec.name.clone())));
+                }
+            }
+            Ok(None)
+        }
+        other => Ok(other.cloned()),
+    }
+}
+
 /// The read-only live status hook (no state mutation). Registered in `lib.rs`.
 #[tauri::command]
 pub async fn migration_status(app: tauri::AppHandle) -> MigrationStatusView {
@@ -160,6 +207,7 @@ pub async fn migration_status(app: tauri::AppHandle) -> MigrationStatusView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::storage::migration::snapshot::SNAPSHOT_FILENAME;
     use std::future::Future;
     use std::path::Path;
 
@@ -175,6 +223,76 @@ mod tests {
         let gate = MigrationGate::new();
         let dir = Path::new(".");
         assert_send(run_pre_install(dir, dir, &pool, &gate));
+    }
+
+    /// A lazily-connected pool that never dials a live server.
+    fn lazy_pool() -> PgPool {
+        sqlx::postgres::PgPoolOptions::new()
+            .min_connections(0)
+            .max_connections(1)
+            .connect_lazy("postgres://postgres:pw@127.0.0.1:1/none")
+            .expect("lazy pool should build without connecting")
+    }
+
+    fn seed_fixture(path: &Path) {
+        let conn = Connection::open(path).expect("open fixture");
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('a', '1');
+             CREATE TABLE rows (id INTEGER PRIMARY KEY, note TEXT);
+             INSERT INTO rows (id, note) VALUES (1, 'x'), (2, NULL);",
+        )
+        .expect("seed fixture");
+    }
+
+    /// The fail-closed decision: a forced snapshot failure returns `Err` on a
+    /// temp SQLite fixture and writes NO snapshot — and, crucially, never reaches
+    /// the (unreachable) pool, so the decision is deterministic without a server.
+    #[tokio::test]
+    async fn run_locked_fails_closed_on_snapshot_fault() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+        seed_fixture(&source);
+
+        let result = run_locked(
+            &source,
+            &migration_dir,
+            &lazy_pool(),
+            Instant::now(),
+            Some(&MigrationFault::SnapshotFail),
+        )
+        .await;
+
+        assert!(result.is_err(), "a forced snapshot failure must fail closed");
+        assert!(
+            !migration_dir.join(SNAPSHOT_FILENAME).exists(),
+            "a failed snapshot step must write no snapshot"
+        );
+    }
+
+    /// `1`/`true` resolves to the first NON-empty table in name order; the
+    /// fault seam never fires for an unknown/blank value.
+    #[test]
+    fn resolve_fault_maps_first_non_empty_to_a_concrete_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE empty_table (id INTEGER PRIMARY KEY);
+             CREATE TABLE zebra (id INTEGER PRIMARY KEY);
+             CREATE TABLE apple (id INTEGER PRIMARY KEY, note TEXT);
+             INSERT INTO apple (id, note) VALUES (1, 'x');
+             INSERT INTO zebra (id) VALUES (1);",
+        )
+        .unwrap();
+        let tables = enumerate_tables(&conn).unwrap();
+
+        let resolved = resolve_fault(Some(&MigrationFault::DropRowFirstNonEmpty), &conn, &tables)
+            .unwrap()
+            .expect("a non-empty table exists");
+        // Name order: apple < empty_table < zebra; apple is the first non-empty.
+        assert_eq!(resolved, MigrationFault::DropRow("apple".to_string()));
+
+        assert_eq!(resolve_fault(None, &conn, &tables).unwrap(), None);
     }
 
     #[test]

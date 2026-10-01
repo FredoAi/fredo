@@ -22,7 +22,7 @@ use crate::infrastructure::storage::engine::quote_ident;
 use super::copy::source_cell;
 use super::parity::RowHasher;
 use super::tables::{enumerate_tables, TableSpec};
-use super::TableParity;
+use super::{MigrationFault, TableParity, MIGRATION_FORCE_MISMATCH_ENV};
 
 /// The single, stable snapshot filename under the migration dir (Q-13).
 pub const SNAPSHOT_FILENAME: &str = "fredo.pre-cutover.db";
@@ -41,13 +41,29 @@ pub struct SnapshotRecord {
     pub source_bytes: u64,
 }
 
-/// Take the ONE pre-cutover snapshot of `source_db` into `migration_dir`.
+/// Take the ONE pre-cutover snapshot of `source_db` into `migration_dir`
+/// (fault-seam-free default path).
+pub fn take_snapshot(source_db: &Path, migration_dir: &Path) -> Result<SnapshotRecord> {
+    take_snapshot_with_fault(source_db, migration_dir, None)
+}
+
+/// Take the ONE pre-cutover snapshot, honouring the **G-275** fault seam.
 ///
 /// The source is opened read-write ONLY for the sanctioned
 /// `wal_checkpoint(TRUNCATE)` touch and the `VACUUM INTO` (which reads the
 /// source and writes the destination — it never mutates `fredo.db`). A missing
 /// source is an error, never an accidentally-created empty database.
-pub fn take_snapshot(source_db: &Path, migration_dir: &Path) -> Result<SnapshotRecord> {
+///
+/// When `fault` is [`MigrationFault::SnapshotFail`] the step fails closed before
+/// touching the source (no snapshot is written), so the caller installs nothing.
+pub fn take_snapshot_with_fault(
+    source_db: &Path,
+    migration_dir: &Path,
+    fault: Option<&MigrationFault>,
+) -> Result<SnapshotRecord> {
+    if matches!(fault, Some(MigrationFault::SnapshotFail)) {
+        bail!("[migration] snapshot forced to fail via {MIGRATION_FORCE_MISMATCH_ENV}");
+    }
     if !source_db.exists() {
         bail!(
             "[migration] source database '{}' does not exist",
@@ -307,6 +323,23 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 2, "the snapshot must replace the target");
+    }
+
+    #[test]
+    fn snapshot_fault_fails_closed_without_writing_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+        seed_source(&source);
+
+        let error =
+            take_snapshot_with_fault(&source, &migration_dir, Some(&MigrationFault::SnapshotFail))
+                .unwrap_err();
+        assert!(error.to_string().contains("forced to fail"), "{error}");
+        assert!(
+            !migration_dir.join(SNAPSHOT_FILENAME).exists(),
+            "a forced snapshot failure must not write a snapshot"
+        );
     }
 
     #[test]

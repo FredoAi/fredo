@@ -40,6 +40,9 @@ use tauri::{AppHandle, Manager};
 use crate::infrastructure::storage::engine::{
     build_pg_pool, EngineChoice, PgPoolStage, StorageEngineState,
 };
+use crate::infrastructure::storage::migration::{
+    resolve_app_data_dir, resolve_migration_dir, run_pre_install, MigrationOutcome, MigrationStatus,
+};
 use crate::infrastructure::storage::AppStore;
 
 use super::lock::PgDataDirLock;
@@ -239,7 +242,7 @@ pub fn start_supervisor(app: &AppHandle) {
         Some(store) => store.inner().clone(),
         None => return,
     };
-    let app_data_dir = match app.path().app_data_dir() {
+    let os_app_data_dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
             tracing::error!(
@@ -250,6 +253,11 @@ pub fn start_supervisor(app: &AppHandle) {
             return;
         }
     };
+    // Spec #2977 ST-6 (G-275): the SAME app-data-dir resolver `lib.rs` injects, so
+    // the migration source `<dir>/fredo.db` and `restore_snapshot`'s target can
+    // never diverge. The managed-PG data dir, install dir, and lock deliberately
+    // stay on the OS dir (see `bootstrap` below).
+    let data_dir = resolve_app_data_dir(&os_app_data_dir);
 
     // Spec #2975 ST-2: the resolved engine choice drives the boot decision. The
     // env lever `FREDO_STORAGE_ENGINE` (resolved by `select_engine` at setup and
@@ -261,7 +269,7 @@ pub fn start_supervisor(app: &AppHandle) {
         None => pg_enabled(&store),
     };
 
-    match bootstrap(&app_data_dir, &store, enabled) {
+    match bootstrap(&os_app_data_dir, &store, enabled) {
         Bootstrap::Disabled => {
             tracing::info!(
                 target: "fredo::pg_supervisor",
@@ -283,25 +291,27 @@ pub fn start_supervisor(app: &AppHandle) {
             );
             app.manage(Arc::new(PgSupervisorState::failed_only(
                 error,
-                super::resolve_data_dir(&app_data_dir).display().to_string(),
+                super::resolve_data_dir(&os_app_data_dir)
+                    .display()
+                    .to_string(),
             )));
         }
-        Bootstrap::Locked(lock, data_dir) => {
+        Bootstrap::Locked(lock, pg_data_dir) => {
             tracing::info!(
                 target: "fredo::pg_supervisor",
                 lock = %lock.path().display(),
-                data_dir = %data_dir,
+                data_dir = %pg_data_dir,
                 "embedded PostgreSQL enabled; holding the exclusive data-dir lock"
             );
-            app.manage(Arc::new(PgSupervisorState::new(None, Some(lock), data_dir)));
+            app.manage(Arc::new(PgSupervisorState::new(None, Some(lock), pg_data_dir)));
             let handle = app.clone();
-            let app_data_dir = app_data_dir.clone();
+            let os_app_data_dir = os_app_data_dir.clone();
             // G-273 / R-2.3: setup NEVER awaits the boot — the whole
             // setup/start/readiness leg runs on a background task so the webview
             // shell renders while the postmaster boots. Only `await_ready`-gated
             // store reads (later slices) block.
             tauri::async_runtime::spawn(async move {
-                run_start(handle, app_data_dir).await;
+                run_start(handle, os_app_data_dir, data_dir).await;
             });
         }
     }
@@ -310,7 +320,11 @@ pub fn start_supervisor(app: &AppHandle) {
 /// The background start: bounded setup → start → marker → readiness. On any
 /// bounded failure, tear down under a bounded stop, clear the marker, and publish
 /// `Failed` (R-1.3). Never awaited from `setup`.
-async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
+///
+/// `os_app_data_dir` roots the managed-PG data/install dirs + lock; `data_dir`
+/// is the resolved app-data dir (G-275) that holds the migration source
+/// `fredo.db` and the default migration scratch dir.
+async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) {
     let state = match app.try_state::<Arc<PgSupervisorState>>() {
         Some(state) => state,
         None => return,
@@ -326,7 +340,7 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
         .map(|state| state.inner().clone());
 
     let password = ensure_password(&store);
-    let mut runtime = PgRuntime::new(&app_data_dir, password);
+    let mut runtime = PgRuntime::new(&os_app_data_dir, password);
     tracing::info!(
         target: "fredo::pg_supervisor",
         host = DEFAULT_PG_HOST,
@@ -376,11 +390,50 @@ async fn run_start(app: AppHandle, app_data_dir: PathBuf) {
                     match build_pg_pool(&url, pool_force_fail_stage()).await {
                         Ok(pg) => match engine.run_pg_schema_inits(&pg.pool) {
                             Ok(()) => {
-                                engine.install_postgres(pg);
-                                tracing::info!(
-                                    target: "fredo::pg_supervisor",
-                                    "storage engine installed: postgres"
-                                );
+                                // Spec #2977 ST-5: the one-shot `fredo.db` →
+                                // PostgreSQL data migration is the LAST pre-install
+                                // step, BETWEEN the schema inits and the install.
+                                // Fail-closed (R-2.2): a failed leg records the
+                                // reason and installs NOTHING — the engine stays on
+                                // SQLite and the next boot re-runs the idempotent
+                                // read-only export. The marker is written inside
+                                // `run_pre_install` ONLY on a fully parity-clean run.
+                                let source_db = data_dir.join("fredo.db");
+                                let migration_dir = resolve_migration_dir(&data_dir);
+                                let gate = engine.migration_gate();
+                                let migration_started = std::time::Instant::now();
+                                match run_pre_install(
+                                    &source_db,
+                                    &migration_dir,
+                                    &pg.pool,
+                                    &gate,
+                                )
+                                .await
+                                {
+                                    Ok(outcome) => {
+                                        engine.record_migration_outcome(outcome);
+                                        engine.install_postgres(pg);
+                                        tracing::info!(
+                                            target: "fredo::pg_supervisor",
+                                            "storage engine installed: postgres"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        let reason = format!("[migration] {error:#}");
+                                        tracing::error!(
+                                            target: "fredo::pg_supervisor",
+                                            reason = %reason,
+                                            "data migration failed; storage engine stays on SQLite (fail-closed)"
+                                        );
+                                        engine.record_migration_outcome(MigrationOutcome {
+                                            status: MigrationStatus::Failed,
+                                            tables: Vec::new(),
+                                            snapshot: None,
+                                            elapsed_ms: migration_started.elapsed().as_millis(),
+                                        });
+                                        engine.set_fallback_reason(reason);
+                                    }
+                                }
                             }
                             Err(error) => {
                                 let reason = format!("[pool:schemaInit] {error:#}");

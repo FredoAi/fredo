@@ -128,10 +128,16 @@ pub fn run() {
     );
 
     builder.setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to resolve app data dir");
+            // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
+            // `FREDO_DATA_DIR` redirects the source `fredo.db` (and the AC3 backout
+            // target) to an in-repo fixture; the managed-PG install dir + lock stay
+            // on the OS dir (`features::pg_supervisor`), so a fixture run reuses the
+            // existing install. Inert when unset (the default path is byte-identical).
+            let data_dir = infrastructure::storage::migration::resolve_app_data_dir(
+                &app.path()
+                    .app_data_dir()
+                    .expect("Failed to resolve app data dir"),
+            );
 
             // -- Shared storage-engine seam (Spec #2975 ST-2) ------------------
             // ONE shared SQLite engine + the swap-once `EngineHandle`, built

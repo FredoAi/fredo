@@ -17,7 +17,7 @@
 //! with `OVERRIDING SYSTEM VALUE` and their sequence is advanced to the migrated
 //! maximum, so post-migration inserts cannot collide with a carried id.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use futures_util::TryStreamExt;
 use rusqlite::Connection;
 use sqlx::{PgPool, Postgres, Row as _};
@@ -27,14 +27,43 @@ use crate::infrastructure::storage::feature_store::ColumnType;
 
 use super::parity::{CellValue, RowHasher};
 use super::tables::{ColumnSpec, TableSpec};
-use super::{TableParity, MIGRATION_CHUNK_ROWS};
+use super::{MigrationFault, TableParity, MIGRATION_CHUNK_ROWS, MIGRATION_FORCE_MISMATCH_ENV};
 
-/// Copy one source table into PostgreSQL and return its independent parity pair.
+/// Copy one source table into PostgreSQL and return its independent parity pair
+/// (fault-seam-free default path).
 pub async fn copy_table(
     conn: &mut Connection,
     pool: &PgPool,
     spec: &TableSpec,
 ) -> Result<TableParity> {
+    copy_table_with_fault(conn, pool, spec, None).await
+}
+
+/// Copy one source table into PostgreSQL and return its independent parity pair,
+/// honouring the **G-275** fault seam.
+///
+/// * [`MigrationFault::ExportError`] targeting `spec.name` aborts before any
+///   read/copy with an injected error (fail-closed, before parity).
+/// * [`MigrationFault::DropRow`] targeting `spec.name` removes ONE row from the
+///   target after the copy and before the target count/checksum, so the parity
+///   gate observes a count + checksum mismatch (R-4.1).
+///
+/// With `fault == None` the path is byte-identical to the un-forced default.
+pub async fn copy_table_with_fault(
+    conn: &mut Connection,
+    pool: &PgPool,
+    spec: &TableSpec,
+    fault: Option<&MigrationFault>,
+) -> Result<TableParity> {
+    if let Some(MigrationFault::ExportError(table)) = fault {
+        if &spec.name == table {
+            return Err(anyhow!(
+                "[migration] injected export I/O error for '{}' via {MIGRATION_FORCE_MISMATCH_ENV}",
+                spec.name
+            ));
+        }
+    }
+
     sqlx::query(&spec.pg_create_sql())
         .execute(pool)
         .await
@@ -79,6 +108,14 @@ pub async fn copy_table(
 
     if overriding_identity {
         reset_identity_sequences(pool, spec, &identity_columns).await?;
+    }
+
+    // G-275 fault seam: drop ONE target row before the target count/checksum, so
+    // the parity gate observes a mismatch (inert when the table does not match).
+    if let Some(MigrationFault::DropRow(table)) = fault {
+        if &spec.name == table {
+            drop_one_target_row(pool, spec).await?;
+        }
     }
 
     let target_rows: i64 = sqlx::query_scalar(&format!(
@@ -424,6 +461,26 @@ async fn reset_identity_sequences(
                 )
             })?;
     }
+    Ok(())
+}
+
+/// Remove exactly one row from the copied target table (the **G-275** fault
+/// seam's parity-mismatch induction). `ctid` is PostgreSQL's physical row
+/// locator, so this needs no primary key and is a no-op on an empty table.
+async fn drop_one_target_row(pool: &PgPool, spec: &TableSpec) -> Result<()> {
+    let table = quote_ident(&spec.name);
+    let sql = format!(
+        "DELETE FROM {table} WHERE ctid IN (SELECT ctid FROM {table} LIMIT 1)"
+    );
+    sqlx::query(&sql)
+        .execute(pool)
+        .await
+        .with_context(|| {
+            format!(
+                "[migration] drop one row from '{}' via {MIGRATION_FORCE_MISMATCH_ENV}",
+                spec.name
+            )
+        })?;
     Ok(())
 }
 
