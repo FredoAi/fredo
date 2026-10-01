@@ -8,10 +8,11 @@ Unscripted edge/failure probes for the one-shot `fredo.db` → PostgreSQL data m
 > **G-263 SAFETY:** every probe is time-bounded and torn down (dev-env lever); the named failure mode
 > is the #2948 ~11 h `pg.stop()` hang. Never an unbounded run. Kill-never-wait on expiry.
 
-> **Induction levers (G-275):** `FREDO_MIGRATION_FAULT` ∈ {`parity_mismatch`, `export_error`,
-> `snapshot_fail`} (architect to confirm the name); an app-data-dir override (`FREDO_DATA_DIR` or a
-> standalone migration entry point) pointing at a fixture dir under `.opencode/tmp/2977/`;
-> `FREDO_STORAGE_ENGINE` (`sqlite|postgres`), `FREDO_PG_DATA_DIR`, `FREDO_PG_POOL_FORCE_FAIL=1`.
+> **Induction levers (G-275) — binding names (G-255):** `FREDO_MIGRATION_FORCE_MISMATCH` ∈
+> {`<table>`, `1`/`true`, `<table>:export_error`, `snapshot_fail`} (no `FREDO_MIGRATION_FAULT`);
+> `FREDO_DATA_DIR` (app-data-dir override → in-repo fixture under `.opencode/tmp/2977/`);
+> `FREDO_MIGRATION_DIR` (scratch/snapshot dir); `FREDO_STORAGE_ENGINE` (`sqlite|postgres`),
+> `FREDO_PG_DATA_DIR`, `FREDO_PG_POOL_FORCE_FAIL=1`.
 
 ## Prompt lines
 
