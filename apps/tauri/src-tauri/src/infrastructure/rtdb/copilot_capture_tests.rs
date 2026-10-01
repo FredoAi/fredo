@@ -115,10 +115,12 @@ type Sink = Arc<Mutex<Vec<RowDelivery>>>;
 /// IngestClassifier` wiring (the `make_classifier()` composition used by the
 /// classifier's own unit tests). Test-only: the emitter captures deliveries
 /// into a `Vec` (no IPC, no `AppHandle`).
-fn make_classifier() -> (tempfile::TempDir, Arc<IngestClassifier>, Arc<Rtdb>, Sink) {
+async fn make_classifier() -> (tempfile::TempDir, Arc<IngestClassifier>, Arc<Rtdb>, Sink) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("open store"));
-    store.ensure_schema().expect("schema");
+    let store = Arc::new(
+        RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("open store"),
+    );
+    store.ensure_schema().await.expect("schema");
     let (cache, _rx) = RtdbCache::new(store);
     let registry = Arc::new(SubscriptionRegistry::new());
     let sink: Sink = Arc::new(Mutex::new(Vec::new()));
@@ -137,57 +139,57 @@ fn make_classifier() -> (tempfile::TempDir, Arc<IngestClassifier>, Arc<Rtdb>, Si
 
 /// Feed one committed fixture (an OTLP/JSON envelope) through the real
 /// classifier. Returns the classifier's row-mutation count.
-fn ingest_fixture(classifier: &IngestClassifier, fixture: &str) -> usize {
+async fn ingest_fixture(classifier: &IngestClassifier, fixture: &str) -> usize {
     let raw: Value = serde_json::from_str(fixture).expect("committed fixture is valid JSON");
-    classifier.ingest_otlp(Transport::OtlpHttp, &raw)
+    classifier.ingest_otlp(Transport::OtlpHttp, &raw).await
 }
 
-fn feed(classifier: &IngestClassifier, raw: &Value) -> usize {
-    classifier.ingest_otlp(Transport::OtlpHttp, raw)
+async fn feed(classifier: &IngestClassifier, raw: &Value) -> usize {
+    classifier.ingest_otlp(Transport::OtlpHttp, raw).await
 }
 
-fn chat(rtdb: &Rtdb, session: &str, corr: &str) -> ChatRow {
+async fn chat(rtdb: &Rtdb, session: &str, corr: &str) -> ChatRow {
     rtdb
         .cache()
-        .get_chat(session, corr)
+        .get_chat(session, corr).await
         .expect("read chat row")
         .expect("chat row exists")
 }
 
-fn tool(rtdb: &Rtdb, session: &str, corr: &str) -> ToolUseRow {
+async fn tool(rtdb: &Rtdb, session: &str, corr: &str) -> ToolUseRow {
     rtdb
         .cache()
-        .get_tool_use(session, corr)
+        .get_tool_use(session, corr).await
         .expect("read tool row")
         .expect("tool row exists")
 }
 
-fn session_row(rtdb: &Rtdb, session: &str, corr: &str) -> AgentSessionRow {
+async fn session_row(rtdb: &Rtdb, session: &str, corr: &str) -> AgentSessionRow {
     rtdb
         .cache()
-        .get_agent_session(session, corr)
+        .get_agent_session(session, corr).await
         .expect("read session row")
         .expect("session row exists")
 }
 
-fn chat_keys(rtdb: &Rtdb, session: &str) -> Vec<(String, String)> {
+async fn chat_keys(rtdb: &Rtdb, session: &str) -> Vec<(String, String)> {
     rtdb
         .cache()
-        .chat_keys_for_session(session)
+        .chat_keys_for_session(session).await
         .expect("chat keys")
 }
 
-fn tool_keys(rtdb: &Rtdb, session: &str) -> Vec<(String, String)> {
+async fn tool_keys(rtdb: &Rtdb, session: &str) -> Vec<(String, String)> {
     rtdb
         .cache()
-        .tool_keys_for_session(session)
+        .tool_keys_for_session(session).await
         .expect("tool keys")
 }
 
-fn session_keys(rtdb: &Rtdb, session: &str) -> Vec<(String, String)> {
+async fn session_keys(rtdb: &Rtdb, session: &str) -> Vec<(String, String)> {
     rtdb
         .cache()
-        .agent_session_keys_for_session(session)
+        .agent_session_keys_for_session(session).await
         .expect("session keys")
 }
 
@@ -307,14 +309,14 @@ fn copilot_envelope(spans: Vec<Value>) -> Value {
 
 // ── R-1.1–R-1.3 / R-2.1–R-2.6: the full content-on attribute → row mapping ──
 
-#[test]
-fn content_on_fixture_maps_the_full_copilot_field_set() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    let ingested = ingest_fixture(&classifier, CONTENT_ON);
+#[tokio::test]
+async fn content_on_fixture_maps_the_full_copilot_field_set() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    let ingested = ingest_fixture(&classifier, CONTENT_ON).await;
     assert!(ingested >= 3, "session + chat + tool rows must classify");
 
     // ── session root (`invoke_agent` → AgentSessionRow, provider-scoped) ────
-    let session = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
+    let session = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1").await;
     assert_eq!(session.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(
         session.total_tokens,
@@ -336,7 +338,7 @@ fn content_on_fixture_maps_the_full_copilot_field_set() {
     assert_field_set(&session, AGENT_SESSION_FIELDS, "agent_session row");
 
     // ── chat turn (`chat` → ChatRow; PER-CALL absolute tokens) ──────────────
-    let chat_row = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2");
+    let chat_row = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await;
     assert_eq!(chat_row.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(
         chat_row.user_message.as_deref(),
@@ -371,7 +373,7 @@ fn content_on_fixture_maps_the_full_copilot_field_set() {
     assert!(chat_row.raw_json.contains("gen_ai.output.messages"));
 
     // ── tool call (`execute_tool` → ToolUseRow) ─────────────────────────────
-    let tool_row = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3");
+    let tool_row = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3").await;
     assert_eq!(tool_row.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(tool_row.tool_name.as_deref(), Some("readFile"));
     assert_eq!(tool_row.tool_success, Some(true), "completed without error.type → success");
@@ -393,13 +395,13 @@ fn content_on_fixture_maps_the_full_copilot_field_set() {
 
 // ── R-3.1 / R-3.2: content-off degradation (structural rows, no content) ─────
 
-#[test]
-fn content_off_fixture_degrades_structurally_and_leaves_content_keys_absent() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, CONTENT_OFF);
+#[tokio::test]
+async fn content_off_fixture_degrades_structurally_and_leaves_content_keys_absent() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, CONTENT_OFF).await;
 
     // Structural rows still exist in ALL three classes.
-    let session = session_row(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_1");
+    let session = session_row(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_1").await;
     assert_eq!(session.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(session.total_tokens, Some(790), "700 + 90 session total fallback");
     assert_eq!(
@@ -408,7 +410,7 @@ fn content_off_fixture_degrades_structurally_and_leaves_content_keys_absent() {
         "no `gen_ai.agent.name` in the live capture → agentName absent (documented degradation)"
     );
 
-    let chat_row = chat(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_2");
+    let chat_row = chat(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_2").await;
     assert_eq!(chat_row.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(chat_row.prompt_tokens, Some(700));
     assert_eq!(chat_row.completion_tokens, Some(90));
@@ -416,7 +418,7 @@ fn content_off_fixture_degrades_structurally_and_leaves_content_keys_absent() {
     assert_eq!(chat_row.user_message, None, "content-off → userMessage absent");
     assert_eq!(chat_row.agent_reply, None, "content-off → agentReply absent");
 
-    let tool_row = tool(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_3");
+    let tool_row = tool(&rtdb, SESSION_CONTENT_OFF, "ses_copilot_fixture_2_3").await;
     assert_eq!(tool_row.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(tool_row.tool_name.as_deref(), Some("readFile"));
     assert_eq!(tool_row.tool_success, Some(true), "structural outcome survives content-off");
@@ -444,19 +446,19 @@ fn content_off_fixture_degrades_structurally_and_leaves_content_keys_absent() {
 
 // ── R-2.5: tool-failure outcome derived from `error.type` + span timing ──────
 
-#[test]
-fn tool_failure_fixture_maps_failure_outcome_error_and_duration() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, TOOL_FAILURE);
+#[tokio::test]
+async fn tool_failure_fixture_maps_failure_outcome_error_and_duration() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, TOOL_FAILURE).await;
 
-    let session = session_row(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_1");
+    let session = session_row(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_1").await;
     assert_eq!(session.total_tokens, Some(680), "600 + 80 session total fallback");
 
-    let chat_row = chat(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_2");
+    let chat_row = chat(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_2").await;
     assert_eq!(chat_row.prompt_tokens, Some(600));
     assert_eq!(chat_row.completion_tokens, Some(80));
 
-    let tool_row = tool(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_3");
+    let tool_row = tool(&rtdb, SESSION_TOOL_FAILURE, "ses_copilot_fixture_3_3").await;
     assert_eq!(tool_row.tool_name.as_deref(), Some("applyPatch"));
     assert_eq!(
         tool_row.tool_success,
@@ -469,22 +471,22 @@ fn tool_failure_fixture_maps_failure_outcome_error_and_duration() {
 
 // ── R-4.2 / partial exchange: chat-only never leaves an orphan or partial row ─
 
-#[test]
-fn session_only_fixture_produces_no_tool_row() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, SESSION_ONLY);
+#[tokio::test]
+async fn session_only_fixture_produces_no_tool_row() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, SESSION_ONLY).await;
 
-    let session = session_row(&rtdb, SESSION_SESSION_ONLY, "ses_copilot_fixture_4_1");
+    let session = session_row(&rtdb, SESSION_SESSION_ONLY, "ses_copilot_fixture_4_1").await;
     assert_eq!(session.total_tokens, Some(400), "350 + 50 session total fallback");
 
-    let chat_row = chat(&rtdb, SESSION_SESSION_ONLY, "ses_copilot_fixture_4_2");
+    let chat_row = chat(&rtdb, SESSION_SESSION_ONLY, "ses_copilot_fixture_4_2").await;
     assert_eq!(chat_row.user_message.as_deref(), Some("What does src/main.rs do?"));
     assert_eq!(chat_row.agent_reply.as_deref(), Some("It is the entry point."));
     assert_eq!(chat_row.prompt_tokens, Some(350));
     assert_eq!(chat_row.completion_tokens, Some(50));
 
     assert!(
-        tool_keys(&rtdb, SESSION_SESSION_ONLY).is_empty(),
+        tool_keys(&rtdb, SESSION_SESSION_ONLY).await.is_empty(),
         "a chat-only exchange must not fabricate a tool row"
     );
 }
@@ -492,9 +494,9 @@ fn session_only_fixture_produces_no_tool_row() {
 /// A partial exchange delivered out of order (chat before the session root)
 /// still yields a coherent row, and the later session root neither orphans nor
 /// duplicates the chat row (R-4.2 "no partial row that later double-writes").
-#[test]
-fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
+#[tokio::test]
+async fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
     let session = "ses_copilot_partial";
     let chat_span = json!({
         "name": "chat auto",
@@ -525,40 +527,40 @@ fn out_of_order_partial_exchange_stays_coherent_without_duplicates() {
     });
 
     // Response before init: the chat row lands first, alone.
-    feed(&classifier, &copilot_envelope(vec![chat_span.clone()]));
-    let chat_keys_before = chat_keys(&rtdb, session);
+    feed(&classifier, &copilot_envelope(vec![chat_span.clone()])).await;
+    let chat_keys_before = chat_keys(&rtdb, session).await;
     assert_eq!(chat_keys_before.len(), 1, "one chat row, no orphan");
-    let chat_before = chat(&rtdb, session, &chat_keys_before[0].1);
-    assert!(session_keys(&rtdb, session).is_empty(), "no session row yet");
+    let chat_before = chat(&rtdb, session, &chat_keys_before[0].1).await;
+    assert!(session_keys(&rtdb, session).await.is_empty(), "no session row yet");
 
     // The session root arrives later — the chat row is untouched.
-    feed(&classifier, &copilot_envelope(vec![session_span]));
-    assert_eq!(chat_keys(&rtdb, session).len(), 1, "no duplicate chat row");
+    feed(&classifier, &copilot_envelope(vec![session_span])).await;
+    assert_eq!(chat_keys(&rtdb, session).await.len(), 1, "no duplicate chat row");
     assert_eq!(
-        chat(&rtdb, session, &chat_keys_before[0].1),
+        chat(&rtdb, session, &chat_keys_before[0].1).await,
         chat_before,
         "the earlier chat row is byte-identical after the late session root"
     );
-    assert_eq!(session_keys(&rtdb, session).len(), 1, "exactly one session row");
+    assert_eq!(session_keys(&rtdb, session).await.len(), 1, "exactly one session row");
 }
 
 // ── R-5.1 / R-5.2: OpenCode unchanged + no cross-provider contamination ──────
 
-#[test]
-fn opencode_and_copilot_rows_coexist_without_cross_contamination() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    feed(&classifier, &opencode_envelope());
-    ingest_fixture(&classifier, CONTENT_ON);
+#[tokio::test]
+async fn opencode_and_copilot_rows_coexist_without_cross_contamination() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    feed(&classifier, &opencode_envelope()).await;
+    ingest_fixture(&classifier, CONTENT_ON).await;
 
     // ── OpenCode baseline: exact field shape, provider `open_code` ──────────
-    let oc_session = session_row(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_1");
+    let oc_session = session_row(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_1").await;
     assert_eq!(oc_session.provider.as_deref(), Some("open_code"));
     assert_eq!(oc_session.total_tokens, Some(59_200), "OpenCode flat total_tokens stays primary");
     assert_eq!(oc_session.total_messages, Some(12));
     assert_eq!(oc_session.total_cost_usd, Some(0.42));
     assert_field_set(&oc_session, AGENT_SESSION_FIELDS, "OpenCode agent_session row");
 
-    let oc_chat = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_2");
+    let oc_chat = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_2").await;
     assert_eq!(oc_chat.provider.as_deref(), Some("open_code"));
     assert_eq!(oc_chat.user_message.as_deref(), Some("What is the weather?"));
     assert_eq!(oc_chat.agent_reply.as_deref(), Some("The weather is sunny."));
@@ -572,7 +574,7 @@ fn opencode_and_copilot_rows_coexist_without_cross_contamination() {
     );
     assert_field_set(&oc_chat, CHAT_FIELDS, "OpenCode chat row");
 
-    let oc_tool = tool(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_3");
+    let oc_tool = tool(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_3").await;
     assert_eq!(oc_tool.provider.as_deref(), Some("open_code"));
     assert_eq!(oc_tool.tool_name.as_deref(), Some("bash"));
     assert_eq!(oc_tool.tool_success, Some(true));
@@ -597,25 +599,25 @@ fn opencode_and_copilot_rows_coexist_without_cross_contamination() {
         "provider session namespaces must not collide"
     );
 
-    for (session, corr) in chat_keys(&rtdb, SESSION_CONTENT_ON) {
+    for (session, corr) in chat_keys(&rtdb, SESSION_CONTENT_ON).await {
         assert!(session.starts_with("ses_copilot_fixture_"), "copilot chat key session");
         assert_ne!(session, "ses_opencode_baseline");
-        assert_eq!(chat(&rtdb, &session, &corr).provider.as_deref(), Some("copilot_cli"));
+        assert_eq!(chat(&rtdb, &session, &corr).await.provider.as_deref(), Some("copilot_cli"));
     }
-    for (session, corr) in chat_keys(&rtdb, "ses_opencode_baseline") {
-        assert_eq!(chat(&rtdb, &session, &corr).provider.as_deref(), Some("open_code"));
+    for (session, corr) in chat_keys(&rtdb, "ses_opencode_baseline").await {
+        assert_eq!(chat(&rtdb, &session, &corr).await.provider.as_deref(), Some("open_code"));
     }
 
     // ── No provider flips on a replayed export ──────────────────────────────
-    feed(&classifier, &opencode_envelope());
+    feed(&classifier, &opencode_envelope()).await;
     assert_eq!(
-        session_row(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_1")
+        session_row(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_1").await
             .provider
             .as_deref(),
         Some("open_code")
     );
     assert_eq!(
-        chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").provider.as_deref(),
+        chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await.provider.as_deref(),
         Some("copilot_cli"),
         "a replayed OpenCode export must never restamp Copilot rows"
     );
@@ -627,32 +629,32 @@ fn opencode_and_copilot_rows_coexist_without_cross_contamination() {
 /// exactly the F-11 "restart Fredo and re-ingest" expectation): a FRESH
 /// classifier over the SAME store re-derives byte-identical keys/content, so
 /// every write is a content no-op — no duplicate composite key, no seq bump.
-#[test]
-fn replayed_identical_copilot_export_is_idempotent_across_classifiers() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, CONTENT_ON);
+#[tokio::test]
+async fn replayed_identical_copilot_export_is_idempotent_across_classifiers() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, CONTENT_ON).await;
 
-    let chat_before = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2");
-    let tool_before = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3");
-    let session_before = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
-    let counts_before = rtdb.cache().store().row_counts().expect("counts");
+    let chat_before = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await;
+    let tool_before = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3").await;
+    let session_before = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1").await;
+    let counts_before = rtdb.cache().store().row_counts().await.expect("counts");
 
     // A fresh classifier (the process-restart shape) replaying the same export.
     let restarted = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
-    ingest_fixture(&restarted, CONTENT_ON);
+    ingest_fixture(&restarted, CONTENT_ON).await;
 
     assert_eq!(
-        rtdb.cache().store().row_counts().expect("counts"),
+        rtdb.cache().store().row_counts().await.expect("counts"),
         counts_before,
         "an identical replay must not add a row in any table"
     );
-    assert_eq!(chat_keys(&rtdb, SESSION_CONTENT_ON).len(), 1, "one chat row per composite key");
-    assert_eq!(tool_keys(&rtdb, SESSION_CONTENT_ON).len(), 1, "one tool row per composite key");
-    assert_eq!(session_keys(&rtdb, SESSION_CONTENT_ON).len(), 1, "one session row");
+    assert_eq!(chat_keys(&rtdb, SESSION_CONTENT_ON).await.len(), 1, "one chat row per composite key");
+    assert_eq!(tool_keys(&rtdb, SESSION_CONTENT_ON).await.len(), 1, "one tool row per composite key");
+    assert_eq!(session_keys(&rtdb, SESSION_CONTENT_ON).await.len(), 1, "one session row");
 
-    let chat_after = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2");
-    let tool_after = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3");
-    let session_after = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
+    let chat_after = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await;
+    let tool_after = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3").await;
+    let session_after = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1").await;
     assert_eq!(chat_after, chat_before, "chat row unchanged (incl. seq)");
     assert_eq!(tool_after, tool_before, "tool row unchanged (incl. seq)");
     assert_eq!(session_after, session_before, "session row unchanged (incl. seq)");
@@ -662,27 +664,27 @@ fn replayed_identical_copilot_export_is_idempotent_across_classifiers() {
 /// Span-keyed idempotency within ONE classifier (the duplicate-export retry
 /// case): the ST9 one-correlation-per-span guard makes the CHAT and TOOL rows
 /// replay as content no-ops — same composite key, same seq.
-#[test]
-fn duplicate_span_keyed_rows_dedup_within_one_classifier() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, CONTENT_ON);
+#[tokio::test]
+async fn duplicate_span_keyed_rows_dedup_within_one_classifier() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, CONTENT_ON).await;
 
-    let chat_before = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2");
-    let tool_before = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3");
+    let chat_before = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await;
+    let tool_before = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3").await;
 
     // The identical export again, through the SAME classifier.
-    ingest_fixture(&classifier, CONTENT_ON);
+    ingest_fixture(&classifier, CONTENT_ON).await;
 
-    let chat_after = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2");
-    let tool_after = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3");
+    let chat_after = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await;
+    let tool_after = tool(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_3").await;
     assert_eq!(chat_after.correlation_id, chat_before.correlation_id);
     assert_eq!(tool_after.correlation_id, tool_before.correlation_id);
     assert_eq!(chat_after.seq, chat_before.seq, "chat seq unchanged on replay");
     assert_eq!(tool_after.seq, tool_before.seq, "tool seq unchanged on replay");
     assert_eq!(chat_after, chat_before);
     assert_eq!(tool_after, tool_before);
-    assert_eq!(chat_keys(&rtdb, SESSION_CONTENT_ON).len(), 1);
-    assert_eq!(tool_keys(&rtdb, SESSION_CONTENT_ON).len(), 1);
+    assert_eq!(chat_keys(&rtdb, SESSION_CONTENT_ON).await.len(), 1);
+    assert_eq!(tool_keys(&rtdb, SESSION_CONTENT_ON).await.len(), 1);
 }
 
 /// R-4.2 / QA R-4 (the gap this spec closes): within ONE classifier instance a
@@ -692,40 +694,40 @@ fn duplicate_span_keyed_rows_dedup_within_one_classifier() {
 /// the session lands at exactly ONE `(sessionId, correlationId)` key — no
 /// second `agent_session_rows` row at the same `startedAtNs`, and re-running is
 /// a content no-op.
-#[test]
-fn replayed_copilot_session_root_stays_one_row_within_one_classifier() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, CONTENT_ON);
+#[tokio::test]
+async fn replayed_copilot_session_root_stays_one_row_within_one_classifier() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, CONTENT_ON).await;
 
-    let baseline = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
-    let keys_before = session_keys(&rtdb, SESSION_CONTENT_ON);
+    let baseline = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1").await;
+    let keys_before = session_keys(&rtdb, SESSION_CONTENT_ON).await;
     assert_eq!(keys_before.len(), 1, "the first capture is a single session row");
-    let counts_before = rtdb.cache().store().row_counts().expect("counts");
+    let counts_before = rtdb.cache().store().row_counts().await.expect("counts");
 
     // The identical export replayed through the SAME classifier (duplicate
     // export / late re-export).
-    ingest_fixture(&classifier, CONTENT_ON);
+    ingest_fixture(&classifier, CONTENT_ON).await;
 
     assert_eq!(
-        session_keys(&rtdb, SESSION_CONTENT_ON),
+        session_keys(&rtdb, SESSION_CONTENT_ON).await,
         keys_before,
         "the replay reuses the root's correlation id — no parallel (sessionId, correlationId) key"
     );
     assert_eq!(
-        rtdb.cache().store().row_counts().expect("counts"),
+        rtdb.cache().store().row_counts().await.expect("counts"),
         counts_before,
         "the replay adds no row in any table"
     );
-    let after = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1");
+    let after = session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1").await;
     assert_eq!(after, baseline, "the session row is a content no-op (incl. seq)");
     assert_eq!(after.seq, baseline.seq, "no seq inflation on replay");
     assert_eq!(after.started_at_ns, Some(1_000_000_000));
 
     // A THIRD replay is still a no-op — the guard is stable, not one-shot.
-    ingest_fixture(&classifier, CONTENT_ON);
-    assert_eq!(session_keys(&rtdb, SESSION_CONTENT_ON), keys_before);
+    ingest_fixture(&classifier, CONTENT_ON).await;
+    assert_eq!(session_keys(&rtdb, SESSION_CONTENT_ON).await, keys_before);
     assert_eq!(
-        session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1"),
+        session_row(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_1").await,
         baseline
     );
 }
@@ -738,39 +740,39 @@ fn replayed_copilot_session_root_stays_one_row_within_one_classifier() {
 /// (a fresh per-turn id for the re-sighted root, NOT a span-keyed reuse). A
 /// general (unscoped) span-keying of `OP_SESSION` was deliberately rejected
 /// precisely so this output is unchanged.
-#[test]
-fn opencode_shaped_replay_output_stays_unchanged() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
+#[tokio::test]
+async fn opencode_shaped_replay_output_stays_unchanged() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
     let base = "ses_opencode_baseline";
-    feed(&classifier, &opencode_envelope());
+    feed(&classifier, &opencode_envelope()).await;
 
     // The v1-faithful first capture (`run_agent` root → `_1`).
-    let session_before = session_row(&rtdb, base, "ses_opencode_baseline_1");
+    let session_before = session_row(&rtdb, base, "ses_opencode_baseline_1").await;
     assert_eq!(session_before.provider.as_deref(), Some("open_code"));
     assert_eq!(
-        session_keys(&rtdb, base),
+        session_keys(&rtdb, base).await,
         vec![(base.to_string(), "ses_opencode_baseline_1".to_string())]
     );
     assert_eq!(
-        chat_keys(&rtdb, base),
+        chat_keys(&rtdb, base).await,
         vec![(base.to_string(), "ses_opencode_baseline_2".to_string())]
     );
     assert_eq!(
-        tool_keys(&rtdb, base),
+        tool_keys(&rtdb, base).await,
         vec![(base.to_string(), "ses_opencode_baseline_3".to_string())]
     );
 
     // Replay the identical OpenCode-shaped export through the SAME classifier.
-    feed(&classifier, &opencode_envelope());
+    feed(&classifier, &opencode_envelope()).await;
 
     // Span-keyed chat/tool rows: the key SET is unchanged (no new key minted).
     assert_eq!(
-        chat_keys(&rtdb, base),
+        chat_keys(&rtdb, base).await,
         vec![(base.to_string(), "ses_opencode_baseline_2".to_string())],
         "OpenCode chat row key set unchanged"
     );
     assert_eq!(
-        tool_keys(&rtdb, base),
+        tool_keys(&rtdb, base).await,
         vec![(base.to_string(), "ses_opencode_baseline_3".to_string())],
         "OpenCode tool row key set unchanged"
     );
@@ -779,9 +781,9 @@ fn opencode_shaped_replay_output_stays_unchanged() {
     // `_1` row is byte-identical (session rows carry no per-turn delta) and the
     // re-sighted root takes the historical session-keyed path — a fresh per-turn
     // id `_4`, exactly the pre-spec behavior (NOT a span-keyed reuse of `_1`).
-    assert_eq!(session_row(&rtdb, base, "ses_opencode_baseline_1"), session_before);
+    assert_eq!(session_row(&rtdb, base, "ses_opencode_baseline_1").await, session_before);
     assert_eq!(
-        session_keys(&rtdb, base),
+        session_keys(&rtdb, base).await,
         vec![
             (base.to_string(), "ses_opencode_baseline_1".to_string()),
             (base.to_string(), "ses_opencode_baseline_4".to_string()),
@@ -789,13 +791,13 @@ fn opencode_shaped_replay_output_stays_unchanged() {
         "OpenCode `run_agent` keeps its historical session-keyed re-mint (unchanged)"
     );
     assert_eq!(
-        session_row(&rtdb, base, "ses_opencode_baseline_4").provider.as_deref(),
+        session_row(&rtdb, base, "ses_opencode_baseline_4").await.provider.as_deref(),
         Some("open_code"),
         "the OpenCode re-minted root stays `open_code` (no provider flip)"
     );
-    for (session, corr) in session_keys(&rtdb, base) {
+    for (session, corr) in session_keys(&rtdb, base).await {
         assert_eq!(
-            session_row(&rtdb, &session, &corr).provider.as_deref(),
+            session_row(&rtdb, &session, &corr).await.provider.as_deref(),
             Some("open_code")
         );
     }
@@ -803,15 +805,15 @@ fn opencode_shaped_replay_output_stays_unchanged() {
 
 // ── R-4.2: a degraded/unclassifiable export never corrupts or duplicates ─────
 
-#[test]
-fn degraded_export_writes_no_rows_and_preserves_existing_rows() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    ingest_fixture(&classifier, CONTENT_ON);
-    let counts_before = rtdb.cache().store().row_counts().expect("counts");
-    let chat_before = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2");
+#[tokio::test]
+async fn degraded_export_writes_no_rows_and_preserves_existing_rows() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    ingest_fixture(&classifier, CONTENT_ON).await;
+    let counts_before = rtdb.cache().store().row_counts().await.expect("counts");
+    let chat_before = chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await;
 
     // An empty envelope (a truncated/denied export) classifies to nothing.
-    assert_eq!(feed(&classifier, &json!({ "resourceSpans": [] })), 0);
+    assert_eq!(feed(&classifier, &json!({ "resourceSpans": [] })).await, 0);
 
     // A span that resolves to no canonical op is dropped, never half-written.
     let unclassifiable = json!({
@@ -824,15 +826,15 @@ fn degraded_export_writes_no_rows_and_preserves_existing_rows() {
             } ] }]
         }]
     });
-    assert_eq!(feed(&classifier, &unclassifiable), 0);
+    assert_eq!(feed(&classifier, &unclassifiable).await, 0);
 
     assert_eq!(
-        rtdb.cache().store().row_counts().expect("counts"),
+        rtdb.cache().store().row_counts().await.expect("counts"),
         counts_before,
         "a degraded export must not add or corrupt rows"
     );
     assert_eq!(
-        chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2"),
+        chat(&rtdb, SESSION_CONTENT_ON, "ses_copilot_fixture_1_2").await,
         chat_before,
         "existing rows are byte-identical after a degraded export"
     );
@@ -847,19 +849,19 @@ fn degraded_export_writes_no_rows_and_preserves_existing_rows() {
 /// R-2.1 the split-continuation invariant (the ST-3R fix): the exchange's user
 /// prompt is re-carried onto the Copilot continuation chat row, while per-call
 /// tokens, the tool row, and the canonical field sets stay exactly as captured.
-#[test]
-fn turn_split_fixture_carries_exchange_prompt_onto_continuation_row() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    let ingested = ingest_fixture(&classifier, TURN_SPLIT);
+#[tokio::test]
+async fn turn_split_fixture_carries_exchange_prompt_onto_continuation_row() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    let ingested = ingest_fixture(&classifier, TURN_SPLIT).await;
     assert!(ingested >= 4, "session + two chat + tool rows must classify");
 
     // ── session root (`invoke_agent` → AgentSessionRow, provider-scoped) ────
-    let session = session_row(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_ROOT_CORR);
+    let session = session_row(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_ROOT_CORR).await;
     assert_eq!(session.provider.as_deref(), Some("copilot_cli"));
     assert_field_set(&session, AGENT_SESSION_FIELDS, "turn-split agent_session row");
 
     // ── dispatch row (`chat` #1: user text + tool_call output) ──────────────
-    let dispatch = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_DISPATCH_CORR);
+    let dispatch = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_DISPATCH_CORR).await;
     assert_eq!(dispatch.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(
         dispatch.user_message.as_deref(),
@@ -883,7 +885,7 @@ fn turn_split_fixture_carries_exchange_prompt_onto_continuation_row() {
     assert_field_set(&dispatch, CHAT_FIELDS, "turn-split dispatch chat row");
 
     // ── continuation row (`chat` #2: tool-role input + assistant text) ──────
-    let continuation = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_CONTINUATION_CORR);
+    let continuation = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_CONTINUATION_CORR).await;
     assert_eq!(continuation.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(
         continuation.user_message.as_deref(),
@@ -910,7 +912,7 @@ fn turn_split_fixture_carries_exchange_prompt_onto_continuation_row() {
     assert!(continuation.raw_json.contains(TURN_SPLIT_PROMPT));
 
     // ── the tool row sits between the two chat rows, outcome intact ─────────
-    let tool_row = tool(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_TOOL_CORR);
+    let tool_row = tool(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_TOOL_CORR).await;
     assert_eq!(tool_row.provider.as_deref(), Some("copilot_cli"));
     assert_eq!(tool_row.tool_name.as_deref(), Some("view"));
     assert_eq!(tool_row.tool_success, Some(true));
@@ -924,22 +926,22 @@ fn turn_split_fixture_carries_exchange_prompt_onto_continuation_row() {
 /// R-4.1 two-POST ordering: the dispatch export (root + `chat` #1 + tool) and
 /// the reply export (`chat` #2) delivered as SEPARATE POSTs still carry — the
 /// prompt is already cached for the session when the continuation lands.
-#[test]
-fn turn_split_two_post_ordering_still_carries() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
+#[tokio::test]
+async fn turn_split_two_post_ordering_still_carries() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
     let spans = turn_split_spans();
     assert_eq!(spans.len(), 4, "fixture shape: root + chat#1 + tool + chat#2");
 
     // POST 1 — the dispatch export (the tool executes inside chat#1's window).
     let dispatch_post = copilot_envelope(spans[..3].to_vec());
-    assert!(feed(&classifier, &dispatch_post) >= 3);
+    assert!(feed(&classifier, &dispatch_post).await >= 3);
     assert_eq!(
-        chat_keys(&rtdb, SESSION_TURN_SPLIT).len(),
+        chat_keys(&rtdb, SESSION_TURN_SPLIT).await.len(),
         1,
         "only the dispatch chat row exists after POST 1"
     );
     assert_eq!(
-        chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_DISPATCH_CORR)
+        chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_DISPATCH_CORR).await
             .user_message
             .as_deref(),
         Some(TURN_SPLIT_PROMPT)
@@ -947,24 +949,24 @@ fn turn_split_two_post_ordering_still_carries() {
 
     // POST 2 — the reply export (chat#2), delivered on its own.
     let reply_post = copilot_envelope(spans[3..].to_vec());
-    assert!(feed(&classifier, &reply_post) >= 1);
+    assert!(feed(&classifier, &reply_post).await >= 1);
 
-    let continuation = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_CONTINUATION_CORR);
+    let continuation = chat(&rtdb, SESSION_TURN_SPLIT, TURN_SPLIT_CONTINUATION_CORR).await;
     assert_eq!(
         continuation.user_message.as_deref(),
         Some(TURN_SPLIT_PROMPT),
         "the prompt cached by POST 1 is carried onto the POST-2 continuation row"
     );
     assert_eq!(continuation.agent_reply.as_deref(), Some(TURN_SPLIT_REPLY));
-    assert_eq!(chat_keys(&rtdb, SESSION_TURN_SPLIT).len(), 2, "two distinct chat rows");
+    assert_eq!(chat_keys(&rtdb, SESSION_TURN_SPLIT).await.len(), 2, "two distinct chat rows");
 }
 
 /// R-3.1/R-3.2 degradation boundary: the carry requires a captured
 /// `gen_ai.input.messages`. A content-off continuation row in a session whose
 /// prompt IS cached must stay absent — no fabricated content.
-#[test]
-fn turn_split_content_off_continuation_stays_absent() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
+#[tokio::test]
+async fn turn_split_content_off_continuation_stays_absent() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
     let session = "ses_copilot_degraded_split";
 
     // A content-captured dispatch (root + chat#1) caches the exchange prompt.
@@ -999,9 +1001,9 @@ fn turn_split_content_off_continuation_stays_absent() {
             ]
         }),
     ]);
-    feed(&classifier, &dispatch);
+    feed(&classifier, &dispatch).await;
     assert_eq!(
-        chat(&rtdb, session, "ses_copilot_degraded_split_2")
+        chat(&rtdb, session, "ses_copilot_degraded_split_2").await
             .user_message
             .as_deref(),
         Some("Carry me"),
@@ -1022,9 +1024,9 @@ fn turn_split_content_off_continuation_stays_absent() {
             attr_num("gen_ai.usage.output_tokens", 10)
         ]
     })]);
-    feed(&classifier, &content_off);
+    feed(&classifier, &content_off).await;
 
-    let continuation = chat(&rtdb, session, "ses_copilot_degraded_split_3");
+    let continuation = chat(&rtdb, session, "ses_copilot_degraded_split_3").await;
     assert_eq!(continuation.prompt_tokens, Some(520), "the structural row still lands");
     assert_eq!(
         continuation.user_message, None,
@@ -1036,14 +1038,14 @@ fn turn_split_content_off_continuation_stays_absent() {
 /// R-5.1 isolation: the carry branch is `copilot_cli`-scoped. An OpenCode-shaped
 /// continuation span (tool-role input, cached session prompt) must stay absent —
 /// the fallback can never fire on an `open_code` row.
-#[test]
-fn turn_split_branch_never_fires_on_opencode_shaped_rows() {
-    let (_dir, classifier, rtdb, _sink) = make_classifier();
-    feed(&classifier, &opencode_envelope());
-    ingest_fixture(&classifier, TURN_SPLIT);
+#[tokio::test]
+async fn turn_split_branch_never_fires_on_opencode_shaped_rows() {
+    let (_dir, classifier, rtdb, _sink) = make_classifier().await;
+    feed(&classifier, &opencode_envelope()).await;
+    ingest_fixture(&classifier, TURN_SPLIT).await;
 
     // The OpenCode baseline keeps its exact content and field set.
-    let oc_chat = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_2");
+    let oc_chat = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_2").await;
     assert_eq!(oc_chat.provider.as_deref(), Some("open_code"));
     assert_eq!(
         oc_chat.user_message.as_deref(),
@@ -1072,9 +1074,9 @@ fn turn_split_branch_never_fires_on_opencode_shaped_rows() {
                  "[{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"c1\",\"response\":\"file1 file2\"}]}]")
         ]
     });
-    feed(&classifier, &opencode_envelope_spans(vec![oc_continuation]));
+    feed(&classifier, &opencode_envelope_spans(vec![oc_continuation])).await;
 
-    let oc_continuation_row = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_4");
+    let oc_continuation_row = chat(&rtdb, "ses_opencode_baseline", "ses_opencode_baseline_4").await;
     assert_eq!(oc_continuation_row.provider.as_deref(), Some("open_code"));
     assert_eq!(
         oc_continuation_row.user_message, None,

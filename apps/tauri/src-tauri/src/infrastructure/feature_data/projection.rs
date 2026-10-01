@@ -43,13 +43,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
-use rusqlite::Connection;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as JsonValue};
 
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::project::rfc3339_now;
-use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine};
+use crate::infrastructure::storage::engine::{CanonicalReader, EngineHandle};
 use crate::infrastructure::storage::feature_store::FeatureStore;
 
 use super::declaration::{
@@ -121,9 +121,13 @@ pub trait DeclaredRowObserver: Send + Sync {
 }
 
 /// The canonical-upsert observer ST-4 installs (the projection engine).
+///
+/// Async (Spec #2976 ST-6): the observer reads canonical rows through the
+/// engine-selected read-only handle, which is async on PostgreSQL.
+#[async_trait]
 pub trait RowUpsertObserver: Send + Sync {
     /// EVERY canonical upsert, unconditionally (no subscription required).
-    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]);
+    async fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]);
 }
 
 static ROW_UPSERT_OBSERVER: Mutex<Option<Arc<dyn RowUpsertObserver>>> = Mutex::new(None);
@@ -143,13 +147,13 @@ pub fn clear_row_upsert_observer() {
 /// The seam `Rtdb::ingest_row_upsert` calls for every canonical upsert. A no-op
 /// until an observer is installed, so the canonical pipeline is unaffected when
 /// the feature-data layer is not composed (existing RTDB tests, CLI mode).
-pub fn dispatch_row_upsert(row: &IngestRow, changed_fields: &[String]) {
+pub async fn dispatch_row_upsert(row: &IngestRow, changed_fields: &[String]) {
     let observer = {
         let guard = lock_row_upsert_observer();
         guard.as_ref().map(Arc::clone)
     };
     if let Some(observer) = observer {
-        observer.on_row_upsert(row, changed_fields);
+        observer.on_row_upsert(row, changed_fields).await;
     }
 }
 
@@ -176,41 +180,40 @@ struct ObservedState {
 /// The backend-owned projection engine: canonical upserts → declared-table
 /// writes, with the declared-row change seam (ST-4).
 pub struct ProjectionEngine {
-    /// The SHARED read-only SQLite engine (Spec #2975 ST-5): canonical
-    /// `*_rows` reads use its `PRAGMA query_only=ON` connection — never a
-    /// per-engine `Connection::open`. Declared-table writes go through
-    /// [`FeatureStore`] (the active engine).
-    canonical: Arc<SqliteEngine>,
+    /// The shared engine handle (Spec #2976 ST-6): canonical `*_rows` reads
+    /// follow the ACTIVE engine through [`StoreEngine::canonical_reader`] — the
+    /// SQLite `PRAGMA query_only=ON` connection or the PostgreSQL pool wrapped
+    /// in a READ ONLY transaction. Never a per-engine `Connection::open`.
+    /// Declared-table writes go through [`FeatureStore`] (the active engine).
+    engine: Arc<EngineHandle>,
     meta: Arc<FeatureDataStore>,
     tables: Arc<FeatureStore>,
     observer: Mutex<Option<Arc<dyn DeclaredRowObserver>>>,
     observed: Mutex<ObservedState>,
-    dispatch: Mutex<()>,
+    /// Serializes projection runs. An async mutex (Spec #2976 ST-6): the guard
+    /// is held across the now-async canonical read, and a std guard across an
+    /// await would make the future `!Send`.
+    dispatch: tokio::sync::Mutex<()>,
     /// Monotonic count of `sessionRollup` group recomputations (observability /
     /// test aid for the O(Σ group) backfill invariant, ST-4S).
     rollup_recomputes: AtomicUsize,
 }
 
 impl ProjectionEngine {
-    /// Wrap the shared engine handle. Canonical reads use the shared read-only
-    /// SQLite connection; declared writes go through the shared `FeatureStore`.
+    /// Wrap the shared engine handle. Canonical reads use the engine-selected
+    /// read-only handle; declared writes go through the shared `FeatureStore`.
     pub fn new(
         engine: Arc<EngineHandle>,
         meta: Arc<FeatureDataStore>,
         tables: Arc<FeatureStore>,
     ) -> Result<Self> {
-        let canonical = engine.engine().sqlite().cloned().ok_or_else(|| {
-            anyhow::anyhow!(
-                "ProjectionEngine requires the shared SQLite engine for canonical reads"
-            )
-        })?;
         Ok(ProjectionEngine {
-            canonical,
+            engine,
             meta,
             tables,
             observer: Mutex::new(None),
             observed: Mutex::new(ObservedState::default()),
-            dispatch: Mutex::new(()),
+            dispatch: tokio::sync::Mutex::new(()),
             rollup_recomputes: AtomicUsize::new(0),
         })
     }
@@ -222,7 +225,7 @@ impl ProjectionEngine {
         meta: Arc<FeatureDataStore>,
         tables: Arc<FeatureStore>,
     ) -> Result<Self> {
-        let sqlite = SqliteEngine::open(&data_dir.join("fredo.db"))?;
+        let sqlite = crate::infrastructure::storage::SqliteEngine::open(&data_dir.join("fredo.db"))?;
         Self::new(
             EngineHandle::new(crate::infrastructure::storage::engine::StoreEngine::Sqlite(sqlite)),
             meta,
@@ -250,12 +253,12 @@ impl ProjectionEngine {
     /// Public for tests; production flows through
     /// [`RowUpsertObserver::on_row_upsert`]. Use [`Self::project`] when a single
     /// joined `Result` is wanted (existing callers/tests).
-    pub fn project_reporting(
+    pub async fn project_reporting(
         &self,
         row: &IngestRow,
         _changed_fields: &[String],
     ) -> Vec<DeclTableOutcome> {
-        let _dispatch = self.lock_dispatch();
+        let _dispatch = self.lock_dispatch().await;
         let declarations = match self.persisted_declarations() {
             Ok(declarations) => declarations,
             // No per-declaration attribution is possible when the declaration
@@ -287,7 +290,7 @@ impl ProjectionEngine {
             let result = if let Some(projection) = row_projection_for(decl, source) {
                 self.apply_row_projection(decl, projection, row)
             } else if let Some(config) = session_rollup_for(decl) {
-                self.apply_session_rollup(decl, config, &session_id)
+                self.apply_session_rollup(decl, config, &session_id).await
             } else {
                 continue;
             };
@@ -304,9 +307,10 @@ impl ProjectionEngine {
     /// `Err`. Public for tests; production flows through
     /// [`RowUpsertObserver::on_row_upsert`]. Delegates to
     /// [`Self::project_reporting`] so both forms share one implementation.
-    pub fn project(&self, row: &IngestRow, changed_fields: &[String]) -> Result<()> {
+    pub async fn project(&self, row: &IngestRow, changed_fields: &[String]) -> Result<()> {
         let failures: Vec<String> = self
             .project_reporting(row, changed_fields)
+            .await
             .into_iter()
             .filter_map(|outcome| match outcome.result {
                 Ok(()) => None,
@@ -328,8 +332,8 @@ impl ProjectionEngine {
     /// [`Self::project_reporting`] this never touches a `sessionRollup`
     /// declaration and never records an in-flight observation, so the backfill
     /// cost is O(rows of the source) — no per-row group recomputation.
-    pub fn project_row_sources(&self, row: &IngestRow) -> Vec<DeclTableOutcome> {
-        let _dispatch = self.lock_dispatch();
+    pub async fn project_row_sources(&self, row: &IngestRow) -> Vec<DeclTableOutcome> {
+        let _dispatch = self.lock_dispatch().await;
         let declarations = match self.persisted_declarations() {
             Ok(declarations) => declarations,
             // No per-declaration attribution is possible when the declaration
@@ -365,8 +369,8 @@ impl ProjectionEngine {
     /// the total rollup cost becomes O(Σ group) instead of one full-group read
     /// per canonical row. This never records an in-flight observation: at startup
     /// SQLite is authoritative and the overlay exists only for write-behind lag.
-    pub fn project_session_rollups(&self, session_id: &str) -> Vec<DeclTableOutcome> {
-        let _dispatch = self.lock_dispatch();
+    pub async fn project_session_rollups(&self, session_id: &str) -> Vec<DeclTableOutcome> {
+        let _dispatch = self.lock_dispatch().await;
         let declarations = match self.persisted_declarations() {
             Ok(declarations) => declarations,
             Err(e) => {
@@ -386,7 +390,7 @@ impl ProjectionEngine {
                 outcomes.push(DeclTableOutcome {
                     feature_id: decl.meta.feature_id.clone(),
                     table: decl.meta.table_name.clone(),
-                    result: self.apply_session_rollup(decl, config, session_id),
+                    result: self.apply_session_rollup(decl, config, session_id).await,
                 });
             }
         }
@@ -476,14 +480,14 @@ impl ProjectionEngine {
 
     // ── sessionRollup projection ────────────────────────────────────────────
 
-    fn apply_session_rollup(
+    async fn apply_session_rollup(
         &self,
         decl: &PersistedDecl,
         config: &super::declaration::SessionRollupProjection,
         session_id: &str,
     ) -> Result<()> {
         self.rollup_recomputes.fetch_add(1, Ordering::Relaxed);
-        let group = self.load_group(session_id)?;
+        let group = self.load_group(session_id).await?;
         let facts = session_rollup::compute_facts(&group, config);
         let key = vec![JsonValue::String(session_id.to_string())];
         let existing = self.find_declared_row(decl, &key)?;
@@ -504,11 +508,17 @@ impl ProjectionEngine {
         self.upsert_declared_row(decl, key, values, existing)
     }
 
-    /// Recompute source: bounded per-key canonical SQL + the in-flight overlay.
-    fn load_group(&self, session_id: &str) -> Result<session_rollup::RollupGroup> {
-        let mut group = {
-            let conn = self.canonical.read_only_conn();
-            session_rollup::load_persisted_group(&conn, session_id)?
+    /// Recompute source: bounded per-key canonical SQL + the in-flight overlay,
+    /// read through the engine-selected read-only handle (REQ-9).
+    async fn load_group(&self, session_id: &str) -> Result<session_rollup::RollupGroup> {
+        let mut group = match self.canonical_conn().await? {
+            CanonicalReader::Sqlite(engine) => {
+                let conn = engine.read_only_conn();
+                session_rollup::load_persisted_group(&conn, session_id)?
+            }
+            CanonicalReader::Postgres(pool) => {
+                session_rollup::load_persisted_group_pg(&pool, session_id).await?
+            }
         };
         let state = self.lock_observed();
         if let Some(observed) = state.groups.get(session_id) {
@@ -680,10 +690,15 @@ impl ProjectionEngine {
 
     // ── lock helpers (poison recovery — no unwrap) ──────────────────────────
 
-    /// The SHARED read-only canonical connection (`PRAGMA query_only=ON`), used
-    /// by the declared-table backfill's distinct-session enumeration.
-    pub(crate) fn canonical_conn(&self) -> MutexGuard<'_, Connection> {
-        self.canonical.read_only_conn()
+    /// The engine-selected read-only canonical reader (AC3 / REQ-9): SQLite
+    /// yields the shared `PRAGMA query_only=ON` connection; PostgreSQL yields
+    /// the shared pool whose reads must be wrapped in [`begin_read_only`].
+    /// Used by the declared-table backfill's distinct-session enumeration.
+    pub(crate) async fn canonical_conn(&self) -> Result<CanonicalReader> {
+        self.engine
+            .engine()
+            .canonical_reader()
+            .ok_or_else(|| anyhow::anyhow!("no canonical reader available for the active engine"))
     }
 
     fn lock_observer(&self) -> MutexGuard<'_, Option<Arc<dyn DeclaredRowObserver>>> {
@@ -700,20 +715,18 @@ impl ProjectionEngine {
         }
     }
 
-    fn lock_dispatch(&self) -> MutexGuard<'_, ()> {
-        match self.dispatch.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    async fn lock_dispatch(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.dispatch.lock().await
     }
 }
 
+#[async_trait]
 impl RowUpsertObserver for ProjectionEngine {
-    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
+    async fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
         // Per-declaration isolation: one broken declared table must never stop a
         // healthy sibling from being applied (ST-4R), so use the reporting form
         // and log one scoped WARN per failed declaration.
-        for outcome in self.project_reporting(row, changed_fields) {
+        for outcome in self.project_reporting(row, changed_fields).await {
             if let Err(e) = outcome.result {
                 tracing::warn!(
                     target: "fredo::feature_data",
@@ -900,10 +913,10 @@ mod tests {
         tables: Arc<FeatureStore>,
     }
 
-    fn setup(declaration: &FeatureDataDeclaration) -> Harness {
+    async fn setup(declaration: &FeatureDataDeclaration) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let rtdb = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
-        rtdb.ensure_schema().unwrap();
+        let rtdb = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        rtdb.ensure_schema().await.unwrap();
         let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
         let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
@@ -1215,9 +1228,9 @@ mod tests {
 
     // ── row projection (field map + where) ──────────────────────────────────
 
-    #[test]
-    fn row_projection_applies_field_map_and_where() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn row_projection_applies_field_map_and_where() {
+        let h = setup(&row_declaration()).await;
         let row = chat_row(
             "ses_1",
             "ses_1_1",
@@ -1227,7 +1240,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(row), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(row), &[]).await.unwrap();
 
         let rows = declared_rows(&h, "probe", "turns");
         assert_eq!(rows.len(), 1, "where matched → projected");
@@ -1237,9 +1250,9 @@ mod tests {
         assert_eq!(rows[0].get("_row_version"), Some(&json!(1)));
     }
 
-    #[test]
-    fn row_projection_where_excludes_non_matching_rows() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn row_projection_where_excludes_non_matching_rows() {
+        let h = setup(&row_declaration()).await;
         // state=Init fails the `state == Response` arm.
         let init = chat_row(
             "ses_1",
@@ -1250,7 +1263,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(init), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(init), &[]).await.unwrap();
         // A subagent row fails the `parentSessionId is null` arm.
         let child = chat_row(
             "ses_1",
@@ -1261,14 +1274,14 @@ mod tests {
             Some(2_000),
             "2026-09-18T00:00:02+00:00",
         );
-        h.engine.project(&IngestRow::Chat(child), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(child), &[]).await.unwrap();
 
         assert!(declared_rows(&h, "probe", "turns").is_empty());
     }
 
-    #[test]
-    fn row_projection_update_bumps_row_version_and_reports_changed_fields() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn row_projection_update_bumps_row_version_and_reports_changed_fields() {
+        let h = setup(&row_declaration()).await;
         let observer = Arc::new(CollectingObserver::default());
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
@@ -1282,7 +1295,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(first), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(first), &[]).await.unwrap();
         let second = chat_row(
             "ses_1",
             "ses_1_1",
@@ -1292,7 +1305,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:02+00:00",
         );
-        h.engine.project(&IngestRow::Chat(second), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(second), &[]).await.unwrap();
 
         let rows = declared_rows(&h, "probe", "turns");
         assert_eq!(rows.len(), 1, "same key upserts in place");
@@ -1307,9 +1320,9 @@ mod tests {
         assert_eq!(changes[1].version, 2, "scope version bumps per change");
     }
 
-    #[test]
-    fn row_projection_repeated_identical_mutation_is_a_noop() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn row_projection_repeated_identical_mutation_is_a_noop() {
+        let h = setup(&row_declaration()).await;
         let observer = Arc::new(CollectingObserver::default());
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
@@ -1323,17 +1336,17 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(row.clone()), &[]).unwrap();
-        h.engine.project(&IngestRow::Chat(row), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(row.clone()), &[]).await.unwrap();
+        h.engine.project(&IngestRow::Chat(row), &[]).await.unwrap();
 
         let changes = observer.changes.lock().unwrap();
         assert_eq!(changes.len(), 1, "an identical recompute emits no change");
         assert_eq!(declared_rows(&h, "probe", "turns")[0].get("_row_version"), Some(&json!(1)));
     }
 
-    #[test]
-    fn row_projection_deletes_the_record_when_where_stops_matching() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn row_projection_deletes_the_record_when_where_stops_matching() {
+        let h = setup(&row_declaration()).await;
         let observer = Arc::new(CollectingObserver::default());
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
@@ -1347,7 +1360,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(response), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(response), &[]).await.unwrap();
         let init = chat_row(
             "ses_1",
             "ses_1_1",
@@ -1357,7 +1370,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:02+00:00",
         );
-        h.engine.project(&IngestRow::Chat(init), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(init), &[]).await.unwrap();
 
         assert!(declared_rows(&h, "probe", "turns").is_empty());
         let changes = observer.changes.lock().unwrap();
@@ -1370,9 +1383,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn row_projection_null_field_is_an_update_never_a_remove() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn row_projection_null_field_is_an_update_never_a_remove() {
+        let h = setup(&row_declaration()).await;
         let observer = Arc::new(CollectingObserver::default());
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
@@ -1386,7 +1399,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(with_reply), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(with_reply), &[]).await.unwrap();
         let without_reply = chat_row(
             "ses_1",
             "ses_1_1",
@@ -1396,7 +1409,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:02+00:00",
         );
-        h.engine.project(&IngestRow::Chat(without_reply), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(without_reply), &[]).await.unwrap();
 
         let rows = declared_rows(&h, "probe", "turns");
         assert_eq!(rows.len(), 1, "a null field is a value change, not a remove");
@@ -1411,9 +1424,9 @@ mod tests {
 
     // ── per-declaration isolation (ST-4R) ───────────────────────────────────
 
-    #[test]
-    fn project_reporting_isolates_a_broken_table_from_a_healthy_sibling() {
-        let h = setup(&two_table_declaration());
+    #[tokio::test]
+    async fn project_reporting_isolates_a_broken_table_from_a_healthy_sibling() {
+        let h = setup(&two_table_declaration()).await;
         break_physical_table(&h, "broken");
 
         let row = chat_row(
@@ -1425,7 +1438,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        let outcomes = h.engine.project_reporting(&IngestRow::Chat(row.clone()), &[]);
+        let outcomes = h.engine.project_reporting(&IngestRow::Chat(row.clone()), &[]).await;
         assert_eq!(outcomes.len(), 2, "one outcome per affected declaration");
 
         let broken = outcomes
@@ -1460,7 +1473,7 @@ mod tests {
         // The joined `project` form still surfaces the failure (delegation).
         let err = h
             .engine
-            .project(&IngestRow::Chat(row), &[])
+            .project(&IngestRow::Chat(row), &[]).await
             .expect_err("the joined form reports the broken table");
         let message = format!("{err:#}");
         assert!(
@@ -1471,9 +1484,9 @@ mod tests {
 
     // ── sessionRollup engine wiring ─────────────────────────────────────────
 
-    #[test]
-    fn session_rollup_projects_every_documented_fact_column() {
-        let h = setup(&mm_declaration());
+    #[tokio::test]
+    async fn session_rollup_projects_every_documented_fact_column() {
+        let h = setup(&mm_declaration()).await;
         h.engine
             .project(
                 &IngestRow::Chat(chat_row(
@@ -1486,7 +1499,7 @@ mod tests {
                     "2026-09-18T00:00:02+00:00",
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
         // A visible turn with a user message + a later timestamp.
         let mut visible = chat_row(
@@ -1499,7 +1512,7 @@ mod tests {
             "2026-09-18T00:00:05+00:00",
         );
         visible.user_message = Some("hello there".to_string());
-        h.engine.project(&IngestRow::Chat(visible), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(visible), &[]).await.unwrap();
         // A parent-keyed composited copy (counts in chatRowCount only).
         let mut copy = chat_row(
             "ses_mm",
@@ -1511,7 +1524,7 @@ mod tests {
             "2026-09-18T00:00:06+00:00",
         );
         copy.composited_child_session_id = Some("ses_child".to_string());
-        h.engine.project(&IngestRow::Chat(copy), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(copy), &[]).await.unwrap();
         // A user-requested dispatch counts; internal build/plan do not.
         h.engine
             .project(
@@ -1523,7 +1536,7 @@ mod tests {
                     false,
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
         h.engine
             .project(
@@ -1535,7 +1548,7 @@ mod tests {
                     false,
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
         // A child-session task row is not the session's own dispatch.
         h.engine
@@ -1548,7 +1561,7 @@ mod tests {
                     true,
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
         h.engine
             .project(
@@ -1558,7 +1571,7 @@ mod tests {
                     "2026-09-18T00:00:07+00:00",
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
 
         let rows = declared_rows(&h, "mission-monitor", "sessions");
@@ -1588,9 +1601,9 @@ mod tests {
         assert_eq!(row.get("customName"), Some(&JsonValue::Null));
     }
 
-    #[test]
-    fn session_rollup_inserts_then_deletes_when_the_group_stops_qualifying() {
-        let h = setup(&mm_declaration());
+    #[tokio::test]
+    async fn session_rollup_inserts_then_deletes_when_the_group_stops_qualifying() {
+        let h = setup(&mm_declaration()).await;
         let observer = Arc::new(CollectingObserver::default());
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
@@ -1608,7 +1621,7 @@ mod tests {
                     "2026-09-18T00:00:01+00:00",
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
         assert_eq!(declared_rows(&h, "mission-monitor", "sessions").len(), 1);
 
@@ -1626,7 +1639,7 @@ mod tests {
                     "2026-09-18T00:00:02+00:00",
                 )),
                 &[],
-            )
+            ).await
             .unwrap();
         assert!(declared_rows(&h, "mission-monitor", "sessions").is_empty());
 
@@ -1638,9 +1651,9 @@ mod tests {
         assert_eq!(changes[1].key, vec![json!("ses_x")]);
     }
 
-    #[test]
-    fn session_rollup_never_stores_a_non_qualifying_group() {
-        let h = setup(&mm_declaration());
+    #[tokio::test]
+    async fn session_rollup_never_stores_a_non_qualifying_group() {
+        let h = setup(&mm_declaration()).await;
         // Subagent-only rows (composited copy) never qualify, so no row exists.
         let mut copy = chat_row(
             "ses_child_group",
@@ -1652,7 +1665,7 @@ mod tests {
             "2026-09-18T00:00:01+00:00",
         );
         copy.composited_child_session_id = Some("ses_child".to_string());
-        h.engine.project(&IngestRow::Chat(copy), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(copy), &[]).await.unwrap();
         assert!(declared_rows(&h, "mission-monitor", "sessions").is_empty());
     }
 
@@ -1662,14 +1675,15 @@ mod tests {
         count: Arc<AtomicUsize>,
     }
 
+    #[async_trait]
     impl RowUpsertObserver for CountingObserver {
-        fn on_row_upsert(&self, _row: &IngestRow, _changed_fields: &[String]) {
+        async fn on_row_upsert(&self, _row: &IngestRow, _changed_fields: &[String]) {
             self.count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    #[test]
-    fn dispatch_reaches_the_installed_observer_and_is_a_noop_without_one() {
+    #[tokio::test]
+    async fn dispatch_reaches_the_installed_observer_and_is_a_noop_without_one() {
         clear_row_upsert_observer();
         let row = IngestRow::Chat(chat_row(
             "ses_1",
@@ -1680,17 +1694,17 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         ));
-        dispatch_row_upsert(&row, &[]);
+        dispatch_row_upsert(&row, &[]).await;
         assert_eq!(source_of(&row), ActivitySource::Chat);
 
         let count = Arc::new(AtomicUsize::new(0));
         install_row_upsert_observer(Arc::new(CountingObserver {
             count: count.clone(),
         }));
-        dispatch_row_upsert(&row, &[]);
+        dispatch_row_upsert(&row, &[]).await;
         assert_eq!(count.load(Ordering::Relaxed), 1);
         clear_row_upsert_observer();
-        dispatch_row_upsert(&row, &[]);
+        dispatch_row_upsert(&row, &[]).await;
         assert_eq!(count.load(Ordering::Relaxed), 1, "cleared observer is not called");
     }
 
@@ -1795,9 +1809,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn tombstoned_key_is_never_re_projected() {
-        let h = setup(&row_declaration());
+    #[tokio::test]
+    async fn tombstoned_key_is_never_re_projected() {
+        let h = setup(&row_declaration()).await;
         // ST-4's delete writes the tombstone with the JSON-array key form; the
         // engine must not resurrect the row.
         h.meta
@@ -1818,7 +1832,7 @@ mod tests {
             Some(1_000),
             "2026-09-18T00:00:01+00:00",
         );
-        h.engine.project(&IngestRow::Chat(row), &[]).unwrap();
+        h.engine.project(&IngestRow::Chat(row), &[]).await.unwrap();
         assert!(declared_rows(&h, "probe", "turns").is_empty());
     }
 }

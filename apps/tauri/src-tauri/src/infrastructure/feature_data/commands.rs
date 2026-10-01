@@ -449,7 +449,7 @@ fn bump_and_notify(
 }
 
 /// `feature_data_read`.
-pub fn read(
+pub async fn read(
     state: &FeatureDataState,
     args: FeatureDataReadArgs,
 ) -> Result<FeatureDataReadResult, Vec<String>> {
@@ -493,6 +493,7 @@ pub fn read(
             let stored = state
                 .rtdb_store
                 .select_snapshot(kind, "1=1", Vec::new())
+                .await
                 .map_err(to_errors)?;
             let version = stored
                 .iter()
@@ -555,7 +556,7 @@ fn declared_snapshot(
 /// `(scope version, rows)` for a canonical watch snapshot.
 type CanonicalSnapshot = (u64, Vec<Map<String, JsonValue>>);
 
-fn canonical_snapshot(
+async fn canonical_snapshot(
     state: &FeatureDataState,
     table: &str,
     scope: &WatchScopeArg,
@@ -564,6 +565,7 @@ fn canonical_snapshot(
     let stored = state
         .rtdb_store
         .select_snapshot(kind, "1=1", Vec::new())
+        .await
         .map_err(to_errors)?;
     let version = stored
         .iter()
@@ -589,7 +591,7 @@ fn to_watch_scope(scope: &WatchScopeArg) -> WatchScope {
 }
 
 /// `feature_data_watch` — register BEFORE the snapshot (R-3.2).
-pub fn watch(
+pub async fn watch(
     state: &FeatureDataState,
     args: FeatureDataWatchArgs,
 ) -> Result<FeatureDataWatchResult, Vec<String>> {
@@ -650,7 +652,7 @@ pub fn watch(
                 args.fields.clone(),
                 args.flush_ms,
             );
-            let snapshot = canonical_snapshot(state, &table, &args.scope)?;
+            let snapshot = canonical_snapshot(state, &table, &args.scope).await?;
             if args.initial {
                 let keys: Vec<Vec<JsonValue>> =
                     snapshot.1.iter().map(canonical_key_of).collect();
@@ -861,19 +863,19 @@ pub fn declare(
 // ── Tauri command wrappers ──────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn feature_data_read(
+pub async fn feature_data_read(
     state: tauri::State<'_, Arc<FeatureDataState>>,
     args: FeatureDataReadArgs,
 ) -> Result<FeatureDataReadResult, Vec<String>> {
-    read(state.inner(), args)
+    read(state.inner(), args).await
 }
 
 #[tauri::command]
-pub fn feature_data_watch(
+pub async fn feature_data_watch(
     state: tauri::State<'_, Arc<FeatureDataState>>,
     args: FeatureDataWatchArgs,
 ) -> Result<FeatureDataWatchResult, Vec<String>> {
-    watch(state.inner(), args)
+    watch(state.inner(), args).await
 }
 
 #[tauri::command]
@@ -1052,10 +1054,10 @@ pub(crate) mod tests {
 
     /// Build a state over a temp dir with `sessions` declared + the engine's
     /// declared observer wired to the watch registry.
-    pub(crate) fn harness() -> Harness {
+    pub(crate) async fn harness() -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
-        rtdb_store.ensure_schema().unwrap();
+        let rtdb_store = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        rtdb_store.ensure_schema().await.unwrap();
         let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
         let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
@@ -1103,13 +1105,13 @@ pub(crate) mod tests {
 
     // ── Read ────────────────────────────────────────────────────────────────
 
-    #[test]
-    fn read_reports_version_rows_and_retention() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
-        h.state.engine.project(&chat_row("ses_2", "ses_2_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn read_reports_version_rows_and_retention() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
+        h.state.engine.project(&chat_row("ses_2", "ses_2_1", 1), &[]).await.unwrap();
 
-        let result = read(&h.state, read_args(declared_ref())).unwrap();
+        let result = read(&h.state, read_args(declared_ref())).await.unwrap();
         assert_eq!(result.rows.len(), 2);
         assert!(result.version >= 2, "version tracks the declared table");
         assert_eq!(
@@ -1128,24 +1130,24 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn read_rejects_an_undeclared_table() {
-        let h = harness();
+    #[tokio::test]
+    async fn read_rejects_an_undeclared_table() {
+        let h = harness().await;
         let errors = read(
             &h.state,
             read_args(DataTableRef::Feature {
                 feature_id: "mission-monitor".to_string(),
                 table: "ghost".to_string(),
             }),
-        )
+        ).await
         .unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("has not declared table 'ghost'"), "{errors:?}");
     }
 
-    #[test]
-    fn read_supports_canonical_refs_with_the_rtdb_retention() {
-        let h = harness();
+    #[tokio::test]
+    async fn read_supports_canonical_refs_with_the_rtdb_retention() {
+        let h = harness().await;
         h.state
             .rtdb_store
             .upsert_chat_rows(&[ChatRow {
@@ -1167,7 +1169,7 @@ pub(crate) mod tests {
                 parent_session_id: None,
                 composited_child_session_id: None,
                 raw_json: "{}".to_string(),
-            }])
+            }]).await
             .unwrap();
 
         let result = read(
@@ -1175,7 +1177,7 @@ pub(crate) mod tests {
             read_args(DataTableRef::Canonical {
                 table: "chat".to_string(),
             }),
-        )
+        ).await
         .unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.version, 4, "canonical scope version is the row seq");
@@ -1184,40 +1186,40 @@ pub(crate) mod tests {
         assert_eq!(result.retention.ttl_days, Some(7));
     }
 
-    #[test]
-    fn read_rejects_an_unknown_canonical_table() {
-        let h = harness();
+    #[tokio::test]
+    async fn read_rejects_an_unknown_canonical_table() {
+        let h = harness().await;
         let errors = read(
             &h.state,
             read_args(DataTableRef::Canonical {
                 table: "bogus".to_string(),
             }),
-        )
+        ).await
         .unwrap_err();
         assert!(errors[0].contains("not one of chat | toolUse | agentSession"), "{errors:?}");
     }
 
-    #[test]
-    fn read_filters_by_where() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
-        h.state.engine.project(&chat_row("ses_2", "ses_2_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn read_filters_by_where() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
+        h.state.engine.project(&chat_row("ses_2", "ses_2_1", 1), &[]).await.unwrap();
         let mut args = read_args(declared_ref());
         args.r#where = vec![EqFilter {
             field: "sessionId".to_string(),
             eq: json!("ses_2"),
         }];
-        let result = read(&h.state, args).unwrap();
+        let result = read(&h.state, args).await.unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("sessionId"), Some(&json!("ses_2")));
     }
 
     // ── Watch ───────────────────────────────────────────────────────────────
 
-    #[test]
-    fn watch_initial_returns_the_snapshot_and_registers() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn watch_initial_returns_the_snapshot_and_registers() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
         let result = watch(
             &h.state,
             FeatureDataWatchArgs {
@@ -1227,22 +1229,22 @@ pub(crate) mod tests {
                 initial: true,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap();
         assert_eq!(result.rows.as_ref().unwrap().len(), 1);
         assert!(result.version >= 1);
         assert!(h.state.watches.is_watching(&result.watch_id));
 
         // A later change is delivered under the returned watch id.
-        h.state.engine.project(&chat_row("ses_2", "ses_2_1", 1), &[]).unwrap();
+        h.state.engine.project(&chat_row("ses_2", "ses_2_1", 1), &[]).await.unwrap();
         assert_eq!(h.state.watches.flush_due(), 1);
         let notifications = h.collector.notifications();
         assert_eq!(notifications[0].watch_id, result.watch_id);
     }
 
-    #[test]
-    fn watch_without_initial_omits_rows() {
-        let h = harness();
+    #[tokio::test]
+    async fn watch_without_initial_omits_rows() {
+        let h = harness().await;
         let result = watch(
             &h.state,
             FeatureDataWatchArgs {
@@ -1252,14 +1254,14 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: None,
             },
-        )
+        ).await
         .unwrap();
         assert!(result.rows.is_none());
     }
 
-    #[test]
-    fn watch_rejects_a_record_scope_with_the_wrong_key_arity() {
-        let h = harness();
+    #[tokio::test]
+    async fn watch_rejects_a_record_scope_with_the_wrong_key_arity() {
+        let h = harness().await;
         let errors = watch(
             &h.state,
             FeatureDataWatchArgs {
@@ -1271,15 +1273,15 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: None,
             },
-        )
+        ).await
         .unwrap_err();
         assert!(errors[0].contains("primary-key value(s)"), "{errors:?}");
         assert_eq!(h.state.watches.watch_count(), 0, "nothing registered");
     }
 
-    #[test]
-    fn unwatch_is_isolated_and_idempotent() {
-        let h = harness();
+    #[tokio::test]
+    async fn unwatch_is_isolated_and_idempotent() {
+        let h = harness().await;
         let kept = watch(
             &h.state,
             FeatureDataWatchArgs {
@@ -1289,7 +1291,7 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap()
         .watch_id;
         let dropped = watch(
@@ -1301,7 +1303,7 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap()
         .watch_id;
 
@@ -1314,7 +1316,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(result.watch_ids, vec![dropped]);
 
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
         assert_eq!(h.state.watches.flush_due(), 1);
         assert_eq!(h.collector.notifications().len(), 1);
         assert_eq!(h.collector.notifications()[0].watch_id, kept);
@@ -1329,10 +1331,10 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn write_guards_backend_owned_reserved_and_undeclared_columns() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn write_guards_backend_owned_reserved_and_undeclared_columns() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
 
         let errors = write(
             &h.state,
@@ -1361,10 +1363,10 @@ pub(crate) mod tests {
         assert_eq!(declared_rows(&h.state)[0].get("chatRowCount"), Some(&json!(1)));
     }
 
-    #[test]
-    fn write_updates_a_feature_owned_column_and_notifies() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn write_updates_a_feature_owned_column_and_notifies() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
         watch(
             &h.state,
             FeatureDataWatchArgs {
@@ -1374,7 +1376,7 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap();
         let result = write(
             &h.state,
@@ -1402,10 +1404,10 @@ pub(crate) mod tests {
         assert_eq!(notification.changed_fields, vec!["customName"]);
     }
 
-    #[test]
-    fn write_with_an_unchanged_value_is_a_noop_and_does_not_notify() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn write_with_an_unchanged_value_is_a_noop_and_does_not_notify() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
         // A real change first (absent → "x") so the second write is a true no-op.
         let first = write(
             &h.state,
@@ -1443,7 +1445,7 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap();
 
         let second = write(
@@ -1493,10 +1495,10 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn write_with_a_real_change_still_notifies_and_bumps() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn write_with_a_real_change_still_notifies_and_bumps() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
         // Seed absent → "x" before the watch so only the x → y change is observed.
         write(
             &h.state,
@@ -1535,7 +1537,7 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap();
 
         let result = write(
@@ -1579,9 +1581,9 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn write_rejects_an_unknown_record() {
-        let h = harness();
+    #[tokio::test]
+    async fn write_rejects_an_unknown_record() {
+        let h = harness().await;
         let errors = write(
             &h.state,
             FeatureDataWriteArgs {
@@ -1600,10 +1602,10 @@ pub(crate) mod tests {
         assert!(errors[0].contains("does not exist"), "{errors:?}");
     }
 
-    #[test]
-    fn delete_tombstones_emits_remove_and_suppresses_re_projection() {
-        let h = harness();
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).unwrap();
+    #[tokio::test]
+    async fn delete_tombstones_emits_remove_and_suppresses_re_projection() {
+        let h = harness().await;
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 1), &[]).await.unwrap();
         watch(
             &h.state,
             FeatureDataWatchArgs {
@@ -1613,7 +1615,7 @@ pub(crate) mod tests {
                 initial: false,
                 flush_ms: Some(0),
             },
-        )
+        ).await
         .unwrap();
         let result = delete(
             &h.state,
@@ -1636,7 +1638,7 @@ pub(crate) mod tests {
         assert!(notification.changed_fields.contains(&"sessionId".to_string()));
 
         // A tombstoned key is never re-projected.
-        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 2), &[]).unwrap();
+        h.state.engine.project(&chat_row("ses_1", "ses_1_1", 2), &[]).await.unwrap();
         assert!(declared_rows(&h.state).is_empty(), "tombstone must suppress resurrection");
 
         // Deleting again is a no-op that still leaves the tombstone.
@@ -1656,9 +1658,9 @@ pub(crate) mod tests {
 
     // ── Declare ─────────────────────────────────────────────────────────────
 
-    #[test]
-    fn declare_is_idempotent() {
-        let h = harness();
+    #[tokio::test]
+    async fn declare_is_idempotent() {
+        let h = harness().await;
         let first = declare(
             &h.state,
             FeatureDataDeclareArgs {
@@ -1680,9 +1682,9 @@ pub(crate) mod tests {
         assert!(!second.materialized[0].created, "re-declare is a no-op");
     }
 
-    #[test]
-    fn declare_rejects_an_invalid_declaration_with_named_errors() {
-        let h = harness();
+    #[tokio::test]
+    async fn declare_rejects_an_invalid_declaration_with_named_errors() {
+        let h = harness().await;
         let errors = declare(
             &h.state,
             FeatureDataDeclareArgs {
@@ -1701,16 +1703,16 @@ pub(crate) mod tests {
         assert!(errors[0].contains("unknown type 'NUMBER'"), "{errors:?}");
     }
 
-    #[test]
-    fn cross_feature_read_is_refused() {
-        let h = harness();
+    #[tokio::test]
+    async fn cross_feature_read_is_refused() {
+        let h = harness().await;
         let errors = read(
             &h.state,
             read_args(DataTableRef::Feature {
                 feature_id: "other-feature".to_string(),
                 table: "sessions".to_string(),
             }),
-        )
+        ).await
         .unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("has not declared table"), "{errors:?}");

@@ -137,7 +137,7 @@ async fn handle_connection(conn: Stream, app: AppHandle) {
 
 async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
     match cmd {
-        CliCommand::EmitEvent { event } => dispatch_emit_event(event, app),
+        CliCommand::EmitEvent { event } => dispatch_emit_event(event, app).await,
         CliCommand::OpenApp { identity } => {
             crate::infrastructure::app_open::dispatch_open_app(identity, app).await
         }
@@ -154,7 +154,10 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
 /// classifier maps the enriched event's payload fields onto RTDB rows
 /// (mock/CLI shapes per the fredo-cli-events skill conventions — real
 /// OTLP-derived rows remain the primary shape).
-fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, app: &AppHandle) -> CliResponse {
+async fn dispatch_emit_event(
+    event: crate::infrastructure::comm::event::FredoEvent,
+    app: &AppHandle,
+) -> CliResponse {
     // Use InternalAdapter to enrich the event with server-side defaults
     let adapter = crate::infrastructure::comm::InternalAdapter::new();
     let enriched = adapter.enrich(event);
@@ -165,7 +168,7 @@ fn dispatch_emit_event(event: crate::infrastructure::comm::event::FredoEvent, ap
     // RTDB rows (mock/CLI shapes per the fredo-cli-events skill conventions —
     // real OTLP-derived rows remain the primary shape).
     let classifier = app.state::<crate::infrastructure::rtdb::ingest::IngestClassifierState>();
-    let rows = classifier.ingest_event(&enriched);
+    let rows = classifier.ingest_event(&enriched).await;
     tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "IPC emit classified into RTDB rows");
 
     CliResponse::ok(serde_json::json!({ "queued": true }))

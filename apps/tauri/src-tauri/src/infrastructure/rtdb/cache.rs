@@ -256,16 +256,20 @@ impl RtdbCache {
 
     // ── Reads: cache-first, SQLite reload on miss ───────────────────────────
 
-    /// Get a chat row — cache-first; a miss reloads from SQLite and
-    /// re-populates the cache (SQLite is authoritative).
-    pub fn get_chat(&self, session_id: &str, correlation_id: &str) -> anyhow::Result<Option<ChatRow>> {
+    /// Get a chat row — cache-first; a miss reloads from the active engine and
+    /// re-populates the cache (storage is authoritative).
+    pub async fn get_chat(
+        &self,
+        session_id: &str,
+        correlation_id: &str,
+    ) -> anyhow::Result<Option<ChatRow>> {
         {
             let mut cache = self.lock_chats();
             if let Some(row) = cache.get(session_id, correlation_id) {
                 return Ok(Some(row));
             }
         }
-        match self.store.get_chat_row(session_id, correlation_id)? {
+        match self.store.get_chat_row(session_id, correlation_id).await? {
             Some(row) => {
                 self.lock_chats().put(
                     (row.session_id.clone(), row.correlation_id.clone()),
@@ -277,8 +281,8 @@ impl RtdbCache {
         }
     }
 
-    /// Get a tool-use row — cache-first, SQLite reload on miss.
-    pub fn get_tool_use(
+    /// Get a tool-use row — cache-first, storage reload on miss.
+    pub async fn get_tool_use(
         &self,
         session_id: &str,
         correlation_id: &str,
@@ -289,7 +293,7 @@ impl RtdbCache {
                 return Ok(Some(row));
             }
         }
-        match self.store.get_tool_use_row(session_id, correlation_id)? {
+        match self.store.get_tool_use_row(session_id, correlation_id).await? {
             Some(row) => {
                 self.lock_tools().put(
                     (row.session_id.clone(), row.correlation_id.clone()),
@@ -301,8 +305,8 @@ impl RtdbCache {
         }
     }
 
-    /// Get an agent-session row — cache-first, SQLite reload on miss.
-    pub fn get_agent_session(
+    /// Get an agent-session row — cache-first, storage reload on miss.
+    pub async fn get_agent_session(
         &self,
         session_id: &str,
         correlation_id: &str,
@@ -313,7 +317,7 @@ impl RtdbCache {
                 return Ok(Some(row));
             }
         }
-        match self.store.get_agent_session_row(session_id, correlation_id)? {
+        match self.store.get_agent_session_row(session_id, correlation_id).await? {
             Some(row) => {
                 self.lock_sessions().put(
                     (row.session_id.clone(), row.correlation_id.clone()),
@@ -328,21 +332,27 @@ impl RtdbCache {
     // ── Per-session key listing (Spec #2788 P3.1 re-key input) ──────────────
 
     /// All keys `(session_id, correlation_id)` belonging to `session_id` for a
-    /// row kind — the CACHED leg unioned with the PERSISTED leg (SQLite is
+    /// row kind — the CACHED leg unioned with the PERSISTED leg (storage is
     /// authoritative per key; a later `get_*` re-reads the winning row).
     /// Deduplicated. Both legs are bounded (cache cap / indexed select).
-    fn keys_for_session_union(
+    async fn keys_for_session_union(
         &self,
         kind: RowKind,
         cached: Vec<RowKey>,
         session_id: &str,
     ) -> anyhow::Result<Vec<RowKey>> {
         let mut keys: Vec<RowKey> = cached;
-        for row in self.store.select_snapshot(
-            kind,
-            "session_id = ?1",
-            vec![rusqlite::types::Value::Text(session_id.to_string())],
-        )? {
+        for row in self
+            .store
+            .select_snapshot(
+                kind,
+                "session_id = ?1",
+                vec![crate::infrastructure::rtdb::store::SqlValue::Text(
+                    session_id.to_string(),
+                )],
+            )
+            .await?
+        {
             let key = row.key();
             keys.push((key.session_id, key.correlation_id));
         }
@@ -352,28 +362,34 @@ impl RtdbCache {
     }
 
     /// Chat keys for a session (cached ∪ persisted) — P3.1 re-key input.
-    pub fn chat_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+    pub async fn chat_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
         let cached = self.lock_chats().keys_for_session(session_id);
         self.keys_for_session_union(RowKind::Chat, cached, session_id)
+            .await
     }
 
     /// Tool-use keys for a session (cached ∪ persisted) — P3.1 re-key input.
-    pub fn tool_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+    pub async fn tool_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
         let cached = self.lock_tools().keys_for_session(session_id);
         self.keys_for_session_union(RowKind::ToolUse, cached, session_id)
+            .await
     }
 
     /// Agent-session keys for a session (cached ∪ persisted) — P3.1 re-key input.
-    pub fn agent_session_keys_for_session(&self, session_id: &str) -> anyhow::Result<Vec<RowKey>> {
+    pub async fn agent_session_keys_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<RowKey>> {
         let cached = self.lock_sessions().keys_for_session(session_id);
         self.keys_for_session_union(RowKind::AgentSession, cached, session_id)
+            .await
     }
 
     // ── Write-behind flush ──────────────────────────────────────────────────
 
     /// Flush one drained batch: partition by kind, upsert each in a single
     /// store transaction per kind. Called by the writer task (and tests).
-    pub fn flush_pending(&self, batch: Vec<PendingWrite>) -> anyhow::Result<usize> {
+    pub async fn flush_pending(&self, batch: Vec<PendingWrite>) -> anyhow::Result<usize> {
         let mut chats = Vec::new();
         let mut tools = Vec::new();
         let mut sessions = Vec::new();
@@ -386,13 +402,13 @@ impl RtdbCache {
         }
         let mut total = 0usize;
         if !chats.is_empty() {
-            total += self.store.upsert_chat_rows(&chats)?;
+            total += self.store.upsert_chat_rows(&chats).await?;
         }
         if !tools.is_empty() {
-            total += self.store.upsert_tool_use_rows(&tools)?;
+            total += self.store.upsert_tool_use_rows(&tools).await?;
         }
         if !sessions.is_empty() {
-            total += self.store.upsert_agent_session_rows(&sessions)?;
+            total += self.store.upsert_agent_session_rows(&sessions).await?;
         }
         Ok(total)
     }
@@ -463,7 +479,7 @@ pub async fn run_writer_task(
                 }
                 if let Some(cache) = app.try_state::<Arc<RtdbCache>>() {
                     let count = batch.len();
-                    if let Err(e) = cache.flush_pending(batch) {
+                    if let Err(e) = cache.flush_pending(batch).await {
                         tracing::error!(
                             target: "fredo::rtdb",
                             error = %e,
@@ -478,7 +494,7 @@ pub async fn run_writer_task(
         }
 
         if last_prune.elapsed() >= WRITER_PRUNE_INTERVAL {
-            prune_with_knobs(&app);
+            prune_with_knobs(&app).await;
             last_prune = tokio::time::Instant::now();
         }
     }
@@ -487,13 +503,13 @@ pub async fn run_writer_task(
 /// Run one prune cycle using the current AppStore knob values. Since P2.3,
 /// every eviction is routed through the RTDB orchestrator (`Rtdb`, when
 /// running) as a `kind: remove` delivery to matching subscribers — R-2d.
-pub fn prune_with_knobs(app: &tauri::AppHandle) {
+pub async fn prune_with_knobs(app: &tauri::AppHandle) {
     let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
         return;
     };
     let app_store = app.state::<Arc<AppStore>>();
     let (retention_days, max_rows) = read_knobs(&app_store);
-    match cache.store().prune(retention_days, max_rows) {
+    match cache.store().prune(retention_days, max_rows).await {
         Ok(outcome) => {
             if !outcome.evicted.is_empty() {
                 if let Some(rtdb) = app.try_state::<RtdbState>() {
@@ -545,10 +561,10 @@ mod tests {
     use super::*;
     use crate::infrastructure::rtdb::rows::RowState;
 
-    fn open_store() -> (tempfile::TempDir, Arc<RtdbStore>) {
+    async fn open_store() -> (tempfile::TempDir, Arc<RtdbStore>) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("open"));
-        store.ensure_schema().expect("schema");
+        let store = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("open"));
+        store.ensure_schema().await.expect("schema");
         (dir, store)
     }
 
@@ -656,15 +672,15 @@ mod tests {
 
     #[tokio::test]
     async fn write_behind_batch_flush_persists_all_row_kinds() {
-        let (_dir, store) = open_store();
+        let (_dir, store) = open_store().await;
         let (cache, mut rx) = RtdbCache::new(store);
 
         cache.upsert_chat(chat_row("ses_a", "ses_a_1", 1));
         cache.upsert_tool_use(tool_row("ses_a", "ses_a_2", 2));
         cache.upsert_agent_session(session_row("ses_a", "ses_a", 3));
 
-        // Cache updated synchronously; SQLite still empty (write-behind).
-        let (chat, tool, agent) = cache.store().row_counts().expect("counts");
+        // Cache updated synchronously; storage still empty (write-behind).
+        let (chat, tool, agent) = cache.store().row_counts().await.expect("counts");
         assert_eq!((chat, tool, agent), (0, 0, 0));
         assert_eq!(cache.chat_cache_len(), 1);
         assert_eq!(cache.tool_cache_len(), 1);
@@ -675,10 +691,10 @@ mod tests {
         while let Ok(pending) = rx.try_recv() {
             batch.push(pending);
         }
-        let flushed = cache.flush_pending(batch).expect("flush");
+        let flushed = cache.flush_pending(batch).await.expect("flush");
         assert_eq!(flushed, 3);
 
-        let (chat, tool, agent) = cache.store().row_counts().expect("counts");
+        let (chat, tool, agent) = cache.store().row_counts().await.expect("counts");
         assert_eq!((chat, tool, agent), (1, 1, 1));
         assert_eq!(cache.dropped_count(), 0);
     }
@@ -687,7 +703,7 @@ mod tests {
 
     #[tokio::test]
     async fn evicted_entries_reload_from_sqlite_on_demand() {
-        let (_dir, store) = open_store();
+        let (_dir, store) = open_store().await;
         // Cache cap 1: writing row B evicts row A from the cache.
         let (cache, mut rx) = RtdbCache::with_capacity(store, 1, QUEUE_CAPACITY);
 
@@ -696,30 +712,30 @@ mod tests {
         let row_b = chat_row("ses_a", "row_b", 2);
         cache.upsert_chat(row_b.clone());
 
-        // Persist both rows so SQLite is authoritative.
+        // Persist both rows so storage is authoritative.
         let mut batch = Vec::new();
         while let Ok(pending) = rx.try_recv() {
             batch.push(pending);
         }
-        cache.flush_pending(batch).expect("flush");
+        cache.flush_pending(batch).await.expect("flush");
 
         // row_b is in cache; row_a was evicted by the cap-1 LRU…
         assert_eq!(cache.chat_cache_len(), 1);
-        // …but reloads from SQLite on demand.
-        let reloaded = cache.get_chat("ses_a", "row_a").expect("get").expect("reloaded");
+        // …but reloads from storage on demand.
+        let reloaded = cache.get_chat("ses_a", "row_a").await.expect("get").expect("reloaded");
         assert_eq!(reloaded, row_a);
         // And is cached again — the cap is enforced on reload too, so the
-        // previously-cached row_b was evicted and reloads from SQLite itself.
+        // previously-cached row_b was evicted and reloads from storage itself.
         assert_eq!(cache.chat_cache_len(), 1, "cap enforced even across a reload");
-        let again = cache.get_chat("ses_a", "row_b").expect("get").expect("reloaded from sqlite");
+        let again = cache.get_chat("ses_a", "row_b").await.expect("get").expect("reloaded from storage");
         assert_eq!(again, row_b, "the other side of the cap reloads on demand too");
     }
 
     #[tokio::test]
     async fn cache_miss_with_no_storage_row_returns_none() {
-        let (_dir, store) = open_store();
+        let (_dir, store) = open_store().await;
         let (cache, _rx) = RtdbCache::new(store);
-        let missing = cache.get_chat("nope", "nope").expect("get");
+        let missing = cache.get_chat("nope", "nope").await.expect("get");
         assert!(missing.is_none());
         assert_eq!(cache.chat_cache_len(), 0, "a miss caches nothing");
     }
@@ -728,7 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn queue_overflow_sheds_storage_writes_never_in_memory_state() {
-        let (_dir, store) = open_store();
+        let (_dir, store) = open_store().await;
         // Queue capacity 1: the first enqueue buffers, the rest are shed.
         let (cache, mut rx) = RtdbCache::with_capacity(store, DEFAULT_CACHE_CAPACITY, 1);
 
@@ -743,11 +759,11 @@ mod tests {
 
         // In-memory/live state is fully intact — all 10 rows readable.
         for i in 0..10 {
-            let got = cache.get_chat("ses_q", &format!("q{i}")).expect("get");
+            let got = cache.get_chat("ses_q", &format!("q{i}")).await.expect("get");
             assert!(got.is_some(), "in-memory row q{i} must survive the shed");
         }
         let expected = last.expect("last row");
-        assert_eq!(cache.get_chat("ses_q", "q9").expect("get"), Some(expected));
+        assert_eq!(cache.get_chat("ses_q", "q9").await.expect("get"), Some(expected));
 
         // The one buffered write is intact for the writer task.
         let buffered = rx.try_recv().expect("first enqueue is buffered");

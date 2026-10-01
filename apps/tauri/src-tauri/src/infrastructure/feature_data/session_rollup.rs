@@ -52,6 +52,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value as JsonValue};
+use sqlx::Row as _;
 
 use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
@@ -471,6 +472,95 @@ pub fn load_persisted_group(conn: &Connection, session_id: &str) -> Result<Rollu
         })?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
+
+    Ok(RollupGroup {
+        session_id: session_id.to_string(),
+        chats,
+        tools,
+        agents,
+    })
+}
+
+/// The PostgreSQL arm of [`load_persisted_group`] (Spec #2976 ST-6): the SAME
+/// bounded, per-group SELECTs against the shared pool, wrapped in a READ ONLY
+/// transaction (REQ-9). `tool_use_rows.is_subagent` is physically `BIGINT` on
+/// PostgreSQL (the C1 `INTEGER→BIGINT` map), so it is normalized to
+/// `Option<bool>` exactly like the canonical store's PG row mapper.
+pub async fn load_persisted_group_pg(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<RollupGroup> {
+    let mut tx = crate::infrastructure::storage::engine::begin_read_only(pool).await?;
+
+    let chat_rows = sqlx::query(
+        "SELECT correlation_id, seq, started_at_ns, updated_at, state,
+                user_message, agent_reply, parent_session_id,
+                composited_child_session_id, provider
+         FROM chat_rows WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let chats = chat_rows
+        .iter()
+        .map(|row| {
+            Ok(RollupChatRow {
+                correlation_id: row.try_get(0)?,
+                seq: row.try_get(1)?,
+                started_at_ns: row.try_get(2)?,
+                updated_at: row.try_get(3)?,
+                state: row.try_get(4)?,
+                user_message: row.try_get(5)?,
+                agent_reply: row.try_get(6)?,
+                parent_session_id: row.try_get(7)?,
+                composited_child_session_id: row.try_get(8)?,
+                provider: row.try_get(9)?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+
+    let tool_rows = sqlx::query(
+        "SELECT correlation_id, seq, tool_name, tool_input_json, is_subagent
+         FROM tool_use_rows WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let tools = tool_rows
+        .iter()
+        .map(|row| {
+            Ok(RollupToolRow {
+                correlation_id: row.try_get(0)?,
+                seq: row.try_get(1)?,
+                tool_name: row.try_get(2)?,
+                tool_input_json: row.try_get(3)?,
+                is_subagent: row
+                    .try_get::<Option<i64>, _>(4)?
+                    .map(|value| value != 0),
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+
+    let agent_rows = sqlx::query(
+        "SELECT correlation_id, seq, updated_at, agent_name
+         FROM agent_session_rows WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let agents = agent_rows
+        .iter()
+        .map(|row| {
+            Ok(RollupAgentRow {
+                correlation_id: row.try_get(0)?,
+                seq: row.try_get(1)?,
+                updated_at: row.try_get(2)?,
+                agent_name: row.try_get(3)?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+
+    tx.commit().await?;
 
     Ok(RollupGroup {
         session_id: session_id.to_string(),

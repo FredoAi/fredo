@@ -469,8 +469,8 @@ mod tests {
 
     const NOW: &str = "2026-09-18T00:00:00+00:00";
 
-    #[test]
-    fn max_rows_evicts_oldest_first_by_latest_at() {
+    #[tokio::test]
+    async fn max_rows_evicts_oldest_first_by_latest_at() {
         let h = setup(Some(Retention {
             max_rows: Some(2),
             ttl_days: None,
@@ -500,8 +500,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn eviction_bumps_version_per_record_and_returns_the_keys() {
+    #[tokio::test]
+    async fn eviction_bumps_version_per_record_and_returns_the_keys() {
         let h = setup(Some(Retention {
             max_rows: Some(1),
             ttl_days: None,
@@ -542,8 +542,8 @@ mod tests {
         assert!(evicted.iter().all(|change| change.table == "sessions"));
     }
 
-    #[test]
-    fn ttl_evicts_strictly_older_than_the_cutoff() {
+    #[tokio::test]
+    async fn ttl_evicts_strictly_older_than_the_cutoff() {
         // A generous cap so ONLY the TTL decides.
         let h = setup(Some(Retention {
             max_rows: Some(100),
@@ -570,8 +570,8 @@ mod tests {
         assert_eq!(remaining_sessions(&h), vec!["boundary", "new"]);
     }
 
-    #[test]
-    fn null_max_rows_is_idle_even_when_a_ttl_would_otherwise_evict() {
+    #[tokio::test]
+    async fn null_max_rows_is_idle_even_when_a_ttl_would_otherwise_evict() {
         // Explicit `maxRows: null` is the binding "idle" contract: the cap is the
         // master switch, so the whole bound is unbounded. `ttlDays: 1` would
         // expire both ancient rows if retention were active.
@@ -595,8 +595,8 @@ mod tests {
         assert_eq!(last_version(&h), 0, "an idle prune must not bump the version");
     }
 
-    #[test]
-    fn absent_declaration_retention_uses_the_appstore_knob_then_the_default() {
+    #[tokio::test]
+    async fn absent_declaration_retention_uses_the_appstore_knob_then_the_default() {
         // No declared retention -> the AppStore knob sets the cap.
         let knobbed = setup(None);
         knobbed
@@ -637,8 +637,8 @@ mod tests {
         assert_eq!(remaining_sessions(&defaulted), vec!["s1", "s2", "s3"]);
     }
 
-    #[test]
-    fn prune_never_touches_a_non_declared_table() {
+    #[tokio::test]
+    async fn prune_never_touches_a_non_declared_table() {
         // cap = 0 -> the declared table is fully evicted.
         let h = setup(Some(Retention {
             max_rows: Some(0),
@@ -727,10 +727,10 @@ mod tests {
         tables: Arc<FeatureStore>,
     }
 
-    fn projection_setup() -> ProjectionHarness {
+    async fn projection_setup() -> ProjectionHarness {
         let dir = tempfile::tempdir().unwrap();
-        let rtdb = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
-        rtdb.ensure_schema().unwrap();
+        let rtdb = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        rtdb.ensure_schema().await.unwrap();
         let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
         let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
@@ -787,9 +787,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tombstoned_key_is_not_re_created() {
-        let h = projection_setup();
+    #[tokio::test]
+    async fn tombstoned_key_is_not_re_created() {
+        let h = projection_setup().await;
         let key = [serde_json::json!("ses_1_1")];
         h.meta
             .put_tombstone(&Tombstone {
@@ -812,10 +812,10 @@ mod tests {
         // The projection engine honors the guard's key format: the tombstoned
         // record is never re-created, while a live sibling still projects.
         h.engine
-            .project(&IngestRow::Chat(chat_row("ses_1", "ses_1_1")), &[])
+            .project(&IngestRow::Chat(chat_row("ses_1", "ses_1_1")), &[]).await
             .unwrap();
         h.engine
-            .project(&IngestRow::Chat(chat_row("ses_1", "ses_1_2")), &[])
+            .project(&IngestRow::Chat(chat_row("ses_1", "ses_1_2")), &[]).await
             .unwrap();
 
         let rows = h.tables.query("probe", "turns", None, None, None).unwrap();

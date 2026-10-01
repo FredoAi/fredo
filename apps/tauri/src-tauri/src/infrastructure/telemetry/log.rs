@@ -139,19 +139,28 @@ impl LogCollector {
     /// Push a log record into the buffer.
     /// If logging is disabled, the record is dropped.
     /// If the buffer threshold is reached, flushes automatically.
-    pub fn push(&self, record: LogRecord) {
+    pub async fn push(&self, record: LogRecord) {
         if !self.enabled_cache.load(Ordering::SeqCst) {
             return;
         }
 
-        let mut inner = self.inner.lock().unwrap();
-        inner.buffer.records.push(record);
+        // Buffer under the lock, then RELEASE it before the flush await (a std
+        // MutexGuard is not Send and must not cross an await).
+        let records = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.buffer.records.push(record);
 
-        if inner.buffer.should_flush() {
-            let records = std::mem::take(&mut inner.buffer.records);
-            inner.buffer.last_flush = Instant::now();
-            drop(inner);
-            if let Err(e) = self.store.insert_logs(&records) {
+            if inner.buffer.should_flush() {
+                let records = std::mem::take(&mut inner.buffer.records);
+                inner.buffer.last_flush = Instant::now();
+                Some(records)
+            } else {
+                None
+            }
+        };
+
+        if let Some(records) = records {
+            if let Err(e) = self.store.insert_logs(&records).await {
                 tracing::error!(target: "fredo::telemetry", error = %e, "log flush error");
             }
         }
@@ -159,7 +168,7 @@ impl LogCollector {
 
     /// Flush buffered records if the 5-second timer has elapsed.
     /// Returns the number of records flushed.
-    pub fn flush_if_needed(&self) -> u64 {
+    pub async fn flush_if_needed(&self) -> u64 {
         let records_to_flush = {
             let mut inner = self.inner.lock().unwrap();
             if inner.buffer.should_flush() {
@@ -172,7 +181,7 @@ impl LogCollector {
         };
 
         let count = records_to_flush.len() as u64;
-        if let Err(e) = self.store.insert_logs(&records_to_flush) {
+        if let Err(e) = self.store.insert_logs(&records_to_flush).await {
             tracing::error!(target: "fredo::telemetry", error = %e, "log flush error");
             return 0;
         }
@@ -181,7 +190,7 @@ impl LogCollector {
 
     /// Force-flush all buffered records immediately, ignoring the timer.
     /// Used by tests and on shutdown. Returns the number of records flushed.
-    pub fn flush_all(&self) -> u64 {
+    pub async fn flush_all(&self) -> u64 {
         let records_to_flush = {
             let mut inner = self.inner.lock().unwrap();
             if inner.buffer.records.is_empty() {
@@ -193,7 +202,7 @@ impl LogCollector {
         };
 
         let count = records_to_flush.len() as u64;
-        if let Err(e) = self.store.insert_logs(&records_to_flush) {
+        if let Err(e) = self.store.insert_logs(&records_to_flush).await {
             tracing::error!(target: "fredo::telemetry", error = %e, "log flush error");
             return 0;
         }
@@ -202,8 +211,8 @@ impl LogCollector {
 
     /// Toggle off — flushes all buffered records, then disables the cache.
     /// Returns the number of records flushed.
-    pub fn disable_and_flush(&self) -> u64 {
-        let flushed = self.flush_all();
+    pub async fn disable_and_flush(&self) -> u64 {
+        let flushed = self.flush_all().await;
         self.enabled_cache.store(false, Ordering::SeqCst);
         flushed
     }
@@ -217,8 +226,8 @@ impl LogCollector {
     }
 
     /// Get current stats: (record_count, storage_bytes).
-    pub fn stats(&self) -> (u64, u64) {
-        self.store.log_stats().unwrap_or((0, 0))
+    pub async fn stats(&self) -> (u64, u64) {
+        self.store.log_stats().await.unwrap_or((0, 0))
     }
 }
 
@@ -335,7 +344,12 @@ where
         };
 
         if let Some(c) = self.get_collector() {
-            c.push(record);
+            // The buffer/flush path is async (engine-selected SpanStore); the
+            // tracing Layer hook is synchronous, so hand the record to the
+            // runtime. Buffering/order is preserved by the collector's Mutex.
+            tauri::async_runtime::spawn(async move {
+                c.push(record).await;
+            });
         }
     }
 }
@@ -416,11 +430,11 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
 
-    fn make_collector() -> (Arc<SpanStore>, Arc<AppStore>, Arc<LogCollector>) {
+    async fn make_collector() -> (Arc<SpanStore>, Arc<AppStore>, Arc<LogCollector>) {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
-        store.ensure_logs_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
+        store.ensure_logs_schema().await.unwrap();
         let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         app_store.control_set("tracing.logging_enabled", "true").unwrap();
         let collector = Arc::new(LogCollector::new(store.clone(), app_store.clone()));
@@ -442,46 +456,46 @@ mod tests {
 
     // ── AC-3: LogCollector captures records ────────────────────────────────
 
-    #[test]
-    fn test_log_collector_enabled() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_log_collector_enabled() {
+        let (store, _app_store, collector) = make_collector().await;
 
-        collector.push(make_record());
-        collector.flush_all();
+        collector.push(make_record()).await;
+        collector.flush_all().await;
 
-        let stats = store.log_stats().unwrap();
+        let stats = store.log_stats().await.unwrap();
         assert_eq!(stats.0, 1, "should have 1 log record");
     }
 
-    #[test]
-    fn test_log_collector_disabled() {
-        let (store, app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_log_collector_disabled() {
+        let (store, app_store, collector) = make_collector().await;
         app_store.control_set("tracing.logging_enabled", "false").unwrap();
         collector.refresh_enabled();
 
-        collector.push(make_record());
-        collector.flush_all();
+        collector.push(make_record()).await;
+        collector.flush_all().await;
 
-        let stats = store.log_stats().unwrap();
+        let stats = store.log_stats().await.unwrap();
         assert_eq!(stats.0, 0, "no records when logging is disabled");
     }
 
     // ── LogBuffer flush threshold ──────────────────────────────────────────
 
-    #[test]
-    fn test_log_buffer_flush_threshold() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_log_buffer_flush_threshold() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Push 500 records — should auto-flush during push at threshold
         for i in 0..500 {
             let mut record = make_record();
             record.attributes_json = serde_json::json!({"i": i}).to_string();
-            collector.push(record);
+            collector.push(record).await;
         }
 
         // After 500, the buffer should have flushed automatically
         // Expect at least 495 records persisted (some may still be in buffer)
-        let (count, _) = store.log_stats().unwrap();
+        let (count, _) = store.log_stats().await.unwrap();
         assert!(
             count >= 495,
             "buffer should have flushed near threshold, got {}",
@@ -489,60 +503,60 @@ mod tests {
         );
 
         // Flush remaining
-        collector.flush_all();
-        let (count, _) = store.log_stats().unwrap();
+        collector.flush_all().await;
+        let (count, _) = store.log_stats().await.unwrap();
         assert_eq!(count, 500, "all 500 records should be persisted");
     }
 
     // ── Flush all ──────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_flush_all_returns_zero_when_empty() {
-        let (_store, _app_store, collector) = make_collector();
-        assert_eq!(collector.flush_all(), 0);
+    #[tokio::test]
+    async fn test_flush_all_returns_zero_when_empty() {
+        let (_store, _app_store, collector) = make_collector().await;
+        assert_eq!(collector.flush_all().await, 0);
     }
 
-    #[test]
-    fn test_flush_all_with_data() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_flush_all_with_data() {
+        let (store, _app_store, collector) = make_collector().await;
 
-        collector.push(make_record());
-        collector.push(make_record());
+        collector.push(make_record()).await;
+        collector.push(make_record()).await;
 
-        let flushed = collector.flush_all();
+        let flushed = collector.flush_all().await;
         assert_eq!(flushed, 2);
 
-        let (count, _) = store.log_stats().unwrap();
+        let (count, _) = store.log_stats().await.unwrap();
         assert_eq!(count, 2);
     }
 
     // ── Disable and flush ──────────────────────────────────────────────────
 
-    #[test]
-    fn test_disable_and_flush_persists_buffered() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_disable_and_flush_persists_buffered() {
+        let (store, _app_store, collector) = make_collector().await;
 
-        collector.push(make_record());
-        collector.push(make_record());
+        collector.push(make_record()).await;
+        collector.push(make_record()).await;
 
-        let flushed = collector.disable_and_flush();
+        let flushed = collector.disable_and_flush().await;
         assert_eq!(flushed, 2, "should flush 2 records before disabling");
 
         // Verify persisted
-        let (count, _) = store.log_stats().unwrap();
+        let (count, _) = store.log_stats().await.unwrap();
         assert_eq!(count, 2);
 
         // Verify disabled — subsequent push should be dropped
-        collector.push(make_record());
-        let (count, _) = store.log_stats().unwrap();
+        collector.push(make_record()).await;
+        let (count, _) = store.log_stats().await.unwrap();
         assert_eq!(count, 2, "no new records after disable");
     }
 
     // ── Refresh enabled ────────────────────────────────────────────────────
 
-    #[test]
-    fn test_refresh_enabled_reads_app_store() {
-        let (_store, app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_refresh_enabled_reads_app_store() {
+        let (_store, app_store, collector) = make_collector().await;
 
         // Initially enabled
         assert!(collector.enabled_cache.load(Ordering::SeqCst));
@@ -560,8 +574,8 @@ mod tests {
 
     // ── LogBridgeLayer creates correct LogRecord ────────────────────────────
 
-    #[test]
-    fn test_log_bridge_layer_creates_record() {
+    #[tokio::test]
+    async fn test_log_bridge_layer_creates_record() {
         // This is a unit test for the LogRecord creation logic.
         // We verify that a LogRecord with expected fields round-trips through serde.
         let record = LogRecord {
@@ -588,8 +602,8 @@ mod tests {
         assert_eq!(deserialized.session_id, Some("sess-1".to_string()));
     }
 
-    #[test]
-    fn test_log_bridge_layer_serialization_camelcase() {
+    #[tokio::test]
+    async fn test_log_bridge_layer_serialization_camelcase() {
         let record = LogRecord {
             timestamp: "2025-01-01T00:00:00+00:00".to_string(),
             level: "ERROR".to_string(),
@@ -612,26 +626,26 @@ mod tests {
 
     // ── Stats ──────────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_log_stats_empty() {
+    #[tokio::test]
+    async fn test_log_stats_empty() {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
-        store.ensure_logs_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
+        store.ensure_logs_schema().await.unwrap();
 
-        let (count, bytes) = store.log_stats().unwrap();
+        let (count, bytes) = store.log_stats().await.unwrap();
         assert_eq!(count, 0);
         assert_eq!(bytes, 0);
     }
 
-    #[test]
-    fn test_log_stats_populated() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_log_stats_populated() {
+        let (store, _app_store, collector) = make_collector().await;
 
-        collector.push(make_record());
-        collector.flush_all();
+        collector.push(make_record()).await;
+        collector.flush_all().await;
 
-        let (count, bytes) = store.log_stats().unwrap();
+        let (count, bytes) = store.log_stats().await.unwrap();
         assert_eq!(count, 1);
         assert!(bytes > 0, "storage_bytes should be > 0 for populated log");
     }
