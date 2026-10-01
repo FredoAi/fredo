@@ -55,7 +55,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use fredo_lib::infrastructure::feature_data::declaration::FeatureDataTableDeclaration;
 use fredo_lib::infrastructure::feature_data::store::FeatureDataStore;
+use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{
     ensure_settings_schema, Dialect, EngineChoice, PgEngine, StorageEngineState,
 };
@@ -696,6 +698,89 @@ fn fixture_generator_is_deterministic() {
         std::fs::read(&second).expect("read the second fixture"),
         "the fixture generator must be byte-deterministic"
     );
+}
+
+/// ST-7c / F-15 regression guard — the committed fixture must emit
+/// PRODUCTION-SHAPED rows, pinned ungated in CI so a malformed fixture can never
+/// again pass the gated suite while failing to render in Mission Monitor:
+///
+/// * every `feature_data_tables.declaration_json` deserializes into the
+///   production [`FeatureDataTableDeclaration`] (the persisted reader's
+///   contract — `registry.rs:216-226`); and
+/// * every `chat_rows` / `tool_use_rows` / `agent_session_rows.state` value is
+///   the canonical LOWERCASE storage form ([`RowState::as_str`],
+///   `rows.rs:44-55`) — never the PascalCase wire enum and never an unknown
+///   token such as `streaming`/`complete` (`store.rs:356-370`).
+///
+/// Runs ungated (fast, no PG).
+#[test]
+fn fixture_rows_are_production_shaped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("production_shaped.db");
+    migration_fixture::build_fixture(&db, &migration_fixture::FixtureScale::SMALL)
+        .expect("build the deterministic fixture");
+    let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open the fixture read-only");
+
+    // (a) Every persisted declaration parses as the production model.
+    let declarations = {
+        let mut statement = conn
+            .prepare("SELECT feature_id, table_name, declaration_json FROM feature_data_tables")
+            .expect("prepare the declaration read");
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query the declarations")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect the declarations")
+    };
+    assert!(
+        !declarations.is_empty(),
+        "the fixture must declare at least one feature table"
+    );
+    for (feature, table, json) in &declarations {
+        serde_json::from_str::<FeatureDataTableDeclaration>(json).unwrap_or_else(|error| {
+            panic!("declaration_json for '{feature}.{table}' must deserialize: {error}\n{json}")
+        });
+    }
+
+    // (b) Every RTDB row state is the canonical lowercase storage form.
+    let canonical: std::collections::BTreeSet<&str> = [
+        RowState::Init,
+        RowState::Update,
+        RowState::Response,
+        RowState::Timeout,
+        RowState::Error,
+    ]
+    .into_iter()
+    .map(|state| state.as_str())
+    .collect();
+    let mut checked = 0usize;
+    for table in ["chat_rows", "tool_use_rows", "agent_session_rows"] {
+        let sql = format!("SELECT state FROM {table}");
+        let states = {
+            let mut statement = conn.prepare(&sql).expect("prepare the state read");
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("query the states")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("collect the states")
+        };
+        for state in states {
+            assert!(
+                canonical.contains(state.as_str()),
+                "'{table}.state' must be a canonical lowercase RowState \
+                 (init|update|response|timeout|error), saw '{state}'"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the fixture must seed at least one RTDB row");
 }
 
 /// Rebuild the canonical small fixture at `.opencode/tmp/2977/fixture/fredo.db`

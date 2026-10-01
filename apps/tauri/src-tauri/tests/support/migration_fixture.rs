@@ -307,23 +307,37 @@ fn seed_settings(conn: &Connection) -> Result<()> {
 }
 
 fn seed_feature_data_tables(conn: &Connection) -> Result<()> {
-    // One row with `backfill_done = 1` and one with `0` (the NULL-vs-set edge).
+    // PRODUCTION-SHAPED declarations (ST-7a / F-15). The persisted-declaration
+    // reader deserializes `declaration_json` into
+    // `FeatureDataTableDeclaration` (`registry.rs:216-226`), which REQUIRES
+    // `name`/`primaryKey`/`columns` (`declaration.rs:225-235`); a
+    // `sessionRollup` `source` additionally requires BOTH `excludeDispatchNames`
+    // and `terminalStates` (`declaration.rs:458-466`). These strings mirror the
+    // real Mission Monitor declaration (`dataDeclaration.ts:40-67`) — the exact
+    // value the product serializes at `registry.rs:340`.
+    //
+    // `sessions` stays `backfill_done = 0` so the `sessionRollup` projection
+    // recomputes the (fixture-absent) physical table once after cutover from the
+    // carried canonical chat/tool rows; `tools` is `1`. One row of each keeps
+    // the AC4 unset(0)/set(1) edge.
+    let sessions_declaration = r#"{"name":"sessions","primaryKey":["sessionId"],"columns":[{"name":"sessionId","type":"TEXT","owner":"backend"},{"name":"provider","type":"TEXT","owner":"backend","nullable":true},{"name":"startedAtNs","type":"INTEGER","owner":"backend","nullable":true},{"name":"latestAt","type":"TEXT","owner":"backend"},{"name":"chatRowCount","type":"INTEGER","owner":"backend"},{"name":"nonSubagentChatRowCount","type":"INTEGER","owner":"backend"},{"name":"visibleTurnCount","type":"INTEGER","owner":"backend"},{"name":"userDispatchCount","type":"INTEGER","owner":"backend"},{"name":"derivedName","type":"TEXT","owner":"backend","nullable":true},{"name":"agentName","type":"TEXT","owner":"backend","nullable":true},{"name":"customName","type":"TEXT","owner":"feature","nullable":true}],"source":{"kind":"sessionRollup","excludeDispatchNames":["build","plan"],"terminalStates":["Response","Timeout"]},"retention":{"maxRows":500}}"#;
+    let tools_declaration = r#"{"name":"tools","primaryKey":["toolUseId"],"columns":[{"name":"toolUseId","type":"TEXT","owner":"backend"},{"name":"toolName","type":"TEXT","owner":"backend","nullable":true}]}"#;
     let rows: [(&str, &str, &str, &str, i64, i64); 2] = [
         (
             "mission-monitor",
             "sessions",
-            r#"{"featureId":"mission-monitor","table":"sessions"}"#,
-            "mm.sessions.v1",
+            sessions_declaration,
+            "mm.sessions.v2",
             7,
-            1,
+            0,
         ),
         (
             "mission-monitor",
             "tools",
-            r#"{"featureId":"mission-monitor","table":"tools"}"#,
+            tools_declaration,
             "mm.tools.v1",
             3,
-            0,
+            1,
         ),
     ];
     for (feature, table, declaration, revision, version, backfill) in rows {
@@ -378,7 +392,11 @@ fn seed_chat_rows(conn: &Connection, count: usize) -> Result<()> {
         } else {
             Some(i as f64 * 0.001)
         };
-        let state = ["streaming", "complete", "error"][index % 3];
+        // LOWERCASE canonical storage form (`RowState::as_str()`,
+        // `rows.rs:44-55`) — the persisted `state` column, NOT the PascalCase
+        // wire enum. `streaming`/`complete` are not parseable by the row
+        // mapper (`store.rs:356-370`).
+        let state = ["update", "response", "error"][index % 3];
         let provider = if index % 2 == 0 { "opencode" } else { "copilot" };
         tx.execute(
             "INSERT INTO chat_rows
@@ -438,7 +456,7 @@ fn seed_tool_use_rows(conn: &Connection, count: usize) -> Result<()> {
                 started,
                 Some(started + 1_000_000),
                 stamp(index),
-                "complete",
+                "response",
                 tool_name,
                 Some(if index % 2 == 0 { 1i64 } else { 0 }),
                 tool_error,
@@ -479,7 +497,7 @@ fn seed_agent_session_rows(conn: &Connection, count: usize) -> Result<()> {
                 started,
                 Some(started + 2_000_000),
                 stamp(index),
-                "complete",
+                "response",
                 Some(i * 100 + 1),
                 Some(i + 1),
                 cost,
