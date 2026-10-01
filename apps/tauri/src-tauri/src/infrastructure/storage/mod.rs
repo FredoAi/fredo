@@ -3,11 +3,14 @@ pub mod feature_store;
 pub mod span_store;
 
 // The storage engine seam (Spec #2975 ST-1) re-exported at the module root so
-// consumers read `storage::{EngineHandle, StoreEngine, ...}`.
+// consumers read `storage::{EngineHandle, StoreEngine, ...}`. Spec #2976 ST-1
+// adds the read-only canonical seam + the slice-3 schema inits.
 pub use engine::{
-    quote_ident, select_engine, Dialect, EngineChoice, EngineHandle, PgEngine, SqliteEngine,
-    StoreEngine, PG_POOL_ACQUIRE_TIMEOUT, PG_POOL_IDLE_TIMEOUT, PG_POOL_MAX_CONNECTIONS,
-    PG_POOL_MAX_LIFETIME, PG_POOL_MIN_CONNECTIONS, STORAGE_ENGINE_ENV,
+    begin_read_only, ensure_rtdb_rows_schema_on_pg, ensure_telemetry_schema_on_pg, quote_ident,
+    select_engine, CanonicalReader, Dialect, EngineChoice, EngineHandle, PgEngine,
+    SqliteEngine, StoreEngine, PG_PERSISTENT_STATEMENTS, PG_POOL_ACQUIRE_TIMEOUT,
+    PG_POOL_IDLE_TIMEOUT, PG_POOL_MAX_CONNECTIONS, PG_POOL_MAX_LIFETIME,
+    PG_POOL_MIN_CONNECTIONS, PG_RTDB_ROWS_DDL, PG_TELEMETRY_DDL, STORAGE_ENGINE_ENV,
 };
 
 use anyhow::{anyhow, Result};

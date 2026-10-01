@@ -44,6 +44,32 @@ pub const PG_POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// Recycle every connection after 30 minutes.
 pub const PG_POOL_MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(1800);
 
+/// The hot PostgreSQL statements the slice-3 stores prepare ONCE and reuse
+/// (`sqlx::query(...).persistent(true)`), per Q-6 (Spec #2976).
+///
+/// These nine statements dominate the write-behind / point-read / prune paths.
+/// Every other statement uses sqlx's default one-shot path; the pool's
+/// per-connection statement cache is the sqlx default (no change), and the pool
+/// sizing constants above stay verbatim (Q-6).
+///
+/// - three `*_rows` full-row upserts (REQ-3): `chat_rows` / `tool_use_rows` /
+///   `agent_session_rows`
+/// - three point reads (REQ-6): `get_chat_row` / `get_tool_use_row` /
+///   `get_agent_session_row`
+/// - the durable-seq seed (REQ-7): `SELECT COALESCE(MAX(seq), 0) …`
+/// - the two prune `DELETE … RETURNING` forms (REQ-8): retention + global cap
+pub const PG_PERSISTENT_STATEMENTS: [&str; 9] = [
+    "chat_rows_upsert",
+    "tool_use_rows_upsert",
+    "agent_session_rows_upsert",
+    "get_chat_row",
+    "get_tool_use_row",
+    "get_agent_session_row",
+    "max_seq",
+    "prune_retention",
+    "prune_global_cap",
+];
+
 // -- Dialect ------------------------------------------------------------------
 
 /// Which SQL dialect the active engine speaks. Returned by
@@ -151,6 +177,67 @@ impl StoreEngine {
             StoreEngine::Postgres(_) => None,
         }
     }
+
+    /// The read-only canonical reader for this engine (AC3 / REQ-9).
+    ///
+    /// The ONE handle every canonical reader (the canonical backfill, provider
+    /// re-derivation, and the declared-table backfill) consumes — SQLite yields
+    /// the shared `PRAGMA query_only=ON` connection, PostgreSQL yields the shared
+    /// pool whose reads must be wrapped in [`begin_read_only`]. `None` only when
+    /// no engine is available; both [`StoreEngine`] variants are always readable.
+    pub fn canonical_reader(&self) -> Option<CanonicalReader> {
+        match self {
+            StoreEngine::Sqlite(engine) => Some(CanonicalReader::Sqlite(Arc::clone(engine))),
+            StoreEngine::Postgres(engine) => Some(CanonicalReader::Postgres(engine.pool.clone())),
+        }
+    }
+
+    /// The active PostgreSQL pool, when the engine is PostgreSQL (REQ-9).
+    ///
+    /// `None` on SQLite, so a caller can take the PostgreSQL-only read-only path
+    /// only when it is actually on the pool.
+    pub fn pg_pool(&self) -> Option<&sqlx::PgPool> {
+        match self {
+            StoreEngine::Sqlite(_) => None,
+            StoreEngine::Postgres(engine) => Some(&engine.pool),
+        }
+    }
+}
+
+// -- The read-only canonical seam (Spec #2976, ST-1) --------------------------
+
+/// The read-only canonical reader, engine-selected (AC3 / REQ-9).
+///
+/// - `Sqlite` carries the shared [`SqliteEngine`]; its `read_only` connection is
+///   pinned with `PRAGMA query_only=ON` (the incumbent read-only guard) — use
+///   [`SqliteEngine::read_only_conn`].
+/// - `Postgres` carries a clone of the shared [`sqlx::PgPool`]; every read is
+///   wrapped in a read-only transaction via [`begin_read_only`].
+///
+/// No canonical reader invents its own connection: the handle is derived from
+/// [`StoreEngine::canonical_reader`], which follows the active engine.
+#[derive(Clone)]
+pub enum CanonicalReader {
+    /// The shared SQLite engine; use [`SqliteEngine::read_only_conn`].
+    Sqlite(Arc<SqliteEngine>),
+    /// The shared PostgreSQL pool; wrap reads in [`begin_read_only`].
+    Postgres(sqlx::PgPool),
+}
+
+/// The PostgreSQL analogue of `PRAGMA query_only=ON`: begin a
+/// `START TRANSACTION READ ONLY` transaction on the shared pool (REQ-9).
+///
+/// Every write through the returned transaction is rejected by PostgreSQL, so a
+/// canonical reader can never mutate `telemetry_spans` / `*_rows`. A rejected
+/// write aborts only the transaction — the connection returns to the pool on
+/// drop and writers are unaffected. Bounded by the pool's own acquire timeout
+/// (G-263).
+pub async fn begin_read_only(
+    pool: &sqlx::PgPool,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    pool.begin_with("START TRANSACTION READ ONLY")
+        .await
+        .map_err(|error| anyhow::anyhow!("[pg:read-only] {error}"))
 }
 
 // -- The swap-once handle -----------------------------------------------------
@@ -359,6 +446,180 @@ pub async fn ensure_settings_schema(pool: &sqlx::PgPool) -> Result<()> {
     Ok(())
 }
 
+// -- Slice-3 PostgreSQL schema init (Spec #2976, ST-1) ------------------------
+
+/// The PostgreSQL DDL for the three RTDB canonical `*_rows` tables + their
+/// indexes (REQ-2), 1:1 with the SQLite schema (`rtdb/store.rs::ensure_schema`;
+/// C1 type map `TEXT→TEXT`, `INTEGER→BIGINT`, `REAL→DOUBLE PRECISION`).
+///
+/// The single PostgreSQL DDL source for these tables: the startup schema-init
+/// registry ([`StorageEngineState::register_slice3_pg_schema_inits`]) and the
+/// store's `ensure_schema` PostgreSQL arm both route here, so the DDL is never
+/// re-declared (NFR-6 spirit). `provider` is `NOT NULL DEFAULT 'unknown'`, the
+/// composite `(session_id, correlation_id)` is the PK, and re-running is a no-op.
+pub const PG_RTDB_ROWS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS chat_rows (
+    session_id                  TEXT NOT NULL,
+    correlation_id              TEXT NOT NULL,
+    seq                         BIGINT NOT NULL,
+    started_at_ns               BIGINT,
+    ended_at_ns                 BIGINT,
+    updated_at                  TEXT NOT NULL,
+    state                       TEXT NOT NULL,
+    user_message                TEXT,
+    agent_reply                 TEXT,
+    prompt_tokens               BIGINT,
+    completion_tokens           BIGINT,
+    cache_read_tokens           BIGINT,
+    cost_usd                    DOUBLE PRECISION,
+    model                       TEXT,
+    parent_session_id           TEXT,
+    composited_child_session_id TEXT,
+    raw_json                    TEXT NOT NULL,
+    provider                    TEXT NOT NULL DEFAULT 'unknown',
+    PRIMARY KEY (session_id, correlation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_started ON chat_rows(started_at_ns);
+CREATE INDEX IF NOT EXISTS idx_chat_session_time ON chat_rows(session_id, started_at_ns);
+CREATE INDEX IF NOT EXISTS idx_chat_updated ON chat_rows(updated_at);
+CREATE TABLE IF NOT EXISTS tool_use_rows (
+    session_id                 TEXT NOT NULL,
+    correlation_id             TEXT NOT NULL,
+    seq                        BIGINT NOT NULL,
+    started_at_ns              BIGINT,
+    ended_at_ns                BIGINT,
+    updated_at                 TEXT NOT NULL,
+    state                      TEXT NOT NULL,
+    tool_name                  TEXT,
+    tool_success               BIGINT,
+    tool_error                 TEXT,
+    duration_ms                BIGINT,
+    tool_input_json            TEXT,
+    tool_output_json           TEXT,
+    is_subagent                BIGINT,
+    raw_json                   TEXT NOT NULL,
+    provider                   TEXT NOT NULL DEFAULT 'unknown',
+    PRIMARY KEY (session_id, correlation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_started ON tool_use_rows(started_at_ns);
+CREATE INDEX IF NOT EXISTS idx_tool_session_time ON tool_use_rows(session_id, started_at_ns);
+CREATE INDEX IF NOT EXISTS idx_tool_updated ON tool_use_rows(updated_at);
+CREATE TABLE IF NOT EXISTS agent_session_rows (
+    session_id                 TEXT NOT NULL,
+    correlation_id             TEXT NOT NULL,
+    seq                        BIGINT NOT NULL,
+    started_at_ns              BIGINT,
+    ended_at_ns                BIGINT,
+    updated_at                 TEXT NOT NULL,
+    state                      TEXT NOT NULL,
+    total_tokens               BIGINT,
+    total_messages             BIGINT,
+    total_cost_usd             DOUBLE PRECISION,
+    agent_name                 TEXT,
+    raw_json                   TEXT NOT NULL,
+    provider                   TEXT NOT NULL DEFAULT 'unknown',
+    PRIMARY KEY (session_id, correlation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_started ON agent_session_rows(started_at_ns);
+CREATE INDEX IF NOT EXISTS idx_agent_session_time ON agent_session_rows(session_id, started_at_ns);
+CREATE INDEX IF NOT EXISTS idx_agent_updated ON agent_session_rows(updated_at);
+"#;
+
+/// The PostgreSQL DDL for the three telemetry tables + their indexes (REQ-2),
+/// 1:1 with the SQLite schema (`storage/span_store.rs`; `INTEGER→BIGINT`,
+/// `REAL→DOUBLE PRECISION`, `AUTOINCREMENT→GENERATED ALWAYS AS IDENTITY`).
+///
+/// The single PostgreSQL DDL source for these tables (see [`PG_RTDB_ROWS_DDL`]).
+/// `telemetry_spans` keeps the `span_id` PK and the `WHERE status_code = 'ERROR'`
+/// partial index; `telemetry_logs.id` / `telemetry_metrics.id` are
+/// `BIGINT GENERATED ALWAYS AS IDENTITY`.
+pub const PG_TELEMETRY_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS telemetry_spans (
+    trace_id        TEXT NOT NULL,
+    span_id         TEXT PRIMARY KEY,
+    parent_span_id  TEXT,
+    span_name       TEXT NOT NULL,
+    span_kind       TEXT NOT NULL DEFAULT 'INTERNAL',
+    start_time_ns   BIGINT NOT NULL,
+    end_time_ns     BIGINT,
+    status_code     TEXT NOT NULL DEFAULT 'UNSET',
+    status_message  TEXT,
+    session_id      TEXT NOT NULL,
+    attributes_json TEXT,
+    events_json     TEXT,
+    provider        TEXT,
+    transport       TEXT,
+    event_type      TEXT,
+    ingested_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_spans_trace_id ON telemetry_spans(trace_id);
+CREATE INDEX IF NOT EXISTS idx_telemetry_spans_start_time ON telemetry_spans(start_time_ns);
+CREATE INDEX IF NOT EXISTS idx_telemetry_spans_session ON telemetry_spans(session_id, start_time_ns);
+CREATE INDEX IF NOT EXISTS idx_telemetry_spans_event_type ON telemetry_spans(event_type, start_time_ns);
+CREATE INDEX IF NOT EXISTS idx_telemetry_spans_error ON telemetry_spans(status_code) WHERE status_code = 'ERROR';
+CREATE TABLE IF NOT EXISTS telemetry_logs (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp       TEXT NOT NULL,
+    level           TEXT NOT NULL,
+    target          TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    attributes_json TEXT DEFAULT '{}',
+    trace_id        TEXT,
+    span_id         TEXT,
+    session_id      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON telemetry_logs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_logs_level ON telemetry_logs(level);
+CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON telemetry_logs(trace_id);
+CREATE INDEX IF NOT EXISTS idx_logs_session_id ON telemetry_logs(session_id);
+CREATE TABLE IF NOT EXISTS telemetry_metrics (
+    id                   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    metric_name          TEXT NOT NULL,
+    metric_type          TEXT NOT NULL,
+    labels_json          TEXT DEFAULT '{}',
+    value                DOUBLE PRECISION NOT NULL,
+    timestamp            TEXT NOT NULL,
+    aggregation_window_s BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_name_time ON telemetry_metrics(metric_name, timestamp);
+"#;
+
+/// Create the three RTDB canonical `*_rows` tables on a PostgreSQL pool
+/// (idempotent). Runs the PostgreSQL arm of `RtdbStore::ensure_schema`.
+pub fn ensure_rtdb_rows_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
+    super::feature_store::block_on_pg(async {
+        sqlx::raw_sql(PG_RTDB_ROWS_DDL).execute(pool).await.map(|_| ())
+    })?;
+    Ok(())
+}
+
+/// Create the three telemetry tables on a PostgreSQL pool (idempotent). Runs the
+/// PostgreSQL arm of `SpanStore::ensure_schema` / `ensure_logs_schema` /
+/// `ensure_metrics_schema`.
+pub fn ensure_telemetry_schema_on_pg(pool: &sqlx::PgPool) -> Result<()> {
+    super::feature_store::block_on_pg(async {
+        sqlx::raw_sql(PG_TELEMETRY_DDL).execute(pool).await.map(|_| ())
+    })?;
+    Ok(())
+}
+
+impl StorageEngineState {
+    /// Register the six canonical slice-3 tables' PostgreSQL schema initializers
+    /// (REQ-2) for the two stores, so `lib.rs` can wire them PRE-install (ST-7).
+    ///
+    /// Appends two initializers — one per store — to the [`PgSchemaInit`]
+    /// registry: `chat_rows` / `tool_use_rows` / `agent_session_rows`
+    /// ([`ensure_rtdb_rows_schema_on_pg`]) and `telemetry_spans` /
+    /// `telemetry_logs` / `telemetry_metrics` ([`ensure_telemetry_schema_on_pg`]).
+    /// They run against the candidate pool BEFORE it is installed, so the six
+    /// tables exist before any feature op. Like every registered initializer, a
+    /// failure is fail-closed (the pool is never installed).
+    pub fn register_slice3_pg_schema_inits(&self) {
+        self.register_pg_schema_init(Arc::new(ensure_rtdb_rows_schema_on_pg));
+        self.register_pg_schema_init(Arc::new(ensure_telemetry_schema_on_pg));
+    }
+}
+
 // -- Engine status (Spec #2975, ST-2) -----------------------------------------
 
 /// Serialize [`Dialect`] as its lowercase wire name (`"sqlite"` | `"postgres"`),
@@ -433,6 +694,13 @@ impl StorageEngineState {
             init(pool)?;
         }
         Ok(())
+    }
+
+    /// Test-only: the number of registered initializers, so a pin can assert
+    /// registration without a live PostgreSQL server.
+    #[cfg(test)]
+    pub(crate) fn schema_init_count(&self) -> usize {
+        lock(&self.schema_inits).len()
     }
 
     /// The swap-once handle (cloned into the supervisor's pool build).
@@ -945,6 +1213,120 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Dialect::Sqlite).unwrap(),
             serde_json::json!("sqlite")
+        );
+    }
+
+    // -- ST-1: engine-selected read-only canonical seam -----------------------
+
+    #[test]
+    fn canonical_reader_and_pg_pool_follow_the_active_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = make_sqlite_engine(dir.path());
+        let engine = StoreEngine::Sqlite(sqlite.clone());
+        match engine.canonical_reader().expect("a sqlite reader") {
+            CanonicalReader::Sqlite(shared) => assert!(Arc::ptr_eq(&shared, &sqlite)),
+            CanonicalReader::Postgres(_) => panic!("sqlite must yield a sqlite reader"),
+        }
+        assert!(engine.pg_pool().is_none());
+
+        let engine = StoreEngine::Postgres(Arc::new(make_pg_engine(
+            "postgres://postgres:secret@127.0.0.1:5432/fredo",
+        )));
+        match engine.canonical_reader().expect("a postgres reader") {
+            CanonicalReader::Postgres(pool) => assert!(!pool.is_closed()),
+            CanonicalReader::Sqlite(_) => panic!("postgres must yield a postgres reader"),
+        }
+        assert!(engine.pg_pool().is_some());
+    }
+
+    #[test]
+    fn canonical_reader_sqlite_uses_the_read_only_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = make_sqlite_engine(dir.path());
+        sqlite
+            .write_conn()
+            .execute_batch("CREATE TABLE probe (id TEXT PRIMARY KEY);")
+            .unwrap();
+        let engine = StoreEngine::Sqlite(sqlite);
+        match engine.canonical_reader().expect("a sqlite reader") {
+            CanonicalReader::Sqlite(shared) => {
+                let read = shared.read_only_conn();
+                assert!(
+                    read.execute("INSERT INTO probe (id) VALUES ('x')", []).is_err(),
+                    "the canonical SQLite reader must reject writes"
+                );
+            }
+            CanonicalReader::Postgres(_) => panic!("sqlite must yield a sqlite reader"),
+        }
+    }
+
+    #[tokio::test]
+    async fn begin_read_only_fails_closed_on_an_unreachable_pool() {
+        let pg = make_pg_engine("postgres://postgres:pw@127.0.0.1:1/none");
+        let error = begin_read_only(&pg.pool).await.err().expect("must fail");
+        assert!(error.to_string().contains("[pg:read-only]"), "{error}");
+    }
+
+    // -- ST-1: six-table PostgreSQL schema init -------------------------------
+
+    #[test]
+    fn slice3_pg_ddl_declares_the_six_tables_one_to_one() {
+        for table in ["chat_rows", "tool_use_rows", "agent_session_rows"] {
+            assert!(
+                PG_RTDB_ROWS_DDL.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing {table}"
+            );
+        }
+        for table in ["telemetry_spans", "telemetry_logs", "telemetry_metrics"] {
+            assert!(
+                PG_TELEMETRY_DDL.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing {table}"
+            );
+        }
+        assert!(PG_RTDB_ROWS_DDL.contains("PRIMARY KEY (session_id, correlation_id)"));
+        assert!(PG_RTDB_ROWS_DDL.contains("DEFAULT 'unknown'"));
+        assert!(PG_TELEMETRY_DDL.contains("TEXT PRIMARY KEY"));
+        assert!(PG_TELEMETRY_DDL.contains("DOUBLE PRECISION"));
+        assert!(PG_TELEMETRY_DDL.contains("WHERE status_code = 'ERROR'"));
+        assert_eq!(
+            PG_TELEMETRY_DDL.matches("GENERATED ALWAYS AS IDENTITY").count(),
+            2,
+            "telemetry_logs.id and telemetry_metrics.id are the identity columns"
+        );
+    }
+
+    #[test]
+    fn register_slice3_pg_schema_inits_registers_one_init_per_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        assert_eq!(state.schema_init_count(), 0);
+        state.register_slice3_pg_schema_inits();
+        assert_eq!(
+            state.schema_init_count(),
+            2,
+            "one initializer per store (RtdbStore + SpanStore)"
+        );
+    }
+
+    #[test]
+    fn persistent_statement_knobs_cover_the_nine_hot_statements() {
+        assert_eq!(PG_PERSISTENT_STATEMENTS.len(), 9);
+        for kind in [
+            "chat_rows_upsert",
+            "tool_use_rows_upsert",
+            "agent_session_rows_upsert",
+        ] {
+            assert!(PG_PERSISTENT_STATEMENTS.contains(&kind), "{kind}");
+        }
+        assert!(PG_PERSISTENT_STATEMENTS.contains(&"max_seq"));
+        assert_eq!(
+            PG_PERSISTENT_STATEMENTS
+                .iter()
+                .filter(|s| s.starts_with("prune_"))
+                .count(),
+            2,
+            "the two prune DELETE ... RETURNING forms"
         );
     }
 }
