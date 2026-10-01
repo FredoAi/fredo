@@ -409,3 +409,28 @@ PASS = F-1..F-20 (slices 1–2) all green AND F-21..F-41 (slice 3) all green, wi
 Any per-store connection, any user-visible change under SQLite, a mutated `fredo.db` on PG failure, a
 count/checksum mismatch, a row-pipeline semantic change, a write reaching `telemetry_spans`, a blank
 Mission Monitor while rows exist, or an unbounded wait = **FAIL**.
+
+## Round 1 — 2026-10-01, `spec/2976 @ c83a0b62` — **ALL PASS**
+
+Harness: PG-selected cold boot (`FREDO_STORAGE_ENGINE=postgres`); `storage_engine_status.engine = "postgres"`.
+The `telemetry-query` skill is SQLite-only and the slice moves the tables to PG, so live receipts used the
+managed `psql` (`%APPDATA%\com.fredo.app\postgres-install\18.6.0\bin\psql.exe` via `run-exitcode.ps1`) —
+a plan/tooling gap, disclosed in the verdict.
+
+- **F-21/F-22 PASS (live):** all six slice-3 tables in PG `public`; PKs `(session_id, correlation_id)` ×3,
+  `telemetry_spans(span_id)`, identity `telemetry_logs.id`/`telemetry_metrics.id`, partial
+  `idx_telemetry_spans_error WHERE status_code='ERROR'`; client backends 7 ≤ max_connections 8; both stores'
+  output landed in PG (SQLite 0 rows for the same fixture sessions).
+- **F-24 PASS (live):** key `e2e-2976-seq_1` seq 2 → full app restart over the same PG data dir → seq 2 read
+  back → next patch → seq 3 (never reset).
+- **F-28 PASS (live):** 10-row `fredo emit` burst → 10 rows in PG, coalesced.
+- **F-33..F-36 PASS (disclosed):** BEFORE = recorded `#2948` SQLite baseline
+  (`git show b4079db:spikes/2948-embedded-postgres/results/measurements.json`) — the spike harness was deleted
+  at the tip; AFTER = live store-level psql microbenchmark on the product's configured PG. Batch upsert
+  +5.6% vs SQLite / 3.9× faster than the un-optimized spike PG; point read +2.3× / 14.3× faster; range read
+  1.5× faster; data-dir +63.8 MiB.
+- **F-38 PASS:** check 0 warnings, clippy clean, 1030 lib + integration tests 0 failed.
+- **F-19 PASS:** `FREDO_TEST_PG=1 cargo test --locked --test storage_engine_pg` → `cross_engine_postgres_suite ok`.
+- **F-39 PASS:** dual-provider Mission Monitor (see `mission-monitor` F-54).
+- **Teardown residual (environment, not slice 3):** after a `Restart`, an orphan `postgres.exe` + stale
+  `postmaster.pid` made the next boot fail closed to SQLite; killing the orphan restored PG (R-18 family).
