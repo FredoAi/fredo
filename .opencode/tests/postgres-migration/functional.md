@@ -138,6 +138,12 @@ this one).
   rendered data equals the same-instant PG store columns (not SQLite). Modeled on `mission-monitor`
   F-54 / `postgres-stores` F-39. **FAIL** = a blank panel while migrated rows exist, a stale SQLite
   read, or a static-only receipt.
+  **Round 1 (2026-10-01) FAIL:** the app booted on the migrated store and the session list rendered
+  6 migrated sessions (matching the 6 `feature_mission_monitor_sessions` rows read via managed
+  `psql` at the same instant), but the graph/tools/tokens did NOT render — the panel showed
+  `unknown rtdb row state: streaming`. Root cause: the committed CU-D fixture writes
+  non-production-shaped data (see F-15). The corrected-fixture capture was blocked by a WebView2
+  `about:blank` environment wedge.
 
 - [ ] **F-13 (NFR) — zero-warning build gates + Windows-first.**
   Run `cargo check --locked`, `cargo clippy --locked -- -D warnings`, `cargo test --locked`.
@@ -154,6 +160,19 @@ this one).
   every live leg is finite; no orphan `postgres.exe` after `-Action Down`. **FAIL** = a write
   reaching `telemetry_spans`, a live writer during parity, an await without a finite bound, or an
   orphan postmaster.
+
+- [ ] **F-15 (promoted from E-fixture, round 1) — the committed fixture generator produces
+  PRODUCTION-SHAPED rows so the migrated data drives Mission Monitor.**
+  The CU-D fixture (`apps/tauri/src-tauri/tests/support/migration_fixture.rs`) must write
+  (a) a valid `feature_data_tables.declaration_json` (production shape: `name`/`primaryKey`/
+  `columns`/`source`/`retention`) and (b) canonical `RowState` values
+  (`Init|Update|Response|Timeout|Error`, not `streaming|complete|error`) for
+  `chat_rows`/`tool_use_rows`/`agent_session_rows`.
+  **Expected:** the backend's persisted-declaration reader accepts the row (no `missing field
+  'name'`), and the frontend row store derives the Mission Monitor graph/tokens with no
+  `unknown rtdb row state` error. **Round 1:** FAIL — the fixture wrote
+  `{"featureId":"mission-monitor","table":"sessions"}` (missing `name`) and lowercase states, so
+  MM's declared session list errored and the graph aborted.
 
 ## Non-functional
 
