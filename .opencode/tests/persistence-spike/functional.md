@@ -1,5 +1,7 @@
 # persistence-spike — Functional
 
+> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+
 Feature: evaluation of embedded PostgreSQL (`theseus-rs/postgresql-embedded`) vs embedded
 SQLite for Fredo local persistence. Issue #2948 (SPIKE — deliverable is a measured
 decision, no production code).
@@ -81,7 +83,7 @@ NOT evidence).
   link from the plan/issue. **FAIL** = vague recommendation, missing effort, unordered
   risks, or missing no-production statement. Edge: `conditional-go` must name conditions;
   points must name the scale.
-  **Round 1 (2026-09-26) result: PASS.** `docs/research/2948-embedded-postgres-spike.md`:
+  **Round 1 (2026-09-26) result: PASS.** `spikes/2948-embedded-postgres-spike.md`:
   `**Status: NO-GO**`; effort `**Size: L (Large) — ~34 story points**` with the named scale
   (S=1–4/M=5–12/L=13–40); a 10-row risk list ordered by impact×likelihood, each with impact
   + mitigation/accepted-risk; `**No production migration occurred.**`; relative links to
@@ -103,7 +105,7 @@ NOT evidence).
   apps/tauri/src-tauri/Cargo.toml` → `Finished \`dev\` profile … in 1m 27s`, exit 0, zero
   warnings. (b) `pnpm --filter @fredo/ui build` → `✓ 2624 modules transformed` / `✓ built in
   9.77s`, exit 0, zero TS errors. (c) `git diff --name-only 283b4a3 origin/spec/2948` →
-  `docs/research/2948-embedded-postgres-spike.md` + 17 files under
+  `spikes/2948-embedded-postgres-spike.md` + 17 files under
   `spikes/2948-embedded-postgres/**` only. `Test-Path Cargo.toml` → `False` (no root
   workspace). `grep postgresql_embedded|postgresql-embedded|embedded-postgres-spike` over
   `apps/` → No files found.

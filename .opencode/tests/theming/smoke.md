@@ -1,5 +1,7 @@
 # Theming — Smoke
 
+> **Withdrawn artifact:** `docs/features/desktop-background-life.md` was deleted. Its citations record real observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The Life contract now lives in source: `lifePatterns.ts` (pattern catalogue + CC BY-SA 3.0 attribution) and `lifeConstants.ts` (derived palette).
+
 > Standardized boilerplate (from `.opencode/tests/README.md`) adapted to the theming surface.
 > These confirm the app still boots and the theming path is reachable.
 

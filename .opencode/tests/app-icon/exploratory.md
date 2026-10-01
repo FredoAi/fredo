@@ -1,5 +1,8 @@
 # app-icon — Exploratory Tests
 
+> **Withdrawn artifact:** `docs/app-icons.md` was deleted. Its citations record real `#2930 round 1` observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The icon contract now lives in `scripts/generate-app-icons.mjs` and `docs/SETUP.md`.
+
+
 Unscripted edge/failure probes for the OS-icon surface. Add findings on the fly; a confirmed probe
 **promotes** to `functional.md` as a new `F-` row (keep the origin note). Verification policy is
 **static** — probes are asset/config/build reads plus built-artifact reads, not telemetry queries.

@@ -1,5 +1,7 @@
 # Theming — Functional
 
+> **Withdrawn artifact:** `docs/features/desktop-background-life.md` was deleted. Its citations record real observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The Life contract now lives in source: `lifePatterns.ts` (pattern catalogue + CC BY-SA 3.0 attribution) and `lifeConstants.ts` (derived palette).
+
 > Formalizes the `## QA Expert` QA Plan rows from `.opencode/tmp/2811/triage.md` (R1..R5).
 > Every case lists the observable expected outcome and required test data.
 > **Verification policy: static** — static ACs (R3/R5) pass on `pnpm --filter @fredo/ui build`

@@ -15,16 +15,60 @@
 
 ## Documentation Catalog
 
+Core product and engineering documentation.
+
 | Document | Purpose |
 |----------|---------|
 | [Architecture](ARCHITECTURE.md) | Communication layer, RTDB row store + ingest classifier, Rust module map, IPC protocol, OTLP receivers, Tauri commands, feature modules, agent integrations, startup sequence |
-| [agentic-pipeline](agentic-pipeline/README.md) | Agentic SDD pipeline: agent catalog, phases, artifacts, scripts, skills, metrics — the full development workflow from intake to improvement |
 | [Setup Guide](SETUP.md) | Prerequisites, install, dev commands, model download, OTLP configuration |
 | [CLI Guide](CLI_GUIDE.md) | All `fredo` CLI subcommands with examples |
 | [Security](SECURITY.md) | IPC socket security, OTLP, Tauri capabilities, input handling, process isolation |
 | [FAQ](FAQ.md) | Common questions and troubleshooting |
-| [App Icons](app-icons.md) | Shipped OS icon set: source of truth (the canonical avatar geometry), composition + baked palette, regeneration commands, platform scope |
-| [STT Engine Selection (research, superseded)](research/stt-engine-selection.md) | Historical #2876 spike — **superseded by #2914**: the local-first streaming STT engine decision (candidate comparison, 6 engines × 8 criteria, cited) and its capture + provisioning recommendation, kept as a record after the on-device engine was removed and model audio became the only voice path |
+| [GenAI Telemetry Reference](telemetry-reference.md) | What Fredo actually receives — every `gen_ai.*` attribute by signal type, grounded in live `telemetry_spans`/`telemetry_metrics`/`telemetry_logs` and cross-referenced against the OTel GenAI semantic conventions. Start here when a row is missing, empty, or non-conformant |
+| [CI Gate Contract](CI_GATE_CONTRACT.md) | What runs on a PR to `main` and which check gates the merge (`validate` is the only required status check; per-stack path-filter gating) |
+| [agentic-pipeline](agentic-pipeline/README.md) | Agentic SDD pipeline: agent catalog, phases, artifacts, scripts, skills, metrics — the full development workflow from intake to improvement |
+
+## Contributing & Agent Contract
+
+| Document | Purpose |
+|----------|---------|
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | How to build from source, the CI-parity command set that must pass before a PR can merge, the contribution workflow, priorities, and non-goals |
+| [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) | Community expectations and enforcement |
+| [Security Policy](../.github/SECURITY.md) | Reporting a vulnerability privately, supported versions, coordinated disclosure, and what is **not** a vulnerability |
+| [AGENTS.md](../AGENTS.md) | **Auto-loaded into every agent session** — the binding architecture summary and universal rules (backend, frontend, Chakra UI, pipeline hygiene). Not a reading document: the harness injects it, so honour it rather than reading it up front |
+
+## Maintainer Runbooks
+
+**The maintainer (repo owner) runs these — not contributors, and never AI agents.** Repository
+settings and release steps are outside what an agent can do, and the steps are deterministic on
+purpose.
+
+| Document | Purpose |
+|----------|---------|
+| [Release Process](release-process.md) | The owner manual for cutting a release: the `release/stable` branch, its ruleset, the draft-release review and publish. Records what the pipeline principal (a GitHub *collaborator*, not an *ADMIN*) cannot do itself |
+| [GitHub Settings Runbook](GITHUB_SETUP.md) | One-time repository settings: branch + tag rulesets, secret scanning, Dependabot, CodeQL, private vulnerability reporting, workflow permissions, 2FA, repo topics |
+
+## Spikes
+
+Research that **is part of a spec**, filed flat as `spikes/<issue-number>-<slug>.md`. These are
+**records, not code** — a spike's PoC crate and raw measurements are disposable; the decision and
+its rationale are what survive. Indexed at [`spikes/README.md`](../spikes/README.md).
+
+| Spike | Outcome |
+|-------|---------|
+| [#2948 — embedded PostgreSQL evaluation](../spikes/2948-embedded-postgres-spike.md) | Is `postgresql-embedded` viable for `fredo.db`? **NO-GO**. The measurements stand as design inputs, not a veto |
+| [#2964 — the migration approach](../spikes/2964-postgres-migration-approach.md) | The migration is **mandated** — so how? The full written approach, with the four section designs absorbed into it |
+| [#2897 — model-audio feasibility](../spikes/2897-model-audio-feasibility.md) | The ST-0 gating record for speech input. Model audio shipped; it is the only speech path |
+| [#2876 — local-first streaming STT engine](../spikes/2876-stt-engine-selection.md) | **SUPERSEDED** by #2914 — kept verbatim as the spike's historical record |
+
+## Research
+
+[`research/`](../research/) is the maintainer's own landscape research — external papers, vendor
+documentation, community practice, and OSS case studies that informed the open-source launch. It is
+**not** spec-scoped work and is not indexed here.
+
+---
 
 ### Archived
+
 Historical documentation for superseded components is in [`archive/`](archive/README.md).

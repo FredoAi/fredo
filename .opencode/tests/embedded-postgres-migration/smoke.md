@@ -9,7 +9,7 @@ non-invasive.
 > no `fredo emit`, no row subscriptions are exercised by this spike.
 
 - [ ] **S-1: Deliverable present.** The design doc (expected
-  `docs/research/2964-embedded-postgres-migration.md`) exists on the spec branch and is
+  `spikes/2964-postgres-migration-approach.md`) exists on the spec branch and is
   non-empty.
 - [ ] **S-2: Six areas present.** F-1's six scope-area headings all appear (quick pass, full
   detail in `functional.md` F-1/F-2).

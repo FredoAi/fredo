@@ -42,7 +42,7 @@ restore the app-boot checks (S-1..S-5 boilerplate).
   **Expected:** all three present. **FAIL:** any missing or uncommitted (an artifact only
   under `.opencode/tmp/` does not count).
   **Round 1 (2026-09-26) result: PASS.** `results/measurements.json` (119 lines),
-  `QUESTIONS.md` (139 lines, Q1–Q9), `docs/research/2948-embedded-postgres-spike.md`
+  `QUESTIONS.md` (139 lines, Q1–Q9), `spikes/2948-embedded-postgres-spike.md`
   (187 lines) all on `origin/spec/2948`.
 
 - [x] **S-6: no-app-runtime-wiring.** Grep `lib.rs` / `AppRuntime` / `apps/tauri/Cargo.toml`

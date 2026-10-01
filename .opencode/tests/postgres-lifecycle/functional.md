@@ -1,5 +1,7 @@
 # postgres-lifecycle — Functional
 
+> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+
 Durable functional suite for the **embedded-PostgreSQL lifecycle supervisor** feature domain
 (bounded start/stop, PID-marker orphan sweep, guaranteed teardown). Seeded at issue **#2974**
 (slice 1 of 6; builds on spike #2964). Inherited and extended by every following Postgres slice.
@@ -18,7 +20,7 @@ Durable functional suite for the **embedded-PostgreSQL lifecycle supervisor** fe
 > `postgres`/`pg_ctl`. An observed unbounded/blocking wait is a FAIL, not a skip.
 
 > **Bounds under test** (reused from `spikes/2964-postgres-migration/src/harness.rs` via
-> `docs/research/2964-postgres-migration-approach/startup-lifecycle.md:35-42`): control **180 s**,
+> `spikes/2964-postgres-migration-approach.md:35-42`): control **180 s**,
 > setup **600 s**, start **180 s**, stop **30 s**, connect **10 s**, ready **60 s**; the readiness
 > wrapper is ready + 2 s. Acceptance is per-process: assert only on the PID this run started.
 
