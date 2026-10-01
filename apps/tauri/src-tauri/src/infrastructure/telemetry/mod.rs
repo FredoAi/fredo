@@ -246,14 +246,18 @@ impl SpanCollector {
     /// Process a batch of FredoEvents, creating/updating/completing spans.
     ///
     /// REQ-10: No-op when `tracing.enabled` is `false`.
-    pub fn process_events(&self, events: &[FredoEvent]) {
+    pub async fn process_events(&self, events: &[FredoEvent]) {
         if !self.enabled_cache.load(Ordering::SeqCst) {
             return;
         }
 
-        let mut inner = self.inner.lock().unwrap();
+        // Collect under the lock; release it before the flush await (a std
+        // MutexGuard is not Send and must not cross an await).
+        let flush_batch = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut flush_batch: Option<Vec<TelemetrySpan>> = None;
 
-        for event in events {
+            for event in events {
             let Some(correlation_id) = &event.correlation_id else {
                 // Cannot track spans without a correlation ID
                 continue;
@@ -363,19 +367,23 @@ impl SpanCollector {
             if inner.buffer.should_flush() {
                 let spans = std::mem::take(&mut inner.buffer.spans);
                 inner.buffer.last_flush = Instant::now();
-                // Release the lock before doing I/O
-                drop(inner);
-                if let Err(e) = self.store.insert_spans(&spans) {
-                    tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
-                }
-                return; // inner was dropped, can't continue
+                flush_batch = Some(spans);
+                break; // preserve the incumbent early-return
+            }
+            }
+            flush_batch
+        };
+
+        if let Some(spans) = flush_batch {
+            if let Err(e) = self.store.insert_spans(&spans).await {
+                tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
             }
         }
     }
 
     /// Flush any buffered spans if the 5-second timer has elapsed (REQ-6b).
     /// Returns the number of spans flushed.
-    pub fn flush_if_needed(&self) -> u64 {
+    pub async fn flush_if_needed(&self) -> u64 {
         let spans_to_flush = {
             let mut inner = self.inner.lock().unwrap();
             if inner.buffer.should_flush() {
@@ -388,7 +396,7 @@ impl SpanCollector {
         };
 
         let count = spans_to_flush.len() as u64;
-        if let Err(e) = self.store.insert_spans(&spans_to_flush) {
+        if let Err(e) = self.store.insert_spans(&spans_to_flush).await {
             tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
             return 0;
         }
@@ -397,7 +405,7 @@ impl SpanCollector {
 
     /// Force-flush all buffered spans immediately, ignoring the timer.
     /// Used by tests and on shutdown. Returns the number of spans flushed.
-    pub fn flush_all(&self) -> u64 {
+    pub async fn flush_all(&self) -> u64 {
         let spans_to_flush = {
             let mut inner = self.inner.lock().unwrap();
             if inner.buffer.spans.is_empty() {
@@ -409,7 +417,7 @@ impl SpanCollector {
         };
 
         let count = spans_to_flush.len() as u64;
-        if let Err(e) = self.store.insert_spans(&spans_to_flush) {
+        if let Err(e) = self.store.insert_spans(&spans_to_flush).await {
             tracing::error!(target: "fredo::telemetry", error = %e, "span flush error");
             return 0;
         }
@@ -419,12 +427,14 @@ impl SpanCollector {
     /// Sweep orphan spans that have been active for more than 5 minutes.
     /// Auto-closes them with status_code='ERROR', status_message='timeout'.
     /// Returns the number of spans closed by the sweep.
-    pub fn sweep_orphans(&self) -> u64 {
-        let mut swept_spans: Vec<TelemetrySpan> = Vec::new();
+    pub async fn sweep_orphans(&self) -> u64 {
         let timeout = Duration::from_secs(300); // 5 minutes
 
-        {
+        // Collect + buffer under the lock, then RELEASE it before the flush
+        // await (a std MutexGuard is not Send and must not cross an await).
+        let (swept_count, flush_batch) = {
             let mut inner = self.inner.lock().unwrap();
+            let mut swept_spans: Vec<TelemetrySpan> = Vec::new();
             let mut to_remove: Vec<String> = Vec::new();
 
             for (correlation_id, active) in inner.active_spans.iter() {
@@ -446,30 +456,37 @@ impl SpanCollector {
             }
 
             // Try to flush immediately if anything was swept
-            if !swept_spans.is_empty() && inner.buffer.should_flush() {
+            let flush_batch = if !swept_spans.is_empty() && inner.buffer.should_flush() {
                 let spans = std::mem::take(&mut inner.buffer.spans);
                 inner.buffer.last_flush = Instant::now();
-                drop(inner);
-                if let Err(e) = self.store.insert_spans(&spans) {
-                    tracing::error!(target: "fredo::telemetry", error = %e, "sweep flush error");
-                }
+                Some(spans)
+            } else {
+                None
+            };
+
+            (swept_spans.len() as u64, flush_batch)
+        };
+
+        if let Some(spans) = flush_batch {
+            if let Err(e) = self.store.insert_spans(&spans).await {
+                tracing::error!(target: "fredo::telemetry", error = %e, "sweep flush error");
             }
         }
 
-        swept_spans.len() as u64
+        swept_count
     }
 
     /// Get a copy of the current stats for the stats IPC command.
-    pub fn stats(&self) -> TelemetryStats {
-        self.store.stats().unwrap_or(TelemetryStats {
+    pub async fn stats(&self) -> TelemetryStats {
+        self.store.stats().await.unwrap_or(TelemetryStats {
             span_count: 0,
             storage_bytes: 0,
         })
     }
 
     /// Purge all spans from the store. Returns count of deleted spans.
-    pub fn purge_all(&self) -> u64 {
-        self.store.purge_all().unwrap_or(0)
+    pub async fn purge_all(&self) -> u64 {
+        self.store.purge_all().await.unwrap_or(0)
     }
 }
 
@@ -506,10 +523,10 @@ mod tests {
         builder.build()
     }
 
-    fn make_collector() -> (Arc<SpanStore>, Arc<AppStore>, Arc<SpanCollector>) {
+    async fn make_collector() -> (Arc<SpanStore>, Arc<AppStore>, Arc<SpanCollector>) {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
         let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         app_store.control_set("tracing.enabled", "true").unwrap();
         let collector = Arc::new(SpanCollector::new(store.clone(), app_store.clone()));
@@ -518,9 +535,9 @@ mod tests {
 
     // ── AC-2: Init→Response produces completed span with OK status ─────────
 
-    #[test]
-    fn test_init_response_produces_completed_span() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_init_response_produces_completed_span() {
+        let (store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -537,19 +554,19 @@ mod tests {
             Some("read"),
         );
 
-        collector.process_events(&[init]);
-        collector.process_events(&[resp]);
+        collector.process_events(&[init]).await;
+        collector.process_events(&[resp]).await;
 
         // Flush to force persistence
-        collector.flush_all();
+        collector.flush_all().await;
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 1, "should have exactly 1 completed span");
     }
 
-    #[test]
-    fn test_completed_span_has_ok_status_and_trace_id() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_completed_span_has_ok_status_and_trace_id() {
+        let (store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -566,27 +583,27 @@ mod tests {
             None,
         );
 
-        collector.process_events(&[init, resp]);
-        collector.flush_all();
+        collector.process_events(&[init, resp]).await;
+        collector.flush_all().await;
 
         // Verify via SQLite directly
-        let conn = store.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT span_id, trace_id, status_code, start_time_ns, end_time_ns FROM telemetry_spans")
-            .unwrap();
-        let rows: Vec<(String, String, String, i64, Option<i64>)> = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                ))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let rows: Vec<(String, String, String, i64, Option<i64>)> = store.with_sqlite_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT span_id, trace_id, status_code, start_time_ns, end_time_ns FROM telemetry_spans")
+                .unwrap();
+            stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        });
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, "sess-abc"); // trace_id = session_id
@@ -600,9 +617,9 @@ mod tests {
 
     // ── AC-3: Init→Update→Update→Response produces one span with latest attrs ─
 
-    #[test]
-    fn test_coalescing_latest_update_only() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_coalescing_latest_update_only() {
+        let (store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -644,21 +661,21 @@ mod tests {
             Some("write"),
         );
 
-        collector.process_events(&[init, update1, update2, resp]);
-        collector.flush_all();
+        collector.process_events(&[init, update1, update2, resp]).await;
+        collector.flush_all().await;
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 1, "should produce exactly 1 span");
 
         // Verify attributes have merged fields from latest update
-        let conn = store.conn.lock().unwrap();
-        let attrs_json: Option<String> = conn
-            .query_row(
+        let attrs_json: Option<String> = store.with_sqlite_conn(|conn| {
+            conn.query_row(
                 "SELECT attributes_json FROM telemetry_spans WHERE span_id = 'corr-3'",
                 [],
                 |row| row.get(0),
             )
-            .ok();
+            .ok()
+        });
 
         let attrs = attrs_json
             .as_deref()
@@ -676,9 +693,9 @@ mod tests {
 
     // ── AC-5: Orphan sweep closes spans >5 min ──────────────────────────────
 
-    #[test]
-    fn test_orphan_sweep_closes_timed_out_spans() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_orphan_sweep_closes_timed_out_spans() {
+        let (store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -688,7 +705,7 @@ mod tests {
             Some("read"),
         );
 
-        collector.process_events(&[init]);
+        collector.process_events(&[init]).await;
 
         // Manually age the span by modifying last_activity
         {
@@ -699,20 +716,20 @@ mod tests {
         }
 
         // Sweep
-        let swept = collector.sweep_orphans();
+        let swept = collector.sweep_orphans().await;
         assert_eq!(swept, 1, "should have swept 1 orphan span");
 
         // Flush and verify
-        collector.flush_all();
+        collector.flush_all().await;
 
-        let conn = store.conn.lock().unwrap();
-        let (status_code, status_msg): (String, Option<String>) = conn
-            .query_row(
+        let (status_code, status_msg): (String, Option<String>) = store.with_sqlite_conn(|conn| {
+            conn.query_row(
                 "SELECT status_code, status_message FROM telemetry_spans WHERE span_id = 'corr-orphan'",
                 [],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
-            .unwrap();
+            .unwrap()
+        });
 
         assert_eq!(status_code, "ERROR");
         assert_eq!(status_msg, Some("timeout".to_string()));
@@ -720,11 +737,11 @@ mod tests {
 
     // ── REQ-10: Tracing disabled ────────────────────────────────────────────
 
-    #[test]
-    fn test_tracing_disabled_does_not_create_spans() {
+    #[tokio::test]
+    async fn test_tracing_disabled_does_not_create_spans() {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
         let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         app_store.control_set("tracing.enabled", "false").unwrap();
 
@@ -746,18 +763,18 @@ mod tests {
             Some("read"),
         );
 
-        collector.process_events(&[init, resp]);
-        collector.flush_all();
+        collector.process_events(&[init, resp]).await;
+        collector.flush_all().await;
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 0, "no spans when tracing is disabled");
     }
 
     // ── Error event produces ERROR span ─────────────────────────────────────
 
-    #[test]
-    fn test_error_event_produces_error_span() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_error_event_produces_error_span() {
+        let (store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -780,17 +797,17 @@ mod tests {
             details: None,
         });
 
-        collector.process_events(&[init, err_event]);
-        collector.flush_all();
+        collector.process_events(&[init, err_event]).await;
+        collector.flush_all().await;
 
-        let conn = store.conn.lock().unwrap();
-        let (status_code, status_msg): (String, Option<String>) = conn
-            .query_row(
+        let (status_code, status_msg): (String, Option<String>) = store.with_sqlite_conn(|conn| {
+            conn.query_row(
                 "SELECT status_code, status_message FROM telemetry_spans WHERE span_id = 'corr-err'",
                 [],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
-            .unwrap();
+            .unwrap()
+        });
 
         assert_eq!(status_code, "ERROR");
         assert_eq!(status_msg, Some("deployment failed".to_string()));
@@ -798,9 +815,9 @@ mod tests {
 
     // ── SpanBuffer flush threshold ──────────────────────────────────────────
 
-    #[test]
-    fn test_buffer_flushes_on_threshold() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_buffer_flushes_on_threshold() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Create 100 completed spans (Init+Response pairs)
         for i in 0..100 {
@@ -819,12 +836,12 @@ mod tests {
                 EventType::ToolUse,
                 Some("bulk_op"),
             );
-            collector.process_events(&[init, resp]);
+            collector.process_events(&[init, resp]).await;
         }
 
         // After 100 completed spans, the buffer should have flushed automatically
         // Check if spans are in the store
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         // Some may have flushed at threshold — verify at least some were persisted
         // (The exact count depends on when process_events flushes internally)
         assert!(
@@ -836,9 +853,9 @@ mod tests {
 
     // ── Multiple sessions ───────────────────────────────────────────────────
 
-    #[test]
-    fn test_multiple_sessions_independent() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_multiple_sessions_independent() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Session A: one span
         collector.process_events(&[make_event(
@@ -847,14 +864,14 @@ mod tests {
             "session-a",
             EventType::Chat,
             None,
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Response,
             "a-1",
             "session-a",
             EventType::Chat,
             None,
-        )]);
+        )]).await;
 
         // Session B: two spans
         collector.process_events(&[make_event(
@@ -863,40 +880,40 @@ mod tests {
             "session-b",
             EventType::ToolUse,
             Some("read"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Init,
             "b-2",
             "session-b",
             EventType::ToolUse,
             Some("write"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Response,
             "b-1",
             "session-b",
             EventType::ToolUse,
             Some("read"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Response,
             "b-2",
             "session-b",
             EventType::ToolUse,
             Some("write"),
-        )]);
+        )]).await;
 
-        collector.flush_all();
+        collector.flush_all().await;
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 3);
     }
 
     // ── Parent span ID chaining ─────────────────────────────────────────────
 
-    #[test]
-    fn test_parent_span_id_chaining() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_parent_span_id_chaining() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Create spans sequentially in the same session
         collector.process_events(&[make_event(
@@ -905,21 +922,21 @@ mod tests {
             "sess-chain",
             EventType::ToolUse,
             Some("step1"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Init,
             "second",
             "sess-chain",
             EventType::ToolUse,
             Some("step2"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Init,
             "third",
             "sess-chain",
             EventType::ToolUse,
             Some("step3"),
-        )]);
+        )]).await;
 
         // Complete them in order
         collector.process_events(&[make_event(
@@ -928,35 +945,35 @@ mod tests {
             "sess-chain",
             EventType::ToolUse,
             Some("step1"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Response,
             "second",
             "sess-chain",
             EventType::ToolUse,
             Some("step2"),
-        )]);
+        )]).await;
         collector.process_events(&[make_event(
             EventState::Response,
             "third",
             "sess-chain",
             EventType::ToolUse,
             Some("step3"),
-        )]);
+        )]).await;
 
-        collector.flush_all();
+        collector.flush_all().await;
 
-        let conn = store.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT span_id, parent_span_id FROM telemetry_spans ORDER BY start_time_ns ASC")
-            .unwrap();
-        let rows: Vec<(String, Option<String>)> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let rows: Vec<(String, Option<String>)> = store.with_sqlite_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT span_id, parent_span_id FROM telemetry_spans ORDER BY start_time_ns ASC")
+                .unwrap();
+            stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        });
 
         assert_eq!(rows.len(), 3);
         // First span: no parent
@@ -972,11 +989,11 @@ mod tests {
 
     // ── Spec #1499 (GA-4 / AC-4): Completed session span persists ───────────
 
-    #[test]
-    fn test_incomplete_session_span_is_not_persisted_immediately() {
+    #[tokio::test]
+    async fn test_incomplete_session_span_is_not_persisted_immediately() {
         // An in-flight session span (no completion marker) stays active and is
         // not persisted until a Response/Error or the orphan sweep closes it.
-        let (store, _app_store, collector) = make_collector();
+        let (store, _app_store, collector) = make_collector().await;
 
         let init = FredoEvent::builder()
             .state(EventState::Init)
@@ -992,10 +1009,10 @@ mod tests {
                 "info": {"text": "prompt"}
             }))
             .build();
-        collector.process_events(&[init]);
-        collector.flush_all();
+        collector.process_events(&[init]).await;
+        collector.flush_all().await;
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 0, "in-flight session span must not be persisted");
     }
 }

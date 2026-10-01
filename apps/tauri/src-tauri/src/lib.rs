@@ -250,14 +250,17 @@ pub fn run() {
             app.manage(EventBus::new(app.handle().clone()));
 
             // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
-            // REQ-1: Create SpanStore with the telemetry_spans schema.
+            // REQ-1: Create SpanStore on the ONE shared engine handle
+            // (Spec #2976 ST-5): SQLite `fredo.db` by default, the shared
+            // PostgreSQL pool once installed. The sync setup closure bridges the
+            // async schema/retention calls (same pattern as RtdbStore below).
             let span_store = Arc::new(
-                SpanStore::open(data_dir.clone()).expect("Failed to open SpanStore"),
+                SpanStore::open(engine_handle.clone()).expect("Failed to open SpanStore"),
             );
-            span_store.ensure_schema().expect("Failed to create telemetry schema");
+            tauri::async_runtime::block_on(span_store.ensure_schema())
+                .expect("Failed to create telemetry schema");
             // REQ-9: Create telemetry_metrics table
-            span_store
-                .ensure_metrics_schema()
+            tauri::async_runtime::block_on(span_store.ensure_metrics_schema())
                 .expect("Failed to create telemetry metrics schema");
             app.manage(span_store.clone());
 
@@ -294,7 +297,7 @@ pub fn run() {
                 .flatten()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7);
-            match span_store.delete_expired(retention_days) {
+            match tauri::async_runtime::block_on(span_store.delete_expired(retention_days)) {
                 Ok(deleted) => {
                     if deleted > 0 {
                         tracing::info!(target: "fredo::telemetry", deleted, "retention cleanup");
@@ -332,7 +335,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let collector = flush_handle.state::<Arc<SpanCollector>>();
-                    let flushed = collector.flush_if_needed();
+                    let flushed = collector.flush_if_needed().await;
                     if flushed > 0 {
                         tracing::info!(target: "fredo::telemetry", flushed, "spans flushed from timer");
                     }
@@ -346,7 +349,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let mc = metrics_flush_handle.state::<Arc<MetricCollector>>();
-                    let flushed = mc.flush_if_needed();
+                    let flushed = mc.flush_if_needed().await;
                     if flushed > 0 {
                         tracing::info!(target: "fredo::telemetry", flushed, "metrics flushed from timer");
                     }
@@ -360,7 +363,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let lc = log_flush_handle.state::<Arc<LogCollector>>();
-                    let flushed = lc.flush_if_needed();
+                    let flushed = lc.flush_if_needed().await;
                     if flushed > 0 {
                         tracing::info!(target: "fredo::telemetry", flushed, "log buffer flushed");
                     }
@@ -374,7 +377,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let collector = sweep_handle.state::<Arc<SpanCollector>>();
-                    let swept = collector.sweep_orphans();
+                    let swept = collector.sweep_orphans().await;
                     if swept > 0 {
                         tracing::info!(target: "fredo::telemetry", swept, "orphan sweep completed");
                     }

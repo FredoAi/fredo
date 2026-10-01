@@ -62,7 +62,7 @@ impl TraceService for OtlpTraceService {
         // and never fails the export response or blocks delivery (R11).
         let store = self.0.state::<Arc<SpanStore>>();
         let raw_spans = raw_spans_from_export(&req, "otlp_grpc");
-        match store.insert_raw_spans(&raw_spans) {
+        match store.insert_raw_spans(&raw_spans).await {
             Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
             Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "raw OTLP span insert failed"),
         }
@@ -101,7 +101,7 @@ impl MetricsService for OtlpMetricsService {
         if !points.is_empty() {
             // Spec #1499 (GA-7): persist OTLP metrics to telemetry_metrics.
             let store = self.0.state::<Arc<SpanStore>>();
-            match store.insert_metrics(&points) {
+            match store.insert_metrics(&points).await {
                 Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP metrics persisted"),
                 Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP metrics insert failed"),
             }
@@ -127,7 +127,7 @@ impl LogsService for OtlpLogsService {
         if !records.is_empty() {
             // Spec #1499 (GA-5/GA-6): persist OTLP log records / events to telemetry_logs.
             let store = self.0.state::<Arc<SpanStore>>();
-            match store.insert_logs(&records) {
+            match store.insert_logs(&records).await {
                 Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP log records persisted"),
                 Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP log insert failed"),
             }

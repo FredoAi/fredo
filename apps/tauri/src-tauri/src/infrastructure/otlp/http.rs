@@ -52,21 +52,21 @@ fn is_protobuf(headers: &HeaderMap) -> bool {
 
 /// R1/R5: persist every span in the export to `telemetry_spans` before and
 /// independent of delivery processing. Insert failure logs-and-continues (R11).
-fn persist_raw_spans(app: &AppHandle, request: &ExportTraceServiceRequest, transport: &str) {
+async fn persist_raw_spans(app: &AppHandle, request: &ExportTraceServiceRequest, transport: &str) {
     let store = app.state::<std::sync::Arc<SpanStore>>();
     let raw_spans = raw_spans_from_export(request, transport);
-    match store.insert_raw_spans(&raw_spans) {
+    match store.insert_raw_spans(&raw_spans).await {
         Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
         Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "raw OTLP span insert failed"),
     }
 }
 
 /// R2: persist OTLP metric points to `telemetry_metrics` (log-and-continue).
-fn persist_metrics(app: &AppHandle, request: &ExportMetricsServiceRequest) {
+async fn persist_metrics(app: &AppHandle, request: &ExportMetricsServiceRequest) {
     let points = otlp_metrics_to_points(request);
     if !points.is_empty() {
         let store = app.state::<std::sync::Arc<SpanStore>>();
-        match store.insert_metrics(&points) {
+        match store.insert_metrics(&points).await {
             Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP metrics persisted"),
             Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP HTTP metrics insert failed"),
         }
@@ -74,11 +74,11 @@ fn persist_metrics(app: &AppHandle, request: &ExportMetricsServiceRequest) {
 }
 
 /// R2: persist OTLP log records to `telemetry_logs` (log-and-continue).
-fn persist_logs(app: &AppHandle, request: &ExportLogsServiceRequest) {
+async fn persist_logs(app: &AppHandle, request: &ExportLogsServiceRequest) {
     let records = otlp_logs_to_records(request);
     if !records.is_empty() {
         let store = app.state::<std::sync::Arc<SpanStore>>();
-        match store.insert_logs(&records) {
+        match store.insert_logs(&records).await {
             Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP log records persisted"),
             Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP HTTP log insert failed"),
         }
@@ -101,7 +101,7 @@ async fn handle_traces(
                 // Persisted transport keeps today's name (`otlp_grpc` —
                 // HTTP-protobuf traces are delivered tagged OtlpGrpc, the
                 // pre-existing quirk).
-                persist_raw_spans(app, &req, "otlp_grpc");
+                persist_raw_spans(app, &req, "otlp_grpc").await;
 
                 let json_value = serde_json::json!({
                     "resourceSpans": req.resource_spans
@@ -136,7 +136,7 @@ async fn handle_traces(
                 // (camelCase OTLP JSON) when present. The OpenCode flat format
                 // (no envelope) skips raw persistence — classification still runs.
                 if let Ok(req) = serde_json::from_value::<ExportTraceServiceRequest>(val.clone()) {
-                    persist_raw_spans(app, &req, "otlp_http");
+                    persist_raw_spans(app, &req, "otlp_http").await;
                 } else {
                     tracing::debug!(target: "fredo::otlp", "non-envelope JSON trace payload — raw persistence skipped");
                 }
@@ -175,7 +175,7 @@ async fn handle_metrics(
         match ExportMetricsServiceRequest::decode(body) {
             Ok(req) => {
                 // R2: persist all metric points to telemetry_metrics.
-                persist_metrics(app, &req);
+                persist_metrics(app, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::BAD_REQUEST,
@@ -184,7 +184,7 @@ async fn handle_metrics(
         // JSON OTLP metrics (standard OTLP/HTTP JSON envelope).
         match serde_json::from_slice::<ExportMetricsServiceRequest>(&body) {
             Ok(req) => {
-                persist_metrics(app, &req);
+                persist_metrics(app, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::OK,
@@ -202,7 +202,7 @@ async fn handle_logs(
         match ExportLogsServiceRequest::decode(body) {
             Ok(req) => {
                 // R2: persist all log records to telemetry_logs.
-                persist_logs(app, &req);
+                persist_logs(app, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::BAD_REQUEST,
@@ -211,7 +211,7 @@ async fn handle_logs(
         // JSON OTLP logs (standard OTLP/HTTP JSON envelope).
         match serde_json::from_slice::<ExportLogsServiceRequest>(&body) {
             Ok(req) => {
-                persist_logs(app, &req);
+                persist_logs(app, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::OK,

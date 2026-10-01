@@ -14,19 +14,19 @@ use crate::infrastructure::telemetry::SpanCollector;
 
 /// REQ-12,15: Return span count, approximate storage size, and metric point count.
 #[tauri::command]
-pub fn telemetry_get_stats(
+pub async fn telemetry_get_stats(
     span_store: tauri::State<'_, Arc<SpanStore>>,
 ) -> Result<TelemetryStatsExt, String> {
-    span_store.stats_ext().map_err(|e| e.to_string())
+    span_store.stats_ext().await.map_err(|e| e.to_string())
 }
 
 /// REQ-12: Delete all rows from telemetry_spans.
 /// Returns the number of deleted spans.
 #[tauri::command]
-pub fn telemetry_purge(
+pub async fn telemetry_purge(
     span_store: tauri::State<'_, Arc<SpanStore>>,
 ) -> Result<u64, String> {
-    span_store.purge_all().map_err(|e| e.to_string())
+    span_store.purge_all().await.map_err(|e| e.to_string())
 }
 
 /// REQ-12: Enable or disable span collection.
@@ -48,7 +48,7 @@ pub fn telemetry_toggle(
 /// REQ-15: Enable or disable metrics collection.
 /// Writes the `tracing.metrics_enabled` key to AppStore and refreshes the cache.
 #[tauri::command]
-pub fn telemetry_metrics_toggle(
+pub async fn telemetry_metrics_toggle(
     enabled: bool,
     app_store: tauri::State<'_, Arc<AppStore>>,
     metric_collector: tauri::State<'_, Arc<MetricCollector>>,
@@ -60,7 +60,7 @@ pub fn telemetry_metrics_toggle(
     if enabled {
         metric_collector.refresh_enabled();
     } else {
-        metric_collector.disable_and_flush();
+        metric_collector.disable_and_flush().await;
     }
     Ok(())
 }
@@ -69,7 +69,7 @@ pub fn telemetry_metrics_toggle(
 /// Writes the `tracing.logging_enabled` key to AppStore and refreshes the cache.
 /// When toggling off, flushes buffered records before stopping.
 #[tauri::command]
-pub fn telemetry_logging_toggle(
+pub async fn telemetry_logging_toggle(
     enabled: bool,
     app_store: tauri::State<'_, Arc<AppStore>>,
     log_collector: tauri::State<'_, Arc<LogCollector>>,
@@ -81,7 +81,7 @@ pub fn telemetry_logging_toggle(
     if enabled {
         log_collector.refresh_enabled();
     } else {
-        log_collector.disable_and_flush();
+        log_collector.disable_and_flush().await;
     }
     Ok(())
 }
@@ -115,11 +115,11 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_toggle_enables_and_disables() {
+    #[tokio::test]
+    async fn test_toggle_enables_and_disables() {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
         let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         let collector = Arc::new(SpanCollector::new(store.clone(), app_store.clone()));
 
@@ -145,23 +145,23 @@ mod tests {
         assert_eq!(val, Some("true".to_string()));
     }
 
-    #[test]
-    fn test_stats_returns_zero_for_empty_store() {
+    #[tokio::test]
+    async fn test_stats_returns_zero_for_empty_store() {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 0);
         assert_eq!(stats.storage_bytes, 0);
     }
 
-    #[test]
-    fn test_purge_clears_all_spans() {
+    #[tokio::test]
+    async fn test_purge_clears_all_spans() {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
-        store.ensure_metrics_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
+        store.ensure_metrics_schema().await.unwrap();
 
         // Insert a span
         let span = crate::infrastructure::telemetry::TelemetrySpan {
@@ -182,12 +182,12 @@ mod tests {
             event_type: None,
             ingested_at: chrono::Utc::now().to_rfc3339(),
         };
-        store.insert_spans(&[span]).unwrap();
+        store.insert_spans(&[span]).await.unwrap();
 
-        let count = store.purge_all().unwrap();
+        let count = store.purge_all().await.unwrap();
         assert_eq!(count, 1);
 
-        let stats = store.stats().unwrap();
+        let stats = store.stats().await.unwrap();
         assert_eq!(stats.span_count, 0);
     }
 }

@@ -109,8 +109,8 @@ impl MetricCollector {
     }
 
     /// REQ-13: Toggle-off flushes remaining metrics before stopping.
-    pub fn disable_and_flush(&self) -> u64 {
-        let flushed = self.flush_all();
+    pub async fn disable_and_flush(&self) -> u64 {
+        let flushed = self.flush_all().await;
         self.enabled_cache
             .store(false, std::sync::atomic::Ordering::SeqCst);
         flushed
@@ -206,7 +206,7 @@ impl MetricCollector {
     }
 
     /// REQ-8,17: Flush if aggregation window elapsed.
-    pub fn flush_if_needed(&self) -> u64 {
+    pub async fn flush_if_needed(&self) -> u64 {
         if !self.enabled_cache.load(std::sync::atomic::Ordering::SeqCst) {
             return 0;
         }
@@ -225,14 +225,14 @@ impl MetricCollector {
         };
 
         if should_flush {
-            self.flush_all()
+            self.flush_all().await
         } else {
             0
         }
     }
 
     /// REQ-18: Force-flush all buffered metrics.
-    pub fn flush_all(&self) -> u64 {
+    pub async fn flush_all(&self) -> u64 {
         let points = {
             let inner = self.inner.lock().unwrap();
             let mut points: Vec<MetricPoint> = Vec::new();
@@ -339,7 +339,7 @@ impl MetricCollector {
             return 0;
         }
 
-        match self.store.insert_metrics(&points) {
+        match self.store.insert_metrics(&points).await {
             Ok(_inserted) => {
                 // REQ-18: Reset only after successful insert — if insert fails, data is preserved
                 let mut inner = self.inner.lock().unwrap();
@@ -400,21 +400,22 @@ pub struct TelemetryStatsExt {
 // ── SpanStore extension contract ───────────────────────────────────────────────
 
 /// Implemented by SpanStore. Capsule A calls these during flush; Capsule B provides the impl.
+#[async_trait::async_trait]
 pub trait SpanStoreMetricsExt {
     /// REQ-9: Create telemetry_metrics table and indexes.
-    fn ensure_metrics_schema(&self) -> Result<()>;
+    async fn ensure_metrics_schema(&self) -> Result<()>;
 
     /// REQ-10: Batch-insert pre-aggregated metric points.
-    fn insert_metrics(&self, points: &[MetricPoint]) -> Result<usize>;
+    async fn insert_metrics(&self, points: &[MetricPoint]) -> Result<usize>;
 
     /// Stats for telemetry_metrics: (point_count, storage_bytes).
-    fn metric_stats(&self) -> Result<(u64, u64)>;
+    async fn metric_stats(&self) -> Result<(u64, u64)>;
 
     /// REQ-11: Delete expired metric points.
-    fn delete_metrics_expired(&self, retention_days: i64) -> Result<u64>;
+    async fn delete_metrics_expired(&self, retention_days: i64) -> Result<u64>;
 
     /// REQ-12: Delete all metric points.
-    fn purge_metrics(&self) -> Result<u64>;
+    async fn purge_metrics(&self) -> Result<u64>;
 }
 
 #[cfg(test)]
@@ -448,11 +449,11 @@ mod tests {
         builder.build()
     }
 
-    fn make_collector() -> (Arc<SpanStore>, Arc<AppStore>, Arc<MetricCollector>) {
+    async fn make_collector() -> (Arc<SpanStore>, Arc<AppStore>, Arc<MetricCollector>) {
         let dir = tempdir().unwrap();
-        let store = Arc::new(SpanStore::open(dir.path().to_path_buf()).unwrap());
-        store.ensure_schema().unwrap();
-        store.ensure_metrics_schema().unwrap();
+        let store = Arc::new(SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        store.ensure_schema().await.unwrap();
+        store.ensure_metrics_schema().await.unwrap();
         let app_store = Arc::new(AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         app_store.control_set("tracing.metrics_enabled", "true").unwrap();
         app_store.control_set("tracing.metrics_aggregation_s", "60").unwrap();
@@ -462,9 +463,9 @@ mod tests {
 
     // ── AC-9: insert_metrics + metric_stats ──────────────────────────────────
 
-    #[test]
-    fn test_insert_metrics_and_stats() {
-        let (store, _app_store, _collector) = make_collector();
+    #[tokio::test]
+    async fn test_insert_metrics_and_stats() {
+        let (store, _app_store, _collector) = make_collector().await;
 
         let points = vec![
             MetricPoint {
@@ -509,18 +510,18 @@ mod tests {
             },
         ];
 
-        let inserted = store.insert_metrics(&points).unwrap();
+        let inserted = store.insert_metrics(&points).await.unwrap();
         assert_eq!(inserted, 5, "AC-9: should insert 5 MetricPoints");
 
-        let (point_count, _storage) = store.metric_stats().unwrap();
+        let (point_count, _storage) = store.metric_stats().await.unwrap();
         assert_eq!(point_count, 5, "AC-9: metric_stats returns point_count=5");
     }
 
     // ── AC-2: Init+Response increments span_count counter ────────────────
 
-    #[test]
-    fn test_init_response_increments_span_count() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_init_response_increments_span_count() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -550,9 +551,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_init_response_does_not_affect_other_span_counters() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_init_response_does_not_affect_other_span_counters() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -585,9 +586,9 @@ mod tests {
 
     // ── AC-3: Multiple Init events increment events_received ─────────────
 
-    #[test]
-    fn test_three_init_events_increment_events_received() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_three_init_events_increment_events_received() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         // Three Init events with different (event_type, transport) combos
         let init1 = FredoEvent::builder()
@@ -648,9 +649,9 @@ mod tests {
 
     // ── AC-5: Active sessions gauge flush ────────────────────────────────
 
-    #[test]
-    fn test_flush_writes_active_sessions_gauge() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_flush_writes_active_sessions_gauge() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Create 3 active sessions (Init events without matching Response)
         let init1 = make_event(EventState::Init, "c1", "session-a", EventType::Chat, None);
@@ -667,27 +668,28 @@ mod tests {
         );
 
         // Flush and verify the active_sessions gauge point was written
-        let flushed = collector.flush_all();
+        let flushed = collector.flush_all().await;
         assert!(flushed >= 1, "should flush at least the active_sessions gauge");
 
         // Verify the active_sessions metric point exists in the store
-        let conn = store.conn.lock().unwrap();
-        let gauge_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM telemetry_metrics WHERE metric_name = 'active_sessions'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let (gauge_count, gauge_value) = store.with_sqlite_conn(|conn| {
+            let gauge_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM telemetry_metrics WHERE metric_name = 'active_sessions'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let gauge_value: f64 = conn
+                .query_row(
+                    "SELECT value FROM telemetry_metrics WHERE metric_name = 'active_sessions'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            (gauge_count, gauge_value)
+        });
         assert_eq!(gauge_count, 1, "should have 1 active_sessions gauge point");
-
-        let gauge_value: f64 = conn
-            .query_row(
-                "SELECT value FROM telemetry_metrics WHERE metric_name = 'active_sessions'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
         assert_eq!(
             gauge_value, 3.0,
             "active_sessions gauge should be 3.0"
@@ -696,9 +698,9 @@ mod tests {
 
     // ── AC-6: Histogram bucket for 45ms ──────────────────────────────────
 
-    #[test]
-    fn test_45ms_falls_in_25_50_bucket() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_45ms_falls_in_25_50_bucket() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         // Create Init+Response for tool_use.read with a 45ms duration
         let init = make_event(
@@ -753,9 +755,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_histogram_1ms_boundary() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_histogram_1ms_boundary() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         let init = make_event(EventState::Init, "c-fast", "s-fast", EventType::Chat, None);
         collector.process_events(&[init]);
@@ -777,9 +779,9 @@ mod tests {
         assert_eq!(buckets[0], 1, "<1ms should be in bucket 0");
     }
 
-    #[test]
-    fn test_histogram_over_10s_boundary() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_histogram_over_10s_boundary() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         let init = make_event(EventState::Init, "c-slow", "s-slow", EventType::Chat, None);
         collector.process_events(&[init]);
@@ -806,9 +808,9 @@ mod tests {
 
     // ── AC-12: Metrics disabled = no-op; toggle-off flushes ──────────────
 
-    #[test]
-    fn test_metrics_disabled_no_op() {
-        let (_store, app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_metrics_disabled_no_op() {
+        let (_store, app_store, collector) = make_collector().await;
         app_store.control_set("tracing.metrics_enabled", "false").unwrap();
         collector.refresh_enabled();
 
@@ -849,9 +851,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_toggle_off_flushes_before_stopping() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_toggle_off_flushes_before_stopping() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Process some events while enabled
         let init = make_event(
@@ -871,7 +873,7 @@ mod tests {
         collector.process_events(&[init, resp]);
 
         // Toggle off — should flush remaining metrics
-        let flushed = collector.disable_and_flush();
+        let flushed = collector.disable_and_flush().await;
 
         // Should have flushed at least the span_count point (active_sessions was already
         // removed because the session's last span completed before disable)
@@ -882,7 +884,7 @@ mod tests {
         );
 
         // Verify metrics were persisted to store
-        let (point_count, _) = store.metric_stats().unwrap();
+        let (point_count, _) = store.metric_stats().await.unwrap();
         assert!(
             point_count >= 1,
             "should have at least 1 metric point in store, got {}",
@@ -908,9 +910,9 @@ mod tests {
 
     // ── Active session count ─────────────────────────────────────────────
 
-    #[test]
-    fn test_active_session_count_returns_count() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_active_session_count_returns_count() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         assert_eq!(
             collector.active_session_count(),
@@ -939,9 +941,9 @@ mod tests {
 
     // ── REQ-5: Session lifecycle — init increments, response/error decrements ──
 
-    #[test]
-    fn test_session_lifecycle_single_span() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_session_lifecycle_single_span() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         // Init: session becomes active
         collector.process_events(&[make_event(
@@ -964,9 +966,9 @@ mod tests {
         assert_eq!(collector.active_session_count(), 0);
     }
 
-    #[test]
-    fn test_session_lifecycle_multiple_spans_on_same_session() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_session_lifecycle_multiple_spans_on_same_session() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         // Two concurrent spans on the same session
         collector.process_events(&[make_event(
@@ -1006,9 +1008,9 @@ mod tests {
         assert_eq!(collector.active_session_count(), 0);
     }
 
-    #[test]
-    fn test_session_lifecycle_error_removes_session() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_session_lifecycle_error_removes_session() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         collector.process_events(&[make_event(
             EventState::Init,
@@ -1032,17 +1034,17 @@ mod tests {
 
     // ── Flush returns count ──────────────────────────────────────────────
 
-    #[test]
-    fn test_flush_all_returns_zero_when_empty() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_flush_all_returns_zero_when_empty() {
+        let (_store, _app_store, collector) = make_collector().await;
 
-        let flushed = collector.flush_all();
+        let flushed = collector.flush_all().await;
         assert_eq!(flushed, 0, "flush of empty buffer should return 0");
     }
 
-    #[test]
-    fn test_flush_all_with_data() {
-        let (store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_flush_all_with_data() {
+        let (store, _app_store, collector) = make_collector().await;
 
         // Create a completed span
         let init = make_event(
@@ -1061,21 +1063,21 @@ mod tests {
         );
         collector.process_events(&[init, resp]);
 
-        let flushed = collector.flush_all();
+        let flushed = collector.flush_all().await;
         // span_count counter is emitted (active_sessions was already removed because the
         // span completed before flush)
         assert!(flushed >= 1, "should flush at least 1 metric point, got {}", flushed);
 
         // Verify in store
-        let (point_count, _) = store.metric_stats().unwrap();
+        let (point_count, _) = store.metric_stats().await.unwrap();
         assert_eq!(point_count, flushed as u64);
     }
 
     // ── Record orphan count ──────────────────────────────────────────────
 
-    #[test]
-    fn test_record_orphan_count_increments_counter() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_record_orphan_count_increments_counter() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         collector.record_orphan_count(2);
 
@@ -1100,9 +1102,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_record_orphan_disabled_no_op() {
-        let (_store, app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_record_orphan_disabled_no_op() {
+        let (_store, app_store, collector) = make_collector().await;
         app_store.control_set("tracing.metrics_enabled", "false").unwrap();
         collector.refresh_enabled();
 
@@ -1117,9 +1119,9 @@ mod tests {
 
     // ── Error event produces status='error' counter ──────────────────────
 
-    #[test]
-    fn test_error_event_increments_error_span_count() {
-        let (_store, _app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_error_event_increments_error_span_count() {
+        let (_store, _app_store, collector) = make_collector().await;
 
         let init = make_event(
             EventState::Init,
@@ -1157,9 +1159,9 @@ mod tests {
 
     // ── Refresh enabled ──────────────────────────────────────────────────
 
-    #[test]
-    fn test_refresh_enabled_reads_app_store() {
-        let (_store, app_store, collector) = make_collector();
+    #[tokio::test]
+    async fn test_refresh_enabled_reads_app_store() {
+        let (_store, app_store, collector) = make_collector().await;
 
         // Initially enabled
         assert!(collector.enabled_cache.load(std::sync::atomic::Ordering::SeqCst));

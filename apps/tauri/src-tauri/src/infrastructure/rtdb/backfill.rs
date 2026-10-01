@@ -744,8 +744,8 @@ mod tests {
     /// tier through `RtdbStore`.
     async fn make_stack() -> Stack {
         let dir = tempfile::tempdir().expect("tempdir");
-        let span_store = SpanStore::open(dir.path().to_path_buf()).expect("span store");
-        span_store.ensure_schema().expect("telemetry schema");
+        let span_store = SpanStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("span store");
+        span_store.ensure_schema().await.expect("telemetry schema");
         let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
         let engine = EngineHandle::new(StoreEngine::Sqlite(sqlite));
         let store = Arc::new(RtdbStore::open(engine.clone()).expect("rtdb store"));
@@ -852,7 +852,7 @@ mod tests {
                         "total_tokens": 500
                     }),
                 ),
-            ])
+            ]).await
             .expect("insert spans");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
@@ -916,7 +916,7 @@ mod tests {
             .insert_raw_spans(&[
                 raw_span("sp-turn2", "ses_ord", "my.llm", 2_000_000_000, chat_attrs("ses_ord", 120)),
                 raw_span("sp-turn1", "ses_ord", "my.llm", 1_000_000_000, chat_attrs("ses_ord", 100)),
-            ])
+            ]).await
             .expect("insert spans");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
@@ -959,7 +959,7 @@ mod tests {
             .insert_raw_spans(&[
                 raw_span("sp-1", "ses_idem", "my.llm", 1_000_000_000, chat_attrs("ses_idem", 100)),
                 raw_span("sp-2", "ses_idem", "my.llm", 2_000_000_000, chat_attrs("ses_idem", 120)),
-            ])
+            ]).await
             .expect("insert spans");
 
         // First pass (the startup backfill — fresh classifier per process).
@@ -1005,18 +1005,18 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs("ses_ok", 100),
-            )])
+            )]).await
             .expect("insert valid span");
 
         let mut bad = raw_span("sp-bad", "ses_bad", "my.llm", 2_000_000_000, json!({}));
         bad.attributes_json = Some("{not json".to_string());
-        stack.span_store.insert_raw_spans(&[bad]).expect("insert bad span");
+        stack.span_store.insert_raw_spans(&[bad]).await.expect("insert bad span");
 
         let mut absent = raw_span("sp-absent", "ses_absent", "chat", 3_000_000_000, json!({}));
         absent.attributes_json = None;
         stack
             .span_store
-            .insert_raw_spans(&[absent])
+            .insert_raw_spans(&[absent]).await
             .expect("insert attribute-less span");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
@@ -1095,7 +1095,7 @@ mod tests {
                         "gen_ai.usage.output_tokens": 5
                     }),
                 ),
-            ])
+            ]).await
             .expect("insert spans");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
@@ -1167,7 +1167,7 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_pr", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         // Simulate a pre-#2932 install: the ORIGINAL marker is already latched.
@@ -1348,7 +1348,7 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_nf", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         stack
             .store
@@ -1415,7 +1415,7 @@ mod tests {
                     3_000_000_000,
                     session_attrs_with_service("ses_ks", "fredo-opencode-plugin"),
                 ),
-            ])
+            ]).await
             .expect("insert spans");
         stack
             .store
@@ -1473,7 +1473,7 @@ mod tests {
                 "my.llm",
                 5_000_000_000,
                 chat_attrs_with_service("ses_other", "fredo-opencode-plugin", 10),
-            )])
+            )]).await
             .expect("insert spans");
         let mut no_span = pre_existing_chat_row("ses_ns", "ses_ns_1", "unknown");
         no_span.started_at_ns = Some(4_000_000_000);
@@ -1523,7 +1523,7 @@ mod tests {
                     1_000_000_000,
                     chat_attrs_with_service("ses_amb", "copilot-cli", 100),
                 ),
-            ])
+            ]).await
             .expect("insert spans");
         stack
             .store
@@ -1559,7 +1559,7 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_child", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         let mut copy = pre_existing_chat_row("ses_parent", "ses_child_1", "unknown");
         copy.composited_child_session_id = Some("ses_child".to_string());
@@ -1596,7 +1596,7 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_v1", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         stack
             .store
@@ -1640,7 +1640,7 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_idem", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         stack
             .store
@@ -1694,13 +1694,13 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_ro", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         stack
             .store
             .upsert_chat_rows(&[pre_existing_chat_row("ses_ro", "ses_ro_1", "unknown")]).await
             .expect("seed");
-        let spans_before = stack.span_store.stats().expect("stats").span_count;
+        let spans_before = stack.span_store.stats().await.expect("stats").span_count;
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
@@ -1709,7 +1709,7 @@ mod tests {
             .expect("pass runs");
 
         assert_eq!(
-            stack.span_store.stats().expect("stats").span_count,
+            stack.span_store.stats().await.expect("stats").span_count,
             spans_before,
             "the provider re-attribution pass is strictly READ-ONLY toward telemetry_spans"
         );
@@ -1733,7 +1733,7 @@ mod tests {
                 "my.llm",
                 1_000_000_000,
                 chat_attrs_with_service("ses_pre", "fredo-opencode-plugin", 100),
-            )])
+            )]).await
             .expect("insert spans");
         stack
             .store
@@ -1787,7 +1787,7 @@ mod tests {
                 // `chat_attrs` carries NO `service.name` → resolve_provider_token
                 // falls back to PROVIDER_UNKNOWN (the shared rule, NFR-6).
                 chat_attrs("ses_r7", 100),
-            )])
+            )]).await
             .expect("insert spans");
         stack
             .store
