@@ -26,7 +26,7 @@ quick paths. Full detail lives in `functional.md`.
 - [ ] **S-7:** PG-selected first cutover on a fixture `fredo.db` — the export runs, the parity gate
   passes, and the engine reports PostgreSQL; a `psql` read shows the migrated `settings` +
   `feature_data_tables` tables (F-1/F-3).
-- [ ] **S-8:** A parity mismatch (induced via `FREDO_MIGRATION_FAULT=parity_mismatch`) makes the
+- [ ] **S-8:** A parity mismatch (induced via `FREDO_MIGRATION_FORCE_MISMATCH=<table>`) makes the
   export exit non-zero and the app start on SQLite with `fredo.db` byte-unchanged (F-4/F-7).
 - [ ] **S-9:** Second startup after a successful cutover skips the export (marker set) and stays on
   PostgreSQL (F-8).
