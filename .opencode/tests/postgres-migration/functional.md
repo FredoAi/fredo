@@ -144,6 +144,20 @@ this one).
   `unknown rtdb row state: streaming`. Root cause: the committed CU-D fixture writes
   non-production-shaped data (see F-15). The corrected-fixture capture was blocked by a WebView2
   `about:blank` environment wedge.
+  **Round 2 (2026-10-01) PARTIAL/FAIL:** the corrected fixture migrated with full per-table parity
+  (13 tables count+checksum, `migration_status=Completed`, `storage_engine_status.engine=postgres`)
+  and Mission Monitor now renders the migrated session list + graph + tokens with NO
+  `unknown rtdb row state` and NO `missing field 'name'` (the round-1 failure is FIXED). The
+  same-instant managed-`psql` read matches the render (session `s000001`: INPUT 4 / CACHE 2 /
+  OUTPUT 2 / COST $0.0010). **However the `── TOOLS (N) ──` element does NOT render for any migrated
+  session.** Root cause (fixture-shape gap, not a product defect): the committed CU-D fixture writes
+  each tool row's `started_at_ns` EQUAL to its chat row's (`migration_fixture.rs:378/439`), so the
+  product's strict time-window parent rule (`resolveParentChatNode`, `useMissionMonitor.ts:349`
+  requires `parentStart < callStart`) resolves no parent and the non-task call never embeds
+  (`associateToolCalls`, `useMissionMonitor.ts:471-472`). PG-verified: `chat_rows.s000001_c0` and
+  `tool_use_rows.s000001_t0` both have `started_at_ns = 1790000000001000000`. Production tool spans
+  start strictly AFTER their chat turn, so real migrated data is unaffected. Fix = offset the
+  fixture tool `started_at_ns` (e.g. chat_start + 1 ms) so the parent rule resolves.
 
 - [ ] **F-13 (NFR) — zero-warning build gates + Windows-first.**
   Run `cargo check --locked`, `cargo clippy --locked -- -D warnings`, `cargo test --locked`.
@@ -165,14 +179,21 @@ this one).
   PRODUCTION-SHAPED rows so the migrated data drives Mission Monitor.**
   The CU-D fixture (`apps/tauri/src-tauri/tests/support/migration_fixture.rs`) must write
   (a) a valid `feature_data_tables.declaration_json` (production shape: `name`/`primaryKey`/
-  `columns`/`source`/`retention`) and (b) canonical `RowState` values
-  (`Init|Update|Response|Timeout|Error`, not `streaming|complete|error`) for
-  `chat_rows`/`tool_use_rows`/`agent_session_rows`.
+  `columns`/`source`/`retention`) and (b) canonical **persisted** `RowState` values in the
+  LOWERCASE storage vocabulary `init|update|response|timeout|error` (`RowState::as_str()`,
+  `infrastructure/rtdb/rows.rs:44-55`) for `chat_rows`/`tool_use_rows`/`agent_session_rows`.
+  NOT the PascalCase wire enum (`Init|Update|Response|Timeout|Error` is the serde wire shape,
+  `EventSubscription.ts:43`) and NOT the round-1 `streaming|complete|error` — the store's
+  `parse_row_state` (`rtdb/store.rs:356-370`) accepts ONLY the lowercase form.
   **Expected:** the backend's persisted-declaration reader accepts the row (no `missing field
   'name'`), and the frontend row store derives the Mission Monitor graph/tokens with no
   `unknown rtdb row state` error. **Round 1:** FAIL — the fixture wrote
-  `{"featureId":"mission-monitor","table":"sessions"}` (missing `name`) and lowercase states, so
-  MM's declared session list errored and the graph aborted.
+  `{"featureId":"mission-monitor","table":"sessions"}` (missing `name`) and non-canonical
+  `streaming|complete|error` states, so MM's declared session list errored and the graph aborted.
+  **Round 2:** PASS — the committed generator now emits valid `FeatureDataTableDeclaration` JSON
+  (`sessions` sessionRollup shape + `tools`) and lowercase canonical states; the ungated guard
+  `fixture_rows_are_production_shaped` is green, and the live SQLite boot projected the declared
+  tables with zero `missing field 'name'` / `unknown rtdb row state` warnings.
 
 ## Non-functional
 
