@@ -198,7 +198,7 @@ impl IngestClassifier {
     /// JSON) into row upserts. Returns the number of row mutations ingested.
     /// P3.2's backfill MUST reuse THIS entry point (reconstructed span JSON)
     /// so the extract rules stay identical to the live path.
-    pub fn ingest_otlp(&self, transport: Transport, raw: &Value) -> usize {
+    pub async fn ingest_otlp(&self, transport: Transport, raw: &Value) -> usize {
         tracing::debug!(
             target: "fredo::rtdb::ingest",
             transport = transport.as_str(),
@@ -225,7 +225,7 @@ impl IngestClassifier {
                     for span in &spans {
                         let span_name =
                             span.get("name").and_then(|v| v.as_str()).unwrap_or("span");
-                        count += self.process_span_rows(span, span_name, &res_attrs, true);
+                        count += self.process_span_rows(span, span_name, &res_attrs, true).await;
                     }
                 }
             }
@@ -238,7 +238,7 @@ impl IngestClassifier {
             .and_then(|v| v.as_str())
             .unwrap_or("otlp.span");
         let empty_res = serde_json::Map::new();
-        count += self.process_span_rows(raw, raw_name, &empty_res, false);
+        count += self.process_span_rows(raw, raw_name, &empty_res, false).await;
         count
     }
 
@@ -247,7 +247,7 @@ impl IngestClassifier {
     /// OTLP-derived rows remain the primary shape per the AGENTS.md
     /// mock-vs-real rule) into row upserts. Only the three row-bearing event
     /// types classify; others are ignored.
-    pub fn ingest_event(&self, event: &FredoEvent) -> usize {
+    pub async fn ingest_event(&self, event: &FredoEvent) -> usize {
         let payload = event.payload.clone().unwrap_or(Value::Null);
         let correlation = event
             .correlation_id
@@ -260,18 +260,18 @@ impl IngestClassifier {
         // (`engine.rs:792-840`): legacy metadata path first (no exclusion,
         // exactly as the engine), then the self-carried routing property with
         // the internal `build`/`plan` exclusion.
-        let mut copied = self.detect_event_relationship(event, &payload);
+        let mut copied = self.detect_event_relationship(event, &payload).await;
 
         match event.event_type {
             EventType::Chat => {
                 let patch =
                     chat_patch_from_event(event, &payload, &correlation, state, &updated_at);
-                copied += self.ingest_chat_with_copy(patch, &event.session_id);
+                copied += self.ingest_chat_with_copy(patch, &event.session_id).await;
             }
             EventType::ToolUse => {
                 let patch =
                     tool_patch_from_event(event, &payload, &correlation, state, &updated_at);
-                copied += self.ingest_tool_with_copy(patch, &event.session_id);
+                copied += self.ingest_tool_with_copy(patch, &event.session_id).await;
             }
             EventType::AgentSession => {
                 let patch = session_patch_from_event(
@@ -282,7 +282,7 @@ impl IngestClassifier {
                     &updated_at,
                     event.provider.as_str(),
                 );
-                copied += self.ingest_session_with_copy(patch, &event.session_id);
+                copied += self.ingest_session_with_copy(patch, &event.session_id).await;
             }
             EventType::Infrastructure | EventType::Ui | EventType::Custom => {}
         }
@@ -319,7 +319,7 @@ impl IngestClassifier {
     /// only ever targets rows it just enumerated, but without this guard a
     /// failed lookup would fall through to the apply path's `INSERT OR REPLACE`
     /// and replace a live full row with a minimal one (data loss).
-    pub fn reattribute_provider(
+    pub async fn reattribute_provider(
         &self,
         kind: RowKind,
         session_id: &str,
@@ -354,18 +354,21 @@ impl IngestClassifier {
                 .rtdb
                 .cache()
                 .get_chat(session_id, correlation_id)
+                .await
                 .map(|row| row.is_some())
                 .unwrap_or(false),
             RowKind::ToolUse => self
                 .rtdb
                 .cache()
                 .get_tool_use(session_id, correlation_id)
+                .await
                 .map(|row| row.is_some())
                 .unwrap_or(false),
             RowKind::AgentSession => self
                 .rtdb
                 .cache()
                 .get_agent_session(session_id, correlation_id)
+                .await
                 .map(|row| row.is_some())
                 .unwrap_or(false),
         };
@@ -390,21 +393,21 @@ impl IngestClassifier {
                     ..ChatPatch::default()
                 },
                 None,
-            ),
+            ).await,
             RowKind::ToolUse => self.apply_tool_use(ToolUsePatch {
                 session_id: Some(session_id.to_string()),
                 correlation_id: Some(correlation_id.to_string()),
                 updated_at,
                 provider: Some(token),
                 ..ToolUsePatch::default()
-            }),
+            }).await,
             RowKind::AgentSession => self.apply_agent_session(AgentSessionPatch {
                 session_id: Some(session_id.to_string()),
                 correlation_id: Some(correlation_id.to_string()),
                 updated_at,
                 provider: Some(token),
                 ..AgentSessionPatch::default()
-            }),
+            }).await,
         };
         if wrote {
             ProviderReattribution::Upgraded
@@ -415,7 +418,7 @@ impl IngestClassifier {
 
     // ── Per-span classification (ported from the deleted v1 OTLP adapter) ────
 
-    fn process_span_rows(
+    async fn process_span_rows(
         &self,
         span: &Value,
         span_name: &str,
@@ -589,7 +592,7 @@ impl IngestClassifier {
                     "Classifier: relationship skipped — internal tool-execution agent session"
                 );
             } else {
-                copied += self.register_relationship(parent, &session_id);
+                copied += self.register_relationship(parent, &session_id).await;
             }
         }
 
@@ -732,7 +735,7 @@ impl IngestClassifier {
                     agent_name: attr_str(payload_map, "agent").or_else(|| attr_str(payload_map, "name")),
                     raw_json: Some(raw_json),
                 };
-                copied += self.ingest_session_with_copy(patch, &session_id);
+                copied += self.ingest_session_with_copy(patch, &session_id).await;
             }
             OP_CHAT_CANON => {
                 // Text/tokens come from the adapter projector's canonical
@@ -762,7 +765,7 @@ impl IngestClassifier {
                     composited_child_session_id: None,
                     raw_json: Some(raw_json),
                 };
-                copied += self.ingest_chat_with_copy(patch, &session_id);
+                copied += self.ingest_chat_with_copy(patch, &session_id).await;
             }
             _ => {
                 let tool_name = op_name
@@ -814,7 +817,7 @@ impl IngestClassifier {
                     is_subagent: Some(is_subagent),
                     raw_json: Some(raw_json),
                 };
-                copied += self.ingest_tool_with_copy(patch, &session_id);
+                copied += self.ingest_tool_with_copy(patch, &session_id).await;
             }
         }
 
@@ -1109,7 +1112,7 @@ impl IngestClassifier {
     /// Register a child→parent relationship (idempotent per child; capped at
     /// [`MAP_CAPACITY`] with oldest-first eviction) and COPY the child's
     /// existing rows under the parent key. Returns the number of copied rows.
-    fn register_relationship(&self, parent: &str, child: &str) -> usize {
+    async fn register_relationship(&self, parent: &str, child: &str) -> usize {
         {
             let Ok(mut child_map) = self.child_to_parent.lock() else {
                 return 0;
@@ -1136,7 +1139,7 @@ impl IngestClassifier {
         if let Ok(mut rev) = self.parent_to_children.lock() {
             rev.entry(parent.to_string()).or_default().push(child.to_string());
         }
-        self.rekey_child_rows(parent, child)
+        self.rekey_child_rows(parent, child).await
     }
 
     /// The parent of a registered child session, if any.
@@ -1151,32 +1154,36 @@ impl IngestClassifier {
     /// Child-keyed rows are LEFT INTACT — a re-key never removes rows (the
     /// binding `kind: remove` constraint). The cached ∪ persisted key set is
     /// read so rows inside the write-behind window are not missed.
-    fn rekey_child_rows(&self, parent: &str, child: &str) -> usize {
+    async fn rekey_child_rows(&self, parent: &str, child: &str) -> usize {
         let mut copied = 0usize;
 
-        if let Ok(chat_keys) = self.rtdb.cache().chat_keys_for_session(child) {
+        if let Ok(chat_keys) = self.rtdb.cache().chat_keys_for_session(child).await {
             for (_, corr) in chat_keys {
-                if let Ok(Some(existing)) = self.rtdb.cache().get_chat(child, &corr) {
+                if let Ok(Some(existing)) = self.rtdb.cache().get_chat(child, &corr).await {
                     self.apply_chat(
                         chat_patch_from_row(&existing, parent),
                         Some((parent, child)),
-                    );
+                    )
+                    .await;
                     copied += 1;
                 }
             }
         }
-        if let Ok(tool_keys) = self.rtdb.cache().tool_keys_for_session(child) {
+        if let Ok(tool_keys) = self.rtdb.cache().tool_keys_for_session(child).await {
             for (_, corr) in tool_keys {
-                if let Ok(Some(existing)) = self.rtdb.cache().get_tool_use(child, &corr) {
-                    self.apply_tool_use(tool_patch_from_row(&existing, parent));
+                if let Ok(Some(existing)) = self.rtdb.cache().get_tool_use(child, &corr).await {
+                    self.apply_tool_use(tool_patch_from_row(&existing, parent)).await;
                     copied += 1;
                 }
             }
         }
-        if let Ok(session_keys) = self.rtdb.cache().agent_session_keys_for_session(child) {
+        if let Ok(session_keys) = self.rtdb.cache().agent_session_keys_for_session(child).await {
             for (_, corr) in session_keys {
-                if let Ok(Some(existing)) = self.rtdb.cache().get_agent_session(child, &corr) {
-                    self.apply_agent_session(session_patch_from_row(&existing, parent));
+                if let Ok(Some(existing)) =
+                    self.rtdb.cache().get_agent_session(child, &corr).await
+                {
+                    self.apply_agent_session(session_patch_from_row(&existing, parent))
+                        .await;
                     copied += 1;
                 }
             }
@@ -1198,7 +1205,7 @@ impl IngestClassifier {
     /// non-`parent-child` metadata object falls through to the self-carried
     /// check, exactly as the engine; the self-carried path applies the
     /// internal-agent exclusion).
-    fn detect_event_relationship(&self, event: &FredoEvent, payload: &Value) -> usize {
+    async fn detect_event_relationship(&self, event: &FredoEvent, payload: &Value) -> usize {
         if let Some(rel_type) = event
             .metadata
             .as_ref()
@@ -1220,7 +1227,7 @@ impl IngestClassifier {
                     .and_then(|r| r.get("childSessionId"))
                     .and_then(|v| v.as_str());
                 if let (Some(parent), Some(child)) = (parent, child) {
-                    return self.register_relationship(parent, child);
+                    return self.register_relationship(parent, child).await;
                 }
             }
         }
@@ -1245,7 +1252,7 @@ impl IngestClassifier {
                 );
                 return 0;
             }
-            return self.register_relationship(parent, &event.session_id);
+            return self.register_relationship(parent, &event.session_id).await;
         }
         0
     }
@@ -1254,14 +1261,14 @@ impl IngestClassifier {
 
     /// Merge-then-ingest one chat patch. Returns `true` when the row was
     /// actually written (a new row, or a content change past the no-op gate).
-    fn apply_chat(&self, patch: ChatPatch, stamp: Option<(&str, &str)>) -> bool {
+    async fn apply_chat(&self, patch: ChatPatch, stamp: Option<(&str, &str)>) -> bool {
         let Some(session) = patch.session_id.clone() else {
             return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
             return false;
         };
-        let existing = self.rtdb.cache().get_chat(&session, &corr).unwrap_or(None);
+        let existing = self.rtdb.cache().get_chat(&session, &corr).await.unwrap_or(None);
         let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_chat_row(&session, &corr));
         let old = serde_json::to_value(&row).unwrap_or(Value::Null);
@@ -1275,7 +1282,7 @@ impl IngestClassifier {
         if content_no_op(existed, &changed) {
             return false;
         }
-        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::Chat(row), &changed) {
+        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::Chat(row), &changed).await {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "chat row ingest failed");
             return false;
         }
@@ -1283,7 +1290,7 @@ impl IngestClassifier {
     }
 
     /// Merge-then-ingest one tool-use patch. Returns `true` when written.
-    fn apply_tool_use(&self, patch: ToolUsePatch) -> bool {
+    async fn apply_tool_use(&self, patch: ToolUsePatch) -> bool {
         let Some(session) = patch.session_id.clone() else {
             return false;
         };
@@ -1294,6 +1301,7 @@ impl IngestClassifier {
             .rtdb
             .cache()
             .get_tool_use(&session, &corr)
+            .await
             .unwrap_or(None);
         let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_tool_row(&session, &corr));
@@ -1304,7 +1312,7 @@ impl IngestClassifier {
         if content_no_op(existed, &changed) {
             return false;
         }
-        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::ToolUse(row), &changed) {
+        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::ToolUse(row), &changed).await {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "tool-use row ingest failed");
             return false;
         }
@@ -1312,7 +1320,7 @@ impl IngestClassifier {
     }
 
     /// Merge-then-ingest one agent-session patch. Returns `true` when written.
-    fn apply_agent_session(&self, patch: AgentSessionPatch) -> bool {
+    async fn apply_agent_session(&self, patch: AgentSessionPatch) -> bool {
         let Some(session) = patch.session_id.clone() else {
             return false;
         };
@@ -1323,6 +1331,7 @@ impl IngestClassifier {
             .rtdb
             .cache()
             .get_agent_session(&session, &corr)
+            .await
             .unwrap_or(None);
         let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_session_row(&session, &corr));
@@ -1333,7 +1342,7 @@ impl IngestClassifier {
         if content_no_op(existed, &changed) {
             return false;
         }
-        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::AgentSession(row), &changed) {
+        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::AgentSession(row), &changed).await {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "agent-session row ingest failed");
             return false;
         }
@@ -1344,37 +1353,37 @@ impl IngestClassifier {
     /// registered) also ingest a parent-keyed stamped copy — the parent-space
     /// composite. The copy's correlation id is the CHILD's per-turn id (the
     /// brief's "new correlation_id = child's turn id").
-    fn ingest_chat_with_copy(&self, patch: ChatPatch, child: &str) -> usize {
-        self.apply_chat(patch.clone(), None);
+    async fn ingest_chat_with_copy(&self, patch: ChatPatch, child: &str) -> usize {
+        self.apply_chat(patch.clone(), None).await;
         let mut copied = 0usize;
         if let Some(parent) = self.parent_of(child) {
             let mut copy = patch;
             copy.session_id = Some(parent.clone());
-            self.apply_chat(copy, Some((parent.as_str(), child)));
+            self.apply_chat(copy, Some((parent.as_str(), child))).await;
             copied += 1;
         }
         copied
     }
 
-    fn ingest_tool_with_copy(&self, patch: ToolUsePatch, child: &str) -> usize {
-        self.apply_tool_use(patch.clone());
+    async fn ingest_tool_with_copy(&self, patch: ToolUsePatch, child: &str) -> usize {
+        self.apply_tool_use(patch.clone()).await;
         let mut copied = 0usize;
         if let Some(parent) = self.parent_of(child) {
             let mut copy = patch;
             copy.session_id = Some(parent.clone());
-            self.apply_tool_use(copy);
+            self.apply_tool_use(copy).await;
             copied += 1;
         }
         copied
     }
 
-    fn ingest_session_with_copy(&self, patch: AgentSessionPatch, child: &str) -> usize {
-        self.apply_agent_session(patch.clone());
+    async fn ingest_session_with_copy(&self, patch: AgentSessionPatch, child: &str) -> usize {
+        self.apply_agent_session(patch.clone()).await;
         let mut copied = 0usize;
         if let Some(parent) = self.parent_of(child) {
             let mut copy = patch;
             copy.session_id = Some(parent.clone());
-            self.apply_agent_session(copy);
+            self.apply_agent_session(copy).await;
             copied += 1;
         }
         copied
@@ -1797,10 +1806,10 @@ mod tests {
 
     type Sink = Arc<Mutex<Vec<RowDelivery>>>;
 
-    fn make_classifier() -> (tempfile::TempDir, Arc<IngestClassifier>, Arc<Rtdb>, Sink) {
+    async fn make_classifier() -> (tempfile::TempDir, Arc<IngestClassifier>, Arc<Rtdb>, Sink) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("open store"));
-        store.ensure_schema().expect("schema");
+        let store = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("open store"));
+        store.ensure_schema().await.expect("schema");
         let (cache, _rx) = crate::infrastructure::rtdb::cache::RtdbCache::new(store);
         let registry = Arc::new(SubscriptionRegistry::new());
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
@@ -1900,9 +1909,9 @@ mod tests {
 
     // ── R-4a: chat span → ChatRow with real-shape extract + per-turn deltas ──
 
-    #[test]
-    fn chat_span_classifies_to_chat_row_with_real_corpus_shapes() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn chat_span_classifies_to_chat_row_with_real_corpus_shapes() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         // Real-corpus-shaped span (registry keys — realCorpus.ts / span_store
         // shapes): completed turn with usage + cost + model.
         let raw = envelope(vec![chat_span(
@@ -1916,12 +1925,12 @@ mod tests {
                 json!({ "key": "cost_usd", "value": { "doubleValue": 0.0125 } }),
             ],
         )]);
-        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &raw);
+        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &raw).await;
         assert!(rows >= 1, "a completed chat span must classify into a row");
 
         let row = rtdb
             .cache()
-            .get_chat("ses_chat1", "ses_chat1_1")
+            .get_chat("ses_chat1", "ses_chat1_1").await
             .expect("read")
             .expect("per-turn row exists under <session>_1 (REQ-639)");
         assert_eq!(row.state, RowState::Response, "completed span → Response");
@@ -1942,9 +1951,9 @@ mod tests {
 
     // ── R-1f: #2711/#2723 per-turn delta baselines across multi-turn ──────────
 
-    #[test]
-    fn delta_baselines_across_multi_turn_preserve_2711_2723_semantics() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn delta_baselines_across_multi_turn_preserve_2711_2723_semantics() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         let turn = |input: i64, cache: i64| {
             envelope(vec![chat_span(
                 "ses_delta",
@@ -1958,16 +1967,16 @@ mod tests {
             )])
         };
 
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(100, 512_000));
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(120, 513_000));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(100, 512_000)).await;
+        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(120, 513_000)).await;
         // Compaction / out-of-order: input drops below the baseline → delta
         // clamped to 0 AND the baseline resets to the new reading.
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(50, 513_500));
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(60, 514_000));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(50, 513_500)).await;
+        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(60, 514_000)).await;
 
         let row2 = rtdb
             .cache()
-            .get_chat("ses_delta", "ses_delta_2")
+            .get_chat("ses_delta", "ses_delta_2").await
             .expect("read")
             .expect("turn 2 row");
         assert_eq!(row2.prompt_tokens, Some(20), "input2 − input1");
@@ -1975,7 +1984,7 @@ mod tests {
 
         let row3 = rtdb
             .cache()
-            .get_chat("ses_delta", "ses_delta_3")
+            .get_chat("ses_delta", "ses_delta_3").await
             .expect("read")
             .expect("turn 3 row");
         assert_eq!(
@@ -1987,7 +1996,7 @@ mod tests {
 
         let row4 = rtdb
             .cache()
-            .get_chat("ses_delta", "ses_delta_4")
+            .get_chat("ses_delta", "ses_delta_4").await
             .expect("read")
             .expect("turn 4 row");
         assert_eq!(
@@ -1999,9 +2008,9 @@ mod tests {
 
     // ── Spec #2933 ST-2/ST-3: Copilot provider-scoped classification + mapping ─
 
-    #[test]
-    fn copilot_invoke_agent_promotes_to_agent_session_row_with_session_total() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn copilot_invoke_agent_promotes_to_agent_session_row_with_session_total() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         let session = json!({
             "name": "invoke_agent copilot",
             "traceId": "trace-cop-session",
@@ -2014,11 +2023,11 @@ mod tests {
                 attr_num("gen_ai.usage.output_tokens", 250)
             ]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![session]));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![session])).await;
 
         let row = rtdb
             .cache()
-            .get_agent_session("ses_cop_session", "ses_cop_session_1")
+            .get_agent_session("ses_cop_session", "ses_cop_session_1").await
             .expect("read")
             .expect("Copilot invoke_agent span must produce an agent_session row");
         assert_eq!(row.provider.as_deref(), Some("copilot_cli"));
@@ -2033,12 +2042,12 @@ mod tests {
         assert_eq!(row.state, RowState::Init, "session spans stay Init (REQ-609)");
     }
 
-    #[test]
-    fn invoke_agent_with_opencode_identity_stays_a_chat_row() {
+    #[tokio::test]
+    async fn invoke_agent_with_opencode_identity_stays_a_chat_row() {
         // R-5.1: the promotion is Copilot-scoped — the SAME op name under the
         // OpenCode resource identity must still land in chat_rows, never a
         // session row.
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         let span = json!({
             "name": "invoke_agent opencode",
             "traceId": "trace-oc-invoke",
@@ -2058,39 +2067,38 @@ mod tests {
                 "scopeSpans": [{ "spans": [ span ] }]
             }]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &raw);
+        classifier.ingest_otlp(Transport::OtlpGrpc, &raw).await;
 
         assert!(
             rtdb
                 .cache()
-                .get_agent_session("ses_oc_invoke", "ses_oc_invoke_1")
+                .get_agent_session("ses_oc_invoke", "ses_oc_invoke_1").await
                 .expect("read")
                 .is_none(),
             "OpenCode invoke_agent must not create a session row"
         );
         let chat = rtdb
             .cache()
-            .get_chat("ses_oc_invoke", "ses_oc_invoke_1")
+            .get_chat("ses_oc_invoke", "ses_oc_invoke_1").await
             .expect("read")
             .expect("OpenCode invoke_agent stays a chat row");
-        assert_eq!(chat.provider.as_deref(), Some("open_code"));
-    }
+        assert_eq!(chat.provider.as_deref(), Some("open_code"));}
 
-    #[test]
-    fn copilot_chat_input_is_per_call_never_a_cumulative_delta() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn copilot_chat_input_is_per_call_never_a_cumulative_delta() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         classifier.ingest_otlp(
             Transport::OtlpGrpc,
             &copilot_envelope(vec![copilot_chat_span("ses_cop_chat", "sp-1", 100, 20)]),
-        );
+        ).await;
         classifier.ingest_otlp(
             Transport::OtlpGrpc,
             &copilot_envelope(vec![copilot_chat_span("ses_cop_chat", "sp-2", 120, 25)]),
-        );
+        ).await;
 
         let first = rtdb
             .cache()
-            .get_chat("ses_cop_chat", "ses_cop_chat_1")
+            .get_chat("ses_cop_chat", "ses_cop_chat_1").await
             .expect("read")
             .expect("turn 1");
         assert_eq!(first.prompt_tokens, Some(100));
@@ -2100,7 +2108,7 @@ mod tests {
 
         let second = rtdb
             .cache()
-            .get_chat("ses_cop_chat", "ses_cop_chat_2")
+            .get_chat("ses_cop_chat", "ses_cop_chat_2").await
             .expect("read")
             .expect("turn 2");
         assert_eq!(
@@ -2112,12 +2120,12 @@ mod tests {
         assert_eq!(
             second.cache_read_tokens, None,
             "delta path bypassed → cacheReadTokens absent (documented degradation)"
-        );
+   );
     }
 
-    #[test]
-    fn copilot_tool_failure_derives_outcome_and_duration_from_error_type_and_timing() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn copilot_tool_failure_derives_outcome_and_duration_from_error_type_and_timing() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         let tool = json!({
             "name": "execute_tool readFile",
             "traceId": "trace-cop-tool-fail",
@@ -2131,11 +2139,11 @@ mod tests {
                 attr("error.type", "permission_denied")
             ]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![tool]));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![tool])).await;
 
         let row = rtdb
             .cache()
-            .get_tool_use("ses_cop_tool_fail", "ses_cop_tool_fail_1")
+            .get_tool_use("ses_cop_tool_fail", "ses_cop_tool_fail_1").await
             .expect("read")
             .expect("tool row");
         assert_eq!(row.provider.as_deref(), Some("copilot_cli"));
@@ -2145,9 +2153,9 @@ mod tests {
         assert_eq!(row.duration_ms, Some(120), "duration derived from span timing");
     }
 
-    #[test]
-    fn copilot_tool_without_error_is_success_with_timing_duration() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn copilot_tool_without_error_is_success_with_timing_duration() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         let tool = json!({
             "name": "execute_tool readFile",
             "traceId": "trace-cop-tool-ok",
@@ -2160,11 +2168,11 @@ mod tests {
                 attr("gen_ai.tool.name", "readFile")
             ]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![tool]));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![tool])).await;
 
         let row = rtdb
             .cache()
-            .get_tool_use("ses_cop_tool_ok", "ses_cop_tool_ok_1")
+            .get_tool_use("ses_cop_tool_ok", "ses_cop_tool_ok_1").await
             .expect("read")
             .expect("tool row");
         assert_eq!(row.tool_success, Some(true), "completed without error → success");
@@ -2172,9 +2180,9 @@ mod tests {
         assert_eq!(row.duration_ms, Some(40));
     }
 
-    #[test]
-    fn opencode_native_flat_keys_stay_primary_over_copilot_fallbacks() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn opencode_native_flat_keys_stay_primary_over_copilot_fallbacks() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         // Copilot-resource spans that ALSO carry the OpenCode-native flat keys —
         // the additive fallbacks must never override them (R-5.1). Distinct
         // session ids keep each first span at correlation `_1`.
@@ -2206,18 +2214,18 @@ mod tests {
                 attr("error.type", "cop_error")
             ]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![session, tool]));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &copilot_envelope(vec![session, tool])).await;
 
         let srow = rtdb
             .cache()
-            .get_agent_session("ses_cop_flat_s", "ses_cop_flat_s_1")
+            .get_agent_session("ses_cop_flat_s", "ses_cop_flat_s_1").await
             .expect("read")
             .expect("session row");
         assert_eq!(srow.total_tokens, Some(9_999), "flat total_tokens stays primary");
 
         let trow = rtdb
             .cache()
-            .get_tool_use("ses_cop_flat_t", "ses_cop_flat_t_1")
+            .get_tool_use("ses_cop_flat_t", "ses_cop_flat_t_1").await
             .expect("read")
             .expect("tool row");
         assert_eq!(trow.tool_success, Some(true), "flat tool.success stays primary");
@@ -2231,9 +2239,9 @@ mod tests {
 
     // ── R-4a: tool span → ToolUseRow, session span → AgentSessionRow ─────────
 
-    #[test]
-    fn tool_and_session_spans_classify_to_their_rows() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn tool_and_session_spans_classify_to_their_rows() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
 
         let tool = json!({
             "name": "fredo.tool.Bash",
@@ -2251,10 +2259,10 @@ mod tests {
                 attr("gen_ai.tool.call.result", "file1 file2")
             ]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &envelope(vec![tool]));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &envelope(vec![tool])).await;
         let tool_row = rtdb
             .cache()
-            .get_tool_use("ses_tool", "ses_tool_1")
+            .get_tool_use("ses_tool", "ses_tool_1").await
             .expect("read")
             .expect("tool row");
         assert_eq!(tool_row.tool_name.as_deref(), Some("Bash"));
@@ -2278,14 +2286,14 @@ mod tests {
                 json!({ "key": "total_cost_usd", "value": { "doubleValue": 0.42 } })
             ]
         });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &envelope(vec![session]));
+        classifier.ingest_otlp(Transport::OtlpGrpc, &envelope(vec![session])).await;
         // Ported correlation resolution (resolve_correlation_id, Init): the
         // FIRST session span of a pure-OTLP session generates the per-turn id
         // `<session>_1` — exactly the v1 adapter behavior (port, don't
         // re-design).
         let session_row = rtdb
             .cache()
-            .get_agent_session("ses_session", "ses_session_1")
+            .get_agent_session("ses_session", "ses_session_1").await
             .expect("read")
             .expect("session-level row (v1-faithful per-turn correlation)");
         assert_eq!(session_row.total_tokens, Some(59_200));
@@ -2299,24 +2307,24 @@ mod tests {
         );
     }
 
-    // ── ST9 (#2688): one correlation id per span, no counter double-advance ──
+    // ── ST9 (#2688): one correlationid per span, no counter double-advance ──
 
-    #[test]
-    fn st9_guard_dual_export_shares_one_correlation_and_one_row() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn st9_guard_dual_export_shares_one_correlation_and_one_row() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         // Streaming open-then-complete: the same spanId exported twice.
         classifier.ingest_otlp(
             Transport::OtlpGrpc,
             &envelope(vec![chat_span("ses_st9", "sp-1", false, vec![])]),
-        );
+        ).await;
         classifier.ingest_otlp(
             Transport::OtlpGrpc,
             &envelope(vec![chat_span("ses_st9", "sp-1", true, vec![])]),
-        );
+        ).await;
 
         let row = rtdb
             .cache()
-            .get_chat("ses_st9", "ses_st9_1")
+            .get_chat("ses_st9", "ses_st9_1").await
             .expect("read")
             .expect("one row for the dual export");
         assert_eq!(row.state, RowState::Response, "completed export wins (LastWins)");
@@ -2324,11 +2332,11 @@ mod tests {
         classifier.ingest_otlp(
             Transport::OtlpGrpc,
             &envelope(vec![chat_span("ses_st9", "sp-2", true, vec![])]),
-        );
+        ).await;
         assert!(
             rtdb
                 .cache()
-                .get_chat("ses_st9", "ses_st9_2")
+                .get_chat("ses_st9", "ses_st9_2").await
                 .expect("read")
                 .is_some(),
             "one turn → one correlation id (no phantom turn between)"
@@ -2337,9 +2345,9 @@ mod tests {
 
     // ── R-4a: unconditional ingest (no subscriber → rows still stored) ───────
 
-    #[test]
-    fn ingest_is_unconditional_without_subscribers() {
-        let (_dir, classifier, rtdb, sink) = make_classifier();
+    #[tokio::test]
+    async fn ingest_is_unconditional_without_subscribers() {
+        let (_dir, classifier, rtdb, sink) = make_classifier().await;
         assert_eq!(rtdb.registry().subscription_count(), 0);
         classifier.ingest_otlp(
             Transport::OtlpGrpc,
@@ -2349,10 +2357,10 @@ mod tests {
                 true,
                 vec![attr_num("gen_ai.usage.input_tokens", 42)],
             )]),
-        );
+        ).await;
         let row = rtdb
             .cache()
-            .get_chat("ses_uncond", "ses_uncond_1")
+            .get_chat("ses_uncond", "ses_uncond_1").await
             .expect("read")
             .expect("row stored with NO subscription — replay-critical");
         assert_eq!(row.prompt_tokens, Some(42));
@@ -2361,9 +2369,9 @@ mod tests {
 
     // ── R-1e: relationship registration + re-key (no removes, stamps) ────────
 
-    #[test]
-    fn relationship_registration_copies_child_rows_under_the_parent_key() {
-        let (_dir, classifier, rtdb, sink) = make_classifier();
+    #[tokio::test]
+    async fn relationship_registration_copies_child_rows_under_the_parent_key() {
+        let (_dir, classifier, rtdb, sink) = make_classifier().await;
         rtdb.subscribe(
             &["chat(sessionId = \"parent-s\") { userMessage, parentSessionId, compositedChildSessionId }".to_string()],
             false,
@@ -2381,7 +2389,7 @@ mod tests {
                 true,
                 vec![attr_num("gen_ai.usage.input_tokens", 10)],
             )]),
-        );
+        ).await;
         assert!(
             emitted(&sink).is_empty(),
             "child-keyed rows do not match the parent query"
@@ -2389,7 +2397,7 @@ mod tests {
         assert!(
             rtdb
                 .cache()
-                .get_chat("child-s", "child-s_1")
+                .get_chat("child-s", "child-s_1").await
                 .expect("read")
                 .is_some(),
             "child-keyed row intact"
@@ -2408,7 +2416,7 @@ mod tests {
                     attr("gen_ai.agent.name", "general"),
                 ],
             )]),
-        );
+        ).await;
 
         let deliveries = emitted(&sink);
         assert!(
@@ -2437,13 +2445,13 @@ mod tests {
         // The child's existing rows are queryable under BOTH keys.
         let child_row = rtdb
             .cache()
-            .get_chat("child-s", "child-s_1")
+            .get_chat("child-s", "child-s_1").await
             .expect("read")
             .expect("child row intact");
         assert_eq!(child_row.prompt_tokens, Some(10));
         let copied = rtdb
             .cache()
-            .get_chat("parent-s", "child-s_1")
+            .get_chat("parent-s", "child-s_1").await
             .expect("read")
             .expect("EXISTING child row copied under the parent key");
         assert_eq!(copied.prompt_tokens, Some(10), "row content carried over");
@@ -2453,16 +2461,16 @@ mod tests {
         assert!(
             rtdb
                 .cache()
-                .get_chat("parent-s", "child-s_2")
+                .get_chat("parent-s", "child-s_2").await
                 .expect("read")
                 .is_some(),
             "post-registration child rows also copy under the parent key"
         );
     }
 
-    #[test]
-    fn internal_build_plan_agents_are_excluded_from_relationships() {
-        let (_dir, classifier, rtdb, sink) = make_classifier();
+    #[tokio::test]
+    async fn internal_build_plan_agents_are_excluded_from_relationships() {
+        let (_dir, classifier, rtdb, sink) = make_classifier().await;
         rtdb.subscribe(
             &["chat(sessionId = \"parent-x\") { userMessage }".to_string()],
             false,
@@ -2481,7 +2489,7 @@ mod tests {
                     attr("gen_ai.agent.name", "build"),
                 ],
             )]),
-        );
+        ).await;
 
         assert!(
             emitted(&sink).is_empty(),
@@ -2490,7 +2498,7 @@ mod tests {
         assert!(
             rtdb
                 .cache()
-                .get_chat("parent-x", "child-build_1")
+                .get_chat("parent-x", "child-build_1").await
                 .expect("read")
                 .is_none(),
             "no parent-keyed copy was created"
@@ -2498,7 +2506,7 @@ mod tests {
         assert!(
             rtdb
                 .cache()
-                .get_chat("child-build", "child-build_1")
+                .get_chat("child-build", "child-build_1").await
                 .expect("read")
                 .is_some(),
             "the child row itself is still ingested"
@@ -2520,9 +2528,9 @@ mod tests {
         event
     }
 
-    #[test]
-    fn ingest_event_maps_cli_mock_payloads_to_rows() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn ingest_event_maps_cli_mock_payloads_to_rows() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
 
         let chat = fredo_event(
             EventType::Chat,
@@ -2532,10 +2540,10 @@ mod tests {
                 "message": { "role": "assistant", "content": [{ "type": "text", "text": "e2e-test: hello from mock event" }] }
             }),
         );
-        classifier.ingest_event(&chat);
+        classifier.ingest_event(&chat).await;
         let row = rtdb
             .cache()
-            .get_chat("e2e-session-1", "e2e-session-1")
+            .get_chat("e2e-session-1", "e2e-session-1").await
             .expect("read")
             .expect("mock chat event → chat row keyed by session (no correlation id)");
         assert_eq!(row.state, RowState::Init);
@@ -2553,10 +2561,10 @@ mod tests {
             }),
         );
         chat2.correlation_id = Some("e2e-corr-1".to_string());
-        classifier.ingest_event(&chat2);
+        classifier.ingest_event(&chat2).await;
         let row2 = rtdb
             .cache()
-            .get_chat("e2e-session-2", "e2e-corr-1")
+            .get_chat("e2e-session-2", "e2e-corr-1").await
             .expect("read")
             .expect("correlation-id-keyed row");
         assert_eq!(row2.user_message.as_deref(), Some("fix the bug"));
@@ -2571,10 +2579,10 @@ mod tests {
             json!({ "error": { "message": "intentional error for testing" } }),
         );
         tool.tool_name = Some("terminal".to_string());
-        classifier.ingest_event(&tool);
+        classifier.ingest_event(&tool).await;
         let tool_row = rtdb
             .cache()
-            .get_tool_use("e2e-tool-1", "e2e-tool-1")
+            .get_tool_use("e2e-tool-1", "e2e-tool-1").await
             .expect("read")
             .expect("mock tool event → tool row");
         assert_eq!(tool_row.tool_name.as_deref(), Some("terminal"));
@@ -2590,10 +2598,10 @@ mod tests {
             "e2e-lifecycle-1",
             json!({ "totalTokens": 1024, "totalMessages": 3, "agent": "opencode" }),
         );
-        classifier.ingest_event(&session);
+        classifier.ingest_event(&session).await;
         let session_row = rtdb
             .cache()
-            .get_agent_session("e2e-lifecycle-1", "e2e-lifecycle-1")
+            .get_agent_session("e2e-lifecycle-1", "e2e-lifecycle-1").await
             .expect("read")
             .expect("mock session event → agent-session row");
         assert_eq!(session_row.total_tokens, Some(1024));
@@ -2601,12 +2609,12 @@ mod tests {
 
         // Non-row-bearing event types classify to nothing.
         let infra = fredo_event(EventType::Infrastructure, EventState::Init, "e2e-diag", json!({}));
-        assert_eq!(classifier.ingest_event(&infra), 0);
+        assert_eq!(classifier.ingest_event(&infra).await, 0);
     }
 
-    #[test]
-    fn ingest_event_registers_relationships_and_rekeys() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn ingest_event_registers_relationships_and_rekeys() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         // A child event with the self-carried parent property + payload agent
         // name — registers and re-keys (build/plan excluded).
         let mut child = fredo_event(
@@ -2616,11 +2624,11 @@ mod tests {
             json!({ "userMessage": "child turn", "agent": "general" }),
         );
         child.parent_session_id = Some("parent-e2e".to_string());
-        classifier.ingest_event(&child);
+        classifier.ingest_event(&child).await;
 
         let copied = rtdb
             .cache()
-            .get_chat("parent-e2e", "child-e2e")
+            .get_chat("parent-e2e", "child-e2e").await
             .expect("read")
             .expect("child row copied under the parent key");
         assert_eq!(copied.composited_child_session_id.as_deref(), Some("child-e2e"));
@@ -2634,11 +2642,11 @@ mod tests {
             json!({ "userMessage": "internal turn", "agent": "plan" }),
         );
         internal.parent_session_id = Some("parent-e2e".to_string());
-        classifier.ingest_event(&internal);
+        classifier.ingest_event(&internal).await;
         assert!(
             rtdb
                 .cache()
-                .get_chat("parent-e2e", "child-build-e2e")
+                .get_chat("parent-e2e", "child-build-e2e").await
                 .expect("read")
                 .is_none(),
             "internal tool-execution agent (plan) never registers"
@@ -2717,13 +2725,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reattribute_provider_upgrades_a_pre_existing_row_at_its_own_key() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn reattribute_provider_upgrades_a_pre_existing_row_at_its_own_key() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         rtdb
             .cache()
             .store()
-            .upsert_chat_rows(&[seeded_chat_row("ses_x", "ses_x_7", PROVIDER_UNKNOWN)])
+            .upsert_chat_rows(&[seeded_chat_row("ses_x", "ses_x_7", PROVIDER_UNKNOWN)]).await
             .expect("seed");
 
         let outcome = classifier.reattribute_provider(
@@ -2731,25 +2739,25 @@ mod tests {
             "ses_x",
             "ses_x_7",
             &[provider_attrs("fredo-opencode-plugin")],
-        );
+        ).await;
         assert_eq!(outcome, ProviderReattribution::Upgraded);
 
-        let row = rtdb.cache().get_chat("ses_x", "ses_x_7").expect("read").expect("row");
+        let row = rtdb.cache().get_chat("ses_x", "ses_x_7").await.expect("read").expect("row");
         assert_eq!(row.provider.as_deref(), Some("open_code"));
         assert_eq!(row.seq, 2, "the upgrade is a real content write");
         assert!(
-            rtdb.cache().get_chat("ses_x", "ses_x_1").expect("read").is_none(),
+            rtdb.cache().get_chat("ses_x", "ses_x_1").await.expect("read").is_none(),
             "reattribution never mints a correlation id (round-1 parallel-row regression)"
         );
     }
 
-    #[test]
-    fn reattribute_provider_never_replaces_a_resolved_token() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn reattribute_provider_never_replaces_a_resolved_token() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         rtdb
             .cache()
             .store()
-            .upsert_chat_rows(&[seeded_chat_row("ses_r", "ses_r_1", "open_code")])
+            .upsert_chat_rows(&[seeded_chat_row("ses_r", "ses_r_1", "open_code")]).await
             .expect("seed");
 
         let outcome = classifier.reattribute_provider(
@@ -2757,21 +2765,21 @@ mod tests {
             "ses_r",
             "ses_r_1",
             &[provider_attrs("copilot-cli")],
-        );
+        ).await;
         assert_eq!(outcome, ProviderReattribution::Unchanged);
 
-        let row = rtdb.cache().get_chat("ses_r", "ses_r_1").expect("read").expect("row");
+        let row = rtdb.cache().get_chat("ses_r", "ses_r_1").await.expect("read").expect("row");
         assert_eq!(row.provider.as_deref(), Some("open_code"), "resolved tokens never restamp");
         assert_eq!(row.seq, 1, "no write, no seq bump");
     }
 
-    #[test]
-    fn reattribute_provider_fallback_to_fallback_is_a_no_op() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn reattribute_provider_fallback_to_fallback_is_a_no_op() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         rtdb
             .cache()
             .store()
-            .upsert_chat_rows(&[seeded_chat_row("ses_f", "ses_f_1", PROVIDER_UNKNOWN)])
+            .upsert_chat_rows(&[seeded_chat_row("ses_f", "ses_f_1", PROVIDER_UNKNOWN)]).await
             .expect("seed");
 
         // An unrecognised `service.name` → the shared rule resolves the
@@ -2781,21 +2789,21 @@ mod tests {
             "ses_f",
             "ses_f_1",
             &[provider_attrs("some-other-cli")],
-        );
+        ).await;
         assert_eq!(outcome, ProviderReattribution::Unchanged);
 
-        let row = rtdb.cache().get_chat("ses_f", "ses_f_1").expect("read").expect("row");
+        let row = rtdb.cache().get_chat("ses_f", "ses_f_1").await.expect("read").expect("row");
         assert_eq!(row.provider.as_deref(), Some(PROVIDER_UNKNOWN), "never NULL/empty");
         assert_eq!(row.seq, 1);
     }
 
-    #[test]
-    fn reattribute_provider_is_ambiguous_when_matched_spans_disagree() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn reattribute_provider_is_ambiguous_when_matched_spans_disagree() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         rtdb
             .cache()
             .store()
-            .upsert_chat_rows(&[seeded_chat_row("ses_amb", "ses_amb_1", PROVIDER_UNKNOWN)])
+            .upsert_chat_rows(&[seeded_chat_row("ses_amb", "ses_amb_1", PROVIDER_UNKNOWN)]).await
             .expect("seed");
 
         let outcome = classifier.reattribute_provider(
@@ -2806,52 +2814,52 @@ mod tests {
                 provider_attrs("fredo-opencode-plugin"),
                 provider_attrs("copilot-cli"),
             ],
-        );
+        ).await;
         assert_eq!(outcome, ProviderReattribution::Ambiguous);
 
-        let row = rtdb.cache().get_chat("ses_amb", "ses_amb_1").expect("read").expect("row");
+        let row = rtdb.cache().get_chat("ses_amb", "ses_amb_1").await.expect("read").expect("row");
         assert_eq!(row.provider.as_deref(), Some(PROVIDER_UNKNOWN), "never guess");
         assert_eq!(row.seq, 1, "an ambiguous match writes nothing");
     }
 
-    #[test]
-    fn reattribute_provider_upgrades_each_row_kind_in_place() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
+    #[tokio::test]
+    async fn reattribute_provider_upgrades_each_row_kind_in_place() {
+        let (_dir, classifier, rtdb, _sink) = make_classifier().await;
         let store = rtdb.cache().store();
         store
-            .upsert_chat_rows(&[seeded_chat_row("ses_kc", "ses_kc_1", PROVIDER_UNKNOWN)])
+            .upsert_chat_rows(&[seeded_chat_row("ses_kc", "ses_kc_1", PROVIDER_UNKNOWN)]).await
             .expect("chat");
         store
-            .upsert_tool_use_rows(&[seeded_tool_row("ses_kt", "ses_kt_1", PROVIDER_UNKNOWN)])
+            .upsert_tool_use_rows(&[seeded_tool_row("ses_kt", "ses_kt_1", PROVIDER_UNKNOWN)]).await
             .expect("tool");
         store
-            .upsert_agent_session_rows(&[seeded_session_row("ses_ks", "ses_ks_1", PROVIDER_UNKNOWN)])
+            .upsert_agent_session_rows(&[seeded_session_row("ses_ks", "ses_ks_1", PROVIDER_UNKNOWN)]).await
             .expect("session");
 
         let attrs = [provider_attrs("fredo-opencode-plugin")];
         assert_eq!(
-            classifier.reattribute_provider(RowKind::Chat, "ses_kc", "ses_kc_1", &attrs),
+            classifier.reattribute_provider(RowKind::Chat, "ses_kc", "ses_kc_1", &attrs).await,
             ProviderReattribution::Upgraded
         );
         assert_eq!(
-            classifier.reattribute_provider(RowKind::ToolUse, "ses_kt", "ses_kt_1", &attrs),
+            classifier.reattribute_provider(RowKind::ToolUse, "ses_kt", "ses_kt_1", &attrs).await,
             ProviderReattribution::Upgraded
         );
         assert_eq!(
-            classifier.reattribute_provider(RowKind::AgentSession, "ses_ks", "ses_ks_1", &attrs),
+            classifier.reattribute_provider(RowKind::AgentSession, "ses_ks", "ses_ks_1", &attrs).await,
             ProviderReattribution::Upgraded
         );
 
         assert_eq!(
-            rtdb.cache().get_chat("ses_kc", "ses_kc_1").expect("read").expect("row").provider.as_deref(),
+            rtdb.cache().get_chat("ses_kc", "ses_kc_1").await.expect("read").expect("row").provider.as_deref(),
             Some("open_code")
         );
         assert_eq!(
-            rtdb.cache().get_tool_use("ses_kt", "ses_kt_1").expect("read").expect("row").provider.as_deref(),
+            rtdb.cache().get_tool_use("ses_kt", "ses_kt_1").await.expect("read").expect("row").provider.as_deref(),
             Some("open_code")
         );
         assert_eq!(
-            rtdb.cache().get_agent_session("ses_ks", "ses_ks_1").expect("read").expect("row").provider.as_deref(),
+            rtdb.cache().get_agent_session("ses_ks", "ses_ks_1").await.expect("read").expect("row").provider.as_deref(),
             Some("open_code")
         );
     }

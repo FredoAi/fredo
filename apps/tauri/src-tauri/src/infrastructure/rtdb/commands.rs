@@ -30,10 +30,10 @@
 //!
 //! Round-3 F-33 fix — the replay leg is a BACKGROUND DRAIN: the IPC command
 //! is `async` (never the main thread) and hands the snapshot SELECT +
-//! delivery build to `tauri::async_runtime::spawn_blocking` immediately after
-//! registration, returning the `Vec<RegisteredQuery>` without awaiting it.
-//! Each query's drain ends with the replay-completion marker
-//! ([`FlushLoop::mark_replay_complete`] → the terminal envelope's
+//! delivery build to `tauri::async_runtime::spawn` (never `tokio::spawn`)
+//! immediately after registration, returning the `Vec<RegisteredQuery>`
+//! without awaiting it. Each query's drain ends with the replay-completion
+//! marker ([`FlushLoop::mark_replay_complete`] → the terminal envelope's
 //! `replayCompleteQueryId`), the frontend's deterministic settle signal.
 //!
 //! The IPC surface (consumed by P4.1's frontend, verbatim):
@@ -57,9 +57,8 @@ use crate::infrastructure::rtdb::query::{
 use crate::infrastructure::rtdb::rows::{
     AgentSessionRow, ChatRow, ToolUseRow, AGENT_SESSION_FIELDS, CHAT_FIELDS, TOOL_USE_FIELDS,
 };
-use crate::infrastructure::rtdb::store::{EvictedKey, RowKind};
+use crate::infrastructure::rtdb::store::{EvictedKey, RowKind, SqlValue};
 use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-use rusqlite::types::Value as SqlValue;
 
 // ── IPC types ───────────────────────────────────────────────────────────────
 
@@ -187,8 +186,8 @@ impl Rtdb {
     }
 
     /// Subscribe with optional replay (R-2a): register the live subscription
-    /// FIRST, then — when `replay` is set — hand the replay leg to the
-    /// blocking pool via [`tauri::async_runtime::spawn_blocking`] and return
+    /// FIRST, then — when `replay` is set — hand the replay leg to
+    /// [`tauri::async_runtime::spawn`] (never `tokio::spawn`) and return
     /// immediately (round-3 F-33 fix: the full-table snapshot SELECT +
     /// per-row delivery build must never run on the caller's thread; the
     /// caller is the async IPC command and the drain is a background task).
@@ -207,7 +206,8 @@ impl Rtdb {
         Ok(registered)
     }
 
-    /// Spawn the replay leg onto the blocking pool (round-3 F-33 fix).
+    /// Spawn the replay leg onto the async runtime (round-3 F-33 fix; Spec
+    /// #2976 ST-4 moved it off `spawn_blocking` to `tauri::async_runtime::spawn`).
     ///
     /// Registration has ALREADY happened before this task is spawned — the
     /// registry's membership cut is taken first (register-before-snapshot),
@@ -225,9 +225,11 @@ impl Rtdb {
         let cache = Arc::clone(&self.cache);
         let registry = Arc::clone(&self.registry);
         let flush = Arc::clone(&self.flush);
-        tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::spawn(async move {
             for (entry, query) in registered.iter().zip(validated.iter()) {
-                if let Err(e) = replay_query_on(&cache, &registry, &flush, &entry.query_id, query) {
+                if let Err(e) =
+                    replay_query_on(&cache, &registry, &flush, &entry.query_id, query).await
+                {
                     tracing::error!(
                         target: "fredo::rtdb",
                         query_id = %entry.query_id,
@@ -270,11 +272,11 @@ impl Rtdb {
     // ── Replay (R-2a) ───────────────────────────────────────────────────────
 
     /// Run one query's SQL snapshot and route it as full-row `insert`
-    /// deliveries (synchronous form — the spawned leg and the tests use the
-    /// free function [`replay_query_on`] directly; this thin wrapper keeps
-    /// the `Rtdb` surface self-contained for diagnostics/tests).
-    pub fn replay_query(&self, query_id: &str, query: &ValidatedQuery) -> Result<usize> {
-        replay_query_on(&self.cache, &self.registry, &self.flush, query_id, query)
+    /// deliveries (async form — the spawned leg and the tests use the free
+    /// function [`replay_query_on`] directly; this thin wrapper keeps the
+    /// `Rtdb` surface self-contained for diagnostics/tests).
+    pub async fn replay_query(&self, query_id: &str, query: &ValidatedQuery) -> Result<usize> {
+        replay_query_on(&self.cache, &self.registry, &self.flush, query_id, query).await
     }
 
     /// Signal one query's replay completion through the flush loop (the
@@ -294,19 +296,25 @@ impl Rtdb {
     ///
     /// Delivery is NEVER shed — only the storage write can be (P1.2 queue
     /// overflow), matching R-2d.
-    pub fn ingest_row_upsert(&self, row: IngestRow, changed_fields: &[String]) -> Result<usize> {
+    pub async fn ingest_row_upsert(
+        &self,
+        row: IngestRow,
+        changed_fields: &[String],
+    ) -> Result<usize> {
         let kind = row.kind();
         let key = row.key();
         let seq = self
             .cache
             .store()
-            .next_seq(kind, &key.session_id, &key.correlation_id)?;
+            .next_seq(kind, &key.session_id, &key.correlation_id)
+            .await?;
         let row = row.with_seq(seq);
         // Feature-data projection seam (Spec #2896 ST-3): every canonical upsert
         // is offered to the installed observer, unconditionally — never gated by
         // subscriptions or an open feature UI (R-4.2). A no-op when the
         // feature-data layer is not composed (existing RTDB tests, CLI mode).
-        crate::infrastructure::feature_data::projection::dispatch_row_upsert(&row, changed_fields);
+        crate::infrastructure::feature_data::projection::dispatch_row_upsert(&row, changed_fields)
+            .await;
         match &row {
             IngestRow::Chat(chat) => self.cache.upsert_chat(chat.clone()),
             IngestRow::ToolUse(tool) => self.cache.upsert_tool_use(tool.clone()),
@@ -371,7 +379,7 @@ fn is_empty_update(delivery: &RowDelivery) -> bool {
 ///
 /// Either interleaving leaves the client with the correct final state —
 /// proven by the concurrent-mutation tests below.
-fn replay_query_on(
+async fn replay_query_on(
     cache: &RtdbCache,
     registry: &SubscriptionRegistry,
     flush: &FlushLoop,
@@ -386,7 +394,7 @@ fn replay_query_on(
     );
     let kind = row_kind(query.event_type);
     let (where_sql, params) = pushdown(query.event_type, &query.args);
-    let rows = cache.store().select_snapshot(kind, &where_sql, params)?;
+    let rows = cache.store().select_snapshot(kind, &where_sql, params).await?;
     let changed = all_field_names(query.event_type);
     let mut forwarded = 0usize;
     for row in &rows {
@@ -599,7 +607,7 @@ fn pushdown(event_type: EventTypeArg, args: &[QueryArg]) -> (String, Vec<SqlValu
 /// async runtime instead of the MAIN thread (the round-1/2 freeze: a sync
 /// command running the full-table replay leg blocked the main thread →
 /// "Not Responding" at MM mount). With `replay: true`, the snapshot leg is
-/// additionally handed to `tauri::async_runtime::spawn_blocking` (never
+/// additionally handed to `tauri::async_runtime::spawn` (never
 /// `tokio::spawn`) inside [`Rtdb::subscribe`], so the command returns right
 /// after registration and the snapshot drains in the background, terminated
 /// per query by the `replayCompleteQueryId` marker envelope.
@@ -640,7 +648,7 @@ mod tests {
     /// marker envelope — round-3 F-33 fix).
     type MarkerSink = Arc<Mutex<Vec<String>>>;
 
-    fn make_rtdb() -> (
+    async fn make_rtdb() -> (
         tempfile::TempDir,
         Arc<Rtdb>,
         tokio::sync::mpsc::Receiver<crate::infrastructure::rtdb::cache::PendingWrite>,
@@ -649,9 +657,9 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Arc::new(
-            RtdbStore::open(dir.path().to_path_buf()).expect("open store"),
+            RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("open store"),
         );
-        store.ensure_schema().expect("schema");
+        store.ensure_schema().await.expect("schema");
         let (cache, rx) = RtdbCache::new(store);
         let registry = Arc::new(SubscriptionRegistry::new());
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
@@ -685,7 +693,7 @@ mod tests {
 
     /// Drain the write-behind queue and persist the batch — tests that prune
     /// (or otherwise read SQLite) must first land the ingested rows.
-    fn persist_write_behind(
+    async fn persist_write_behind(
         rtdb: &Rtdb,
         rx: &mut tokio::sync::mpsc::Receiver<crate::infrastructure::rtdb::cache::PendingWrite>,
     ) {
@@ -694,7 +702,7 @@ mod tests {
             batch.push(pending);
         }
         rtdb.cache()
-            .flush_pending(batch)
+            .flush_pending(batch).await
             .expect("write-behind flush");
     }
 
@@ -767,9 +775,9 @@ mod tests {
 
     // ── Subscribe validation (R-3a): named errors, zero partial registration ─
 
-    #[test]
-    fn typo_field_subscribes_return_the_named_error_with_the_query_text() {
-        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn typo_field_subscribes_return_the_named_error_with_the_query_text() {
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb().await;
         let err = rtdb
             .subscribe(&["chat(promtTokens > 0) { userMessage }".to_string()], false, None)
             .expect_err("typo field must fail validation");
@@ -787,9 +795,9 @@ mod tests {
         assert_eq!(rtdb.registry().subscription_count(), 0);
     }
 
-    #[test]
-    fn parse_error_subscribes_carry_the_offending_query_text() {
-        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn parse_error_subscribes_carry_the_offending_query_text() {
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb().await;
         let err = rtdb
             .subscribe(&["chat(promptTokens >".to_string()], false, None)
             .expect_err("truncated query must fail to parse");
@@ -801,9 +809,9 @@ mod tests {
         assert_eq!(rtdb.registry().subscription_count(), 0);
     }
 
-    #[test]
-    fn any_failure_registers_nothing_zero_partial_registration() {
-        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn any_failure_registers_nothing_zero_partial_registration() {
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb().await;
         let queries = vec![
             "chat(sessionId = \"s\") { userMessage }".to_string(),
             "chat(bogusField = 1) { userMessage }".to_string(),
@@ -816,9 +824,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn valid_subscribes_return_query_ids_and_event_types() {
-        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn valid_subscribes_return_query_ids_and_event_types() {
+        let (_dir, rtdb, _rx, _sink, _markers) = make_rtdb().await;
         let queries = vec![
             "chat(promptTokens > 0) { userMessage, agentReply }".to_string(),
             "toolUse(toolSuccess = true) { toolName }".to_string(),
@@ -839,9 +847,9 @@ mod tests {
 
     // ── Live path: ingest → match → flush → emitter ─────────────────────────
 
-    #[test]
-    fn ingest_routes_deliveries_and_allocates_durable_seq() {
-        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn ingest_routes_deliveries_and_allocates_durable_seq() {
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb().await;
         rtdb.subscribe(
             &["chat(promptTokens > 0) { userMessage, agentReply }".to_string()],
             false,
@@ -853,11 +861,11 @@ mod tests {
         row.prompt_tokens = Some(25);
         let changed = vec!["promptTokens".to_string(), "userMessage".to_string()];
         let forwarded = rtdb
-            .ingest_row_upsert(IngestRow::Chat(row.clone()), &changed)
+            .ingest_row_upsert(IngestRow::Chat(row.clone()), &changed).await
             .expect("ingest");
         assert_eq!(forwarded, 1);
         assert_eq!(
-            rtdb.cache().store().next_seq(RowKind::Chat, "s_live", "s_live_1").expect("seq"),
+            rtdb.cache().store().next_seq(RowKind::Chat, "s_live", "s_live_1").await.expect("seq"),
             2,
             "seq was allocated 1 by the ingest and continues from MAX"
         );
@@ -873,15 +881,15 @@ mod tests {
         assert_eq!(patch.get("agentReply"), Some(&serde_json::Value::Null));
     }
 
-    #[test]
-    fn live_update_after_insert_carries_only_changed_fields() {
-        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn live_update_after_insert_carries_only_changed_fields() {
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb().await;
         rtdb.subscribe(&["chat { userMessage, agentReply, updatedAt }".to_string()], false, None)
             .expect("subscribe");
 
         let row1 = chat_row("s_u", "s_u_1", "2026-08-31T00:00:00+00:00");
         rtdb
-            .ingest_row_upsert(IngestRow::Chat(row1), &["userMessage".to_string()])
+            .ingest_row_upsert(IngestRow::Chat(row1), &["userMessage".to_string()]).await
             .expect("ingest 1");
         // Flush the first window so the insert is emitted on its own and the
         // second mutation cannot coalesce into it.
@@ -892,7 +900,7 @@ mod tests {
             .ingest_row_upsert(
                 IngestRow::Chat(row2),
                 &["agentReply".to_string(), "updatedAt".to_string()],
-            )
+            ).await
             .expect("ingest 2");
 
         window_drain(&rtdb);
@@ -921,9 +929,9 @@ mod tests {
         validate(&spec).expect("validate")
     }
 
-    #[test]
-    fn replay_emits_full_row_snapshot_inserts_then_live_patches_flow() {
-        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+    #[tokio::test]
+    async fn replay_emits_full_row_snapshot_inserts_then_live_patches_flow() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb().await;
 
         // Historical rows already in SQLite (durability — R-2c reads whatever
         // SQLite holds; seq continues from MAX via P1.2).
@@ -932,7 +940,7 @@ mod tests {
         historic.prompt_tokens = Some(25);
         rtdb.cache()
             .store()
-            .upsert_chat_rows(&[historic.clone()])
+            .upsert_chat_rows(&[historic.clone()]).await
             .expect("persist historic row");
 
         let text = "chat(promptTokens > 0) { userMessage, agentReply }".to_string();
@@ -943,7 +951,7 @@ mod tests {
         // The replay leg (what spawn_replay_leg runs off-thread): snapshot
         // inserts enqueue, then the completion marker fires. flush_ms: 0 →
         // per-patch synchronous emission, exactly as before the threading fix.
-        rtdb.replay_query(&registered[0].query_id, &query).expect("replay");
+        rtdb.replay_query(&registered[0].query_id, &query).await.expect("replay");
         let out = emitted(&sink);
         assert_eq!(out.len(), 1, "snapshot insert");
         assert_eq!(out[0].kind, RowChangeKind::Insert);
@@ -962,17 +970,17 @@ mod tests {
         // Non-matching snapshot rows are filtered by the registry, not just
         // pushdown: a row below the threshold yields nothing — and the marker
         // still fires (replay completes even with an empty result set).
-        let (_dir2, rtdb2, _rx2, sink2, marker_sink2) = make_rtdb();
+        let (_dir2, rtdb2, _rx2, sink2, marker_sink2) = make_rtdb().await;
         let mut below = chat_row("s_r", "s_r_2", "2026-08-30T00:00:01+00:00");
         below.seq = 1;
         below.prompt_tokens = Some(0);
-        rtdb2.cache().store().upsert_chat_rows(&[below]).expect("persist below");
+        rtdb2.cache().store().upsert_chat_rows(&[below]).await.expect("persist below");
         let below_registered = rtdb2
             .register_queries(&[text.clone()], Some(0))
             .expect("register");
         let below_query = validated(&text);
         rtdb2
-            .replay_query(&below_registered[0].query_id, &below_query)
+            .replay_query(&below_registered[0].query_id, &below_query).await
             .expect("replay");
         assert!(
             emitted(&sink2)
@@ -989,7 +997,7 @@ mod tests {
         let mut live = chat_row("s_r", "s_r_1", "2026-08-31T00:00:00+00:00");
         live.prompt_tokens = Some(25);
         live.agent_reply = Some("streamed".to_string());
-        rtdb.ingest_row_upsert(IngestRow::Chat(live), &["agentReply".to_string()])
+        rtdb.ingest_row_upsert(IngestRow::Chat(live), &["agentReply".to_string()]).await
             .expect("ingest");
         let all = emitted(&sink);
         assert_eq!(all.len(), 2);
@@ -1001,15 +1009,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn concurrent_mutation_before_snapshot_leg_yields_no_gap_and_no_lost_update() {
+    #[tokio::test]
+    async fn concurrent_mutation_before_snapshot_leg_yields_no_gap_and_no_lost_update() {
         // Interleaving A: the mutation lands mid-replay BEFORE the snapshot
         // leg matches the key (the live insert registers membership first).
-        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb().await;
 
         let mut historic = chat_row("s_c", "s_c_1", "2026-08-30T00:00:00+00:00");
         historic.seq = 1;
-        rtdb.cache().store().upsert_chat_rows(&[historic]).expect("persist");
+        rtdb.cache().store().upsert_chat_rows(&[historic]).await.expect("persist");
 
         let text = "chat(sessionId = \"s_c\") { userMessage, agentReply }".to_string();
         let registered = rtdb.register_queries(&[text.clone()], None).expect("register");
@@ -1025,11 +1033,11 @@ mod tests {
             .ingest_row_upsert(
                 IngestRow::Chat(live),
                 &["agentReply".to_string(), "updatedAt".to_string()],
-            )
+            ).await
             .expect("ingest");
 
         // The replay snapshot leg runs after the mutation.
-        rtdb.replay_query(&registered[0].query_id, &validated)
+        rtdb.replay_query(&registered[0].query_id, &validated).await
             .expect("replay");
 
         window_drain(&rtdb);
@@ -1045,19 +1053,18 @@ mod tests {
             Some(&serde_json::json!("live reply")),
             "final state must hold the live value (no lost update)"
         );
-        assert_eq!(row.get("userMessage"), Some(&serde_json::json!("fix the bug")));
-    }
+        assert_eq!(row.get("userMessage"), Some(&serde_json::json!("fix the bug")));}
 
-    #[test]
-    fn concurrent_mutation_after_snapshot_leg_coalesces_to_the_correct_final_state() {
+    #[tokio::test]
+    async fn concurrent_mutation_after_snapshot_leg_coalesces_to_the_correct_final_state() {
         // Interleaving B: the snapshot leg matches the key first (snapshot
         // insert seq 1), THEN the mutation lands (live update seq 2) — both
         // coalesce in one window into the correct final row.
-        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb().await;
 
         let mut historic = chat_row("s_d", "s_d_1", "2026-08-30T00:00:00+00:00");
         historic.seq = 1;
-        rtdb.cache().store().upsert_chat_rows(&[historic]).expect("persist");
+        rtdb.cache().store().upsert_chat_rows(&[historic]).await.expect("persist");
 
         let text = "chat(sessionId = \"s_d\") { userMessage, agentReply }".to_string();
         let registered = rtdb.register_queries(&[text.clone()], None).expect("register");
@@ -1065,7 +1072,7 @@ mod tests {
             let spec = parse(&text).expect("parse");
             validate(&spec).expect("validate")
         };
-        rtdb.replay_query(&registered[0].query_id, &validated)
+        rtdb.replay_query(&registered[0].query_id, &validated).await
             .expect("replay first leg");
 
         let mut live = chat_row("s_d", "s_d_1", "2026-08-31T00:00:00+00:00");
@@ -1074,7 +1081,7 @@ mod tests {
             .ingest_row_upsert(
                 IngestRow::Chat(live),
                 &["agentReply".to_string(), "updatedAt".to_string()],
-            )
+            ).await
             .expect("ingest after replay");
 
         window_drain(&rtdb);
@@ -1092,9 +1099,9 @@ mod tests {
 
     // ── Remove on eviction (R-2d) ───────────────────────────────────────────
 
-    #[test]
-    fn eviction_routes_remove_to_matching_subscriber_only() {
-        let (_dir, rtdb, mut rx, sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn eviction_routes_remove_to_matching_subscriber_only() {
+        let (_dir, rtdb, mut rx, sink, _markers) = make_rtdb().await;
         let registered = rtdb
             .subscribe(
                 &[
@@ -1110,7 +1117,7 @@ mod tests {
 
         let row = chat_row("s_e", "s_e_1", "2020-01-01T00:00:00+00:00");
         rtdb
-            .ingest_row_upsert(IngestRow::Chat(row), &["userMessage".to_string()])
+            .ingest_row_upsert(IngestRow::Chat(row), &["userMessage".to_string()]).await
             .expect("ingest");
         window_drain(&rtdb);
         let inserts = emitted(&sink);
@@ -1119,11 +1126,11 @@ mod tests {
 
         // Land the write-behind batch so SQLite holds the row, then retention
         // prune evicts it and returns the eviction set.
-        persist_write_behind(&rtdb, &mut rx);
+        persist_write_behind(&rtdb, &mut rx).await;
         let outcome = rtdb
             .cache()
             .store()
-            .prune(7, 100_000)
+            .prune(7, 100_000).await
             .expect("prune");
         assert_eq!(outcome.deleted, 1);
         assert_eq!(outcome.evicted.len(), 1);
@@ -1145,26 +1152,25 @@ mod tests {
         let state = apply_client(&all);
         assert!(!state.contains_key(&(matching.query_id.clone(), RowKey {
             session_id: "s_e".to_string(),
-            correlation_id: "s_e_1".to_string(),
-        })));
+            correlation_id: "s_e_1".to_string(),})));
     }
 
-    #[test]
-    fn remove_is_emitted_only_for_retention_evictions() {
+    #[tokio::test]
+    async fn remove_is_emitted_only_for_retention_evictions() {
         // A row that merely STOPS matching (arg failure) never produces a
         // remove — R-2d binding decision.
-        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb().await;
         rtdb.subscribe(&["chat(promptTokens > 20) { promptTokens }".to_string()], false, None)
             .expect("subscribe");
         let mut row = chat_row("s_f", "s_f_1", "2026-08-31T00:00:00+00:00");
         row.prompt_tokens = Some(25);
         rtdb
-            .ingest_row_upsert(IngestRow::Chat(row), &["promptTokens".to_string()])
+            .ingest_row_upsert(IngestRow::Chat(row), &["promptTokens".to_string()]).await
             .expect("ingest 1");
         let mut drop_below = chat_row("s_f", "s_f_1", "2026-08-31T00:00:01+00:00");
         drop_below.prompt_tokens = Some(10);
         rtdb
-            .ingest_row_upsert(IngestRow::Chat(drop_below), &["promptTokens".to_string()])
+            .ingest_row_upsert(IngestRow::Chat(drop_below), &["promptTokens".to_string()]).await
             .expect("ingest 2");
         window_drain(&rtdb);
         let out = emitted(&sink);
@@ -1174,16 +1180,16 @@ mod tests {
 
     // ── Unsubscribe ─────────────────────────────────────────────────────────
 
-    #[test]
-    fn unsubscribe_stops_delivery_and_discards_pending() {
-        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn unsubscribe_stops_delivery_and_discards_pending() {
+        let (_dir, rtdb, _rx, sink, _markers) = make_rtdb().await;
         let registered = rtdb
             .subscribe(&["chat { userMessage }".to_string()], false, None)
             .expect("subscribe");
 
         let row = chat_row("s_g", "s_g_1", "2026-08-31T00:00:00+00:00");
         rtdb
-            .ingest_row_upsert(IngestRow::Chat(row), &["userMessage".to_string()])
+            .ingest_row_upsert(IngestRow::Chat(row), &["userMessage".to_string()]).await
             .expect("ingest — pending");
         rtdb.unsubscribe(&[registered[0].query_id.clone()]);
         window_drain(&rtdb);
@@ -1192,7 +1198,7 @@ mod tests {
         // Further ingests match nothing.
         let row2 = chat_row("s_g", "s_g_2", "2026-08-31T00:00:01+00:00");
         rtdb
-            .ingest_row_upsert(IngestRow::Chat(row2), &["userMessage".to_string()])
+            .ingest_row_upsert(IngestRow::Chat(row2), &["userMessage".to_string()]).await
             .expect("ingest 2");
         window_drain(&rtdb);
         assert!(emitted(&sink).is_empty());
@@ -1253,19 +1259,19 @@ mod tests {
         assert_eq!(params, vec![SqlValue::Text("copilot_cli".to_string())]);
     }
 
-    #[test]
-    fn replay_snapshot_select_respects_the_pushdown_clause() {
-        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+    #[tokio::test]
+    async fn replay_snapshot_select_respects_the_pushdown_clause() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb().await;
         let mut hit = chat_row("s_p", "s_p_1", "2026-08-30T00:00:00+00:00");
         hit.seq = 1;
         let mut other = chat_row("s_q", "s_q_1", "2026-08-30T00:00:00+00:00");
         other.seq = 1;
-        rtdb.cache().store().upsert_chat_rows(&[hit, other]).expect("persist");
+        rtdb.cache().store().upsert_chat_rows(&[hit, other]).await.expect("persist");
 
         let text = "chat(sessionId = \"s_p\") { userMessage }".to_string();
         let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
         rtdb
-            .replay_query(&registered[0].query_id, &validated(&text))
+            .replay_query(&registered[0].query_id, &validated(&text)).await
             .expect("replay");
         rtdb.mark_replay_complete(&registered[0].query_id);
         let out = emitted(&sink);
@@ -1279,11 +1285,11 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_with_replay_spawns_the_replay_leg_and_signals_completion() {
-        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb().await;
         let mut historic = chat_row("s_bg", "s_bg_1", "2026-08-30T00:00:00+00:00");
         historic.seq = 1;
         historic.prompt_tokens = Some(25);
-        rtdb.cache().store().upsert_chat_rows(&[historic]).expect("persist");
+        rtdb.cache().store().upsert_chat_rows(&[historic]).await.expect("persist");
 
         // subscribe(replay: true) returns right after registration — the
         // snapshot leg drains in the background (tauri::async_runtime::
@@ -1321,9 +1327,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn replay_drain_terminates_with_the_completion_marker_on_the_final_coalesced_chunk() {
-        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+    #[tokio::test]
+    async fn replay_drain_terminates_with_the_completion_marker_on_the_final_coalesced_chunk() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb().await;
         let rows: Vec<ChatRow> = (0..600)
             .map(|i| {
                 let mut row = chat_row("s_m", &format!("c{i}"), "2026-08-30T00:00:00+00:00");
@@ -1331,13 +1337,13 @@ mod tests {
                 row
             })
             .collect();
-        rtdb.cache().store().upsert_chat_rows(&rows).expect("persist");
+        rtdb.cache().store().upsert_chat_rows(&rows).await.expect("persist");
 
         // Default coalescing window (MM's actual replay configuration).
         let text = "chat(sessionId = \"s_m\") { userMessage }".to_string();
         let registered = rtdb.register_queries(&[text.clone()], None).expect("register");
         rtdb
-            .replay_query(&registered[0].query_id, &validated(&text))
+            .replay_query(&registered[0].query_id, &validated(&text)).await
             .expect("replay");
         rtdb.mark_replay_complete(&registered[0].query_id);
         assert!(
@@ -1372,9 +1378,9 @@ mod tests {
         (chrono::Utc::now() - chrono::Duration::seconds(seconds)).to_rfc3339()
     }
 
-    #[test]
-    fn replay_recency_range_pushdown_bounds_the_snapshot_and_keeps_the_settle_marker() {
-        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+    #[tokio::test]
+    async fn replay_recency_range_pushdown_bounds_the_snapshot_and_keeps_the_settle_marker() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb().await;
 
         // Fixture magnitudes are REAL ns-since-epoch (G-028 class guard): the
         // round-1 shipped 1970-relative constant (`7*24*60*60*1e9` ≈ 6.048e14)
@@ -1405,13 +1411,13 @@ mod tests {
         null_start.seq = 3;
         rtdb.cache()
             .store()
-            .upsert_chat_rows(&[old, recent, null_start])
+            .upsert_chat_rows(&[old, recent, null_start]).await
             .expect("persist");
 
         let text = format!("chat(startedAtNs >= {cutoff}) {{ userMessage }}");
         let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
         assert_eq!(registered.len(), 1);
-        rtdb.replay_query(&registered[0].query_id, &validated(&text)).expect("replay");
+        rtdb.replay_query(&registered[0].query_id, &validated(&text)).await.expect("replay");
         let out = emitted(&sink);
         assert_eq!(out.len(), 1, "the recency range bounds the snapshot read to the recent row");
         assert_eq!(out[0].key.correlation_id, "s_rr_recent");
@@ -1436,7 +1442,7 @@ mod tests {
         // live-refreshes through the retained subscription (full-row insert).
         let mut live_new = chat_row("s_rr", "s_rr_new", &rfc3339_ago(5));
         live_new.started_at_ns = Some(now_epoch_ns());
-        rtdb.ingest_row_upsert(IngestRow::Chat(live_new), &["userMessage".to_string()])
+        rtdb.ingest_row_upsert(IngestRow::Chat(live_new), &["userMessage".to_string()]).await
             .expect("ingest");
         window_drain(&rtdb);
         let after_live = emitted(&sink);
@@ -1451,9 +1457,9 @@ mod tests {
     //    arg per row lexicographically; the pipeline's canonical RFC3339
     //    stamps make lexicographic == chronological) ──────────────────────────
 
-    #[test]
-    fn replay_updated_at_watermark_returns_only_the_delta_and_keeps_the_settle_marker() {
-        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb();
+    #[tokio::test]
+    async fn replay_updated_at_watermark_returns_only_the_delta_and_keeps_the_settle_marker() {
+        let (_dir, rtdb, _rx, sink, marker_sink) = make_rtdb().await;
 
         // Two persisted rows with REAL RFC3339 updated_at values: one last
         // updated BEFORE the watermark (the module-scoped store already holds
@@ -1468,12 +1474,12 @@ mod tests {
         held.seq = 1;
         let mut delta = chat_row("s_wm", "s_wm_delta", &delta_updated_at);
         delta.seq = 2;
-        rtdb.cache().store().upsert_chat_rows(&[held, delta]).expect("persist");
+        rtdb.cache().store().upsert_chat_rows(&[held, delta]).await.expect("persist");
 
         let text = format!("chat(updatedAt > \"{watermark}\") {{ userMessage }}");
         let registered = rtdb.register_queries(&[text.clone()], Some(0)).expect("register");
         assert_eq!(registered.len(), 1);
-        rtdb.replay_query(&registered[0].query_id, &validated(&text)).expect("replay");
+        rtdb.replay_query(&registered[0].query_id, &validated(&text)).await.expect("replay");
         let out = emitted(&sink);
         assert_eq!(out.len(), 1, "warm reopen drains ONLY the rows updated after the watermark");
         assert_eq!(out[0].key.correlation_id, "s_wm_delta");
@@ -1492,7 +1498,7 @@ mod tests {
         // the retained subscription (streaming continues past the delta drain).
         let mut live_after = chat_row("s_wm", "s_wm_live", &rfc3339_ago(5));
         live_after.agent_reply = Some("live".to_string());
-        rtdb.ingest_row_upsert(IngestRow::Chat(live_after), &["agentReply".to_string(), "updatedAt".to_string()])
+        rtdb.ingest_row_upsert(IngestRow::Chat(live_after), &["agentReply".to_string(), "updatedAt".to_string()]).await
             .expect("ingest");
         window_drain(&rtdb);
         let after_live = emitted(&sink);
@@ -1504,9 +1510,9 @@ mod tests {
     // ── Sub-task 5 (AC2.b): a retention cap prune routes `kind: remove` to a
     //    live subscriber so the shared frontend store cannot outgrow the cap ──
 
-    #[test]
-    fn cap_prune_routes_remove_to_live_subscriber_and_the_client_drops_the_rows() {
-        let (_dir, rtdb, mut rx, sink, _markers) = make_rtdb();
+    #[tokio::test]
+    async fn cap_prune_routes_remove_to_live_subscriber_and_the_client_drops_the_rows() {
+        let (_dir, rtdb, mut rx, sink, _markers) = make_rtdb().await;
 
         // The mission-monitor panel subscribes the UNFILTERED chat query (its
         // shared per-event-type partition map holds every Chat row); a narrow
@@ -1536,7 +1542,7 @@ mod tests {
             rtdb.ingest_row_upsert(
                 IngestRow::Chat(chat_row(session, corr, updated_at)),
                 &["userMessage".to_string()],
-            )
+            ).await
             .expect("ingest");
         }
         window_drain(&rtdb);
@@ -1548,8 +1554,8 @@ mod tests {
 
         // Land the write-behind batch so SQLite holds the rows, then apply the
         // GLOBAL max_rows cap (retention_days large so the age prune is inert).
-        persist_write_behind(&rtdb, &mut rx);
-        let outcome = rtdb.cache().store().prune(365, 2).expect("prune");
+        persist_write_behind(&rtdb, &mut rx).await;
+        let outcome = rtdb.cache().store().prune(365, 2).await.expect("prune");
         assert_eq!(outcome.deleted, 1, "cap 3→2 evicts the single oldest row");
         assert_eq!(outcome.evicted.len(), 1);
         assert_eq!(outcome.evicted[0].session_id, "s_old");

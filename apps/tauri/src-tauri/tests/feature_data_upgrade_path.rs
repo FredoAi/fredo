@@ -71,13 +71,13 @@ struct Harness {
     tables: Arc<FeatureStore>,
 }
 
-fn harness() -> Harness {
+async fn harness() -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let data_dir = dir.path().to_path_buf();
     let sqlite = SqliteEngine::open(&data_dir.join("fredo.db")).expect("shared engine");
     let engine = EngineHandle::new(StoreEngine::Sqlite(sqlite));
-    let rtdb_store = Arc::new(RtdbStore::open(data_dir.clone()).expect("rtdb store"));
-    rtdb_store.ensure_schema().expect("rtdb schema");
+    let rtdb_store = Arc::new(RtdbStore::open(engine.clone()).expect("rtdb store"));
+    rtdb_store.ensure_schema().await.expect("rtdb schema");
     let meta = Arc::new(FeatureDataStore::open(engine.clone()).expect("feature data store"));
     meta.ensure_schema().expect("feature data schema");
     let tables = Arc::new(FeatureStore::open(engine.clone()).expect("feature store"));
@@ -275,9 +275,9 @@ fn row_table(name: &str) -> FeatureDataTableDeclaration {
 
 // ── (1)–(5): the legacy upgrade path ────────────────────────────────────────
 
-#[test]
-fn legacy_upgrade_path_repairs_the_declared_sessions_table() {
-    let h = harness();
+#[tokio::test]
+async fn legacy_upgrade_path_repairs_the_declared_sessions_table() {
+    let h = harness().await;
     let declaration = mm_declaration();
     let table_decl = &declaration.tables[0];
 
@@ -321,7 +321,7 @@ fn legacy_upgrade_path_repairs_the_declared_sessions_table() {
                 Some(3_000),
                 "2026-03-01T00:00:03+00:00",
             ),
-        ])
+        ]).await
         .expect("seed canonical chat rows");
 
     // Pre-condition: the declared name is owned by the LEGACY schema, with rows.
@@ -416,7 +416,7 @@ fn legacy_upgrade_path_repairs_the_declared_sessions_table() {
         ProjectionEngine::new(h.engine.clone(), h.meta.clone(), h.tables.clone())
             .expect("projection engine"),
     );
-    let fed = backfill_pending(&h.meta, &engine, &h.rtdb_store)
+    let fed = backfill_pending(&h.meta, &engine, &h.rtdb_store).await
         .expect("the backfill runs");
     assert_eq!(
         fed, 3,
@@ -491,9 +491,9 @@ fn legacy_upgrade_path_repairs_the_declared_sessions_table() {
 
 // ── (6): per-table projection isolation ─────────────────────────────────────
 
-#[test]
-fn broken_declared_table_does_not_suppress_a_sibling_or_set_its_marker() {
-    let h = harness();
+#[tokio::test]
+async fn broken_declared_table_does_not_suppress_a_sibling_or_set_its_marker() {
+    let h = harness().await;
 
     let declaration = FeatureDataDeclaration {
         feature_id: "probe".to_string(),
@@ -521,7 +521,7 @@ fn broken_declared_table_does_not_suppress_a_sibling_or_set_its_marker() {
                 Some(2_000),
                 "2026-03-01T00:00:02+00:00",
             ),
-        ])
+        ]).await
         .expect("seed canonical chat rows");
 
     // Damage the `broken` physical table: recreate it WITHOUT the declared
@@ -540,7 +540,7 @@ fn broken_declared_table_does_not_suppress_a_sibling_or_set_its_marker() {
         ProjectionEngine::new(h.engine.clone(), h.meta.clone(), h.tables.clone())
             .expect("projection engine"),
     );
-    let fed = backfill_pending(&h.meta, &engine, &h.rtdb_store)
+    let fed = backfill_pending(&h.meta, &engine, &h.rtdb_store).await
         .expect("the backfill runs despite the broken table");
     assert_eq!(fed, 2, "both canonical rows are fed through the engine");
 

@@ -44,6 +44,7 @@ use crate::infrastructure::feature_data::projection::{DeclTableOutcome, Projecti
 use crate::infrastructure::feature_data::store::{FeatureDataStore, TableMeta};
 use crate::infrastructure::rtdb::commands::IngestRow;
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore, StoredRow};
+use crate::infrastructure::storage::engine::{begin_read_only, CanonicalReader};
 
 /// Fed units (canonical rows / distinct sessions) between INFO progress lines.
 const PROGRESS_EVERY: usize = 5_000;
@@ -51,7 +52,7 @@ const PROGRESS_EVERY: usize = 5_000;
 /// Backfill every persisted declared table whose `backfill_done` marker is
 /// unset. Returns the number of fed units: canonical rows fed through the row
 /// leg plus one recompute per distinct session fed through the rollup leg.
-pub fn backfill_pending(
+pub async fn backfill_pending(
     meta: &Arc<FeatureDataStore>,
     engine: &Arc<ProjectionEngine>,
     rtdb_store: &Arc<RtdbStore>,
@@ -111,7 +112,7 @@ pub fn backfill_pending(
     let mut row_fed = 0usize;
     for tag in &needed_sources {
         let kind = kind_of_tag(*tag);
-        for row in rtdb_store.select_snapshot(kind, "1=1", Vec::new())? {
+        for row in rtdb_store.select_snapshot(kind, "1=1", Vec::new()).await? {
             row_fed += 1;
             fed += 1;
             if row_fed.is_multiple_of(PROGRESS_EVERY) {
@@ -125,7 +126,7 @@ pub fn backfill_pending(
                 );
             }
             record_outcomes(
-                &engine.project_row_sources(&to_ingest_row(&row)),
+                &engine.project_row_sources(&to_ingest_row(&row)).await,
                 &mut failures,
             );
         }
@@ -153,7 +154,7 @@ pub fn backfill_pending(
     if !rollup_tables.is_empty() {
         let rollup_leg_start = Instant::now();
         let mut rollup_fed = 0usize;
-        for session_id in distinct_session_ids(engine)? {
+        for session_id in distinct_session_ids(engine).await? {
             rollup_fed += 1;
             fed += 1;
             if rollup_fed.is_multiple_of(PROGRESS_EVERY) {
@@ -166,7 +167,10 @@ pub fn backfill_pending(
                     "declared-table backfill progress"
                 );
             }
-            record_outcomes(&engine.project_session_rollups(&session_id), &mut failures);
+            record_outcomes(
+                &engine.project_session_rollups(&session_id).await,
+                &mut failures,
+            );
         }
         tracing::info!(
             target: "fredo::feature_data",
@@ -239,7 +243,7 @@ pub async fn run_backfill(
     engine: Arc<ProjectionEngine>,
     rtdb_store: Arc<RtdbStore>,
 ) {
-    match backfill_pending(&meta, &engine, &rtdb_store) {
+    match backfill_pending(&meta, &engine, &rtdb_store).await {
         Ok(fed) if fed > 0 => tracing::info!(
             target: "fredo::feature_data",
             fed,
@@ -280,19 +284,30 @@ fn to_ingest_row(row: &StoredRow) -> IngestRow {
 
 /// Distinct canonical sessionIds across all three row tables (read-only).
 ///
-/// Uses the SHARED read-only SQLite connection owned by the projection engine
-/// (Spec #2975 ST-5) — never a per-run `Connection::open`.
-fn distinct_session_ids(engine: &ProjectionEngine) -> Result<Vec<String>> {
-    let conn = engine.canonical_conn();
-    let mut stmt = conn.prepare(
-        "SELECT session_id FROM chat_rows
+/// Uses the engine-selected read-only canonical handle owned by the projection
+/// engine (REQ-9): the SQLite `PRAGMA query_only=ON` connection, or the shared
+/// PostgreSQL pool wrapped in a READ ONLY transaction — never a per-run
+/// `Connection::open`.
+async fn distinct_session_ids(engine: &ProjectionEngine) -> Result<Vec<String>> {
+    const SQL: &str = "SELECT session_id FROM chat_rows
          UNION SELECT session_id FROM tool_use_rows
-         UNION SELECT session_id FROM agent_session_rows",
-    )?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+         UNION SELECT session_id FROM agent_session_rows";
+    match engine.canonical_conn().await? {
+        CanonicalReader::Sqlite(sqlite) => {
+            let conn = sqlite.read_only_conn();
+            let mut stmt = conn.prepare(SQL)?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }
+        CanonicalReader::Postgres(pool) => {
+            let mut tx = begin_read_only(&pool).await?;
+            let rows: Vec<(String,)> = sqlx::query_as(SQL).fetch_all(&mut *tx).await?;
+            tx.commit().await?;
+            Ok(rows.into_iter().map(|(session_id,)| session_id).collect())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -380,10 +395,10 @@ mod tests {
         tables: Arc<FeatureStore>,
     }
 
-    fn setup_full(full: FeatureDataDeclaration) -> Harness {
+    async fn setup_full(full: FeatureDataDeclaration) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).unwrap());
-        rtdb_store.ensure_schema().unwrap();
+        let rtdb_store = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
+        rtdb_store.ensure_schema().await.unwrap();
         let meta = Arc::new(FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
         meta.ensure_schema().unwrap();
         let tables = Arc::new(FeatureStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap());
@@ -400,12 +415,12 @@ mod tests {
         }
     }
 
-    fn setup(declaration: FeatureDataTableDeclaration) -> Harness {
+    async fn setup(declaration: FeatureDataTableDeclaration) -> Harness {
         setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.v1".to_string(),
             tables: vec![declaration],
-        })
+        }).await
     }
 
     /// A `row`-sourced table projecting `correlationId`/`agentReply`.
@@ -489,14 +504,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn backfill_projects_pending_rows_and_sets_the_marker() {
-        let h = setup(row_declaration());
+    #[tokio::test]
+    async fn backfill_projects_pending_rows_and_sets_the_marker() {
+        let h = setup(row_declaration()).await;
         h.rtdb_store
-            .upsert_chat_rows(&[chat_row("ses_1", "ses_1_1", 1, "one"), chat_row("ses_1", "ses_1_2", 2, "two")])
+            .upsert_chat_rows(&[chat_row("ses_1", "ses_1_1", 1, "one"), chat_row("ses_1", "ses_1_2", 2, "two")]).await
             .unwrap();
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(fed, 2, "every canonical chat row is fed once");
         let rows = declared(&h, "turns");
         assert_eq!(rows.len(), 2);
@@ -504,36 +519,36 @@ mod tests {
         assert!(marker(&h, "turns"), "the backfill marker is set");
 
         // A second run is a no-op (marker gated).
-        let again = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let again = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(again, 0, "backfill is one-time");
         assert_eq!(declared(&h, "turns").len(), 2, "no duplicate projection");
     }
 
-    #[test]
-    fn backfill_never_modifies_canonical_rows() {
-        let h = setup(row_declaration());
+    #[tokio::test]
+    async fn backfill_never_modifies_canonical_rows() {
+        let h = setup(row_declaration()).await;
         h.rtdb_store
-            .upsert_chat_rows(&[chat_row("ses_1", "ses_1_1", 1, "one")])
+            .upsert_chat_rows(&[chat_row("ses_1", "ses_1_1", 1, "one")]).await
             .unwrap();
-        let (chats_before, _, _) = h.rtdb_store.row_counts().unwrap();
+        let (chats_before, _, _) = h.rtdb_store.row_counts().await.unwrap();
 
-        backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
 
-        let (chats_after, _, _) = h.rtdb_store.row_counts().unwrap();
+        let (chats_after, _, _) = h.rtdb_store.row_counts().await.unwrap();
         assert_eq!(chats_before, chats_after, "canonical rows are read-only to backfill");
     }
 
-    #[test]
-    fn backfill_recomputes_a_session_rollup_per_distinct_session() {
-        let h = setup(rollup_declaration());
+    #[tokio::test]
+    async fn backfill_recomputes_a_session_rollup_per_distinct_session() {
+        let h = setup(rollup_declaration()).await;
         h.rtdb_store
             .upsert_chat_rows(&[
                 chat_row("ses_a", "ses_a_1", 1, "answer a"),
                 chat_row("ses_b", "ses_b_1", 1, "answer b"),
-            ])
+            ]).await
             .unwrap();
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(fed, 2, "one representative row per distinct session");
         let rows = declared(&h, "sessions");
         assert_eq!(rows.len(), 2, "both sessions qualify");
@@ -550,8 +565,8 @@ mod tests {
     /// session (M), never once per canonical row (N). On the pre-fix code the row
     /// leg routed every row through `project_reporting`, so the counter would be
     /// N and the row-notification/rollup-notification split would collapse.
-    #[test]
-    fn rollup_is_recomputed_once_per_session_not_per_row() {
+    #[tokio::test]
+    async fn rollup_is_recomputed_once_per_session_not_per_row() {
         let h = setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.row+rollup.v1".to_string(),
@@ -559,7 +574,7 @@ mod tests {
                 row_table("turns", ActivitySource::Chat),
                 rollup_declaration(),
             ],
-        });
+        }).await;
         // N = 6 canonical chat rows across M = 2 sessions (N > M).
         h.rtdb_store
             .upsert_chat_rows(&[
@@ -569,14 +584,14 @@ mod tests {
                 chat_row("ses_b", "ses_b_1", 1, "b1"),
                 chat_row("ses_b", "ses_b_2", 2, "b2"),
                 chat_row("ses_b", "ses_b_3", 3, "b3"),
-            ])
+            ]).await
             .unwrap();
 
         let observer = Arc::new(CollectingObserver::default());
         h.engine
             .set_declared_row_observer(observer.clone() as Arc<dyn DeclaredRowObserver>);
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
 
         assert_eq!(
             h.engine.rollup_recompute_count(),
@@ -606,8 +621,8 @@ mod tests {
 
     /// `fed` observably separates the two legs: rows fed through the row
     /// projections + one recompute per distinct session.
-    #[test]
-    fn fed_counts_row_rows_plus_distinct_sessions() {
+    #[tokio::test]
+    async fn fed_counts_row_rows_plus_distinct_sessions() {
         let h = setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.row+rollup.fed.v1".to_string(),
@@ -615,16 +630,16 @@ mod tests {
                 row_table("turns", ActivitySource::Chat),
                 rollup_declaration(),
             ],
-        });
+        }).await;
         h.rtdb_store
             .upsert_chat_rows(&[
                 chat_row("ses_a", "ses_a_1", 1, "a1"),
                 chat_row("ses_a", "ses_a_2", 2, "a2"),
                 chat_row("ses_b", "ses_b_1", 1, "b1"),
-            ])
+            ]).await
             .unwrap();
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(
             fed,
             3 + 2,
@@ -637,8 +652,8 @@ mod tests {
     /// soon as the row leg completes, so a LATER rollup-leg failure cannot
     /// un-complete it; the damaged rollup table stays `false` and a second run
     /// retries only it.
-    #[test]
-    fn completed_table_is_marked_before_a_later_leg_fails() {
+    #[tokio::test]
+    async fn completed_table_is_marked_before_a_later_leg_fails() {
         let h = setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.row+broken-rollup.v1".to_string(),
@@ -646,13 +661,13 @@ mod tests {
                 row_table("turns", ActivitySource::Chat),
                 rollup_declaration(),
             ],
-        });
+        }).await;
         h.rtdb_store
             .upsert_chat_rows(&[
                 chat_row("ses_a", "ses_a_1", 1, "a1"),
                 chat_row("ses_a", "ses_a_2", 2, "a2"),
                 chat_row("ses_b", "ses_b_1", 1, "b1"),
-            ])
+            ]).await
             .unwrap();
         // Damage the rollup physical table: recreate it WITHOUT the declared
         // `chatRowCount` column, so every rollup projection fails.
@@ -664,7 +679,7 @@ mod tests {
             )
             .unwrap();
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(fed, 3 + 2, "both legs are fed in one run");
         assert_eq!(
             declared(&h, "turns").len(),
@@ -682,7 +697,7 @@ mod tests {
 
         // A second run retries ONLY the damaged rollup table: the row leg has no
         // pending row-sourced table left, so it feeds nothing.
-        let retry = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let retry = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(retry, 2, "only the still-pending rollup table is re-fed");
         assert_eq!(
             declared(&h, "turns").len(),
@@ -692,8 +707,8 @@ mod tests {
         assert!(!marker(&h, "sessions"), "still unset until it can project");
     }
 
-    #[test]
-    fn backfill_failed_projection_leaves_marker_unset_and_does_not_suppress_a_sibling() {
+    #[tokio::test]
+    async fn backfill_failed_projection_leaves_marker_unset_and_does_not_suppress_a_sibling() {
         let h = setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.multi.v1".to_string(),
@@ -701,12 +716,12 @@ mod tests {
                 row_table("broken", ActivitySource::Chat),
                 row_table("healthy", ActivitySource::Chat),
             ],
-        });
+        }).await;
         h.rtdb_store
             .upsert_chat_rows(&[
                 chat_row("ses_1", "ses_1_1", 1, "one"),
                 chat_row("ses_1", "ses_1_2", 2, "two"),
-            ])
+            ]).await
             .unwrap();
         // Damage the `broken` physical table: recreate it without the declared
         // `reply` column, so every projection against it fails independently.
@@ -718,7 +733,7 @@ mod tests {
             )
             .unwrap();
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(fed, 2, "both canonical chat rows are fed through the engine");
 
         assert_eq!(
@@ -735,7 +750,7 @@ mod tests {
         // A retry retries the still-pending broken table and does not duplicate
         // the healthy sibling's rows.
         let before = declared(&h, "healthy").len();
-        backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(
             declared(&h, "healthy").len(),
             before,
@@ -744,16 +759,16 @@ mod tests {
         assert!(!marker(&h, "broken"), "still unset until it can project");
     }
 
-    #[test]
-    fn backfill_zero_row_source_completes_and_sets_the_marker() {
+    #[tokio::test]
+    async fn backfill_zero_row_source_completes_and_sets_the_marker() {
         let h = setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.empty.v1".to_string(),
             tables: vec![row_table("empty", ActivitySource::ToolUse)],
-        });
+        }).await;
         // No canonical tool rows exist.
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(fed, 0, "nothing to feed");
         assert!(declared(&h, "empty").is_empty());
         assert!(
@@ -762,8 +777,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn backfill_source_none_table_completes_and_sets_the_marker() {
+    #[tokio::test]
+    async fn backfill_source_none_table_completes_and_sets_the_marker() {
         let h = setup_full(FeatureDataDeclaration {
             feature_id: "probe".to_string(),
             declaration_revision: "probe.none.v1".to_string(),
@@ -774,9 +789,9 @@ mod tests {
                 source: None,
                 retention: None,
             }],
-        });
+        }).await;
 
-        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).unwrap();
+        let fed = backfill_pending(&h.meta, &h.engine, &h.rtdb_store).await.unwrap();
         assert_eq!(fed, 0);
         assert!(marker(&h, "manual"), "a source:None table completes");
     }

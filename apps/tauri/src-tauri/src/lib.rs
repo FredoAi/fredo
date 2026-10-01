@@ -78,10 +78,11 @@ struct FeatureDataUpsertObserver {
     watches: Arc<WatchRegistry>,
 }
 
+#[async_trait::async_trait]
 impl RowUpsertObserver for FeatureDataUpsertObserver {
-    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
+    async fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
         self.watches.on_canonical_row(row, changed_fields);
-        self.engine.on_row_upsert(row, changed_fields);
+        self.engine.on_row_upsert(row, changed_fields).await;
     }
 }
 
@@ -157,6 +158,11 @@ pub fn run() {
             storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
                 features::terminal::persistence::ensure_table_on_pg(pool)
             }));
+            // Spec #2976 ST-7: the six slice-3 canonical tables (three `*_rows`
+            // for RtdbStore + three telemetry tables) exist on the candidate
+            // pool BEFORE it is installed (fail-closed: a failed init installs
+            // NOTHING).
+            storage_state.register_slice3_pg_schema_inits();
             app.manage(storage_state);
 
             // -- SQLite settings store (Spec #2975 ST-3) -----------------------
@@ -380,15 +386,18 @@ pub fn run() {
                 }
             });
 
-            // -- RTDB row store (Spec #2788 P1.2) ------------------------------
-            // SQLite-authoritative typed rows (chat_rows / tool_use_rows /
-            // agent_session_rows in fredo.db) behind an LRU row cache with a
-            // ~30 ms write-behind flush task. telemetry_spans is never touched.
+            // -- RTDB row store (Spec #2788 P1.2; engine-selected #2976 ST-7) ---
+            // Typed rows (chat_rows / tool_use_rows / agent_session_rows) behind
+            // an LRU row cache with a ~30 ms write-behind flush task, routed
+            // through the ONE shared `EngineHandle` (SQLite `fredo.db` by
+            // default, the shared PostgreSQL pool once installed).
+            // telemetry_spans is never touched.
             let rtdb_store = Arc::new(
-                RtdbStore::open(data_dir.clone()).expect("Failed to open RtdbStore"),
+                RtdbStore::open(engine_handle.clone()).expect("Failed to open RtdbStore"),
             );
-            rtdb_store
-                .ensure_schema()
+            // One-time startup schema creation on the active engine (the
+            // sync setup closure bridges to the async store schema).
+            tauri::async_runtime::block_on(rtdb_store.ensure_schema())
                 .expect("Failed to create rtdb schema");
             let (rtdb_cache, rtdb_rx) = RtdbCache::new(Arc::clone(&rtdb_store));
             app.manage(rtdb_cache.clone());
@@ -544,8 +553,10 @@ pub fn run() {
 
             // Retention prune on startup (mirrors the SpanStore/contract flow;
             // the writer task re-prunes on a 60-minute interval). P2.3: the
-            // evicted keys route `kind: remove` deliveries through Rtdb.
-            prune_with_knobs(app.handle());
+            // evicted keys route `kind: remove` deliveries through Rtdb. The
+            // prune now awaits the engine-selected store; the sync setup closure
+            // bridges with `block_on` to keep the pre-writer-task ordering.
+            tauri::async_runtime::block_on(prune_with_knobs(app.handle()));
 
             // Declared-table retention prune: once at startup, then on the same
             // 60-minute cadence as the RTDB writer prune (ST-7 supplies the
@@ -586,13 +597,18 @@ pub fn run() {
             // instance (the per-classifier turn/correlation state must start
             // fresh — see rtdb::backfill module docs).
             let backfill_handle = app.handle().clone();
-            let backfill_dir = data_dir.clone();
+            let backfill_engine = engine_handle.clone();
             tauri::async_runtime::spawn(async move {
-                infrastructure::rtdb::backfill::run_startup_backfill(&backfill_handle, &backfill_dir);
+                infrastructure::rtdb::backfill::run_startup_backfill(
+                    &backfill_handle,
+                    backfill_engine.clone(),
+                )
+                .await;
                 infrastructure::rtdb::backfill::run_startup_provider_rebackfill(
                     &backfill_handle,
-                    &backfill_dir,
-                );
+                    backfill_engine,
+                )
+                .await;
             });
 
             // -- IPC server (OpenCode plugin event path) -----------------------------

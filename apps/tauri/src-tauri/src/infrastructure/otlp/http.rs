@@ -111,7 +111,7 @@ async fn handle_traces(
                 // pre-existing quirk: HTTP-protobuf traces are tagged
                 // Transport::OtlpGrpc.
                 let classifier = app.state::<IngestClassifierState>();
-                let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+                let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value).await;
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-protobuf export classified into RTDB rows");
                 StatusCode::OK
             }
@@ -144,7 +144,7 @@ async fn handle_traces(
                 // R3: HTTP-JSON traces are tagged Transport::OtlpHttp.
                 let transport = Transport::OtlpHttp;
                 let classifier = app.state::<IngestClassifierState>();
-                let rows = classifier.ingest_otlp(transport, &val);
+                let rows = classifier.ingest_otlp(transport, &val).await;
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-JSON export classified into RTDB rows");
                 StatusCode::OK
             }

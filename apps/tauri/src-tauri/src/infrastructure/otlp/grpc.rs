@@ -77,7 +77,7 @@ impl TraceService for OtlpTraceService {
         // (R-4a). Log-and-continue: a classifier failure never affects the
         // export response.
         let classifier = self.0.state::<IngestClassifierState>();
-        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value).await;
         tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "gRPC export classified into RTDB rows");
 
         Ok(Response::new(ExportTraceServiceResponse {

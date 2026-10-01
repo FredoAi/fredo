@@ -74,12 +74,12 @@
 //! `tracing::warn`, never a panic; an empty or missing `telemetry_spans`
 //! table yields a zero summary.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
+use sqlx::Row as _;
 use tauri::Manager;
 
 use crate::infrastructure::rtdb::attrs::{
@@ -92,6 +92,7 @@ use crate::infrastructure::rtdb::ingest::{
     IngestClassifier, IngestClassifierState, ProviderReattribution,
 };
 use crate::infrastructure::rtdb::store::RowKind;
+use crate::infrastructure::storage::engine::{begin_read_only, CanonicalReader, EngineHandle};
 use crate::infrastructure::storage::AppStore;
 
 /// AppStore KV marker set after one successful backfill pass over an
@@ -207,55 +208,121 @@ fn collect_unresolved_rows(conn: &Connection, sql: &str) -> Result<Vec<Unresolve
     Ok(out)
 }
 
-/// Replay every persisted span through the shared ingest classifier
-/// (NFR-6). Opens a READ-ONLY connection; errors only when fredo.db itself
-/// cannot be opened read-only (the caller logs and retries next startup).
-pub fn backfill_from_telemetry(
-    data_dir: &Path,
-    classifier: &IngestClassifier,
-) -> Result<BackfillSummary> {
-    let db_path = data_dir.join("fredo.db");
-    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| anyhow::anyhow!("rtdb backfill: cannot open fredo.db read-only: {e}"))?;
+/// One persisted `telemetry_spans` row, engine-agnostic (owned — no connection
+/// guard is held while the classifier awaits).
+struct PersistedSpan {
+    trace_id: String,
+    span_id: String,
+    span_name: String,
+    start_time_ns: i64,
+    end_time_ns: Option<i64>,
+    session_id: String,
+    attributes_json: Option<String>,
+}
 
-    let present: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='telemetry_spans'",
-        [],
+/// True when `table` exists on the shared SQLite read-only connection.
+fn sqlite_table_present(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        params![table],
         |row| row.get(0),
     )?;
-    if present == 0 {
+    Ok(count > 0)
+}
+
+/// True when `table` exists on the PostgreSQL read-only transaction.
+async fn pg_table_present(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    table: &str,
+) -> Result<bool> {
+    let present: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(table)
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(present.is_some())
+}
+
+/// Read every `telemetry_spans` row in replay order through the engine-selected
+/// READ-ONLY canonical handle (REQ-9). `Ok(None)` when the table is absent on
+/// the active engine (a fresh install / pre-migration tier).
+async fn read_all_spans(engine: &EngineHandle) -> Result<Option<Vec<PersistedSpan>>> {
+    const SQL: &str = "SELECT trace_id, span_id, span_name, start_time_ns, end_time_ns,
+                session_id, attributes_json
+         FROM telemetry_spans
+         ORDER BY session_id ASC, start_time_ns ASC, span_id ASC";
+    match engine.engine().canonical_reader() {
+        Some(CanonicalReader::Sqlite(sqlite)) => {
+            let conn = sqlite.read_only_conn();
+            if !sqlite_table_present(&conn, "telemetry_spans")? {
+                return Ok(None);
+            }
+            let mut stmt = conn.prepare(SQL)?;
+            let mut rows = stmt.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(PersistedSpan {
+                    trace_id: row.get(0)?,
+                    span_id: row.get(1)?,
+                    span_name: row.get(2)?,
+                    start_time_ns: row.get(3)?,
+                    end_time_ns: row.get(4)?,
+                    session_id: row.get(5)?,
+                    attributes_json: row.get(6)?,
+                });
+            }
+            Ok(Some(out))
+        }
+        Some(CanonicalReader::Postgres(pool)) => {
+            let mut tx = begin_read_only(&pool).await?;
+            if !pg_table_present(&mut tx, "telemetry_spans").await? {
+                return Ok(None);
+            }
+            let rows = sqlx::query(SQL).fetch_all(&mut *tx).await?;
+            let out = rows
+                .iter()
+                .map(|row| {
+                    Ok(PersistedSpan {
+                        trace_id: row.try_get(0)?,
+                        span_id: row.try_get(1)?,
+                        span_name: row.try_get(2)?,
+                        start_time_ns: row.try_get(3)?,
+                        end_time_ns: row.try_get(4)?,
+                        session_id: row.try_get(5)?,
+                        attributes_json: row.try_get(6)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, sqlx::Error>>()?;
+            tx.commit().await?;
+            Ok(Some(out))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Replay every persisted span through the shared ingest classifier
+/// (NFR-6), reading `telemetry_spans` through the engine-selected READ-ONLY
+/// canonical handle. Returns a zero summary when the telemetry tier is absent.
+pub async fn backfill_from_telemetry(
+    engine: &EngineHandle,
+    classifier: &IngestClassifier,
+) -> Result<BackfillSummary> {
+    let Some(spans) = read_all_spans(engine).await? else {
         tracing::info!(
             target: "fredo::rtdb::backfill",
             "rtdb backfill: telemetry_spans table absent — no pre-cutover history to derive"
         );
         return Ok(BackfillSummary::default());
-    }
-
-    let mut stmt = conn.prepare(
-        "SELECT trace_id, span_id, span_name, start_time_ns, end_time_ns,
-                session_id, attributes_json
-         FROM telemetry_spans
-         ORDER BY session_id ASC, start_time_ns ASC, span_id ASC",
-    )?;
-    let mut rows = stmt.query([])?;
+    };
 
     let mut summary = BackfillSummary::default();
-    while let Some(row) = rows.next()? {
+    for span in &spans {
         summary.spans_read += 1;
-        let trace_id: String = row.get(0)?;
-        let span_id: String = row.get(1)?;
-        let span_name: String = row.get(2)?;
-        let start_time_ns: i64 = row.get(3)?;
-        let end_time_ns: Option<i64> = row.get(4)?;
-        let session_id: String = row.get(5)?;
-        let attributes_json: Option<String> = row.get(6)?;
-
-        let Some(attrs) = parse_attributes(attributes_json.as_deref()) else {
+        let Some(attrs) = parse_attributes(span.attributes_json.as_deref()) else {
             summary.skipped_malformed += 1;
             tracing::warn!(
                 target: "fredo::rtdb::backfill",
-                span_id = %span_id,
-                session_id = %session_id,
+                span_id = %span.span_id,
+                session_id = %span.session_id,
                 "rtdb backfill skipping malformed span (attributes_json is not a JSON object)"
             );
             continue;
@@ -264,7 +331,7 @@ pub fn backfill_from_telemetry(
         // Summary-only classification through the SHARED resolver — the
         // classifier re-resolves identically when fed the reconstructed
         // span; no extract rule is duplicated here.
-        match resolve_op_name(&span_name, &attrs) {
+        match resolve_op_name(&span.span_name, &attrs) {
             Some(op) => {
                 if op == OP_SESSION {
                     summary.session_spans += 1;
@@ -277,25 +344,25 @@ pub fn backfill_from_telemetry(
             None => summary.skipped_unrecognized += 1,
         }
 
-        let span = reconstruct_span(
-            &trace_id,
-            &span_id,
-            &span_name,
-            start_time_ns,
-            end_time_ns,
-            &session_id,
+        let reconstructed = reconstruct_span(
+            &span.trace_id,
+            &span.span_id,
+            &span.span_name,
+            span.start_time_ns,
+            span.end_time_ns,
+            &span.session_id,
             attrs,
         );
-        classifier.ingest_otlp(Transport::OtlpGrpc, &span);
+        classifier.ingest_otlp(Transport::OtlpGrpc, &reconstructed).await;
     }
     Ok(summary)
 }
 
 /// The lib.rs startup-hook body (P3.2): run the canonical backfill at most
-/// once ever, inside a `tauri::async_runtime::spawn` so startup never
-/// blocks. Tolerates a missing/empty telemetry tier; malformed spans are
-/// skipped inside [`backfill_from_telemetry`], never a panic.
-pub fn run_startup_backfill(app: &tauri::AppHandle, data_dir: &Path) {
+/// once ever. Spawned by lib.rs inside a `tauri::async_runtime::spawn` so
+/// startup never blocks. Tolerates a missing/empty telemetry tier; malformed
+/// spans are skipped inside [`backfill_from_telemetry`], never a panic.
+pub async fn run_startup_backfill(app: &tauri::AppHandle, engine: Arc<EngineHandle>) {
     let app_store = app.state::<Arc<AppStore>>();
     if matches!(app_store.control_get(BACKFILL_COMPLETED_KEY), Ok(Some(_))) {
         tracing::debug!(
@@ -306,7 +373,7 @@ pub fn run_startup_backfill(app: &tauri::AppHandle, data_dir: &Path) {
     }
 
     let classifier = app.state::<IngestClassifierState>();
-    match backfill_from_telemetry(data_dir, classifier.inner()) {
+    match backfill_from_telemetry(&engine, classifier.inner()).await {
         Ok(summary) => {
             tracing::info!(
                 target: "fredo::rtdb::backfill",
@@ -342,80 +409,144 @@ pub fn run_startup_backfill(app: &tauri::AppHandle, data_dir: &Path) {
     }
 }
 
+/// The per-kind unresolved-row join (shared by both engine arms). `?1` is the
+/// documented fallback sentinel (imported, never a literal); the PostgreSQL arm
+/// translates it to `$1`.
+fn unresolved_sql(kind: RowKind) -> &'static str {
+    match kind {
+        RowKind::Chat => {
+            "SELECT c.session_id, c.correlation_id, s.span_name, s.attributes_json
+         FROM chat_rows c
+         JOIN telemetry_spans s
+           ON s.session_id = COALESCE(c.composited_child_session_id, c.session_id)
+          AND s.start_time_ns = c.started_at_ns
+        WHERE (c.provider IS NULL OR c.provider = ?1)
+          AND c.started_at_ns IS NOT NULL"
+        }
+        RowKind::ToolUse => {
+            "SELECT c.session_id, c.correlation_id, s.span_name, s.attributes_json
+         FROM tool_use_rows c
+         JOIN telemetry_spans s
+           ON s.session_id = c.session_id
+          AND s.start_time_ns = c.started_at_ns
+        WHERE (c.provider IS NULL OR c.provider = ?1)
+          AND c.started_at_ns IS NOT NULL"
+        }
+        RowKind::AgentSession => {
+            "SELECT c.session_id, c.correlation_id, s.span_name, s.attributes_json
+         FROM agent_session_rows c
+         JOIN telemetry_spans s
+           ON s.session_id = c.session_id
+          AND s.start_time_ns = c.started_at_ns
+        WHERE (c.provider IS NULL OR c.provider = ?1)
+          AND c.started_at_ns IS NOT NULL"
+        }
+    }
+}
+
+/// PostgreSQL arm of [`collect_unresolved_rows`] — identical grouping, reads
+/// through the READ ONLY transaction.
+async fn collect_unresolved_rows_pg(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &str,
+) -> Result<Vec<UnresolvedRow>> {
+    let rows = sqlx::query(sql)
+        .bind(PROVIDER_UNKNOWN)
+        .fetch_all(&mut **tx)
+        .await?;
+    let mut out: Vec<UnresolvedRow> = Vec::new();
+    let mut index: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let session_id: String = row.try_get(0)?;
+        let correlation_id: String = row.try_get(1)?;
+        let span_name: String = row.try_get(2)?;
+        let attributes_json: Option<String> = row.try_get(3)?;
+        let key = (session_id.clone(), correlation_id.clone());
+        let idx = *index.entry(key).or_insert_with(|| {
+            out.push(UnresolvedRow {
+                session_id: session_id.clone(),
+                correlation_id: correlation_id.clone(),
+                candidates: Vec::new(),
+            });
+            out.len() - 1
+        });
+        if let Some(attrs) = parse_attributes(attributes_json.as_deref()) {
+            out[idx].candidates.push((span_name, attrs));
+        }
+    }
+    Ok(out)
+}
+
 /// Testable core of the Spec #2932 ST-6 provider re-derivation: gate on the
 /// INDEPENDENT [`BACKFILL_PROVIDER_COMPLETED_KEY`] marker, enumerate each
 /// unresolved row's matched span(s), and upgrade the row's `provider` slot AT
 /// ITS OWN KEY through [`IngestClassifier::reattribute_provider`] (round-2
 /// identity rule — no correlation id is ever minted, no row is ever created).
 /// The token comes from the SAME shared `attrs::resolve_provider_token` rule
-/// (NFR-6).
+/// (NFR-6). Canonical + telemetry reads go through the engine-selected
+/// READ-ONLY handle (REQ-9).
 ///
 /// Returns `Ok(None)` when a prior pass already latched the marker (idempotent
 /// skip); `Ok(Some(summary))` when a pass ran. `spans_read == 0` (absent or
 /// empty `telemetry_spans`) leaves the marker UNSET so the next startup
 /// re-checks — never a false "done".
-fn provider_rebackfill_pass(
+async fn provider_rebackfill_pass(
     app_store: &AppStore,
     classifier: &IngestClassifier,
-    data_dir: &Path,
+    engine: &EngineHandle,
 ) -> Result<Option<ProviderReattributionSummary>> {
     if matches!(app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
         return Ok(None);
     }
 
-    let db_path = data_dir.join("fredo.db");
-    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| anyhow::anyhow!("rtdb provider re-derivation: cannot open fredo.db read-only: {e}"))?;
-
-    let present: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='telemetry_spans'",
-        [],
-        |row| row.get(0),
-    )?;
     let mut summary = ProviderReattributionSummary::default();
-    if present == 0 {
-        tracing::info!(
-            target: "fredo::rtdb::backfill",
-            "rtdb provider re-derivation: telemetry_spans table absent — nothing to attribute"
-        );
-        return Ok(Some(summary));
+
+    // Enumerate unresolved rows for every kind WITHOUT holding a connection
+    // guard across the classifier awaits (`reattribute_provider` awaits the
+    // storage-backed cache reads).
+    let mut pending: Vec<(RowKind, Vec<UnresolvedRow>)> = Vec::new();
+    match engine.engine().canonical_reader() {
+        Some(CanonicalReader::Sqlite(sqlite)) => {
+            let conn = sqlite.read_only_conn();
+            if !sqlite_table_present(&conn, "telemetry_spans")? {
+                tracing::info!(
+                    target: "fredo::rtdb::backfill",
+                    "rtdb provider re-derivation: telemetry_spans table absent — nothing to attribute"
+                );
+                return Ok(Some(summary));
+            }
+            summary.spans_read = conn.query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| {
+                row.get::<_, i64>(0)
+            })? as usize;
+            for kind in [RowKind::Chat, RowKind::ToolUse, RowKind::AgentSession] {
+                pending.push((kind, collect_unresolved_rows(&conn, unresolved_sql(kind))?));
+            }
+        }
+        Some(CanonicalReader::Postgres(pool)) => {
+            let mut tx = begin_read_only(&pool).await?;
+            if !pg_table_present(&mut tx, "telemetry_spans").await? {
+                tracing::info!(
+                    target: "fredo::rtdb::backfill",
+                    "rtdb provider re-derivation: telemetry_spans table absent — nothing to attribute"
+                );
+                return Ok(Some(summary));
+            }
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM telemetry_spans")
+                .fetch_one(&mut *tx)
+                .await?;
+            summary.spans_read = count as usize;
+            for kind in [RowKind::Chat, RowKind::ToolUse, RowKind::AgentSession] {
+                let sql = unresolved_sql(kind).replace("?1", "$1");
+                pending.push((kind, collect_unresolved_rows_pg(&mut tx, &sql).await?));
+            }
+            tx.commit().await?;
+        }
+        None => {}
     }
-    summary.spans_read = conn.query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| {
-        row.get::<_, i64>(0)
-    })? as usize;
 
-    // Per-kind enumeration of UNRESOLVED rows joined to their span(s) on
-    // `(match_session, started_at_ns)`. Chat rows match the composited child
-    // session when re-keyed; tool/session rows have no composite column.
-    // `?1` is the documented fallback sentinel (imported, never a literal).
-    let chat_sql = "SELECT c.session_id, c.correlation_id, s.span_name, s.attributes_json
-         FROM chat_rows c
-         JOIN telemetry_spans s
-           ON s.session_id = COALESCE(c.composited_child_session_id, c.session_id)
-          AND s.start_time_ns = c.started_at_ns
-        WHERE (c.provider IS NULL OR c.provider = ?1)
-          AND c.started_at_ns IS NOT NULL";
-    let tool_sql = "SELECT c.session_id, c.correlation_id, s.span_name, s.attributes_json
-         FROM tool_use_rows c
-         JOIN telemetry_spans s
-           ON s.session_id = c.session_id
-          AND s.start_time_ns = c.started_at_ns
-        WHERE (c.provider IS NULL OR c.provider = ?1)
-          AND c.started_at_ns IS NOT NULL";
-    let session_sql = "SELECT c.session_id, c.correlation_id, s.span_name, s.attributes_json
-         FROM agent_session_rows c
-         JOIN telemetry_spans s
-           ON s.session_id = c.session_id
-          AND s.start_time_ns = c.started_at_ns
-        WHERE (c.provider IS NULL OR c.provider = ?1)
-          AND c.started_at_ns IS NOT NULL";
-
-    for (kind, sql) in [
-        (RowKind::Chat, chat_sql),
-        (RowKind::ToolUse, tool_sql),
-        (RowKind::AgentSession, session_sql),
-    ] {
-        for unresolved in collect_unresolved_rows(&conn, sql)? {
+    for (kind, unresolved_rows) in pending {
+        for unresolved in unresolved_rows {
             summary.rows_considered += 1;
             let candidates: Vec<Map<String, Value>> = unresolved
                 .candidates
@@ -423,12 +554,15 @@ fn provider_rebackfill_pass(
                 .filter(|(span_name, attrs)| matches_op_family(kind, span_name, attrs))
                 .map(|(_, attrs)| attrs.clone())
                 .collect();
-            match classifier.reattribute_provider(
-                kind,
-                &unresolved.session_id,
-                &unresolved.correlation_id,
-                &candidates,
-            ) {
+            match classifier
+                .reattribute_provider(
+                    kind,
+                    &unresolved.session_id,
+                    &unresolved.correlation_id,
+                    &candidates,
+                )
+                .await
+            {
                 ProviderReattribution::Upgraded => summary.upgraded += 1,
                 ProviderReattribution::Unchanged => summary.unchanged += 1,
                 ProviderReattribution::Ambiguous => summary.ambiguous += 1,
@@ -451,8 +585,8 @@ fn provider_rebackfill_pass(
 /// shared `resolve_provider_token` rule + the canonical apply/ingest helpers);
 /// the pass mints no correlation id, so a fresh instance is not required for
 /// key reproducibility — the round-2 identity fix removes that dependency.
-/// Never blocks startup; tolerates a missing/empty telemetry tier.
-pub fn run_startup_provider_rebackfill(app: &tauri::AppHandle, data_dir: &Path) {
+/// Spawned by lib.rs; tolerates a missing/empty telemetry tier.
+pub async fn run_startup_provider_rebackfill(app: &tauri::AppHandle, engine: Arc<EngineHandle>) {
     let app_store = app.state::<Arc<AppStore>>();
     if matches!(app_store.control_get(BACKFILL_PROVIDER_COMPLETED_KEY), Ok(Some(_))) {
         tracing::debug!(
@@ -465,7 +599,7 @@ pub fn run_startup_provider_rebackfill(app: &tauri::AppHandle, data_dir: &Path) 
     let rtdb = app.state::<RtdbState>();
     let classifier = IngestClassifier::new(Arc::clone(rtdb.inner()));
 
-    match provider_rebackfill_pass(app_store.inner().as_ref(), &classifier, data_dir) {
+    match provider_rebackfill_pass(app_store.inner().as_ref(), &classifier, &engine).await {
         Ok(None) => {
             // Race-free re-check (another pass latched it between the read and
             // the call) — nothing to do.
@@ -588,7 +722,9 @@ mod tests {
     use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
     use crate::infrastructure::rtdb::store::RtdbStore;
     use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
+    use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
     use crate::infrastructure::storage::span_store::SpanStore;
+    use std::path::Path;
     use tempfile::TempDir;
     use tokio::sync::mpsc::Receiver;
 
@@ -600,17 +736,20 @@ mod tests {
         rtdb: Arc<Rtdb>,
         rx: Receiver<PendingWrite>,
         store: Arc<RtdbStore>,
+        engine: Arc<EngineHandle>,
     }
 
     /// One fredo.db hosting BOTH tiers, exactly like production: the
     /// telemetry tier through the REAL `SpanStore` DDL and the canonical
     /// tier through `RtdbStore`.
-    fn make_stack() -> Stack {
+    async fn make_stack() -> Stack {
         let dir = tempfile::tempdir().expect("tempdir");
         let span_store = SpanStore::open(dir.path().to_path_buf()).expect("span store");
         span_store.ensure_schema().expect("telemetry schema");
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("rtdb store"));
-        store.ensure_schema().expect("rtdb schema");
+        let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
+        let engine = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+        let store = Arc::new(RtdbStore::open(engine.clone()).expect("rtdb store"));
+        store.ensure_schema().await.expect("rtdb schema");
         let (cache, rx) = RtdbCache::new(Arc::clone(&store));
         let rtdb = Arc::new(Rtdb::new(
             cache,
@@ -623,17 +762,18 @@ mod tests {
             rtdb,
             rx,
             store,
+            engine,
         }
     }
 
     /// Drain the write-behind queue and persist the batch — store-level
     /// assertions must see the derived rows.
-    fn persist_write_behind(stack: &mut Stack) {
+    async fn persist_write_behind(stack: &mut Stack) {
         let mut batch = Vec::new();
         while let Ok(pending) = stack.rx.try_recv() {
             batch.push(pending);
         }
-        stack.rtdb.cache().flush_pending(batch).expect("flush");
+        stack.rtdb.cache().flush_pending(batch).await.expect("flush");
     }
 
     fn raw_span(
@@ -679,9 +819,9 @@ mod tests {
 
     // ── Derivation: chat / tool / session spans → their canonical rows ──────
 
-    #[test]
-    fn backfill_derives_canonical_rows_from_telemetry_spans() {
-        let stack = make_stack();
+    #[tokio::test]
+    async fn backfill_derives_canonical_rows_from_telemetry_spans() {
+        let stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[
@@ -716,7 +856,7 @@ mod tests {
             .expect("insert spans");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        let summary = backfill_from_telemetry(stack.dir.path(), &classifier).expect("backfill");
+        let summary = backfill_from_telemetry(&stack.engine, &classifier).await.expect("backfill");
         assert_eq!(summary.spans_read, 3);
         assert_eq!(summary.chat_spans, 1);
         assert_eq!(summary.tool_spans, 1);
@@ -726,7 +866,7 @@ mod tests {
         let chat = stack
             .rtdb
             .cache()
-            .get_chat("ses_chat", "ses_chat_1")
+            .get_chat("ses_chat", "ses_chat_1").await
             .expect("read")
             .expect("chat row re-derived");
         assert_eq!(chat.state, RowState::Response, "completed span → Response");
@@ -741,7 +881,7 @@ mod tests {
         let tool = stack
             .rtdb
             .cache()
-            .get_tool_use("ses_tool", "ses_tool_1")
+            .get_tool_use("ses_tool", "ses_tool_1").await
             .expect("read")
             .expect("tool row re-derived");
         assert_eq!(tool.tool_name.as_deref(), Some("Bash"));
@@ -753,7 +893,7 @@ mod tests {
         let session = stack
             .rtdb
             .cache()
-            .get_agent_session("ses_session", "ses_session_1")
+            .get_agent_session("ses_session", "ses_session_1").await
             .expect("read")
             .expect("agent-session row re-derived");
         assert_eq!(session.agent_name.as_deref(), Some("general"));
@@ -767,9 +907,9 @@ mod tests {
 
     // ── Ordering (R-4c): (session_id, start_time_ns) replay order ───────────
 
-    #[test]
-    fn backfill_replays_in_session_start_time_order() {
-        let stack = make_stack();
+    #[tokio::test]
+    async fn backfill_replays_in_session_start_time_order() {
+        let stack = make_stack().await;
         // Insert the LATER turn first — replay must still order by start time.
         stack
             .span_store
@@ -780,12 +920,12 @@ mod tests {
             .expect("insert spans");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        backfill_from_telemetry(stack.dir.path(), &classifier).expect("backfill");
+        backfill_from_telemetry(&stack.engine, &classifier).await.expect("backfill");
 
         let turn1 = stack
             .rtdb
             .cache()
-            .get_chat("ses_ord", "ses_ord_1")
+            .get_chat("ses_ord", "ses_ord_1").await
             .expect("read")
             .expect("turn-1 row");
         assert_eq!(turn1.started_at_ns, Some(1_000_000_000), "the earlier span is turn 1");
@@ -798,7 +938,7 @@ mod tests {
         let turn2 = stack
             .rtdb
             .cache()
-            .get_chat("ses_ord", "ses_ord_2")
+            .get_chat("ses_ord", "ses_ord_2").await
             .expect("read")
             .expect("turn-2 row");
         assert_eq!(turn2.started_at_ns, Some(2_000_000_000));
@@ -811,9 +951,9 @@ mod tests {
 
     // ── Idempotency: re-run → no duplicates, seq unchanged ──────────────────
 
-    #[test]
-    fn backfill_is_idempotent_re_runs_do_not_duplicate_or_inflate_seq() {
-        let mut stack = make_stack();
+    #[tokio::test]
+    async fn backfill_is_idempotent_re_runs_do_not_duplicate_or_inflate_seq() {
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[
@@ -824,40 +964,39 @@ mod tests {
 
         // First pass (the startup backfill — fresh classifier per process).
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        backfill_from_telemetry(stack.dir.path(), &classifier).expect("first run");
-        persist_write_behind(&mut stack);
+        backfill_from_telemetry(&stack.engine, &classifier).await.expect("first run");
+        persist_write_behind(&mut stack).await;
 
         let first_row = stack
             .store
-            .get_chat_row("ses_idem", "ses_idem_1")
+            .get_chat_row("ses_idem", "ses_idem_1").await
             .expect("read")
             .expect("row persisted");
-        let counts = stack.store.row_counts().expect("counts");
+        let counts = stack.store.row_counts().await.expect("counts");
 
         // Re-run over the same corpus with a FRESH classifier (the restart
         // shape): deterministic replay order re-derives the same per-turn
         // ids and byte-identical content → every write is a no-op.
         let fresh = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        backfill_from_telemetry(stack.dir.path(), &fresh).expect("re-run");
-        persist_write_behind(&mut stack);
+        backfill_from_telemetry(&stack.engine, &fresh).await.expect("re-run");
+        persist_write_behind(&mut stack).await;
 
         assert_eq!(
-            stack.store.row_counts().expect("counts"),
+            stack.store.row_counts().await.expect("counts"),
             counts,
             "no duplicate rows after the re-run"
         );
         assert_eq!(
-            stack.store.get_chat_row("ses_idem", "ses_idem_1").expect("read"),
+            stack.store.get_chat_row("ses_idem", "ses_idem_1").await.expect("read"),
             Some(first_row),
             "stored rows are byte-identical — content-identical re-derivations were skipped (seq unchanged)"
         );
     }
 
     // ── Malformed / attribute-less spans: skip, never panic ─────────────────
-
-    #[test]
-    fn backfill_skips_malformed_spans_without_crashing() {
-        let stack = make_stack();
+    #[tokio::test]
+    async fn backfill_skips_malformed_spans_without_crashing() {
+        let stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -881,7 +1020,7 @@ mod tests {
             .expect("insert attribute-less span");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        let summary = backfill_from_telemetry(stack.dir.path(), &classifier).expect("backfill");
+        let summary = backfill_from_telemetry(&stack.engine, &classifier).await.expect("backfill");
         assert_eq!(summary.spans_read, 3);
         assert_eq!(summary.skipped_malformed, 1, "the non-JSON attributes row is skipped");
 
@@ -889,7 +1028,7 @@ mod tests {
             stack
                 .rtdb
                 .cache()
-                .get_chat("ses_ok", "ses_ok_1")
+                .get_chat("ses_ok", "ses_ok_1").await
                 .expect("read")
                 .is_some(),
             "the valid span is still derived"
@@ -898,7 +1037,7 @@ mod tests {
             stack
                 .rtdb
                 .cache()
-                .get_chat("ses_absent", "ses_absent_1")
+                .get_chat("ses_absent", "ses_absent_1").await
                 .expect("read")
                 .is_some(),
             "NULL attributes is an empty set (not malformed) — the span name \
@@ -908,12 +1047,12 @@ mod tests {
 
     // ── Empty / missing telemetry tier tolerated ────────────────────────────
 
-    #[test]
-    fn backfill_tolerates_missing_or_empty_telemetry_table() {
+    #[tokio::test]
+    async fn backfill_tolerates_missing_or_empty_telemetry_table() {
         let dir = tempfile::tempdir().expect("tempdir");
         // fredo.db with the RTDB schema but NO telemetry_spans table.
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("store"));
-        store.ensure_schema().expect("schema");
+        let store = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("store"));
+        store.ensure_schema().await.expect("schema");
         let (cache, _rx) = RtdbCache::new(Arc::clone(&store));
         let rtdb = Arc::new(Rtdb::new(
             cache,
@@ -921,21 +1060,23 @@ mod tests {
             Arc::new(FlushLoop::new(Arc::new(|_: &[RowDelivery], _: Option<&str>| {}))),
         ));
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
-        let summary = backfill_from_telemetry(dir.path(), &classifier).expect("backfill");
+        let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
+        let engine = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+        let summary = backfill_from_telemetry(&engine, &classifier).await.expect("backfill");
         assert_eq!(summary.spans_read, 0, "missing table → zero summary, no error");
 
         // Present but empty table.
-        let stack = make_stack();
+        let stack = make_stack().await;
         let classifier2 = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        let summary2 = backfill_from_telemetry(stack.dir.path(), &classifier2).expect("backfill");
+        let summary2 = backfill_from_telemetry(&stack.engine, &classifier2).await.expect("backfill");
         assert_eq!(summary2.spans_read, 0);
     }
 
     // ── Relationship compositing re-derives through the shared classifier ───
 
-    #[test]
-    fn backfill_preserves_parent_child_compositing() {
-        let stack = make_stack();
+    #[tokio::test]
+    async fn backfill_preserves_parent_child_compositing() {
+        let stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[
@@ -958,12 +1099,12 @@ mod tests {
             .expect("insert spans");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        backfill_from_telemetry(stack.dir.path(), &classifier).expect("backfill");
+        backfill_from_telemetry(&stack.engine, &classifier).await.expect("backfill");
 
         let child = stack
             .rtdb
             .cache()
-            .get_chat("ses_child", "ses_child_1")
+            .get_chat("ses_child", "ses_child_1").await
             .expect("read")
             .expect("child-keyed row");
         assert_eq!(child.prompt_tokens, Some(10));
@@ -971,7 +1112,7 @@ mod tests {
         let copied = stack
             .rtdb
             .cache()
-            .get_chat("ses_parent", "ses_child_1")
+            .get_chat("ses_parent", "ses_child_1").await
             .expect("read")
             .expect("child row re-keyed under the parent session");
         assert_eq!(copied.prompt_tokens, Some(10), "row content carried over");
@@ -1015,9 +1156,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn provider_rebackfill_runs_once_under_its_own_marker_independent_of_the_old_one() {
-        let stack = make_stack();
+    #[tokio::test]
+    async fn provider_rebackfill_runs_once_under_its_own_marker_independent_of_the_old_one() {
+        let stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1039,7 +1180,7 @@ mod tests {
             .is_none());
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        let first = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let first = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("the new pass runs even though the OLD marker is latched");
         assert_eq!(first.spans_read, 1);
@@ -1059,18 +1200,18 @@ mod tests {
         );
 
         // Idempotent: the second call is a no-op.
-        let second = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let second = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass");
         assert!(second.is_none(), "the latched marker makes a re-run a no-op");
     }
 
-    #[test]
-    fn provider_rebackfill_is_a_no_op_without_spans_and_does_not_latch() {
+    #[tokio::test]
+    async fn provider_rebackfill_is_a_no_op_without_spans_and_does_not_latch() {
         // Present-but-empty telemetry tier.
-        let stack = make_stack();
+        let stack = make_stack().await;
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.spans_read, 0);
@@ -1084,8 +1225,8 @@ mod tests {
 
         // Missing telemetry_spans table entirely.
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("store"));
-        store.ensure_schema().expect("schema");
+        let store = Arc::new(RtdbStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("store"));
+        store.ensure_schema().await.expect("schema");
         let (cache, _rx) = RtdbCache::new(Arc::clone(&store));
         let rtdb = Arc::new(Rtdb::new(
             cache,
@@ -1094,7 +1235,9 @@ mod tests {
         ));
         let app_store = AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
-        let summary = provider_rebackfill_pass(&app_store, &classifier, dir.path())
+        let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
+        let engine = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.spans_read, 0, "missing table → zero summary, no error");
@@ -1191,12 +1334,12 @@ mod tests {
             .expect("clear marker");
     }
 
-    #[test]
-    fn provider_reattribution_upgrades_a_pre_existing_row_whose_key_a_replay_would_not_re_mint() {
+    #[tokio::test]
+    async fn provider_reattribution_upgrades_a_pre_existing_row_whose_key_a_replay_would_not_re_mint() {
         // The round-1 regression shape: the persisted key is NOT the `_1` a
         // fresh corpus replay would mint — it is the historical key the live
         // process wrote. The corrected pass must upgrade it IN PLACE.
-        let mut stack = make_stack();
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1209,12 +1352,12 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_nf", "ses_nf_7", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_nf", "ses_nf_7", "unknown")]).await
             .expect("seed pre-existing migrated row");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.rows_considered, 1);
@@ -1222,10 +1365,10 @@ mod tests {
         assert_eq!(summary.ambiguous, 0);
         assert_eq!(summary.no_source, 0);
 
-        persist_write_behind(&mut stack);
+        persist_write_behind(&mut stack).await;
         let row = stack
             .store
-            .get_chat_row("ses_nf", "ses_nf_7")
+            .get_chat_row("ses_nf", "ses_nf_7").await
             .expect("read")
             .expect("row still present");
         assert_eq!(
@@ -1235,19 +1378,19 @@ mod tests {
         );
         assert_eq!(row.seq, 2, "the upgrade is a real content write");
         assert_eq!(
-            stack.store.row_counts().expect("counts"),
+            stack.store.row_counts().await.expect("counts"),
             (1, 0, 0),
             "the pass creates NO new rows"
         );
         assert!(
-            stack.store.get_chat_row("ses_nf", "ses_nf_1").expect("read").is_none(),
+            stack.store.get_chat_row("ses_nf", "ses_nf_1").await.expect("read").is_none(),
             "the pass must never mint a correlation key (round-1 parallel-row regression)"
         );
     }
 
-    #[test]
-    fn provider_reattribution_upgrades_each_row_kind_in_place() {
-        let mut stack = make_stack();
+    #[tokio::test]
+    async fn provider_reattribution_upgrades_each_row_kind_in_place() {
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[
@@ -1276,11 +1419,11 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_kc", "ses_kc_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_kc", "ses_kc_1", "unknown")]).await
             .expect("seed chat");
         stack
             .store
-            .upsert_tool_use_rows(&[pre_existing_tool_row("ses_kt", "ses_kt_1", "unknown", 2_000_000_000)])
+            .upsert_tool_use_rows(&[pre_existing_tool_row("ses_kt", "ses_kt_1", "unknown", 2_000_000_000)]).await
             .expect("seed tool");
         stack
             .store
@@ -1289,39 +1432,39 @@ mod tests {
                 "ses_ks_1",
                 "unknown",
                 3_000_000_000,
-            )])
+            )]).await
             .expect("seed session");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.rows_considered, 3);
         assert_eq!(summary.upgraded, 3, "one arm per row kind upgrades in place");
 
-        persist_write_behind(&mut stack);
+        persist_write_behind(&mut stack).await;
         assert_eq!(
-            stack.rtdb.cache().get_chat("ses_kc", "ses_kc_1").expect("read").expect("row").provider.as_deref(),
+            stack.rtdb.cache().get_chat("ses_kc", "ses_kc_1").await.expect("read").expect("row").provider.as_deref(),
             Some("open_code")
         );
         assert_eq!(
-            stack.rtdb.cache().get_tool_use("ses_kt", "ses_kt_1").expect("read").expect("row").provider.as_deref(),
+            stack.rtdb.cache().get_tool_use("ses_kt", "ses_kt_1").await.expect("read").expect("row").provider.as_deref(),
             Some("open_code")
         );
         assert_eq!(
-            stack.rtdb.cache().get_agent_session("ses_ks", "ses_ks_1").expect("read").expect("row").provider.as_deref(),
+            stack.rtdb.cache().get_agent_session("ses_ks", "ses_ks_1").await.expect("read").expect("row").provider.as_deref(),
             Some("open_code")
         );
-        assert_eq!(stack.store.row_counts().expect("counts"), (1, 1, 1));
+        assert_eq!(stack.store.row_counts().await.expect("counts"), (1, 1, 1));
     }
 
-    #[test]
-    fn provider_reattribution_leaves_rows_without_a_matching_span_at_the_fallback() {
+    #[tokio::test]
+    async fn provider_reattribution_leaves_rows_without_a_matching_span_at_the_fallback() {
         // A CLI-originated row (`started_at_ns IS NULL`) and a row whose
         // `started_at_ns` has no span: both are outside the join, so they stay
         // the documented fallback — never NULL/empty.
-        let mut stack = make_stack();
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1338,31 +1481,31 @@ mod tests {
         cli_row.started_at_ns = None;
         stack
             .store
-            .upsert_chat_rows(&[no_span, cli_row])
+            .upsert_chat_rows(&[no_span, cli_row]).await
             .expect("seed");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.spans_read, 1, "an unrelated span still latches the marker");
         assert_eq!(summary.rows_considered, 0, "rows with no matched span are not enumerated");
 
-        persist_write_behind(&mut stack);
-        let row = stack.store.get_chat_row("ses_ns", "ses_ns_1").expect("read").expect("row");
+        persist_write_behind(&mut stack).await;
+        let row = stack.store.get_chat_row("ses_ns", "ses_ns_1").await.expect("read").expect("row");
         assert_eq!(row.provider.as_deref(), Some("unknown"));
         assert_eq!(row.seq, 1, "no write for an unmatched row");
-        let cli = stack.store.get_chat_row("ses_cli", "ses_cli").expect("read").expect("row");
+        let cli = stack.store.get_chat_row("ses_cli", "ses_cli").await.expect("read").expect("row");
         assert_eq!(cli.provider.as_deref(), Some("unknown"), "never NULL/empty");
-        assert_eq!(cli.seq, 1);
+   assert_eq!(cli.seq, 1);
     }
 
-    #[test]
-    fn provider_reattribution_skips_an_ambiguous_start_time_match() {
+    #[tokio::test]
+    async fn provider_reattribution_skips_an_ambiguous_start_time_match() {
         // Two candidate spans share `(session, started_at_ns)` and disagree on
         // the resource identity — nothing may be written (never guess).
-        let mut stack = make_stack();
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[
@@ -1384,30 +1527,30 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_amb", "ses_amb_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_amb", "ses_amb_1", "unknown")]).await
             .expect("seed");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.rows_considered, 1);
         assert_eq!(summary.ambiguous, 1);
         assert_eq!(summary.upgraded, 0);
 
-        persist_write_behind(&mut stack);
-        let row = stack.store.get_chat_row("ses_amb", "ses_amb_1").expect("read").expect("row");
+        persist_write_behind(&mut stack).await;
+        let row = stack.store.get_chat_row("ses_amb", "ses_amb_1").await.expect("read").expect("row");
         assert_eq!(row.provider.as_deref(), Some("unknown"));
         assert_eq!(row.seq, 1, "an ambiguous match writes nothing");
     }
 
-    #[test]
-    fn provider_reattribution_upgrades_a_composited_copy_from_the_child_session() {
+    #[tokio::test]
+    async fn provider_reattribution_upgrades_a_composited_copy_from_the_child_session() {
         // A parent-keyed composited copy carries `composited_child_session_id`;
         // the pass matches it to the CHILD session's span and upgrades it in
         // place under the PARENT key.
-        let mut stack = make_stack();
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1420,31 +1563,31 @@ mod tests {
             .expect("insert spans");
         let mut copy = pre_existing_chat_row("ses_parent", "ses_child_1", "unknown");
         copy.composited_child_session_id = Some("ses_child".to_string());
-        stack.store.upsert_chat_rows(&[copy]).expect("seed composited copy");
+        stack.store.upsert_chat_rows(&[copy]).await.expect("seed composited copy");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(summary.upgraded, 1);
 
-        persist_write_behind(&mut stack);
+        persist_write_behind(&mut stack).await;
         let row = stack
             .store
-            .get_chat_row("ses_parent", "ses_child_1")
+            .get_chat_row("ses_parent", "ses_child_1").await
             .expect("read")
             .expect("row");
         assert_eq!(row.provider.as_deref(), Some("open_code"));
         assert_eq!(row.composited_child_session_id.as_deref(), Some("ses_child"));
-        assert_eq!(stack.store.row_counts().expect("counts"), (1, 0, 0));
+        assert_eq!(stack.store.row_counts().await.expect("counts"), (1, 0, 0));
     }
 
-    #[test]
-    fn provider_reattribution_runs_when_only_the_v1_marker_is_latched() {
+    #[tokio::test]
+    async fn provider_reattribution_runs_when_only_the_v1_marker_is_latched() {
         // The superseded round-1 marker key stays ignored: the corrected `.v2`
         // pass must still run (and upgrade), latching only its own key.
-        let stack = make_stack();
+        let stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1457,7 +1600,7 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_v1", "ses_v1_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_v1", "ses_v1_1", "unknown")]).await
             .expect("seed");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         app_store
@@ -1465,7 +1608,7 @@ mod tests {
             .expect("latch the superseded v1 marker");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let summary = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let summary = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("the corrected pass runs even though the v1 marker is latched");
         assert_eq!(summary.upgraded, 1);
@@ -1479,16 +1622,16 @@ mod tests {
             "the superseded v1 value is never rewritten"
         );
         assert!(
-            provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+            provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
                 .expect("pass")
                 .is_none(),
             "the latched .v2 marker makes a re-run a no-op"
         );
     }
 
-    #[test]
-    fn provider_reattribution_is_idempotent() {
-        let mut stack = make_stack();
+    #[tokio::test]
+    async fn provider_reattribution_is_idempotent() {
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1501,30 +1644,30 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_idem", "ses_idem_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_idem", "ses_idem_1", "unknown")]).await
             .expect("seed");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let first = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let first = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(first.upgraded, 1);
-        persist_write_behind(&mut stack);
-        let after_first = stack.store.row_counts().expect("counts");
-        let row = stack.store.get_chat_row("ses_idem", "ses_idem_1").expect("read").expect("row");
+        persist_write_behind(&mut stack).await;
+        let after_first = stack.store.row_counts().await.expect("counts");
+        let row = stack.store.get_chat_row("ses_idem", "ses_idem_1").await.expect("read").expect("row");
         assert_eq!(row.seq, 2);
 
         // Force the pass to run again (marker cleared — the fixture-script lever).
         clear_marker(stack.dir.path(), BACKFILL_PROVIDER_COMPLETED_KEY);
-        let second = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let second = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(second.rows_considered, 0, "the upgraded row is no longer unresolved");
         assert_eq!(second.upgraded, 0);
-        persist_write_behind(&mut stack);
-        assert_eq!(stack.store.row_counts().expect("counts"), after_first, "no new rows");
-        let row2 = stack.store.get_chat_row("ses_idem", "ses_idem_1").expect("read").expect("row");
+        persist_write_behind(&mut stack).await;
+        assert_eq!(stack.store.row_counts().await.expect("counts"), after_first, "no new rows");
+        let row2 = stack.store.get_chat_row("ses_idem", "ses_idem_1").await.expect("read").expect("row");
         assert_eq!(row2, row, "re-running writes nothing — no seq bump");
 
         // Direct re-attribution with the same candidate is a content no-op.
@@ -1534,15 +1677,15 @@ mod tests {
                 "ses_idem",
                 "ses_idem_1",
                 &[service_attrs("fredo-opencode-plugin")],
-            ),
+            ).await,
             ProviderReattribution::Unchanged,
             "an already-resolved token is never restamped"
         );
     }
 
-    #[test]
-    fn provider_reattribution_never_writes_telemetry_spans() {
-        let stack = make_stack();
+    #[tokio::test]
+    async fn provider_reattribution_never_writes_telemetry_spans() {
+        let stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1555,13 +1698,13 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_ro", "ses_ro_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_ro", "ses_ro_1", "unknown")]).await
             .expect("seed");
         let spans_before = stack.span_store.stats().expect("stats").span_count;
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
 
@@ -1572,8 +1715,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn provider_rebackfill_upgrades_a_pre_existing_migration_fallback() {
+    #[tokio::test]
+    async fn provider_rebackfill_upgrades_a_pre_existing_migration_fallback() {
         // The #2932 migration appends `provider TEXT NOT NULL DEFAULT 'unknown'`,
         // so a pre-existing row reads back as a REAL `Some("unknown")`. The
         // bound `provider` merge rule is `MergeRule::KeepFirstAttributed`: the
@@ -1581,7 +1724,7 @@ mod tests {
         // pass's re-derived resolved token upgrades the row exactly once
         // (R6) — and the classifier's content-no-op gate now sees a real
         // content change, so the row IS written (seq advances).
-        let mut stack = make_stack();
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1594,21 +1737,21 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_pre", "ses_pre_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_pre", "ses_pre_1", "unknown")]).await
             .expect("seed pre-existing migrated row");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
 
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
-        provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
 
         // The row was actually written: the re-derivation produced a real
         // content change (provider in the diff) and the durable seq advanced.
-        persist_write_behind(&mut stack);
+        persist_write_behind(&mut stack).await;
         let row = stack
             .store
-            .get_chat_row("ses_pre", "ses_pre_1")
+            .get_chat_row("ses_pre", "ses_pre_1").await
             .expect("read")
             .expect("row still present");
         assert_eq!(
@@ -1621,19 +1764,19 @@ mod tests {
             "R6: the upgrade is a real write — the durable seq advanced past the seeded 1"
         );
         assert_eq!(
-            stack.store.row_counts().expect("counts"),
+            stack.store.row_counts().await.expect("counts"),
             (1, 0, 0),
             "R8: the pass creates no rows on upgrade"
         );
     }
 
-    #[test]
-    fn provider_rebackfill_fallback_to_fallback_replay_is_a_no_op() {
+    #[tokio::test]
+    async fn provider_rebackfill_fallback_to_fallback_replay_is_a_no_op() {
         // R7 non-regression: a span whose resource lacks `service.name`
         // re-derives the documented fallback `unknown`; a fallback→fallback
         // attribution is a no-op (row unchanged, no seq bump) and the stored
         // value is never NULL/empty.
-        let mut stack = make_stack();
+        let mut stack = make_stack().await;
         stack
             .span_store
             .insert_raw_spans(&[raw_span(
@@ -1648,22 +1791,22 @@ mod tests {
             .expect("insert spans");
         stack
             .store
-            .upsert_chat_rows(&[pre_existing_chat_row("ses_r7", "ses_r7_1", "unknown")])
+            .upsert_chat_rows(&[pre_existing_chat_row("ses_r7", "ses_r7_1", "unknown")]).await
             .expect("seed pre-existing migrated row");
         let app_store = AppStore::open_sqlite_for_tests(stack.dir.path().to_path_buf()).expect("app store");
         let classifier = Arc::new(IngestClassifier::new(Arc::clone(&stack.rtdb)));
 
-        let first = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let first = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(first.rows_considered, 1);
         assert_eq!(first.upgraded, 0, "a fallback→fallback attribution writes nothing");
         assert_eq!(first.unchanged, 1);
 
-        persist_write_behind(&mut stack);
+        persist_write_behind(&mut stack).await;
         let before = stack
             .store
-            .get_chat_row("ses_r7", "ses_r7_1")
+            .get_chat_row("ses_r7", "ses_r7_1").await
             .expect("read")
             .expect("row present");
         assert_eq!(
@@ -1680,15 +1823,15 @@ mod tests {
         // attribution is still a no-op — the row is byte-identical and the
         // durable seq is unchanged.
         clear_marker(stack.dir.path(), BACKFILL_PROVIDER_COMPLETED_KEY);
-        let second = provider_rebackfill_pass(&app_store, &classifier, stack.dir.path())
+        let second = provider_rebackfill_pass(&app_store, &classifier, &stack.engine).await
             .expect("pass")
             .expect("pass runs");
         assert_eq!(second.upgraded, 0);
-        persist_write_behind(&mut stack);
+        persist_write_behind(&mut stack).await;
 
         let after = stack
             .store
-            .get_chat_row("ses_r7", "ses_r7_1")
+            .get_chat_row("ses_r7", "ses_r7_1").await
             .expect("read")
             .expect("row still present");
         assert_eq!(

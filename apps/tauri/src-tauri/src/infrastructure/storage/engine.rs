@@ -1218,8 +1218,8 @@ mod tests {
 
     // -- ST-1: engine-selected read-only canonical seam -----------------------
 
-    #[test]
-    fn canonical_reader_and_pg_pool_follow_the_active_engine() {
+    #[tokio::test]
+    async fn canonical_reader_and_pg_pool_follow_the_active_engine() {
         let dir = tempfile::tempdir().unwrap();
         let sqlite = make_sqlite_engine(dir.path());
         let engine = StoreEngine::Sqlite(sqlite.clone());

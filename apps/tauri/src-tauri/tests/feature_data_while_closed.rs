@@ -57,10 +57,11 @@ struct CompositeUpsertObserver {
     watches: Arc<WatchRegistry>,
 }
 
+#[async_trait::async_trait]
 impl RowUpsertObserver for CompositeUpsertObserver {
-    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
+    async fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
         self.watches.on_canonical_row(row, changed_fields);
-        self.engine.on_row_upsert(row, changed_fields);
+        self.engine.on_row_upsert(row, changed_fields).await;
     }
 }
 
@@ -166,15 +167,15 @@ fn declared_version(meta: &FeatureDataStore) -> i64 {
 }
 
 /// R-4.2 — the end-to-end proof: no watch, no read, window closed.
-#[test]
-fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open() {
+#[tokio::test]
+async fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open() {
     let dir = tempfile::tempdir().expect("tempdir");
 
     // ── Stores (the same set lib.rs opens over one fredo.db) ────────────────
     let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("shared engine");
     let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
-    let rtdb_store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("rtdb store"));
-    rtdb_store.ensure_schema().expect("rtdb schema");
+    let rtdb_store = Arc::new(RtdbStore::open(engine_handle.clone()).expect("rtdb store"));
+    rtdb_store.ensure_schema().await.expect("rtdb schema");
     let meta = Arc::new(FeatureDataStore::open(engine_handle.clone()).expect("feature data store"));
     meta.ensure_schema().expect("feature data schema");
     let tables = Arc::new(FeatureStore::open(engine_handle.clone()).expect("feature store"));
@@ -228,7 +229,7 @@ fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open
             "control",
         )),
         &["userMessage".to_string()],
-    )
+    ).await
     .expect("ingest the control session with no observer installed");
     assert!(
         declared_rows(&tables).is_empty(),
@@ -250,7 +251,7 @@ fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open
             "hello from a closed window",
         )),
         &["state".to_string(), "userMessage".to_string()],
-    )
+    ).await
     .expect("ingest the first canonical chat row");
 
     let rows = declared_rows(&tables);
@@ -276,7 +277,7 @@ fn canonical_ingest_updates_the_declared_sessions_row_with_no_watch_or_read_open
     rtdb.ingest_row_upsert(
         IngestRow::ToolUse(tool_row(SESSION_ID, "ses_st8_2", "2026-09-18T00:00:03+00:00")),
         &["toolName".to_string()],
-    )
+    ).await
     .expect("ingest a canonical user-requested task row");
 
     let rows = declared_rows(&tables);
