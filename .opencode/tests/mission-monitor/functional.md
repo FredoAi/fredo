@@ -432,3 +432,16 @@
     migrated store adds no round-trip or full-history scan to the list path.
   - Regression risk (#523): a `useEffect`/`useMemo` dep on `.length` or a newly-created object; a new
     synchronous scan introduced by the store swap.
+
+## Round 1 — 2026-10-01, `spec/2976 @ c83a0b62` — **F-54 PASS**
+
+PG-selected boot (`FREDO_STORAGE_ENGINE=postgres`). Live OpenCode session driven through **Terminal**
+(`spawn_terminal_session` + `write_pty_input` with trailing `\r`), session `ses_f076afb13ffepyVcchvL1Onuya`;
+Copilot session via the committed split-turn producer
+(`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-turn-split.fixture.json`),
+session `e2e-copilotsplit2933`. Both listed as distinct entries (`◈OpenCode` / `◆GitHub Copilot`); selecting
+each renders chat node + `── TOOLS (N) ──` + RESPONSE + tokens + graph. Same-instant cross-check: Copilot node
+INPUT 10,241 / OUTPUT 14 = PG `chat_rows` `_4`; tool `view` 10 ms = PG `tool_use_rows` `_3.duration_ms`;
+OpenCode session bar TOTAL 52,261 = PG `agent_session_rows` `_4.total_tokens`; `pg_stat_activity` client
+backends 7 ≤ 8. Persistence re-verified after a full restart. Console clean (only the pre-existing
+`motion() is deprecated` WARN + `auto-fit` DEBUG). **R-61..R-65 / N-27 PASS.**
