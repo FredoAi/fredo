@@ -398,32 +398,24 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                 // SQLite and the next boot re-runs the idempotent
                                 // read-only export. The marker is written inside
                                 // `run_pre_install` ONLY on a fully parity-clean run.
+                                //
+                                // R-3.5 (G-123): the EXCLUSIVE migration barrier is
+                                // acquired HERE and held across `install_postgres`, so
+                                // the quiesced window spans copy + parity + the engine
+                                // flip — no writer can slip a SQLite write between the
+                                // copy and the install (which would be lost on the
+                                // flip). `run_pre_install` never re-acquires it.
                                 let source_db = data_dir.join("fredo.db");
                                 let migration_dir = resolve_migration_dir(&data_dir);
                                 let gate = engine.migration_gate();
                                 let migration_started = std::time::Instant::now();
-                                match run_pre_install(
-                                    &source_db,
-                                    &migration_dir,
-                                    &pg.pool,
-                                    &gate,
-                                )
-                                .await
-                                {
-                                    Ok(outcome) => {
-                                        engine.record_migration_outcome(outcome);
-                                        engine.install_postgres(pg);
-                                        tracing::info!(
-                                            target: "fredo::pg_supervisor",
-                                            "storage engine installed: postgres"
-                                        );
-                                    }
+                                match gate.migration_enter().await {
                                     Err(error) => {
                                         let reason = format!("[migration] {error:#}");
                                         tracing::error!(
                                             target: "fredo::pg_supervisor",
                                             reason = %reason,
-                                            "data migration failed; storage engine stays on SQLite (fail-closed)"
+                                            "could not acquire the migration barrier; storage engine stays on SQLite (fail-closed)"
                                         );
                                         engine.record_migration_outcome(MigrationOutcome {
                                             status: MigrationStatus::Failed,
@@ -433,7 +425,47 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                         });
                                         engine.set_fallback_reason(reason);
                                     }
-                                }
+                                    Ok(guard) => {
+                                        match run_pre_install(
+                                            &source_db,
+                                            &migration_dir,
+                                            &pg.pool,
+                                            &guard,
+                                        )
+                                        .await
+                                        {
+                                            Ok(outcome) => {
+                                                engine.record_migration_outcome(outcome);
+                                                // Still under the barrier: the install
+                                                // is the final step of the window.
+                                                engine.install_postgres(pg);
+                                                tracing::info!(
+                                                    target: "fredo::pg_supervisor",
+                                                    "storage engine installed: postgres"
+                                                );
+                                            }
+                                            Err(error) => {
+                                                let reason = format!("[migration] {error:#}");
+                                                tracing::error!(
+                                                    target: "fredo::pg_supervisor",
+                                                    reason = %reason,
+                                                    "data migration failed; storage engine stays on SQLite (fail-closed)"
+                                                );
+                                                engine.record_migration_outcome(MigrationOutcome {
+                                                    status: MigrationStatus::Failed,
+                                                    tables: Vec::new(),
+                                                    snapshot: None,
+                                                    elapsed_ms: migration_started
+                                                        .elapsed()
+                                                        .as_millis(),
+                                                });
+                                                engine.set_fallback_reason(reason);
+                                            }
+                                        }
+                                        // Release the barrier only AFTER the install.
+                                        drop(guard);
+                                    }
+                                };
                             }
                             Err(error) => {
                                 let reason = format!("[pool:schemaInit] {error:#}");

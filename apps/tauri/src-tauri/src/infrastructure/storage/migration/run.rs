@@ -8,7 +8,9 @@
 //!
 //! Ordering contract:
 //! 1. read the completion marker from the candidate pool — present ⇒ `Skipped`;
-//! 2. take the EXCLUSIVE migration gate (bounded by [`GATE_WAIT_BOUND`]);
+//! 2. the caller holds the EXCLUSIVE migration gate (bounded by
+//!    [`GATE_WAIT_BOUND`]) from BEFORE this call THROUGH `install_postgres`
+//!    (R-3.5: the barrier spans copy + parity + engine install);
 //! 3. snapshot `fredo.db` while writers are quiesced;
 //! 4. copy + parity-gate every source table from the read-only snapshot;
 //! 5. write the marker ONLY after a fully parity-clean run.
@@ -24,7 +26,7 @@ use sqlx::PgPool;
 use crate::infrastructure::storage::engine::{quote_ident, StorageEngineState};
 
 use super::copy::copy_table_with_fault;
-use super::gate::MigrationGate;
+use super::gate::MigrationGuard;
 use super::snapshot::{open_snapshot_read_only, take_snapshot_with_fault};
 use super::tables::{enumerate_tables, TableSpec};
 use super::{
@@ -58,16 +60,23 @@ impl Default for MigrationStatusView {
 }
 
 /// Copy every physical table of `source_db` into the candidate `pool`, gated by
-/// the per-table parity check and the exclusive `gate`.
+/// the per-table parity check.
 ///
 /// `source_db` is the path to `fredo.db`; `migration_dir` receives the single
 /// pre-cutover snapshot. A present completion marker short-circuits to
 /// [`MigrationStatus::Skipped`].
+///
+/// **R-3.5 (G-123):** the caller MUST hold the exclusive migration barrier
+/// (`guard`) from BEFORE this call through `install_postgres` — this function
+/// never acquires or releases it, so the copy, the parity gate, AND the engine
+/// install all sit inside ONE quiesced window. The held `guard` is accepted (not
+/// re-acquired: an exclusive lock is not re-entrant) purely to make the hold
+/// scope explicit at the call site.
 pub async fn run_pre_install(
     source_db: &Path,
     migration_dir: &Path,
     pool: &PgPool,
-    gate: &Arc<MigrationGate>,
+    _guard: &MigrationGuard<'_>,
 ) -> Result<MigrationOutcome> {
     let started = Instant::now();
 
@@ -86,14 +95,9 @@ pub async fn run_pre_install(
         });
     }
 
-    // 2. Exclusive barrier, held across snapshot → copy → parity. The acquire is
-    //    bounded separately from (and more loosely than) the migration leg, so a
-    //    writer can wait out a full leg before giving up.
-    let _guard = gate.migration_enter().await?;
-
-    // 3-5. The whole leg under the wall-clock bound (G-263). The G-275 fault
+    // 2-5. The whole leg under the wall-clock bound (G-263). The G-275 fault
     //      seam is read ONCE here; unset ⇒ `None` ⇒ the default path is
-    //      byte-identical.
+    //      byte-identical. The exclusive barrier is held by the caller.
     let fault = current_migration_fault();
     match tokio::time::timeout(
         MIGRATION_BOUND,
@@ -208,6 +212,7 @@ pub async fn migration_status(app: tauri::AppHandle) -> MigrationStatusView {
 mod tests {
     use super::*;
     use crate::infrastructure::storage::migration::snapshot::SNAPSHOT_FILENAME;
+    use crate::infrastructure::storage::migration::MigrationGate;
     use std::future::Future;
     use std::path::Path;
 
@@ -221,8 +226,10 @@ mod tests {
             .connect_lazy("postgres://postgres:pw@127.0.0.1:1/none")
             .expect("lazy pool should build without connecting");
         let gate = MigrationGate::new();
+        // The caller holds the exclusive barrier (R-3.5) and passes it in.
+        let guard = gate.migration_enter().await.unwrap();
         let dir = Path::new(".");
-        assert_send(run_pre_install(dir, dir, &pool, &gate));
+        assert_send(run_pre_install(dir, dir, &pool, &guard));
     }
 
     /// A lazily-connected pool that never dials a live server.

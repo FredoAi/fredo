@@ -38,6 +38,7 @@ use tauri::Manager;
 use crate::infrastructure::rtdb::commands::RtdbState;
 use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
+use crate::infrastructure::storage::migration::MigrationGate;
 use crate::infrastructure::storage::AppStore;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -462,9 +463,14 @@ impl RtdbCache {
 /// Dedicated write-behind task: drains the bounded queue in ~30 ms batches and
 /// runs retention pruning on a 60-minute interval (knobs re-read each cycle).
 /// Spawned by lib.rs via `tauri::async_runtime::spawn`.
+///
+/// Spec #2977 ST-4: every batch flush quiesces against the exclusive migration
+/// barrier when one is installed, so no RTDB storage write can land while the
+/// migration window is open. `None` (unit tests) leaves the task ungated.
 pub async fn run_writer_task(
     app: tauri::AppHandle,
     mut rx: tokio::sync::mpsc::Receiver<PendingWrite>,
+    gate: Option<Arc<MigrationGate>>,
 ) {
     let mut last_prune = tokio::time::Instant::now();
     loop {
@@ -477,16 +483,19 @@ pub async fn run_writer_task(
                 while let Ok(pending) = rx.try_recv() {
                     batch.push(pending);
                 }
-                if let Some(cache) = app.try_state::<Arc<RtdbCache>>() {
-                    let count = batch.len();
-                    if let Err(e) = cache.flush_pending(batch).await {
-                        tracing::error!(
-                            target: "fredo::rtdb",
-                            error = %e,
-                            count,
-                            "rtdb write-behind batch flush failed — in-memory rows unaffected"
-                        );
-                    }
+                match gate.as_ref() {
+                    Some(gate) => match gate.writer_enter().await {
+                        Ok(_guard) => flush_rtdb_batch(&app, batch).await,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "fredo::rtdb",
+                                error = %error,
+                                count = batch.len(),
+                                "rtdb write-behind batch shed: migration barrier held past its bound"
+                            );
+                        }
+                    },
+                    None => flush_rtdb_batch(&app, batch).await,
                 }
             }
             Ok(None) => break,  // channel closed — all senders dropped
@@ -494,8 +503,23 @@ pub async fn run_writer_task(
         }
 
         if last_prune.elapsed() >= WRITER_PRUNE_INTERVAL {
-            prune_with_knobs(&app).await;
+            prune_with_knobs(&app, gate.as_ref()).await;
             last_prune = tokio::time::Instant::now();
+        }
+    }
+}
+
+/// Flush one drained batch through the RTDB cache (storage write).
+async fn flush_rtdb_batch(app: &tauri::AppHandle, batch: Vec<PendingWrite>) {
+    if let Some(cache) = app.try_state::<Arc<RtdbCache>>() {
+        let count = batch.len();
+        if let Err(e) = cache.flush_pending(batch).await {
+            tracing::error!(
+                target: "fredo::rtdb",
+                error = %e,
+                count,
+                "rtdb write-behind batch flush failed — in-memory rows unaffected"
+            );
         }
     }
 }
@@ -503,7 +527,24 @@ pub async fn run_writer_task(
 /// Run one prune cycle using the current AppStore knob values. Since P2.3,
 /// every eviction is routed through the RTDB orchestrator (`Rtdb`, when
 /// running) as a `kind: remove` delivery to matching subscribers — R-2d.
-pub async fn prune_with_knobs(app: &tauri::AppHandle) {
+///
+/// Spec #2977 ST-4: quiesces against the exclusive migration barrier when one is
+/// installed; on timeout the prune is shed.
+pub async fn prune_with_knobs(app: &tauri::AppHandle, gate: Option<&Arc<MigrationGate>>) {
+    let _guard = match gate {
+        Some(gate) => match gate.writer_enter().await {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                tracing::warn!(
+                    target: "fredo::rtdb",
+                    error = %error,
+                    "rtdb prune shed: migration barrier held past its bound"
+                );
+                return;
+            }
+        },
+        None => None,
+    };
     let Some(cache) = app.try_state::<Arc<RtdbCache>>() else {
         return;
     };

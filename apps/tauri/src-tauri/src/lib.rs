@@ -46,6 +46,7 @@ use infrastructure::storage::engine::{
     select_engine, EngineHandle, SqliteEngine, StorageEngineState, StoreEngine,
 };
 use infrastructure::storage::feature_store::{self, FeatureStore};
+use infrastructure::storage::migration::MigrationGate;
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
 use infrastructure::telemetry::metrics_collector::{MetricCollector, SpanStoreMetricsExt};
@@ -89,7 +90,24 @@ impl RowUpsertObserver for FeatureDataUpsertObserver {
 /// One declared-table retention prune cycle; every eviction fans out into the
 /// watch registry as a `remove` notification (the function itself returns the
 /// evictions and emits nothing).
-fn prune_feature_data(app: &tauri::AppHandle) {
+///
+/// Spec #2977 ST-4: quiesces against the exclusive migration barrier when one is
+/// installed; on timeout the prune is shed (the next cycle retries).
+async fn prune_feature_data(app: &tauri::AppHandle, gate: Option<&Arc<MigrationGate>>) {
+    let _guard = match gate {
+        Some(gate) => match gate.writer_enter().await {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                tracing::warn!(
+                    target: "fredo::feature_data",
+                    error = %error,
+                    "declared retention prune shed: migration barrier held past its bound"
+                );
+                return;
+            }
+        },
+        None => None,
+    };
     let Some(state) = app.try_state::<Arc<FeatureDataState>>() else {
         return;
     };
@@ -171,6 +189,14 @@ pub fn run() {
             storage_state.register_slice3_pg_schema_inits();
             app.manage(storage_state);
 
+            // Spec #2977 ST-4: the ONE shared migration barrier, cloned into
+            // every storage-write chokepoint below (the RTDB writer task, the
+            // span/metrics/log flush tasks, the watch flush, the prunes, the
+            // feature-data backfill) and installed onto the `FeatureStore` for
+            // the terminal persistence writes. The supervisor's migration leg
+            // takes the exclusive side of this SAME gate.
+            let migration_gate = app.state::<Arc<StorageEngineState>>().migration_gate();
+
             // -- SQLite settings store (Spec #2975 ST-3) -----------------------
             // The KV store sits ON the shared handle: the async data plane
             // (`get`/`set`) is engine-selected, while the synchronous control
@@ -198,6 +224,9 @@ pub fn run() {
             let feature_store = Arc::new(
                 FeatureStore::open(engine_handle.clone()).expect("Failed to open FeatureStore"),
             );
+            // Spec #2977 ST-4: the terminal persistence writes quiesce through
+            // the shared migration barrier installed here.
+            feature_store.install_migration_gate(migration_gate.clone());
             app.manage(feature_store.clone());
 
             // -- Terminal persisted session records (Spec #2935 ST-2) ----------
@@ -336,10 +365,24 @@ pub fn run() {
 
             // REQ-6: Background flush every 1 second (5-second idle timeout).
             let flush_handle = app.handle().clone();
+            let flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
+                    // Spec #2977 ST-4: quiesce the storage flush against the
+                    // exclusive migration barrier.
+                    let _guard = match flush_gate.writer_enter().await {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "fredo::telemetry",
+                                error = %error,
+                                "span flush shed: migration barrier held past its bound"
+                            );
+                            continue;
+                        }
+                    };
                     let collector = flush_handle.state::<Arc<SpanCollector>>();
                     let flushed = collector.flush_if_needed().await;
                     if flushed > 0 {
@@ -350,10 +393,24 @@ pub fn run() {
 
             // REQ-17: Background metrics flush every 1 second.
             let metrics_flush_handle = app.handle().clone();
+            let metrics_flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
+                    // Spec #2977 ST-4: quiesce the storage flush against the
+                    // exclusive migration barrier.
+                    let _guard = match metrics_flush_gate.writer_enter().await {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "fredo::telemetry",
+                                error = %error,
+                                "metrics flush shed: migration barrier held past its bound"
+                            );
+                            continue;
+                        }
+                    };
                     let mc = metrics_flush_handle.state::<Arc<MetricCollector>>();
                     let flushed = mc.flush_if_needed().await;
                     if flushed > 0 {
@@ -364,10 +421,24 @@ pub fn run() {
 
             // REQ-7: Background log flush every 1 second.
             let log_flush_handle = app.handle().clone();
+            let log_flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
+                    // Spec #2977 ST-4: quiesce the storage flush against the
+                    // exclusive migration barrier.
+                    let _guard = match log_flush_gate.writer_enter().await {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "fredo::telemetry",
+                                error = %error,
+                                "log flush shed: migration barrier held past its bound"
+                            );
+                            continue;
+                        }
+                    };
                     let lc = log_flush_handle.state::<Arc<LogCollector>>();
                     let flushed = lc.flush_if_needed().await;
                     if flushed > 0 {
@@ -498,18 +569,34 @@ pub fn run() {
                 engine: feature_engine.clone(),
                 watches: feature_watches.clone(),
                 rtdb_store: rtdb_store.clone(),
+                migration_gate: migration_gate.clone(),
             }));
             // Watch flush task: emits due coalescing windows (~5 ms cadence).
             let feature_flush = feature_watches.clone();
+            let watch_flush_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
-                run_watch_flush_task(feature_flush).await;
+                run_watch_flush_task(feature_flush, Some(watch_flush_gate)).await;
             });
             // One-time declared-table projection backfill (A-17): spawned,
-            // never awaited on the read path.
+            // never awaited on the read path. Spec #2977 ST-4: the backfill
+            // writes declared rows directly, so it quiesces against the
+            // migration barrier for its (one-shot) duration.
             let backfill_meta = feature_meta.clone();
             let backfill_engine = feature_engine.clone();
             let backfill_store = rtdb_store.clone();
+            let backfill_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
+                let _guard = match backfill_gate.writer_enter().await {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "fredo::feature_data",
+                            error = %error,
+                            "declared-table backfill shed: migration barrier held past its bound"
+                        );
+                        return;
+                    }
+                };
                 infrastructure::feature_data::backfill::run_backfill(
                     backfill_meta,
                     backfill_engine,
@@ -565,27 +652,32 @@ pub fn run() {
             // evicted keys route `kind: remove` deliveries through Rtdb. The
             // prune now awaits the engine-selected store; the sync setup closure
             // bridges with `block_on` to keep the pre-writer-task ordering.
-            tauri::async_runtime::block_on(prune_with_knobs(app.handle()));
+            tauri::async_runtime::block_on(prune_with_knobs(app.handle(), Some(&migration_gate)));
 
             // Declared-table retention prune: once at startup, then on the same
             // 60-minute cadence as the RTDB writer prune (ST-7 supplies the
             // function; evictions fan out as `remove` notifications here).
-            prune_feature_data(app.handle());
+            tauri::async_runtime::block_on(prune_feature_data(
+                app.handle(),
+                Some(&migration_gate),
+            ));
             let feature_prune_handle = app.handle().clone();
+            let feature_prune_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
                 interval.tick().await; // consume the immediate first tick
                 loop {
                     interval.tick().await;
-                    prune_feature_data(&feature_prune_handle);
+                    prune_feature_data(&feature_prune_handle, Some(&feature_prune_gate)).await;
                 }
             });
 
             // RTDB write-behind task: drains the bounded queue in ~30 ms
             // batches; overflow sheds the storage write, never in-memory state.
             let rtdb_writer_handle = app.handle().clone();
+            let rtdb_writer_gate = migration_gate.clone();
             tauri::async_runtime::spawn(async move {
-                run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx).await;
+                run_rtdb_writer_task(rtdb_writer_handle, rtdb_rx, Some(rtdb_writer_gate)).await;
             });
 
             // RTDB canonical backfill (Spec #2788 P3.2, REQs R-2b/R-4c):
@@ -596,6 +688,13 @@ pub fn run() {
             // Spawned: never blocks startup. Idempotent: content-identical
             // re-merges skip the write (no seq inflation); a one-shot
             // completion marker keeps later startups O(1).
+            //
+            // Spec #2977 ST-4 quiesce note: this replay ingests INTO THE
+            // IN-MEMORY RTDB pipeline (classifier → cache → write-behind queue);
+            // it performs NO direct storage write. Its storage writes are the
+            // writer task's, which are gated below — so the canonical backfill
+            // is quiesced TRANSITIVELY without a coarse hold here (a coarse hold
+            // would stall the migration for the whole replay on a full-size DB).
             //
             // Spec #2932 ST-6: the provider re-derivation leg runs SEQUENTIALLY
             // after it, gated by its OWN independent marker

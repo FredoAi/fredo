@@ -56,6 +56,15 @@ impl MigrationGate {
         }
     }
 
+    /// Enter as a writer from a SYNCHRONOUS write entry point (the terminal
+    /// record writes), which cannot `.await`. Drives [`Self::writer_enter`] on
+    /// the ambient runtime (or a throwaway one), so the acquire is still bounded
+    /// by the gate's bound. `Err` means the migration held the barrier past the
+    /// bound and the caller must shed the write (G-263).
+    pub fn writer_enter_blocking(&self) -> Result<MigrationWriterGuard<'_>> {
+        block_on_gate(self.writer_enter())
+    }
+
     /// Enter as the migration leg: take the EXCLUSIVE write lock, bounded by the
     /// gate's acquire bound. While held, every writer waits (up to its own
     /// bound) — the barrier is held across copy → parity → install.
@@ -79,6 +88,20 @@ impl MigrationGate {
     /// Cheap fast-path probe: is the exclusive migration leg in flight?
     pub fn is_migrating(&self) -> bool {
         self.migrating.load(Ordering::SeqCst)
+    }
+}
+
+/// Drive an async acquire from a synchronous caller (mirrors the store's
+/// `block_on_pg` bridge). Inside a multi-threaded runtime this parks the worker
+/// via `block_in_place`; outside any runtime it builds a bounded throwaway one.
+fn block_on_gate<F: std::future::Future>(future: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a runtime for a synchronous migration-gate acquire")
+            .block_on(future),
     }
 }
 
@@ -175,6 +198,45 @@ mod tests {
             "a failed acquire must not leave the fast path latched"
         );
 
+        drop(writer);
+    }
+
+    /// **R-3.5 hold-scope pin (G-123).** The supervisor acquires the exclusive
+    /// barrier BEFORE `run_pre_install` and holds it ACROSS `install_postgres`
+    /// (the state.rs call site). Model that exact sequence here: a writer must be
+    /// blocked for the WHOLE window — copy/parity AND the engine install — and
+    /// unblocked only once the barrier is released after the install.
+    #[tokio::test]
+    async fn writer_is_blocked_across_the_copy_parity_and_install_window() {
+        let gate = MigrationGate::new();
+
+        // Acquire before the leg (state.rs).
+        let guard = gate.migration_enter().await.unwrap();
+
+        // ... copy + parity ...
+        let blocked_during_leg =
+            tokio::time::timeout(Duration::from_millis(40), gate.writer_enter()).await;
+        assert!(
+            blocked_during_leg.is_err(),
+            "a writer must be blocked while the barrier spans copy + parity"
+        );
+
+        // ... engine install, STILL under the same exclusive barrier ...
+        assert!(
+            gate.is_migrating(),
+            "the barrier must remain held across the engine install"
+        );
+        let blocked_during_install =
+            tokio::time::timeout(Duration::from_millis(40), gate.writer_enter()).await;
+        assert!(
+            blocked_during_install.is_err(),
+            "a writer must be blocked across the engine install (R-3.5)"
+        );
+
+        // Release only AFTER the install; a writer then enters.
+        drop(guard);
+        assert!(!gate.is_migrating());
+        let writer = gate.writer_enter().await.unwrap();
         drop(writer);
     }
 }
