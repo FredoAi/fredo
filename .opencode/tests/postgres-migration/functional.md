@@ -26,12 +26,15 @@ this one).
 > (kill-never-wait on expiry; `-EnvVar NAME=value` for env seams); never a bare
 > `postgres`/`pg_ctl`. An observed unbounded/blocking wait is a FAIL, not a skip.
 
-> **Induction levers (G-275).** (a) An app-data-dir override (`FREDO_DATA_DIR`, or a standalone
-> migration entry point with explicit `--source`/`--target`) pointing at a writable fixture dir
-> under `.opencode/tmp/2977/` — **required seam, not yet shipped** (see `## Discussion` in the
-> plan). (b) The migration fault seam `FREDO_MIGRATION_FAULT` ∈ {`parity_mismatch`,
-> `export_error`, `snapshot_fail`} — **required, architect to name**. Shipped seams:
-> `FREDO_STORAGE_ENGINE` (`sqlite|postgres`), `FREDO_PG_DATA_DIR`, `FREDO_PG_POOL_FORCE_FAIL=1`.
+> **Induction levers (G-275) — binding names (G-255).** (a) `FREDO_DATA_DIR` — the app-data-dir
+> override that redirects the source `fredo.db` AND the AC3 backout target, so the full app-level
+> leg runs against an in-repo fixture dir under `.opencode/tmp/2977/fixture/` without touching the
+> live `%APPDATA%\com.fredo.app\fredo.db`; `FREDO_MIGRATION_DIR` overrides the scratch/snapshot dir.
+> (b) `FREDO_MIGRATION_FORCE_MISMATCH` — the ONE fault seam (no `FREDO_MIGRATION_FAULT`): `<table>`
+> drops one row from that table (parity mismatch); `1`/`true` drops one row from the first non-empty
+> table; `<table>:export_error` aborts that table's copy before parity; `snapshot_fail` forces the
+> snapshot step to fail; unset ⇒ inert. Shipped seams: `FREDO_STORAGE_ENGINE` (`sqlite|postgres`),
+> `FREDO_PG_DATA_DIR`, `FREDO_PG_POOL_FORCE_FAIL=1`. Live status hook: `migration_status`.
 
 > **G-271 coverage.** Where a row verifies a structured deliverable (the physical-table set, the
 > per-table parity pairs, the carried markers), assert COVERAGE of the named elements — never a
@@ -65,8 +68,8 @@ this one).
 
 - [ ] **F-4 (AC2, G-275) — fail-closed: a mismatch does NOT set the marker, does NOT flip the
   engine, leaves `fredo.db` untouched; the next startup re-runs the idempotent export.**
-  Induce a deliberate mismatch via `FREDO_MIGRATION_FAULT=parity_mismatch` (or the architect's
-  equivalent) with a fixture dir under `.opencode/tmp/2977/`; record `fredo.db` SHA-256 before.
+  Induce a deliberate mismatch via `FREDO_MIGRATION_FORCE_MISMATCH=<table>` (or `=1`) with a
+  fixture dir under `.opencode/tmp/2977/`; record `fredo.db` SHA-256 before.
   **Expected:** the parity gate fails closed — `migration.postgres.completed` is NOT set, the
   engine is NOT flipped (`storage_engine_status.engine == "sqlite"`), `fredo.db` is byte-untouched;
   the NEXT startup re-runs the read-only export (idempotent, no partial-state corruption).
@@ -89,8 +92,8 @@ this one).
 
 - [ ] **F-7 (AC4, G-275) — a deliberately corrupted/mismatched table makes the export exit NON-ZERO
   and the app starts on SQLite.**
-  Corrupt one table via the fault seam (`FREDO_MIGRATION_FAULT=parity_mismatch`; alternative
-  `export_error`) on a fixture under `.opencode/tmp/2977/`.
+  Corrupt one table via the fault seam (`FREDO_MIGRATION_FORCE_MISMATCH=<table>`; alternative
+  `<table>:export_error`) on a fixture under `.opencode/tmp/2977/`.
   **Expected:** the export exits non-zero; the app starts on SQLite and is fully operational;
   `fredo.db` is byte-unchanged; a structured (non-fatal) error is logged; the failure is bounded.
   **FAIL** = a silent success, a crash, an engine flip, or an unbounded wait.
