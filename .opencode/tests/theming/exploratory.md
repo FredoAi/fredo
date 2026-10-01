@@ -1,5 +1,7 @@
 # Theming — Exploratory
 
+> **Withdrawn artifact:** `docs/features/desktop-background-life.md` was deleted. Its citations record real observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The Life contract now lives in source: `lifePatterns.ts` (pattern catalogue + CC BY-SA 3.0 attribution) and `lifeConstants.ts` (derived palette).
+
 > Unscripted probes the Tester runs beyond the functional cases. A confirmed finding PROMOTES to
 > `functional.md` as a new `F-` row (keep the origin note).
 

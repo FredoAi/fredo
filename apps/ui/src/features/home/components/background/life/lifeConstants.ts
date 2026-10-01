@@ -65,8 +65,7 @@ export const LIFE_ATTRIBUTION = 'Patterns: Life Lexicon (Stephen Silver), CC BY-
  * `ThemeProvider.tsx` (base pass, next to `--accent-strong`). They are the
  * SINGLE authored-number home for the calmer/less-glaring field: the provider
  * string-interpolates them into the three `color-mix()` custom properties, and
- * `lifeEngine.ts` reads the resolved values at paint time. See
- * `docs/features/desktop-background-life.md`.
+ * `lifeEngine.ts` reads the resolved values at paint time.
  *
  * The cell desaturation leg targets a DERIVED mid-neutral (`--life-neutral`,
  * `--text-primary` blended toward `--body-bg`) rather than `--text-primary`

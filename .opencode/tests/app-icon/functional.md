@@ -1,5 +1,8 @@
 # app-icon — Functional Tests
 
+> **Withdrawn artifact:** `docs/app-icons.md` was deleted. Its citations record real `#2930 round 1` observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The icon contract now lives in `scripts/generate-app-icons.mjs` and `docs/SETUP.md`.
+
+
 Reusable functional suite for the **Fredo OS-level application icon** surface: the static raster
 icon set shipped by `tauri.conf.json` (`bundle.icon`) plus the derived Windows set, and the
 installed/release-build display of that set (taskbar, Start menu, window chrome, `.exe`, NSIS

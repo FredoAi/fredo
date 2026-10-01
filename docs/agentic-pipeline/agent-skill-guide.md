@@ -155,7 +155,7 @@ license: MIT
 <Input → output pairs showing expected style and detail.>
 
 ## Resources
-- <Reference docs: see [reference.md](reference.md)>
+- <Reference docs: see [playbooks/references.md](playbooks/references.md)>
 - <Validation: run `python scripts/validate.py` — script output, not code, enters context>
 ```
 

@@ -941,7 +941,7 @@ pub async fn probe_model_audio_capability(app: &AppHandle) -> SttAudioCapability
 // `llama-server` build accepts an OpenAI-style `input_audio` content part on
 // `POST /v1/chat/completions` BEFORE any transport code is written. The live
 // request is driven from outside the app (the recipe in
-// `docs/research/model-audio-feasibility.md`, executed by the Tester as F-110),
+// `spikes/2897-model-audio-feasibility/model-audio-feasibility.md`, executed by the Tester as F-110),
 // because ST-0's non-goals forbid a registered command or any behavior change.
 //
 // This module is the pure, test-pinned seam: it shapes the exact request body,

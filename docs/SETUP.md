@@ -177,7 +177,7 @@ pnpm icons:generate   # regenerate every shipped icon from the one committed SVG
 pnpm icons:check      # verify config + inventory + sizes + determinism
 ```
 
-See [app-icons.md](app-icons.md) for the source of truth, the composition and baked-palette
+See `scripts/generate-app-icons.mjs` for the source of truth, the composition and baked-palette
 contract, and which platform sets are shipped vs explicitly scoped out.
 
 ## After Installation

@@ -1,5 +1,8 @@
 # app-icon — Regression Tests
 
+> **Withdrawn artifact:** `docs/app-icons.md` was deleted. Its citations record real `#2930 round 1` observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The icon contract now lives in `scripts/generate-app-icons.mjs` and `docs/SETUP.md`.
+
+
 The "must not change" baseline for the OS-icon work: replacing the shipped icon set must not disturb
 the release pipeline, the build, the theming/avatar system, or the desktop shell. Verification
 policy is **static** (asset + config + build domain).

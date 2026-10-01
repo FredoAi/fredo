@@ -1,5 +1,7 @@
 # persistence-spike — Regression
 
+> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+
 Feature: local persistence (embedded SQLite / `fredo.db`, RTDB row store, observability
 `sqlx`). Issue #2948 is a **spike** that must have ZERO production impact. Regression here
 is the negative-case baseline (AC5) plus linked suites whose surface overlaps persistence.

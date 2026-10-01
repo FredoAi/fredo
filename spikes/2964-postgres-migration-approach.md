@@ -4,15 +4,10 @@
 - **Revises:** #2948 (`fix`) — #2948 answered "should we?" and returned NO-GO; its measurements stand as **design inputs**, not a veto
 - **Method:** **BOTH** an executed, isolated PoC against a real embedded PostgreSQL **AND** a file-level written design (see §3)
 - **Time-box:** 3 working days, Windows-first — met (see §11)
-- **Production change:** **NONE.** No file under `apps/**` is edited; this document + the section files + the isolated `spikes/2964-postgres-migration/` PoC are the deliverables
-- **PoC artifact:** [`spikes/2964-postgres-migration/`](../../spikes/2964-postgres-migration/)
-- **Section files:** [`store-migration.md`](2964-postgres-migration-approach/store-migration.md) (ST-2),
-  [`data-migration.md`](2964-postgres-migration-approach/data-migration.md) (ST-4),
-  [`startup-lifecycle.md`](2964-postgres-migration-approach/startup-lifecycle.md) (ST-5),
-  [`packaging-install.md`](2964-postgres-migration-approach/packaging-install.md) (ST-6)
-- **Inputs:** [`spikes/2948-embedded-postgres/results/measurements.json`](../../spikes/2948-embedded-postgres/results/measurements.json),
-  [`spikes/2948-embedded-postgres/QUESTIONS.md`](../../spikes/2948-embedded-postgres/QUESTIONS.md),
-  [`docs/research/2948-embedded-postgres-spike.md`](2948-embedded-postgres-spike.md)
+- **Production change:** **NONE.** No file under `apps/**` is edited; this document was the durable deliverable
+- **PoC artifact:** `spikes/2964-postgres-migration/` (standalone crate — **no longer committed**; the spike PoC was disposable). Its measured findings are cited inline below and summarised in §11
+- **Section files:** `2964-postgres-migration-approach/{store,data,startup,packaging}-*.md` (ST-2, ST-4, ST-5, ST-6) — withdrawn with the PoC; their content is absorbed into this record
+- **Inputs:** [`spikes/2948-embedded-postgres-spike.md`](./2948-embedded-postgres-spike.md) (the NO-GO ADR and its measurements — the durable input; the raw `results/measurements.json` and `QUESTIONS.md` were withdrawn with that spike's PoC)
 
 > **How to read this document.** It is self-contained enough to satisfy AC1–AC5 on its own,
 > while referring to the four section files for full depth. Every `file:line` citation below
@@ -69,7 +64,7 @@ because every scope area below is designed around them.
 
 **Both were produced, deliberately:**
 
-- **The isolated PoC** at [`spikes/2964-postgres-migration/`](../../spikes/2964-postgres-migration/)
+- **The isolated PoC** at [`spikes/2964-postgres-migration/`](./)
   is a standalone crate (never a Cargo workspace member, never referenced by `lib.rs`/`AppRuntime`,
   no dependency added to `apps/tauri/src-tauri/Cargo.toml`). It executes the riskiest paths against
   a **real embedded PostgreSQL 18.6.0** on Windows x86_64 (`postgresql_embedded` 0.21,
@@ -95,8 +90,8 @@ both removes the residual risk each leaves.
 | `results/parity.json` | `parity` | `cargo run --release --bin parity` | 8/8 tables count+checksum matched; markers carried unchanged; rollback demonstrated (508 ms) |
 | `results/lifecycle.json` | `supervisor` | `cargo run --release --bin supervisor` | 20/20 checks; start 985 ms · ready 128 ms · stop 398 ms · hard-kill 213 ms; no orphan (76 s run) |
 
-**No production code path changed.** The only added/changed files are under
-`docs/research/2964-postgres-migration-approach*` and `spikes/2964-postgres-migration/**`. The
+   **No production code path changed.** The only added/changed files are under
+   `spikes/2964-postgres-migration/**` (this record, the section files, and the isolated PoC). The
 harness never opens the real `fredo.db`; every data directory is a throwaway path under
 `spikes/2964-postgres-migration/target/spike-tmp/`.
 
@@ -167,7 +162,7 @@ the upsert re-expressions above; no schema tooling or extension is adopted. **No
 
 ## 5. Scope area (b) — Store / module migration path
 
-**Full design:** [`store-migration.md`](2964-postgres-migration-approach/store-migration.md) (ST-2).
+**Full design:** `store-migration.md` (ST-2).
 Summary:
 
 - **The shared pool.** One `sqlx::PgPool` is created once in `lib.rs`'s setup closure (before any
@@ -211,7 +206,7 @@ than redesigned. **No blocker.**
 
 ## 6. Scope area (c) — `fredo.db` data migration / backfill
 
-**Full design:** [`data-migration.md`](2964-postgres-migration-approach/data-migration.md) (ST-4).
+**Full design:** `data-migration.md` (ST-4).
 Summary:
 
 ### 6.1 Cutover decision (R-5c): staged one-shot export/import
@@ -300,7 +295,7 @@ data. **No blocker.**
 
 ## 7. Scope area (d) — Startup / lifecycle
 
-**Full design:** [`startup-lifecycle.md`](2964-postgres-migration-approach/startup-lifecycle.md) (ST-5).
+**Full design:** `startup-lifecycle.md` (ST-5).
 Summary:
 
 **Chosen approach:** a dedicated lifecycle supervisor that **reuses the managed-child mechanism
@@ -356,7 +351,7 @@ gap and the single-instance question are named open items (Q-16–Q-21). The ~11
 
 ## 8. Scope area (e) — Packaging / install
 
-**Full design:** [`packaging-install.md`](2964-postgres-migration-approach/packaging-install.md) (ST-6).
+**Full design:** `packaging-install.md` (ST-6).
 Summary:
 
 `postgresql_embedded` 0.21 acquires the PostgreSQL distribution in one of two ways, chosen at
@@ -397,7 +392,7 @@ input + resolving evidence.
 
 ## 9. Scope area (f) — Rollback / reversibility
 
-**Full design:** [`data-migration.md`](2964-postgres-migration-approach/data-migration.md) §6.
+**Full design:** `data-migration.md` §6.
 Summary:
 
 **`fredo.db` is never mutated or deleted by the migration.** A pre-cutover `VACUUM INTO` snapshot is
@@ -435,8 +430,8 @@ by the parity check. **No blocker.**
 
 Every #2948 measured regression carries an explicit position with a one-line rationale; numbers
 reconcile with
-[`spikes/2948-embedded-postgres/results/measurements.json`](../../spikes/2948-embedded-postgres/results/measurements.json)
-(reference: `docs/research/2948-embedded-postgres-spike.md`). Extra granularity is included
+   [`spikes/2948-embedded-postgres-spike.md`](./2948-embedded-postgres-spike.md)
+   (the durable #2948 ADR; its raw `results/measurements.json` was withdrawn with that spike's PoC). Extra granularity is included
 (ST-1/ST-3/ST-6 measured findings) where it sharpens a position.
 
 | # | #2948 regression (measured) | Position | Rationale |
@@ -487,7 +482,7 @@ acquisition-mode question is called out first.
 - **Position:** `bundled` if offline-first is hard; otherwise `runtime-download` (already de-risked
   by #2948, no installer growth, one documented first-run download of 164,026,008 B).
 - **Is this input resolvable?** **It is a named open question, not resolvable within this spike** —
-  it is inherited backlog question **(a)**, a **human product decision** (`docs/research/2948-embedded-postgres-spike.md:105-108`).
+     it is inherited backlog question **(a)**, a **human product decision** (`spikes/2948-embedded-postgres/2948-embedded-postgres-spike.md:105-108`).
 - **Resolving evidence:** a PO/human answer to question (a). If "hard" → adopt `bundled`; if
   "soft"/not a constraint → keep `runtime-download`.
 
@@ -637,7 +632,7 @@ acquisition-mode question is called out first.
 ## 13. Explicit non-goal
 
 **Re-litigating whether to migrate is out of scope.** The migration is **mandated**; #2948's NO-GO
-framing is superseded (`docs/research/2948-embedded-postgres-spike.md`). A finding that a chosen
+   framing is superseded (`spikes/2948-embedded-postgres/2948-embedded-postgres-spike.md`). A finding that a chosen
 *approach or acquisition mode* is unviable must come with an alternative **embedded-PostgreSQL**
 approach, never a return to the migrate-or-not question. (This non-goal is a section of its own and
 is **not** one of the six AC1 scope areas.)
@@ -649,10 +644,10 @@ is **not** one of the six AC1 scope areas.)
 | Requirement | Where satisfied |
 |---|---|
 | **AC1 / R-1(a)** schema mapping | §4 (all stores, types/PKs/indexes, behavior re-expression) + `results/schema-translation.json` |
-| **AC1 / R-1(b)** store/module migration path | §5 + [`store-migration.md`](2964-postgres-migration-approach/store-migration.md) + `results/write-behind.json` |
-| **AC1 / R-1(c)** `fredo.db` data migration/backfill | §6 + [`data-migration.md`](2964-postgres-migration-approach/data-migration.md) + `results/parity.json` |
-| **AC1 / R-1(d)** startup/lifecycle | §7 + [`startup-lifecycle.md`](2964-postgres-migration-approach/startup-lifecycle.md) + `results/lifecycle.json` |
-| **AC1 / R-1(e)** packaging/install | §8 + [`packaging-install.md`](2964-postgres-migration-approach/packaging-install.md) |
+| **AC1 / R-1(b)** store/module migration path | §5 + `store-migration.md` + `results/write-behind.json` |
+| **AC1 / R-1(c)** `fredo.db` data migration/backfill | §6 + `data-migration.md` + `results/parity.json` |
+| **AC1 / R-1(d)** startup/lifecycle | §7 + `startup-lifecycle.md` + `results/lifecycle.json` |
+| **AC1 / R-1(e)** packaging/install | §8 + `packaging-install.md` |
 | **AC1 / R-1(f)** rollback/reversibility | §9 + `results/parity.json` (`rollback.*`) |
 | **AC2 / R-2** regression → position table | §10 (all six categories + the `pg.stop()` hang) |
 | **AC3 / R-4, R-4a** PoC or written design + why | §3 (both produced, with why) + `results/*.json` |
@@ -663,8 +658,8 @@ is **not** one of the six AC1 scope areas.)
 
 ## 15. Scope / verification
 
-- **No production file changed.** The changed set on `spec/2964` is exactly
-  `docs/research/2964-postgres-migration-approach*` + `spikes/2964-postgres-migration/**`; nothing
+   - **No production file changed.** The changed set on `spec/2964` is exactly
+     `spikes/2964-postgres-migration/**`; nothing
   under `apps/**`. The PoC is a standalone package (not a workspace member), never referenced by
   `lib.rs`/`AppRuntime`, with no dependency added to `apps/tauri/src-tauri/Cargo.toml`. `Cargo.toml`
   was pre-declared by ST-1 with a `[[bin]]` per artifact.

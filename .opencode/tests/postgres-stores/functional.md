@@ -1,5 +1,7 @@
 # postgres-stores — Functional
 
+> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+
 Durable functional suite for the **storage engine seam + shared async PostgreSQL pool** feature
 domain (slice 2 of 6; builds on slice-1 `postgres-lifecycle` #2974 and spike #2964). One shared
 `sqlx::PgPool` cloned into `AppStore` / `FeatureStore` / `FeatureDataStore` + the read-only paths,

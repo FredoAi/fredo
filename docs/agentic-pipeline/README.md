@@ -58,7 +58,36 @@ flowchart TD
 | [pipeline-rationale.md](pipeline-rationale.md) | Why the pipeline is built this way — deterministic state-machine control that injects context to bound stochastic agent behavior, and the Self-Improver's feedback loop |
 | [agent-definition-guide.md](agent-definition-guide.md) | Anatomy for writing agent `.md` files: identity, structure, length limits, DeepSeek-specific guidance, iteration/eval |
 | [agent-skill-guide.md](agent-skill-guide.md) | Anatomy for writing `SKILL.md` files: description-as-router, progressive disclosure, length limits, degrees of freedom, iteration/eval |
+| [common-rules.md](common-rules.md) | The cross-cutting rules every agent in the pipeline follows: research discipline, how to use the shared references, citing sources, and behaviour that cuts across phases |
+| [permissions.md](permissions.md) | Each agent's deny-by-default sandbox — which commands and edit paths actually work, and the loop-mitigation rules. **Read before acting** |
 | [templates/PO-issue-template.md](templates/PO-issue-template.md) | Backlog issue template for the Product Owner: title (Connextra), problem/why, scope, success metrics, 3–5 bullet acceptance criteria (Gherkin only where warranted), INVEST self-check, bug variant |
+
+### Playbooks
+
+Per-agent dispatch briefs — the role's mandate, its phases, its tools, and the artifacts it owes.
+
+| Playbook | Role |
+|----------|------|
+| [product-owner.md](playbooks/product-owner.md) | Product Owner — intake, backlog, acceptance criteria |
+| [software-architect.md](playbooks/software-architect.md) | Software Architect — research, domain model, task decomposition, fix plans |
+| [ui-ux-expert.md](playbooks/ui-ux-expert.md) | UI/UX Expert — design assets, interaction flows, accessibility |
+| [qa-expert.md](playbooks/qa-expert.md) | QA Expert — the QA Plan and the sole authorship of feature test suites |
+| [developer.md](playbooks/developer.md) | Developer — implementation, verification, CI gates |
+| [tester.md](playbooks/tester.md) | Tester — executes the QA Plan, attaches evidence, posts the verdict |
+| [self-improver.md](playbooks/self-improver.md) | Self-Improver — orchestration, staffing, the audit gate, and the Class → Lever table |
+| [references.md](playbooks/references.md) | The shared, agent-editable knowledge base — every agent may add, edit, and remove references; the Self-Improver owns the `### G-` guardrail records under Known Failure Modes |
+
+### Templates
+
+| Template | Used for |
+|----------|----------|
+| [triage-plan-template.md](templates/triage-plan-template.md) | The Implementation Plan assembled at the `triage → implementation` transition |
+| [Triage-plan-comment-template.md](templates/Triage-plan-comment-template.md) | The `## Triage Plan` comment |
+| [Status-comment-template.md](templates/Status-comment-template.md) | The agent-facing `Status` comment (blockers/escalations only) |
+| [Development-summary-comment-template.md](templates/Development-summary-comment-template.md) | The `## Development Summary` comment |
+| [Tests-runs-comment-template.md](templates/Tests-runs-comment-template.md) | The `## Tests Runs` verdict comment |
+| [Fix-plan-comment-template.md](templates/Fix-plan-comment-template.md) | The machine-posted `## Fix Plan (round N)` comment |
+| [SI-summary-comment-template.md](templates/SI-summary-comment-template.md) | The Self-Improver's `## SI Summary` comment |
 
 ---
 
