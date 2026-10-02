@@ -174,3 +174,23 @@ enforced; a mode recorded without the Q-1 answer (and not marked PENDING); a cor
 acquisition that extracts a partial distribution; a first-run failure that leaves a half-extracted
 tree; a console flash; no server log tail; a restated spike number where a re-measurement is named; a
 static-only receipt on F-13; or an unbounded/blocking wait = **FAIL**.
+
+## Round — #2978 (2026-10-01, `spec/2978 @ 9e129f3`) — PASS (bundled boot unverified)
+
+- **F-1/F-14:** PASS — `cargo check`/`clippy -D warnings`/`test` green on default AND `--features bundled`
+  (1082 unit + integration, 0 failed); `tauri.conf.json:53-54` unchanged. (`cargo tree` not allowlisted → substituted.)
+- **F-3:** PASS — seeded 30,000,000 B partial (≥50% of the real **54,068,902 B** archive); server saw
+  `Range: bytes=30000000-` → 206; completed digest = pin `7da44c2d…4db7d5`; skip-if-verified on the next boot.
+- **F-4:** PASS — wrong-SHA override → `[pg:archive] SHA-256 mismatch`; artifact DELETED; no extract.
+- **F-5:** PASS — unreachable URL → retryable `[pg:archive]` error; no half-extract; bounded.
+- **F-6:** PASS — no visible console window (cold initdb + warm pg_ctl start); pg_ctl console is windowless.
+- **F-7:** PASS — `pg_server_log_tail` returned real `<data_dir>/log/postgres.log` lines.
+- **F-8:** PASS — archive 54,068,902 B; extracted payload 164,026,008 B / 2,973 files.
+- **F-10:** PASS (substitution) — release-binary Δ +54,067,200 B (bundler unavailable).
+- **F-11:** PASS — data dir 41,980,260 B / 1,037 files.
+- **F-12:** PASS — postmaster peak WS 18,145,280 B; tree sum ≈ 191,864,832 B vs 277,700,608 B baseline.
+- **F-13:** PASS — live OpenCode Terminal session (`FREDO-2978-E2E-OK`) rendered in Mission Monitor with
+  chat + `── TOOLS (1) ──` + tokens; `telemetry_spans` cross-checked at the same instant.
+- **F-2/F-9:** PASS (default/docs) / **UNVERIFIED bundled boot** — named tooling gap (no `dev-env` feature lever).
+- **Number correction:** `PG_FIRST_RUN_DOWNLOAD_BYTES` is the EXTRACTED payload; the real first-run transfer
+  is **54,068,902 B**.
