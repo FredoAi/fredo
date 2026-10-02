@@ -166,21 +166,23 @@ async fn state_registry_tracks_pools_by_connection_id() {
 }
 
 #[tokio::test]
-async fn remaining_command_stubs_return_typed_not_implemented() {
+async fn remaining_query_stub_returns_typed_not_implemented() {
     let state = DbClientState::new(None, PathBuf::from("C:/tmp/dbclient"));
 
     // ST-2 filled the connection lifecycle: `db_connection_list` is real and
     // returns the (empty) saved-connection list without any network call.
     assert!(super::connect::connection_list(&state).await.is_ok());
 
+    // ST-3 filled the schema browse: with no open pool it returns the typed
+    // "not open" error (no network call), not the ST-1 NotImplemented stub.
     let schema_args = super::types::DbSchemaListArgs {
         connection_id: "c1".into(),
         parent_id: None,
     };
     let schema_err = super::schema::schema_list(schema_args, &state)
         .await
-        .expect_err("schema stub must fail");
-    assert!(schema_err.iter().any(|m| m.contains("not implemented")));
+        .expect_err("no open pool must fail");
+    assert!(schema_err.iter().any(|m| m.contains("not open")));
 
     let query_args = super::types::DbQueryArgs {
         connection_id: "c1".into(),
