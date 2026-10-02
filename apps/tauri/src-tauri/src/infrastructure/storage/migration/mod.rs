@@ -139,12 +139,40 @@ pub fn resolve_migration_dir(app_data_dir: &Path) -> PathBuf {
 /// Rows per copy statement — mirrors `RTDB_MAX_EMISSION_BATCH` (R-5.1).
 pub const MIGRATION_CHUNK_ROWS: usize = 512;
 
-/// Wall-clock bound on the whole migration leg (G-263: no unbounded wait).
-pub const MIGRATION_BOUND: Duration = Duration::from_secs(300);
+/// Per-table copy budget floor (ST-8a). Every table gets at least this long for
+/// its copy + target re-read, regardless of its size — it covers the per-table
+/// overhead (source count, target count/checksum re-read) even for a tiny table.
+pub const MIGRATION_TABLE_FLOOR: Duration = Duration::from_secs(120);
+
+/// Conservative per-table throughput floor (ST-8a), in rows per second. Each
+/// table's budget is derived from its source row count at this rate; it sits
+/// ~2× under the measured real-corpus rate (~21k rows/s), leaving margin for the
+/// full target re-read and slower disks.
+pub const MIGRATION_MIN_ROWS_PER_SEC: u64 = 10_000;
+
+/// The whole-leg absolute fail-closed ceiling (ST-8a; G-263: still bounded,
+/// never unbounded). The per-table budgets are proportional to each table's
+/// source size; this caps the total even if many large tables are present. For
+/// the real dev corpus the dominant `telemetry_metrics` table's budget is
+/// ~1,168 s, so 1,800 s leaves headroom for every other table.
+pub const MIGRATION_HARD_CEILING: Duration = Duration::from_secs(1_800);
+
+/// The per-table copy budget for a table with `rows` source rows (ST-8a):
+/// [`MIGRATION_TABLE_FLOOR`] + `rows / MIGRATION_MIN_ROWS_PER_SEC` seconds.
+///
+/// Monotonic in `rows` and always below [`MIGRATION_HARD_CEILING`] for any
+/// realistic corpus (the hard ceiling still backstops the whole leg).
+pub fn migration_table_budget(rows: i64) -> Duration {
+    let rows = rows.max(0) as u64;
+    MIGRATION_TABLE_FLOOR + Duration::from_secs(rows / MIGRATION_MIN_ROWS_PER_SEC)
+}
 
 /// Wall-clock bound on a migration-gate acquire (writers + the exclusive
-/// migration leg). Deliberately larger than [`MIGRATION_BOUND`] so a writer can
-/// wait out a full migration leg before giving up (G-263).
+/// migration leg). The gate's ACQUIRE bound only waits for in-flight writers to
+/// drain — it does not wait for the leg to finish — so it is deliberately
+/// unchanged by the per-table budget: a writer still sheds at `GATE_WAIT_BOUND`
+/// (the documented bounded-write contract, G-263) even though the leg itself may
+/// now run longer.
 pub const GATE_WAIT_BOUND: Duration = Duration::from_secs(330);
 
 /// The migration leg's terminal status (R-4).
@@ -180,6 +208,10 @@ pub struct TableParity {
     pub checksum_match: bool,
     /// Always `true`: the export reads the source through a read-only handle.
     pub read_only_source: bool,
+    /// Wall-clock milliseconds spent copying this table (ST-8d diagnostics) —
+    /// surfaced as `elapsedMs` in `migration_status`, so a real-corpus
+    /// measurement shows exactly which table dominates.
+    pub elapsed_ms: u128,
 }
 
 /// The result of one `run_pre_install` invocation.
@@ -338,5 +370,55 @@ mod tests {
                 Some(MigrationFault::SnapshotFail)
             );
         }
+    }
+
+    #[test]
+    fn migration_table_budget_is_the_floor_at_zero_and_monotonic_in_rows() {
+        // A table with no rows still gets the floor (per-table overhead).
+        assert_eq!(migration_table_budget(0), MIGRATION_TABLE_FLOOR);
+        // A negative count (defensive) clamps to the floor, never subtracts.
+        assert_eq!(migration_table_budget(-42), MIGRATION_TABLE_FLOOR);
+        // Strictly monotonic in rows.
+        assert!(migration_table_budget(10_000) > migration_table_budget(0));
+        assert!(migration_table_budget(1_000_000) > migration_table_budget(10_000));
+        // The floor is the minimum for every table.
+        assert!(migration_table_budget(0) >= MIGRATION_TABLE_FLOOR);
+    }
+
+    #[test]
+    fn migration_table_budget_fits_the_hard_ceiling_for_the_real_corpus() {
+        assert!(
+            MIGRATION_TABLE_FLOOR < MIGRATION_HARD_CEILING,
+            "the per-table floor must sit under the whole-leg hard ceiling"
+        );
+        // The real dev corpus' dominant table (`telemetry_metrics`,
+        // 10,480,700 rows) needs ~1,168 s at the conservative 10k rows/s floor:
+        // >= 1,000 s and strictly under the 1,800 s hard ceiling.
+        let real_largest = migration_table_budget(10_480_700);
+        assert!(
+            real_largest >= Duration::from_secs(1_000),
+            "the real corpus' dominant table needs a >= 1,000 s budget, got {real_largest:?}"
+        );
+        assert!(
+            real_largest < MIGRATION_HARD_CEILING,
+            "the per-table budget must fit under the hard ceiling, got {real_largest:?}"
+        );
+    }
+
+    #[test]
+    fn table_parity_serializes_elapsed_ms_in_camel_case() {
+        let parity = TableParity {
+            table: "settings".to_string(),
+            source_rows: 2,
+            target_rows: 2,
+            count_match: true,
+            source_checksum: "a".to_string(),
+            target_checksum: "a".to_string(),
+            checksum_match: true,
+            read_only_source: true,
+            elapsed_ms: 1_234,
+        };
+        let json = serde_json::to_value(&parity).unwrap();
+        assert_eq!(json["elapsedMs"], 1_234);
     }
 }

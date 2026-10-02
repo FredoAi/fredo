@@ -9,6 +9,18 @@
 //! 4. stream the target back and compute its checksum,
 //! 5. return both independent comparisons as a [`TableParity`].
 //!
+//! **One transaction per table (ST-8c):** all of a table's chunk upserts commit
+//! together (with `SET LOCAL synchronous_commit = off` for the copy session), so
+//! the copy pays one WAL flush per table instead of one per 512-row chunk. The
+//! leg is idempotent (a crash re-runs the read-only export) and the marker is
+//! written only after a full parity-clean pass, so relaxing copy-time durability
+//! does not weaken the fail-closed contract.
+//!
+//! **Cooperative per-table deadline (ST-8b):** `deadline` is checked BETWEEN
+//! chunks, so an over-budget table returns `Err` with its transaction rolled back
+//! cleanly (never a future dropped mid-transaction); the caller then writes no
+//! marker and the app stays on SQLite.
+//!
 //! Reads never hold a SQLite borrow across an `.await`: each chunk is read
 //! synchronously and dropped before the PostgreSQL write, so the copy future is
 //! `Send` (the supervisor's background task requires it).
@@ -17,10 +29,12 @@
 //! with `OVERRIDING SYSTEM VALUE` and their sequence is advanced to the migrated
 //! maximum, so post-migration inserts cannot collide with a carried id.
 
+use std::time::Instant;
+
 use anyhow::{anyhow, Context, Result};
 use futures_util::TryStreamExt;
 use rusqlite::Connection;
-use sqlx::{PgPool, Postgres, Row as _};
+use sqlx::{PgConnection, PgPool, Postgres, Row as _};
 
 use crate::infrastructure::storage::engine::quote_ident;
 use crate::infrastructure::storage::feature_store::ColumnType;
@@ -35,12 +49,13 @@ pub async fn copy_table(
     conn: &mut Connection,
     pool: &PgPool,
     spec: &TableSpec,
+    deadline: Instant,
 ) -> Result<TableParity> {
-    copy_table_with_fault(conn, pool, spec, None).await
+    copy_table_with_fault(conn, pool, spec, None, deadline).await
 }
 
 /// Copy one source table into PostgreSQL and return its independent parity pair,
-/// honouring the **G-275** fault seam.
+/// honouring the **G-275** fault seam and the **ST-8b** per-table `deadline`.
 ///
 /// * [`MigrationFault::ExportError`] targeting `spec.name` aborts before any
 ///   read/copy with an injected error (fail-closed, before parity).
@@ -48,13 +63,19 @@ pub async fn copy_table(
 ///   target after the copy and before the target count/checksum, so the parity
 ///   gate observes a count + checksum mismatch (R-4.1).
 ///
-/// With `fault == None` the path is byte-identical to the un-forced default.
+/// The whole chunk loop runs inside ONE transaction (ST-8c) with
+/// `SET LOCAL synchronous_commit = off`; the deadline (ST-8b) is checked between
+/// chunks so an overrun rolls the transaction back cleanly. With `fault == None`
+/// the copied bytes are byte-identical to the un-forced default.
 pub async fn copy_table_with_fault(
     conn: &mut Connection,
     pool: &PgPool,
     spec: &TableSpec,
     fault: Option<&MigrationFault>,
+    deadline: Instant,
 ) -> Result<TableParity> {
+    let table_started = Instant::now();
+
     if let Some(MigrationFault::ExportError(table)) = fault {
         if &spec.name == table {
             return Err(anyhow!(
@@ -72,6 +93,20 @@ pub async fn copy_table_with_fault(
     let identity_columns = identity_columns(pool, &spec.name).await?;
     let overriding_identity = !identity_columns.is_empty();
 
+    // ST-8c: ONE transaction per table. A `Drop` (error / cancelled future)
+    // rolls every chunk of this table back atomically, so a partial table is
+    // never left behind for the (fail-closed, marker-less) re-run.
+    let mut tx = pool
+        .begin()
+        .await
+        .with_context(|| format!("[migration] begin copy transaction for '{}'", spec.name))?;
+    // The leg is idempotent and the marker is written only after a parity-clean
+    // pass, so the copy session may skip the per-commit fsync.
+    sqlx::query("SET LOCAL synchronous_commit = off")
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("[migration] relax synchronous_commit for '{}'", spec.name))?;
+
     let mut source_rows: i64 = 0;
     let mut source_hasher = RowHasher::new();
     if spec.pk.is_empty() {
@@ -84,11 +119,13 @@ pub async fn copy_table_with_fault(
         }
         source_rows = all.len() as i64;
         for chunk in all.chunks(MIGRATION_CHUNK_ROWS) {
-            flush_chunk(pool, spec, chunk, overriding_identity).await?;
+            ensure_within_budget(deadline, &spec.name)?;
+            flush_chunk(&mut tx, spec, chunk, overriding_identity).await?;
         }
     } else {
         let mut cursor: Option<Vec<CellValue>> = None;
         loop {
+            ensure_within_budget(deadline, &spec.name)?;
             let chunk = read_chunk(conn, spec, cursor.as_deref())?;
             if chunk.is_empty() {
                 break;
@@ -97,7 +134,7 @@ pub async fn copy_table_with_fault(
                 source_hasher.update_row(row);
             }
             source_rows += chunk.len() as i64;
-            flush_chunk(pool, spec, &chunk, overriding_identity).await?;
+            flush_chunk(&mut tx, spec, &chunk, overriding_identity).await?;
             cursor = Some(primary_key_values(
                 spec,
                 chunk.last().expect("chunk is non-empty"),
@@ -105,6 +142,10 @@ pub async fn copy_table_with_fault(
         }
     }
     let source_checksum = source_hasher.finish();
+
+    tx.commit()
+        .await
+        .with_context(|| format!("[migration] commit copy transaction for '{}'", spec.name))?;
 
     if overriding_identity {
         reset_identity_sequences(pool, spec, &identity_columns).await?;
@@ -158,7 +199,21 @@ pub async fn copy_table_with_fault(
         target_checksum: target_checksum.clone(),
         checksum_match: source_checksum == target_checksum,
         read_only_source: true,
+        elapsed_ms: table_started.elapsed().as_millis(),
     })
+}
+
+/// Cooperative per-table deadline check (ST-8b), called BETWEEN chunks so the
+/// table's transaction is rolled back cleanly (never a future dropped
+/// mid-transaction). Fail-closed: an overrun returns `Err`, so the caller writes
+/// no marker and the app stays on SQLite.
+fn ensure_within_budget(deadline: Instant, table: &str) -> Result<()> {
+    if Instant::now() >= deadline {
+        return Err(anyhow!(
+            "[migration] table '{table}' exceeded its per-table copy budget"
+        ));
+    }
+    Ok(())
 }
 
 /// Read at most [`MIGRATION_CHUNK_ROWS`] source rows PK-ordered, after `cursor`.
@@ -258,9 +313,10 @@ fn primary_key_values(spec: &TableSpec, row: &[CellValue]) -> Vec<CellValue> {
         .collect()
 }
 
-/// Upsert one chunk on PostgreSQL.
+/// Upsert one chunk on PostgreSQL through the table's transaction connection
+/// (ST-8c: one transaction per table, not one autocommit per chunk).
 async fn flush_chunk(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     spec: &TableSpec,
     rows: &[Vec<CellValue>],
     overriding_identity: bool,
@@ -303,7 +359,7 @@ async fn flush_chunk(
         }
     }
     query
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .with_context(|| format!("[migration] copy rows into '{}'", spec.name))?;
     Ok(())

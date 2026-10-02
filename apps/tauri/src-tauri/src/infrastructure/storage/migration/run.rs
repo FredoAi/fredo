@@ -2,9 +2,14 @@
 //!
 //! [`run_pre_install`] is called by the supervisor BETWEEN
 //! `run_pg_schema_inits` and `install_postgres`, against the **candidate** pool.
-//! It is fail-closed: any error (or the whole-leg [`MIGRATION_BOUND`] timeout)
-//! returns `Err` having written no marker, so the caller installs nothing and
-//! the app stays on SQLite (R-2.2/R-2.3).
+//! It is fail-closed: any error (or the whole-leg [`MIGRATION_HARD_CEILING`]
+//! timeout) returns `Err` having written no marker, so the caller installs
+//! nothing and the app stays on SQLite (R-2.2/R-2.3).
+//!
+//! Each table is copied under its OWN proportional budget (ST-8a/ST-8b), checked
+//! cooperatively between chunks, so a single oversized table can never starve the
+//! tables ordered after it — every physical table is attempted. The whole-leg
+//! [`MIGRATION_HARD_CEILING`] remains the fail-closed backstop.
 //!
 //! Ordering contract:
 //! 1. read the completion marker from the candidate pool — present ⇒ `Skipped`;
@@ -30,8 +35,8 @@ use super::gate::MigrationGuard;
 use super::snapshot::{open_snapshot_read_only, take_snapshot_with_fault};
 use super::tables::{enumerate_tables, TableSpec};
 use super::{
-    current_migration_fault, MigrationFault, MigrationOutcome, MigrationStatus, MIGRATION_BOUND,
-    MIGRATION_COMPLETED_KEY,
+    current_migration_fault, migration_table_budget, MigrationFault, MigrationOutcome,
+    MigrationStatus, MIGRATION_COMPLETED_KEY, MIGRATION_HARD_CEILING,
 };
 
 /// The read-only status view the `migration_status` command exposes.
@@ -95,19 +100,21 @@ pub async fn run_pre_install(
         });
     }
 
-    // 2-5. The whole leg under the wall-clock bound (G-263). The G-275 fault
-    //      seam is read ONCE here; unset ⇒ `None` ⇒ the default path is
-    //      byte-identical. The exclusive barrier is held by the caller.
+    // 2-5. The whole leg under the hard ceiling (ST-8a; G-263). Per-table
+    //      budgets are enforced cooperatively inside `run_locked`; this ceiling
+    //      is the fail-closed backstop. The G-275 fault seam is read ONCE here;
+    //      unset ⇒ `None` ⇒ the default path is byte-identical. The exclusive
+    //      barrier is held by the caller.
     let fault = current_migration_fault();
     match tokio::time::timeout(
-        MIGRATION_BOUND,
+        MIGRATION_HARD_CEILING,
         run_locked(source_db, migration_dir, pool, started, fault.as_ref()),
     )
     .await
     {
         Ok(result) => result,
         Err(_) => Err(anyhow!(
-            "[migration] the migration leg exceeded its {MIGRATION_BOUND:?} wall-clock bound"
+            "[migration] the migration leg exceeded its {MIGRATION_HARD_CEILING:?} hard ceiling"
         )),
     }
 }
@@ -130,7 +137,20 @@ async fn run_locked(
 
     let mut parities = Vec::with_capacity(tables.len());
     for spec in &tables {
-        let parity = copy_table_with_fault(&mut conn, pool, spec, fault).await?;
+        // ST-8a/ST-8b: give each table its own proportional budget (derived from
+        // its source row count) and enforce it cooperatively between chunks. A
+        // single oversized table can no longer starve the tables after it — the
+        // loop always advances to the next table.
+        let rows = source_row_count(&conn, spec)?;
+        let deadline = Instant::now() + migration_table_budget(rows);
+        let parity = copy_table_with_fault(&mut conn, pool, spec, fault, deadline).await?;
+        tracing::info!(
+            target: "fredo::migration",
+            table = %spec.name,
+            rows = parity.source_rows,
+            elapsed_ms = parity.elapsed_ms as u64,
+            "table copied"
+        );
         if !parity.count_match || !parity.checksum_match {
             return Err(anyhow!(
                 "[migration] parity mismatch on '{}': rows {}/{} checksums {}/{}",
@@ -179,16 +199,7 @@ fn resolve_fault(
     match fault {
         Some(MigrationFault::DropRowFirstNonEmpty) => {
             for spec in tables {
-                let count: i64 = conn
-                    .query_row(
-                        &format!("SELECT COUNT(*) FROM {}", quote_ident(&spec.name)),
-                        [],
-                        |row| row.get(0),
-                    )
-                    .with_context(|| {
-                        format!("[migration] count source table '{}'", spec.name)
-                    })?;
-                if count > 0 {
+                if source_row_count(conn, spec)? > 0 {
                     return Ok(Some(MigrationFault::DropRow(spec.name.clone())));
                 }
             }
@@ -196,6 +207,18 @@ fn resolve_fault(
         }
         other => Ok(other.cloned()),
     }
+}
+
+/// The source row count of one enumerated table (ST-8b), read through the
+/// read-only snapshot handle. Drives the per-table budget (ST-8a) and the
+/// `1`/`true` fault-seam resolution.
+fn source_row_count(conn: &Connection, spec: &TableSpec) -> Result<i64> {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {}", quote_ident(&spec.name)),
+        [],
+        |row| row.get(0),
+    )
+    .with_context(|| format!("[migration] count source table '{}'", spec.name))
 }
 
 /// The read-only live status hook (no state mutation). Registered in `lib.rs`.

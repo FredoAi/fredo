@@ -497,7 +497,7 @@ async fn measurement_phase(tmp: &Path, scratch_dir: &Path, url: &str) {
     let started = Instant::now();
     let outcome = run_pre_install(&large_db, &migration_dir, &pool, &guard)
         .await
-        .expect("the large copy must complete within MIGRATION_BOUND");
+        .expect("the large copy must complete within the migration budget");
     let wall_clock = started.elapsed();
     drop(guard);
     assert_eq!(outcome.status, MigrationStatus::Completed);
@@ -509,27 +509,73 @@ async fn measurement_phase(tmp: &Path, scratch_dir: &Path, url: &str) {
         "every large-fixture table must pass both parity comparisons"
     );
 
+    // ST-8f: the per-table loop must REACH every physical table, including the
+    // tables ordered AFTER the large `telemetry_metrics` table. A giant table
+    // can no longer abort the whole leg before the tail is attempted — assert
+    // every enumerated table has a parity pair and that the tail tables (the
+    // exact round-3 zeros) are present.
+    let source_conn = Connection::open_with_flags(&large_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open the large fixture read-only");
+    let source_tables = enumerate_tables(&source_conn).expect("enumerate the large fixture");
+    for spec in &source_tables {
+        let parity = outcome
+            .tables
+            .iter()
+            .find(|parity| parity.table == spec.name)
+            .unwrap_or_else(|| panic!("no parity recorded for tail table '{}'", spec.name));
+        assert!(
+            parity.count_match && parity.checksum_match,
+            "tail table '{}' must pass both parity comparisons",
+            spec.name
+        );
+    }
+    assert_eq!(
+        outcome.tables.len(),
+        source_tables.len(),
+        "every physical table must be attempted (per-table budget must not starve the tail)"
+    );
+    for tail in ["telemetry_metrics", "telemetry_spans", "tool_use_rows"] {
+        assert!(
+            outcome.tables.iter().any(|parity| parity.table == tail),
+            "the table '{tail}' ordered at/after the large metrics table must be carried"
+        );
+    }
+
     let peak_working_set = peak_working_set_bytes();
     let largest = scale.largest_table_rows();
     let chunks = largest.div_ceil(MIGRATION_CHUNK_ROWS);
+    let per_table: String = outcome
+        .tables
+        .iter()
+        .map(|parity| {
+            format!(
+                "`{}` {} rows, {} ms",
+                parity.table, parity.source_rows, parity.elapsed_ms
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     let report = format!(
         "# AC5 measurement — one-shot `fredo.db` → PostgreSQL copy\n\n\
          - **Fixture:** a GENERATED deterministic fixture (NOT the live dev DB); \
          source `{}` ({} bytes)\n\
-         - **Scale:** largest table `chat_rows` = {} rows; total fixture rows = {}; \
-         `MIGRATION_CHUNK_ROWS` = {} ⇒ ~{} chunks in the largest table\n\
+         - **Scale:** largest table = {} rows (`telemetry_metrics` = {} rows); \
+         total fixture rows = {}; `MIGRATION_CHUNK_ROWS` = {} ⇒ ~{} chunks in the largest table\n\
          - **Wall clock (snapshot + copy + parity + marker):** {} ms\n\
          - **`MigrationOutcome.elapsed_ms`:** {}\n\
+         - **Per-table `elapsedMs`:** {}\n\
          - **Peak working set** (`Get-Process PeakWorkingSet64`): {}\n\
          - **Parity:** {} tables, every count + checksum matched\n",
         large_db.display(),
         fixture_bytes,
         largest,
+        scale.telemetry_metrics,
         scale.total_rows(),
         MIGRATION_CHUNK_ROWS,
         chunks,
         wall_clock.as_millis(),
         outcome.elapsed_ms,
+        per_table,
         peak_working_set
             .map(|bytes| format!("{bytes} bytes ({:.1} MiB)", bytes as f64 / 1_048_576.0))
             .unwrap_or_else(|| "unavailable".to_string()),

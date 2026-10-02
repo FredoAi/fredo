@@ -143,6 +143,9 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<Vec<TableParity>> {
             target_checksum: checksum,
             checksum_match: true,
             read_only_source: true,
+            // Snapshot verification is a local re-read, not a copy — no copy
+            // duration applies.
+            elapsed_ms: 0,
         });
     }
     Ok(out)

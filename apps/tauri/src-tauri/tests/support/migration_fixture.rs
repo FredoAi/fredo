@@ -60,14 +60,18 @@ impl FixtureScale {
     };
 
     /// The **AC5** measurement fixture: > 100k rows in the largest table, so
-    /// the copy exercises many `MIGRATION_CHUNK_ROWS = 512` chunks.
+    /// the copy exercises many `MIGRATION_CHUNK_ROWS = 512` chunks. ST-8e:
+    /// `telemetry_metrics` (the real corpus' dominant table) is raised to 120k
+    /// so this fixture exercises that table's shape — it is still ~87× smaller
+    /// than the real corpus (10,480,700 rows), so the live cutover, not this
+    /// fixture, is the AC5 receipt.
     pub const LARGE: FixtureScale = FixtureScale {
         chat_rows: 120_000,
         tool_use_rows: 20_000,
         agent_session_rows: 4_000,
         telemetry_spans: 100_000,
         telemetry_logs: 20_000,
-        telemetry_metrics: 10_000,
+        telemetry_metrics: 120_000,
         feature_items: 20_000,
         tombstones: 100,
     };
