@@ -436,7 +436,14 @@ fn seed_tool_use_rows(conn: &Connection, count: usize) -> Result<()> {
         let i = index as i64;
         let session = format!("s{index:06}");
         let correlation = format!("s{index:06}_t0");
-        let started = 1_790_000_000_000_000_000i64 + i * 1_000_000;
+        // ST-7d / F-12: start each tool STRICTLY AFTER its parent chat row
+        // (chat_start + 1 ms). The product's tool→chat association rule requires
+        // `parentStart < callStart` (`useMissionMonitor.ts:349`), so a tie (the
+        // old formula used the identical `+ i * 1_000_000`) resolves no parent
+        // and the `── TOOLS (N) ──` section never renders. The parent chat row's
+        // end (`chat_start + 500 ms` when closed, `NULL` when open) still admits
+        // the call. Both SMALL and LARGE scales inherit this offset.
+        let started = 1_790_000_000_000_000_000i64 + i * 1_000_000 + 1_000_000;
         let tool_name = ["read", "bash", "edit"][index % 3];
         let tool_error = if index % 4 == 0 {
             Some("injected tool error")

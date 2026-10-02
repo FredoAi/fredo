@@ -710,7 +710,11 @@ fn fixture_generator_is_deterministic() {
 /// * every `chat_rows` / `tool_use_rows` / `agent_session_rows.state` value is
 ///   the canonical LOWERCASE storage form ([`RowState::as_str`],
 ///   `rows.rs:44-55`) — never the PascalCase wire enum and never an unknown
-///   token such as `streaming`/`complete` (`store.rs:356-370`).
+///   token such as `streaming`/`complete` (`store.rs:356-370`); and
+/// * at least one `tool_use_rows` row attaches to its parent `chat_rows` row
+///   under the product's strict start-time rule (`tool.started_at_ns >
+///   chat.started_at_ns`, and before the chat end) — the invariant that makes
+///   the `── TOOLS (N) ──` section render (`useMissionMonitor.ts:342-357`).
 ///
 /// Runs ungated (fast, no PG).
 #[test]
@@ -781,6 +785,29 @@ fn fixture_rows_are_production_shaped() {
         }
     }
     assert!(checked > 0, "the fixture must seed at least one RTDB row");
+
+    // (c) ST-7c′ / F-12: at least one tool row must ATTACH to its parent chat
+    // row under the product's strict time-window rule
+    // (`useMissionMonitor.ts:342-357`): the tool starts STRICTLY AFTER its
+    // same-session chat row and before that chat row's end (or the chat row is
+    // still open). A fixture that ties the two timestamps resolves no parent and
+    // renders no `── TOOLS (N) ──` element, so this pins the invariant in CI.
+    let attaching_tools: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tool_use_rows t
+             JOIN chat_rows c ON c.session_id = t.session_id
+             WHERE t.started_at_ns > c.started_at_ns
+               AND (c.ended_at_ns IS NULL OR c.ended_at_ns > t.started_at_ns)",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count the tool rows that attach to a parent chat row");
+    assert!(
+        attaching_tools > 0,
+        "the fixture must seed at least one tool row that attaches to its parent chat row \
+         under the strict start-time rule (tool.started_at_ns > chat.started_at_ns, and before \
+         the chat end)"
+    );
 }
 
 /// Rebuild the canonical small fixture at `.opencode/tmp/2977/fixture/fredo.db`
