@@ -126,6 +126,16 @@ this one).
   stays bounded (no full-table materialization); a BEFORE/AFTER measurement (wall-clock + peak
   RSS/working set) is recorded with the fixture scale named. **FAIL** = an unbounded single-shot
   copy, unbounded memory, or no recorded measurement.
+  **Round 3 (2026-10-01) FAIL on the real full-size corpus.** The plan's F-11 test data is "a full-size
+  copy of the dev `fredo.db`"; the real dev corpus has `telemetry_metrics` = **10,480,700** rows
+  (total ≈10.56 M rows). The 512-row chunked copy ran but the leg hit `MIGRATION_BOUND` (300 s) after
+  copying **6,346,240** metrics rows (~21,000 rows/s ⇒ full corpus ~500 s; the round-2 fixture
+  measurement of 294,100 rows in 26,551 ms predicts ~960 s). `migration_status.status=Failed`,
+  `storage_engine_status.fallbackReason="[migration] … exceeded its 300s wall-clock bound"`. Rounds 1–2
+  measured a 120,000-row fixture (50,995,200 bytes), which is not the real corpus. **Expected vs actual:**
+  expected a completed full-size copy; actual = fail-closed at the bound. **Repro:** set
+  `postgres.enabled=true`, `dev-env.ps1 -Action Up -Spec 2977 -EnvVar "FREDO_PG_DATA_DIR=…"` against the
+  real `fredo.db`; read `migration_status` / `storage_engine_status`; managed `psql` `SELECT count(*) FROM telemetry_metrics`.
 
 - [ ] **F-12 (HUMAN MISSION-MONITOR DIRECTIVE, G-256) — boot on the migrated data and render
   sessions / tools / tokens in Mission Monitor (parity vs pre-migration).**
@@ -158,6 +168,26 @@ this one).
   `tool_use_rows.s000001_t0` both have `started_at_ns = 1790000000001000000`. Production tool spans
   start strictly AFTER their chat turn, so real migrated data is unaffected. Fix = offset the
   fixture tool `started_at_ns` (e.g. chat_start + 1 ms) so the parent rule resolves.
+  **Round 3 (2026-10-01) FAIL on the real corpus (capacity).** The corrected synthetic fixture is no
+  longer the blocker — but the human directive is about REAL migrated data, and the real `fredo.db`
+  cannot migrate: `telemetry_metrics` = 10,480,700 rows exceeds `MIGRATION_BOUND` (300 s); the leg
+  fails closed and the app stays on SQLite (`fallbackReason` above), so it never boots on migrated
+  data. **Decisive receipt impossible** until the capacity ceiling is addressed (raise the bound /
+  speed the copy / scope metrics out). Corroboration: the `── TOOLS (N) ──` element RENDERS on the
+  real corpus pre-migration (SQLite) — session `ses_f268a0f47ffe0eM1m0bwLpdEei`, N up to 143; the
+  round-2 missing-element symptom was the fixture tie, fixed by ST-7d + pinned by ST-7c′. The blocker
+  is now capacity, not rendering. **Promoted to F-16.**
+
+- [ ] **F-16 (promoted from F-12 round 3) — a REAL full-size `fredo.db` completes the one-shot
+  migration within `MIGRATION_BOUND` and boots on PostgreSQL.**
+  On the real dev corpus, enable PG and boot: the migration must complete (marker set, engine flips to
+  postgres) and Mission Monitor must render the migrated sessions/tools/tokens at parity with the
+  pre-migration SQLite baseline.
+  **Expected:** `migration_status.status=Completed`, `storage_engine_status.engine="postgres"`, every
+  table count+checksum matched, and MM renders the real session's `── TOOLS (N) ──` from the migrated
+  store. **Round 3 (2026-10-01): FAIL** — the leg exceeds the 300 s bound on 10,480,700
+  `telemetry_metrics` rows and fails closed (engine stays SQLite). **FAIL** = any real corpus that
+  cannot complete the one-shot carry.
 
 - [ ] **F-13 (NFR) — zero-warning build gates + Windows-first.**
   Run `cargo check --locked`, `cargo clippy --locked -- -D warnings`, `cargo test --locked`.
@@ -194,6 +224,12 @@ this one).
   (`sessions` sessionRollup shape + `tools`) and lowercase canonical states; the ungated guard
   `fixture_rows_are_production_shaped` is green, and the live SQLite boot projected the declared
   tables with zero `missing field 'name'` / `unknown rtdb row state` warnings.
+  **Round 3 (2026-10-01): PASS (extended).** ST-7d offsets the fixture tool `started_at_ns` to
+  `chat_start + 1,000,000 ns`, and ST-7c′ extends the ungated guard with assertion (c): at least one
+  `tool_use_rows` row attaches to its same-session `chat_rows` row under the strict rule
+  (`t.started_at_ns > c.started_at_ns AND (c.ended_at_ns IS NULL OR c.ended_at_ns > t.started_at_ns)`).
+  `cargo test --locked --test postgres_migration` → `test fixture_rows_are_production_shaped ... ok`,
+  `3 passed; 0 failed; 1 ignored`. This pins the exact round-2 root cause (the tool/chat start tie).
 
 ## Non-functional
 
