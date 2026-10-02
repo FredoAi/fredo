@@ -5,8 +5,11 @@
 //! ([`super::runtime`]) / startup-safety primitives ([`super::sweep`],
 //! [`super::lock`]). It owns:
 //!
-//! * the disable-by-default decision (`postgres.enabled` absent ⇒ nothing is
-//!   locked, swept, or spawned — SQLite persistence is untouched, R-1.4);
+//! * the boot decision: since Spec #2979 CU-1 the engine default is PostgreSQL,
+//!   so the supervisor starts unless the legacy control-plane key
+//!   `postgres.enabled=false` opts out (nothing is locked, swept, or spawned —
+//!   SQLite persistence is untouched, R-1.4). The PID/password markers it reads
+//!   and writes live on the dedicated control plane (`control.db`);
 //! * the exclusive data-dir lock acquired BEFORE the orphan sweep (R-4.5);
 //! * the LAZY background start — `lib.rs` setup NEVER awaits `setup()/start()/
 //!   probe_ready()` (G-273/R-2.3), so the webview shell renders while the
@@ -199,15 +202,24 @@ enum Bootstrap {
     Locked(PgDataDirLock, String),
 }
 
-/// The slice-1 KV enable flag: ONLY the literal `"true"` enables the engine;
-/// absent, blank, or any other value leaves persistence unchanged (R-1.4). Used
-/// as the fallback when no shared engine state is managed (unit tests / a
-/// pre-ST-2 caller); in production the resolved engine choice supersedes it.
+/// The no-managed-state fallback enable flag. PostgreSQL is UNCONDITIONAL, so
+/// this is always `true` (Spec #2979 CU-1-R2): the legacy `postgres.enabled`
+/// control key is INERT — a carried `"false"` out of an upgraded install must
+/// NOT disable the PostgreSQL-only data plane. Used only when no shared engine
+/// state is managed (unit tests / a pre-ST-2 caller); in production the resolved
+/// engine choice supersedes it.
 fn pg_enabled(store: &AppStore) -> bool {
-    matches!(
-        store.control_get(PG_ENABLED_KEY).ok().flatten().as_deref(),
-        Some("true")
-    )
+    // The legacy key is read for diagnostics only; its value NEVER disables the
+    // PostgreSQL-only data plane.
+    let carried = store.control_get(PG_ENABLED_KEY).ok().flatten();
+    if carried.is_some() {
+        tracing::debug!(
+            target: "fredo::pg_supervisor",
+            carried = ?carried,
+            "legacy postgres.enabled control key is inert (PostgreSQL is unconditional)"
+        );
+    }
+    true
 }
 
 /// The **FS-4** fault seam resolved to a named pool-build stage: the non-blank
@@ -283,11 +295,13 @@ pub fn start_supervisor(app: &AppHandle) {
     // stay on the OS dir (see `bootstrap` below).
     let data_dir = resolve_app_data_dir(&os_app_data_dir);
 
-    // Spec #2975 ST-2: the resolved engine choice drives the boot decision. The
-    // env lever `FREDO_STORAGE_ENGINE` (resolved by `select_engine` at setup and
-    // carried on the managed engine state) OVERRIDES the control-plane
-    // `postgres.enabled`; with no override the slice-1 KV rule applies
-    // (absent ⇒ disabled, so persistence is unchanged — R-1.4).
+    // Spec #2975 ST-2 / Spec #2979 CU-1-R2: the resolved engine choice drives the
+    // boot decision. PostgreSQL is UNCONDITIONAL: `FREDO_STORAGE_ENGINE` is inert
+    // (`postgres` selects PG; `sqlite` => PG) and the legacy control-plane
+    // `postgres.enabled` key is INERT — a carried `"false"` must not brick the
+    // PostgreSQL-only data plane. The shared engine state's choice (always
+    // `EngineChoice::Postgres`) is authoritative; `pg_enabled` is the
+    // no-managed-state fallback and likewise always enables the supervisor.
     let enabled = match app.try_state::<Arc<StorageEngineState>>() {
         Some(state) => state.choice() == EngineChoice::Postgres,
         None => pg_enabled(&store),
@@ -424,9 +438,10 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
             // Spec #2975 ST-2 pool-ready callback (REQ-1/EARS-1.2): after the
             // readiness probe resolves, build ONE bounded pool and install it
             // into the shared handle EXACTLY once. ANY failure/timeout installs
-            // NOTHING and records the reason — the app stays on SQLite
-            // (fail-closed, REQ-3/EARS-3.2). The FS-4 seam forces this
-            // deterministically for QA (REQ-3/EARS-3.3).
+            // NOTHING and records the reason — the handle stays Pending, so the
+            // data plane is unavailable until a later startup re-runs the leg
+            // (fail-closed, R-1.4; NO SQLite data-plane fallback). The FS-4 seam
+            // forces this deterministically for QA (REQ-3/EARS-3.3).
             //
             // ST-2 rework: AFTER the pool builds and BEFORE the install, run the
             // registered startup schema initializers against the candidate pool,
@@ -440,14 +455,18 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                     match build_pg_pool(&url, pool_force_fail_stage()).await {
                         Ok(pg) => match engine.run_pg_schema_inits(&pg.pool) {
                             Ok(()) => {
-                                // Spec #2977 ST-5: the one-shot `fredo.db` →
-                                // PostgreSQL data migration is the LAST pre-install
-                                // step, BETWEEN the schema inits and the install.
-                                // Fail-closed (R-2.2): a failed leg records the
-                                // reason and installs NOTHING — the engine stays on
-                                // SQLite and the next boot re-runs the idempotent
-                                // read-only export. The marker is written inside
-                                // `run_pre_install` ONLY on a fully parity-clean run.
+                                // Spec #2977 ST-5 / #2979 CU-3: the one-shot
+                                // `fredo.db` → PostgreSQL data migration is the
+                                // LAST pre-install step, BETWEEN the schema inits
+                                // and the install. A source-absent data dir returns
+                                // `Fresh` (no leg; PostgreSQL installs normally,
+                                // R-1.1/R-4.1). Fail-closed (R-1.4): a failed leg
+                                // records the reason and installs NOTHING — the
+                                // handle stays Pending (no SQLite data-plane
+                                // fallback) and the next boot re-runs the
+                                // idempotent read-only export. The marker is
+                                // written inside `run_pre_install` ONLY on a fully
+                                // parity-clean run.
                                 //
                                 // R-3.5 (G-123): the EXCLUSIVE migration barrier is
                                 // acquired HERE and held across `install_postgres`, so
@@ -465,7 +484,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                         tracing::error!(
                                             target: "fredo::pg_supervisor",
                                             reason = %reason,
-                                            "could not acquire the migration barrier; storage engine stays on SQLite (fail-closed)"
+                                            "could not acquire the migration barrier; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                                         );
                                         engine.record_migration_outcome(MigrationOutcome {
                                             status: MigrationStatus::Failed,
@@ -485,12 +504,16 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                         .await
                                         {
                                             Ok(outcome) => {
+                                                let migration_status = outcome.status;
                                                 engine.record_migration_outcome(outcome);
                                                 // Still under the barrier: the install
                                                 // is the final step of the window.
+                                                // `Fresh`/`Skipped`/`Completed` all
+                                                // install PostgreSQL (R-1.1/R-1.3).
                                                 engine.install_postgres(pg);
                                                 tracing::info!(
                                                     target: "fredo::pg_supervisor",
+                                                    ?migration_status,
                                                     "storage engine installed: postgres"
                                                 );
                                             }
@@ -499,7 +522,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                                 tracing::error!(
                                                     target: "fredo::pg_supervisor",
                                                     reason = %reason,
-                                                    "data migration failed; storage engine stays on SQLite (fail-closed)"
+                                                    "data migration failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                                                 );
                                                 engine.record_migration_outcome(MigrationOutcome {
                                                     status: MigrationStatus::Failed,
@@ -522,7 +545,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                 tracing::error!(
                                     target: "fredo::pg_supervisor",
                                     reason = %reason,
-                                    "schema init failed; storage engine stays on SQLite (fail-closed)"
+                                    "schema init failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                                 );
                                 engine.set_fallback_reason(reason);
                             }
@@ -532,7 +555,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                             tracing::error!(
                                 target: "fredo::pg_supervisor",
                                 reason = %reason,
-                                "pool build failed; storage engine stays on SQLite (fail-closed)"
+                                "pool build failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                             );
                             engine.set_fallback_reason(reason);
                         }
@@ -565,7 +588,8 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
         }
         Err((stage, error)) => {
             // Spec #2975 ST-2: a selection/setup/start/readiness failure leaves
-            // the engine on SQLite — record why (fail-closed, REQ-3/EARS-3.2).
+            // the handle Pending — record why (fail-closed, R-1.4; no SQLite
+            // data-plane fallback).
             if let Some(engine) = engine.as_ref() {
                 if engine.choice() == EngineChoice::Postgres {
                     engine.set_fallback_reason(structured_error(stage, &error));
@@ -812,23 +836,48 @@ mod tests {
     };
 
     fn open_store(dir: &Path) -> AppStore {
-        use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
-        let sqlite = SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine");
-        AppStore::open(EngineHandle::new(StoreEngine::Sqlite(sqlite))).expect("open app store")
+        use crate::infrastructure::storage::engine::EngineHandle;
+        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
     #[test]
-    fn only_the_literal_true_enables_the_engine() {
+    fn the_enabled_key_is_inert_postgres_is_unconditional() {
+        // CU-1-R2: the no-managed-state fallback always enables PostgreSQL; the
+        // legacy `postgres.enabled` key can never disable it (a carried `false`
+        // must not brick the PG-only data plane).
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
 
-        assert!(!pg_enabled(&store), "an absent flag is disabled (R-1.4)");
-        for raw in ["false", "TRUE", "True", "1", "yes", "", "  true"] {
+        assert!(pg_enabled(&store), "absent flag still enables PostgreSQL");
+        for raw in ["false", "FALSE", "False", "0", "no", "", "  false", "true"] {
             store.control_set(PG_ENABLED_KEY, raw).expect("seed flag");
-            assert!(!pg_enabled(&store), "{raw:?} must not enable the engine");
+            assert!(
+                pg_enabled(&store),
+                "{raw:?} must not disable the PostgreSQL default"
+            );
         }
-        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
-        assert!(pg_enabled(&store));
+    }
+
+    #[test]
+    fn the_postgres_password_lives_on_the_control_plane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+
+        let password = ensure_password(&store);
+        assert!(!password.is_empty(), "a password is generated on first use");
+        assert_eq!(
+            store.control_get(PG_PASSWORD_KEY).expect("read"),
+            Some(password.clone()),
+            "the password is persisted on the control plane"
+        );
+        assert!(
+            dir.path()
+                .join(crate::infrastructure::storage::CONTROL_DB_FILENAME)
+                .exists(),
+            "the control plane must be materialized on control.db (CU-1)"
+        );
+        // Reused, never regenerated.
+        assert_eq!(ensure_password(&store), password);
     }
 
     #[test]

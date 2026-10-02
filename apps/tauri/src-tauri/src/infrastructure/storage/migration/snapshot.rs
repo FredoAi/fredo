@@ -1,15 +1,33 @@
 //! Pre-cutover snapshot, verification, and the executable SQLite backout
 //! (ST-3, R-3.1/R-3.3/R-3.4).
 //!
-//! - [`take_snapshot`] runs `PRAGMA wal_checkpoint(TRUNCATE)` then
-//!   `VACUUM INTO <migration_dir>/fredo.pre-cutover.db`. Exactly ONE snapshot is
-//!   kept, overwritten per attempt, and never auto-deleted (Q-13) — it IS the
-//!   backout. `fredo.db` itself is never mutated or deleted by the migration leg.
+//! - [`take_snapshot`] opens the source `fredo.db` with a **strictly read-only**
+//!   handle and runs `VACUUM INTO <migration_dir>/fredo.pre-cutover.db`. The
+//!   read-only source is never written: `VACUUM INTO` reads a consistent
+//!   pre-cutover view (including committed WAL frames) and writes ONLY the
+//!   snapshot target. Exactly ONE snapshot is kept, overwritten per attempt, and
+//!   never auto-deleted (Q-13) — it IS the backout. `fredo.db` itself is never
+//!   mutated or deleted by the migration leg.
 //! - [`verify_snapshot`] re-opens the snapshot read-only and recomputes the same
 //!   per-table counts/checksums, so a caller can compare them against the
 //!   pre-cutover values.
+//! - [`verify_rollback_snapshot`] / [`compare_rollback_parity`] recompute the
+//!   retained snapshot and compare it, table by table, against the recorded
+//!   pre-cutover parity — the pure decision `verify_rollback` persists (R-2.2).
 //! - [`restore_snapshot`] copies the snapshot over the target `fredo.db` through
 //!   an atomic temp-file + rename, then clears any stale WAL sidecars.
+//!
+//! # Snapshot retention — Q-13 (Spec #2979 CU-4)
+//!
+//! There is exactly ONE snapshot, `<migration_dir>/fredo.pre-cutover.db`
+//! ([`SNAPSHOT_FILENAME`]) under [`super::resolve_migration_dir`]. It is
+//! overwritten per cutover attempt (a re-run after a failed parity gate replaces
+//! it), retained **read-only for the life of the release** alongside `fredo.db`,
+//! and pruned only at the NEXT release's cleanup — never automatically by the
+//! migration leg. `take_snapshot` opens the source `fredo.db` strictly read-only
+//! and never mutates it, and `verify_rollback` never mutates the snapshot or
+//! `fredo.db` (it opens the snapshot with a strictly read-only handle). This is
+//! the executable SQLite backout artifact.
 
 use std::path::{Path, PathBuf};
 
@@ -34,9 +52,6 @@ pub struct SnapshotRecord {
     pub path: PathBuf,
     /// ISO-8601 UTC creation timestamp.
     pub created_at: String,
-    /// `true` when the pre-snapshot `wal_checkpoint(TRUNCATE)` completed without
-    /// a busy result.
-    pub checkpointed: bool,
     /// The source `fredo.db` byte size at snapshot time.
     pub source_bytes: u64,
 }
@@ -49,10 +64,10 @@ pub fn take_snapshot(source_db: &Path, migration_dir: &Path) -> Result<SnapshotR
 
 /// Take the ONE pre-cutover snapshot, honouring the **G-275** fault seam.
 ///
-/// The source is opened read-write ONLY for the sanctioned
-/// `wal_checkpoint(TRUNCATE)` touch and the `VACUUM INTO` (which reads the
-/// source and writes the destination — it never mutates `fredo.db`). A missing
-/// source is an error, never an accidentally-created empty database.
+/// The source is opened with a **strictly read-only** handle and `VACUUM INTO`
+/// reads a consistent pre-cutover view of it (including committed WAL frames)
+/// while writing ONLY the snapshot destination — `fredo.db` is never mutated.
+/// A missing source is an error, never an accidentally-created empty database.
 ///
 /// When `fault` is [`MigrationFault::SnapshotFail`] the step fails closed before
 /// touching the source (no snapshot is written), so the caller installs nothing.
@@ -78,16 +93,11 @@ pub fn take_snapshot_with_fault(
     })?;
 
     let snapshot_path = migration_dir.join(SNAPSHOT_FILENAME);
-    let conn = Connection::open_with_flags(source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    // The source is opened STRICTLY READ-ONLY. `VACUUM INTO` reads a consistent
+    // pre-cutover view of the source (including committed WAL frames) and writes
+    // only the snapshot target, so `fredo.db` stays byte-identical.
+    let conn = Connection::open_with_flags(source_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("[migration] open source '{}'", source_db.display()))?;
-
-    // The sanctioned pre-snapshot touch: fold WAL content into the main db file
-    // so the snapshot is complete and self-contained.
-    let (busy, _log, _checkpointed): (i64, i64, i64) = conn
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .context("[migration] wal_checkpoint(TRUNCATE)")?;
 
     // One snapshot, overwritten per attempt (never auto-deleted).
     if snapshot_path.exists() {
@@ -112,7 +122,6 @@ pub fn take_snapshot_with_fault(
     Ok(SnapshotRecord {
         path: snapshot_path,
         created_at: Utc::now().to_rfc3339(),
-        checkpointed: busy == 0,
         source_bytes,
     })
 }
@@ -149,6 +158,117 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<Vec<TableParity>> {
         });
     }
     Ok(out)
+}
+
+/// One recorded pre-cutover table: its row count and SHA-256 checksum, captured
+/// by a parity-clean cutover (Spec #2979 CU-4, R-2.1) and persisted under
+/// [`super::ROLLBACK_PRECUTOVER_PARITY_KEY`]. This is the durable reference
+/// [`verify_rollback_snapshot`] compares the retained snapshot against.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreCutoverTable {
+    /// The physical table name.
+    pub table: String,
+    /// Pre-cutover row count.
+    pub rows: i64,
+    /// SHA-256 over the pre-cutover PK-ordered canonical encoding.
+    pub checksum: String,
+}
+
+/// One table's rollback verification result (recorded vs recomputed).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackTableCheck {
+    /// The physical table name.
+    pub table: String,
+    /// The recorded pre-cutover row count.
+    pub recorded_rows: i64,
+    /// The recomputed snapshot row count.
+    pub recomputed_rows: i64,
+    /// The recorded pre-cutover SHA-256 checksum.
+    pub recorded_checksum: String,
+    /// The recomputed snapshot SHA-256 checksum.
+    pub recomputed_checksum: String,
+    /// `recorded_rows == recomputed_rows && recorded_checksum == recomputed_checksum`.
+    pub matches: bool,
+}
+
+/// The pure outcome of comparing the retained snapshot's recomputed parity
+/// against the recorded pre-cutover parity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RollbackVerification {
+    /// `true` only when EVERY recorded table matched exactly (R-2.2).
+    pub verified: bool,
+    /// One result per recorded table.
+    pub tables: Vec<RollbackTableCheck>,
+    /// The first mismatch, when any (the fail-closed reason).
+    pub mismatch: Option<String>,
+}
+
+/// Recompute the retained `snapshot` read-only and compare it, table by table,
+/// against `recorded` — the pre-cutover reference (R-2.2).
+///
+/// Read-only end-to-end: the snapshot is opened with
+/// [`open_snapshot_read_only`], so neither the snapshot nor `fredo.db` is
+/// mutated. `verified` is `true` ONLY when every recorded table is present with
+/// an equal row count AND checksum; any missing table or mismatch leaves it
+/// `false` with a human-readable [`RollbackVerification::mismatch`].
+pub fn verify_rollback_snapshot(
+    snapshot: &Path,
+    recorded: &[PreCutoverTable],
+) -> Result<RollbackVerification> {
+    let recomputed = verify_snapshot(snapshot)?;
+    Ok(compare_rollback_parity(recorded, &recomputed))
+}
+
+/// The pure comparison behind [`verify_rollback_snapshot`]: every `recorded`
+/// table must be present in `recomputed` with an equal row count and checksum.
+///
+/// An empty `recorded` set can never verify (there is nothing to prove), so it
+/// fails closed with a mismatch.
+pub fn compare_rollback_parity(
+    recorded: &[PreCutoverTable],
+    recomputed: &[TableParity],
+) -> RollbackVerification {
+    if recorded.is_empty() {
+        return RollbackVerification {
+            verified: false,
+            tables: Vec::new(),
+            mismatch: Some("no recorded pre-cutover parity to verify against".to_string()),
+        };
+    }
+
+    let mut tables = Vec::with_capacity(recorded.len());
+    let mut mismatch = None;
+    for expected in recorded {
+        let found = recomputed.iter().find(|parity| parity.table == expected.table);
+        let (rows, checksum) = match found {
+            Some(parity) => (parity.source_rows, parity.source_checksum.clone()),
+            None => (0, String::new()),
+        };
+        let matches = found.is_some() && rows == expected.rows && checksum == expected.checksum;
+        if !matches && mismatch.is_none() {
+            mismatch = Some(format!(
+                "table '{}' mismatch: recorded {} rows / {} checksum, recomputed {} rows / {} checksum",
+                expected.table, expected.rows, expected.checksum, rows, checksum
+            ));
+        }
+        tables.push(RollbackTableCheck {
+            table: expected.table.clone(),
+            recorded_rows: expected.rows,
+            recomputed_rows: rows,
+            recorded_checksum: expected.checksum.clone(),
+            recomputed_checksum: checksum,
+            matches,
+        });
+    }
+
+    let verified = mismatch.is_none();
+    RollbackVerification {
+        verified,
+        tables,
+        mismatch,
+    }
 }
 
 /// Restore `snapshot` over `target_db` through an atomic temp-file + rename.
@@ -242,6 +362,80 @@ mod tests {
              INSERT INTO rows (id, note) VALUES (1, 'x'), (2, NULL), (3, 'z');",
         )
         .expect("seed source");
+    }
+
+    /// SHA-256 of a file's raw bytes — the byte-identity oracle for the source
+    /// `fredo.db` across a snapshot.
+    fn file_sha256(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(path).expect("read fixture file");
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// R-2.1/R-4.2/R-3: `take_snapshot` must leave the source `fredo.db`
+    /// **byte-identical**, even when the source is in WAL mode with committed
+    /// frames still sitting in an uncheckpointed `-wal`. This is the regression
+    /// gate that forces the strictly read-only `VACUUM INTO` mechanism — the old
+    /// `wal_checkpoint(TRUNCATE)` rewrote the main file and would fail here.
+    #[test]
+    fn take_snapshot_leaves_a_wal_source_byte_identical_and_captures_wal_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+
+        // Seed in WAL mode and KEEP the writer open: the last connection's close
+        // would otherwise checkpoint and truncate the WAL, hiding the edge.
+        let writer = Connection::open(&source).expect("open source writer");
+        let mode: String = writer
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .expect("set WAL mode");
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+        // No automatic checkpoint, so the committed frames stay in the WAL.
+        writer
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .expect("disable auto-checkpoint");
+        writer
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES ('a', '1'), ('b', 'two');
+                 CREATE TABLE rows (id INTEGER PRIMARY KEY, note TEXT);
+                 INSERT INTO rows (id, note) VALUES (1, 'x'), (2, NULL), (3, 'z');",
+            )
+            .expect("seed source");
+
+        // The committed frames must be in an uncheckpointed `-wal` (beyond the
+        // 32-byte WAL header) at snapshot time.
+        let wal = PathBuf::from(format!("{}-wal", source.display()));
+        assert!(wal.exists(), "an uncheckpointed -wal must be present");
+        assert!(
+            std::fs::metadata(&wal).expect("stat -wal").len() > 32,
+            "the -wal must carry committed frames"
+        );
+
+        let before = file_sha256(&source);
+        let record = take_snapshot(&source, &migration_dir).expect("take snapshot");
+        let after = file_sha256(&source);
+        assert_eq!(
+            before, after,
+            "take_snapshot must leave the WAL-mode source fredo.db byte-identical"
+        );
+
+        // The snapshot still carries EVERY row, including those only in the WAL.
+        let parity = verify_snapshot(&record.path).expect("verify snapshot");
+        let settings = parity
+            .iter()
+            .find(|table| table.table == "settings")
+            .expect("settings parity");
+        assert_eq!(settings.source_rows, 2);
+        let rows = parity
+            .iter()
+            .find(|table| table.table == "rows")
+            .expect("rows parity");
+        assert_eq!(rows.source_rows, 3);
+
+        drop(writer);
     }
 
     #[test]
@@ -352,5 +546,157 @@ mod tests {
         let error = take_snapshot(&missing, &dir.path().join("migration")).unwrap_err();
         assert!(error.to_string().contains("does not exist"), "{error}");
         assert!(!missing.exists(), "a missing source must never be created");
+    }
+
+    // ── CU-4 (R-2.2): the rollback verification decision ────────────────────
+
+    fn recorded(table: &str, rows: i64, checksum: &str) -> PreCutoverTable {
+        PreCutoverTable {
+            table: table.to_string(),
+            rows,
+            checksum: checksum.to_string(),
+        }
+    }
+
+    fn recomputed(table: &str, rows: i64, checksum: &str) -> TableParity {
+        TableParity {
+            table: table.to_string(),
+            source_rows: rows,
+            target_rows: rows,
+            count_match: true,
+            source_checksum: checksum.to_string(),
+            target_checksum: checksum.to_string(),
+            checksum_match: true,
+            read_only_source: true,
+            elapsed_ms: 0,
+        }
+    }
+
+    /// A full match on every table sets `verified = true`.
+    #[test]
+    fn rollback_verification_sets_on_a_checksum_match() {
+        let recorded = vec![
+            recorded("settings", 2, "aaa"),
+            recorded("rows", 3, "bbb"),
+        ];
+        let recomputed = vec![
+            recomputed("settings", 2, "aaa"),
+            recomputed("rows", 3, "bbb"),
+        ];
+        let verdict = compare_rollback_parity(&recorded, &recomputed);
+        assert!(verdict.verified, "every equal checksum must verify: {verdict:?}");
+        assert!(verdict.mismatch.is_none());
+        assert_eq!(verdict.tables.len(), 2);
+        assert!(verdict.tables.iter().all(|check| check.matches));
+    }
+
+    /// One checksum mismatch leaves `verified = false` and names the mismatch.
+    #[test]
+    fn rollback_verification_rejects_a_checksum_mismatch() {
+        let recorded = vec![
+            recorded("settings", 2, "aaa"),
+            recorded("rows", 3, "bbb"),
+        ];
+        // The snapshot's `rows` checksum drifted.
+        let recomputed = vec![
+            recomputed("settings", 2, "aaa"),
+            recomputed("rows", 3, "bbb-tampered"),
+        ];
+        let verdict = compare_rollback_parity(&recorded, &recomputed);
+        assert!(!verdict.verified, "a checksum mismatch must NOT verify");
+        assert_eq!(
+            verdict.mismatch.as_deref().map(|m| m.contains("rows")),
+            Some(true),
+            "the mismatch must name the offending table: {verdict:?}"
+        );
+        let rows = verdict
+            .tables
+            .iter()
+            .find(|check| check.table == "rows")
+            .expect("rows check");
+        assert!(!rows.matches);
+        assert_eq!(rows.recorded_checksum, "bbb");
+        assert_eq!(rows.recomputed_checksum, "bbb-tampered");
+        // The matching table is still reported as matching.
+        assert!(verdict
+            .tables
+            .iter()
+            .find(|check| check.table == "settings")
+            .unwrap()
+            .matches);
+    }
+
+    /// A recorded table absent from the recomputed set fails closed.
+    #[test]
+    fn rollback_verification_rejects_a_missing_table() {
+        let recorded = vec![recorded("settings", 2, "aaa"), recorded("gone", 1, "zzz")];
+        let recomputed = vec![recomputed("settings", 2, "aaa")];
+        let verdict = compare_rollback_parity(&recorded, &recomputed);
+        assert!(!verdict.verified);
+        let missing = verdict
+            .tables
+            .iter()
+            .find(|check| check.table == "gone")
+            .expect("missing table check");
+        assert!(!missing.matches);
+        assert_eq!(missing.recomputed_checksum, "");
+    }
+
+    /// An empty recorded set can never verify (nothing to prove).
+    #[test]
+    fn rollback_verification_rejects_an_empty_reference() {
+        let verdict = compare_rollback_parity(&[], &[recomputed("settings", 2, "aaa")]);
+        assert!(!verdict.verified);
+        assert!(verdict.mismatch.is_some());
+    }
+
+    /// The full read-only path: a real snapshot's recomputed parity matches the
+    /// recorded pre-cutover values, and a tampered copy does not.
+    #[test]
+    fn verify_rollback_snapshot_matches_a_real_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+        seed_source(&source);
+        let record = take_snapshot(&source, &migration_dir).unwrap();
+
+        // Record the pre-cutover reference from the snapshot itself (exactly what
+        // the cutover does) — the same values the source `fredo.db` holds.
+        let recorded: Vec<PreCutoverTable> = verify_snapshot(&record.path)
+            .unwrap()
+            .into_iter()
+            .map(|parity| PreCutoverTable {
+                table: parity.table,
+                rows: parity.source_rows,
+                checksum: parity.source_checksum,
+            })
+            .collect();
+
+        let verdict = verify_rollback_snapshot(&record.path, &recorded).unwrap();
+        assert!(verdict.verified, "the retained snapshot must verify: {verdict:?}");
+
+        // A tampered copy of the snapshot must NOT verify (read-only check).
+        let tampered = dir.path().join("tampered.db");
+        std::fs::copy(&record.path, &tampered).unwrap();
+        {
+            let conn = Connection::open(&tampered).unwrap();
+            conn.execute_batch("DELETE FROM settings WHERE key = 'a';").unwrap();
+        }
+        let tampered_verdict = verify_rollback_snapshot(&tampered, &recorded).unwrap();
+        assert!(
+            !tampered_verdict.verified,
+            "a tampered snapshot must NOT verify: {tampered_verdict:?}"
+        );
+
+        // The verification never mutated the retained snapshot.
+        let after = verify_snapshot(&record.path).unwrap();
+        assert_eq!(after.len(), recorded.len());
+        for expected in &recorded {
+            let found = after
+                .iter()
+                .find(|parity| parity.table == expected.table)
+                .expect("table after verification");
+            assert_eq!(found.source_checksum, expected.checksum);
+        }
     }
 }

@@ -32,10 +32,10 @@ use super::{PG_PID_KEY, POSTGRES_IMAGE};
 
 /// Persist the managed postmaster PID marker; `None` clears it.
 ///
-/// [`AppStore`] is the single source of truth for the marker — this helper owns
-/// the key so the write and clear paths can never drift. A failed write is
-/// ignored: the marker is best-effort recovery metadata, never load-bearing
-/// state.
+/// The [`AppStore`] **control plane** (`control.db`, Spec #2979 CU-1) is the
+/// single source of truth for the marker — this helper owns the key so the write
+/// and clear paths can never drift. A failed write is ignored: the marker is
+/// best-effort recovery metadata, never load-bearing state.
 pub fn persist_pid(store: &AppStore, pid: Option<u32>) {
     let value = pid.map(|pid| pid.to_string()).unwrap_or_default();
     let _ = store.control_set(PG_PID_KEY, &value);
@@ -183,9 +183,8 @@ mod tests {
     }
 
     fn open_store(dir: &Path) -> AppStore {
-        use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
-        let sqlite = SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine");
-        AppStore::open(EngineHandle::new(StoreEngine::Sqlite(sqlite))).expect("open app store")
+        use crate::infrastructure::storage::engine::EngineHandle;
+        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
     #[test]
@@ -198,6 +197,20 @@ mod tests {
 
         persist_pid(&store, None);
         assert_eq!(persisted_pid(&store), None);
+    }
+
+    #[test]
+    fn the_pid_marker_lives_on_the_control_plane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+        persist_pid(&store, Some(777));
+        assert!(
+            dir.path()
+                .join(crate::infrastructure::storage::CONTROL_DB_FILENAME)
+                .exists(),
+            "the postmaster PID marker must live on control.db (CU-1)"
+        );
+        assert_eq!(persisted_pid(&store), Some(777));
     }
 
     #[test]

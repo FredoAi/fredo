@@ -1,14 +1,15 @@
-//! ST-6 — cross-engine parity + bounded-runtime safety for the storage engine
-//! seam (Spec #2975, slice 2).
+//! PostgreSQL storage regression suite (Spec #2975 ST-6; PG-only since Spec
+//! #2979 CU-2).
 //!
 //! This integration binary drives the migrated `AppStore` / `FeatureStore` /
-//! `FeatureDataStore` through BOTH engines — the default SQLite engine and the
-//! real embedded PostgreSQL server (the slice-1 bounded `PgRuntime`) — and
-//! asserts they are **byte-equal**: per-table row counts and SHA-256 content
-//! checksums, plus the AC4 edge cases (duplicate-PK idempotency, `BYTEA` byte
-//! identity, unknown key → `None`, hyphenated feature id → the same physical
-//! table name) and the AC2 statement-translation probes (`to_regclass` /
-//! `information_schema` / quoted identifiers).
+//! `FeatureDataStore` against the REAL embedded PostgreSQL server (the slice-1
+//! bounded `PgRuntime`) and pins the consolidated PostgreSQL behavior:
+//! schema init, quoted identifiers, declared-table quoting, the Mission Monitor
+//! declaration, the fixture run, and the bounded-runtime teardown contract.
+//!
+//! Since Spec #2979 CU-2 removed the SQLite data plane, the previous cross-engine
+//! (SQLite ↔ PostgreSQL) comparisons are gone; every PostgreSQL-side scenario and
+//! assertion is retained.
 //!
 //! # Offline gate
 //!
@@ -39,8 +40,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value as JsonValue};
-use sha2::{Digest, Sha256};
-use sqlx::Row as _;
 
 use fredo_lib::infrastructure::feature_data::declaration::{
     ColumnOwner, DataSource, DeclaredColumn, DeclaredColumnType, FeatureDataDeclaration,
@@ -52,7 +51,7 @@ use fredo_lib::infrastructure::rtdb::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{ensure_settings_schema, StorageEngineState};
 use fredo_lib::infrastructure::storage::feature_store::{ColumnDef, ColumnType, FeatureStore};
 use fredo_lib::infrastructure::storage::{
-    AppStore, EngineChoice, EngineHandle, PgEngine, SqliteEngine, StoreEngine,
+    AppStore, EngineChoice, EngineHandle, PgEngine, StoreEngine,
 };
 use fredo_lib::PgRuntime;
 
@@ -61,7 +60,7 @@ use fredo_lib::PgRuntime;
 const GATE_ENV: &str = "FREDO_TEST_PG";
 const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
 const FEATURE_ID: &str = "mission-monitor";
-/// The hyphen is normalized to `_` identically on both engines (EARS-4.4).
+/// The hyphen is normalized to `_` (EARS-4.4).
 const PHYSICAL_TABLE: &str = "feature_mission_monitor_items";
 const T0: &str = "2026-09-27T00:00:00Z";
 const T1: &str = "2026-09-27T01:00:00Z";
@@ -95,12 +94,12 @@ fn unique_schema(tag: &str) -> String {
 
 // ── The ONE gated test (one embedded server per binary) ──────────────────────
 
-/// The whole cross-engine suite runs inside ONE owning scope so the single
+/// The whole PostgreSQL suite runs inside ONE owning scope so the single
 /// embedded `PgRuntime` has a guaranteed teardown on every exit path (normal,
 /// error, panic) — the G-263 contract. Each phase below gets its OWN
 /// `CREATE SCHEMA` + pool `search_path`, so the phases are isolated.
 #[tokio::test(flavor = "multi_thread")]
-async fn cross_engine_postgres_suite() {
+async fn postgres_storage_suite() {
     if !pg_enabled() {
         eprintln!("storage_engine_pg: skipping — set {GATE_ENV}=1 to run the gated PG suite");
         return;
@@ -132,8 +131,8 @@ async fn cross_engine_postgres_suite() {
     let url = runtime.connection_url();
     let port = runtime.port();
 
-    // Phase 1: the SQLite↔PG equivalence fixture + AC4 edges + translation probes.
-    cross_engine_scenario(&url, &unique_schema("baseline")).await;
+    // Phase 1: the PostgreSQL fixture + catalog/type assertions.
+    postgres_fixture_scenario(&url, &unique_schema("baseline")).await;
     // Phase 2: quoted identifiers (case-preserving dynamic DDL).
     quoted_identifier_scenario(&url, &unique_schema("quoted")).await;
     // Phase 3: the ST-2 startup schema-init registry on the candidate pool
@@ -165,62 +164,35 @@ async fn cross_engine_postgres_suite() {
     );
 }
 
-// ── Phase 1: SQLite ↔ PostgreSQL equivalence ─────────────────────────────────
+// ── Phase 1: the PostgreSQL fixture ──────────────────────────────────────────
 
-async fn cross_engine_scenario(url: &str, schema: &str) {
-    // SQLite side: the default engine, a temp `fredo.db`.
-    let sqlite_dir = tempfile::tempdir().expect("tempdir");
-    let sqlite_engine =
-        SqliteEngine::open(&sqlite_dir.path().join("fredo.db")).expect("sqlite engine");
-    let sqlite_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine.clone()));
-    let sqlite_app = AppStore::open(sqlite_handle.clone()).expect("sqlite app store");
-    let sqlite_features = FeatureStore::open(sqlite_handle.clone()).expect("sqlite feature store");
-    let sqlite_data = FeatureDataStore::open(sqlite_handle).expect("sqlite data store");
-
-    // PG side: stores start on SQLite (the production order — `AppStore::open`
-    // captures the synchronous control plane) and are swapped to PostgreSQL once.
-    let pg_scratch = tempfile::tempdir().expect("tempdir");
-    let pg_sqlite = SqliteEngine::open(&pg_scratch.path().join("fredo.db")).expect("sqlite engine");
-    let pg_handle = EngineHandle::new(StoreEngine::Sqlite(pg_sqlite));
-    let pg_app = AppStore::open(pg_handle.clone()).expect("app store");
-    let pg_features = FeatureStore::open(pg_handle.clone()).expect("feature store");
-    let pg_data = FeatureDataStore::open(pg_handle.clone()).expect("data store");
+async fn postgres_fixture_scenario(url: &str, schema: &str) {
+    // The production order: stores start pending; the supervisor installs the
+    // PostgreSQL pool once the server is ready.
+    let app_scratch = tempfile::tempdir().expect("tempdir");
+    let handle = EngineHandle::new_pending();
+    let app = AppStore::open(handle.clone(), app_scratch.path()).expect("app store");
+    let features = FeatureStore::open(handle.clone()).expect("feature store");
+    let data = FeatureDataStore::open(handle.clone()).expect("data store");
 
     let pool = build_pool(url, schema).await;
     assert!(
         current_search_path(&pool).await.contains(schema),
         "the test pool must resolve unqualified tables inside schema {schema}"
     );
-    pg_handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
+    handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
         pool: pool.clone(),
         url: url.to_string(),
     })));
 
-    // Run the IDENTICAL fixture on both engines.
-    let sqlite_obs = run_fixture(&sqlite_app, &sqlite_features, &sqlite_data).await;
-    let pg_obs = run_fixture(&pg_app, &pg_features, &pg_data).await;
-    assert_eq!(
-        pg_obs, sqlite_obs,
-        "cross-engine fixture observables must be identical"
-    );
+    // Run the fixture against PostgreSQL.
+    let obs = run_fixture(&app, &features, &data).await;
     assert!(
-        sqlite_obs.contains(&format!("blob.a={}", hex(&[0, 1, 2, 127, 128, 254, 255]))),
-        "the BLOB must round-trip byte-identically (EARS-4.2), observables: {sqlite_obs:?}"
+        obs.contains(&format!("blob.a={}", hex(&[0, 1, 2, 127, 128, 254, 255]))),
+        "the BLOB must round-trip byte-identically (EARS-4.2), observables: {obs:?}"
     );
 
-    // Per-table row count + content checksum must be byte-equal (QA-N.1 / F-17).
-    let sqlite_sums = sqlite_table_sums(&sqlite_engine);
-    let pg_sums = pg_table_sums(&pool).await;
-    assert_eq!(
-        pg_sums, sqlite_sums,
-        "SQLite and PostgreSQL must be byte-equal (row count + content checksum)"
-    );
-
-    // EARS-4.4 / F-13: the hyphenated feature id yields the SAME physical name.
-    assert!(
-        sqlite_has_table(&sqlite_engine, PHYSICAL_TABLE),
-        "SQLite must hold {PHYSICAL_TABLE}"
-    );
+    // EARS-4.4 / F-13: the hyphenated feature id yields the physical name.
     let pg_physical: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
         .bind(PHYSICAL_TABLE)
         .fetch_one(&pool)
@@ -229,10 +201,10 @@ async fn cross_engine_scenario(url: &str, schema: &str) {
     assert_eq!(
         pg_physical.as_deref(),
         Some(PHYSICAL_TABLE),
-        "PostgreSQL must resolve the same physical table name"
+        "PostgreSQL must resolve the physical table name"
     );
 
-    // EARS-2.3 / F-7: existence + type probes use the PG catalogs (not sqlite_master).
+    // EARS-2.3 / F-7: existence + type probes use the PG catalogs.
     let types = pg_column_types(&pool, schema, PHYSICAL_TABLE).await;
     assert_eq!(types.get("label").map(String::as_str), Some("text"));
     assert_eq!(types.get("count").map(String::as_str), Some("bigint"));
@@ -244,15 +216,21 @@ async fn cross_engine_scenario(url: &str, schema: &str) {
         "the reserved `_row_version` column must be a bigint (C1 map)"
     );
 
+    // The fixture wrote exactly the three seeded rows (duplicate insert ignored,
+    // upsert updated in place).
+    let item_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feature_mission_monitor_items")
+        .fetch_one(&pool)
+        .await
+        .expect("count feature items");
+    assert_eq!(item_count, 3, "three distinct fixture rows persist on PostgreSQL");
+
     pool.close().await;
 }
 
 /// Phase 2: a mixed-case dynamic identifier proves double-quoting (an unquoted
 /// identifier would be folded to lowercase by PostgreSQL).
 async fn quoted_identifier_scenario(url: &str, schema: &str) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
-    let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+    let handle = EngineHandle::new_pending();
     let features = FeatureStore::open(handle.clone()).expect("feature store");
 
     let pool = build_pool(url, schema).await;
@@ -317,9 +295,7 @@ async fn quoted_identifier_scenario(url: &str, schema: &str) {
 /// the PG-selected app fail `no existe la relación «feature_data_tables»`
 /// (ST-6 rework, ST-2 contract).
 async fn schema_init_scenario(url: &str, schema: &str) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
-    let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+    let handle = EngineHandle::new_pending();
 
     // The candidate pool, exactly what `build_pg_pool` hands the registry.
     let pool = build_pool(url, schema).await;
@@ -393,9 +369,7 @@ async fn schema_init_scenario(url: &str, schema: &str) {
 /// every declared-row projection write failed `no existe la columna «sessionId»`
 /// and Mission Monitor rendered nothing on the PG-selected boot (ST-2 rework).
 async fn declared_table_quoting_scenario(url: &str, schema: &str) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).expect("sqlite engine");
-    let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
+    let handle = EngineHandle::new_pending();
 
     let pool = build_pool(url, schema).await;
     handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
@@ -436,8 +410,8 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
     );
 
     // (i-b) ST-4 rework: the declared physical types must come from the AC2 C1
-    // map, NOT the SQLite names — an `int4`/`real` regression fails here (the
-    // live defect: `startedAtNs INTEGER → int4` overflowed on the ns epoch).
+    // map — an `int4`/`real` regression fails here (the live defect:
+    // `startedAtNs INTEGER → int4` overflowed on the ns epoch).
     assert_eq!(
         types.get("sessionId").map(String::as_str),
         Some("text"),
@@ -539,8 +513,8 @@ async fn declared_table_quoting_scenario(url: &str, schema: &str) {
 }
 
 /// The MM-shaped declaration whose unquoted DDL PostgreSQL folded — mirrors the
-/// registry unit-test declaration (`registry.rs` `declaration(..)`): mixed-case
-/// PK `sessionId`, mixed-case column `chatRowCount`.
+/// registry unit-test declaration: mixed-case PK `sessionId`, mixed-case column
+/// `chatRowCount`.
 fn mm_sessions_declaration() -> FeatureDataDeclaration {
     FeatureDataDeclaration {
         feature_id: "mission-monitor".to_string(),
@@ -590,11 +564,10 @@ fn mm_sessions_declaration() -> FeatureDataDeclaration {
     }
 }
 
-// ── The shared fixture (identical operations on both engines) ────────────────
+// ── The shared fixture ───────────────────────────────────────────────────────
 
-/// Run the identical operations against one engine's store set and return a
-/// sorted list of `name=value` observables. Two engines produce equal lists iff
-/// they behaved identically.
+/// Run the fixture against one engine's store set and return a sorted list of
+/// `name=value` observables.
 async fn run_fixture(
     app: &AppStore,
     features: &FeatureStore,
@@ -673,7 +646,7 @@ async fn run_fixture(
     out.push(format!("row.b.label={}", b[0]["label"]));
     out.push(format!("row.b.version={}", b[0]["_row_version"]));
 
-    // F-7: a multi-parameter query (`$n` / `?n`, order preserved).
+    // F-7: a multi-parameter query (`$n`, order preserved).
     let multi = features
         .query(
             FEATURE_ID,
@@ -851,8 +824,7 @@ async fn current_search_path(pool: &sqlx::PgPool) -> String {
         .expect("current_setting('search_path')")
 }
 
-/// `true` when `table` exists in `schema` on the PostgreSQL pool (catalog probe,
-/// not `sqlite_master`).
+/// `true` when `table` exists in `schema` on the PostgreSQL pool (catalog probe).
 async fn pg_has_table(pool: &sqlx::PgPool, schema: &str, table: &str) -> bool {
     let found: Option<String> = sqlx::query_scalar(
         "SELECT table_name FROM information_schema.tables
@@ -877,136 +849,4 @@ async fn pg_column_types(pool: &sqlx::PgPool, schema: &str, table: &str) -> Hash
     .await
     .expect("information_schema.columns probe");
     rows.into_iter().collect()
-}
-
-// ── Row count + content checksum (SQLite vs PostgreSQL) ──────────────────────
-
-const SETTINGS_SQL: &str = "SELECT key, value FROM settings ORDER BY key";
-// The BLOB is hex-encoded on BOTH sides and lower-cased so the comparison is
-// case-insensitive: SQLite's `hex()` emits UPPERCASE while PostgreSQL's
-// `encode(..,'hex')` emits lowercase (ST-6 rework; the round-1 checksum
-// mismatch at this table was this case difference, not data loss).
-const ITEMS_SQL_SQLITE: &str = "SELECT id, label, CAST(count AS TEXT), CAST(ratio AS TEXT), \
-     lower(hex(payload)), CAST(_row_version AS TEXT), _updated_at \
-     FROM feature_mission_monitor_items ORDER BY id";
-const ITEMS_SQL_PG: &str = "SELECT id, label, count::text, ratio::text, lower(encode(payload, 'hex')), \
-     _row_version::text, _updated_at \
-     FROM feature_mission_monitor_items ORDER BY id";
-const META_SQL: &str = "SELECT feature_id, table_name, declaration_json, declaration_revision, \
-     CAST(last_version AS TEXT), CAST(backfill_done AS TEXT) \
-     FROM feature_data_tables ORDER BY feature_id, table_name";
-const META_SQL_PG: &str = "SELECT feature_id, table_name, declaration_json, declaration_revision, \
-     last_version::text, backfill_done::text \
-     FROM feature_data_tables ORDER BY feature_id, table_name";
-const TOMBSTONE_SQL: &str = "SELECT feature_id, table_name, key_json, deleted_at \
-     FROM feature_data_tombstones ORDER BY feature_id, table_name, key_json";
-
-fn sqlite_table_sums(engine: &SqliteEngine) -> Vec<String> {
-    let mut out = Vec::new();
-    for (label, sql, table) in [
-        ("settings", SETTINGS_SQL, "settings"),
-        ("feature_items", ITEMS_SQL_SQLITE, PHYSICAL_TABLE),
-        ("feature_data_tables", META_SQL, "feature_data_tables"),
-        (
-            "feature_data_tombstones",
-            TOMBSTONE_SQL,
-            "feature_data_tombstones",
-        ),
-    ] {
-        let rows = sqlite_rows(engine, sql);
-        let count = sqlite_count(engine, table);
-        out.push(format!("{label}:count={count}:sum={}", checksum(&rows)));
-    }
-    out.sort();
-    out
-}
-
-async fn pg_table_sums(pool: &sqlx::PgPool) -> Vec<String> {
-    let mut out = Vec::new();
-    for (label, sql, table) in [
-        ("settings", SETTINGS_SQL, "settings"),
-        ("feature_items", ITEMS_SQL_PG, PHYSICAL_TABLE),
-        ("feature_data_tables", META_SQL_PG, "feature_data_tables"),
-        (
-            "feature_data_tombstones",
-            TOMBSTONE_SQL,
-            "feature_data_tombstones",
-        ),
-    ] {
-        let rows = pg_rows(pool, sql).await;
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(pool)
-            .await
-            .expect("count");
-        out.push(format!("{label}:count={count}:sum={}", checksum(&rows)));
-    }
-    out.sort();
-    out
-}
-
-fn sqlite_rows(engine: &SqliteEngine, sql: &str) -> Vec<Vec<Option<String>>> {
-    let conn = engine.read_only_conn();
-    let mut stmt = conn.prepare(sql).expect("prepare sqlite query");
-    let columns = stmt.column_count();
-    stmt.query_map([], |row| {
-        let mut values = Vec::with_capacity(columns);
-        for index in 0..columns {
-            values.push(row.get::<_, Option<String>>(index)?);
-        }
-        Ok(values)
-    })
-    .expect("query sqlite rows")
-    .collect::<rusqlite::Result<Vec<_>>>()
-    .expect("collect sqlite rows")
-}
-
-fn sqlite_count(engine: &SqliteEngine, table: &str) -> i64 {
-    engine
-        .read_only_conn()
-        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-            row.get(0)
-        })
-        .expect("sqlite count")
-}
-
-fn sqlite_has_table(engine: &SqliteEngine, table: &str) -> bool {
-    engine
-        .read_only_conn()
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            rusqlite::params![table],
-            |_| Ok(()),
-        )
-        .is_ok()
-}
-
-async fn pg_rows(pool: &sqlx::PgPool, sql: &str) -> Vec<Vec<Option<String>>> {
-    let rows = sqlx::query(sql).fetch_all(pool).await.expect("query pg rows");
-    rows.iter()
-        .map(|row| {
-            (0..row.len())
-                .map(|index| row.try_get::<Option<String>, _>(index).expect("cell"))
-                .collect()
-        })
-        .collect()
-}
-
-/// Order-independent SHA-256 over the stringified rows.
-fn checksum(rows: &[Vec<Option<String>>]) -> String {
-    let mut lines: Vec<String> = rows
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.clone().unwrap_or_else(|| "<null>".to_string()))
-                .collect::<Vec<_>>()
-                .join("\u{1f}")
-        })
-        .collect();
-    lines.sort();
-    let mut hasher = Sha256::new();
-    for line in &lines {
-        hasher.update(line.as_bytes());
-        hasher.update(b"\n");
-    }
-    format!("{:x}", hasher.finalize())
 }

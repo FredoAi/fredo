@@ -188,6 +188,33 @@ The installer adds the `fredo` binary to your system PATH. Verify:
 fredo --help
 ```
 
+## PostgreSQL Persistence, Cutover, and Rollback
+
+Fredo's migrated stores are backed by an **embedded PostgreSQL** engine, which is the shipped default (Spec #2979). The legacy `fredo.db` file is retained read-only as the backout artifact.
+
+### Fresh vs. upgraded installs
+
+- **Fresh install** (no `fredo.db`): starts directly on PostgreSQL with no migration leg.
+- **Upgraded install** (an existing `fredo.db`): runs a **one-shot cutover** — every physical table is copied into PostgreSQL under a per-table row-count **and SHA-256 checksum parity gate**. The `migration.postgres.completed` marker is written only after a fully parity-clean run, so a second startup skips the leg. A failed leg is fail-closed: nothing is installed and the next startup re-runs the read-only export.
+
+### Snapshot retention (Q-13)
+
+A parity-checked cutover leaves **exactly one** pre-cutover snapshot, `fredo.pre-cutover.db`, under the resolved migration directory (`<app_data_dir>/migration` unless `FREDO_MIGRATION_DIR` overrides it). It is:
+
+- **retained read-only for the life of the release** alongside `fredo.db` — it is the executable SQLite backout;
+- **overwritten per cutover attempt** (a re-run after a failed parity gate replaces the single file); and
+- **pruned only at the next release's cleanup** — never automatically by the migration leg.
+
+The migration leg never mutates or deletes `fredo.db`.
+
+### Rollback verification (`rollback.verified`)
+
+A parity-clean cutover records the pre-cutover per-table row counts and SHA-256 checksums. The `verify_rollback` command recomputes the retained snapshot's checksums **read-only** and sets `rollback.verified = "true"` (plus `rollback.verified_at`, RFC-3339) **only when every recomputed checksum equals the recorded pre-cutover value**. On any mismatch it records `"false"` and reports the mismatch; the snapshot and `fredo.db` are never modified. The cutover release gate reports this as `rollbackVerified`.
+
+### Downgrade policy (Q-14 / R-4.3) — accepted loss
+
+The retained `fredo.db` is **byte-identical to the pre-cutover state**. Rows written **after** the cutover live only in PostgreSQL and are **not reverse-exported** (a PostgreSQL → SQLite incremental export is explicitly out of scope). A downgrade to a pre-cutover build therefore reads the pre-cutover state and **does not** see post-cutover rows — this data loss is **accepted** and is the documented trade-off of the PostgreSQL cutover. To back out: stop the app, restore `fredo.pre-cutover.db` over `fredo.db` (or use the retained `fredo.db`), then start the pre-cutover build.
+
 ## Environment Variables
 
 The Tauri app does not require environment variables for basic operation. For connecting to external services (Azure DevOps, Kubernetes, Jira), configure credentials via the Settings panel in the app UI.

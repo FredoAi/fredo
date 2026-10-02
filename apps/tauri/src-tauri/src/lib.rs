@@ -42,14 +42,12 @@ use infrastructure::rtdb::store::{
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-use infrastructure::storage::engine::{
-    select_engine, EngineHandle, SqliteEngine, StorageEngineState, StoreEngine,
-};
+use infrastructure::storage::engine::{select_engine, EngineHandle, StorageEngineState};
 use infrastructure::storage::feature_store::{self, FeatureStore};
 use infrastructure::storage::migration::MigrationGate;
 use infrastructure::storage::span_store::SpanStore;
 use infrastructure::storage::AppStore;
-use infrastructure::telemetry::metrics_collector::{MetricCollector, SpanStoreMetricsExt};
+use infrastructure::telemetry::metrics_collector::MetricCollector;
 use infrastructure::telemetry::log::{LogBridgeLayer, LogCollector, LOG_COLLECTOR_CELL};
 use infrastructure::telemetry::SpanCollector;
 use runtime::AppRuntime;
@@ -157,18 +155,35 @@ pub fn run() {
                     .expect("Failed to resolve app data dir"),
             );
 
-            // -- Shared storage-engine seam (Spec #2975 ST-2) ------------------
-            // ONE shared SQLite engine + the swap-once `EngineHandle`, built
-            // BEFORE the supervisor starts. The supervisor's background pool
-            // build installs PostgreSQL into this handle once the managed server
-            // is ready; any failure leaves the handle on SQLite (fail-closed,
-            // REQ-3/EARS-3.2). The state is managed so `storage_engine_status`
-            // can report the live dialect + the fail-closed reason, and so the
-            // supervisor can read the resolved selection.
-            let sqlite_engine = SqliteEngine::open(&data_dir.join("fredo.db"))
-                .expect("Failed to open the shared storage engine");
-            let engine_choice = select_engine(&sqlite_engine);
-            let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine));
+            // -- Shared storage-engine seam (Spec #2975 ST-2; #2979 CU-2) ------
+            // The swap-once `EngineHandle`, built BEFORE the supervisor starts.
+            // Since Spec #2979 CU-2 the data plane is PostgreSQL-only: the handle
+            // starts PENDING and the supervisor's background pool build installs
+            // the PostgreSQL engine once the managed server is ready. Until then
+            // a data-plane op fails closed (R-3.2) — it never serves from SQLite.
+            // The startup schema set is materialized on the CANDIDATE pool by the
+            // registered initializers below, BEFORE the pool is installed.
+            let engine_handle = EngineHandle::new_pending();
+
+            // -- Control-plane store (Spec #2979 CU-1) -------------------------
+            // The synchronous control plane lives on its OWN
+            // `<data_dir>/control.db` (split off `fredo.db`), so `fredo.db` can
+            // be retained read-only. `AppStore::open` also carries the legacy
+            // `settings` rows out of `fredo.db` READ-ONLY on first boot. The
+            // async data plane (`get`/`set`) sits ON the shared handle; the setup
+            // closure below reads config via the synchronous control API.
+            let app_store = Arc::new(
+                AppStore::open(engine_handle.clone(), &data_dir)
+                    .expect("Failed to open settings store"),
+            );
+            app.manage(app_store.clone());
+
+            // -- Engine selection (Spec #2979 CU-1, reworked CU-1-R2) ----------
+            // Resolve the data-plane selection from the CONTROL plane. PostgreSQL
+            // is UNCONDITIONAL: the legacy `sqlite` env value is rejected and the
+            // legacy control-plane opt-out `postgres.enabled=false` is inert (a
+            // carried key must not disable the PostgreSQL-only data plane).
+            let engine_choice = select_engine(app_store.control_engine());
             let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
             // Spec #2975 ST-2 rework: register the startup schema initializers
             // BEFORE the supervisor starts, so the registry is populated before
@@ -197,24 +212,14 @@ pub fn run() {
             // takes the exclusive side of this SAME gate.
             let migration_gate = app.state::<Arc<StorageEngineState>>().migration_gate();
 
-            // -- SQLite settings store (Spec #2975 ST-3) -----------------------
-            // The KV store sits ON the shared handle: the async data plane
-            // (`get`/`set`) is engine-selected, while the synchronous control
-            // plane (`control_get`/`control_set`) stays on SQLite. The setup
-            // closure below stays synchronous and reads config via the control
-            // API — never `block_on`.
-            let app_store = Arc::new(
-                AppStore::open(engine_handle.clone()).expect("Failed to open settings store"),
-            );
-            app.manage(app_store.clone());
-
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
-            // Disabled by default (`postgres.enabled` absent ⇒ no lock, no
-            // sweep, no spawn; SQLite persistence unchanged — R-1.4). When
-            // enabled it acquires the exclusive data-dir lock BEFORE the orphan
-            // sweep and LAZILY starts the postmaster on a background task:
-            // `setup` NEVER awaits the boot (G-273/R-2.3), so the webview shell
-            // renders while PostgreSQL starts.
+            // Spec #2979 CU-1/CU-1-R2: PostgreSQL is the UNCONDITIONAL engine, so
+            // the supervisor always starts. The legacy `postgres.enabled` control
+            // key is INERT — a carried `false` must not disable the PostgreSQL-only
+            // data plane. When enabled it acquires the exclusive data-dir lock
+            // BEFORE the orphan sweep and LAZILY starts the postmaster on a
+            // background task: `setup` NEVER awaits the boot (G-273/R-2.3), so the
+            // webview shell renders while PostgreSQL starts.
             features::pg_supervisor::start_supervisor(app.handle());
 
             // -- FeatureStore (generic typed-column store for features) --------
@@ -230,10 +235,10 @@ pub fn run() {
             app.manage(feature_store.clone());
 
             // -- Terminal persisted session records (Spec #2935 ST-2) ----------
-            // Materialize the record table once at startup; the terminal feature
-            // writes/reads it directly (never via useFeatureData).
-            features::terminal::persistence::ensure_table(&feature_store)
-                .expect("Failed to create terminal session record table");
+            // Materialize the record table on the CANDIDATE PostgreSQL pool via
+            // the schema-init registry above (`ensure_table_on_pg`), which runs
+            // PRE-install — so no data-plane call is needed here while the pool
+            // is still pending (Spec #2979 CU-2; R-3.2 fail-closed).
 
             // -- Tracing subscriber initialization (Spec #408) -----------------
             // Initialize before any tracing::info!/warn!/error! calls.
@@ -286,17 +291,14 @@ pub fn run() {
 
             // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
             // REQ-1: Create SpanStore on the ONE shared engine handle
-            // (Spec #2976 ST-5): SQLite `fredo.db` by default, the shared
-            // PostgreSQL pool once installed. The sync setup closure bridges the
-            // async schema/retention calls (same pattern as RtdbStore below).
+            // (Spec #2976 ST-5): the shared PostgreSQL pool once installed. The
+            // telemetry + metrics tables are materialized on the CANDIDATE pool by
+            // `register_slice3_pg_schema_inits` PRE-install, so no data-plane
+            // schema call is made here while the pool is still pending (Spec #2979
+            // CU-2; R-3.2 fail-closed).
             let span_store = Arc::new(
                 SpanStore::open(engine_handle.clone()).expect("Failed to open SpanStore"),
             );
-            tauri::async_runtime::block_on(span_store.ensure_schema())
-                .expect("Failed to create telemetry schema");
-            // REQ-9: Create telemetry_metrics table
-            tauri::async_runtime::block_on(span_store.ensure_metrics_schema())
-                .expect("Failed to create telemetry metrics schema");
             app.manage(span_store.clone());
 
             // REQ-11: Set telemetry defaults if not already configured.
@@ -469,16 +471,14 @@ pub fn run() {
             // -- RTDB row store (Spec #2788 P1.2; engine-selected #2976 ST-7) ---
             // Typed rows (chat_rows / tool_use_rows / agent_session_rows) behind
             // an LRU row cache with a ~30 ms write-behind flush task, routed
-            // through the ONE shared `EngineHandle` (SQLite `fredo.db` by
-            // default, the shared PostgreSQL pool once installed).
+            // through the ONE shared `EngineHandle` (PostgreSQL-only since Spec
+            // #2979 CU-2). The three `*_rows` tables are materialized on the
+            // CANDIDATE pool by `register_slice3_pg_schema_inits` PRE-install, so
+            // no data-plane schema call is made here while the pool is pending.
             // telemetry_spans is never touched.
             let rtdb_store = Arc::new(
                 RtdbStore::open(engine_handle.clone()).expect("Failed to open RtdbStore"),
             );
-            // One-time startup schema creation on the active engine (the
-            // sync setup closure bridges to the async store schema).
-            tauri::async_runtime::block_on(rtdb_store.ensure_schema())
-                .expect("Failed to create rtdb schema");
             let (rtdb_cache, rtdb_rx) = RtdbCache::new(Arc::clone(&rtdb_store));
             app.manage(rtdb_cache.clone());
 
@@ -519,9 +519,10 @@ pub fn run() {
                 FeatureDataStore::open(engine_handle.clone())
                     .expect("Failed to open FeatureDataStore"),
             );
-            feature_meta
-                .ensure_schema()
-                .expect("Failed to create feature data schema");
+            // The metadata tables are materialized on the CANDIDATE pool by the
+            // registered `FeatureDataStore::ensure_schema_on_pg` PRE-install, so
+            // no data-plane schema call is made here while the pool is pending
+            // (Spec #2979 CU-2; R-3.2 fail-closed).
             let feature_registry = Arc::new(DeclarationRegistry::new(
                 feature_meta.clone(),
                 feature_store.clone(),
@@ -841,6 +842,11 @@ pub fn run() {
             // One-shot `fredo.db` → PostgreSQL data migration (Spec #2977):
             // the read-only live status hook (ST-6).
             infrastructure::storage::migration::run::migration_status,
+            // Rollback verification (Spec #2979 CU-4): recompute the retained
+            // pre-cutover snapshot read-only and set `rollback.verified` only on
+            // a full checksum match (R-2.2). Bounded (G-263); never mutates the
+            // snapshot or `fredo.db`.
+            infrastructure::storage::migration::run::verify_rollback,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
             feature_store::feature_store_insert,

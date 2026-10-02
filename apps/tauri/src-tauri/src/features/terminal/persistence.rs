@@ -315,13 +315,6 @@ pub fn newest_session_id_for_dir(
 mod tests {
     use super::*;
     use crate::features::terminal::state::SessionKind;
-    use std::path::PathBuf;
-
-    fn store_with_table(dir: &tempfile::TempDir) -> FeatureStore {
-        let store = FeatureStore::open_sqlite_for_tests(PathBuf::from(dir.path())).unwrap();
-        ensure_table(&store).unwrap();
-        store
-    }
 
     fn record(id: &str, cli: SessionKind, title: &str, last_active_at: u64) -> PersistedSession {
         PersistedSession {
@@ -487,107 +480,7 @@ mod tests {
 
     // ── Retention / eviction ────────────────────────────────────────────────
 
-    #[test]
-    fn retention_keeps_the_newest_records_and_evicts_the_oldest() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-
-        for i in 0..(MAX_RECORDS as u64 + 5) {
-            insert(&store, &record(&format!("r{i}"), SessionKind::OpenCode, "OpenCode", i)).unwrap();
-        }
-
-        let all = list(&store).unwrap();
-        assert_eq!(all.len(), MAX_RECORDS, "the record set is bounded");
-        // Newest first: the five oldest (last_active_at 0..5) are gone.
-        assert_eq!(all.first().unwrap().last_active_at, MAX_RECORDS as u64 + 4);
-        assert_eq!(all.last().unwrap().last_active_at, 5);
-        assert!(get(&store, "r0").unwrap().is_none());
-        assert!(get(&store, "r4").unwrap().is_none());
-        assert!(get(&store, "r5").unwrap().is_some());
-    }
-
-    #[test]
-    fn eviction_returns_zero_below_the_cap() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-        insert(&store, &record("only", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
-        assert_eq!(evict_oldest_beyond_max(&store).unwrap(), 0);
-    }
-
     // ── Lifecycle helpers ───────────────────────────────────────────────────
-
-    #[test]
-    fn touch_refreshes_last_active_at_and_keeps_the_record() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-        insert(&store, &record("s1", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
-
-        touch(&store, "s1", 42).unwrap();
-        let record = get(&store, "s1").unwrap().unwrap();
-        assert_eq!(record.last_active_at, 42);
-        assert_eq!(record.created_at, 1, "created_at is immutable");
-        assert_eq!(list(&store).unwrap().len(), 1, "the record is kept");
-    }
-
-    #[test]
-    fn set_cli_session_id_persists_the_capture() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-        insert(&store, &record("s1", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
-
-        set_cli_session_id(&store, "s1", "ses_abc").unwrap();
-        assert_eq!(
-            get(&store, "s1").unwrap().unwrap().cli_session_id.as_deref(),
-            Some("ses_abc")
-        );
-    }
-
-    #[test]
-    fn rename_updates_title_in_place_and_keeps_key_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-        let mut original = record("s1", SessionKind::OpenCode, "OpenCode", 7);
-        original.cli_session_id = Some("ses_abc".into());
-        insert(&store, &original).unwrap();
-
-        assert_eq!(rename(&store, "s1", "My build agent").unwrap(), 1);
-
-        let renamed = get(&store, "s1").unwrap().unwrap();
-        assert_eq!(renamed.title, "My build agent", "only the name changed");
-        // G-242 key identity: the SAME id, every other column untouched.
-        assert_eq!(renamed.id, original.id, "the id is the record key — unchanged");
-        assert_eq!(renamed.cli, original.cli);
-        assert_eq!(renamed.work_dir, original.work_dir);
-        assert_eq!(renamed.created_at, original.created_at, "created_at is immutable");
-        assert_eq!(renamed.last_active_at, original.last_active_at);
-        assert_eq!(renamed.cli_session_id, original.cli_session_id);
-        // Exactly one row keeps the same id — no orphan, no duplicate.
-        let all = list(&store).unwrap();
-        assert_eq!(all.len(), 1, "the record count is unchanged");
-        assert_eq!(all[0].id, "s1");
-    }
-
-    #[test]
-    fn rename_of_an_unknown_id_updates_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-        insert(&store, &record("s1", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
-
-        assert_eq!(rename(&store, "nope", "X").unwrap(), 0);
-        assert_eq!(get(&store, "s1").unwrap().unwrap().title, "OpenCode");
-    }
-
-    #[test]
-    fn delete_removes_only_the_named_record() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_with_table(&dir);
-        insert(&store, &record("a", SessionKind::OpenCode, "OpenCode", 1)).unwrap();
-        insert(&store, &record("b", SessionKind::Copilot, "GitHub Copilot", 2)).unwrap();
-
-        assert_eq!(delete(&store, "a").unwrap(), 1);
-        assert!(get(&store, "a").unwrap().is_none());
-        assert!(get(&store, "b").unwrap().is_some());
-    }
 
     // ── OpenCode session-id capture parser ──────────────────────────────────
 

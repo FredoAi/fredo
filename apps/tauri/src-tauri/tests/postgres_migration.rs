@@ -64,9 +64,10 @@ use fredo_lib::infrastructure::storage::engine::{
 use fredo_lib::infrastructure::storage::migration::snapshot::SNAPSHOT_FILENAME;
 use fredo_lib::infrastructure::storage::migration::{
     enumerate_tables, resolve_app_data_dir, resolve_migration_dir, restore_snapshot, run_pre_install,
-    verify_snapshot, MigrationStatus, MIGRATION_CHUNK_ROWS, MIGRATION_COMPLETED_KEY,
+    verify_rollback_snapshot, verify_snapshot, MigrationStatus, PreCutoverTable, MIGRATION_CHUNK_ROWS,
+    MIGRATION_COMPLETED_KEY, ROLLBACK_PRECUTOVER_PARITY_KEY,
 };
-use fredo_lib::infrastructure::storage::{EngineHandle, SqliteEngine, StoreEngine};
+use fredo_lib::infrastructure::storage::EngineHandle;
 use fredo_lib::PgRuntime;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -387,6 +388,48 @@ async fn cross_engine_migration_suite() {
             parity.table
         );
     }
+
+    // CU-4 (R-2.1/R-2.2): the parity-clean cutover recorded the pre-cutover
+    // per-table counts + checksums, and the retained snapshot recomputes to
+    // exactly those values (`verify_rollback` sets `rollback.verified=true`).
+    let recorded_json = pg_setting(&carry_pool, ROLLBACK_PRECUTOVER_PARITY_KEY)
+        .await
+        .expect("a parity-clean cutover must record the pre-cutover parity");
+    let recorded: Vec<PreCutoverTable> =
+        serde_json::from_str(&recorded_json).expect("the recorded parity must be JSON");
+    assert_eq!(
+        recorded.len(),
+        carry_outcome.tables.len(),
+        "every carried table must be recorded"
+    );
+    let verdict = verify_rollback_snapshot(&snapshot, &recorded)
+        .expect("recompute the retained snapshot");
+    assert!(
+        verdict.verified,
+        "the retained snapshot must verify against the recorded pre-cutover parity: {verdict:?}"
+    );
+
+    // A tampered copy must NOT verify — and the check is read-only, so the
+    // retained snapshot itself stays intact.
+    let tampered = scratch_dir.join("tampered.pre-cutover.db");
+    std::fs::copy(&snapshot, &tampered).expect("copy the snapshot for a tamper check");
+    {
+        let conn = Connection::open(&tampered).expect("open the tampered copy");
+        conn.execute_batch("DELETE FROM settings WHERE rowid = (SELECT MIN(rowid) FROM settings);")
+            .expect("tamper the copy");
+    }
+    let tampered_verdict =
+        verify_rollback_snapshot(&tampered, &recorded).expect("recompute the tampered copy");
+    assert!(
+        !tampered_verdict.verified,
+        "a tampered snapshot must NOT verify: {tampered_verdict:?}"
+    );
+    assert!(
+        verify_rollback_snapshot(&snapshot, &recorded)
+            .expect("re-verify the retained snapshot")
+            .verified,
+        "verifying a tampered copy must not mutate the retained snapshot"
+    );
     carry_pool.close().await;
 
     // ── Phase D: forced mismatch → fail-closed, nothing installed ───────────
@@ -422,11 +465,73 @@ async fn cross_engine_migration_suite() {
             pg_setting(&pool, MIGRATION_COMPLETED_KEY).await.is_none(),
             "a fail-closed run must NOT set the marker ('{fault}')"
         );
-        assert_eq!(
-            state.status().engine,
-            Dialect::Sqlite,
+        assert!(
+            state.handle().engine().is_none(),
             "a fail-closed run must NOT install PostgreSQL ('{fault}')"
         );
+        // CU-3 (R-1.4): the wire reports not-ready with no engine installed.
+        assert!(
+            !state.status().ready,
+            "a fail-closed run must report storage_engine_status.ready=false ('{fault}')"
+        );
+        pool.close().await;
+    }
+
+    // ── Phase E: fresh install (no `fredo.db`) → Fresh, no leg, PG installs ──
+    {
+        let schema = unique_schema("fresh");
+        let pool = build_pool(&url, &schema).await;
+        let state = sqlite_state(&scratch_dir.join("fresh.db"));
+        register_schema_inits(&state);
+        state
+            .run_pg_schema_inits(&pool)
+            .expect("schema inits on the fresh candidate");
+
+        // A data dir that never had `fredo.db` (R-4.1).
+        let fresh_dir = tmp.join("fresh-data");
+        std::fs::create_dir_all(&fresh_dir).expect("create the fresh data dir");
+        let missing_source = fresh_dir.join("fredo.db");
+        assert!(!missing_source.exists(), "the fresh data dir has no fredo.db");
+        let fresh_migration_dir = tmp.join("migration-fresh");
+
+        let gate = state.migration_gate();
+        let guard = gate
+            .migration_enter()
+            .await
+            .expect("the exclusive migration barrier must be acquired");
+        let fresh_outcome = run_pre_install(&missing_source, &fresh_migration_dir, &pool, &guard)
+            .await
+            .expect("a fresh install must not fail the leg (R-1.1/R-4.1)");
+        drop(guard);
+
+        assert_eq!(
+            fresh_outcome.status,
+            MigrationStatus::Fresh,
+            "a data dir with no fredo.db must report Fresh (R-1.1/R-4.1)"
+        );
+        assert!(fresh_outcome.tables.is_empty(), "a fresh install copies nothing");
+        assert!(
+            fresh_outcome.snapshot.is_none(),
+            "a fresh install snapshots nothing"
+        );
+        assert!(
+            pg_setting(&pool, MIGRATION_COMPLETED_KEY).await.is_none(),
+            "a fresh install must NOT write the cutover marker"
+        );
+        assert!(
+            !fresh_migration_dir.join(SNAPSHOT_FILENAME).exists(),
+            "a fresh install must write no snapshot"
+        );
+
+        // PostgreSQL installs normally on the Fresh path (R-1.1).
+        state.install_postgres(PgEngine {
+            pool: pool.clone(),
+            url: url.clone(),
+        });
+        let status = state.status();
+        assert_eq!(status.engine, Dialect::Postgres);
+        assert!(status.ready, "a fresh install must install PostgreSQL");
+        assert_eq!(status.fallback_reason, None);
         pool.close().await;
     }
 
@@ -629,11 +734,10 @@ async fn build_pool(url: &str, schema: &str) -> PgPool {
     pool
 }
 
-/// A `StorageEngineState` whose swap-once handle starts on SQLite, exactly like
-/// `lib.rs` before the supervisor installs PostgreSQL.
-fn sqlite_state(db_path: &Path) -> Arc<StorageEngineState> {
-    let engine = SqliteEngine::open(db_path).expect("open the scratch SQLite engine");
-    let handle = EngineHandle::new(StoreEngine::Sqlite(engine));
+/// A `StorageEngineState` whose swap-once handle starts PENDING, exactly like
+/// `lib.rs` before the supervisor installs PostgreSQL (Spec #2979 CU-2).
+fn sqlite_state(_db_path: &Path) -> Arc<StorageEngineState> {
+    let handle = EngineHandle::new_pending();
     StorageEngineState::new(handle, EngineChoice::Postgres)
 }
 

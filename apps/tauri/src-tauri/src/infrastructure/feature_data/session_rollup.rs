@@ -50,7 +50,6 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
 use serde_json::{Map, Value as JsonValue};
 use sqlx::Row as _;
 
@@ -412,74 +411,6 @@ pub fn fact_values(facts: &SessionRollupFacts) -> Map<String, JsonValue> {
 }
 
 // ── Canonical reads (bounded, per group key) ────────────────────────────────
-
-/// Read the persisted canonical rows for one group, selecting ONLY the columns
-/// the rollup reads (never `raw_json`) — one bounded, indexed query per kind.
-pub fn load_persisted_group(conn: &Connection, session_id: &str) -> Result<RollupGroup> {
-    let chats = {
-        let mut stmt = conn.prepare(
-            "SELECT correlation_id, seq, started_at_ns, updated_at, state,
-                    user_message, agent_reply, parent_session_id,
-                    composited_child_session_id, provider
-             FROM chat_rows WHERE session_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![session_id], |row| {
-            Ok(RollupChatRow {
-                correlation_id: row.get(0)?,
-                seq: row.get(1)?,
-                started_at_ns: row.get(2)?,
-                updated_at: row.get(3)?,
-                state: row.get(4)?,
-                user_message: row.get(5)?,
-                agent_reply: row.get(6)?,
-                parent_session_id: row.get(7)?,
-                composited_child_session_id: row.get(8)?,
-                provider: row.get(9)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-
-    let tools = {
-        let mut stmt = conn.prepare(
-            "SELECT correlation_id, seq, tool_name, tool_input_json, is_subagent
-             FROM tool_use_rows WHERE session_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![session_id], |row| {
-            Ok(RollupToolRow {
-                correlation_id: row.get(0)?,
-                seq: row.get(1)?,
-                tool_name: row.get(2)?,
-                tool_input_json: row.get(3)?,
-                is_subagent: row.get(4)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-
-    let agents = {
-        let mut stmt = conn.prepare(
-            "SELECT correlation_id, seq, updated_at, agent_name
-             FROM agent_session_rows WHERE session_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![session_id], |row| {
-            Ok(RollupAgentRow {
-                correlation_id: row.get(0)?,
-                seq: row.get(1)?,
-                updated_at: row.get(2)?,
-                agent_name: row.get(3)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-
-    Ok(RollupGroup {
-        session_id: session_id.to_string(),
-        chats,
-        tools,
-        agents,
-    })
-}
 
 /// The PostgreSQL arm of [`load_persisted_group`] (Spec #2976 ST-6): the SAME
 /// bounded, per-group SELECTs against the shared pool, wrapped in a READ ONLY

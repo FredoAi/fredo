@@ -291,7 +291,6 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::storage::AppStore;
     use std::net::TcpListener;
 
     #[test]
@@ -318,25 +317,6 @@ mod tests {
         assert!(!is_llama_server_image(Some(""), LLAMA_SERVER_IMAGE));
         // A gone / unreadable process is a safe no-kill path.
         assert!(!is_llama_server_image(None, LLAMA_SERVER_IMAGE));
-    }
-
-    #[test]
-    fn persist_pid_round_trips_and_clears() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = AppStore::open_sqlite_for_tests(dir.path().to_path_buf()).expect("open app store");
-
-        persist_pid(&store, Some(4242));
-        assert_eq!(persisted_pid(&store), Some(4242));
-
-        persist_pid(&store, None);
-        assert_eq!(persisted_pid(&store), None);
-
-        // A blank / malformed marker is not a PID (never parsed as 0).
-        let _ = store.control_set(
-            crate::features::llm_server::LLAMA_SERVER_PID_KEY,
-            "not-a-pid",
-        );
-        assert_eq!(persisted_pid(&store), None);
     }
 
     #[cfg(target_os = "windows")]

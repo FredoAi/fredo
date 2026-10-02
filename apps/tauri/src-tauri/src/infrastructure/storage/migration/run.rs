@@ -4,7 +4,8 @@
 //! `run_pg_schema_inits` and `install_postgres`, against the **candidate** pool.
 //! It is fail-closed: any error (or the whole-leg [`MIGRATION_HARD_CEILING`]
 //! timeout) returns `Err` having written no marker, so the caller installs
-//! nothing and the app stays on SQLite (R-2.2/R-2.3).
+//! nothing (the handle stays `Pending`) — there is NO SQLite data-plane fallback
+//! (R-1.4).
 //!
 //! Each table is copied under its OWN proportional budget (ST-8a/ST-8b), checked
 //! cooperatively between chunks, so a single oversized table can never starve the
@@ -12,6 +13,9 @@
 //! [`MIGRATION_HARD_CEILING`] remains the fail-closed backstop.
 //!
 //! Ordering contract:
+//! 0. a data dir with no `fredo.db` has nothing to migrate — return `Fresh`
+//!    BEFORE reading the marker or snapshotting, so PostgreSQL installs
+//!    normally (R-1.1/R-4.1);
 //! 1. read the completion marker from the candidate pool — present ⇒ `Skipped`;
 //! 2. the caller holds the EXCLUSIVE migration gate (bounded by
 //!    [`GATE_WAIT_BOUND`]) from BEFORE this call THROUGH `install_postgres`
@@ -22,22 +26,34 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 use sqlx::PgPool;
 
 use crate::infrastructure::storage::engine::{quote_ident, StorageEngineState};
+use crate::infrastructure::storage::AppStore;
 
 use super::copy::copy_table_with_fault;
 use super::gate::MigrationGuard;
-use super::snapshot::{open_snapshot_read_only, take_snapshot_with_fault};
+use super::snapshot::{
+    open_snapshot_read_only, take_snapshot_with_fault, verify_rollback_snapshot, PreCutoverTable,
+    RollbackTableCheck, SNAPSHOT_FILENAME,
+};
 use super::tables::{enumerate_tables, TableSpec};
 use super::{
-    current_migration_fault, migration_table_budget, MigrationFault, MigrationOutcome,
-    MigrationStatus, MIGRATION_COMPLETED_KEY, MIGRATION_HARD_CEILING,
+    current_migration_fault, migration_table_budget, resolve_app_data_dir, resolve_migration_dir,
+    MigrationFault, MigrationOutcome, MigrationStatus, MIGRATION_COMPLETED_KEY,
+    MIGRATION_HARD_CEILING, ROLLBACK_PRECUTOVER_PARITY_KEY, ROLLBACK_VERIFIED_AT_KEY,
+    ROLLBACK_VERIFIED_KEY,
 };
+
+/// Finite bound on the whole `verify_rollback` flow (G-263). The snapshot
+/// recompute runs on a blocking worker under this wall-clock cap; the caller is
+/// never left waiting on an unbounded read. On expiry the verification fails
+/// closed and writes nothing.
+pub const VERIFY_ROLLBACK_BOUND: Duration = Duration::from_secs(600);
 
 /// The read-only status view the `migration_status` command exposes.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -68,8 +84,9 @@ impl Default for MigrationStatusView {
 /// the per-table parity check.
 ///
 /// `source_db` is the path to `fredo.db`; `migration_dir` receives the single
-/// pre-cutover snapshot. A present completion marker short-circuits to
-/// [`MigrationStatus::Skipped`].
+/// pre-cutover snapshot. A source-absent data dir short-circuits to
+/// [`MigrationStatus::Fresh`] (fresh install, R-1.1/R-4.1); a present completion
+/// marker short-circuits to [`MigrationStatus::Skipped`] (R-1.3).
 ///
 /// **R-3.5 (G-123):** the caller MUST hold the exclusive migration barrier
 /// (`guard`) from BEFORE this call through `install_postgres` — this function
@@ -84,6 +101,25 @@ pub async fn run_pre_install(
     _guard: &MigrationGuard<'_>,
 ) -> Result<MigrationOutcome> {
     let started = Instant::now();
+
+    // 0. Fresh-install guard (R-1.1/R-4.1): a data dir with no `fredo.db` has
+    //    nothing to migrate. Return `Fresh` BEFORE reading the marker or taking a
+    //    snapshot, so the leg is a clean no-op and PostgreSQL installs normally.
+    //    Without this guard `take_snapshot` rejects the missing source and fails
+    //    the whole boot (the pre-CU-3 gap).
+    if !source_db.exists() {
+        tracing::info!(
+            target: "fredo::migration",
+            path = %source_db.display(),
+            "no legacy fredo.db; skipping the one-shot cutover leg (fresh install)"
+        );
+        return Ok(MigrationOutcome {
+            status: MigrationStatus::Fresh,
+            tables: Vec::new(),
+            snapshot: None,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
 
     // 1. Marker gate: read from the candidate pool BEFORE copying.
     let marker: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
@@ -176,6 +212,30 @@ async fn run_locked(
     .await
     .context("[migration] write the completion marker")?;
 
+    // CU-4 (R-2.1): record the pre-cutover per-table counts + SHA-256 checksums
+    // as the durable reference `verify_rollback` compares the retained snapshot
+    // against (R-2.2). The source side of each parity pair IS the pre-cutover
+    // value (the export reads the read-only snapshot of `fredo.db`).
+    let pre_cutover: Vec<PreCutoverTable> = parities
+        .iter()
+        .map(|parity| PreCutoverTable {
+            table: parity.table.clone(),
+            rows: parity.source_rows,
+            checksum: parity.source_checksum.clone(),
+        })
+        .collect();
+    let pre_cutover_json =
+        serde_json::to_string(&pre_cutover).context("[migration] encode the pre-cutover parity")?;
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ($1, $2)
+         ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value",
+    )
+    .bind(ROLLBACK_PRECUTOVER_PARITY_KEY)
+    .bind(&pre_cutover_json)
+    .execute(pool)
+    .await
+    .context("[migration] record the pre-cutover parity")?;
+
     Ok(MigrationOutcome {
         status: MigrationStatus::Completed,
         tables: parities,
@@ -228,6 +288,179 @@ pub async fn migration_status(app: tauri::AppHandle) -> MigrationStatusView {
     match app.try_state::<Arc<StorageEngineState>>() {
         Some(state) => state.migration_status_view(),
         None => MigrationStatusView::default(),
+    }
+}
+
+/// The structured result of one `verify_rollback` invocation (Spec #2979 CU-4).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRollbackReport {
+    /// `true` only when every recomputed snapshot checksum equals the recorded
+    /// pre-cutover value (R-2.2).
+    pub verified: bool,
+    /// The retained snapshot that was verified, when resolvable.
+    pub snapshot_path: Option<String>,
+    /// One recorded-vs-recomputed result per table.
+    pub tables: Vec<RollbackTableCheck>,
+    /// The first mismatch, when any.
+    pub mismatch: Option<String>,
+    /// Human-readable summary (the fail-closed reason on a non-verification).
+    pub reason: String,
+}
+
+impl VerifyRollbackReport {
+    /// A fail-closed report (nothing verified, no table detail).
+    fn unavailable(snapshot_path: Option<String>, reason: impl Into<String>) -> Self {
+        VerifyRollbackReport {
+            verified: false,
+            snapshot_path,
+            tables: Vec::new(),
+            mismatch: None,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// The store writes `verify_rollback` performs for a verdict (R-2.2).
+///
+/// A full match writes `rollback.verified = "true"` AND
+/// `rollback.verified_at` = `verified_at` (RFC-3339). Any mismatch writes ONLY
+/// `rollback.verified = "false"` — the timestamp is never stamped without a
+/// verification.
+pub fn rollback_verdict_writes(verified: bool, verified_at: &str) -> Vec<(&'static str, String)> {
+    if verified {
+        vec![
+            (ROLLBACK_VERIFIED_KEY, "true".to_string()),
+            (ROLLBACK_VERIFIED_AT_KEY, verified_at.to_string()),
+        ]
+    } else {
+        vec![(ROLLBACK_VERIFIED_KEY, "false".to_string())]
+    }
+}
+
+/// Recompute the retained pre-cutover snapshot read-only and set
+/// `rollback.verified` (R-2.2). Registered in `lib.rs`.
+///
+/// Reads the recorded pre-cutover parity from the active store (written by a
+/// parity-clean cutover under [`ROLLBACK_PRECUTOVER_PARITY_KEY`]), recomputes the
+/// snapshot's per-table counts + SHA-256 checksums, and sets
+/// `rollback.verified = "true"` (plus `rollback.verified_at` = RFC-3339) ONLY
+/// when EVERY recomputed checksum equals the recorded value. On any mismatch it
+/// records `"false"` and reports the mismatch; nothing is verified.
+///
+/// **G-263:** the whole flow is capped by [`VERIFY_ROLLBACK_BOUND`] and the
+/// synchronous snapshot recompute runs on a blocking worker. **Read-only:** the
+/// snapshot is opened read-only and `fredo.db` is never touched.
+#[tauri::command]
+pub async fn verify_rollback(app: tauri::AppHandle) -> VerifyRollbackReport {
+    use tauri::Manager as _;
+
+    // The active store holds the recorded pre-cutover parity + the verdict keys.
+    let Some(store) = app.try_state::<Arc<AppStore>>() else {
+        return VerifyRollbackReport::unavailable(None, "the store is not available");
+    };
+
+    let snapshot = match app.path().app_data_dir() {
+        Ok(os_dir) => resolve_migration_dir(&resolve_app_data_dir(&os_dir)).join(SNAPSHOT_FILENAME),
+        Err(error) => {
+            return VerifyRollbackReport::unavailable(
+                None,
+                format!("resolve the app data dir: {error}"),
+            )
+        }
+    };
+    let snapshot_path = Some(snapshot.display().to_string());
+
+    if !snapshot.exists() {
+        return VerifyRollbackReport::unavailable(
+            snapshot_path,
+            "no retained pre-cutover snapshot to verify",
+        );
+    }
+
+    let recorded = match store.get(ROLLBACK_PRECUTOVER_PARITY_KEY).await {
+        Ok(Some(json)) => match serde_json::from_str::<Vec<PreCutoverTable>>(&json) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                return VerifyRollbackReport::unavailable(
+                    snapshot_path,
+                    format!("the recorded pre-cutover parity is unreadable: {error}"),
+                )
+            }
+        },
+        Ok(None) => {
+            return VerifyRollbackReport::unavailable(
+                snapshot_path,
+                "no recorded pre-cutover parity (no parity-clean cutover)",
+            )
+        }
+        Err(error) => {
+            return VerifyRollbackReport::unavailable(
+                snapshot_path,
+                format!("read the recorded pre-cutover parity: {error:#}"),
+            )
+        }
+    };
+
+    // G-263: bound the flow; the synchronous snapshot recompute runs on a
+    // blocking worker so the async runtime is never blocked.
+    let snapshot_for_task = snapshot.clone();
+    let bounded = tokio::time::timeout(
+        VERIFY_ROLLBACK_BOUND,
+        tokio::task::spawn_blocking(move || {
+            verify_rollback_snapshot(&snapshot_for_task, &recorded)
+        }),
+    )
+    .await;
+
+    let verification = match bounded {
+        Ok(Ok(Ok(verification))) => verification,
+        Ok(Ok(Err(error))) => {
+            return VerifyRollbackReport::unavailable(
+                snapshot_path,
+                format!("recompute the retained snapshot: {error:#}"),
+            )
+        }
+        Ok(Err(join_error)) => {
+            return VerifyRollbackReport::unavailable(
+                snapshot_path,
+                format!("the verification worker failed: {join_error}"),
+            )
+        }
+        Err(_) => {
+            return VerifyRollbackReport::unavailable(
+                snapshot_path,
+                format!("verification exceeded its {VERIFY_ROLLBACK_BOUND:?} bound"),
+            )
+        }
+    };
+
+    // Persist the verdict: `rollback.verified = "true"` ONLY on a full match
+    // (R-2.2); any mismatch records `"false"` and never stamps a timestamp.
+    let verified_at = chrono::Utc::now().to_rfc3339();
+    for (key, value) in rollback_verdict_writes(verification.verified, &verified_at) {
+        if let Err(error) = store.set(key, &value).await {
+            return VerifyRollbackReport::unavailable(
+                snapshot_path,
+                format!("record {key}: {error:#}"),
+            );
+        }
+    }
+
+    let reason = if verification.verified {
+        "every retained-snapshot checksum equals the recorded pre-cutover value".to_string()
+    } else {
+        verification
+            .mismatch
+            .clone()
+            .unwrap_or_else(|| "a retained-snapshot checksum mismatch".to_string())
+    };
+    VerifyRollbackReport {
+        verified: verification.verified,
+        snapshot_path,
+        tables: verification.tables,
+        mismatch: verification.mismatch,
+        reason,
     }
 }
 
@@ -301,6 +534,40 @@ mod tests {
         );
     }
 
+    /// CU-3 (R-1.1/R-4.1): a data dir with no `fredo.db` must NOT run the leg —
+    /// it returns `Fresh` and writes NO snapshot, and (because the guard fires
+    /// before the marker read) never dials the lazily-connected pool.
+    #[tokio::test]
+    async fn run_pre_install_returns_fresh_when_the_source_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        // A path that does not exist — no `fredo.db` in this data dir.
+        let missing = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+        assert!(!missing.exists());
+
+        let gate = MigrationGate::new();
+        let guard = gate.migration_enter().await.unwrap();
+        let outcome = run_pre_install(&missing, &migration_dir, &lazy_pool(), &guard)
+            .await
+            .expect("a source-absent install must not fail the leg");
+
+        assert_eq!(
+            outcome.status,
+            MigrationStatus::Fresh,
+            "no source ⇒ Fresh, never Failed (the pre-CU-3 gap)"
+        );
+        assert!(outcome.tables.is_empty(), "a fresh install copies nothing");
+        assert!(outcome.snapshot.is_none(), "a fresh install snapshots nothing");
+        assert!(
+            outcome.completed(),
+            "a fresh install installs PostgreSQL normally (R-1.1)"
+        );
+        assert!(
+            !migration_dir.join(SNAPSHOT_FILENAME).exists(),
+            "a fresh install must write no snapshot"
+        );
+    }
+
     /// `1`/`true` resolves to the first NON-empty table in name order; the
     /// fault seam never fires for an unknown/blank value.
     #[test]
@@ -340,6 +607,72 @@ mod tests {
         assert_eq!(json["status"], "Skipped");
         assert_eq!(json["snapshotPath"], serde_json::Value::Null);
         assert_eq!(json["completed"], false);
+    }
+
+    // ── CU-4 (R-2.2): the verify_rollback verdict persistence ───────────────
+
+    /// A checksum match sets `rollback.verified = "true"` AND stamps
+    /// `rollback.verified_at` (RFC-3339).
+    #[test]
+    fn rollback_verdict_writes_sets_true_and_the_timestamp_on_a_match() {
+        let writes = rollback_verdict_writes(true, "2026-10-02T00:00:00+00:00");
+        assert_eq!(writes.len(), 2);
+        assert!(writes.contains(&(ROLLBACK_VERIFIED_KEY, "true".to_string())));
+        assert!(writes.contains(&(
+            ROLLBACK_VERIFIED_AT_KEY,
+            "2026-10-02T00:00:00+00:00".to_string()
+        )));
+    }
+
+    /// A checksum mismatch records ONLY `rollback.verified = "false"` — no
+    /// timestamp is stamped, so `rollbackVerified` can never read true.
+    #[test]
+    fn rollback_verdict_writes_records_false_without_a_timestamp_on_a_mismatch() {
+        let writes = rollback_verdict_writes(false, "2026-10-02T00:00:00+00:00");
+        assert_eq!(
+            writes,
+            vec![(ROLLBACK_VERIFIED_KEY, "false".to_string())],
+            "a mismatch must not stamp rollback.verified_at"
+        );
+        assert!(
+            !writes.iter().any(|(key, _)| *key == ROLLBACK_VERIFIED_AT_KEY),
+            "no verification timestamp on a mismatch"
+        );
+    }
+
+    /// The report serializes camelCase, matching the wire contract.
+    #[test]
+    fn verify_rollback_report_serializes_camel_case() {
+        let report = VerifyRollbackReport {
+            verified: true,
+            snapshot_path: Some("C:/m/fredo.pre-cutover.db".to_string()),
+            tables: vec![RollbackTableCheck {
+                table: "settings".to_string(),
+                recorded_rows: 2,
+                recomputed_rows: 2,
+                recorded_checksum: "a".to_string(),
+                recomputed_checksum: "a".to_string(),
+                matches: true,
+            }],
+            mismatch: None,
+            reason: "ok".to_string(),
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["verified"], true);
+        assert_eq!(json["snapshotPath"], "C:/m/fredo.pre-cutover.db");
+        assert_eq!(json["tables"][0]["recordedRows"], 2);
+        assert_eq!(json["tables"][0]["recomputedChecksum"], "a");
+        assert_eq!(json["mismatch"], serde_json::Value::Null);
+    }
+
+    /// An unavailable report is fail-closed: never verified, no table detail.
+    #[test]
+    fn verify_rollback_report_unavailable_is_fail_closed() {
+        let report = VerifyRollbackReport::unavailable(None, "no snapshot");
+        assert!(!report.verified);
+        assert!(report.tables.is_empty());
+        assert!(report.mismatch.is_none());
+        assert_eq!(report.reason, "no snapshot");
     }
 }
 

@@ -7,11 +7,14 @@
 //! primary key — with a per-table count + SHA-256 parity gate, and an executable
 //! SQLite snapshot rollback.
 //!
-//! Fail-closed contract (R-2.2): the completion marker
+//! Fail-closed contract (R-1.4): the completion marker
 //! ([`MIGRATION_COMPLETED_KEY`]) is written ONLY after a fully parity-clean run;
 //! any mismatch returns `Err` having written no marker, so the caller installs
-//! nothing and the app stays on SQLite. The next startup re-runs the idempotent
-//! read-only export.
+//! nothing (the handle stays `Pending`) — there is NO SQLite data-plane
+//! fallback. The next startup re-runs the idempotent, read-only export.
+//!
+//! Fresh-install contract (R-1.1/R-4.1): a data dir with no `fredo.db` runs no
+//! one-shot leg — [`MigrationStatus::Fresh`] — and PostgreSQL installs normally.
 //!
 //! Module layout (one concern per file):
 //! - [`tables`] — source enumeration + PostgreSQL target DDL derivation
@@ -33,14 +36,36 @@ use std::time::Duration;
 
 pub use gate::{MigrationGate, MigrationGuard, MigrationWriterGuard};
 pub use parity::{canonical_row_checksum, encode_row, CellValue, RowHasher};
-pub use run::{run_pre_install, MigrationStatusView};
-pub use snapshot::{restore_snapshot, take_snapshot, verify_snapshot, SnapshotRecord};
+pub use run::{run_pre_install, verify_rollback, MigrationStatusView, VerifyRollbackReport};
+pub use snapshot::{
+    compare_rollback_parity, restore_snapshot, take_snapshot, verify_rollback_snapshot,
+    verify_snapshot, PreCutoverTable, RollbackTableCheck, RollbackVerification, SnapshotRecord,
+};
 pub use tables::{enumerate_tables, ColumnSpec, TableSpec};
 
 /// PostgreSQL `settings` key marking a completed cutover. Written ONLY after a
 /// fully parity-clean run, before the pool is installed; read before copying so
 /// a completed cutover is skipped on the next boot.
 pub const MIGRATION_COMPLETED_KEY: &str = "migration.postgres.completed";
+
+/// PostgreSQL `settings` key holding the recorded **pre-cutover** per-table
+/// parity (JSON `[{ "table", "rows", "checksum" }]`) written by a parity-clean
+/// cutover (Spec #2979 CU-4, R-2.1).
+///
+/// This is the durable reference `verify_rollback` compares the retained
+/// snapshot's recomputed checksums against: the backout is proven only when
+/// every recomputed value equals this recorded pre-cutover value (R-2.2).
+pub const ROLLBACK_PRECUTOVER_PARITY_KEY: &str = "rollback.pre_cutover_parity";
+
+/// PostgreSQL `settings` key set to `"true"` ONLY when `verify_rollback` finds
+/// EVERY recomputed retained-snapshot checksum equal to the recorded pre-cutover
+/// value (Spec #2979 CU-4, R-2.2). It stays absent/`"false"` on any mismatch.
+pub const ROLLBACK_VERIFIED_KEY: &str = "rollback.verified";
+
+/// PostgreSQL `settings` key carrying the RFC-3339 timestamp of the successful
+/// `verify_rollback` (Spec #2979 CU-4, R-2.2). Written only alongside
+/// [`ROLLBACK_VERIFIED_KEY`] = `"true"`.
+pub const ROLLBACK_VERIFIED_AT_KEY: &str = "rollback.verified_at";
 
 /// **G-275** app-data-dir override: when set (non-blank) the app data root used
 /// to resolve the source `fredo.db` AND the AC3 backout target is this path
@@ -181,9 +206,12 @@ pub const GATE_WAIT_BOUND: Duration = Duration::from_secs(330);
 pub enum MigrationStatus {
     /// The completion marker was already present — nothing to do.
     Skipped,
+    /// The data dir has no `fredo.db`: nothing to migrate (fresh install). The
+    /// engine installs PostgreSQL normally (R-1.1/R-4.1).
+    Fresh,
     /// The whole export ran and every table passed the parity gate.
     Completed,
-    /// The export failed closed; the engine stays on SQLite.
+    /// The export failed closed; no marker, no engine install (R-1.4).
     Failed,
 }
 
@@ -224,12 +252,13 @@ pub struct MigrationOutcome {
 }
 
 impl MigrationOutcome {
-    /// `true` when the marker is set or the run completed cleanly — the two
-    /// states in which the store is authoritative on PostgreSQL.
+    /// `true` when the marker is set, the run completed cleanly, or there was
+    /// nothing to migrate (a fresh install) — the states in which the store is
+    /// authoritative on PostgreSQL.
     pub fn completed(&self) -> bool {
         matches!(
             self.status,
-            MigrationStatus::Completed | MigrationStatus::Skipped
+            MigrationStatus::Completed | MigrationStatus::Skipped | MigrationStatus::Fresh
         )
     }
 }
@@ -420,5 +449,38 @@ mod tests {
         };
         let json = serde_json::to_value(&parity).unwrap();
         assert_eq!(json["elapsedMs"], 1_234);
+    }
+
+    /// CU-3 (R-1.1/R-4.1): the fresh-install variant serializes PascalCase and
+    /// counts as completed — a fresh install is PostgreSQL-authoritative.
+    #[test]
+    fn fresh_status_is_pascal_case_and_completed() {
+        assert_eq!(
+            serde_json::to_value(MigrationStatus::Fresh).unwrap(),
+            serde_json::json!("Fresh")
+        );
+        let outcome = MigrationOutcome {
+            status: MigrationStatus::Fresh,
+            tables: Vec::new(),
+            snapshot: None,
+            elapsed_ms: 0,
+        };
+        assert!(
+            outcome.completed(),
+            "a fresh install (no source) is authoritative on PostgreSQL"
+        );
+    }
+
+    /// CU-3 (R-1.4): a failed leg is NOT completed — the marker is absent and no
+    /// engine was installed, so `migration_status.completed` must stay `false`.
+    #[test]
+    fn failed_status_is_not_completed() {
+        let outcome = MigrationOutcome {
+            status: MigrationStatus::Failed,
+            tables: Vec::new(),
+            snapshot: None,
+            elapsed_ms: 0,
+        };
+        assert!(!outcome.completed(), "a fail-closed leg must not report completed");
     }
 }
