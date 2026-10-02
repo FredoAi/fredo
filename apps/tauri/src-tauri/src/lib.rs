@@ -178,9 +178,11 @@ pub fn run() {
             );
             app.manage(app_store.clone());
 
-            // -- Engine selection (Spec #2979 CU-1) ----------------------------
-            // Resolve the data-plane selection from the CONTROL plane; the
-            // default is PostgreSQL (the legacy `sqlite` env value is rejected).
+            // -- Engine selection (Spec #2979 CU-1, reworked CU-1-R2) ----------
+            // Resolve the data-plane selection from the CONTROL plane. PostgreSQL
+            // is UNCONDITIONAL: the legacy `sqlite` env value is rejected and the
+            // legacy control-plane opt-out `postgres.enabled=false` is inert (a
+            // carried key must not disable the PostgreSQL-only data plane).
             let engine_choice = select_engine(app_store.control_engine());
             let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
             // Spec #2975 ST-2 rework: register the startup schema initializers
@@ -211,13 +213,13 @@ pub fn run() {
             let migration_gate = app.state::<Arc<StorageEngineState>>().migration_gate();
 
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
-            // Since Spec #2979 CU-1 the engine default is PostgreSQL, so the
-            // supervisor starts by default; the legacy `postgres.enabled=false`
-            // control key is the bounded SQLite opt-out (R-1.4). When enabled it
-            // acquires the exclusive data-dir lock BEFORE the orphan sweep and
-            // LAZILY starts the postmaster on a background task: `setup` NEVER
-            // awaits the boot (G-273/R-2.3), so the webview shell renders while
-            // PostgreSQL starts.
+            // Spec #2979 CU-1/CU-1-R2: PostgreSQL is the UNCONDITIONAL engine, so
+            // the supervisor always starts. The legacy `postgres.enabled` control
+            // key is INERT — a carried `false` must not disable the PostgreSQL-only
+            // data plane. When enabled it acquires the exclusive data-dir lock
+            // BEFORE the orphan sweep and LAZILY starts the postmaster on a
+            // background task: `setup` NEVER awaits the boot (G-273/R-2.3), so the
+            // webview shell renders while PostgreSQL starts.
             features::pg_supervisor::start_supervisor(app.handle());
 
             // -- FeatureStore (generic typed-column store for features) --------

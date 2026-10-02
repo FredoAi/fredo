@@ -202,15 +202,24 @@ enum Bootstrap {
     Locked(PgDataDirLock, String),
 }
 
-/// The slice-1 KV enable flag: ONLY the literal `"true"` enables the engine;
-/// absent, blank, or any other value leaves persistence unchanged (R-1.4). Used
-/// as the fallback when no shared engine state is managed (unit tests / a
-/// pre-ST-2 caller); in production the resolved engine choice supersedes it.
+/// The no-managed-state fallback enable flag. PostgreSQL is UNCONDITIONAL, so
+/// this is always `true` (Spec #2979 CU-1-R2): the legacy `postgres.enabled`
+/// control key is INERT — a carried `"false"` out of an upgraded install must
+/// NOT disable the PostgreSQL-only data plane. Used only when no shared engine
+/// state is managed (unit tests / a pre-ST-2 caller); in production the resolved
+/// engine choice supersedes it.
 fn pg_enabled(store: &AppStore) -> bool {
-    matches!(
-        store.control_get(PG_ENABLED_KEY).ok().flatten().as_deref(),
-        Some("true")
-    )
+    // The legacy key is read for diagnostics only; its value NEVER disables the
+    // PostgreSQL-only data plane.
+    let carried = store.control_get(PG_ENABLED_KEY).ok().flatten();
+    if carried.is_some() {
+        tracing::debug!(
+            target: "fredo::pg_supervisor",
+            carried = ?carried,
+            "legacy postgres.enabled control key is inert (PostgreSQL is unconditional)"
+        );
+    }
+    true
 }
 
 /// The **FS-4** fault seam resolved to a named pool-build stage: the non-blank
@@ -286,11 +295,13 @@ pub fn start_supervisor(app: &AppHandle) {
     // stay on the OS dir (see `bootstrap` below).
     let data_dir = resolve_app_data_dir(&os_app_data_dir);
 
-    // Spec #2975 ST-2: the resolved engine choice drives the boot decision. The
-    // env lever `FREDO_STORAGE_ENGINE` (resolved by `select_engine` at setup and
-    // carried on the managed engine state) OVERRIDES the control-plane
-    // `postgres.enabled`; with no override the slice-1 KV rule applies
-    // (absent ⇒ disabled, so persistence is unchanged — R-1.4).
+    // Spec #2975 ST-2 / Spec #2979 CU-1-R2: the resolved engine choice drives the
+    // boot decision. PostgreSQL is UNCONDITIONAL: `FREDO_STORAGE_ENGINE` is inert
+    // (`postgres` selects PG; `sqlite` => PG) and the legacy control-plane
+    // `postgres.enabled` key is INERT — a carried `"false"` must not brick the
+    // PostgreSQL-only data plane. The shared engine state's choice (always
+    // `EngineChoice::Postgres`) is authoritative; `pg_enabled` is the
+    // no-managed-state fallback and likewise always enables the supervisor.
     let enabled = match app.try_state::<Arc<StorageEngineState>>() {
         Some(state) => state.choice() == EngineChoice::Postgres,
         None => pg_enabled(&store),
@@ -830,17 +841,21 @@ mod tests {
     }
 
     #[test]
-    fn only_the_literal_true_enables_the_engine() {
+    fn the_enabled_key_is_inert_postgres_is_unconditional() {
+        // CU-1-R2: the no-managed-state fallback always enables PostgreSQL; the
+        // legacy `postgres.enabled` key can never disable it (a carried `false`
+        // must not brick the PG-only data plane).
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
 
-        assert!(!pg_enabled(&store), "an absent flag is disabled (R-1.4)");
-        for raw in ["false", "TRUE", "True", "1", "yes", "", "  true"] {
+        assert!(pg_enabled(&store), "absent flag still enables PostgreSQL");
+        for raw in ["false", "FALSE", "False", "0", "no", "", "  false", "true"] {
             store.control_set(PG_ENABLED_KEY, raw).expect("seed flag");
-            assert!(!pg_enabled(&store), "{raw:?} must not enable the engine");
+            assert!(
+                pg_enabled(&store),
+                "{raw:?} must not disable the PostgreSQL default"
+            );
         }
-        store.control_set(PG_ENABLED_KEY, "true").expect("enable");
-        assert!(pg_enabled(&store));
     }
 
     #[test]

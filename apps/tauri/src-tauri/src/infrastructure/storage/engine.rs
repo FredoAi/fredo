@@ -302,22 +302,28 @@ impl EngineHandle {
 // -- Engine selection ---------------------------------------------------------
 
 /// Which engine the app should run the data plane on.
+///
+/// Spec #2979 CU-1-R2: PostgreSQL is UNCONDITIONAL — the historical `Sqlite`
+/// variant was removed because post-CU-2 there is no SQLite data plane to
+/// select. Single-variant by design, mirroring the
+/// [`crate::features::pg_supervisor::release_gate::ShippedDefault`] precedent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineChoice {
-    Sqlite,
     Postgres,
 }
 
-/// Resolve the engine choice (REQ-1/EARS-1.1; Spec #2979 CU-1).
+/// Resolve the engine choice (REQ-1/EARS-1.1; Spec #2979 CU-1, reworked CU-1-R2).
 ///
-/// The default is **PostgreSQL** (was SQLite). Precedence:
-/// `FREDO_STORAGE_ENGINE` (`postgres`, case-insensitive) selects PostgreSQL and
-/// OVERRIDES the control-plane KV key `postgres.enabled`. The legacy `sqlite`
-/// env value is REMOVED as a data-plane selection: it is inert/rejected and can
-/// never select SQLite (the control plane is not engine-selected). When the env
-/// is unset/blank/unrecognized, an explicit control-plane opt-out
-/// (`postgres.enabled = "false"`) still selects SQLite for a bounded backout;
-/// every other value (including absent) => PostgreSQL.
+/// PostgreSQL is the UNCONDITIONAL data-plane engine. Neither the
+/// `FREDO_STORAGE_ENGINE` env lever nor the legacy control-plane KV key
+/// `postgres.enabled` can select SQLite (post-CU-2 there is no SQLite data
+/// plane):
+/// - `postgres` (case-insensitive) selects PostgreSQL;
+/// - the legacy `sqlite` env value is inert/rejected => PostgreSQL;
+/// - the legacy control-plane opt-out `postgres.enabled = "false"` is INERT =>
+///   PostgreSQL. A carried key out of an upgraded install must NOT disable the
+///   PostgreSQL-only data plane (CU-1-R2 defect: it left the `EngineHandle`
+///   `Pending` and bricked the app).
 ///
 /// `control` is the DEDICATED control-plane engine (`control.db`), not the
 /// data-plane engine.
@@ -328,21 +334,11 @@ pub fn select_engine(control: &SqliteEngine) -> EngineChoice {
 }
 
 /// The pure precedence rule, split out so it is unit-testable without touching
-/// process-global environment state.
-fn resolve_engine_choice(env: Option<&str>, kv_enabled: Option<&str>) -> EngineChoice {
-    match env.map(str::trim) {
-        Some(value) if value.eq_ignore_ascii_case("postgres") => EngineChoice::Postgres,
-        // `sqlite` is no longer an accepted data-plane selection (CU-1): the
-        // value is inert/rejected and falls through to the PostgreSQL default.
-        Some(value) if value.eq_ignore_ascii_case("sqlite") => EngineChoice::Postgres,
-        // Unset, blank, or an unrecognized value: no override intent, so consult
-        // the legacy control-plane opt-out. Only an explicit `"false"` keeps
-        // SQLite; absent/default => PostgreSQL.
-        _ => match kv_enabled.map(str::trim) {
-            Some(value) if value.eq_ignore_ascii_case("false") => EngineChoice::Sqlite,
-            _ => EngineChoice::Postgres,
-        },
-    }
+/// process-global environment state. Both inputs are retained (and ignored) so
+/// the unconditional-PostgreSQL rule stays directly testable — see the
+/// selection-precedence tests below.
+fn resolve_engine_choice(_env: Option<&str>, _kv_enabled: Option<&str>) -> EngineChoice {
+    EngineChoice::Postgres
 }
 
 // -- Identifier quoting -------------------------------------------------------
@@ -377,8 +373,9 @@ pub const PG_POOL_BUILD_BOUND: std::time::Duration = std::time::Duration::from_s
 
 /// A named stage of the bounded pool build. The **FS-4** injectable fault seam
 /// (`FREDO_PG_POOL_FORCE_FAIL`, owned by `features::pg_supervisor`) forces the
-/// build to fail AT one of these stages, so the fail-closed SQLite fallback is
-/// observable without corrupting a real data dir (G-275).
+/// build to fail AT one of these stages, so the fail-closed `Pending` outcome
+/// (no engine installed; there is NO SQLite data-plane fallback) is observable
+/// without corrupting a real data dir (G-275).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgPoolStage {
     /// Establish the pool (real connections to the managed server).
@@ -955,16 +952,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_engine_choice_honours_an_explicit_kv_opt_out() {
-        // The legacy control-plane `postgres.enabled=false` is the ONE bounded
-        // SQLite opt-out (backout); it is not an env-selected data plane.
+    fn resolve_engine_choice_treats_the_kv_opt_out_as_inert() {
+        // CU-1-R2: a carried `postgres.enabled=false` must NOT select a SQLite
+        // data plane (there is none) — it is inert and PostgreSQL is unconditional.
         assert_eq!(
             resolve_engine_choice(None, Some("false")),
-            EngineChoice::Sqlite
+            EngineChoice::Postgres
         );
         assert_eq!(
             resolve_engine_choice(None, Some("FALSE")),
-            EngineChoice::Sqlite
+            EngineChoice::Postgres
+        );
+        assert_eq!(
+            resolve_engine_choice(None, Some("False")),
+            EngineChoice::Postgres
         );
     }
 
@@ -987,6 +988,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_engine_choice_is_unconditionally_postgres_cu1_r2() {
+        // The CU-1-R2 acceptance set: every combination — including a carried
+        // `postgres.enabled=false` — resolves to PostgreSQL.
+        assert_eq!(
+            resolve_engine_choice(None, Some("false")),
+            EngineChoice::Postgres
+        );
+        assert_eq!(
+            resolve_engine_choice(None, Some("true")),
+            EngineChoice::Postgres
+        );
+        assert_eq!(resolve_engine_choice(None, None), EngineChoice::Postgres);
+        assert_eq!(
+            resolve_engine_choice(Some("sqlite"), Some("false")),
+            EngineChoice::Postgres
+        );
+        assert_eq!(
+            resolve_engine_choice(Some("postgres"), Some("false")),
+            EngineChoice::Postgres
+        );
+    }
+
+    #[test]
     fn resolve_engine_choice_treats_blank_or_unknown_env_as_unset() {
         assert_eq!(
             resolve_engine_choice(Some(""), Some("true")),
@@ -1004,10 +1028,10 @@ mod tests {
             resolve_engine_choice(Some("bogus"), None),
             EngineChoice::Postgres
         );
-        // A blank/unknown env still honours an explicit opt-out.
+        // A blank/unknown env still leaves the inert opt-out inert.
         assert_eq!(
             resolve_engine_choice(Some("bogus"), Some("false")),
-            EngineChoice::Sqlite
+            EngineChoice::Postgres
         );
     }
 
@@ -1023,7 +1047,7 @@ mod tests {
         );
         assert_eq!(
             resolve_engine_choice(None, Some("False")),
-            EngineChoice::Sqlite
+            EngineChoice::Postgres
         );
     }
 
@@ -1069,13 +1093,16 @@ mod tests {
     }
 
     #[test]
-    fn select_engine_honours_the_explicit_kv_opt_out() {
+    fn select_engine_treats_the_seeded_kv_opt_out_as_inert() {
+        // CU-1-R2: the exact upgraded-install artifact (a `postgres.enabled=false`
+        // control row carried out of `fredo.db`) must resolve to PostgreSQL, not
+        // a (non-existent) SQLite data plane.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _env = unset_env(STORAGE_ENGINE_ENV);
         let dir = tempfile::tempdir().unwrap();
         let engine = make_sqlite_engine(dir.path());
         seed_kv(&engine, PG_ENABLED_KEY, "false");
-        assert_eq!(select_engine(&engine), EngineChoice::Sqlite);
+        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
     }
 
     // -- swap-once handle -----------------------------------------------------
