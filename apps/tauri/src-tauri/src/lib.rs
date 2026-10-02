@@ -19,6 +19,16 @@ pub use features::pg_supervisor::runtime::PgRuntime;
 #[doc(hidden)]
 pub use features::terminal::persistence::ensure_table_on_pg as ensure_terminal_table_on_pg;
 
+// Spec #2950 ST-1 — the built-in PostgreSQL client's frozen producer contract
+// (`db_client::{types, seam, state}`): wire types, the persistence/credential
+// key contract, the G-275 seams and the managed `DbClientState`. The command
+// wrappers are registered below; the contract modules are re-exported so the
+// frozen surface is reachable (and integration tests can pin it) while the
+// ST-2/ST-3/ST-4 consumer bodies are still pending. `#[doc(hidden)]`: not part
+// of the app surface.
+#[doc(hidden)]
+pub use features::db_client;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use features::terminal::state::TerminalState;
@@ -735,6 +745,13 @@ pub fn run() {
             // the frontend owns the one resolution rule.
             app.manage(infrastructure::app_open::AppOpenRegistry::new());
 
+            // -- Built-in PostgreSQL client state (Spec #2950 ST-1) ------------
+            // The single managed state every `db_*` command takes. ST-1 resolves
+            // only the G-275 seams and opens NO pool; ST-2 populates the
+            // per-connection pool registry.
+            app.manage(Arc::new(features::db_client::state::DbClientState::from_env()));
+
+
             // -- OTLP receiver (gRPC :4317 + HTTP :4318) -----------------------
             infrastructure::otlp::start(app.handle().clone());
 
@@ -836,6 +853,18 @@ pub fn run() {
             // source slice 6 consumes (acquisition mode + cutover marker →
             // shipped default; fail-closed to SQLite; NO engine flip).
             features::pg_supervisor::release_gate::cutover_release_gate,
+            // Built-in PostgreSQL client (Spec #2950 ST-1): all nine `db_*`
+            // commands registered once. ADDITIVE — the wrappers are typed; the
+            // connect/schema/query bodies land in ST-2/ST-3/ST-4.
+            features::db_client::commands::db_connection_list,
+            features::db_client::commands::db_connection_test,
+            features::db_client::commands::db_connection_save,
+            features::db_client::commands::db_connection_delete,
+            features::db_client::commands::db_connect,
+            features::db_client::commands::db_disconnect,
+            features::db_client::commands::db_schema_list,
+            features::db_client::commands::db_query_execute,
+            features::db_client::commands::db_result_page,
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,
