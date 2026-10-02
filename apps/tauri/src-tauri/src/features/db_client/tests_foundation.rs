@@ -166,7 +166,7 @@ async fn state_registry_tracks_pools_by_connection_id() {
 }
 
 #[tokio::test]
-async fn remaining_query_stub_returns_typed_not_implemented() {
+async fn command_bodies_are_real_and_fail_closed_without_a_connection() {
     let state = DbClientState::new(None, PathBuf::from("C:/tmp/dbclient"));
 
     // ST-2 filled the connection lifecycle: `db_connection_list` is real and
@@ -174,7 +174,7 @@ async fn remaining_query_stub_returns_typed_not_implemented() {
     assert!(super::connect::connection_list(&state).await.is_ok());
 
     // ST-3 filled the schema browse: with no open pool it returns the typed
-    // "not open" error (no network call), not the ST-1 NotImplemented stub.
+    // "not open" error (no network call).
     let schema_args = super::types::DbSchemaListArgs {
         connection_id: "c1".into(),
         parent_id: None,
@@ -184,6 +184,8 @@ async fn remaining_query_stub_returns_typed_not_implemented() {
         .expect_err("no open pool must fail");
     assert!(schema_err.iter().any(|m| m.contains("not open")));
 
+    // ST-4 filled the query execution: an unknown connection fails closed with a
+    // typed error and never reaches a server.
     let query_args = super::types::DbQueryArgs {
         connection_id: "c1".into(),
         sql: "select 1".into(),
@@ -191,7 +193,13 @@ async fn remaining_query_stub_returns_typed_not_implemented() {
         selection: None,
         confirmed_statement_hashes: Vec::new(),
     };
-    assert!(super::query::query_execute(query_args, &state).await.is_err());
+    let query_err = super::query::query_execute(query_args, &state)
+        .await
+        .expect_err("unknown connection must fail");
+    assert!(
+        query_err.iter().any(|m| m.contains("unknown connection")),
+        "{query_err:?}"
+    );
 }
 
 #[test]

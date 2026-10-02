@@ -18,8 +18,8 @@
 //! # ST-1 non-goals / invariants
 //!
 //! * No `sqlx` pool is opened, no `pg_catalog` SQL is issued, and no credential
-//!   is read or written here — [`connect`], [`schema`] and [`query`] are typed
-//!   `NotImplemented` stubs (ST-2/ST-3/ST-4 fill their own module bodies).
+//!   is read or written here — [`connect`], [`schema`] and [`query`] fill their
+//!   own module bodies in ST-2/ST-3/ST-4.
 //! * `AppStore`/`EngineHandle` and the embedded-PostgreSQL supervisor are
 //!   untouched.
 //! * The wiring files (`mod.rs`, `commands.rs`, `state.rs`, `types.rs`,
@@ -39,16 +39,3 @@ pub mod types;
 
 #[cfg(test)]
 mod tests_foundation;
-
-/// Marker prefix for the ST-1 placeholder error returned by the typed
-/// `NotImplemented` stubs. Downstream sub-tasks replace the stub bodies (never
-/// the signatures) with the real implementation.
-pub(crate) const NOT_IMPLEMENTED_PREFIX: &str = "db_client::";
-
-/// The ST-1 placeholder error. Every command wrapper is registered and typed,
-/// but the real bodies land in ST-2 (connect), ST-3 (schema) and ST-4 (query).
-pub(crate) fn not_implemented(op: &str) -> Vec<String> {
-    vec![format!(
-        "{NOT_IMPLEMENTED_PREFIX}{op}: not implemented (ST-1 foundation; body lands in a later sub-task)"
-    )]
-}
