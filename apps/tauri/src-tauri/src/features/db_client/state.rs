@@ -71,6 +71,15 @@ impl DbClientState {
         self.pools.lock().await.remove(connection_id)
     }
 
+    /// Clone the open pool for `connection_id`, if any. Read-only accessor for
+    /// the consumers of the registry — ST-3 (`db_schema_list`) and ST-4
+    /// (`db_query_execute`/`db_result_page`) run read-only catalog/query SQL on
+    /// the already-open pool; **pool lifecycle stays ST-2's** (this never opens
+    /// or closes a pool). Returns `None` when the connection is not open.
+    pub async fn pool(&self, connection_id: &str) -> Option<PgPool> {
+        self.pools.lock().await.get(connection_id).cloned()
+    }
+
     /// Number of currently open external pools.
     pub async fn pool_count(&self) -> usize {
         self.pools.lock().await.len()
