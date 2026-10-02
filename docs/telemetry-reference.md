@@ -1,6 +1,6 @@
 # GenAI Telemetry Reference — What Fredo Receives
 
-Ground truth of the GenAI telemetry Fredo actually receives from the agent CLIs it captures — opencode (via the fredo plugin → OTLP → `fredo.db`) and GitHub Copilot CLI (via its native OpenTelemetry export into the same OTLP/HTTP receiver) — organized by signal type. Every table is grounded in live data from the `telemetry_spans`, `telemetry_metrics`, and `telemetry_logs` tables (query via `.opencode/skills/telemetry-query/telemetry-query.ps1`), cross-referenced against the [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/).
+Ground truth of the GenAI telemetry Fredo actually receives from the agent CLIs it captures — opencode (via the fredo plugin → OTLP → the embedded PostgreSQL store) and GitHub Copilot CLI (via its native OpenTelemetry export into the same OTLP/HTTP receiver) — organized by signal type. Every table is grounded in live data from the `telemetry_spans`, `telemetry_metrics`, and `telemetry_logs` tables (query via `.opencode/skills/telemetry-query/telemetry-query.ps1`), cross-referenced against the [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/).
 
 > **Reading this doc:** "Property" is the key name as it appears in the JSON attributes. "Path" is where it lives in the payload (top-level `attributes_json` or nested). "Available in Fredo?" is ✅ if Fredo stores/receives it today, ⚠️ if present but non-conformant to the OTel registry, and ❌ if not received.
 
@@ -275,8 +275,8 @@ exports are idempotent: rows upsert on `(session_id, correlation_id)` with no
 
 ## 5. Source of truth + how to query
 
-- **Database:** the active store — `fredo.db` by default, or the managed PostgreSQL cluster when the storage engine is enabled (`FREDO_STORAGE_ENGINE=postgres`) — holding `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`.
-- **Query tool:** `.opencode/skills/telemetry-query/telemetry-query.ps1` (read-only sqlite3 wrapper — SQLite path only; when the storage engine is PostgreSQL, query the managed cluster with its `psql`).
+- **Database:** the active store — the embedded PostgreSQL cluster (the shipped default since Spec #2979; the SQLite data path was removed) — holding `telemetry_spans`, `telemetry_metrics`, `telemetry_logs`. The legacy `fredo.db` is retained read-only as the backout artifact.
+- **Query tool:** query the managed cluster with its `psql` (the `telemetry-query` skill's sqlite3 wrapper reads only the retained `fredo.db` backout artifact, not the live store).
 - **Emission side:** `apps/opencode-plugin/` (fredo plugin) — spans/metrics/logs.
 - **Adapter (consumption side):** `apps/tauri/src-tauri/src/infrastructure/comm/adapters/otlp.rs` — maps `gen_ai.input.messages`/`gen_ai.output.messages` (parsed JSON-string message arrays) to `userMessage`/`agentReply` (the frontend contract).
 - **Registry (source of truth for `gen_ai.*` names):** OTel GenAI semantic conventions — https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai/
