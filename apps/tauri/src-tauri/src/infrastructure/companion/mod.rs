@@ -6,6 +6,7 @@
 //! forbidden (`AGENTS.md`), so they live here in the shared infrastructure layer
 //! — one implementation, one resolution order, one path rule.
 
+pub mod download;
 pub mod models;
 pub mod resolver;
 pub mod skills;

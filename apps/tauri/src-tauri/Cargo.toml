@@ -11,6 +11,20 @@ crate-type = ["lib", "cdylib", "staticlib"]
 name = "fredo"
 path = "src/main.rs"
 
+# Acquisition-mode build-time switch (Spec #2978 S1). The shipped default is the
+# crate `runtime-download` mode (`default = []`, no `bundled`), so the installer
+# does not grow and the distribution is fetched on first run through Fredo's
+# SHA-256-pinned streaming engine (`features/pg_supervisor/acquisition.rs`).
+#
+# `bundled` compile-time-embeds the PostgreSQL archive into the binary (+54,048,768 B
+# installer growth) and removes the first-run network fetch. It is deliberately
+# NOT the default. The crate's `bundled` build-time fetch from
+# `theseus-rs/postgresql-binaries` is OUTSIDE Fredo's SHA-pinned integrity surface
+# unless it is replaced by a SHA-pinned resource (Spec #2978 S3 / AC4).
+[features]
+default = []
+bundled = ["postgresql_embedded/bundled"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 tonic-build = "0.12"
@@ -49,10 +63,11 @@ sha2 = "0.10"
 schemars = "1"
 # PostgreSQL (for observability tools)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
-# Managed embedded-PostgreSQL lifecycle (Spec #2974, ST-1). Acquisition mode is
-# the crate default `runtime-download`; the `bundled` feature is deliberately NOT
-# enabled (packaging scope is a later slice). `settings.timeout` must always be
-# `Some(PG_CONTROL_TIMEOUT)` — leaving it `None` is the #2948 ~11 h stop hang.
+# Managed embedded-PostgreSQL lifecycle (Spec #2974, ST-1; packaging #2978 S1).
+# Acquisition mode is the crate default `runtime-download`; the `bundled` crate
+# feature is wired through the `[features]` table above and deliberately NOT
+# enabled by default. `settings.timeout` must always be `Some(PG_CONTROL_TIMEOUT)`
+# — leaving it `None` is the #2948 ~11 h stop hang.
 postgresql_embedded = { version = "0.21", features = ["tokio"] }
 # Structured logging (tracing ecosystem)
 tracing = "0.1"

@@ -26,6 +26,11 @@
 //! the shared-root appends so they are never concurrent). With the `lib.rs`
 //! wiring in place the module is live, so it carries NO `#![allow(dead_code)]`
 //! (AGENTS.md forbids a permanent suppression).
+//!
+//! Packaging slice #2978 appends: [`acquisition`] (S1/S2/S3 — build-time mode +
+//! SHA-pinned archive), the Q-17 postmaster-log configuration in [`runtime`] and
+//! the bounded log tail in [`state`] (S4), and [`release_gate`] (S6 — the
+//! read-only cutover decision source slice 6 consumes).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -51,6 +56,14 @@ pub const PG_DATA_SUBDIR: &str = "postgres";
 pub const PG_INSTALL_SUBDIR: &str = "postgres-install";
 /// Exclusive data-dir lock filename under the app data dir.
 pub const PG_LOCK_FILENAME: &str = "postgres.lock";
+/// Log subdirectory under the PostgreSQL data dir (`<data_dir>/log`). The
+/// postmaster's logging collector is pointed here through the crate's
+/// `Settings::configuration` hook (Spec #2978 S4 / Q-17), so this is the ONE
+/// directory [`state::pg_server_log_tail`] reads.
+pub const PG_LOG_SUBDIR: &str = "log";
+/// Postmaster log filename (`<data_dir>/log/postgres.log`); fixed by the
+/// `log_filename` server configuration so the tail path is deterministic.
+pub const PG_LOG_FILENAME: &str = "postgres.log";
 /// Ephemeral loopback bind host (never `0.0.0.0`).
 pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
 
@@ -59,10 +72,17 @@ pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
 
 /// **FS-1** test hook: when set (non-blank) the managed PostgreSQL data dir is
 /// this path instead of `<app_data_dir>/<PG_DATA_SUBDIR>`. The distribution
-/// (install) dir and the `<app_data_dir>/postgres.lock` file are deliberately
-/// NOT overridable, so the existing download is reused (no network) and the
+/// (install) dir has its own override ([`PG_INSTALL_DIR_ENV`]); the
+/// `<app_data_dir>/postgres.lock` file stays deliberately NOT overridable, so the
 /// exclusive lock keeps its stable location. Inert when unset.
 pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
+/// **G-275** induction seam (Spec #2978 S2): when set (non-blank) the managed
+/// PostgreSQL distribution/installation dir is this path instead of
+/// `<app_data_dir>/<PG_INSTALL_SUBDIR>`. Both the [`runtime::PgRuntime`] install
+/// dir and the [`acquisition`] archive staging dir resolve through
+/// [`resolve_install_dir`], so the override can never make them diverge. Inert
+/// when unset — the default path is byte-identical.
+pub const PG_INSTALL_DIR_ENV: &str = "FREDO_PG_INSTALL_DIR";
 /// **FS-3** test hook: when set to a positive millisecond count the graceful
 /// stop sleeps that long (capped at [`PG_CONTROL_TIMEOUT`]) before calling the
 /// real `pg.stop()`, so the bounded hard-kill watchdog in
@@ -113,6 +133,25 @@ pub fn resolve_data_dir(app_data_dir: &Path) -> PathBuf {
     }
 }
 
+/// Resolve the managed distribution/installation dir (Spec #2978 S2): the
+/// non-blank [`PG_INSTALL_DIR_ENV`] override when set, else
+/// `<app_data_dir>/<PG_INSTALL_SUBDIR>`. ONE shared rule so [`runtime::PgRuntime`]
+/// and [`acquisition::acquire_pg_archive`] can never diverge.
+pub fn resolve_install_dir(app_data_dir: &Path) -> PathBuf {
+    match std::env::var(PG_INSTALL_DIR_ENV) {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.join(PG_INSTALL_SUBDIR),
+    }
+}
+
+/// `<data_dir>/log/postgres.log` — the ONE path rule for the postmaster log,
+/// shared by the crate settings that create it ([`runtime::PgRuntime`]) and the
+/// read-only tail ([`state::pg_server_log_tail`]), so the writer and the reader
+/// can never diverge.
+pub fn pg_log_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(PG_LOG_SUBDIR).join(PG_LOG_FILENAME)
+}
+
 /// The **FS-3** stop-hang duration, capped at [`PG_CONTROL_TIMEOUT`]; `None` when
 /// [`PG_STOP_HANG_ENV`] is unset, blank, unparseable, or zero — so the default
 /// path is unchanged.
@@ -156,6 +195,8 @@ pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
 /// Upper bound on how long to wait for a killed PID tree to disappear.
 pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
 
+pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
+pub mod release_gate; // S6 (#2978): cutover release gate
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2
 pub mod lock; // ST-2
