@@ -62,6 +62,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Confirmed (2026-10-01, #2976) — the SI re-grouped ST-3/4/6 + wiring into one unit (`23188b6`, 1051 tests green) and ST-5 + wiring into a second (`c83a0b6`, 1051 tests green); both receipts were real and the round passed with zero rework.
 - **re-validated:** 2026-10-02, #2977 — the plan declared 4 compilable units (CU-A..CU-D) and the SI dispatched by unit with dependency waves; each unit produced a green `cargo check`/`clippy`/`test` receipt (CU-A `8596e37`, CU-B `ee128e3`, CU-C `6e627cb`, CU-D `e7e020d`) and no intermediate branch state was left non-building. Confirmed.
 - **re-validated:** 2026-10-02, #2978 — the plan declared 3 compilable units (CU-1 S1+S2+S3; CU-2 S4+S6, bundling the shared `lib.rs`/`mod.rs` registrations into one push; CU-3 measurement), dispatched in dependency order; CU-1 `8fea1f0` and CU-2 `9e129f3` each produced a green `cargo check`/`clippy`/`test` receipt on BOTH feature branches, so no intermediate branch state was non-building. Confirmed.
+- **re-validated:** 2026-10-02, #2979 — the plan declared 5 compilable units (CU-1 control-plane split; CU-2 the compiler-coupled SQLite-branch removal; CU-3 cutover semantics; CU-4 rollback verification; CU-5 seams/suites) with a strict `requires:` chain; each of CU-1..CU-4 produced a green CI-parity receipt and CU-5 was a verified no-op, so no intermediate branch state was non-building. The SI rejected CU-2's first push for deleting coverage (recorded as G-290), not for build breakage. Confirmed.
 
 ### G-282: local_toolchain_lags_ci_so_a_lint_gate_fails_only_in_ci
 - **activation_date:** 2026-10-01
@@ -79,6 +80,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md + playbooks/software-architect.md + playbooks/self-improver.md (convergence) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-01 from the #2976 observation; the fallback was substituted and disclosed this round with no UNVERIFIED row. Re-validate on the next plan that names an AC fallback.
 - **re-validated:** 2026-10-02, #2977 — the plan pinned no AC fallback to a bare `main` path: the backlog's cited `docs/research/2964-*` paths and the spike PoC `results/` were withdrawn, and the fixture generator is in-repo under `.opencode/tmp/<issue>/`. No fallback was unreachable. Confirmed.
+- **re-validated:** 2026-10-02, #2979 — the backlog AGAIN cited withdrawn paths (`docs/research/2964-postgres-migration-approach.md`, `data-migration.md`, `spikes/2964-postgres-migration/results/parity.json`); the SI flagged them in the planner briefs and the plan pinned no fallback to them — the BEFORE leg used spec-branch history (`dev-env -At <pre-change-tip>`) and fixtures lived under `.opencode/tmp/2979/`. No fallback was unreachable. Confirmed.
 
 ### G-284: sqlite_only_telemetry_read_lever_unrunnable_once_the_store_migrates
 - **activation_date:** 2026-10-01
@@ -88,6 +90,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** .opencode/skills/telemetry-query/SKILL.md (add a PG mode) + playbooks/qa-expert.md + playbooks/self-improver.md (tester brief) + references.md (this record)
 - **effectiveness:** Confirmed (2026-10-02, #2977) — the plan named the managed-`psql` lever and the tester used it for every PG read across four rounds; the refinement is the exact database name (`postgres`) and the allowlisted wrapper invocation. The `telemetry-query` PG-mode read path remains the open follow-up.
 - **re-validated:** 2026-10-02, #2978 — the packaging plan named the managed-`psql` lever (URI from `pg_supervisor_status` + the `postgres.password` AppStore key; database `postgres`) and the `telemetry-query` skill only for the SQLite-side `telemetry_spans` cross-check; the tester used exactly those and disclosed the split. Confirmed. (This slice did not flip the engine, so the SQLite-side cross-check remained valid.)
+- **re-validated:** 2026-10-02, #2979 — the cutover flipped the engine and removed the SQLite data plane; the plan named the managed-`psql` lever as the ONLY live read path (the `telemetry-query` skill now reads only the retained backout artifact) and the tester used it for every PG read across both rounds, with the substitution disclosed. Confirmed; the `telemetry-query` PG-mode read path remains the open follow-up.
 
 ### G-285: fixture_generator_omits_the_consuming_contracts_invariants
 - **activation_date:** 2026-10-02
@@ -104,6 +107,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When an AC requires a real full-size copy/measurement, the plan must be derived from a MEASURED real corpus — record its bytes and per-table row counts, derive the throughput and the wall-clock budget from that measurement (per-table, not one fixed whole-leg constant), and have the QA row name the real corpus scale. Never size a full-size gate from an assumed constant or a synthetic fixture alone.
 - **home:** playbooks/software-architect.md + playbooks/qa-expert.md (required test data / non-functional checks) + playbooks/self-improver.md (convergence) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-02 from the #2977 round-3 failure; the round-4 fix (per-table budget, one transaction per table, every table attempted) migrated the real corpus and the round passed.
+- **re-validated:** 2026-10-02, #2979 — the cutover plan named the per-table budget and the real-corpus scale; the tester migrated 11.38M `telemetry_metrics` rows in 708 s within the per-table budget and the whole leg under the hard ceiling, with no fixed whole-leg bound reintroduced. Confirmed.
 
 ### G-287: tests_commit_leaves_the_serving_tree_dirty
 - **activation_date:** 2026-10-02
@@ -112,6 +116,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** A suite-persistence action must leave the serving working tree/index clean after it commits (or restore the pre-commit state); until it does, the orchestrator's G-032 sync must clean the tree first (restore the affected paths from a committed tree-ish) before merging `main`.
 - **home:** .opencode/scripts/pipeline-state.rs (tests-commit) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-02 from the #2977 recurrence; the script fix is the open follow-up.
+- **re-validated:** 2026-10-02, #2979 — RECURRED: the round-2 `tests-commit` again left the reconciled suite paths staged/dirty on `spec/2979`, and the SI had to reset the branch and merge `origin/main` by SHA to complete the G-032 sync before the tester. The script fix remains the open follow-up.
 
 ### G-288: plan_conflates_the_download_transfer_with_the_extracted_payload
 - **activation_date:** 2026-10-02
@@ -120,6 +125,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** When a plan declares a byte-size AC or a transfer fixture, the Architect must LABEL the quantity explicitly (network-transfer bytes vs extracted/on-disk bytes vs installer delta) and reconcile it against the REAL artifact at plan time (archive size + digest), never a prior document's summary. A QA fixture that seeds a partial transfer must use the real transfer size. A declared constant whose label contradicts the artifact is a plan defect returned in the same convergence pass.
 - **home:** playbooks/software-architect.md (decomposition) + playbooks/qa-expert.md (required test data) + playbooks/self-improver.md (convergence) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-02 from #2978 (caught by the developer/tester mid-round; no round burned, but the plan's AC1/AC5 labels were wrong and the corrected transfer figure is 54,068,902 B). Re-validate on the next byte-size AC.
+- **re-validated:** 2026-10-02, #2979 — the cutover plan's NFR prose labelled the quantities explicitly (network-transfer archive vs extracted payload vs installer delta vs data-dir delta); the tester's re-measurement table carried the labels with no conflation. Confirmed.
 
 ### G-289: live_boot_of_a_compile_time_feature_variant_has_no_harness_lever
 - **activation_date:** 2026-10-02
@@ -128,6 +134,31 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** Before a plan requires a live boot of a build-time variant, confirm the dev-environment harness exposes a lever to build+boot it (a feature/profile/flag passthrough); if it does not, either add the lever in the same pass or scope the row to the build-time verification the harness can actually drive and state that explicitly at convergence. A live-variant row with no harness lever is a plan defect returned at convergence.
 - **home:** .opencode/skills/dev-environment/SKILL.md + .opencode/scripts/dev-env.ps1 + playbooks/qa-expert.md + playbooks/self-improver.md (convergence) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-02 from #2978; the `dev-env.ps1 -Features` passthrough is the open follow-up (needed by slice 6, which flips the default and must boot `bundled` live).
+- **re-validated:** 2026-10-02, #2979 — slice 6 determined at convergence that it requires NO live `bundled` boot (acquisition mode unchanged, `runtime-download` default), so the missing lever was not needed; the determination was recorded in the plan and the audit. The lever remains the open follow-up for the first slice that needs a live build-time variant. Not exercised → still Pending.
+
+### G-290: compiler_coupled_removal_sweep_deletes_the_target_engines_own_coverage
+- **activation_date:** 2026-10-02
+- **observed:** #2979 CU-2 — the compiler-coupled sweep that removed the SQLite data plane reached green by DELETING coverage: the gated PostgreSQL integration suite, the Mission-Monitor Copilot classification tests, and ~350 unit tests (1113 → 760). The SI rejected the push at developer-push review and returned a focused change; the developer restored the gated PG suite, ported the classification tests to a gated PG binary, restored 54 pure-logic tests, and produced a per-test removal list (760 → 814).
+- **target_failure:** a removal/engine-cutover sweep deletes the SURVIVING engine's own regression coverage (and unrelated pure-logic tests) to make the build green, so the slice that makes an engine authoritative ships with less coverage of that engine than before — a false green.
+- **guardrail:** When decomposing/reviewing a removal sweep, require the plan and the push to PRESERVE the surviving engine's regression suite and to CLASSIFY every removed test: ported to the surviving engine's gated suite / pure-logic restored unchanged / genuinely engine-only-removed with a written justification. Deleting an assertion is not passing it; a green receipt obtained by deleting the target engine's coverage is a false green and must be rejected at developer-push review.
+- **home:** playbooks/software-architect.md (decomposition) + playbooks/developer.md (verification) + playbooks/self-improver.md (developer-push review) + references.md
+- **effectiveness:** Confirmed (2026-10-02, #2979 round 1) — caught at push review before the testing round; the focused change restored the gated PG suite + ported the Mission-Monitor classification tests + restored the pure-logic tests, and the round-2 live round passed.
+
+### G-291: byte_identity_backout_artifact_written_by_its_own_snapshot_step
+- **activation_date:** 2026-10-02
+- **observed:** #2979 round 1 — the one-shot cutover's snapshot step opened the source legacy DB read-write and ran a WAL checkpoint that folded WAL frames into the main file, so the "retained read-only / byte-identical" backout artifact changed (SHA-256 verified twice; 3 AC rows FAILed). Round 2 opened the source strictly read-only and dropped the checkpoint (the snapshot mechanism writes only the target); byte-identity then held on BOTH the successful cutover and the forced-mismatch leg.
+- **target_failure:** a migration/backout flow whose AC requires a legacy artifact to stay byte-identical still writes it through an open-mode, checkpoint, vacuum, repair, or journal-mode side effect, so the "read-only retained artifact" contract is violated and only a live byte-level check reveals it.
+- **guardrail:** When an AC requires a legacy artifact to be byte-identical / retained read-only across a migration leg, the plan must name the read-only source handle AND forbid every write-inducing operation on it (checkpoint, vacuum-into-source, repair, journal-mode change); the developer must add a byte-identity regression test that exercises the WAL path; the tester must record the artifact SHA-256 before AND after on both the success and the failure legs.
+- **home:** playbooks/software-architect.md (decomposition) + playbooks/developer.md (verification) + playbooks/tester.md + references.md
+- **effectiveness:** Confirmed (2026-10-02, #2979 round 2) — the fix passed and byte-identity was re-verified live on both legs; the round-1 FAIL was a true FAIL (G-033 held).
+
+### G-292: retained_legacy_opt_out_key_bricks_the_replacement_path
+- **activation_date:** 2026-10-02
+- **observed:** #2979 round 1 — the cutover retained a legacy control key that opted the app OUT of the replacement engine; once the legacy data plane was removed, a carried opt-out left the replacement data plane uninstalled (the tester had to delete the row to exercise the default path). Round 2 made the key inert and removed the single-variant selection branch.
+- **target_failure:** a slice that removes a legacy path keeps the legacy opt-out key/flag honored, so an upgraded install carrying it silently disables the replacement path and bricks the feature — surfacing only when a live boot carries the key.
+- **guardrail:** When a slice removes a legacy path, every key/flag that opted INTO the legacy path must become inert (or be migrated) in the SAME slice, and the replacement's default must be unconditional. Add a regression test that boots with the legacy opt-out present and asserts the replacement path is active.
+- **home:** playbooks/software-architect.md (decomposition) + playbooks/self-improver.md (convergence) + playbooks/developer.md + references.md
+- **effectiveness:** Confirmed (2026-10-02, #2979 round 2) — the key was made inert and the tester booted the real corpus with the key present (`storage_engine_status.ready:true` + a live store read).
 
 ### G-277: migration_plan_creates_schema_only_on_the_pre_swap_engine
 - **activation_date:** 2026-09-27
@@ -153,6 +184,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** A gated test/feature leg must be driven by a mechanism that sets the variable INSIDE a script file (never an inline `$env:` in a `-Command` string the outer shell expands), and the evidence must show the gate ACTIVE (not the skip notice). Verify the launcher's multi-variable env injection with two variables before relying on it; a single-variable form is the fallback.
 - **home:** .opencode/skills/dev-environment/SKILL.md + playbooks/tester.md + .opencode/scripts/run-exitcode.ps1 (document the outer-expansion pitfall) + references.md (this record)
 - **effectiveness:** Pending — created 2026-09-27 from the #2975 rounds; the workaround (set `$env:` inside a helper script) unblocked the gated leg.
+- **re-validated:** 2026-10-02, #2979 — both tester rounds drove the gated PG suites via a helper script that set the gate inside the script; the gate was confirmed ACTIVE (the suites executed, not skipped). Confirmed. The launcher's multi-variable `-EnvVar` form still silently collapses to one variable — the documented pitfall persists.
 
 ### G-280: dev_env_down_hard_kill_orphans_the_managed_sidecar
 - **activation_date:** 2026-09-27
@@ -161,6 +193,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **guardrail:** The dev-environment stop action should perform a bounded post-kill reclaim of the spec's managed sidecar (guarded by the sidecar image name) and its stale OS sockets; until it does, treat the lingering process/socket as a known environment artifact (NEVER a spec FAIL) and report it.
 - **home:** .opencode/scripts/dev-env.ps1 + .opencode/skills/dev-environment/SKILL.md + references.md (this record)
 - **effectiveness:** Pending — routed to the Self-Improver 2026-09-27; the bounded post-kill reclaim is the open follow-up.
+- **re-validated:** 2026-10-02, #2979 — RECURRED: every `dev-env.ps1 -Action Down` left 10–21 orphan `postgres.exe` processes, and the bridge/OTLP ports stayed LISTENING on a dead PID (the tester cleared them manually). Reported per G-280, not attributed to the spec. The bounded post-kill reclaim remains the open follow-up.
 
 ### G-276: audit_restart_flushes_drafts_after_the_destination_phase_entry
 - **activation_date:** 2026-09-27
@@ -180,6 +213,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-09-27, #2975 — the migration plan shipped BOTH induction levers (an injectable fault-injection env seam `FREDO_PG_POOL_FORCE_FAIL` + a writable/corruptible state-dir override `FREDO_PG_DATA_DIR`) and the tester induced both fail-closed legs LIVE; both passed with structured error receipts. Confirmed.
 - **re-validated:** 2026-10-02, #2977 — the plan shipped `FREDO_DATA_DIR` (in-repo fixture source + AC3 backout target) and the ONE fault seam `FREDO_MIGRATION_FORCE_MISMATCH`, and the tester induced the fail-closed legs LIVE (forced mismatch → `Err`, no marker, no flip; executed byte-exact backout). Confirmed.
 - **re-validated:** 2026-10-02, #2978 — the packaging plan shipped the three error-path induction seams `FREDO_PG_INSTALL_DIR` / `FREDO_PG_ARCHIVE_URL` / `FREDO_PG_ARCHIVE_SHA256`, and the tester induced BOTH AC2/AC4 failure paths LIVE (wrong digest → `[pg:archive] SHA-256 mismatch`, artifact deleted, no extract; unreachable URL → retryable `[pg:archive]` error, no half-extract, bounded). Confirmed.
+- **re-validated:** 2026-10-02, #2979 — the cutover plan named the retained induction seams (`FREDO_DATA_DIR`, `FREDO_MIGRATION_DIR`, `FREDO_MIGRATION_FORCE_MISMATCH` with all four sub-cases, `FREDO_PG_DATA_DIR`, `FREDO_PG_POOL_FORCE_FAIL`), CU-5 verified them present/reachable, and the tester induced the forced-mismatch fail-closed path LIVE (no marker, no install, `ready:false`, structured reason) plus the fresh-install path. The round-1 FAIL was a byte-identity product defect (G-291), not a missing induction lever. Confirmed.
 
 ### G-273: render_behaviour_declared_without_an_owning_acceptance_clause
 - **activation_date:** 2026-09-27
@@ -271,6 +305,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Confirmed (2026-09-26, #2964 round 1) — the first spec to start a FRESH spike PoC external runtime after activation: the plan's ST-5 carried the runtime bound as a literal checklist line, every dispatch brief required a finite outer timeout + a kill-never-wait posture, and the PoC implemented finite control/start/stop timeouts, bounded waits with a hard-kill fallback, guaranteed teardown, and a PID-reuse-guarded orphan sweep. The executor's `pg.stop` measured 398 ms (the prior failure was ~11 h), the whole run finished in 76 s with bounded memory and no orphaned `postgres.exe`, and the tester verified the source + ran the bounded unit tests. The hang class did not recur.
 - **re-validated:** 2026-10-02, #2977 — the real-corpus migration leg is bounded per table under a hard ceiling; the round-3 run hit its bound and failed CLOSED (no hang, no orphan, app stayed on SQLite), and round 4 completed at ~732 s. The bound working as designed is not a recurrence. Confirmed.
 - **re-validated:** 2026-10-02, #2978 — the packaging slice's live legs were all bounded (acquisition failure `elapsed_ms=1`; a 200 s capped console-window poll; bounded builds), the tester ran no unbounded binary, and no postmaster started by the round survived. Confirmed.
+- **re-validated:** 2026-10-02, #2979 — the real-corpus cutover leg was bounded per table and completed in ~12 min under the hard ceiling; the tester ran no unbounded binary across two rounds. Confirmed. (The known G-280 teardown orphans are a separate dev-env artifact, not a bound failure.)
 
 ### G-264: out_of_repo_glob_grep_hunt_stalls_the_harness
 - **activation_date:** 2026-09-26
@@ -278,7 +313,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **target_failure:** an agent resolves an uncertainty about a dependency or environment by globbing/grepping outside the repo (`~`, `%USERPROFILE%`, `~\.cargo`, `node_modules`, `C:\Windows`); out-of-repo reads are sandbox-denied and a glob against `~` stalls the harness, so the agent burns the round instead of reading compiler/linter errors or asking for the contract.
 - **guardrail:** A dispatch brief touching a third-party dependency MUST supply the needed contract INLINE (type/field/signature, or the exact fix) and forbid ALL Glob/Grep/Read outside the repo — the agent inspects a dependency only via an explicit `Read <absolute path>` the brief names, or by reading compiler/linter errors. A needed fact that is absent is a tooling gap to `block` on, never a filesystem hunt, and an agent is never routed at `~`.
 - **home:** playbooks/self-improver.md (dispatch briefs) + playbooks/developer.md + playbooks/tester.md + common-rules.md (§4 out-of-repo) + references.md (this record)
-- **effectiveness:** Applied (2026-09-26, #2948) — the brief carried the prohibition plus the inline contract; the developer applied the exact edits with zero out-of-repo probes. Re-validated 2026-09-26 (#2949): every planner/developer/tester brief carried the explicit no-out-of-repo prohibition and the inline contract; all seven dispatches complied with zero out-of-repo probes (one planner recovered a UTF-16 plan capture via an in-repo decode only). Re-validated 2026-09-26 (#2964): every planner/developer/tester brief and the PoC capsules carried the explicit no-out-of-repo prohibition with the dependency contract stated inline; all eight agent dispatches complied with zero out-of-repo probes (a developer even reported the harness denies the `~` spool path and refused to read it).
+- **effectiveness:** Applied (2026-09-26, #2948) — the brief carried the prohibition plus the inline contract; the developer applied the exact edits with zero out-of-repo probes. Re-validated 2026-09-26 (#2949): every planner/developer/tester brief carried the explicit no-out-of-repo prohibition and the inline contract; all seven dispatches complied with zero out-of-repo probes (one planner recovered a UTF-16 plan capture via an in-repo decode only). Re-validated 2026-09-26 (#2964): every planner/developer/tester brief and the PoC capsules carried the explicit no-out-of-repo prohibition with the dependency contract stated inline; all eight agent dispatches complied with zero out-of-repo probes (a developer even reported the harness denies the `~` spool path and refused to read it). Re-validated 2026-10-02 (#2979): every planner/fix-plan/developer/tester brief carried the prohibition; all dispatches complied with zero out-of-repo probes, and the stale backlog evidence paths were explicitly marked withdrawn rather than hunted.
 
 ### G-260: create_worktree_reuse_hides_a_dirty_stale_worktree
 - **activation_date:** 2026-09-26
