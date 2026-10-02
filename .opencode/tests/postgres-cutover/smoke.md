@@ -26,7 +26,8 @@ in `functional.md`.
 - [ ] **S-7:** Upgraded install (fixture `fredo.db`) cuts over once; marker set; second startup skips
   (F-2).
 - [ ] **S-8:** A forced parity mismatch (`FREDO_MIGRATION_FORCE_MISMATCH`) fails closed: no marker,
-  engine stays SQLite, `fredo.db` byte-unchanged (F-3).
+  no PG install (`storage_engine_status == {engine:"postgres", ready:false, …}`, no SQLite
+  data-plane fallback), `fredo.db` byte-unchanged (F-3).
 - [ ] **S-9:** `rollback.verified` reads true after an executed backout; the restored checksums match
   (F-5).
 - [ ] **S-10:** `cargo tree -i rusqlite` is empty for the app crate (or every remaining site is
@@ -41,6 +42,6 @@ in `functional.md`.
 ## Smoke-level pass/fail
 
 PASS = S-1..S-3, S-6..S-13 green; S-4/S-5 green or a named blocker. Any count/checksum mismatch, a
-marker set on a mismatch, an engine flip despite a parity failure, a mutated `fredo.db` on the
+marker set on a mismatch, a SQLite data-plane fallback on a parity failure, a mutated `fredo.db` on the
 migration leg, a blank Mission Monitor while migrated rows exist, a write reaching `telemetry_spans`,
 a residual SQLite-only construct in a migrated path, or an unbounded wait = **FAIL**.

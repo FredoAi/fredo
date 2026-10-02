@@ -61,14 +61,19 @@ stores, after a production cutover is parity-checked and a real backout is exerc
   leg `Skipped` (no re-copy, no parity re-gate). **FAIL** = a second copy, a flip back to SQLite, or
   a set marker with no data.
 
-- [ ] **F-3 (REQ-3, AC1, G-275) — a forced parity mismatch fails closed: no marker, no flip,
-  `fredo.db` untouched, next startup re-runs the idempotent export.**
+- [ ] **F-3 (REQ-3, AC1, G-275) — a forced parity mismatch fails closed: no marker, no PG install,
+  `fredo.db` byte-identical, no SQLite fallback, next startup re-runs the idempotent read-only
+  export.**
   Induce via `FREDO_MIGRATION_FORCE_MISMATCH=<table>` (or `1`) on a fixture under
   `.opencode/tmp/2979/`; record `fredo.db` SHA-256 before.
-  **Expected:** `migration.postgres.completed` is NOT set; `storage_engine_status.engine ==
-  "sqlite"`; `fredo.db` byte-identical; the app is fully operational on SQLite; the next startup
-  re-runs the read-only export (idempotent, no partial-state corruption). **FAIL** = a set marker,
-  an engine flip, a mutated `fredo.db`, a crash, or an unbounded wait.
+  **Expected:** `migration.postgres.completed` is NOT set; the PG engine is NOT installed — the
+  `EngineHandle` stays `Pending` and `storage_engine_status == {engine:"postgres", ready:false,
+  fallbackReason:"…"}` with the structured failure reported on `migration_status`; `fredo.db` is
+  byte-identical (never mutated); there is NO SQLite data-plane fallback — the data plane is
+  unavailable until a later startup re-runs the idempotent, read-only export and the parity gate
+  passes; the next startup re-runs the read-only export (idempotent, no partial-state corruption).
+  **FAIL** = a set marker, a SQLite data-plane fallback, a mutated `fredo.db`, a crash, or an
+  unbounded wait.
 
 - [ ] **F-4 (REQ-4, AC4) — an install that never had `fredo.db` starts clean on PostgreSQL with no
   migration leg.**
@@ -176,8 +181,8 @@ stores, after a production cutover is parity-checked and a real backout is exerc
 
 PASS = F-1..F-13 green with live evidence from the running artifact (PG store read via managed
 `psql`; `telemetry_spans`; the restored snapshot; `migration_status`/`storage_engine_status`) and
-N-1..N-5 holding. Any of: an engine flip or a set marker on a parity mismatch; a mutated/deleted
-`fredo.db` on the migration leg; `rollback.verified` false while F-5 is claimed PASS; a residual
+N-1..N-5 holding. Any of: a set marker or a SQLite data-plane fallback on a parity mismatch; a
+mutated/deleted `fredo.db` on the migration leg; `rollback.verified` false while F-5 is claimed PASS; a residual
 SQLite branch or SQLite-only construct in a migrated path; `rusqlite` still in the app graph without
 a named justification; a blank Mission Monitor while migrated rows exist; a static-only receipt on a
 live row; a fixed whole-leg bound on the real corpus; or an unbounded/blocking wait (the #2948
