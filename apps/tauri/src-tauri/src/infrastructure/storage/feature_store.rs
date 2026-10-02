@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use sqlx::{Column as _, PgPool, Postgres, Row as _, TypeInfo as _};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::engine::{quote_ident, Dialect, EngineHandle, StoreEngine};
+use super::migration::{MigrationGate, MigrationWriterGuard};
 
 // ── Column Types ──────────────────────────────────────────────────────────────
 
@@ -157,6 +158,10 @@ pub struct DeleteArgs {
 /// `pragma_table_info → information_schema.columns`; quoted identifiers).
 pub struct FeatureStore {
     engine: Arc<EngineHandle>,
+    /// The shared migration barrier (Spec #2977 ST-4). Installed once at startup
+    /// by `lib.rs`; unset in unit tests, where a write is ungated (a migration
+    /// cannot be running without that state).
+    migration_gate: OnceLock<Arc<MigrationGate>>,
 }
 
 /// One physical column of a feature-namespaced table, as reported by
@@ -173,7 +178,38 @@ pub(crate) struct PhysicalColumn {
 impl FeatureStore {
     /// Wrap the shared engine handle.
     pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
-        Ok(FeatureStore { engine })
+        Ok(FeatureStore {
+            engine,
+            migration_gate: OnceLock::new(),
+        })
+    }
+
+    /// Install the shared migration barrier (Spec #2977 ST-4). Called once at
+    /// startup; the terminal persistence writes quiesce through it. Idempotent.
+    pub(crate) fn install_migration_gate(&self, gate: Arc<MigrationGate>) {
+        let _ = self.migration_gate.set(gate);
+    }
+
+    /// Acquire the shared writer barrier for an ASYNC write entry point (the
+    /// `feature_store_*` IPC commands). `Ok(None)` when no gate is installed
+    /// (unit tests) — the write is then ungated. `Err` means the migration held
+    /// the barrier past its bound and the write must be shed (G-263).
+    pub(crate) async fn writer_guard_async(
+        &self,
+    ) -> Result<Option<MigrationWriterGuard<'_>>> {
+        match self.migration_gate.get() {
+            Some(gate) => gate.writer_enter().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Acquire the shared writer barrier for a SYNCHRONOUS write entry point
+    /// (the terminal persistence writes). Bounded; see [`Self::writer_guard_async`].
+    pub(crate) fn writer_guard(&self) -> Result<Option<MigrationWriterGuard<'_>>> {
+        match self.migration_gate.get() {
+            Some(gate) => gate.writer_enter_blocking().map(Some),
+            None => Ok(None),
+        }
     }
 
     /// The SQL dialect the active engine speaks (Spec #2975 ST-4 rework).
@@ -217,7 +253,12 @@ impl FeatureStore {
     }
 
     /// Normalize a raw physical type string to a [`ColumnType`].
-    fn normalize_column_type(type_str: &str) -> ColumnType {
+    ///
+    /// The ONE source-affinity map: the engine-selected store and the one-shot
+    /// `fredo.db` → PostgreSQL migration (`storage::migration`) both read a
+    /// physical type string through this function, so a source table's derived
+    /// target DDL can never diverge from the store's own table creation.
+    pub(crate) fn normalize_column_type(type_str: &str) -> ColumnType {
         match type_str.to_uppercase().as_str() {
             "INTEGER" => ColumnType::INTEGER,
             "REAL" => ColumnType::REAL,
@@ -1154,12 +1195,14 @@ pub fn feature_store_ensure_table(
 
 /// REQ-2: Insert rows into a feature-namespaced table.
 #[tauri::command]
-pub fn feature_store_insert(
+pub async fn feature_store_insert(
     state: tauri::State<'_, Arc<FeatureStore>>,
     feature_id: String,
     table_name: String,
     rows: Vec<serde_json::Map<String, JsonValue>>,
 ) -> Result<u64, String> {
+    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
+    let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
         .insert(&feature_id, &table_name, &rows)
         .map_err(|e| e.to_string())
@@ -1188,13 +1231,15 @@ pub fn feature_store_query(
 
 /// REQ-4: Update rows matching WHERE clause.
 #[tauri::command]
-pub fn feature_store_update(
+pub async fn feature_store_update(
     state: tauri::State<'_, Arc<FeatureStore>>,
     feature_id: String,
     table_name: String,
     set_cols: serde_json::Map<String, JsonValue>,
     where_cols: serde_json::Map<String, JsonValue>,
 ) -> Result<u64, String> {
+    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
+    let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
         .update(&feature_id, &table_name, &set_cols, &where_cols)
         .map_err(|e| e.to_string())
@@ -1202,12 +1247,14 @@ pub fn feature_store_update(
 
 /// REQ-5: Delete rows matching WHERE clause.
 #[tauri::command]
-pub fn feature_store_delete(
+pub async fn feature_store_delete(
     state: tauri::State<'_, Arc<FeatureStore>>,
     feature_id: String,
     table_name: String,
     where_cols: serde_json::Map<String, JsonValue>,
 ) -> Result<u64, String> {
+    // Spec #2977 ST-4: quiesce the write against the exclusive migration barrier.
+    let _guard = state.writer_guard_async().await.map_err(|e| e.to_string())?;
     state
         .delete(&feature_id, &table_name, &where_cols)
         .map_err(|e| e.to_string())

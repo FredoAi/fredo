@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod feature_store;
+pub mod migration;
 pub mod span_store;
 
 // The storage engine seam (Spec #2975 ST-1) re-exported at the module root so
@@ -11,6 +12,13 @@ pub use engine::{
     SqliteEngine, StoreEngine, PG_PERSISTENT_STATEMENTS, PG_POOL_ACQUIRE_TIMEOUT,
     PG_POOL_IDLE_TIMEOUT, PG_POOL_MAX_CONNECTIONS, PG_POOL_MAX_LIFETIME,
     PG_POOL_MIN_CONNECTIONS, PG_RTDB_ROWS_DDL, PG_TELEMETRY_DDL, STORAGE_ENGINE_ENV,
+};
+
+// The one-shot `fredo.db` → PostgreSQL data migration (Spec #2977) re-exported
+// at the module root so consumers read `storage::{run_pre_install, ...}`.
+pub use migration::{
+    run_pre_install, MigrationGate, MigrationOutcome, MigrationStatus, MigrationStatusView,
+    SnapshotRecord, TableParity, MIGRATION_CHUNK_ROWS, MIGRATION_COMPLETED_KEY,
 };
 
 use anyhow::{anyhow, Result};
