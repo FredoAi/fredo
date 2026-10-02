@@ -619,3 +619,414 @@ impl ObservedGroup {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::rtdb::rows::RowState;
+
+    fn config() -> SessionRollupProjection {
+        SessionRollupProjection {
+            kind: super::super::declaration::SessionRollupKind::SessionRollup,
+            exclude_dispatch_names: vec!["build".to_string(), "plan".to_string()],
+            terminal_states: vec![RowState::Response, RowState::Timeout],
+        }
+    }
+
+    fn chat(correlation_id: &str, state: &str, reply: Option<&str>) -> RollupChatRow {
+        RollupChatRow {
+            correlation_id: correlation_id.to_string(),
+            seq: 1,
+            started_at_ns: Some(1_000),
+            updated_at: "2026-09-18T00:00:00+00:00".to_string(),
+            state: state.to_string(),
+            user_message: None,
+            agent_reply: reply.map(str::to_string),
+            parent_session_id: None,
+            composited_child_session_id: None,
+            provider: None,
+        }
+    }
+
+    fn tool(correlation_id: &str, name: &str, subagent_type: Option<&str>, is_subagent: bool) -> RollupToolRow {
+        RollupToolRow {
+            correlation_id: correlation_id.to_string(),
+            seq: 1,
+            tool_name: Some(name.to_string()),
+            tool_input_json: subagent_type
+                .map(|value| format!(r#"{{"subagent_type":"{value}","prompt":"p"}}"#)),
+            is_subagent: Some(is_subagent),
+        }
+    }
+
+    fn group(chats: Vec<RollupChatRow>, tools: Vec<RollupToolRow>, agents: Vec<RollupAgentRow>) -> RollupGroup {
+        RollupGroup {
+            session_id: "ses_1".to_string(),
+            chats,
+            tools,
+            agents,
+        }
+    }
+
+    #[test]
+    fn chat_row_count_counts_every_chat_row_including_subagent_copies() {
+        let mut plain = chat("c1", "response", Some("done"));
+        plain.started_at_ns = Some(2_000);
+        let mut child_original = chat("c2", "response", Some("child"));
+        child_original.parent_session_id = Some("ses_parent".to_string());
+        let mut child_copy = chat("c3", "response", Some("copy"));
+        child_copy.composited_child_session_id = Some("ses_child".to_string());
+
+        let facts = compute_facts(&group(vec![plain, child_original, child_copy], vec![], vec![]), &config());
+        assert_eq!(facts.chat_row_count, 3);
+        assert_eq!(facts.non_subagent_chat_row_count, 1);
+    }
+
+    #[test]
+    fn non_subagent_chat_row_count_requires_both_subagent_stamps_null() {
+        let plain = chat("c1", "init", None);
+        let mut parent_only = chat("c2", "init", None);
+        parent_only.parent_session_id = Some("ses_parent".to_string());
+        let mut composited_only = chat("c3", "init", None);
+        composited_only.composited_child_session_id = Some("ses_child".to_string());
+        let mut both = chat("c4", "init", None);
+        both.parent_session_id = Some("ses_parent".to_string());
+        both.composited_child_session_id = Some("ses_child".to_string());
+
+        let facts = compute_facts(
+            &group(vec![plain, parent_only, composited_only, both], vec![], vec![]),
+            &config(),
+        );
+        assert_eq!(facts.non_subagent_chat_row_count, 1);
+    }
+
+    #[test]
+    fn visible_turn_count_excludes_terminal_blank_turns_and_all_subagent_rows() {
+        let visible = chat("c1", "response", Some("a real reply"));
+        let transitional = chat("c2", "response", Some("   ")); // terminal + blank
+        let timeout_blank = chat("c3", "timeout", None);
+        let init_blank = chat("c4", "init", None); // NOT terminal → visible
+        let mut subagent_visible = chat("c5", "init", None);
+        subagent_visible.parent_session_id = Some("ses_parent".to_string());
+        let mut copy_visible = chat("c6", "init", None);
+        copy_visible.composited_child_session_id = Some("ses_child".to_string());
+
+        let facts = compute_facts(
+            &group(
+                vec![
+                    visible,
+                    transitional,
+                    timeout_blank,
+                    init_blank,
+                    subagent_visible,
+                    copy_visible,
+                ],
+                vec![],
+                vec![],
+            ),
+            &config(),
+        );
+        // c1 (visible), c4 (init is not terminal) — c2/c3 transitional, c5/c6 subagent.
+        assert_eq!(facts.visible_turn_count, 2);
+    }
+
+    #[test]
+    fn user_dispatch_count_counts_only_non_subagent_task_rows_not_excluded() {
+        let developer = tool("t1", "task", Some("developer"), false);
+        let build = tool("t2", "task", Some("build"), false);
+        let plan = tool("t3", "task", Some("plan"), false);
+        let child_dispatch = tool("t4", "task", Some("developer"), true);
+        let non_task = tool("t5", "bash", None, false);
+        let no_name = tool("t6", "task", None, false); // neither key → counts
+
+        let facts = compute_facts(
+            &group(
+                vec![],
+                vec![developer, build, plan, child_dispatch, non_task, no_name],
+                vec![],
+            ),
+            &config(),
+        );
+        assert_eq!(facts.user_dispatch_count, 2, "developer + unnamed task");
+    }
+
+    #[test]
+    fn agent_fallback_key_is_used_when_subagent_type_is_absent() {
+        let row = RollupToolRow {
+            correlation_id: "t1".to_string(),
+            seq: 1,
+            tool_name: Some("task".to_string()),
+            tool_input_json: Some(r#"{"agent":"build","prompt":"p"}"#.to_string()),
+            is_subagent: Some(false),
+        };
+        let facts = compute_facts(&group(vec![], vec![row], vec![]), &config());
+        assert_eq!(facts.user_dispatch_count, 0, "agent fallback is excluded");
+    }
+
+    #[test]
+    fn started_at_ns_is_the_min_non_null_and_latest_at_the_max_updated_at() {
+        let mut a = chat("c1", "init", None);
+        a.started_at_ns = Some(5_000);
+        a.updated_at = "2026-09-18T00:00:05+00:00".to_string();
+        let mut b = chat("c2", "init", None);
+        b.started_at_ns = None; // ignored for the min
+        b.updated_at = "2026-09-18T00:00:09+00:00".to_string();
+        let mut c = chat("c3", "init", None);
+        c.started_at_ns = Some(1_000);
+        c.updated_at = "2026-09-18T00:00:01+00:00".to_string();
+
+        let facts = compute_facts(&group(vec![a, b, c], vec![], vec![]), &config());
+        assert_eq!(facts.started_at_ns, Some(1_000));
+        assert_eq!(
+            facts.latest_at.as_deref(),
+            Some("2026-09-18T00:00:09+00:00")
+        );
+    }
+
+    #[test]
+    fn started_at_ns_is_null_when_every_chat_row_is_null() {
+        let mut row = chat("c1", "init", None);
+        row.started_at_ns = None;
+        let facts = compute_facts(&group(vec![row], vec![], vec![]), &config());
+        assert_eq!(facts.started_at_ns, None);
+    }
+
+    #[test]
+    fn derived_name_is_the_earliest_non_blank_user_message_null_started_sorts_last() {
+        let mut later = chat("c9", "init", None);
+        later.user_message = Some("later message".to_string());
+        later.started_at_ns = Some(9_000);
+        let mut earliest = chat("c2", "init", None);
+        earliest.user_message = Some("earliest message".to_string());
+        earliest.started_at_ns = Some(2_000);
+        let mut blank = chat("c1", "init", None);
+        blank.user_message = Some("   ".to_string());
+        blank.started_at_ns = Some(1_000); // blank → never selected
+        let mut null_started = chat("c0", "init", None);
+        null_started.user_message = Some("null started message".to_string());
+        null_started.started_at_ns = None;
+
+        let facts = compute_facts(
+            &group(vec![later, earliest, blank, null_started], vec![], vec![]),
+            &config(),
+        );
+        assert_eq!(facts.derived_name.as_deref(), Some("earliest message"));
+    }
+
+    #[test]
+    fn derived_name_is_null_when_no_chat_row_has_a_non_blank_message() {
+        let mut blank = chat("c1", "init", None);
+        blank.user_message = Some("  ".to_string());
+        let facts = compute_facts(&group(vec![blank], vec![], vec![]), &config());
+        assert_eq!(facts.derived_name, None);
+    }
+
+    #[test]
+    fn agent_name_is_the_latest_non_blank_across_agent_session_rows() {
+        let old = RollupAgentRow {
+            correlation_id: "a1".to_string(),
+            seq: 5,
+            updated_at: "2026-09-18T00:00:01+00:00".to_string(),
+            agent_name: Some("old-agent".to_string()),
+        };
+        let blank_latest = RollupAgentRow {
+            correlation_id: "a2".to_string(),
+            seq: 9,
+            updated_at: "2026-09-18T00:00:09+00:00".to_string(),
+            agent_name: Some("  ".to_string()),
+        };
+        let newer = RollupAgentRow {
+            correlation_id: "a3".to_string(),
+            seq: 2,
+            updated_at: "2026-09-18T00:00:05+00:00".to_string(),
+            agent_name: Some("newer-agent".to_string()),
+        };
+
+        let facts = compute_facts(
+            &group(
+                vec![chat("c1", "init", None)],
+                vec![],
+                vec![old, blank_latest, newer],
+            ),
+            &config(),
+        );
+        assert_eq!(facts.agent_name.as_deref(), Some("newer-agent"));
+    }
+
+    #[test]
+    fn provider_is_the_earliest_non_subagent_chat_row_token() {
+        let mut later = chat("c9", "init", None);
+        later.started_at_ns = Some(9_000);
+        later.provider = Some("copilot_cli".to_string());
+        let mut earliest = chat("c2", "init", None);
+        earliest.started_at_ns = Some(2_000);
+        earliest.provider = Some("open_code".to_string());
+        let mut null_started = chat("c0", "init", None);
+        null_started.started_at_ns = None;
+        null_started.provider = Some("claude_code".to_string());
+
+        let facts = compute_facts(
+            &group(vec![later, earliest, null_started], vec![], vec![]),
+            &config(),
+        );
+        assert_eq!(facts.provider, "open_code");
+    }
+
+    #[test]
+    fn provider_ignores_subagent_rows_when_a_non_subagent_row_exists() {
+        // The subagent row is earliest by startedAtNs, but the pick must be the
+        // earliest NON-subagent row's token.
+        let mut child = chat("c1", "init", None);
+        child.started_at_ns = Some(1_000);
+        child.provider = Some("child_token".to_string());
+        child.composited_child_session_id = Some("ses_child".to_string());
+        let mut plain = chat("c2", "init", None);
+        plain.started_at_ns = Some(5_000);
+        plain.provider = Some("open_code".to_string());
+
+        let facts = compute_facts(&group(vec![child, plain], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "open_code");
+    }
+
+    #[test]
+    fn provider_falls_back_to_composited_rows_when_no_non_subagent_row_exists() {
+        let mut later = chat("c9", "init", None);
+        later.started_at_ns = Some(9_000);
+        later.provider = Some("later".to_string());
+        later.parent_session_id = Some("ses_parent".to_string());
+        let mut earliest = chat("c2", "init", None);
+        earliest.started_at_ns = Some(2_000);
+        earliest.provider = Some("copilot_cli".to_string());
+        earliest.composited_child_session_id = Some("ses_child".to_string());
+
+        let facts = compute_facts(&group(vec![later, earliest], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "copilot_cli");
+    }
+
+    #[test]
+    fn provider_ties_break_on_correlation_id_ascending() {
+        let mut b = chat("b_row", "init", None);
+        b.started_at_ns = Some(1_000);
+        b.provider = Some("from_b".to_string());
+        let mut a = chat("a_row", "init", None);
+        a.started_at_ns = Some(1_000);
+        a.provider = Some("from_a".to_string());
+
+        let facts = compute_facts(&group(vec![b, a], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "from_a");
+    }
+
+    #[test]
+    fn provider_normalizes_null_and_blank_to_unknown() {
+        let null = chat("c1", "init", None);
+        let facts = compute_facts(&group(vec![null], vec![], vec![]), &config());
+        assert_eq!(facts.provider, PROVIDER_UNKNOWN);
+        assert_eq!(facts.provider, "unknown");
+
+        let mut blank = chat("c1", "init", None);
+        blank.provider = Some("   ".to_string());
+        let facts = compute_facts(&group(vec![blank], vec![], vec![]), &config());
+        assert_eq!(facts.provider, "unknown");
+    }
+
+    #[test]
+    fn fact_values_emits_the_provider_token() {
+        let mut row = chat("c1", "init", None);
+        row.provider = Some("copilot_cli".to_string());
+        let facts = compute_facts(&group(vec![row], vec![], vec![]), &config());
+        let values = fact_values(&facts);
+        assert_eq!(
+            values.get(PROVIDER),
+            Some(&JsonValue::String("copilot_cli".to_string()))
+        );
+        assert_eq!(FACT_COLUMNS.len(), 10);
+        assert_eq!(FACT_COLUMNS[9], PROVIDER);
+    }
+
+    #[test]
+    fn qualification_matches_the_frontend_predicate() {
+        let visible = compute_facts(
+            &group(vec![chat("c1", "init", None)], vec![], vec![]),
+            &config(),
+        );
+        assert!(qualifies(&visible), "a visible turn qualifies");
+
+        // Transitional-only non-subagent row with no dispatch → does not qualify.
+        let transitional = compute_facts(
+            &group(vec![chat("c1", "response", Some(""))], vec![], vec![]),
+            &config(),
+        );
+        assert!(!qualifies(&transitional));
+
+        // Transitional-only but with a user-requested dispatch → qualifies.
+        let dispatch_belt = compute_facts(
+            &group(
+                vec![chat("c1", "response", Some(""))],
+                vec![tool("t1", "task", Some("developer"), false)],
+                vec![],
+            ),
+            &config(),
+        );
+        assert!(qualifies(&dispatch_belt));
+
+        // Subagent-only rows never qualify.
+        let mut child = chat("c1", "init", None);
+        child.composited_child_session_id = Some("ses_child".to_string());
+        let subagent_only = compute_facts(&group(vec![child], vec![], vec![]), &config());
+        assert!(!qualifies(&subagent_only));
+    }
+
+    #[test]
+    fn merge_overlays_in_flight_rows_and_yields_to_a_caught_up_sql_seq() {
+        let persisted = RollupChatRow::from_chat_row(&chat_row_fixture("c_persisted", 7));
+        let mut group = RollupGroup {
+            session_id: "ses_1".to_string(),
+            chats: vec![persisted],
+            tools: vec![],
+            agents: vec![],
+        };
+
+        let mut observed = ObservedGroup::default();
+        // Not yet flushed (seq 3 < persisted seq 7 is a different key) — overlaid.
+        let mut in_flight = chat("c_in_flight", "response", Some("live"));
+        in_flight.seq = 1;
+        observed.observe(ObservedRow::Chat(in_flight));
+        // SQL already caught up (seq 9 >= observed 5) — SQL wins.
+        let mut stale = chat("c_persisted", "init", None);
+        stale.seq = 5;
+        observed.observe(ObservedRow::Chat(stale));
+
+        observed.merge_into(&mut group);
+        assert_eq!(group.chats.len(), 2);
+        let persisted_after = group
+            .chats
+            .iter()
+            .find(|row| row.correlation_id == "c_persisted")
+            .expect("persisted row kept");
+        assert_eq!(persisted_after.state, "response", "SQL caught up → SQL wins");
+        assert!(group.chats.iter().any(|row| row.correlation_id == "c_in_flight"));
+    }
+
+    fn chat_row_fixture(correlation_id: &str, seq: i64) -> ChatRow {
+        ChatRow {
+            session_id: "ses_1".to_string(),
+            correlation_id: correlation_id.to_string(),
+            seq,
+            started_at_ns: Some(1_000),
+            ended_at_ns: None,
+            updated_at: "2026-09-18T00:00:00+00:00".to_string(),
+            state: RowState::Response,
+            provider: None,
+            user_message: None,
+            agent_reply: Some("persisted".to_string()),
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cost_usd: None,
+            model: None,
+            parent_session_id: None,
+            composited_child_session_id: None,
+            raw_json: "{}".to_string(),
+        }
+    }
+}

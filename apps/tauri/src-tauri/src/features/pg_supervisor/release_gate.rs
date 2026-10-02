@@ -126,3 +126,80 @@ pub async fn cutover_release_gate(app: AppHandle) -> CutoverReleaseGate {
         reason: decision_reason(ACQUISITION_MODE, migration_completed),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CU-1: the shipped default is unconditionally PostgreSQL — for BOTH
+    /// acquisition modes, with and without the marker.
+    #[test]
+    fn decide_shipped_default_is_unconditionally_postgres() {
+        for mode in [
+            PgAcquisitionMode::RuntimeDownload,
+            PgAcquisitionMode::Bundled,
+        ] {
+            for completed in [false, true] {
+                assert_eq!(
+                    decide_shipped_default(mode, completed),
+                    ShippedDefault::Postgres,
+                    "mode {mode:?} / marker {completed} must default to postgres"
+                );
+            }
+        }
+    }
+
+    /// CU-1: `migrationWillRun = fredo.db exists && !migration_completed`.
+    #[test]
+    fn migration_will_run_requires_a_source_and_no_marker() {
+        assert!(
+            !migration_will_run(false, false),
+            "a fresh install (no fredo.db) runs no leg"
+        );
+        assert!(
+            migration_will_run(true, false),
+            "an upgraded install runs the one-shot leg"
+        );
+        assert!(
+            !migration_will_run(true, true),
+            "the marker skips the leg on every subsequent startup"
+        );
+        assert!(!migration_will_run(false, true));
+    }
+
+    /// The reason names the unconditional default and the marker posture.
+    #[test]
+    fn decision_reason_names_the_unconditional_default_and_marker() {
+        let absent = decision_reason(PgAcquisitionMode::RuntimeDownload, false);
+        assert!(absent.contains("unconditionally postgres"), "{absent}");
+        assert!(absent.contains(MIGRATION_COMPLETED_KEY), "{absent}");
+        assert!(absent.contains("absent"), "{absent}");
+
+        let present = decision_reason(PgAcquisitionMode::Bundled, true);
+        assert!(present.contains("unconditionally postgres"), "{present}");
+        assert!(present.contains("present"), "{present}");
+    }
+
+    /// The gate serializes camelCase and the enums use their declared values.
+    #[test]
+    fn gate_serializes_camel_case() {
+        let gate = CutoverReleaseGate {
+            acquisition_mode: PgAcquisitionMode::RuntimeDownload,
+            migration_completed: false,
+            migration_will_run: true,
+            shipped_default: ShippedDefault::Postgres,
+            reason: "test".to_string(),
+        };
+        let json = serde_json::to_value(&gate).expect("serialize");
+        assert_eq!(json["acquisitionMode"], "runtimeDownload");
+        assert_eq!(json["migrationCompleted"], false);
+        assert_eq!(json["migrationWillRun"], true);
+        assert_eq!(json["shippedDefault"], "postgres");
+        assert_eq!(json["reason"], "test");
+
+        assert_eq!(
+            serde_json::to_value(ShippedDefault::Postgres).expect("serialize"),
+            "postgres"
+        );
+    }
+}

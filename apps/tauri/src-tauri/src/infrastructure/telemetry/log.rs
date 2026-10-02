@@ -421,3 +421,60 @@ struct SpanTraceContext {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── LogBridgeLayer creates correct LogRecord ────────────────────────────
+
+    #[tokio::test]
+    async fn test_log_bridge_layer_creates_record() {
+        // This is a unit test for the LogRecord creation logic.
+        // We verify that a LogRecord with expected fields round-trips through serde.
+        let record = LogRecord {
+            timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+            level: "INFO".to_string(),
+            target: "fredo::test".to_string(),
+            message: "test message".to_string(),
+            attributes_json: r#"{"event_id":"abc"}"#.to_string(),
+            trace_id: Some("trace-1".to_string()),
+            span_id: Some("span-1".to_string()),
+            session_id: Some("sess-1".to_string()),
+        };
+
+        // Serialize and deserialize
+        let json = serde_json::to_string(&record).unwrap();
+        let deserialized: LogRecord = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.level, "INFO");
+        assert_eq!(deserialized.target, "fredo::test");
+        assert_eq!(deserialized.message, "test message");
+        assert_eq!(deserialized.attributes_json, r#"{"event_id":"abc"}"#);
+        assert_eq!(deserialized.trace_id, Some("trace-1".to_string()));
+        assert_eq!(deserialized.span_id, Some("span-1".to_string()));
+        assert_eq!(deserialized.session_id, Some("sess-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_log_bridge_layer_serialization_camelcase() {
+        let record = LogRecord {
+            timestamp: "2025-01-01T00:00:00+00:00".to_string(),
+            level: "ERROR".to_string(),
+            target: "fredo::test".to_string(),
+            message: "error occurred".to_string(),
+            attributes_json: "{}".to_string(),
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+        };
+
+        let json = serde_json::to_string(&record).unwrap();
+        // Verify camelCase field names
+        assert!(json.contains("\"traceId\""));
+        assert!(json.contains("\"spanId\""));
+        assert!(json.contains("\"sessionId\""));
+        assert!(json.contains("\"attributesJson\""));
+        assert!(!json.contains("\"trace_id\""));
+    }
+}

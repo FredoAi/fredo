@@ -856,3 +856,109 @@ pub(crate) fn diff_fields(
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn where_expr_evaluates_all_any_not_in_is_null_and_eq() {
+        let row = json!({
+            "state": "Response",
+            "parentSessionId": JsonValue::Null,
+            "toolName": "task",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        assert!(eval_where(
+            &WhereExpr::Eq {
+                field: "state".to_string(),
+                eq: json!("Response"),
+            },
+            &row
+        ));
+        assert!(!eval_where(
+            &WhereExpr::Eq {
+                field: "state".to_string(),
+                eq: json!("Init"),
+            },
+            &row
+        ));
+        assert!(eval_where(
+            &WhereExpr::IsNull {
+                field: "parentSessionId".to_string(),
+                is_null: true,
+            },
+            &row
+        ));
+        assert!(!eval_where(
+            &WhereExpr::IsNull {
+                field: "parentSessionId".to_string(),
+                is_null: false,
+            },
+            &row
+        ));
+        assert!(eval_where(
+            &WhereExpr::IsNull {
+                field: "missing".to_string(),
+                is_null: true,
+            },
+            &row
+        ));
+        assert!(eval_where(
+            &WhereExpr::In {
+                field: "toolName".to_string(),
+                r#in: vec![json!("bash"), json!("task")],
+            },
+            &row
+        ));
+        assert!(!eval_where(
+            &WhereExpr::In {
+                field: "toolName".to_string(),
+                r#in: vec![json!("bash")],
+            },
+            &row
+        ));
+        assert!(eval_where(
+            &WhereExpr::All {
+                all: vec![
+                    WhereExpr::Eq {
+                        field: "state".to_string(),
+                        eq: json!("Response"),
+                    },
+                    WhereExpr::IsNull {
+                        field: "parentSessionId".to_string(),
+                        is_null: true,
+                    },
+                ],
+            },
+            &row
+        ));
+        assert!(eval_where(
+            &WhereExpr::Any {
+                any: vec![
+                    WhereExpr::Eq {
+                        field: "state".to_string(),
+                        eq: json!("Init"),
+                    },
+                    WhereExpr::Eq {
+                        field: "state".to_string(),
+                        eq: json!("Response"),
+                    },
+                ],
+            },
+            &row
+        ));
+        assert!(eval_where(
+            &WhereExpr::Not {
+                not: Box::new(WhereExpr::Eq {
+                    field: "state".to_string(),
+                    eq: json!("Init"),
+                }),
+            },
+            &row
+        ));
+    }
+}

@@ -310,3 +310,212 @@ pub fn newest_session_id_for_dir(
         .max_by_key(|(created, _)| *created)
         .map(|(_, id)| id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::terminal::state::SessionKind;
+
+    fn record(id: &str, cli: SessionKind, title: &str, last_active_at: u64) -> PersistedSession {
+        PersistedSession {
+            id: id.to_string(),
+            cli,
+            work_dir: r"C:\Code\fredo".to_string(),
+            title: title.to_string(),
+            created_at: last_active_at,
+            last_active_at,
+            cli_session_id: None,
+        }
+    }
+
+    // ── Record mapping ──────────────────────────────────────────────────────
+
+    #[test]
+    fn to_row_carries_exactly_the_seven_columns() {
+        let session = PersistedSession {
+            id: "s1".into(),
+            cli: SessionKind::Copilot,
+            work_dir: r"C:\repo".into(),
+            title: "GitHub Copilot".into(),
+            created_at: 10,
+            last_active_at: 20,
+            cli_session_id: None,
+        };
+        let row = session.to_row();
+        let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "cli",
+                "cli_session_id",
+                "created_at",
+                "id",
+                "last_active_at",
+                "title",
+                "work_dir"
+            ]
+        );
+        assert_eq!(row.get("cli").unwrap(), &json!("copilot"));
+        assert_eq!(row.get("cli_session_id").unwrap(), &Value::Null);
+        assert_eq!(row.get("created_at").unwrap(), &json!(10));
+    }
+
+    #[test]
+    fn row_round_trips_through_from_row() {
+        let session = PersistedSession {
+            id: "s1".into(),
+            cli: SessionKind::OpenCode,
+            work_dir: r"C:\repo".into(),
+            title: "OpenCode 2".into(),
+            created_at: 10,
+            last_active_at: 20,
+            cli_session_id: Some("ses_abc".into()),
+        };
+        let back = PersistedSession::from_row(&session.to_row()).unwrap();
+        assert_eq!(back, session);
+    }
+
+    #[test]
+    fn from_row_accepts_the_shell_kind() {
+        // Spec #2942 R-5.3: a parse gap here would make shell records silently
+        // INVISIBLE through `list`'s `filter_map` — the shell wire value MUST
+        // parse back into a record.
+        let session = PersistedSession {
+            id: "s1".into(),
+            cli: SessionKind::Shell,
+            work_dir: r"C:\repo".into(),
+            title: "Terminal".into(),
+            created_at: 10,
+            last_active_at: 20,
+            cli_session_id: None,
+        };
+        let back = PersistedSession::from_row(&session.to_row()).unwrap();
+        assert_eq!(back.cli, SessionKind::Shell);
+        assert_eq!(back, session);
+        assert_eq!(session.to_row().get("cli").unwrap(), &json!("shell"));
+    }
+
+    #[test]
+    fn from_row_returns_none_for_a_malformed_row() {
+        // Unknown cli wire value.
+        let mut row = Map::new();
+        row.insert("id".into(), json!("s1"));
+        row.insert("cli".into(), json!("claude"));
+        row.insert("work_dir".into(), json!("~"));
+        row.insert("title".into(), json!("Claude"));
+        row.insert("created_at".into(), json!(1));
+        row.insert("last_active_at".into(), json!(1));
+        assert!(PersistedSession::from_row(&row).is_none());
+
+        // Missing id.
+        let mut missing = Map::new();
+        missing.insert("cli".into(), json!("opencode"));
+        assert!(PersistedSession::from_row(&missing).is_none());
+    }
+
+    #[test]
+    fn record_serializes_camel_case_for_the_ui_wire() {
+        let session = PersistedSession {
+            id: "s1".into(),
+            cli: SessionKind::OpenCode,
+            work_dir: r"C:\repo".into(),
+            title: "OpenCode".into(),
+            created_at: 10,
+            last_active_at: 20,
+            cli_session_id: None,
+        };
+        let json = serde_json::to_value(&session).unwrap();
+        assert_eq!(json["id"], json!("s1"));
+        assert_eq!(json["cli"], json!("opencode"));
+        assert_eq!(json["workDir"], json!("C:\\repo"));
+        assert_eq!(json["title"], json!("OpenCode"));
+        assert_eq!(json["createdAt"], json!(10));
+        assert_eq!(json["lastActiveAt"], json!(20));
+        assert!(json["cliSessionId"].is_null());
+    }
+
+    // ── Title minting ───────────────────────────────────────────────────────
+
+    #[test]
+    fn mint_title_starts_at_the_bare_label() {
+        assert_eq!(mint_title(SessionKind::OpenCode, &[]), "OpenCode");
+        assert_eq!(mint_title(SessionKind::Copilot, &[]), "GitHub Copilot");
+        // Spec #2942 — the plain shell's stable title uses the "Terminal" label.
+        assert_eq!(mint_title(SessionKind::Shell, &[]), "Terminal");
+    }
+
+    #[test]
+    fn mint_title_numbers_shell_records_independently() {
+        let existing = vec![
+            record("a", SessionKind::Shell, "Terminal", 1),
+            record("b", SessionKind::OpenCode, "OpenCode", 2),
+        ];
+        assert_eq!(mint_title(SessionKind::Shell, &existing), "Terminal 2");
+        // A different kind's records do not affect the ordinal.
+        assert_eq!(mint_title(SessionKind::Copilot, &existing), "GitHub Copilot");
+    }
+
+    #[test]
+    fn mint_title_appends_the_lowest_unused_ordinal() {
+        let existing = vec![
+            record("a", SessionKind::OpenCode, "OpenCode", 1),
+            record("b", SessionKind::OpenCode, "OpenCode 2", 2),
+        ];
+        assert_eq!(mint_title(SessionKind::OpenCode, &existing), "OpenCode 3");
+        // A different CLI's records do not affect the ordinal.
+        assert_eq!(mint_title(SessionKind::Copilot, &existing), "GitHub Copilot");
+    }
+
+    #[test]
+    fn mint_title_does_not_reuse_a_removed_middle_ordinal() {
+        // Records 1 and 3 exist (2 was removed): the next title is 4, so no
+        // existing title is duplicated.
+        let existing = vec![
+            record("a", SessionKind::OpenCode, "OpenCode", 1),
+            record("c", SessionKind::OpenCode, "OpenCode 3", 3),
+        ];
+        assert_eq!(mint_title(SessionKind::OpenCode, &existing), "OpenCode 4");
+    }
+
+    // ── Retention / eviction ────────────────────────────────────────────────
+
+    // ── Lifecycle helpers ───────────────────────────────────────────────────
+
+    // ── OpenCode session-id capture parser ──────────────────────────────────
+
+    /// A trimmed, real-shaped fixture from the ST-1 probe output
+    /// (`opencode session list --format json`).
+    const OPENCODE_LIST: &str = r#"[
+      { "id": "ses_old", "title": "Older",  "updated": 100, "created": 100, "projectId": "p", "directory": "C:\\Code\\fredo" },
+      { "id": "ses_new", "title": "Newest", "updated": 300, "created": 300, "projectId": "p", "directory": "C:\\Code\\fredo" },
+      { "id": "ses_elsewhere", "title": "Other", "updated": 400, "created": 400, "projectId": "p", "directory": "C:\\Code\\other" }
+    ]"#;
+
+    #[test]
+    fn capture_picks_the_newest_session_in_the_matching_directory() {
+        assert_eq!(
+            newest_session_id_for_dir(OPENCODE_LIST, r"C:\Code\fredo", 50).as_deref(),
+            Some("ses_new")
+        );
+    }
+
+    #[test]
+    fn capture_matches_the_directory_case_and_separator_insensitively() {
+        assert_eq!(
+            newest_session_id_for_dir(OPENCODE_LIST, "c:/code/FREDO/", 50).as_deref(),
+            Some("ses_new")
+        );
+    }
+
+    #[test]
+    fn capture_ignores_sessions_created_before_the_spawn() {
+        assert!(newest_session_id_for_dir(OPENCODE_LIST, r"C:\Code\fredo", 301).is_none());
+    }
+
+    #[test]
+    fn capture_returns_none_for_another_directory_or_bad_json() {
+        assert!(newest_session_id_for_dir(OPENCODE_LIST, r"C:\Code\none", 0).is_none());
+        assert!(newest_session_id_for_dir("not json", r"C:\Code\fredo", 0).is_none());
+    }
+}

@@ -373,3 +373,68 @@ pub fn guard_feature_write(
         Err(errors)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::feature_data::declaration::{DeclaredColumn, DeclaredColumnType};
+
+    fn guarded_table() -> FeatureDataTableDeclaration {
+        FeatureDataTableDeclaration {
+            name: "sessions".to_string(),
+            primary_key: vec!["sessionId".to_string()],
+            columns: vec![
+                DeclaredColumn {
+                    name: "sessionId".to_string(),
+                    col_type: DeclaredColumnType::Text,
+                    nullable: false,
+                    owner: ColumnOwner::Backend,
+                },
+                DeclaredColumn {
+                    name: "customName".to_string(),
+                    col_type: DeclaredColumnType::Text,
+                    nullable: true,
+                    owner: ColumnOwner::Feature,
+                },
+            ],
+            source: None,
+            retention: None,
+        }
+    }
+
+    #[test]
+    fn guard_allows_feature_owned_columns() {
+        let set = serde_json::json!({ "customName": "My session" })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(guard_feature_write(&guarded_table(), &set).is_ok());
+    }
+
+    #[test]
+    fn guard_rejects_reserved_undeclared_and_backend_owned_columns() {
+        let set = serde_json::json!({
+            "_row_version": 3,
+            "_updated_at": "now",
+            "sessionId": "s1",
+            "ghost": true
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let errors = guard_feature_write(&guarded_table(), &set).unwrap_err();
+        assert_eq!(errors.len(), 4, "{errors:?}");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("'_row_version'") && e.contains("backend-managed")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("'_updated_at'") && e.contains("backend-managed")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("'sessionId'") && e.contains("backend-owned")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("'ghost'") && e.contains("not declared")));
+    }
+}

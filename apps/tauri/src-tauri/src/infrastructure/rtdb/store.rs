@@ -995,3 +995,135 @@ async fn prune_pg(pool: &PgPool, cutoff: &str, max_rows: i64) -> Result<PruneOut
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chat_row(session: &str, corr: &str, seq: i64, updated_at: &str) -> ChatRow {
+        ChatRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq,
+            started_at_ns: Some(1_000),
+            ended_at_ns: None,
+            updated_at: updated_at.to_string(),
+            state: RowState::Init,
+            provider: Some("open_code".to_string()),
+            user_message: Some("fix the bug".to_string()),
+            agent_reply: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cost_usd: None,
+            model: None,
+            parent_session_id: None,
+            composited_child_session_id: None,
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn tool_row(session: &str, corr: &str, seq: i64, updated_at: &str) -> ToolUseRow {
+        ToolUseRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq,
+            started_at_ns: Some(2_000),
+            ended_at_ns: Some(3_000),
+            updated_at: updated_at.to_string(),
+            state: RowState::Response,
+            provider: Some("open_code".to_string()),
+            tool_name: Some("bash".to_string()),
+            tool_success: Some(false),
+            tool_error: Some("exit code 1".to_string()),
+            duration_ms: Some(1_000),
+            tool_input_json: Some(r#"{"command":"ls"}"#.to_string()),
+            tool_output_json: None,
+            is_subagent: Some(true),
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn session_row(session: &str, corr: &str, seq: i64, updated_at: &str) -> AgentSessionRow {
+        AgentSessionRow {
+            session_id: session.to_string(),
+            correlation_id: corr.to_string(),
+            seq,
+            started_at_ns: Some(3_000),
+            ended_at_ns: Some(9_000),
+            updated_at: updated_at.to_string(),
+            state: RowState::Update,
+            provider: Some("open_code".to_string()),
+            total_tokens: Some(23_262),
+            total_messages: Some(57),
+            total_cost_usd: Some(0.512),
+            agent_name: Some("self-improver".to_string()),
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    // ── Column sets + statement builders (PG parity by construction) ────────
+
+    #[test]
+    fn column_sets_are_18_16_13_with_the_composite_pk_first() {
+        assert_eq!(columns_of(RowKind::Chat).len(), 18);
+        assert_eq!(columns_of(RowKind::ToolUse).len(), 16);
+        assert_eq!(columns_of(RowKind::AgentSession).len(), 13);
+        for kind in [RowKind::Chat, RowKind::ToolUse, RowKind::AgentSession] {
+            let columns = columns_of(kind);
+            assert_eq!(columns[0], "session_id", "composite PK first leg");
+            assert_eq!(columns[1], "correlation_id", "composite PK second leg");
+            assert_eq!(columns[columns.len() - 1], "provider", "provider is LAST");
+        }
+        assert_eq!(chat_cells(&chat_row("s", "c", 1, "t")).len(), 18);
+        assert_eq!(tool_cells(&tool_row("s", "c", 1, "t")).len(), 16);
+        assert_eq!(agent_session_cells(&session_row("s", "c", 1, "t")).len(), 13);
+    }
+
+    #[test]
+    fn upsert_statement_chunk_is_512() {
+        assert_eq!(RtdbStore::UPSERT_STATEMENT_CHUNK, 512);
+    }
+
+    #[test]
+    fn pg_upsert_sql_is_full_row_on_conflict_excluded() {
+        let sql = pg_upsert_sql("chat_rows", CHAT_COLUMNS, 1);
+        assert!(
+            sql.contains("ON CONFLICT (session_id, correlation_id) DO UPDATE SET"),
+            "composite-PK conflict target: {sql}"
+        );
+        // Every non-PK column is updated from EXCLUDED (never a partial write).
+        for column in &CHAT_COLUMNS[2..] {
+            assert!(
+                sql.contains(&format!("{column} = EXCLUDED.{column}")),
+                "missing EXCLUDED update for {column}: {sql}"
+            );
+        }
+        // One row → exactly the 18 placeholders $1..$18.
+        for i in 1..=18 {
+            assert!(sql.contains(&format!("${i}")), "missing ${i}: {sql}");
+        }
+        assert!(!sql.contains("$19"), "no extra placeholders: {sql}");
+    }
+
+    #[test]
+    fn pg_upsert_sql_numbers_placeholders_across_a_chunk() {
+        // Two 3-column rows → $1..$6 (global numbering across the VALUES rows).
+        let sql = pg_upsert_sql("t", &["a", "b", "c"], 2);
+        assert_eq!(
+            sql,
+            "INSERT INTO t (a, b, c) VALUES ($1, $2, $3), ($4, $5, $6) \
+             ON CONFLICT (session_id, correlation_id) DO UPDATE SET c = EXCLUDED.c"
+        );
+    }
+
+    #[test]
+    fn pg_placeholders_translate_question_marks_to_dollar_params() {
+        assert_eq!(pg_placeholders("prompt_tokens > ?1"), "prompt_tokens > $1");
+        assert_eq!(
+            pg_placeholders("a = ?1 AND b = ?2"),
+            "a = $1 AND b = $2"
+        );
+        assert_eq!(pg_placeholders("1=1"), "1=1");
+    }
+}
