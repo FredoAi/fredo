@@ -43,3 +43,13 @@ core-path sanity plus the packaging quick paths. Full detail lives in `functiona
 PASS = S-1..S-3 and S-6..S-12 green; S-4/S-5 green or a named blocker. A mode not build-time
 enforced, a corrupt/truncated acquisition that extracts, a first-run failure that leaves a partial
 tree, a console flash, no log tail, a static-only receipt on S-12, or an unbounded wait = **FAIL**.
+
+## Round — #2978 (2026-10-01, `spec/2978 @ 9e129f3`) — PASS
+
+- S-1/S-2/S-3: PASS (app renders; console clean; Mission Monitor session list + graph canvas).
+- S-4/S-5: PASS (Setup window sections; screenshots captured).
+- S-6: PASS (`Cargo.toml` + live `cutover_release_gate` → `runtimeDownload`).
+- S-7: PASS build / **UNVERIFIED boot** (no `dev-env` feature lever — named tooling gap).
+- S-8/S-9/S-10: PASS (real Range-resume acquisition; mismatch delete+error; offline retryable error).
+- S-11: PASS (no visible console window; `pg_server_log_tail` live).
+- S-12: PASS (live OpenCode session + `── TOOLS (1) ──` + tokens; `telemetry_spans` cross-check).
