@@ -75,6 +75,23 @@ Slices 1-6 of the SQLite → embedded-PostgreSQL migration ship the **lifecycle 
 
 ---
 
+## Database Client (`features/db_client`, Spec #2950)
+
+The built-in PostgreSQL client connects to **external** PostgreSQL databases (separate per-connection pools; the embedded-PostgreSQL persistence plane is never touched).
+
+**Protections:**
+- **Credentials in the OS keychain only.** A saved connection's password is stored via the `keyring` crate (Windows Credential Manager / macOS Keychain / Linux Secret Service; service `fredo.dbclient`, account `connection:<id>:password`). The settings store (`settingsService`/`AppStore` KV) holds only **secret-free** connection metadata, history, saved queries, and preferences — no plaintext password is written to disk, logs, telemetry, or CSV/JSON exports. (Note: `patStorage.ts`'s base64 PAT handling is obfuscation, not a credential store; DB-client passwords never use it.)
+- **Read-only by default.** A new connection defaults to read-only; a read-only connection structurally refuses any non-`read` statement **before contacting the server**. Write mode is an explicit, visible per-connection opt-in.
+- **Destructive/`unknown` statements are confirmation-gated.** In write mode, UPDATE/DELETE/DROP/TRUNCATE/ALTER (and unclassifiable statements) return `confirmationRequired` without executing until the caller echoes back the matching statement hash; a single action never executes multiple statements (multi-statement is an explicit opt-in).
+- **Bounded everything.** Connect ≤10 s, statement timeout 30 s, result sets default 100 rows / hard cap 5,000 with explicit "Load more"; at most 8 simultaneous connections; the result cache is released on disconnect/delete.
+- **TLS honoured, never silently downgraded.** `require`/`verifyCa`/`verifyFull` map to `sqlx`'s `PgSslMode` and are not weakened.
+
+**Limitations:**
+- Any process on the same machine under the same OS user can read the OS-keychain secret for the service, as with any keychain-backed app credential.
+- The client can execute arbitrary SQL against the user's external database when write mode is enabled — that is the user's explicit choice, gated by the confirmation flow above.
+
+---
+
 ## Voice Input
 
 Voice input is **local-only by hard requirement**. Microphone capture is native (`cpal`/WASAPI in Fredo's Rust — no `getUserMedia`), and the captured utterance is understood by the locally-managed companion model itself as that turn's input. There is exactly **one speech path** (model audio) and **no separate on-device recognizer or transcription mode**. Audio never traverses the network: the **only** way the clip leaves the capture path is the `input_audio` content part of a turn sent over **loopback** to the managed `llama-server` (the same `127.0.0.1` process documented above).
@@ -140,7 +157,7 @@ The `capture_screen_region` command captures physical screen pixels via the `xca
 
 Settings are persisted as plain key-value pairs. The **synchronous control plane** (the `settings` KV) lives in a small SQLite `control.db` managed by `AppStore`; the migrated data plane lives on the embedded PostgreSQL cluster. Both are stored in the Tauri app data directory (`%APPDATA%\fredo` on Windows, `~/.local/share/fredo` on Linux, `~/Library/Application Support/fredo` on macOS).
 
-- No credentials or secrets are stored in the settings database — OS keychain integration is planned for future phases
+- No credentials or secrets are stored in the settings database. The one feature that handles a user secret — the built-in PostgreSQL client (`features/db_client`) — stores the connection password in the **OS keychain** (`keyring`); the settings KV holds only secret-free connection metadata, history, saved queries, and preferences.
 - All SQL queries use parameterized statements — no string interpolation (the retained `rusqlite` control-plane path and the PostgreSQL `sqlx` data-plane path)
 - Session history in the Mission Monitor is persisted via the RTDB row store on the embedded PostgreSQL cluster, applied to the module-scoped `StreamContext` row store in-memory. Live rows are unbounded; persistence retention is bounded by the `rtdb.retention_days` / `rtdb.max_rows` knobs.
 

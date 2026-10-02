@@ -205,6 +205,17 @@ src-tauri/src/
 |       +-- state.rs            — `start_supervisor`/`stop_on_exit` wiring, `await_ready` gate, `pg_supervisor_status` + `pg_server_log_tail` commands
 |       +-- acquisition.rs      — build-time acquisition mode (`runtime-download` default / `bundled` feature) + priced constants + integrity-pinned archive acquisition (reuses the ONE streaming engine)
 |       +-- release_gate.rs     — read-only cutover release gate (acquisition mode + `migration.postgres.completed` → shipped default = PostgreSQL; `migrationWillRun` + `rollbackVerified`)
+|   +-- db_client/              — Built-in PostgreSQL client (Spec #2950): named saved connections + OS-keychain credentials, lazy `pg_catalog` schema browse, `sqlparser`-gated query execution (read-only default; destructive/`unknown` confirmation), bounded result sets, per-connection history/saved queries, CSV/JSON export
+|       +-- mod.rs              — feature module wiring + module tree
+|       +-- types.rs            — `Db*` wire types/enums (camelCase serde)
+|       +-- state.rs            — `DbClientState` (per-connection `sqlx::PgPool` registry, bounded result cache, app-data state dir)
+|       +-- seam.rs             — env-gated failure/state-dir test seams (`FREDO_DBCLIENT_FORCE_FAIL` / `FREDO_DBCLIENT_STATE_DIR`)
+|       +-- credentials.rs      — OS-keychain credential store (`keyring`; service `fredo.dbclient`)
+|       +-- connect.rs          — connection test/save/list/delete + bounded connect/session
+|       +-- schema.rs           — lazy per-level `pg_catalog` browse
+|       +-- classify.rs         — quote/comment-aware statement splitter + `sqlparser` classification
+|       +-- query.rs            — read-only/destructive/`unknown` safety gates, execution, bounded result cache + pagination
+|       +-- commands.rs         — the nine `db_*` Tauri commands
 +-- infrastructure/
     +-- comm/                   — Canonical wire types + the single IPC emitter
     |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
@@ -493,6 +504,7 @@ apps/ui/src/
 |   +-- optimizely/                 — Feature flag management
 |   +-- theming/                    — Theme customization
 |   +-- model-storage/              — Model file management
+|   +-- database-client/            — Built-in PostgreSQL client (connections, schema tree, SQL editor, results, history/export)
 +-- shared/
     +-- contexts/StreamContext.tsx  — connection status + the module-scoped RTDB row store
     +-- hooks/useEventRows.ts       — the typed row-subscription hook (replay + live patches)
@@ -545,6 +557,7 @@ Shipped defaults: `Ctrl+Space` (launcher), `Ctrl+Shift+P` (action palette in the
 | optimizely | ✓ | — | Optimizely feature flag management |
 | theming | ✗ | — | Theme customization (hidden from grid) |
 | model-storage | ✓ | — | Model file management |
+| database-client | ✓ | `db_*` commands + `settingsService` | Built-in PostgreSQL client — saved connections (OS-keychain credentials), lazy schema browser, multi-tab SQL editor + bounded results grid, history/saved queries, CSV/JSON export; read-only by default |
 
 ### Workspace Layout (`shared/window-system/`, Spec #2949)
 
