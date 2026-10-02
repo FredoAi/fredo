@@ -1,6 +1,6 @@
 {
     "$schema": "https://opencode.ai/config.json",
-    "instructions": [],
+    "instructions": ["docs/ENGINEERING_RULES.md"],
     "agent": {
         "product-owner": {
             "description":  "Clarifies requirements, creates backlog issues, dispatches the Self-Improver (orchestrator). Use when a human requests work. Outputs a backlog issue.",

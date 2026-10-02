@@ -35,7 +35,8 @@ Core product and engineering documentation.
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | How to build from source, the CI-parity command set that must pass before a PR can merge, the contribution workflow, priorities, and non-goals |
 | [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) | Community expectations and enforcement |
 | [Security Policy](../.github/SECURITY.md) | Reporting a vulnerability privately, supported versions, coordinated disclosure, and what is **not** a vulnerability |
-| [AGENTS.md](../AGENTS.md) | **Auto-loaded into every agent session** — the binding architecture summary and universal rules (backend, frontend, Chakra UI, pipeline hygiene). Not a reading document: the harness injects it, so honour it rather than reading it up front |
+| [AGENTS.md](../AGENTS.md) | **Auto-loaded into every agent session** — how the main session works with the human (Edit / Backlog / Implement-a-backlog-item routing) plus explore/debug guidance and pointers into the docs. Not a reading document: the harness injects it |
+| [ENGINEERING_RULES.md](ENGINEERING_RULES.md) | **Auto-injected into every agent session** via `opencode.json` — the binding engineering rules (backend, frontend, Chakra UI, settings). A change that violates one is wrong even if it builds |
 
 ## Maintainer Runbooks
 

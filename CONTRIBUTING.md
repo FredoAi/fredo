@@ -10,11 +10,13 @@ Thank you for your interest in contributing to Fredo — a desktop platform for 
 - **Node.js 20+** with **pnpm** — the frontend is React 19 / TypeScript
 - Platform-specific build prerequisites for Tauri v2 on your operating system (WebView2 runtime on Windows, Xcode command line tools on macOS, `webkit2gtk` and friends on Linux)
 
-> **Before you change code, read [`AGENTS.md`](AGENTS.md)** (repo root). It holds the binding
-> architecture summary and the universal rules — no cross-feature imports, the sanctioned row-pipeline
-> module layout, the token-only colour rule, the emit path, and the build-hygiene commands. It is
-> **auto-loaded into every AI agent session** by the harness, so code written with an agent must
-> satisfy it whether or not you read it. Full documentation index: [`docs/README.md`](docs/README.md).
+> **Before you change code, read [`docs/ENGINEERING_RULES.md`](docs/ENGINEERING_RULES.md)**. It
+> holds the binding engineering rules — no cross-feature imports, the sanctioned row-pipeline module
+> layout, the token-only colour rule, the emit path, and the build-hygiene commands — and it is
+> **auto-injected into every AI agent session** via `opencode.json`, so code written with an agent
+> must satisfy it whether or not you read it. [`AGENTS.md`](AGENTS.md) (repo root) carries the
+> operating model and pointers; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the architecture
+> summary. Full documentation index: [`docs/README.md`](docs/README.md).
 
 ### Setup
 
