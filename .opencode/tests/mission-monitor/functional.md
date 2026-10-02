@@ -445,3 +445,74 @@ INPUT 10,241 / OUTPUT 14 = PG `chat_rows` `_4`; tool `view` 10 ms = PG `tool_use
 OpenCode session bar TOTAL 52,261 = PG `agent_session_rows` `_4.total_tokens`; `pg_stat_activity` client
 backends 7 ≤ 8. Persistence re-verified after a full restart. Console clean (only the pre-existing
 `motion() is deprecated` WARN + `auto-fit` DEBUG). **R-61..R-65 / N-27 PASS.**
+
+---
+
+# Mission Monitor — Functional Test Cases (Slice 6, #2979 — default PostgreSQL cutover + SQLite removal, E2E acceptance)
+
+> Durable functional suite (feature domain `mission-monitor`), extended for slice 6 of the PostgreSQL
+> migration (#2979): embedded PostgreSQL becomes the DEFAULT and the SQLite persistence path is
+> removed. Mission Monitor is the end-to-end acceptance surface — a cutover/removal bug surfaces here
+> even when the unit gates are green. This is the HUMAN DIRECTIVE row (G-256).
+>
+> **Evidence policy: LIVE (mandatory).** The exit gate / audit fail-closed unless the tester's Evidence
+> references `telemetry_spans` (an OTLP-ingested live receipt — the CLI `fredo emit` path writes NO
+> spans, G-256) AND a rendered-webview receipt (DOM snapshot / screenshot) for the SAME instant, on the
+> PostgreSQL-default store. A static-only PASS is a FALSE PASS.
+>
+> **G-284 PG read lever (disclosed substitution).** `telemetry-query` is SQLite-only and cannot read
+> the migrated PG store; live PG reads use the managed `psql`
+> (`%APPDATA%\com.fredo.app\postgres-install\18.6.0\bin\psql.exe`) via the allowlisted wrapper
+> `run-exitcode.ps1`, URI from `pg_supervisor_status` + the `postgres.password` AppStore key, database
+> `postgres`.
+>
+> **G-263 SAFETY:** every live leg is bounded and torn down via
+> `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2979` / `-Action Down`; never a bare
+> `postgres`/`pg_ctl`; the named failure mode is the #2948 ~11 h `pg.stop()` hang. An unbounded wait is
+> a FAIL, not a skip.
+>
+> Fixture doctrine (G-073/G-076/G-080): OpenCode = a live Terminal-driven session (never the `opencode`
+> binary from a shell); Copilot = the committed in-repo split-turn producer
+> (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture <fixture>`). Cross-check
+> `telemetry_spans` / `chat_rows` / `tool_use_rows` / `agent_session_rows` at the SAME instant as every
+> DOM assertion (G-073.3).
+
+## Default-cutover end-to-end acceptance (HUMAN DIRECTIVE — MANDATORY)
+
+- [ ] **F-55 (HUMAN DIRECTIVE, slice 6 #2979 — duplicate of `postgres-cutover` F-12). Boot the app on
+  the PostgreSQL-DEFAULT path with REAL migrated data and verify Mission Monitor still renders LIVE
+  agent sessions / tools / tokens / graph for BOTH an OpenCode session AND a Copilot session at ONE
+  instant, at parity with the pre-cutover SQLite rendering — AND exercise the executable SQLite
+  backout to prove reversibility.**
+  Procedure: capture a pre-cutover Mission Monitor baseline (DOM + screenshot + source rows) on the
+  BEFORE leg (`dev-env.ps1 -Action Up -Spec 2979 -At <pre-change-tip>`); cut over the real corpus
+  (bounded per table, G-286); boot on the PostgreSQL-default path (no `FREDO_STORAGE_ENGINE` override);
+  drive a live OpenCode session through the **Terminal** feature (`write_pty_input` with a trailing
+  `\r`) AND inject a Copilot split-turn session via the in-repo producer; open Mission Monitor; select
+  each session at one instant; snapshot the DOM + screenshot; read the migrated store via managed
+  `psql` at the SAME instant. Then execute the SQLite backout (stop app → restore the pre-cutover
+  snapshot over `fredo.db` → start the SQLite build) and confirm the restored counts/checksums.
+  - EXPECTED: BOTH sessions listed as distinct entries (never merged, never one hidden); selecting
+    each renders its chat node(s) + `── USER ──` + `── TOOLS (N) ──` + RESPONSE + token figures + the
+    graph at the SAME structural detail as the pre-cutover SQLite baseline; the rendered
+    session/tool/token values equal the same-instant `telemetry_spans` rows AND the columns of the
+    migrated `*_rows` tables (served by PostgreSQL, not the SQLite fallback); the backout is executed
+    and the restored `fredo.db` checksums match the pre-cutover values; `rollback.verified == true`.
+    No regression vs the pre-cutover rendering.
+  - Edge: OpenCode-only; Copilot-only; both in one store; switching back and forth; rows landing
+    mid-stream; a stale SQLite read (FAIL); a blank/partial panel while rows exist (FAIL); the Copilot
+    split-turn null `userMessage` still rendering its node; a backout that does not restore byte-exact
+    (FAIL).
+  - Evidence: the same-instant DOM snapshot + screenshot + `telemetry_spans`/row query output +
+    `storage_engine_status` + the restored-snapshot checksum (the live receipt). A static-only,
+    single-provider, or backout-less receipt = **FALSE PASS**.
+
+## Non-functional — slice 6 (#2979)
+
+- [ ] **N-28 (NFR, no regression on the default PostgreSQL path, #523):**
+  `tauri_read_logs(source="console")` after the PostgreSQL-default boot, session select/switch, and the
+  dual-provider drive.
+  - EXPECTED: no `Error:` / `Uncaught` / `Maximum update depth exceeded`; derivation epoch-based; the
+    cutover/removal adds no round-trip or full-history scan to the list path.
+  - Regression risk (#523): a `useEffect`/`useMemo` dep on `.length` or a newly-created object; a new
+    synchronous scan introduced by the removal.
