@@ -3450,7 +3450,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                             // silently skipped — the parser is lenient about POSITION but
                             // strict about TOKEN SHAPE (same family as #2877/#2897, whose
                             // fixes only covered position). Surface it loudly instead.
-                            if features.is_empty() && a2a.contains(FEATURE_TESTS_PREFIX) {
+                            if features.is_empty() && section(&a2a, "## QA Expert").contains(FEATURE_TESTS_PREFIX) {
                                 let msg = "QA `**Feature tests:**` marker present but no valid feature names parsed — no suites persisted (write `**Feature tests:** <lowercase-kebab>[, <name>]` and put any prose on a following line)";
                                 notes.push(format!("WARNING: {}", msg));
                                 let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped")]);

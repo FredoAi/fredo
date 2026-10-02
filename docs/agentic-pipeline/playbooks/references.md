@@ -53,6 +53,14 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ---
 ## Known Failure Modes
+### G-295: on_the_go_improvement
+- **activation_date:** 2026-10-02
+- **observed:** #2989 round 1
+- **target_failure:** (on-the-go pipeline improvement)
+- **guardrail:** Fixed a false-positive G-240 guard: the feature-tests marker warning checked the whole A2A file, so the seeded template header's own documentation line (**Feature tests:**) fired a spurious WARNING + guard.fired on plans that seed no suites. Scoped the check to the ## QA Expert section (matching parse_feature_names). test-scripts.ps1 113/113.
+- **home:** references.md (G-295)
+- **effectiveness:** Pending
+
 ### G-281: compiler_coupled_migration_waves_leave_the_branch_unbuildable
 - **activation_date:** 2026-10-01
 - **observed:** #2976 (PG slice 3, resume) — the plan decomposed the async store migration into 7 logical sub-tasks (ST-1..ST-7) dispatched in 4 dependency-ordered waves, but the change is compiler-coupled: once ST-2 made the canonical store async, `lib.rs` and every store caller stopped compiling, so NO intermediate wave built and neither a wave-2 developer nor the tester could produce a green local receipt. The SI consolidated the remaining work into two COMPILABLE units (the RTDB cluster + the SpanStore half), each driven to a green `cargo check`/`clippy`/`test`, and the round passed.
