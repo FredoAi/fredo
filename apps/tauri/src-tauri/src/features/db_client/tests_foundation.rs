@@ -11,11 +11,10 @@ use std::path::PathBuf;
 use super::seam::{parse_force_fail, resolve_state_dir, ForceFailStage, DEFAULT_DBCLIENT_STATE_DIR};
 use super::state::DbClientState;
 use super::types::{
-    history_key, keyring_account, saved_queries_key, AccessMode, DbColumn, DbConnectionSaveArgs,
-    DbConnectionTestArgs, DbConnectionView, DbEngineKind, DbErrorKind, DbObjectKind, DbQueryError,
-    DbResultSet, QueryMode, SslMode, StatementClass, DBCLIENT_CONNECTIONS_KEY,
-    DBCLIENT_HISTORY_KEY_PREFIX, DBCLIENT_KEYRING_SERVICE, DBCLIENT_PREFS_KEY,
-    DBCLIENT_SAVED_QUERIES_KEY_PREFIX,
+    history_key, keyring_account, saved_queries_key, AccessMode, DbColumn, DbConnectionView,
+    DbEngineKind, DbErrorKind, DbObjectKind, DbQueryError, DbResultSet, QueryMode, SslMode,
+    StatementClass, DBCLIENT_CONNECTIONS_KEY, DBCLIENT_HISTORY_KEY_PREFIX,
+    DBCLIENT_KEYRING_SERVICE, DBCLIENT_PREFS_KEY, DBCLIENT_SAVED_QUERIES_KEY_PREFIX,
 };
 
 fn sample_view() -> DbConnectionView {
@@ -167,47 +166,21 @@ async fn state_registry_tracks_pools_by_connection_id() {
 }
 
 #[tokio::test]
-async fn command_stubs_return_typed_not_implemented() {
+async fn remaining_command_stubs_return_typed_not_implemented() {
     let state = DbClientState::new(None, PathBuf::from("C:/tmp/dbclient"));
 
-    let list_err = super::connect::connection_list(&state)
-        .await
-        .expect_err("stub must fail");
-    assert!(list_err.iter().any(|m| m.contains("not implemented")));
-
-    let test_args = DbConnectionTestArgs {
-        engine: DbEngineKind::Postgres,
-        host: "127.0.0.1".into(),
-        port: 5432,
-        user: "postgres".into(),
-        database: "postgres".into(),
-        ssl_mode: SslMode::Prefer,
-        password: None,
-    };
-    let test_err = super::connect::connection_test(test_args)
-        .await
-        .expect_err("stub must fail");
-    assert!(test_err.iter().any(|m| m.contains("connect::connection_test")));
-
-    let save_args = DbConnectionSaveArgs {
-        id: None,
-        name: "local".into(),
-        engine: DbEngineKind::Postgres,
-        host: "127.0.0.1".into(),
-        port: 5432,
-        user: "postgres".into(),
-        database: "postgres".into(),
-        ssl_mode: SslMode::Prefer,
-        access_mode: AccessMode::ReadOnly,
-        password: None,
-    };
-    assert!(super::connect::connection_save(save_args, &state).await.is_err());
+    // ST-2 filled the connection lifecycle: `db_connection_list` is real and
+    // returns the (empty) saved-connection list without any network call.
+    assert!(super::connect::connection_list(&state).await.is_ok());
 
     let schema_args = super::types::DbSchemaListArgs {
         connection_id: "c1".into(),
         parent_id: None,
     };
-    assert!(super::schema::schema_list(schema_args, &state).await.is_err());
+    let schema_err = super::schema::schema_list(schema_args, &state)
+        .await
+        .expect_err("schema stub must fail");
+    assert!(schema_err.iter().any(|m| m.contains("not implemented")));
 
     let query_args = super::types::DbQueryArgs {
         connection_id: "c1".into(),

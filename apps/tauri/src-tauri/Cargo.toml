@@ -80,6 +80,13 @@ tauri-plugin-mcp-bridge = "0.12"
 # captured clip is handed to the managed multimodal model over IPC; there is no
 # native speech engine dependency.
 cpal = "0.18"
+# OS-keychain credential storage for the built-in Postgres client (Spec #2950,
+# ST-2): Windows Credential Manager / macOS Keychain / Linux Secret Service. The
+# native backend for each platform is enabled explicitly (keyring 3 ships none
+# by default); only the host platform's backend is compiled. The db-client
+# stores only the connection password here; no secret ever reaches the settings
+# KV, logs, or an export.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 
 [dev-dependencies]
 tempfile = "3"
