@@ -8,8 +8,23 @@
 //! - [`verify_snapshot`] re-opens the snapshot read-only and recomputes the same
 //!   per-table counts/checksums, so a caller can compare them against the
 //!   pre-cutover values.
+//! - [`verify_rollback_snapshot`] / [`compare_rollback_parity`] recompute the
+//!   retained snapshot and compare it, table by table, against the recorded
+//!   pre-cutover parity — the pure decision `verify_rollback` persists (R-2.2).
 //! - [`restore_snapshot`] copies the snapshot over the target `fredo.db` through
 //!   an atomic temp-file + rename, then clears any stale WAL sidecars.
+//!
+//! # Snapshot retention — Q-13 (Spec #2979 CU-4)
+//!
+//! There is exactly ONE snapshot, `<migration_dir>/fredo.pre-cutover.db`
+//! ([`SNAPSHOT_FILENAME`]) under [`super::resolve_migration_dir`]. It is
+//! overwritten per cutover attempt (a re-run after a failed parity gate replaces
+//! it), retained **read-only for the life of the release** alongside `fredo.db`,
+//! and pruned only at the NEXT release's cleanup — never automatically by the
+//! migration leg. `take_snapshot` never mutates the source `fredo.db`, and
+//! `verify_rollback` never mutates the snapshot or `fredo.db` (it opens the
+//! snapshot with a strictly read-only handle). This is the executable SQLite
+//! backout artifact.
 
 use std::path::{Path, PathBuf};
 
@@ -149,6 +164,117 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<Vec<TableParity>> {
         });
     }
     Ok(out)
+}
+
+/// One recorded pre-cutover table: its row count and SHA-256 checksum, captured
+/// by a parity-clean cutover (Spec #2979 CU-4, R-2.1) and persisted under
+/// [`super::ROLLBACK_PRECUTOVER_PARITY_KEY`]. This is the durable reference
+/// [`verify_rollback_snapshot`] compares the retained snapshot against.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreCutoverTable {
+    /// The physical table name.
+    pub table: String,
+    /// Pre-cutover row count.
+    pub rows: i64,
+    /// SHA-256 over the pre-cutover PK-ordered canonical encoding.
+    pub checksum: String,
+}
+
+/// One table's rollback verification result (recorded vs recomputed).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackTableCheck {
+    /// The physical table name.
+    pub table: String,
+    /// The recorded pre-cutover row count.
+    pub recorded_rows: i64,
+    /// The recomputed snapshot row count.
+    pub recomputed_rows: i64,
+    /// The recorded pre-cutover SHA-256 checksum.
+    pub recorded_checksum: String,
+    /// The recomputed snapshot SHA-256 checksum.
+    pub recomputed_checksum: String,
+    /// `recorded_rows == recomputed_rows && recorded_checksum == recomputed_checksum`.
+    pub matches: bool,
+}
+
+/// The pure outcome of comparing the retained snapshot's recomputed parity
+/// against the recorded pre-cutover parity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RollbackVerification {
+    /// `true` only when EVERY recorded table matched exactly (R-2.2).
+    pub verified: bool,
+    /// One result per recorded table.
+    pub tables: Vec<RollbackTableCheck>,
+    /// The first mismatch, when any (the fail-closed reason).
+    pub mismatch: Option<String>,
+}
+
+/// Recompute the retained `snapshot` read-only and compare it, table by table,
+/// against `recorded` — the pre-cutover reference (R-2.2).
+///
+/// Read-only end-to-end: the snapshot is opened with
+/// [`open_snapshot_read_only`], so neither the snapshot nor `fredo.db` is
+/// mutated. `verified` is `true` ONLY when every recorded table is present with
+/// an equal row count AND checksum; any missing table or mismatch leaves it
+/// `false` with a human-readable [`RollbackVerification::mismatch`].
+pub fn verify_rollback_snapshot(
+    snapshot: &Path,
+    recorded: &[PreCutoverTable],
+) -> Result<RollbackVerification> {
+    let recomputed = verify_snapshot(snapshot)?;
+    Ok(compare_rollback_parity(recorded, &recomputed))
+}
+
+/// The pure comparison behind [`verify_rollback_snapshot`]: every `recorded`
+/// table must be present in `recomputed` with an equal row count and checksum.
+///
+/// An empty `recorded` set can never verify (there is nothing to prove), so it
+/// fails closed with a mismatch.
+pub fn compare_rollback_parity(
+    recorded: &[PreCutoverTable],
+    recomputed: &[TableParity],
+) -> RollbackVerification {
+    if recorded.is_empty() {
+        return RollbackVerification {
+            verified: false,
+            tables: Vec::new(),
+            mismatch: Some("no recorded pre-cutover parity to verify against".to_string()),
+        };
+    }
+
+    let mut tables = Vec::with_capacity(recorded.len());
+    let mut mismatch = None;
+    for expected in recorded {
+        let found = recomputed.iter().find(|parity| parity.table == expected.table);
+        let (rows, checksum) = match found {
+            Some(parity) => (parity.source_rows, parity.source_checksum.clone()),
+            None => (0, String::new()),
+        };
+        let matches = found.is_some() && rows == expected.rows && checksum == expected.checksum;
+        if !matches && mismatch.is_none() {
+            mismatch = Some(format!(
+                "table '{}' mismatch: recorded {} rows / {} checksum, recomputed {} rows / {} checksum",
+                expected.table, expected.rows, expected.checksum, rows, checksum
+            ));
+        }
+        tables.push(RollbackTableCheck {
+            table: expected.table.clone(),
+            recorded_rows: expected.rows,
+            recomputed_rows: rows,
+            recorded_checksum: expected.checksum.clone(),
+            recomputed_checksum: checksum,
+            matches,
+        });
+    }
+
+    let verified = mismatch.is_none();
+    RollbackVerification {
+        verified,
+        tables,
+        mismatch,
+    }
 }
 
 /// Restore `snapshot` over `target_db` through an atomic temp-file + rename.
@@ -352,5 +478,157 @@ mod tests {
         let error = take_snapshot(&missing, &dir.path().join("migration")).unwrap_err();
         assert!(error.to_string().contains("does not exist"), "{error}");
         assert!(!missing.exists(), "a missing source must never be created");
+    }
+
+    // ── CU-4 (R-2.2): the rollback verification decision ────────────────────
+
+    fn recorded(table: &str, rows: i64, checksum: &str) -> PreCutoverTable {
+        PreCutoverTable {
+            table: table.to_string(),
+            rows,
+            checksum: checksum.to_string(),
+        }
+    }
+
+    fn recomputed(table: &str, rows: i64, checksum: &str) -> TableParity {
+        TableParity {
+            table: table.to_string(),
+            source_rows: rows,
+            target_rows: rows,
+            count_match: true,
+            source_checksum: checksum.to_string(),
+            target_checksum: checksum.to_string(),
+            checksum_match: true,
+            read_only_source: true,
+            elapsed_ms: 0,
+        }
+    }
+
+    /// A full match on every table sets `verified = true`.
+    #[test]
+    fn rollback_verification_sets_on_a_checksum_match() {
+        let recorded = vec![
+            recorded("settings", 2, "aaa"),
+            recorded("rows", 3, "bbb"),
+        ];
+        let recomputed = vec![
+            recomputed("settings", 2, "aaa"),
+            recomputed("rows", 3, "bbb"),
+        ];
+        let verdict = compare_rollback_parity(&recorded, &recomputed);
+        assert!(verdict.verified, "every equal checksum must verify: {verdict:?}");
+        assert!(verdict.mismatch.is_none());
+        assert_eq!(verdict.tables.len(), 2);
+        assert!(verdict.tables.iter().all(|check| check.matches));
+    }
+
+    /// One checksum mismatch leaves `verified = false` and names the mismatch.
+    #[test]
+    fn rollback_verification_rejects_a_checksum_mismatch() {
+        let recorded = vec![
+            recorded("settings", 2, "aaa"),
+            recorded("rows", 3, "bbb"),
+        ];
+        // The snapshot's `rows` checksum drifted.
+        let recomputed = vec![
+            recomputed("settings", 2, "aaa"),
+            recomputed("rows", 3, "bbb-tampered"),
+        ];
+        let verdict = compare_rollback_parity(&recorded, &recomputed);
+        assert!(!verdict.verified, "a checksum mismatch must NOT verify");
+        assert_eq!(
+            verdict.mismatch.as_deref().map(|m| m.contains("rows")),
+            Some(true),
+            "the mismatch must name the offending table: {verdict:?}"
+        );
+        let rows = verdict
+            .tables
+            .iter()
+            .find(|check| check.table == "rows")
+            .expect("rows check");
+        assert!(!rows.matches);
+        assert_eq!(rows.recorded_checksum, "bbb");
+        assert_eq!(rows.recomputed_checksum, "bbb-tampered");
+        // The matching table is still reported as matching.
+        assert!(verdict
+            .tables
+            .iter()
+            .find(|check| check.table == "settings")
+            .unwrap()
+            .matches);
+    }
+
+    /// A recorded table absent from the recomputed set fails closed.
+    #[test]
+    fn rollback_verification_rejects_a_missing_table() {
+        let recorded = vec![recorded("settings", 2, "aaa"), recorded("gone", 1, "zzz")];
+        let recomputed = vec![recomputed("settings", 2, "aaa")];
+        let verdict = compare_rollback_parity(&recorded, &recomputed);
+        assert!(!verdict.verified);
+        let missing = verdict
+            .tables
+            .iter()
+            .find(|check| check.table == "gone")
+            .expect("missing table check");
+        assert!(!missing.matches);
+        assert_eq!(missing.recomputed_checksum, "");
+    }
+
+    /// An empty recorded set can never verify (nothing to prove).
+    #[test]
+    fn rollback_verification_rejects_an_empty_reference() {
+        let verdict = compare_rollback_parity(&[], &[recomputed("settings", 2, "aaa")]);
+        assert!(!verdict.verified);
+        assert!(verdict.mismatch.is_some());
+    }
+
+    /// The full read-only path: a real snapshot's recomputed parity matches the
+    /// recorded pre-cutover values, and a tampered copy does not.
+    #[test]
+    fn verify_rollback_snapshot_matches_a_real_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+        seed_source(&source);
+        let record = take_snapshot(&source, &migration_dir).unwrap();
+
+        // Record the pre-cutover reference from the snapshot itself (exactly what
+        // the cutover does) — the same values the source `fredo.db` holds.
+        let recorded: Vec<PreCutoverTable> = verify_snapshot(&record.path)
+            .unwrap()
+            .into_iter()
+            .map(|parity| PreCutoverTable {
+                table: parity.table,
+                rows: parity.source_rows,
+                checksum: parity.source_checksum,
+            })
+            .collect();
+
+        let verdict = verify_rollback_snapshot(&record.path, &recorded).unwrap();
+        assert!(verdict.verified, "the retained snapshot must verify: {verdict:?}");
+
+        // A tampered copy of the snapshot must NOT verify (read-only check).
+        let tampered = dir.path().join("tampered.db");
+        std::fs::copy(&record.path, &tampered).unwrap();
+        {
+            let conn = Connection::open(&tampered).unwrap();
+            conn.execute_batch("DELETE FROM settings WHERE key = 'a';").unwrap();
+        }
+        let tampered_verdict = verify_rollback_snapshot(&tampered, &recorded).unwrap();
+        assert!(
+            !tampered_verdict.verified,
+            "a tampered snapshot must NOT verify: {tampered_verdict:?}"
+        );
+
+        // The verification never mutated the retained snapshot.
+        let after = verify_snapshot(&record.path).unwrap();
+        assert_eq!(after.len(), recorded.len());
+        for expected in &recorded {
+            let found = after
+                .iter()
+                .find(|parity| parity.table == expected.table)
+                .expect("table after verification");
+            assert_eq!(found.source_checksum, expected.checksum);
+        }
     }
 }

@@ -27,7 +27,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::migration::{resolve_app_data_dir, MIGRATION_COMPLETED_KEY};
+use crate::infrastructure::storage::migration::{
+    resolve_app_data_dir, MIGRATION_COMPLETED_KEY, ROLLBACK_VERIFIED_KEY,
+};
 use crate::infrastructure::storage::AppStore;
 
 use super::acquisition::{PgAcquisitionMode, ACQUISITION_MODE};
@@ -56,6 +58,10 @@ pub struct CutoverReleaseGate {
     /// Whether the one-shot cutover leg will run on this boot
     /// (`fredo.db exists && !migration_completed`).
     pub migration_will_run: bool,
+    /// Whether the production backout has been verified
+    /// (`rollback.verified == "true"`, Spec #2979 CU-4 / R-2.2). Read-only:
+    /// written only by `verify_rollback`.
+    pub rollback_verified: bool,
     /// The resolved shipped default (unconditionally PostgreSQL since CU-1).
     pub shipped_default: ShippedDefault,
     /// Human-readable explanation of the decision.
@@ -99,6 +105,16 @@ async fn migration_marker_present(store: &AppStore) -> bool {
     matches!(store.get(MIGRATION_COMPLETED_KEY).await, Ok(Some(_)))
 }
 
+/// Read-only rollback-verification probe over the active store (Spec #2979
+/// CU-4, R-2.2): `true` only when `rollback.verified` is exactly `"true"`. A
+/// missing store or a read error is fail-closed to `false`.
+async fn rollback_verification_present(store: &AppStore) -> bool {
+    matches!(
+        store.get(ROLLBACK_VERIFIED_KEY).await,
+        Ok(Some(value)) if value == "true"
+    )
+}
+
 /// Whether the legacy source `<app_data_dir>/fredo.db` exists (Spec #2979 CU-1).
 /// Uses the SAME app-data-dir resolver as the migration leg, so the reported
 /// `migrationWillRun` can never diverge from the leg's source.
@@ -113,9 +129,12 @@ fn legacy_fredo_db_exists(app: &AppHandle) -> bool {
 /// The read-only cutover release gate command (REQ-7.1). Registered in `lib.rs`.
 #[tauri::command]
 pub async fn cutover_release_gate(app: AppHandle) -> CutoverReleaseGate {
-    let migration_completed = match app.try_state::<Arc<AppStore>>() {
-        Some(store) => migration_marker_present(store.inner()).await,
-        None => false,
+    let (migration_completed, rollback_verified) = match app.try_state::<Arc<AppStore>>() {
+        Some(store) => (
+            migration_marker_present(store.inner()).await,
+            rollback_verification_present(store.inner()).await,
+        ),
+        None => (false, false),
     };
     let shipped_default = decide_shipped_default(ACQUISITION_MODE, migration_completed);
     let will_run = migration_will_run(legacy_fredo_db_exists(&app), migration_completed);
@@ -123,6 +142,7 @@ pub async fn cutover_release_gate(app: AppHandle) -> CutoverReleaseGate {
         acquisition_mode: ACQUISITION_MODE,
         migration_completed,
         migration_will_run: will_run,
+        rollback_verified,
         shipped_default,
         reason: decision_reason(ACQUISITION_MODE, migration_completed),
     }
@@ -188,6 +208,7 @@ mod tests {
             acquisition_mode: PgAcquisitionMode::RuntimeDownload,
             migration_completed: false,
             migration_will_run: true,
+            rollback_verified: true,
             shipped_default: ShippedDefault::Postgres,
             reason: "test".to_string(),
         };
@@ -195,6 +216,7 @@ mod tests {
         assert_eq!(json["acquisitionMode"], "runtimeDownload");
         assert_eq!(json["migrationCompleted"], false);
         assert_eq!(json["migrationWillRun"], true);
+        assert_eq!(json["rollbackVerified"], true);
         assert_eq!(json["shippedDefault"], "postgres");
         assert_eq!(json["reason"], "test");
 

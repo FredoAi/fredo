@@ -36,14 +36,36 @@ use std::time::Duration;
 
 pub use gate::{MigrationGate, MigrationGuard, MigrationWriterGuard};
 pub use parity::{canonical_row_checksum, encode_row, CellValue, RowHasher};
-pub use run::{run_pre_install, MigrationStatusView};
-pub use snapshot::{restore_snapshot, take_snapshot, verify_snapshot, SnapshotRecord};
+pub use run::{run_pre_install, verify_rollback, MigrationStatusView, VerifyRollbackReport};
+pub use snapshot::{
+    compare_rollback_parity, restore_snapshot, take_snapshot, verify_rollback_snapshot,
+    verify_snapshot, PreCutoverTable, RollbackTableCheck, RollbackVerification, SnapshotRecord,
+};
 pub use tables::{enumerate_tables, ColumnSpec, TableSpec};
 
 /// PostgreSQL `settings` key marking a completed cutover. Written ONLY after a
 /// fully parity-clean run, before the pool is installed; read before copying so
 /// a completed cutover is skipped on the next boot.
 pub const MIGRATION_COMPLETED_KEY: &str = "migration.postgres.completed";
+
+/// PostgreSQL `settings` key holding the recorded **pre-cutover** per-table
+/// parity (JSON `[{ "table", "rows", "checksum" }]`) written by a parity-clean
+/// cutover (Spec #2979 CU-4, R-2.1).
+///
+/// This is the durable reference `verify_rollback` compares the retained
+/// snapshot's recomputed checksums against: the backout is proven only when
+/// every recomputed value equals this recorded pre-cutover value (R-2.2).
+pub const ROLLBACK_PRECUTOVER_PARITY_KEY: &str = "rollback.pre_cutover_parity";
+
+/// PostgreSQL `settings` key set to `"true"` ONLY when `verify_rollback` finds
+/// EVERY recomputed retained-snapshot checksum equal to the recorded pre-cutover
+/// value (Spec #2979 CU-4, R-2.2). It stays absent/`"false"` on any mismatch.
+pub const ROLLBACK_VERIFIED_KEY: &str = "rollback.verified";
+
+/// PostgreSQL `settings` key carrying the RFC-3339 timestamp of the successful
+/// `verify_rollback` (Spec #2979 CU-4, R-2.2). Written only alongside
+/// [`ROLLBACK_VERIFIED_KEY`] = `"true"`.
+pub const ROLLBACK_VERIFIED_AT_KEY: &str = "rollback.verified_at";
 
 /// **G-275** app-data-dir override: when set (non-blank) the app data root used
 /// to resolve the source `fredo.db` AND the AC3 backout target is this path

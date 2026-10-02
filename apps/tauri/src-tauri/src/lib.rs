@@ -840,6 +840,11 @@ pub fn run() {
             // One-shot `fredo.db` → PostgreSQL data migration (Spec #2977):
             // the read-only live status hook (ST-6).
             infrastructure::storage::migration::run::migration_status,
+            // Rollback verification (Spec #2979 CU-4): recompute the retained
+            // pre-cutover snapshot read-only and set `rollback.verified` only on
+            // a full checksum match (R-2.2). Bounded (G-263); never mutates the
+            // snapshot or `fredo.db`.
+            infrastructure::storage::migration::run::verify_rollback,
             // FeatureStore (Spec #339)
             feature_store::feature_store_ensure_table,
             feature_store::feature_store_insert,

@@ -64,7 +64,8 @@ use fredo_lib::infrastructure::storage::engine::{
 use fredo_lib::infrastructure::storage::migration::snapshot::SNAPSHOT_FILENAME;
 use fredo_lib::infrastructure::storage::migration::{
     enumerate_tables, resolve_app_data_dir, resolve_migration_dir, restore_snapshot, run_pre_install,
-    verify_snapshot, MigrationStatus, MIGRATION_CHUNK_ROWS, MIGRATION_COMPLETED_KEY,
+    verify_rollback_snapshot, verify_snapshot, MigrationStatus, PreCutoverTable, MIGRATION_CHUNK_ROWS,
+    MIGRATION_COMPLETED_KEY, ROLLBACK_PRECUTOVER_PARITY_KEY,
 };
 use fredo_lib::infrastructure::storage::EngineHandle;
 use fredo_lib::PgRuntime;
@@ -387,6 +388,48 @@ async fn cross_engine_migration_suite() {
             parity.table
         );
     }
+
+    // CU-4 (R-2.1/R-2.2): the parity-clean cutover recorded the pre-cutover
+    // per-table counts + checksums, and the retained snapshot recomputes to
+    // exactly those values (`verify_rollback` sets `rollback.verified=true`).
+    let recorded_json = pg_setting(&carry_pool, ROLLBACK_PRECUTOVER_PARITY_KEY)
+        .await
+        .expect("a parity-clean cutover must record the pre-cutover parity");
+    let recorded: Vec<PreCutoverTable> =
+        serde_json::from_str(&recorded_json).expect("the recorded parity must be JSON");
+    assert_eq!(
+        recorded.len(),
+        carry_outcome.tables.len(),
+        "every carried table must be recorded"
+    );
+    let verdict = verify_rollback_snapshot(&snapshot, &recorded)
+        .expect("recompute the retained snapshot");
+    assert!(
+        verdict.verified,
+        "the retained snapshot must verify against the recorded pre-cutover parity: {verdict:?}"
+    );
+
+    // A tampered copy must NOT verify — and the check is read-only, so the
+    // retained snapshot itself stays intact.
+    let tampered = scratch_dir.join("tampered.pre-cutover.db");
+    std::fs::copy(&snapshot, &tampered).expect("copy the snapshot for a tamper check");
+    {
+        let conn = Connection::open(&tampered).expect("open the tampered copy");
+        conn.execute_batch("DELETE FROM settings WHERE rowid = (SELECT MIN(rowid) FROM settings);")
+            .expect("tamper the copy");
+    }
+    let tampered_verdict =
+        verify_rollback_snapshot(&tampered, &recorded).expect("recompute the tampered copy");
+    assert!(
+        !tampered_verdict.verified,
+        "a tampered snapshot must NOT verify: {tampered_verdict:?}"
+    );
+    assert!(
+        verify_rollback_snapshot(&snapshot, &recorded)
+            .expect("re-verify the retained snapshot")
+            .verified,
+        "verifying a tampered copy must not mutate the retained snapshot"
+    );
     carry_pool.close().await;
 
     // ── Phase D: forced mismatch → fail-closed, nothing installed ───────────
