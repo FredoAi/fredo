@@ -21,7 +21,7 @@ pub use migration::{
     SnapshotRecord, TableParity, MIGRATION_CHUNK_ROWS, MIGRATION_COMPLETED_KEY,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rusqlite::{params, Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,22 +44,22 @@ pub fn resolve_control_db_path(app_data_dir: &Path) -> PathBuf {
 const CONTROL_CARRY_MAX_ROWS: i64 = 1_000;
 
 /// Persistent key-value store (the `settings` table), split into two planes
-/// (Spec #2975, ST-3; Spec #2979 CU-1).
+/// (Spec #2975, ST-3; Spec #2979 CU-1/CU-2).
 ///
 /// - **Control plane** ([`Self::control_get`] / [`Self::control_set`]): ALWAYS
-///   synchronous SQLite, now on its OWN `<app_data_dir>/control.db` (Spec #2979
+///   synchronous SQLite, on its OWN `<app_data_dir>/control.db` (Spec #2979
 ///   CU-1). It holds the keys that must be readable *before* PostgreSQL exists
 ///   (`postgres.enabled`, `postgres_pid`, `postgres.password`) and the
 ///   synchronous startup config path. These keys NEVER route through the pool.
 /// - **Data plane** ([`Self::get`] / [`Self::set`], async): routed through the
-///   shared [`EngineHandle`] and therefore engine-selected — SQLite by default
-///   until CU-2 removes that arm, PostgreSQL once the supervisor installs the
-///   pool.
+///   shared [`EngineHandle`] and therefore PostgreSQL-only (Spec #2979 CU-2). A
+///   data-plane op with no pool installed fails closed (R-3.2).
 ///
 /// The control-plane SQLite engine is opened on `control.db` at [`Self::open`]
-/// so it is independent of the swap-once handle's `SQLite -> PostgreSQL`
-/// transition: after the pool is installed the handle reports PostgreSQL, but
-/// the control plane keeps serving the synchronous startup/lifecycle reads.
+/// so it is independent of the swap-once handle's `Pending -> PostgreSQL`
+/// transition: after the pool is installed the handle serves the data plane,
+/// while the control plane keeps serving the synchronous startup/lifecycle
+/// reads.
 pub struct AppStore {
     /// The shared swap-once engine handle (data plane).
     engine: Arc<EngineHandle>,
@@ -71,44 +71,22 @@ impl AppStore {
     /// Open the dedicated control plane and wrap the shared engine handle.
     ///
     /// The control plane lives on `<app_data_dir>/control.db`, where the
-    /// app-data dir is the parent of the shared data-plane SQLite engine's
-    /// `fredo.db` (the production `lib.rs` order opens that engine first). The
-    /// handle MUST therefore start on SQLite; a handle already on PostgreSQL has
-    /// no synchronous SQLite source and is rejected.
+    /// app-data dir is resolved by the caller (`lib.rs`). The data-plane handle
+    /// may be pending at open; only the control plane is opened here.
     ///
     /// On the FIRST boot of this control plane (no rows yet) the legacy
     /// `settings` rows are carried out of the existing `<app_data_dir>/fredo.db`
     /// READ-ONLY and seeded into `control.db` (bounded). `fredo.db` is never
     /// written by this path.
-    pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
-        let active = engine.engine();
-        let data_engine = active.sqlite().cloned().ok_or_else(|| {
-            anyhow!("AppStore requires the shared SQLite engine at open to resolve the control plane")
-        })?;
-        let app_data_dir = data_engine
-            .path()
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-
-        let control = SqliteEngine::open(&resolve_control_db_path(&app_data_dir))?;
+    pub fn open(engine: Arc<EngineHandle>, app_data_dir: &Path) -> Result<Self> {
+        let control = SqliteEngine::open(&resolve_control_db_path(app_data_dir))?;
         control.write_conn().execute_batch(
             "CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );",
         )?;
-        // The data-plane SQLite engine (still active until the PostgreSQL pool
-        // installs; its SQLite arm is removed by CU-2) keeps its OWN `settings`
-        // schema, so the async `get`/`set` path stays byte-compatible on the
-        // SQLite arm while the control plane has moved to `control.db`.
-        data_engine.write_conn().execute_batch(
-            "CREATE TABLE IF NOT EXISTS settings (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );",
-        )?;
-        carry_legacy_settings(&app_data_dir, &control)?;
+        carry_legacy_settings(app_data_dir, &control)?;
 
         Ok(AppStore { engine, control })
     }
@@ -119,18 +97,7 @@ impl AppStore {
         &self.control
     }
 
-    /// Test-only convenience: open a SQLite-backed store at `<data_dir>/fredo.db`.
-    ///
-    /// Production callers always pass the shared `EngineHandle` built in
-    /// `lib.rs`; this keeps unit tests terse and hermetic without a live pool.
-    #[cfg(test)]
-    pub fn open_sqlite_for_tests(data_dir: std::path::PathBuf) -> Result<Self> {
-        let sqlite = SqliteEngine::open(&data_dir.join("fredo.db"))?;
-        Self::open(EngineHandle::new(StoreEngine::Sqlite(sqlite)))
-    }
-
     // ── Control plane (always synchronous SQLite; never behind the pool) ──────
-
     /// Read one control-plane KV value from the shared SQLite write connection.
     pub fn control_get(&self, key: &str) -> Result<Option<String>> {
         let conn = self.control.write_conn();
@@ -160,17 +127,9 @@ impl AppStore {
     /// An unknown key returns `None` on both engines (REQ-4/EARS-4.3) — never an
     /// empty-string sentinel.
     pub async fn get(&self, key: &str) -> Result<Option<String>> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
-                let mut rows = stmt.query(params![key])?;
-                match rows.next()? {
-                    Some(row) => Ok(Some(row.get(0)?)),
-                    None => Ok(None),
-                }
-            }
+            
             StoreEngine::Postgres(pg) => {
                 let value: Option<String> =
                     sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
@@ -188,17 +147,9 @@ impl AppStore {
     /// EXCLUDED.value` (REQ-2/EARS-2.1), matching the SQLite `excluded` upsert
     /// 1:1.
     pub async fn set(&self, key: &str, value: &str) -> Result<()> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                conn.execute(
-                    "INSERT INTO settings (key, value) VALUES (?1, ?2)
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    params![key, value],
-                )?;
-                Ok(())
-            }
+            
             StoreEngine::Postgres(pg) => {
                 sqlx::query(
                     "INSERT INTO settings (key, value) VALUES ($1, $2)
@@ -274,23 +225,17 @@ fn read_legacy_settings(path: &Path) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
-    /// Build a tempdir-backed SQLite engine + swap-once handle. The `TempDir`
-    /// must be kept alive for the test's duration (it owns the DB file).
-    fn make_handle() -> (tempfile::TempDir, Arc<EngineHandle>) {
-        let dir = tempfile::tempdir().unwrap();
-        let sqlite = SqliteEngine::open(&dir.path().join("fredo.db")).unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
-        (dir, handle)
-    }
-
+    /// Build a tempdir-backed control-plane store over a PENDING data-plane
+    /// handle (the PostgreSQL pool is not installed in these tests).
     fn make_store() -> (tempfile::TempDir, AppStore) {
-        let (dir, handle) = make_handle();
-        let store = AppStore::open(handle).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new_pending();
+        let store = AppStore::open(handle, dir.path()).unwrap();
         (dir, store)
     }
 
-    /// A lazily-connected pool: enough to swap the handle to PostgreSQL without a
-    /// live server (a query then fails closed rather than hanging).
+    /// A lazily-connected pool: enough to install PostgreSQL without a live
+    /// server (a query then fails closed rather than hanging).
     fn make_pg_engine(url: &str) -> PgEngine {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .min_connections(0)
@@ -303,33 +248,7 @@ mod tests {
         }
     }
 
-    // ── REQ-1: AppStore data-plane CRUD (SQLite default) ──────────────────
-
-    #[tokio::test]
-    async fn get_returns_some_for_previously_set_key() {
-        let (_dir, store) = make_store();
-        store.set("theme", "dark").await.unwrap();
-        let result = store.get("theme").await.unwrap();
-        assert_eq!(result, Some("dark".to_string()));
-    }
-
-    #[tokio::test]
-    async fn get_returns_none_for_unknown_key() {
-        let (_dir, store) = make_store();
-        let result = store.get("nonexistent").await.unwrap();
-        assert_eq!(result, None);
-    }
-
-    #[tokio::test]
-    async fn set_upserts_same_key_twice() {
-        let (_dir, store) = make_store();
-        store.set("language", "en").await.unwrap();
-        store.set("language", "fr").await.unwrap();
-        let result = store.get("language").await.unwrap();
-        assert_eq!(result, Some("fr".to_string()));
-    }
-
-    // ── Spec #2979 CU-1: the control plane lives on `control.db` ───────────
+    // ── Spec #2979 CU-1/CU-2: the control plane lives on `control.db` ───────
 
     #[test]
     fn resolve_control_db_path_is_control_db_under_the_data_dir() {
@@ -357,12 +276,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn control_plane_stays_on_sqlite_after_the_handle_swaps_to_postgres() {
-        let (_dir, handle) = make_handle();
-        let store = AppStore::open(handle.clone()).unwrap();
+    async fn data_plane_fails_closed_while_the_pool_is_pending() {
+        let (_dir, store) = make_store();
+        // R-3.2: no SQLite data-plane fallback.
+        assert!(store.get("theme").await.is_err());
+        assert!(store.set("theme", "dark").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn control_plane_stays_on_sqlite_after_the_handle_installs_postgres() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::new_pending();
+        let store = AppStore::open(handle.clone(), dir.path()).unwrap();
 
         // The pool is installed (lazy, no server needed): the data plane now
-        // reports PostgreSQL...
+        // targets PostgreSQL...
         handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(
             "postgres://postgres:secret@127.0.0.1:1/none",
         ))));
@@ -375,7 +303,7 @@ mod tests {
             Some("loopback-secret".to_string())
         );
 
-        // A DATA-plane read now targets the (unreachable) pool and fails closed
+        // A DATA-plane read targets the (unreachable) pool and fails closed
         // rather than silently falling back to SQLite.
         assert!(
             store.get("theme").await.is_err(),
@@ -394,15 +322,8 @@ mod tests {
         );
         store.control_set("shared", "value").unwrap();
         assert_eq!(
-            store.get("shared").await.unwrap(),
-            None,
-            "a control-plane write must not be visible to the data plane"
-        );
-        store.set("data-only", "value").await.unwrap();
-        assert_eq!(
-            store.control_get("data-only").unwrap(),
-            None,
-            "a data-plane write must not be visible to the control plane"
+            store.control_get("shared").unwrap(),
+            Some("value".to_string())
         );
     }
 
@@ -427,10 +348,7 @@ mod tests {
             .unwrap();
         }
 
-        let handle = EngineHandle::new(StoreEngine::Sqlite(
-            SqliteEngine::open(&dir.path().join("fredo.db")).unwrap(),
-        ));
-        let store = AppStore::open(handle).unwrap();
+        let store = AppStore::open(EngineHandle::new_pending(), dir.path()).unwrap();
         assert_eq!(
             store.control_get("postgres.enabled").unwrap(),
             Some("false".to_string()),
@@ -440,28 +358,11 @@ mod tests {
         // A later control-plane change is authoritative: a re-open must NOT
         // re-carry the stale legacy value (first boot only).
         store.control_set("postgres.enabled", "true").unwrap();
-        let handle2 = EngineHandle::new(StoreEngine::Sqlite(
-            SqliteEngine::open(&dir.path().join("fredo.db")).unwrap(),
-        ));
-        let store2 = AppStore::open(handle2).unwrap();
+        let store2 = AppStore::open(EngineHandle::new_pending(), dir.path()).unwrap();
         assert_eq!(
             store2.control_get("postgres.enabled").unwrap(),
             Some("true".to_string()),
             "the carry must run once; control.db is authoritative afterwards"
-        );
-    }
-
-    #[tokio::test]
-    async fn open_rejects_a_handle_already_on_postgres() {
-        let sqlite = SqliteEngine::open(&tempfile::tempdir().unwrap().path().join("fredo.db"))
-            .unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite));
-        handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(
-            "postgres://postgres:secret@127.0.0.1:1/none",
-        ))));
-        assert!(
-            AppStore::open(handle).is_err(),
-            "opening an AppStore without a SQLite source for the control plane must fail"
         );
     }
 }

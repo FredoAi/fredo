@@ -3,7 +3,7 @@
 //! The migration enumerates the physical tables of the SOURCE `fredo.db` at
 //! runtime from `sqlite_master` (skipping the `sqlite_*` internals), then derives
 //! each target's PostgreSQL DDL from `pragma_table_info` through the ONE type map
-//! ([`ColumnType::as_sql_type_for`] with [`Dialect::Postgres`]) + [`quote_ident`].
+//! ([`ColumnType::as_pg_type`]) + [`quote_ident`].
 //! The derived DDL is compatible with
 //! [`FeatureStore::ensure_table_on_pg`](crate::infrastructure::storage::feature_store::FeatureStore::ensure_table_on_pg),
 //! so a post-install `ensure_table` is a no-op.
@@ -14,7 +14,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-use crate::infrastructure::storage::engine::{quote_ident, Dialect};
+use crate::infrastructure::storage::engine::quote_ident;
 use crate::infrastructure::storage::feature_store::{ColumnType, FeatureStore};
 
 /// One physical column of a source table, in declaration order.
@@ -109,7 +109,7 @@ impl TableSpec {
             let mut definition = format!(
                 "{} {}",
                 quote_ident(&column.name),
-                column.col_type.as_sql_type_for(Dialect::Postgres)
+                column.col_type.as_pg_type()
             );
             // PK columns are NOT NULL via the table-level PRIMARY KEY clause.
             if column.not_null && column.pk_ordinal == 0 {

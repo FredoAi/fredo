@@ -17,7 +17,7 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use super::migration::{MigrationGate, MigrationOutcome, MigrationStatusView};
@@ -76,35 +76,33 @@ pub const PG_PERSISTENT_STATEMENTS: [&str; 9] = [
 
 /// Which SQL dialect the active engine speaks. Returned by
 /// [`StoreEngine::dialect`].
+///
+/// Since Spec #2979 CU-2 the data plane is PostgreSQL-only, so this enum has a
+/// single variant; it is retained as the serialized status token (CU-3 extends
+/// the status wire).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
-    Sqlite,
     Postgres,
 }
 
 // -- Engines ------------------------------------------------------------------
 
-/// ONE shared SQLite engine for the migrated family: two connections over the
-/// SAME `<app_data_dir>/fredo.db`.
+/// The ONE synchronous SQLite engine: the pre-PostgreSQL **control plane**
+/// (Spec #2979 CU-1/CU-2). Since CU-2 removed the SQLite data plane, `rusqlite`
+/// is retained ONLY here (the control plane) and in the one-shot migration
+/// module (`storage/migration/**`). It opens two connections over the SAME
+/// control-plane database (`<app_data_dir>/control.db`).
 ///
-/// - `write` is the single write handle (replaces every per-store
-///   `Mutex<Connection>`), in WAL journal mode as the incumbent `FeatureStore`
-///   established.
-/// - `read_only` is a second handle pinned with `PRAGMA query_only=ON`, the
-///   incumbent read-only guard `ProjectionEngine` established.
+/// - `write` is the single write handle, in WAL journal mode.
+/// - `read_only` is a second handle pinned with `PRAGMA query_only=ON`.
 pub struct SqliteEngine {
-    /// The database file this engine was opened on. Exposed via [`Self::path`]
-    /// so `AppStore` can locate the sibling control plane (`control.db`) without
-    /// re-deriving the app-data dir (Spec #2979 CU-1).
-    db_path: PathBuf,
     write: Mutex<Connection>,
     read_only: Mutex<Connection>,
 }
 
 impl SqliteEngine {
     /// Open (or create) `db_path` and build the shared write + read-only
-    /// handles. Parent directories are created, preserving the incumbent
-    /// `AppStore`/`FeatureStore` open behaviour.
+    /// handles. Parent directories are created.
     pub fn open(db_path: &Path) -> Result<Arc<Self>> {
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -121,16 +119,9 @@ impl SqliteEngine {
         read_only.execute_batch("PRAGMA query_only=ON;")?;
 
         Ok(Arc::new(SqliteEngine {
-            db_path: db_path.to_path_buf(),
             write: Mutex::new(write),
             read_only: Mutex::new(read_only),
         }))
-    }
-
-    /// The database file this engine was opened on. The control-plane resolver
-    /// uses its parent as the resolved app-data dir (Spec #2979 CU-1).
-    pub fn path(&self) -> &Path {
-        &self.db_path
     }
 
     /// Lock the shared write connection (poison-recovering).
@@ -167,72 +158,53 @@ pub struct PgEngine {
     pub url: String,
 }
 
-/// The active engine. Cloned into every migrated store.
+/// The active data-plane engine. Cloned into every migrated store.
+///
+/// Since Spec #2979 CU-2 the migrated stores are PostgreSQL-only: the SQLite
+/// arm is removed, so this enum has a single variant. The synchronous control
+/// plane (`control.db`) is NOT part of this seam — it stays on [`SqliteEngine`]
+/// directly.
 #[derive(Clone)]
 pub enum StoreEngine {
-    Sqlite(Arc<SqliteEngine>),
     Postgres(Arc<PgEngine>),
 }
 
 impl StoreEngine {
-    /// The SQL dialect this engine speaks.
+    /// The SQL dialect this engine speaks (always PostgreSQL).
     pub fn dialect(&self) -> Dialect {
-        match self {
-            StoreEngine::Sqlite(_) => Dialect::Sqlite,
-            StoreEngine::Postgres(_) => Dialect::Postgres,
-        }
-    }
-
-    /// The shared synchronous SQLite engine, when active (the control plane).
-    pub fn sqlite(&self) -> Option<&Arc<SqliteEngine>> {
-        match self {
-            StoreEngine::Sqlite(engine) => Some(engine),
-            StoreEngine::Postgres(_) => None,
-        }
+        Dialect::Postgres
     }
 
     /// The read-only canonical reader for this engine (AC3 / REQ-9).
     ///
     /// The ONE handle every canonical reader (the canonical backfill, provider
-    /// re-derivation, and the declared-table backfill) consumes — SQLite yields
-    /// the shared `PRAGMA query_only=ON` connection, PostgreSQL yields the shared
-    /// pool whose reads must be wrapped in [`begin_read_only`]. `None` only when
-    /// no engine is available; both [`StoreEngine`] variants are always readable.
+    /// re-derivation, and the declared-table backfill) consumes: the shared
+    /// PostgreSQL pool, whose reads are wrapped in [`begin_read_only`]. `None`
+    /// only when no engine is available.
     pub fn canonical_reader(&self) -> Option<CanonicalReader> {
-        match self {
-            StoreEngine::Sqlite(engine) => Some(CanonicalReader::Sqlite(Arc::clone(engine))),
-            StoreEngine::Postgres(engine) => Some(CanonicalReader::Postgres(engine.pool.clone())),
-        }
+        let StoreEngine::Postgres(engine) = self;
+        Some(CanonicalReader::Postgres(engine.pool.clone()))
     }
 
-    /// The active PostgreSQL pool, when the engine is PostgreSQL (REQ-9).
-    ///
-    /// `None` on SQLite, so a caller can take the PostgreSQL-only read-only path
-    /// only when it is actually on the pool.
-    pub fn pg_pool(&self) -> Option<&sqlx::PgPool> {
-        match self {
-            StoreEngine::Sqlite(_) => None,
-            StoreEngine::Postgres(engine) => Some(&engine.pool),
-        }
+    /// The active PostgreSQL pool (REQ-9).
+    pub fn pg_pool(&self) -> &sqlx::PgPool {
+        let StoreEngine::Postgres(engine) = self;
+        &engine.pool
     }
 }
 
 // -- The read-only canonical seam (Spec #2976, ST-1) --------------------------
 
-/// The read-only canonical reader, engine-selected (AC3 / REQ-9).
+/// The read-only canonical reader (AC3 / REQ-9).
 ///
-/// - `Sqlite` carries the shared [`SqliteEngine`]; its `read_only` connection is
-///   pinned with `PRAGMA query_only=ON` (the incumbent read-only guard) — use
-///   [`SqliteEngine::read_only_conn`].
-/// - `Postgres` carries a clone of the shared [`sqlx::PgPool`]; every read is
-///   wrapped in a read-only transaction via [`begin_read_only`].
+/// Since Spec #2979 CU-2 the data plane is PostgreSQL-only, so the reader always
+/// carries a clone of the shared [`sqlx::PgPool`]; every read is wrapped in a
+/// read-only transaction via [`begin_read_only`].
 ///
 /// No canonical reader invents its own connection: the handle is derived from
 /// [`StoreEngine::canonical_reader`], which follows the active engine.
 #[derive(Clone)]
 pub enum CanonicalReader {
-    /// The shared SQLite engine; use [`SqliteEngine::read_only_conn`].
-    Sqlite(Arc<SqliteEngine>),
     /// The shared PostgreSQL pool; wrap reads in [`begin_read_only`].
     Postgres(sqlx::PgPool),
 }
@@ -257,36 +229,72 @@ pub async fn begin_read_only(
 
 /// The swap-once shared handle held by every migrated store (`Arc`-cloned).
 ///
-/// Starts on SQLite; [`Self::install`] performs the ONE
-/// `SQLite -> PostgreSQL` transition when the managed server becomes ready.
-/// A reader that already captured the previous `Arc` keeps completing on that
-/// engine -- the swap never invalidates an in-flight read.
+/// Starts **pending** (no data-plane engine); [`Self::install`] performs the ONE
+/// `Pending -> PostgreSQL` transition when the managed server becomes ready.
+/// Until then, a data-plane operation fail-closes with a structured error
+/// ([`Self::pg`]) rather than serving from SQLite (R-3.2). A reader that already
+/// captured the previous `Arc` keeps completing on that engine — the swap never
+/// invalidates an in-flight read.
 pub struct EngineHandle {
-    inner: RwLock<Arc<StoreEngine>>,
+    inner: RwLock<Option<Arc<StoreEngine>>>,
 }
 
 impl EngineHandle {
-    /// Wrap the initial engine (always SQLite in production) and share it.
-    pub fn new(engine: StoreEngine) -> Arc<Self> {
+    /// A handle with no data-plane engine installed yet. The supervisor installs
+    /// the PostgreSQL pool once the managed server is ready.
+    pub fn new_pending() -> Arc<Self> {
         Arc::new(EngineHandle {
-            inner: RwLock::new(Arc::new(engine)),
+            inner: RwLock::new(None),
         })
     }
 
-    /// The active engine. Cheap: clones the `Arc` under a read lock.
-    pub fn engine(&self) -> Arc<StoreEngine> {
+    /// Wrap an already-built engine (test/eager construction).
+    pub fn new(engine: StoreEngine) -> Arc<Self> {
+        Arc::new(EngineHandle {
+            inner: RwLock::new(Some(Arc::new(engine))),
+        })
+    }
+
+    /// The active engine, or `None` while the PostgreSQL pool is not installed.
+    pub fn engine(&self) -> Option<Arc<StoreEngine>> {
         lock_read(&self.inner).clone()
     }
 
     /// The ONLY path to PostgreSQL: install `engine` exactly once.
     ///
-    /// Swap-once semantics: only the first `SQLite -> PostgreSQL` transition
+    /// Swap-once semantics: only the first `Pending -> PostgreSQL` transition
     /// replaces the active engine; every later call is a no-op (first-wins), so
     /// a second install can never replace an active pool.
     pub fn install(&self, engine: StoreEngine) {
         let mut guard = lock_write(&self.inner);
-        if matches!(**guard, StoreEngine::Sqlite(_)) && matches!(engine, StoreEngine::Postgres(_)) {
-            *guard = Arc::new(engine);
+        if guard.is_none() {
+            *guard = Some(Arc::new(engine));
+        }
+    }
+
+    /// The active engine, or a structured fail-closed error when the PostgreSQL
+    /// pool is not installed yet (R-3.2: a data-plane op never serves from
+    /// SQLite).
+    pub fn engine_or_err(&self) -> Result<Arc<StoreEngine>> {
+        self.engine().ok_or_else(|| {
+            anyhow::anyhow!(
+                "[storage] engine not ready: the PostgreSQL pool is not installed yet (fail-closed, R-3.2)"
+            )
+        })
+    }
+
+    /// The active PostgreSQL engine, or a structured fail-closed error when the
+    /// pool is not installed yet (R-3.2: a data-plane op never serves from
+    /// SQLite).
+    pub fn pg(&self) -> Result<Arc<PgEngine>> {
+        match self.engine() {
+            Some(engine) => {
+                let StoreEngine::Postgres(pg) = engine.as_ref();
+                Ok(Arc::clone(pg))
+            }
+            None => Err(anyhow::anyhow!(
+                "[storage] engine not ready: the PostgreSQL pool is not installed yet (fail-closed, R-3.2)"
+            )),
         }
     }
 }
@@ -548,8 +556,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_updated ON agent_session_rows(updated_at);
 "#;
 
 /// The PostgreSQL DDL for the three telemetry tables + their indexes (REQ-2),
-/// 1:1 with the SQLite schema (`storage/span_store.rs`; `INTEGER→BIGINT`,
-/// `REAL→DOUBLE PRECISION`, `AUTOINCREMENT→GENERATED ALWAYS AS IDENTITY`).
+/// with the C1 type map (`INTEGER→BIGINT`, `REAL→DOUBLE PRECISION`, and
+/// `GENERATED ALWAYS AS IDENTITY` identity columns).
 ///
 /// The single PostgreSQL DDL source for these tables (see [`PG_RTDB_ROWS_DDL`]).
 /// `telemetry_spans` keeps the `span_id` PK and the `WHERE status_code = 'ERROR'`
@@ -644,15 +652,14 @@ impl StorageEngineState {
 
 // -- Engine status (Spec #2975, ST-2) -----------------------------------------
 
-/// Serialize [`Dialect`] as its lowercase wire name (`"sqlite"` | `"postgres"`),
-/// the shape `storage_engine_status` exposes to the webview.
+/// Serialize [`Dialect`] as its lowercase wire name (`"postgres"`), the shape
+/// `storage_engine_status` exposes to the webview.
 impl serde::Serialize for Dialect {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         serializer.serialize_str(match self {
-            Dialect::Sqlite => "sqlite",
             Dialect::Postgres => "postgres",
         })
     }
@@ -765,7 +772,7 @@ impl StorageEngineState {
     /// The read-only status snapshot.
     pub fn status(&self) -> StorageEngineStatus {
         StorageEngineStatus {
-            engine: self.handle.engine().dialect(),
+            engine: Dialect::Postgres,
             fallback_reason: self.fallback_reason(),
         }
     }
@@ -808,7 +815,7 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
     match app.try_state::<Arc<StorageEngineState>>() {
         Some(state) => state.status(),
         None => StorageEngineStatus {
-            engine: Dialect::Sqlite,
+            engine: Dialect::Postgres,
             fallback_reason: None,
         },
     }
@@ -884,16 +891,11 @@ mod tests {
 
     #[tokio::test]
     async fn store_engine_reports_its_dialect() {
-        let dir = tempfile::tempdir().unwrap();
-        let sqlite = StoreEngine::Sqlite(make_sqlite_engine(dir.path()));
-        assert_eq!(sqlite.dialect(), Dialect::Sqlite);
-        assert!(sqlite.sqlite().is_some());
-
         let pg = StoreEngine::Postgres(Arc::new(make_pg_engine(
             "postgres://postgres:secret@127.0.0.1:5432/fredo",
         )));
         assert_eq!(pg.dialect(), Dialect::Postgres);
-        assert!(pg.sqlite().is_none());
+        assert!(!pg.pg_pool().is_closed());
     }
 
     // -- quote_ident ----------------------------------------------------------
@@ -1069,61 +1071,32 @@ mod tests {
     // -- swap-once handle -----------------------------------------------------
 
     #[tokio::test]
+    async fn engine_handle_starts_pending_and_fails_closed() {
+        let handle = EngineHandle::new_pending();
+        assert!(handle.engine().is_none(), "the handle starts pending");
+        // R-3.2: a data-plane op with no engine must fail closed with a
+        // structured error — never serve from SQLite.
+        let error = handle.pg().err().expect("pending handle must fail closed");
+        assert!(error.to_string().contains("engine not ready"), "{error}");
+    }
+
+    #[tokio::test]
     async fn engine_handle_installs_postgres_at_most_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let sqlite = make_sqlite_engine(dir.path());
-        let handle = EngineHandle::new(StoreEngine::Sqlite(sqlite.clone()));
+        let handle = EngineHandle::new_pending();
 
-        // Starts on SQLite.
-        assert_eq!(handle.engine().dialect(), Dialect::Sqlite);
-        let old = handle.engine();
-        assert!(old.sqlite().is_some());
-
-        // First install: SQLite -> Postgres.
+        // First install: Pending -> Postgres.
         let first_url = "postgres://postgres:secret@127.0.0.1:5432/fredo_first";
         handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(first_url))));
-        let installed = handle.engine();
+        let installed = handle.engine().expect("installed");
         assert_eq!(installed.dialect(), Dialect::Postgres);
-        match installed.as_ref() {
-            StoreEngine::Postgres(pg) => assert_eq!(pg.url, first_url),
-            StoreEngine::Sqlite(_) => panic!("install did not swap to Postgres"),
-        }
+        let StoreEngine::Postgres(pg) = installed.as_ref();
+        assert_eq!(pg.url, first_url);
 
         // Second install is a no-op (first-wins).
         let second_url = "postgres://postgres:secret@127.0.0.1:5432/fredo_second";
         handle.install(StoreEngine::Postgres(Arc::new(make_pg_engine(second_url))));
-        match handle.engine().as_ref() {
-            StoreEngine::Postgres(pg) => {
-                assert_eq!(pg.url, first_url, "install must run at most once")
-            }
-            StoreEngine::Sqlite(_) => panic!("engine must remain Postgres"),
-        }
-
-        // A reader that captured the old Arc still completes on the old engine.
-        assert_eq!(old.dialect(), Dialect::Sqlite);
-        old.sqlite()
-            .unwrap()
-            .write_conn()
-            .execute_batch("CREATE TABLE after_swap (id TEXT);")
-            .expect("the old engine stays usable for an in-flight reader");
-    }
-
-    #[tokio::test]
-    async fn engine_handle_does_not_install_a_sqlite_replacement() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = make_sqlite_engine(dir.path());
-        let handle = EngineHandle::new(StoreEngine::Sqlite(first.clone()));
-
-        // A second SQLite engine must never replace the active one (install is
-        // the SQLite -> Postgres edge only).
-        let other_dir = tempfile::tempdir().unwrap();
-        handle.install(StoreEngine::Sqlite(make_sqlite_engine(other_dir.path())));
-        match handle.engine().as_ref() {
-            StoreEngine::Sqlite(active) => {
-                assert!(Arc::ptr_eq(active, &first), "the original engine must stay active")
-            }
-            StoreEngine::Postgres(_) => panic!("must not install Postgres here"),
-        }
+        let StoreEngine::Postgres(pg) = handle.engine().expect("installed").as_ref().clone();
+        assert_eq!(pg.url, first_url, "install must run at most once");
     }
 
     // -- SQLite write / read-only connection split ----------------------------
@@ -1216,19 +1189,17 @@ mod tests {
     // -- ST-2: engine status --------------------------------------------------
 
     #[test]
-    fn storage_engine_state_starts_on_sqlite_without_a_fallback_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
-        let state = StorageEngineState::new(handle, EngineChoice::Sqlite);
+    fn storage_engine_state_starts_on_postgres_without_a_fallback_reason() {
+        let handle = EngineHandle::new_pending();
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
         let status = state.status();
-        assert_eq!(status.engine, Dialect::Sqlite);
+        assert_eq!(status.engine, Dialect::Postgres);
         assert_eq!(status.fallback_reason, None);
     }
 
     #[test]
     fn storage_engine_state_keeps_the_first_fallback_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let handle = EngineHandle::new_pending();
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
         state.set_fallback_reason("[pool:connect] forced".to_string());
         state.set_fallback_reason("[start] later".to_string());
@@ -1237,14 +1208,13 @@ mod tests {
             Some("[pool:connect] forced"),
             "the FIRST failure reason must survive"
         );
-        // A failed build leaves the engine on SQLite (fail-closed).
-        assert_eq!(state.status().engine, Dialect::Sqlite);
+        // A failed build leaves the handle pending (fail-closed).
+        assert!(state.handle().engine().is_none());
     }
 
     #[tokio::test]
     async fn storage_engine_state_installs_postgres_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let handle = EngineHandle::new_pending();
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
         state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo"));
         assert_eq!(state.status().engine, Dialect::Postgres);
@@ -1257,8 +1227,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_pg_schema_inits_runs_every_initializer_in_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let handle = EngineHandle::new_pending();
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
 
         // A fresh registry is empty: running it is a no-op.
@@ -1288,8 +1257,7 @@ mod tests {
     async fn run_pg_schema_inits_stops_at_the_first_error() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let handle = EngineHandle::new_pending();
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
 
         state.register_pg_schema_init(Arc::new(|_pool| Err(anyhow::anyhow!("[init] boom"))));
@@ -1319,53 +1287,22 @@ mod tests {
         assert_eq!(json["engine"], "postgres");
         assert_eq!(json["fallbackReason"], "[pool:connect] forced");
         assert_eq!(
-            serde_json::to_value(Dialect::Sqlite).unwrap(),
-            serde_json::json!("sqlite")
+            serde_json::to_value(Dialect::Postgres).unwrap(),
+            serde_json::json!("postgres")
         );
     }
 
-    // -- ST-1: engine-selected read-only canonical seam -----------------------
+    // -- ST-1: read-only canonical seam ---------------------------------------
 
     #[tokio::test]
     async fn canonical_reader_and_pg_pool_follow_the_active_engine() {
-        let dir = tempfile::tempdir().unwrap();
-        let sqlite = make_sqlite_engine(dir.path());
-        let engine = StoreEngine::Sqlite(sqlite.clone());
-        match engine.canonical_reader().expect("a sqlite reader") {
-            CanonicalReader::Sqlite(shared) => assert!(Arc::ptr_eq(&shared, &sqlite)),
-            CanonicalReader::Postgres(_) => panic!("sqlite must yield a sqlite reader"),
-        }
-        assert!(engine.pg_pool().is_none());
-
         let engine = StoreEngine::Postgres(Arc::new(make_pg_engine(
             "postgres://postgres:secret@127.0.0.1:5432/fredo",
         )));
         match engine.canonical_reader().expect("a postgres reader") {
             CanonicalReader::Postgres(pool) => assert!(!pool.is_closed()),
-            CanonicalReader::Sqlite(_) => panic!("postgres must yield a postgres reader"),
         }
-        assert!(engine.pg_pool().is_some());
-    }
-
-    #[test]
-    fn canonical_reader_sqlite_uses_the_read_only_connection() {
-        let dir = tempfile::tempdir().unwrap();
-        let sqlite = make_sqlite_engine(dir.path());
-        sqlite
-            .write_conn()
-            .execute_batch("CREATE TABLE probe (id TEXT PRIMARY KEY);")
-            .unwrap();
-        let engine = StoreEngine::Sqlite(sqlite);
-        match engine.canonical_reader().expect("a sqlite reader") {
-            CanonicalReader::Sqlite(shared) => {
-                let read = shared.read_only_conn();
-                assert!(
-                    read.execute("INSERT INTO probe (id) VALUES ('x')", []).is_err(),
-                    "the canonical SQLite reader must reject writes"
-                );
-            }
-            CanonicalReader::Postgres(_) => panic!("sqlite must yield a sqlite reader"),
-        }
+        assert!(!engine.pg_pool().is_closed());
     }
 
     #[tokio::test]
@@ -1405,8 +1342,7 @@ mod tests {
 
     #[test]
     fn register_slice3_pg_schema_inits_registers_one_init_per_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::new(StoreEngine::Sqlite(make_sqlite_engine(dir.path())));
+        let handle = EngineHandle::new_pending();
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
         assert_eq!(state.schema_init_count(), 0);
         state.register_slice3_pg_schema_inits();

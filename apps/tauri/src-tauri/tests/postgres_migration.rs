@@ -66,7 +66,7 @@ use fredo_lib::infrastructure::storage::migration::{
     enumerate_tables, resolve_app_data_dir, resolve_migration_dir, restore_snapshot, run_pre_install,
     verify_snapshot, MigrationStatus, MIGRATION_CHUNK_ROWS, MIGRATION_COMPLETED_KEY,
 };
-use fredo_lib::infrastructure::storage::{EngineHandle, SqliteEngine, StoreEngine};
+use fredo_lib::infrastructure::storage::EngineHandle;
 use fredo_lib::PgRuntime;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -422,9 +422,8 @@ async fn cross_engine_migration_suite() {
             pg_setting(&pool, MIGRATION_COMPLETED_KEY).await.is_none(),
             "a fail-closed run must NOT set the marker ('{fault}')"
         );
-        assert_eq!(
-            state.status().engine,
-            Dialect::Sqlite,
+        assert!(
+            state.handle().engine().is_none(),
             "a fail-closed run must NOT install PostgreSQL ('{fault}')"
         );
         pool.close().await;
@@ -629,11 +628,10 @@ async fn build_pool(url: &str, schema: &str) -> PgPool {
     pool
 }
 
-/// A `StorageEngineState` whose swap-once handle starts on SQLite, exactly like
-/// `lib.rs` before the supervisor installs PostgreSQL.
-fn sqlite_state(db_path: &Path) -> Arc<StorageEngineState> {
-    let engine = SqliteEngine::open(db_path).expect("open the scratch SQLite engine");
-    let handle = EngineHandle::new(StoreEngine::Sqlite(engine));
+/// A `StorageEngineState` whose swap-once handle starts PENDING, exactly like
+/// `lib.rs` before the supervisor installs PostgreSQL (Spec #2979 CU-2).
+fn sqlite_state(_db_path: &Path) -> Arc<StorageEngineState> {
+    let handle = EngineHandle::new_pending();
     StorageEngineState::new(handle, EngineChoice::Postgres)
 }
 

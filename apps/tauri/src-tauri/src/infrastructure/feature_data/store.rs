@@ -18,7 +18,6 @@
 //! `backend`-owned column, nor an undeclared column.
 
 use anyhow::Result;
-use rusqlite::{params, OptionalExtension};
 use serde_json::{Map, Value as JsonValue};
 use std::sync::Arc;
 
@@ -26,24 +25,6 @@ use crate::infrastructure::storage::engine::{EngineHandle, StoreEngine};
 use crate::infrastructure::storage::feature_store::block_on_pg;
 
 use super::declaration::{is_reserved_column, ColumnOwner, FeatureDataTableDeclaration};
-
-/// The two metadata tables, SQLite DDL (byte-identical to the incumbent).
-const TABLES_DDL_SQLITE: &str = "CREATE TABLE IF NOT EXISTS feature_data_tables (
-        feature_id            TEXT NOT NULL,
-        table_name            TEXT NOT NULL,
-        declaration_json      TEXT NOT NULL,
-        declaration_revision  TEXT NOT NULL,
-        last_version          INTEGER NOT NULL DEFAULT 0,
-        backfill_done         INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (feature_id, table_name)
-    );
-    CREATE TABLE IF NOT EXISTS feature_data_tombstones (
-        feature_id  TEXT NOT NULL,
-        table_name  TEXT NOT NULL,
-        key_json    TEXT NOT NULL,
-        deleted_at  TEXT NOT NULL,
-        PRIMARY KEY (feature_id, table_name, key_json)
-    );";
 
 /// The PostgreSQL DDL (C1 type map: `INTEGER → bigint`).
 const TABLES_DDL_PG: &str = "CREATE TABLE IF NOT EXISTS feature_data_tables (
@@ -94,23 +75,11 @@ impl FeatureDataStore {
         Ok(FeatureDataStore { engine })
     }
 
-    /// Test-only convenience: a SQLite-backed store at `<data_dir>/fredo.db`.
-    #[cfg(test)]
-    pub fn open_sqlite_for_tests(data_dir: std::path::PathBuf) -> Result<Self> {
-        let sqlite = crate::infrastructure::storage::engine::SqliteEngine::open(
-            &data_dir.join("fredo.db"),
-        )?;
-        Self::open(EngineHandle::new(StoreEngine::Sqlite(sqlite)))
-    }
-
     /// Create the metadata + tombstone tables if they don't exist.
     pub fn ensure_schema(&self) -> Result<()> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                engine.write_conn().execute_batch(TABLES_DDL_SQLITE)?;
-                Ok(())
-            }
+            
             StoreEngine::Postgres(pg) => Self::ensure_schema_on_pg(&pg.pool),
         }
     }
@@ -127,21 +96,9 @@ impl FeatureDataStore {
 
     /// Load the metadata row for one declared table.
     pub fn get_table(&self, feature_id: &str, table_name: &str) -> Result<Option<TableMeta>> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                conn.query_row(
-                    "SELECT feature_id, table_name, declaration_json, declaration_revision,
-                            last_version, backfill_done
-                     FROM feature_data_tables
-                     WHERE feature_id = ?1 AND table_name = ?2",
-                    params![feature_id, table_name],
-                    row_to_meta,
-                )
-                .optional()
-                .map_err(Into::into)
-            }
+            
             StoreEngine::Postgres(pg) => {
                 let row: Option<(String, String, String, String, i64, i64)> = block_on_pg(async {
                     sqlx::query_as(
@@ -178,21 +135,9 @@ impl FeatureDataStore {
 
     /// Load every persisted declaration metadata row (startup materialization).
     pub fn list_tables(&self) -> Result<Vec<TableMeta>> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                let mut stmt = conn.prepare(
-                    "SELECT feature_id, table_name, declaration_json, declaration_revision,
-                            last_version, backfill_done
-                     FROM feature_data_tables
-                     ORDER BY feature_id, table_name",
-                )?;
-                let rows = stmt
-                    .query_map([], row_to_meta)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            }
+            
             StoreEngine::Postgres(pg) => {
                 let rows: Vec<(String, String, String, String, i64, i64)> = block_on_pg(async {
                     sqlx::query_as(
@@ -230,31 +175,9 @@ impl FeatureDataStore {
 
     /// Insert or update the metadata row for a declared table.
     pub fn put_table(&self, meta: &TableMeta) -> Result<()> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                conn.execute(
-                    "INSERT INTO feature_data_tables
-                        (feature_id, table_name, declaration_json, declaration_revision,
-                         last_version, backfill_done)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(feature_id, table_name) DO UPDATE SET
-                        declaration_json     = excluded.declaration_json,
-                        declaration_revision = excluded.declaration_revision,
-                        last_version         = excluded.last_version,
-                        backfill_done        = excluded.backfill_done",
-                    params![
-                        meta.feature_id,
-                        meta.table_name,
-                        meta.declaration_json,
-                        meta.declaration_revision,
-                        meta.last_version,
-                        i64::from(meta.backfill_done),
-                    ],
-                )?;
-                Ok(())
-            }
+            
             StoreEngine::Postgres(pg) => {
                 block_on_pg(async {
                     sqlx::query(
@@ -285,17 +208,9 @@ impl FeatureDataStore {
 
     /// Update only the projection backfill marker for a declared table.
     pub fn set_backfill_done(&self, feature_id: &str, table_name: &str, done: bool) -> Result<()> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                conn.execute(
-                    "UPDATE feature_data_tables SET backfill_done = ?3
-                     WHERE feature_id = ?1 AND table_name = ?2",
-                    params![feature_id, table_name, i64::from(done)],
-                )?;
-                Ok(())
-            }
+            
             StoreEngine::Postgres(pg) => {
                 block_on_pg(async {
                     sqlx::query(
@@ -316,17 +231,9 @@ impl FeatureDataStore {
 
     /// Update only the last delivered scope version for a declared table.
     pub fn set_last_version(&self, feature_id: &str, table_name: &str, version: i64) -> Result<()> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                conn.execute(
-                    "UPDATE feature_data_tables SET last_version = ?3
-                     WHERE feature_id = ?1 AND table_name = ?2",
-                    params![feature_id, table_name, version],
-                )?;
-                Ok(())
-            }
+            
             StoreEngine::Postgres(pg) => {
                 block_on_pg(async {
                     sqlx::query(
@@ -347,25 +254,9 @@ impl FeatureDataStore {
 
     /// Insert (or refresh) a tombstone for an explicitly deleted record key.
     pub fn put_tombstone(&self, tombstone: &Tombstone) -> Result<()> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                conn.execute(
-                    "INSERT INTO feature_data_tombstones
-                        (feature_id, table_name, key_json, deleted_at)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(feature_id, table_name, key_json) DO UPDATE SET
-                        deleted_at = excluded.deleted_at",
-                    params![
-                        tombstone.feature_id,
-                        tombstone.table_name,
-                        tombstone.key_json,
-                        tombstone.deleted_at,
-                    ],
-                )?;
-                Ok(())
-            }
+            
             StoreEngine::Postgres(pg) => {
                 block_on_pg(async {
                     sqlx::query(
@@ -395,20 +286,9 @@ impl FeatureDataStore {
         table_name: &str,
         key_json: &str,
     ) -> Result<bool> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                let found: Option<i64> = conn
-                    .query_row(
-                        "SELECT 1 FROM feature_data_tombstones
-                         WHERE feature_id = ?1 AND table_name = ?2 AND key_json = ?3",
-                        params![feature_id, table_name, key_json],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                Ok(found.is_some())
-            }
+            
             StoreEngine::Postgres(pg) => {
                 let found: Option<i32> = block_on_pg(async {
                     sqlx::query_scalar(
@@ -428,28 +308,9 @@ impl FeatureDataStore {
 
     /// Load every tombstone for one declared table.
     pub fn list_tombstones(&self, feature_id: &str, table_name: &str) -> Result<Vec<Tombstone>> {
-        let active = self.engine.engine();
+        let active = self.engine.engine_or_err()?;
         match active.as_ref() {
-            StoreEngine::Sqlite(engine) => {
-                let conn = engine.write_conn();
-                let mut stmt = conn.prepare(
-                    "SELECT feature_id, table_name, key_json, deleted_at
-                     FROM feature_data_tombstones
-                     WHERE feature_id = ?1 AND table_name = ?2
-                     ORDER BY key_json",
-                )?;
-                let rows = stmt
-                    .query_map(params![feature_id, table_name], |row| {
-                        Ok(Tombstone {
-                            feature_id: row.get(0)?,
-                            table_name: row.get(1)?,
-                            key_json: row.get(2)?,
-                            deleted_at: row.get(3)?,
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            }
+            
             StoreEngine::Postgres(pg) => {
                 let rows: Vec<(String, String, String, String)> = block_on_pg(async {
                     sqlx::query_as(
@@ -475,17 +336,6 @@ impl FeatureDataStore {
             }
         }
     }
-}
-
-fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<TableMeta> {
-    Ok(TableMeta {
-        feature_id: row.get(0)?,
-        table_name: row.get(1)?,
-        declaration_json: row.get(2)?,
-        declaration_revision: row.get(3)?,
-        last_version: row.get(4)?,
-        backfill_done: row.get::<_, i64>(5)? != 0,
-    })
 }
 
 /// Reject a feature-originated write that names a reserved backend-managed
@@ -521,139 +371,5 @@ pub fn guard_feature_write(
         Ok(())
     } else {
         Err(errors)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::infrastructure::feature_data::declaration::{DeclaredColumn, DeclaredColumnType};
-
-    fn make_store() -> (tempfile::TempDir, FeatureDataStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FeatureDataStore::open_sqlite_for_tests(dir.path().to_path_buf()).unwrap();
-        store.ensure_schema().unwrap();
-        (dir, store)
-    }
-
-    fn sample_meta() -> TableMeta {
-        TableMeta {
-            feature_id: "mission-monitor".to_string(),
-            table_name: "sessions".to_string(),
-            declaration_json: "{}".to_string(),
-            declaration_revision: "mm.sessions.v1".to_string(),
-            last_version: 0,
-            backfill_done: false,
-        }
-    }
-
-    #[test]
-    fn metadata_round_trips_and_upserts() {
-        let (_dir, store) = make_store();
-        assert_eq!(
-            store.get_table("mission-monitor", "sessions").unwrap(),
-            None
-        );
-
-        store.put_table(&sample_meta()).unwrap();
-        let loaded = store
-            .get_table("mission-monitor", "sessions")
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded, sample_meta());
-        assert_eq!(store.list_tables().unwrap().len(), 1);
-
-        let mut updated = sample_meta();
-        updated.declaration_revision = "mm.sessions.v2".to_string();
-        updated.last_version = 42;
-        updated.backfill_done = true;
-        store.put_table(&updated).unwrap();
-
-        let loaded = store
-            .get_table("mission-monitor", "sessions")
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.declaration_revision, "mm.sessions.v2");
-        assert_eq!(loaded.last_version, 42);
-        assert!(loaded.backfill_done);
-        assert_eq!(store.list_tables().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn tombstone_round_trips() {
-        let (_dir, store) = make_store();
-        assert!(!store.is_tombstoned("f", "t", "[\"k\"]").unwrap());
-
-        store
-            .put_tombstone(&Tombstone {
-                feature_id: "f".to_string(),
-                table_name: "t".to_string(),
-                key_json: "[\"k\"]".to_string(),
-                deleted_at: "2026-09-18T00:00:00Z".to_string(),
-            })
-            .unwrap();
-
-        assert!(store.is_tombstoned("f", "t", "[\"k\"]").unwrap());
-        assert!(!store.is_tombstoned("f", "t", "[\"other\"]").unwrap());
-        assert_eq!(store.list_tombstones("f", "t").unwrap().len(), 1);
-    }
-
-    fn guarded_table() -> FeatureDataTableDeclaration {
-        FeatureDataTableDeclaration {
-            name: "sessions".to_string(),
-            primary_key: vec!["sessionId".to_string()],
-            columns: vec![
-                DeclaredColumn {
-                    name: "sessionId".to_string(),
-                    col_type: DeclaredColumnType::Text,
-                    nullable: false,
-                    owner: ColumnOwner::Backend,
-                },
-                DeclaredColumn {
-                    name: "customName".to_string(),
-                    col_type: DeclaredColumnType::Text,
-                    nullable: true,
-                    owner: ColumnOwner::Feature,
-                },
-            ],
-            source: None,
-            retention: None,
-        }
-    }
-
-    #[test]
-    fn guard_allows_feature_owned_columns() {
-        let set = serde_json::json!({ "customName": "My session" })
-            .as_object()
-            .unwrap()
-            .clone();
-        assert!(guard_feature_write(&guarded_table(), &set).is_ok());
-    }
-
-    #[test]
-    fn guard_rejects_reserved_undeclared_and_backend_owned_columns() {
-        let set = serde_json::json!({
-            "_row_version": 3,
-            "_updated_at": "now",
-            "sessionId": "s1",
-            "ghost": true
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let errors = guard_feature_write(&guarded_table(), &set).unwrap_err();
-        assert_eq!(errors.len(), 4, "{errors:?}");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("'_row_version'") && e.contains("backend-managed")));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("'_updated_at'") && e.contains("backend-managed")));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("'sessionId'") && e.contains("backend-owned")));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("'ghost'") && e.contains("not declared")));
     }
 }

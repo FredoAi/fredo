@@ -815,9 +815,8 @@ mod tests {
     };
 
     fn open_store(dir: &Path) -> AppStore {
-        use crate::infrastructure::storage::engine::{EngineHandle, SqliteEngine, StoreEngine};
-        let sqlite = SqliteEngine::open(&dir.join("fredo.db")).expect("open sqlite engine");
-        AppStore::open(EngineHandle::new(StoreEngine::Sqlite(sqlite))).expect("open app store")
+        use crate::infrastructure::storage::engine::EngineHandle;
+        AppStore::open(EngineHandle::new_pending(), dir).expect("open app store")
     }
 
     #[test]
