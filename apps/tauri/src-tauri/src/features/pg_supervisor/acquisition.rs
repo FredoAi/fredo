@@ -222,6 +222,13 @@ mod tests {
 
     #[test]
     fn manifest_pins_the_release_archive_and_the_shared_engine_layout() {
+        // The manifest reads the process-global archive overrides, so this pin
+        // must serialize with the env-mutating test and assert the UNSET default
+        // path deterministically under any suite order (G-222).
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_ARCHIVE_URL_ENV);
+        std::env::remove_var(PG_ARCHIVE_SHA256_ENV);
+
         let manifest = pg_archive_manifest();
 
         assert_eq!(manifest.revision, PG_VERSION);

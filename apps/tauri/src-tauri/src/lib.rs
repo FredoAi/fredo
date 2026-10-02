@@ -828,6 +828,13 @@ pub fn run() {
             // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
             // read-only observability hook (no state mutation).
             features::pg_supervisor::state::pg_supervisor_status,
+            // Windows distribution quality (Spec #2978 S4): the bounded,
+            // read-only postmaster log tail (`<data_dir>/log/postgres.log`).
+            features::pg_supervisor::state::pg_server_log_tail,
+            // Cutover release gate (Spec #2978 S6): the ONE read-only decision
+            // source slice 6 consumes (acquisition mode + cutover marker →
+            // shipped default; fail-closed to SQLite; NO engine flip).
+            features::pg_supervisor::release_gate::cutover_release_gate,
             // Storage engine seam (Spec #2975 ST-2): the live-observable,
             // read-only engine status (dialect + fail-closed reason).
             infrastructure::storage::engine::storage_engine_status,

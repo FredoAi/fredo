@@ -82,6 +82,25 @@ pub struct PgStatusView {
     /// The PostgreSQL data directory (`<app_data_dir>/postgres`, or the FS-1
     /// `FREDO_PG_DATA_DIR` override when set).
     pub data_dir: String,
+    /// Additive (Spec #2978 S4): the postmaster log path
+    /// (`<data_dir>/log/postgres.log`) the read-only `pg_server_log_tail` reads;
+    /// `None` only when no data dir is resolvable.
+    pub log_path: Option<String>,
+}
+
+/// `<data_dir>/log/postgres.log` as a serializable string; `None` when the data
+/// dir is unknown (empty). One rule so the status view and the tail agree.
+fn log_path_for(data_dir: &str) -> Option<String> {
+    let trimmed = data_dir.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(
+            super::pg_log_path(Path::new(trimmed))
+                .display()
+                .to_string(),
+        )
+    }
 }
 
 impl PgStatusView {
@@ -92,6 +111,7 @@ impl PgStatusView {
             port: None,
             pid: None,
             error: Some(error),
+            log_path: log_path_for(&data_dir),
             data_dir,
         }
     }
@@ -119,12 +139,14 @@ pub struct PgSupervisorState {
 impl PgSupervisorState {
     /// Build a `Starting` supervisor holding the acquired lock (runtime added on success).
     pub fn new(runtime: Option<PgRuntime>, lock: Option<PgDataDirLock>, data_dir: String) -> Self {
+        let log_path = log_path_for(&data_dir);
         let (status, _rx) = tokio::sync::watch::channel(PgStatusView {
             state: PgState::Starting,
             port: None,
             pid: None,
             error: None,
             data_dir,
+            log_path,
         });
         Self {
             runtime: Mutex::new(runtime),
@@ -147,12 +169,14 @@ impl PgSupervisorState {
     /// Publish `Ready` with the resolved port/PID.
     pub fn set_ready(&self, port: u16, pid: u32) {
         let data_dir = self.status.borrow().data_dir.clone();
+        let log_path = log_path_for(&data_dir);
         self.status.send_replace(PgStatusView {
             state: PgState::Ready,
             port: Some(port),
             pid: Some(pid),
             error: None,
             data_dir,
+            log_path,
         });
     }
 
@@ -652,6 +676,21 @@ pub fn stop_on_exit(app: &AppHandle) {
     }
 }
 
+/// Resolve the managed-PG data dir for read-only observers (the status view and
+/// the log tail): the live supervisor's already-resolved dir when present, else
+/// the OS app-data dir through the ONE [`super::resolve_data_dir`] rule (FS-1
+/// aware). Mirrors the supervisor so the reported `data_dir` and the log path
+/// can never diverge.
+fn resolve_status_data_dir(app: &AppHandle) -> String {
+    if let Some(state) = app.try_state::<Arc<PgSupervisorState>>() {
+        return state.status.borrow().data_dir.clone();
+    }
+    app.path()
+        .app_data_dir()
+        .map(|dir| super::resolve_data_dir(&dir).display().to_string())
+        .unwrap_or_default()
+}
+
 /// The ONE observability hook: a read-only status snapshot (no state mutation).
 #[tauri::command]
 pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
@@ -660,18 +699,108 @@ pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
     }
     // No managed supervisor ⇒ disabled (the default) — resolve the data dir for
     // informational purposes only (honours the FS-1 override like the live path).
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map(|dir| super::resolve_data_dir(&dir).display().to_string())
-        .unwrap_or_default();
+    let data_dir = resolve_status_data_dir(&app);
     PgStatusView {
         state: PgState::Disabled,
         port: None,
         pid: None,
         error: None,
+        log_path: log_path_for(&data_dir),
         data_dir,
     }
+}
+
+// ── Postmaster log tail (Spec #2978 S4 / REQ-3.2) ─────────────────────────────
+
+/// Hard cap on the bytes read from the END of the log for one
+/// [`pg_server_log_tail`] call. The tail is always a bounded, read-only window —
+/// never a whole-file read.
+pub const PG_LOG_TAIL_MAX_BYTES: u64 = 64 * 1024;
+/// Hard cap on the number of lines a caller may request, so the returned vector
+/// is bounded even for a pathological `lines` argument.
+pub const PG_LOG_TAIL_MAX_LINES: usize = 2_000;
+
+/// Read-only tail of the managed postmaster's log
+/// (`#[serde(rename_all = "camelCase")]`).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PgLogTail {
+    /// The log path that was read (`<data_dir>/log/postgres.log`).
+    pub path: String,
+    /// The last `lines` lines of the log (empty when the file does not exist yet).
+    pub lines: Vec<String>,
+    /// `true` when the returned window does not cover the whole file (the file is
+    /// larger than [`PG_LOG_TAIL_MAX_BYTES`], or more lines exist than requested).
+    pub truncated: bool,
+}
+
+/// Bounded, read-only tail of `path`: at most [`PG_LOG_TAIL_MAX_BYTES`] are read
+/// from the end, the first (partial) line is dropped when the read started
+/// mid-file, and at most `lines` (capped at [`PG_LOG_TAIL_MAX_LINES`]) are
+/// returned. A missing/unreadable file yields an empty tail (never an error and
+/// never a whole-file read).
+fn tail_file(path: &Path, lines: usize) -> PgLogTail {
+    let path_string = path.display().to_string();
+    let empty = || PgLogTail {
+        path: path_string.clone(),
+        lines: Vec::new(),
+        truncated: false,
+    };
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return empty(),
+    };
+    let len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let start = len.saturating_sub(PG_LOG_TAIL_MAX_BYTES);
+    let mut buf = Vec::new();
+    let read_ok = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(start)).is_ok()
+        && std::io::Read::read_to_end(
+            &mut std::io::Read::take(&mut file, PG_LOG_TAIL_MAX_BYTES),
+            &mut buf,
+        )
+        .is_ok();
+    if !read_ok {
+        return empty();
+    }
+
+    let text = String::from_utf8_lossy(&buf);
+    let mut window: Vec<&str> = text.lines().collect();
+    // A read that started mid-file begins with a partial line: drop it.
+    if start > 0 && !window.is_empty() {
+        window.remove(0);
+    }
+    let total = window.len();
+    let requested = lines.min(PG_LOG_TAIL_MAX_LINES);
+    let tail: Vec<String> = if total > requested {
+        window[total - requested..]
+            .iter()
+            .map(|line| (*line).to_string())
+            .collect()
+    } else {
+        window.iter().map(|line| (*line).to_string()).collect()
+    };
+    PgLogTail {
+        path: path_string,
+        lines: tail,
+        truncated: start > 0 || total > requested,
+    }
+}
+
+/// The bounded, read-only postmaster log tail (REQ-3.2). Registered in `lib.rs`.
+/// The `app` handle resolves the SAME data dir the runtime writes to; the
+/// frontend-facing argument is only `lines`.
+#[tauri::command]
+pub async fn pg_server_log_tail(app: AppHandle, lines: usize) -> PgLogTail {
+    let data_dir = resolve_status_data_dir(&app);
+    if data_dir.trim().is_empty() {
+        return PgLogTail {
+            path: String::new(),
+            lines: Vec::new(),
+            truncated: false,
+        };
+    }
+    tail_file(&super::pg_log_path(Path::new(&data_dir)), lines)
 }
 
 #[cfg(test)]
@@ -788,12 +917,19 @@ mod tests {
             pid: Some(1234),
             error: None,
             data_dir: "C:/data/postgres".to_string(),
+            log_path: log_path_for("C:/data/postgres"),
         };
         let json = serde_json::to_value(&ready).expect("serialize");
         assert_eq!(json["state"], "ready");
         assert_eq!(json["port"], 54321);
         assert_eq!(json["pid"], 1234);
         assert_eq!(json["dataDir"], "C:/data/postgres");
+        assert_eq!(
+            json["logPath"],
+            super::super::pg_log_path(Path::new("C:/data/postgres"))
+                .display()
+                .to_string()
+        );
         assert!(json["error"].is_null());
 
         assert_eq!(
@@ -837,5 +973,110 @@ mod tests {
 
         std::env::set_var(PG_POOL_FORCE_FAIL_ENV, "   ");
         assert_eq!(pool_force_fail_stage(), None, "blank must be inert");
+    }
+
+    // -- S4 (#2978): postmaster log path + bounded tail ------------------------
+
+    /// S4 / REQ-3.2: the status view carries the additive `logPath` pointing at
+    /// `<data_dir>/log/postgres.log` (camelCase on the wire), and it is `None`
+    /// only when no data dir is resolvable.
+    #[test]
+    fn log_path_is_additive_and_resolves_under_the_data_dir() {
+        let view = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let snapshot = view.status.borrow().clone();
+        assert_eq!(
+            snapshot.log_path,
+            Some(
+                super::super::pg_log_path(Path::new("C:/data/postgres"))
+                    .display()
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            log_path_for("C:/data/postgres"),
+            Some(
+                super::super::pg_log_path(Path::new("C:/data/postgres"))
+                    .display()
+                    .to_string()
+            )
+        );
+        assert_eq!(log_path_for(""), None, "an unknown data dir yields no log path");
+        assert_eq!(log_path_for("   "), None, "a blank data dir yields no log path");
+    }
+
+    /// S4 / REQ-3.2: the tail returns only the LAST `lines` lines of the log and
+    /// reports `truncated` when more lines exist.
+    #[test]
+    fn pg_log_tail_returns_only_the_last_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("postgres.log");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\n").expect("seed log");
+
+        let tail = tail_file(&path, 2);
+        assert_eq!(tail.path, path.display().to_string());
+        assert_eq!(tail.lines, vec!["four".to_string(), "five".to_string()]);
+        assert!(tail.truncated, "more lines exist than requested");
+
+        let whole = tail_file(&path, 99);
+        assert_eq!(whole.lines.len(), 5, "all lines fit within the cap");
+        assert!(!whole.truncated, "the whole file fits the requested window");
+    }
+
+    /// S4 / REQ-3.2 edge: a missing log (e.g. a failed start) yields an empty
+    /// tail — never an error, never a whole-file read.
+    #[test]
+    fn pg_log_tail_is_empty_when_the_log_is_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("log").join("postgres.log");
+        let tail = tail_file(&path, 10);
+        assert_eq!(tail.path, path.display().to_string());
+        assert!(tail.lines.is_empty());
+        assert!(!tail.truncated);
+    }
+
+    /// S4 / REQ-3.2: the read is bounded — a log larger than
+    /// [`PG_LOG_TAIL_MAX_BYTES`] returns at most [`PG_LOG_TAIL_MAX_LINES`] lines
+    /// and reports `truncated`, and it never starts at the file's first line.
+    #[test]
+    fn pg_log_tail_reads_a_bounded_window_of_a_large_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("postgres.log");
+        let mut contents = String::new();
+        for index in 0..5_000 {
+            contents.push_str(&format!("line-{index:05}\n"));
+        }
+        std::fs::write(&path, contents).expect("seed large log");
+
+        let tail = tail_file(&path, usize::MAX);
+        assert!(
+            tail.lines.len() <= PG_LOG_TAIL_MAX_LINES,
+            "the returned line count must be bounded, got {}",
+            tail.lines.len()
+        );
+        assert!(tail.truncated, "a log larger than the window is truncated");
+        assert_eq!(
+            tail.lines.last().map(String::as_str),
+            Some("line-04999"),
+            "the tail must end at the file's last line"
+        );
+        assert_ne!(
+            tail.lines.first().map(String::as_str),
+            Some("line-00000"),
+            "the bounded read must not start at the file's first line"
+        );
+    }
+
+    /// S4: `PgLogTail` serializes camelCase (`path`/`lines`/`truncated`).
+    #[test]
+    fn pg_log_tail_serializes_camel_case() {
+        let json = serde_json::to_value(PgLogTail {
+            path: "C:/data/postgres/log/postgres.log".to_string(),
+            lines: vec!["a".to_string()],
+            truncated: true,
+        })
+        .expect("serialize");
+        assert_eq!(json["path"], "C:/data/postgres/log/postgres.log");
+        assert_eq!(json["lines"][0], "a");
+        assert_eq!(json["truncated"], true);
     }
 }

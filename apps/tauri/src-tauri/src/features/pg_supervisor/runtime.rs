@@ -38,6 +38,45 @@ use super::{
 /// idempotent (never appended twice).
 const PG_KNOB_MARKER: &str = "# fredo server-memory knobs (Spec #2975)";
 
+/// **Q-17 log-destination mechanism (Spec #2978 S4, REQ-3.2).** The crate
+/// (`postgresql_embedded` 0.21) owns the postmaster spawn, so Fredo cannot apply
+/// `CREATE_NO_WINDOW`/stdout redirection at the spawn boundary (the
+/// `features/llm_server/process.rs` pattern). The crate DOES expose its server
+/// configuration surface — [`Settings::configuration`] ("Server configuration
+/// options", a `HashMap<String, String>`) — so the postmaster's own
+/// `logging_collector` is pointed at `<data_dir>/log/postgres.log`, the exact
+/// path [`crate::features::pg_supervisor::state::pg_server_log_tail`] reads.
+///
+/// `log_directory = 'log'` is resolved by PostgreSQL relative to the data
+/// directory, so the collector writes `<data_dir>/log/postgres.log`. Rotation is
+/// disabled (`log_rotation_age`/`log_rotation_size = 0`) so the filename is
+/// stable and the tail never races a renamed file.
+pub const PG_LOG_COLLECTOR_CONFIG: &[(&str, &str)] = &[
+    ("logging_collector", "on"),
+    ("log_directory", "log"),
+    ("log_filename", "postgres.log"),
+    ("log_rotation_age", "0"),
+    ("log_rotation_size", "0"),
+    ("log_truncate_on_rotation", "off"),
+];
+
+/// **Documented deviation (Q-17, AC3.1 — no console flash).** The crate 0.21
+/// `Settings` surface (verified against the crate's public rustdoc at
+/// implementation time: fields `data_dir`, `installation_dir`, `host`, `port`,
+/// `username`, `password`, `temporary`, `timeout`, `configuration`,
+/// `trust_installation_dir`, `socket_dir`, `releases_url`, `version`) exposes a
+/// server-configuration hook but NO process-creation-flag hook. Therefore the
+/// console window of the crate-spawned postmaster CANNOT be suppressed from
+/// Fredo code today, and on a Windows GUI launch a brief console flash remains
+/// possible. This is the plan's named deviation branch (AC3.1 is the gate that
+/// forces resolution — a crate hook or a wrapper — before ship); it is recorded
+/// here rather than silently shipped. The log-destination half (AC3.2) IS
+/// implemented via [`PG_LOG_COLLECTOR_CONFIG`], and the server's own logging
+/// collector captures the postmaster output regardless of the console.
+pub const PG_CONSOLE_FLASH_DEVIATION: &str =
+    "postgresql_embedded 0.21 exposes no spawn creation-flag hook; the crate-spawned \
+     postmaster console cannot be suppressed from Fredo code (Q-17/AC3.1 documented deviation)";
+
 /// Kill primitive seam used by the teardown paths; defaults to [`kill_pid_tree`].
 /// Injectable in tests so teardown can be proven without spawning a server.
 pub type KillTreeFn = fn(u32);
@@ -181,6 +220,22 @@ impl PgRuntime {
         // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
         // `None` is exactly what let `pg_ctl -w stop` wait ~11 h in #2948.
         settings.timeout = Some(PG_CONTROL_TIMEOUT);
+        // Q-17 (S4): point the crate-spawned postmaster's logging collector at
+        // `<data_dir>/log/postgres.log` through the crate's server-configuration
+        // hook. This is the surface `pg_server_log_tail` reads (REQ-3.2).
+        for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+            settings
+                .configuration
+                .insert(key.to_string(), value.to_string());
+        }
+        // Q-17: surface the documented console-flash deviation on the live boot
+        // path (the crate exposes no creation-flag hook), so it is recorded in
+        // the app log rather than silently shipped (AC3.1 gate).
+        tracing::warn!(
+            target: "fredo::pg_supervisor",
+            deviation = PG_CONSOLE_FLASH_DEVIATION,
+            "embedded-PostgreSQL Q-17 deviation recorded"
+        );
         // NOTE: `settings.username` is intentionally left at the crate default
         // ("postgres") — see the spike's empirically verified finding: the field
         // only builds `url()`, while `initdb` still creates the `postgres`
@@ -477,6 +532,46 @@ mod tests {
         );
         let expected = dir.path().join(PG_DATA_SUBDIR);
         assert_eq!(runtime.data_dir(), expected.as_path());
+    }
+
+    /// S4 / REQ-3.2 (Q-17): the crate settings point the postmaster's logging
+    /// collector at `<data_dir>/log/postgres.log` — the path the read-only tail
+    /// reads — and the console-flash deviation is recorded (the crate exposes no
+    /// creation-flag hook).
+    #[test]
+    fn settings_route_the_postmaster_log_to_the_data_dir_log_path() {
+        // Explicit dirs (not the FS-1 resolver) so the assertion is independent
+        // of any sibling test's process-global env state (G-222).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-log");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+
+        let configuration = &runtime.pg.settings().configuration;
+        for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+            assert_eq!(
+                configuration.get(key).map(String::as_str),
+                Some(value),
+                "server configuration must set {key} = {value}"
+            );
+        }
+        // The path rule the tail reads and the config writes must agree.
+        assert_eq!(
+            crate::features::pg_supervisor::pg_log_path(runtime.data_dir()),
+            data_dir.join("log").join("postgres.log")
+        );
+        assert!(
+            !PG_CONSOLE_FLASH_DEVIATION.is_empty(),
+            "the Q-17 console-flash deviation must be recorded"
+        );
     }
 
     #[tokio::test]
