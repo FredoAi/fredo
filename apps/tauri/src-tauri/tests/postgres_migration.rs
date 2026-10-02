@@ -426,6 +426,69 @@ async fn cross_engine_migration_suite() {
             state.handle().engine().is_none(),
             "a fail-closed run must NOT install PostgreSQL ('{fault}')"
         );
+        // CU-3 (R-1.4): the wire reports not-ready with no engine installed.
+        assert!(
+            !state.status().ready,
+            "a fail-closed run must report storage_engine_status.ready=false ('{fault}')"
+        );
+        pool.close().await;
+    }
+
+    // ── Phase E: fresh install (no `fredo.db`) → Fresh, no leg, PG installs ──
+    {
+        let schema = unique_schema("fresh");
+        let pool = build_pool(&url, &schema).await;
+        let state = sqlite_state(&scratch_dir.join("fresh.db"));
+        register_schema_inits(&state);
+        state
+            .run_pg_schema_inits(&pool)
+            .expect("schema inits on the fresh candidate");
+
+        // A data dir that never had `fredo.db` (R-4.1).
+        let fresh_dir = tmp.join("fresh-data");
+        std::fs::create_dir_all(&fresh_dir).expect("create the fresh data dir");
+        let missing_source = fresh_dir.join("fredo.db");
+        assert!(!missing_source.exists(), "the fresh data dir has no fredo.db");
+        let fresh_migration_dir = tmp.join("migration-fresh");
+
+        let gate = state.migration_gate();
+        let guard = gate
+            .migration_enter()
+            .await
+            .expect("the exclusive migration barrier must be acquired");
+        let fresh_outcome = run_pre_install(&missing_source, &fresh_migration_dir, &pool, &guard)
+            .await
+            .expect("a fresh install must not fail the leg (R-1.1/R-4.1)");
+        drop(guard);
+
+        assert_eq!(
+            fresh_outcome.status,
+            MigrationStatus::Fresh,
+            "a data dir with no fredo.db must report Fresh (R-1.1/R-4.1)"
+        );
+        assert!(fresh_outcome.tables.is_empty(), "a fresh install copies nothing");
+        assert!(
+            fresh_outcome.snapshot.is_none(),
+            "a fresh install snapshots nothing"
+        );
+        assert!(
+            pg_setting(&pool, MIGRATION_COMPLETED_KEY).await.is_none(),
+            "a fresh install must NOT write the cutover marker"
+        );
+        assert!(
+            !fresh_migration_dir.join(SNAPSHOT_FILENAME).exists(),
+            "a fresh install must write no snapshot"
+        );
+
+        // PostgreSQL installs normally on the Fresh path (R-1.1).
+        state.install_postgres(PgEngine {
+            pool: pool.clone(),
+            url: url.clone(),
+        });
+        let status = state.status();
+        assert_eq!(status.engine, Dialect::Postgres);
+        assert!(status.ready, "a fresh install must install PostgreSQL");
+        assert_eq!(status.fallback_reason, None);
         pool.close().await;
     }
 

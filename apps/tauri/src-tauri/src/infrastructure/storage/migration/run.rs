@@ -4,7 +4,8 @@
 //! `run_pg_schema_inits` and `install_postgres`, against the **candidate** pool.
 //! It is fail-closed: any error (or the whole-leg [`MIGRATION_HARD_CEILING`]
 //! timeout) returns `Err` having written no marker, so the caller installs
-//! nothing and the app stays on SQLite (R-2.2/R-2.3).
+//! nothing (the handle stays `Pending`) — there is NO SQLite data-plane fallback
+//! (R-1.4).
 //!
 //! Each table is copied under its OWN proportional budget (ST-8a/ST-8b), checked
 //! cooperatively between chunks, so a single oversized table can never starve the
@@ -12,6 +13,9 @@
 //! [`MIGRATION_HARD_CEILING`] remains the fail-closed backstop.
 //!
 //! Ordering contract:
+//! 0. a data dir with no `fredo.db` has nothing to migrate — return `Fresh`
+//!    BEFORE reading the marker or snapshotting, so PostgreSQL installs
+//!    normally (R-1.1/R-4.1);
 //! 1. read the completion marker from the candidate pool — present ⇒ `Skipped`;
 //! 2. the caller holds the EXCLUSIVE migration gate (bounded by
 //!    [`GATE_WAIT_BOUND`]) from BEFORE this call THROUGH `install_postgres`
@@ -68,8 +72,9 @@ impl Default for MigrationStatusView {
 /// the per-table parity check.
 ///
 /// `source_db` is the path to `fredo.db`; `migration_dir` receives the single
-/// pre-cutover snapshot. A present completion marker short-circuits to
-/// [`MigrationStatus::Skipped`].
+/// pre-cutover snapshot. A source-absent data dir short-circuits to
+/// [`MigrationStatus::Fresh`] (fresh install, R-1.1/R-4.1); a present completion
+/// marker short-circuits to [`MigrationStatus::Skipped`] (R-1.3).
 ///
 /// **R-3.5 (G-123):** the caller MUST hold the exclusive migration barrier
 /// (`guard`) from BEFORE this call through `install_postgres` — this function
@@ -84,6 +89,25 @@ pub async fn run_pre_install(
     _guard: &MigrationGuard<'_>,
 ) -> Result<MigrationOutcome> {
     let started = Instant::now();
+
+    // 0. Fresh-install guard (R-1.1/R-4.1): a data dir with no `fredo.db` has
+    //    nothing to migrate. Return `Fresh` BEFORE reading the marker or taking a
+    //    snapshot, so the leg is a clean no-op and PostgreSQL installs normally.
+    //    Without this guard `take_snapshot` rejects the missing source and fails
+    //    the whole boot (the pre-CU-3 gap).
+    if !source_db.exists() {
+        tracing::info!(
+            target: "fredo::migration",
+            path = %source_db.display(),
+            "no legacy fredo.db; skipping the one-shot cutover leg (fresh install)"
+        );
+        return Ok(MigrationOutcome {
+            status: MigrationStatus::Fresh,
+            tables: Vec::new(),
+            snapshot: None,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
 
     // 1. Marker gate: read from the candidate pool BEFORE copying.
     let marker: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
@@ -298,6 +322,40 @@ mod tests {
         assert!(
             !migration_dir.join(SNAPSHOT_FILENAME).exists(),
             "a failed snapshot step must write no snapshot"
+        );
+    }
+
+    /// CU-3 (R-1.1/R-4.1): a data dir with no `fredo.db` must NOT run the leg —
+    /// it returns `Fresh` and writes NO snapshot, and (because the guard fires
+    /// before the marker read) never dials the lazily-connected pool.
+    #[tokio::test]
+    async fn run_pre_install_returns_fresh_when_the_source_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        // A path that does not exist — no `fredo.db` in this data dir.
+        let missing = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+        assert!(!missing.exists());
+
+        let gate = MigrationGate::new();
+        let guard = gate.migration_enter().await.unwrap();
+        let outcome = run_pre_install(&missing, &migration_dir, &lazy_pool(), &guard)
+            .await
+            .expect("a source-absent install must not fail the leg");
+
+        assert_eq!(
+            outcome.status,
+            MigrationStatus::Fresh,
+            "no source ⇒ Fresh, never Failed (the pre-CU-3 gap)"
+        );
+        assert!(outcome.tables.is_empty(), "a fresh install copies nothing");
+        assert!(outcome.snapshot.is_none(), "a fresh install snapshots nothing");
+        assert!(
+            outcome.completed(),
+            "a fresh install installs PostgreSQL normally (R-1.1)"
+        );
+        assert!(
+            !migration_dir.join(SNAPSHOT_FILENAME).exists(),
+            "a fresh install must write no snapshot"
         );
     }
 

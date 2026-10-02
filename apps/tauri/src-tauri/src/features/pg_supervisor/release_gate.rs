@@ -73,7 +73,8 @@ pub fn decide_shipped_default(_mode: PgAcquisitionMode, _migration_completed: bo
 
 /// Whether the one-shot cutover leg will run on this boot (Spec #2979 CU-1):
 /// a legacy `fredo.db` exists AND the marker is absent. A fresh install (no
-/// `fredo.db`) yields `false` (R-1.1/R-4.1).
+/// `fredo.db`) yields `false` (R-1.1/R-4.1) — the leg reports
+/// `MigrationStatus::Fresh` and PostgreSQL installs normally.
 pub fn migration_will_run(fredo_db_exists: bool, migration_completed: bool) -> bool {
     fredo_db_exists && !migration_completed
 }

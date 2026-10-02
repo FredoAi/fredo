@@ -666,14 +666,20 @@ impl serde::Serialize for Dialect {
 }
 
 /// Read-only observable storage-engine status (the live hook for the fail-closed
-/// seam). `engine` is the ACTIVE dialect; `fallback_reason` is set only when
-/// PostgreSQL was selected but the engine stayed on SQLite.
+/// seam). `engine` is the TARGET dialect (always `postgres` since CU-2);
+/// `ready` is `true` only once the PostgreSQL pool is installed into the handle;
+/// `fallback_reason` carries the structured failure when the leg failed and the
+/// handle stayed `Pending` (R-1.4). There is no SQLite data-plane fallback.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageEngineStatus {
-    /// The active engine's dialect.
+    /// The target engine's dialect (always PostgreSQL).
     pub engine: Dialect,
-    /// Why the engine stayed on SQLite, when it did.
+    /// `true` once the PostgreSQL pool is installed; `false` while the handle is
+    /// `Pending` (pre-install or a fail-closed leg).
+    pub ready: bool,
+    /// Why the engine is not ready (the structured fail-closed reason), when it
+    /// is not.
     pub fallback_reason: Option<String>,
 }
 
@@ -769,10 +775,12 @@ impl StorageEngineState {
         lock(&self.fallback_reason).clone()
     }
 
-    /// The read-only status snapshot.
+    /// The read-only status snapshot. `ready` is derived from the swap-once
+    /// handle: it is `true` only once the PostgreSQL pool is installed (R-1.4).
     pub fn status(&self) -> StorageEngineStatus {
         StorageEngineStatus {
             engine: Dialect::Postgres,
+            ready: self.handle.engine().is_some(),
             fallback_reason: self.fallback_reason(),
         }
     }
@@ -816,6 +824,7 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
         Some(state) => state.status(),
         None => StorageEngineStatus {
             engine: Dialect::Postgres,
+            ready: false,
             fallback_reason: None,
         },
     }
@@ -826,6 +835,7 @@ pub async fn storage_engine_status(app: tauri::AppHandle) -> StorageEngineStatus
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::storage::migration::MigrationStatus;
 
     /// Serializes every test that mutates or reads the process-global
     /// `FREDO_STORAGE_ENGINE`, so environment precedence is deterministic.
@@ -1194,6 +1204,10 @@ mod tests {
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
         let status = state.status();
         assert_eq!(status.engine, Dialect::Postgres);
+        assert!(
+            !status.ready,
+            "the handle starts Pending, so the engine is not ready"
+        );
         assert_eq!(status.fallback_reason, None);
     }
 
@@ -1208,8 +1222,9 @@ mod tests {
             Some("[pool:connect] forced"),
             "the FIRST failure reason must survive"
         );
-        // A failed build leaves the handle pending (fail-closed).
+        // A failed build leaves the handle pending and not ready (fail-closed).
         assert!(state.handle().engine().is_none());
+        assert!(!state.status().ready);
     }
 
     #[tokio::test]
@@ -1218,9 +1233,64 @@ mod tests {
         let state = StorageEngineState::new(handle, EngineChoice::Postgres);
         state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fredo"));
         assert_eq!(state.status().engine, Dialect::Postgres);
+        assert!(state.status().ready, "an installed pool is ready");
         // A second install is a no-op (first-wins on the swap-once handle).
         state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/other"));
         assert_eq!(state.status().engine, Dialect::Postgres);
+        assert!(state.status().ready);
+    }
+
+    /// CU-3 (R-1.4): a failed cutover leg records `Failed`, installs NOTHING (the
+    /// handle stays `Pending`), and reports `ready:false` + the structured reason.
+    #[test]
+    fn failed_migration_reports_not_ready_and_installs_nothing() {
+        let handle = EngineHandle::new_pending();
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        state.record_migration_outcome(MigrationOutcome {
+            status: MigrationStatus::Failed,
+            tables: Vec::new(),
+            snapshot: None,
+            elapsed_ms: 7,
+        });
+        state.set_fallback_reason("[migration] parity mismatch on 'settings'".to_string());
+
+        let status = state.status();
+        assert_eq!(status.engine, Dialect::Postgres);
+        assert!(!status.ready, "a fail-closed leg must report not-ready");
+        assert_eq!(
+            status.fallback_reason.as_deref(),
+            Some("[migration] parity mismatch on 'settings'")
+        );
+        let view = state.migration_status_view();
+        assert_eq!(view.status, MigrationStatus::Failed);
+        assert!(!view.completed, "a failed leg is not completed");
+        assert!(
+            state.handle().engine().is_none(),
+            "no partially-migrated engine may be installed"
+        );
+    }
+
+    /// CU-3 (R-1.1/R-4.1): a fresh install (no source) is `Fresh`, counts as
+    /// completed, and installs PostgreSQL normally.
+    #[tokio::test]
+    async fn fresh_migration_reports_completed_and_installs_normally() {
+        let handle = EngineHandle::new_pending();
+        let state = StorageEngineState::new(handle, EngineChoice::Postgres);
+        state.record_migration_outcome(MigrationOutcome {
+            status: MigrationStatus::Fresh,
+            tables: Vec::new(),
+            snapshot: None,
+            elapsed_ms: 0,
+        });
+        assert!(
+            state.migration_status_view().completed,
+            "a fresh install is authoritative on PostgreSQL"
+        );
+        // The supervisor installs on the `Fresh` Ok path (R-1.1).
+        state.install_postgres(make_pg_engine("postgres://postgres:secret@127.0.0.1:5432/fresh"));
+        let status = state.status();
+        assert!(status.ready);
+        assert_eq!(status.fallback_reason, None);
     }
 
     // -- ST-2 rework: startup schema-init registry ----------------------------
@@ -1281,10 +1351,12 @@ mod tests {
     fn storage_engine_status_serializes_camel_case_with_lowercase_dialect() {
         let status = StorageEngineStatus {
             engine: Dialect::Postgres,
+            ready: false,
             fallback_reason: Some("[pool:connect] forced".to_string()),
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["engine"], "postgres");
+        assert_eq!(json["ready"], false);
         assert_eq!(json["fallbackReason"], "[pool:connect] forced");
         assert_eq!(
             serde_json::to_value(Dialect::Postgres).unwrap(),

@@ -427,9 +427,10 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
             // Spec #2975 ST-2 pool-ready callback (REQ-1/EARS-1.2): after the
             // readiness probe resolves, build ONE bounded pool and install it
             // into the shared handle EXACTLY once. ANY failure/timeout installs
-            // NOTHING and records the reason — the app stays on SQLite
-            // (fail-closed, REQ-3/EARS-3.2). The FS-4 seam forces this
-            // deterministically for QA (REQ-3/EARS-3.3).
+            // NOTHING and records the reason — the handle stays Pending, so the
+            // data plane is unavailable until a later startup re-runs the leg
+            // (fail-closed, R-1.4; NO SQLite data-plane fallback). The FS-4 seam
+            // forces this deterministically for QA (REQ-3/EARS-3.3).
             //
             // ST-2 rework: AFTER the pool builds and BEFORE the install, run the
             // registered startup schema initializers against the candidate pool,
@@ -443,14 +444,18 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                     match build_pg_pool(&url, pool_force_fail_stage()).await {
                         Ok(pg) => match engine.run_pg_schema_inits(&pg.pool) {
                             Ok(()) => {
-                                // Spec #2977 ST-5: the one-shot `fredo.db` →
-                                // PostgreSQL data migration is the LAST pre-install
-                                // step, BETWEEN the schema inits and the install.
-                                // Fail-closed (R-2.2): a failed leg records the
-                                // reason and installs NOTHING — the engine stays on
-                                // SQLite and the next boot re-runs the idempotent
-                                // read-only export. The marker is written inside
-                                // `run_pre_install` ONLY on a fully parity-clean run.
+                                // Spec #2977 ST-5 / #2979 CU-3: the one-shot
+                                // `fredo.db` → PostgreSQL data migration is the
+                                // LAST pre-install step, BETWEEN the schema inits
+                                // and the install. A source-absent data dir returns
+                                // `Fresh` (no leg; PostgreSQL installs normally,
+                                // R-1.1/R-4.1). Fail-closed (R-1.4): a failed leg
+                                // records the reason and installs NOTHING — the
+                                // handle stays Pending (no SQLite data-plane
+                                // fallback) and the next boot re-runs the
+                                // idempotent read-only export. The marker is
+                                // written inside `run_pre_install` ONLY on a fully
+                                // parity-clean run.
                                 //
                                 // R-3.5 (G-123): the EXCLUSIVE migration barrier is
                                 // acquired HERE and held across `install_postgres`, so
@@ -468,7 +473,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                         tracing::error!(
                                             target: "fredo::pg_supervisor",
                                             reason = %reason,
-                                            "could not acquire the migration barrier; storage engine stays on SQLite (fail-closed)"
+                                            "could not acquire the migration barrier; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                                         );
                                         engine.record_migration_outcome(MigrationOutcome {
                                             status: MigrationStatus::Failed,
@@ -488,12 +493,16 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                         .await
                                         {
                                             Ok(outcome) => {
+                                                let migration_status = outcome.status;
                                                 engine.record_migration_outcome(outcome);
                                                 // Still under the barrier: the install
                                                 // is the final step of the window.
+                                                // `Fresh`/`Skipped`/`Completed` all
+                                                // install PostgreSQL (R-1.1/R-1.3).
                                                 engine.install_postgres(pg);
                                                 tracing::info!(
                                                     target: "fredo::pg_supervisor",
+                                                    ?migration_status,
                                                     "storage engine installed: postgres"
                                                 );
                                             }
@@ -502,7 +511,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                                 tracing::error!(
                                                     target: "fredo::pg_supervisor",
                                                     reason = %reason,
-                                                    "data migration failed; storage engine stays on SQLite (fail-closed)"
+                                                    "data migration failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                                                 );
                                                 engine.record_migration_outcome(MigrationOutcome {
                                                     status: MigrationStatus::Failed,
@@ -525,7 +534,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                                 tracing::error!(
                                     target: "fredo::pg_supervisor",
                                     reason = %reason,
-                                    "schema init failed; storage engine stays on SQLite (fail-closed)"
+                                    "schema init failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                                 );
                                 engine.set_fallback_reason(reason);
                             }
@@ -535,7 +544,7 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
                             tracing::error!(
                                 target: "fredo::pg_supervisor",
                                 reason = %reason,
-                                "pool build failed; storage engine stays on SQLite (fail-closed)"
+                                "pool build failed; storage engine stays Pending (fail-closed, no SQLite data-plane fallback)"
                             );
                             engine.set_fallback_reason(reason);
                         }
@@ -568,7 +577,8 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
         }
         Err((stage, error)) => {
             // Spec #2975 ST-2: a selection/setup/start/readiness failure leaves
-            // the engine on SQLite — record why (fail-closed, REQ-3/EARS-3.2).
+            // the handle Pending — record why (fail-closed, R-1.4; no SQLite
+            // data-plane fallback).
             if let Some(engine) = engine.as_ref() {
                 if engine.choice() == EngineChoice::Postgres {
                     engine.set_fallback_reason(structured_error(stage, &error));
