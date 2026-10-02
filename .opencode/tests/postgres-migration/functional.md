@@ -136,6 +136,13 @@ this one).
   expected a completed full-size copy; actual = fail-closed at the bound. **Repro:** set
   `postgres.enabled=true`, `dev-env.ps1 -Action Up -Spec 2977 -EnvVar "FREDO_PG_DATA_DIR=…"` against the
   real `fredo.db`; read `migration_status` / `storage_engine_status`; managed `psql` `SELECT count(*) FROM telemetry_metrics`.
+  **Round 4 (2026-10-02) PASS on the real full-size corpus.** Source `fredo.db` = 4,029,865,984 bytes, 11 physical
+  tables, `telemetry_metrics` = 10,999,247 rows. The per-table-budget + one-transaction-per-table fix (ST-8a–ST-8c)
+  completed the cutover: `migration_status=Completed`, 11/11 tables `countMatch && checksumMatch && readOnlySource`,
+  wall clock ≈ 732 s (sum of per-table `elapsedMs` = 732,271 ms; `telemetry_metrics` 707,576 ms — under its 1,209 s
+  per-table budget and the 1,800 s hard ceiling). `MIGRATION_CHUNK_ROWS=512` unchanged; bounded memory: fredo.exe
+  process-lifetime peak working set **398.31 MiB** (idle ≈ 91 MiB), not proportional to the corpus. Per-table `elapsedMs`
+  recorded for all 11 tables. **FAIL** = any real corpus that cannot complete the one-shot carry.
 
 - [ ] **F-12 (HUMAN MISSION-MONITOR DIRECTIVE, G-256) — boot on the migrated data and render
   sessions / tools / tokens in Mission Monitor (parity vs pre-migration).**
@@ -177,6 +184,15 @@ this one).
   real corpus pre-migration (SQLite) — session `ses_f268a0f47ffe0eM1m0bwLpdEei`, N up to 143; the
   round-2 missing-element symptom was the fixture tie, fixed by ST-7d + pinned by ST-7c′. The blocker
   is now capacity, not rendering. **Promoted to F-16.**
+  **Round 4 (2026-10-02) PASS (decisive, real migrated data).** The real corpus cutover completed
+  (`migration_status=Completed`, engine `postgres`, all 11 tables count+checksum parity incl. the round-3 zeros
+  `telemetry_spans` 7,708 and `tool_use_rows` 9,281). Mission Monitor booted on the migrated store and rendered the
+  real session `ses_f235c1790ffepdbJi4Xz3tJ0l7` at **exact parity** with the pre-migration SQLite baseline: session bar
+  `INPUT 84,363 / CACHE 3,594,880 / REASONING 17,424 / OUTPUT 17,704 / SUBAGENTS 8,858,009 / TOTAL 12,572,388 /
+  ESTIMATED COST $0.2832 / 45 msgs`, node `build · deepseek-v4.1-flash` with `TOOLS (2)` = `skill 6.1s` + `read 1.0s`
+  and `TOKEN USAGE INPUT 697 / CACHE 138,048 / REASONING 121 / OUTPUT 217 / TOTAL 130,993` ($0.0007). Graph 46 nodes /
+  45 edges; no `unknown rtdb row state`; no `missing field 'name'`; clean console. Same-instant managed-`psql` read of
+  the migrated store (db `postgres`, port 56704) matched the render and the table counts.
 
 - [ ] **F-16 (promoted from F-12 round 3) — a REAL full-size `fredo.db` completes the one-shot
   migration within `MIGRATION_BOUND` and boots on PostgreSQL.**
@@ -188,6 +204,11 @@ this one).
   store. **Round 3 (2026-10-01): FAIL** — the leg exceeds the 300 s bound on 10,480,700
   `telemetry_metrics` rows and fails closed (engine stays SQLite). **FAIL** = any real corpus that
   cannot complete the one-shot carry.
+  **Round 4 (2026-10-02) PASS.** Real corpus (`fredo.db` 4,029,865,984 bytes; `telemetry_metrics` 10,999,247 rows)
+  completed the one-shot migration (`migration_status=Completed`, `storage_engine_status.engine="postgres"`), every
+  table count+checksum matched (`telemetry_spans` 7,708 and `tool_use_rows` 9,281 now populated), and Mission Monitor
+  rendered the real migrated session's graph + `TOOLS (2)` + tokens at parity. Backout verified byte-exact
+  (restored `fredo.db` SHA-256 `D3A08E90…BCD3D4` = pre-cutover).
 
 - [ ] **F-13 (NFR) — zero-warning build gates + Windows-first.**
   Run `cargo check --locked`, `cargo clippy --locked -- -D warnings`, `cargo test --locked`.
