@@ -42,11 +42,14 @@
   idempotent (no duplicate rows, no partial-state corruption).
   **Edge / FAIL:** a second copy on restart; a re-run that duplicates rows or re-gates parity.
 
-- [ ] **R-5 (fail-closed — no engine flip on a parity failure):** on ANY count/checksum mismatch the
-  marker is not set, the engine stays SQLite, `fredo.db` is untouched, and the app remains fully
-  operational on SQLite.
-  **Edge / FAIL:** an engine flip despite a mismatch; a set marker on a failure; a crash instead of
-  a structured non-fatal error.
+- [ ] **R-5 (fail-closed — no SQLite fallback on a parity failure):** on ANY count/checksum mismatch
+  the marker `migration.postgres.completed` is not set, the PG engine is NOT installed (the
+  `EngineHandle` stays `Pending`; `storage_engine_status == {engine:"postgres", ready:false,
+  fallbackReason:"…"}`), `fredo.db` is byte-identical (never mutated), and there is NO SQLite
+  data-plane fallback — the data plane is unavailable until a later startup re-runs the idempotent,
+  read-only export and the parity gate passes.
+  **Edge / FAIL:** a set marker on a failure; an install (`ready:true`) despite a mismatch; a mutated
+  `fredo.db`; a crash instead of a structured non-fatal error.
 
 - [ ] **R-6 (no SQLite-only construct in migrated paths):** no `PRAGMA`, `sqlite_master`,
   `pragma_table_info`, or `?n` placeholder remains in a migrated path; `to_regclass` /
