@@ -257,6 +257,13 @@ pub struct DbQueryArgs {
     pub selection: Option<TextRange>,
     /// Confirmation hashes the user has explicitly approved (R-5.3).
     pub confirmed_statement_hashes: Vec<String>,
+    /// First-page row limit (R-3.3, PO decision 7). `None`/`0` => the backend's
+    /// `DEFAULT_PAGE` (100).
+    ///
+    /// Additive and serde-defaulted so existing callers keep the 100-row default.
+    /// Clamped to the backend's `HARD_CAP` (5,000) bound by the query path.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 /// A result-set column descriptor.

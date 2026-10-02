@@ -123,6 +123,7 @@ describe('QueryTabs — run scope (R-3.2/R-3.6)', () => {
       mode: 'single',
       selection: { start: 10, end: 18 },
       confirmedStatementHashes: [],
+      limit: 100,
     });
   });
 
@@ -139,7 +140,18 @@ describe('QueryTabs — run scope (R-3.2/R-3.6)', () => {
       mode: 'all',
       selection: null,
       confirmedStatementHashes: [],
+      limit: 100,
     });
+  });
+
+  it('forwards the stored default row limit as the first-page limit (QA-12)', async () => {
+    renderWithChakra(<QueryTabs connectionId="c1" defaultRowLimit={150} />);
+    fireEvent.change(editor(), { target: { value: 'SELECT * FROM qa_big' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(dbQueryExecuteMock).toHaveBeenCalledTimes(1));
+    expect(dbQueryExecuteMock.mock.calls[0][0].limit).toBe(150);
   });
 
   it('renders every result set from a Run all outcome in order', async () => {
@@ -172,6 +184,44 @@ describe('QueryTabs — run scope (R-3.2/R-3.6)', () => {
     await waitFor(() => expect(screen.getByTestId('db-query-error')).toBeDefined());
     expect(screen.getByTestId('db-query-error')).toHaveTextContent('boom');
     expect(screen.getByTestId('db-query-error-position')).toHaveTextContent('line 1, column 3');
+  });
+});
+
+describe('QueryTabs — dropped connection (R-3.8)', () => {
+  it('notifies the shell with the connection id when a query is typed connectionLost', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({
+        error: {
+          kind: 'connectionLost',
+          message: 'connection lost: the server is no longer reachable',
+          line: null,
+          column: null,
+          position: null,
+        },
+      }),
+    );
+    const onConnectionLost = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onConnectionLost={onConnectionLost} />);
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(onConnectionLost).toHaveBeenCalledWith('c1'));
+    expect(onConnectionLost).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not notify the shell for an ordinary typed error', async () => {
+    dbQueryExecuteMock.mockResolvedValue(
+      outcome({ error: { kind: 'query', message: 'boom', line: null, column: null, position: null } }),
+    );
+    const onConnectionLost = vi.fn();
+    renderWithChakra(<QueryTabs connectionId="c1" onConnectionLost={onConnectionLost} />);
+    fireEvent.change(editor(), { target: { value: 'SELEC 1' } });
+
+    fireEvent.click(screen.getByTestId('db-query-run'));
+
+    await waitFor(() => expect(screen.getByTestId('db-query-error')).toBeDefined());
+    expect(onConnectionLost).not.toHaveBeenCalled();
   });
 });
 

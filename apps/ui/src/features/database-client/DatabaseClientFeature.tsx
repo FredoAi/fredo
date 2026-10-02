@@ -69,6 +69,7 @@ export const DatabaseClientFeatureView: React.FC = () => {
   const [externalSql, setExternalSql] = useState<ExternalSql | null>(null);
   const [activeSql, setActiveSql] = useState('');
   const [pageSize, setPageSize] = useState(100);
+  const [defaultRowLimit, setDefaultRowLimit] = useState(100);
   const [statusMessage, setStatusMessage] = useState('');
 
   const reload = useCallback(async () => {
@@ -87,7 +88,12 @@ export const DatabaseClientFeatureView: React.FC = () => {
   useEffect(() => {
     void reload();
     loadPrefs()
-      .then((prefs) => setPageSize(prefs.pageSize))
+      .then((prefs) => {
+        // R-3.3 / QA-12: the first page honours the stored default row limit;
+        // the Load-more page size is independent.
+        setPageSize(prefs.pageSize);
+        setDefaultRowLimit(prefs.defaultRowLimit);
+      })
       .catch(() => {
         /* tolerant (R-4.5) — keep the default page size */
       });
@@ -127,6 +133,14 @@ export const DatabaseClientFeatureView: React.FC = () => {
     setStatuses((current) => ({ ...current, [activeId]: 'idle' }));
     setStatusMessage('Disconnected');
   }, [activeId]);
+
+  const handleConnectionLost = useCallback((connectionId: string) => {
+    // R-3.8 UI leg: the backend has already removed the dead pool; mirror the
+    // loss so the session is marked disconnected rather than left "connected".
+    setConnectedId((current) => (current === connectionId ? null : current));
+    setStatuses((current) => ({ ...current, [connectionId]: 'error' }));
+    setStatusMessage('Connection lost — reconnect to continue');
+  }, []);
 
   const handleSaved = useCallback(
     async (view: DbConnectionView) => {
@@ -311,6 +325,8 @@ export const DatabaseClientFeatureView: React.FC = () => {
             connectionId={connectedId}
             schemaNodes={schemaNodes}
             pageSize={pageSize}
+            defaultRowLimit={defaultRowLimit}
+            onConnectionLost={handleConnectionLost}
             externalSql={externalSql}
             onQueryComplete={handleQueryComplete}
             onActiveSqlChange={setActiveSql}

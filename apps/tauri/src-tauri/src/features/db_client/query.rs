@@ -15,9 +15,9 @@
 //!   (R-5.4); [`QueryMode::All`] returns one result set per statement in order
 //!   (R-3.6);
 //! * **bounded results + pagination** — each result set is capped at
-//!   [`HARD_CAP`] rows, the first page is [`DEFAULT_PAGE`] rows, and
-//!   `db_result_page` slices the cached set without re-running the query
-//!   (R-3.3/R-3.4);
+//!   [`HARD_CAP`] rows, the first page honours the request's `limit` (falling
+//!   back to [`DEFAULT_PAGE`]), and `db_result_page` slices the cached set
+//!   without re-running the query (R-3.3/R-3.4);
 //! * **typed errors** — the Postgres message with 1-based line/column when the
 //!   server supplies a position (R-3.5) and a typed `connectionLost` when the
 //!   connection drops mid-query (R-3.8).
@@ -154,8 +154,12 @@ pub async fn query_execute(
     };
 
     let mut result_sets = Vec::new();
+    // R-3.3 / PO decision 7 — the first page honours the client's
+    // `defaultRowLimit` when supplied, falling back to `DEFAULT_PAGE` (100) and
+    // clamped to `HARD_CAP` (R-3.4).
+    let first_page = first_page_limit(args.limit);
     for statement in &statements {
-        match execute_one(&pool, &args.connection_id, &statement.sql).await {
+        match execute_one(&pool, &args.connection_id, &statement.sql, first_page).await {
             Ok(set) => result_sets.push(set),
             Err(error) => {
                 // R-3.8 — a dropped connection is typed `connectionLost` and the
@@ -307,14 +311,42 @@ fn class_token(class: StatementClass) -> &'static str {
 
 // ── Execution ─────────────────────────────────────────────────────────────────
 
+/// Resolve the first-page row limit from an optional request value (R-3.3).
+///
+/// An absent or zero limit falls back to [`DEFAULT_PAGE`]; every value is clamped
+/// to [`HARD_CAP`] (R-3.4) and never below 1.
+fn first_page_limit(limit: Option<usize>) -> usize {
+    limit
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PAGE)
+        .clamp(1, HARD_CAP)
+}
+
 async fn execute_one(
     pool: &PgPool,
     connection_id: &str,
     sql: &str,
+    first_page: usize,
 ) -> Result<DbResultSet, DbQueryError> {
     let started = Instant::now();
     let attempt = async {
-        let mut conn = pool.acquire().await.map_err(|e| map_sqlx_error(&e, sql))?;
+        // R-3.8 — a killed server does not close the pool; `acquire()` then
+        // exhausts its timeout. Only a pool with NO live connection is a lost
+        // connection; genuine contention on a healthy (saturated) pool stays
+        // `Timeout` (the pool is built with `max_connections(1)`).
+        let mut conn = pool.acquire().await.map_err(|e| {
+            if matches!(e, sqlx::Error::PoolTimedOut) && pool.size() == 0 {
+                DbQueryError {
+                    kind: DbErrorKind::ConnectionLost,
+                    message: "connection lost: the server is no longer reachable".to_string(),
+                    line: None,
+                    column: None,
+                    position: None,
+                }
+            } else {
+                map_sqlx_error(&e, sql)
+            }
+        })?;
         // Server-side bound (mirrors the client-side `STATEMENT_TIMEOUT`).
         sqlx::query("SET statement_timeout = 30000")
             .execute(&mut *conn)
@@ -373,7 +405,8 @@ async fn execute_one(
         }),
         Ok(Ok((columns, rows, truncated))) => {
             let duration_ms = started.elapsed().as_millis() as u64;
-            let (_, set) = cache_result_set(connection_id, columns, rows, truncated, duration_ms);
+            let (_, set) =
+                cache_result_set(connection_id, columns, rows, truncated, duration_ms, first_page);
             Ok(set)
         }
         Ok(Err(error)) => Err(error),
@@ -668,13 +701,14 @@ pub fn release_connection_results(connection_id: &str) {
 }
 
 /// Insert a result set into the process-wide cache and return its id plus the
-/// first page (R-3.3).
+/// first page (R-3.3). `first_page` is the already-clamped request limit.
 fn cache_result_set(
     connection_id: &str,
     columns: Vec<DbColumn>,
     rows: Vec<Vec<JsonValue>>,
     truncated: bool,
     duration_ms: u64,
+    first_page: usize,
 ) -> (String, DbResultSet) {
     let id = Uuid::new_v4().to_string();
     let mut cache = result_cache().lock().expect("result cache poisoned");
@@ -687,7 +721,7 @@ fn cache_result_set(
         duration_ms,
     );
     let set = cache
-        .page(connection_id, &id, 0, DEFAULT_PAGE)
+        .page(connection_id, &id, 0, first_page)
         .expect("just-inserted result set");
     (id, set)
 }

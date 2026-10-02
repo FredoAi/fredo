@@ -10,8 +10,8 @@
 use serde_json::{json, Value as JsonValue};
 
 use super::{
-    line_column, plan_statements, query_execute, result_page, ResultCache, DEFAULT_PAGE, HARD_CAP,
-    MAX_CACHED_RESULT_SETS, STATEMENT_TIMEOUT,
+    cache_result_set, first_page_limit, line_column, plan_statements, query_execute, result_page,
+    ResultCache, DEFAULT_PAGE, HARD_CAP, MAX_CACHED_RESULT_SETS, STATEMENT_TIMEOUT,
 };
 use crate::features::db_client::seam::ForceFailStage;
 use crate::features::db_client::state::DbClientState;
@@ -57,6 +57,7 @@ fn args(sql: &str, mode: QueryMode) -> DbQueryArgs {
         mode,
         selection: None,
         confirmed_statement_hashes: Vec::new(),
+        limit: None,
     }
 }
 
@@ -273,6 +274,30 @@ fn result_cache_zero_limit_uses_the_default_page() {
     let rows: Vec<Vec<JsonValue>> = (0..150).map(|index| vec![json!(index)]).collect();
     cache.insert("c1".into(), "rs".into(), columns(), rows, false, 0);
     assert_eq!(cache.page("c1", "rs", 0, 0).expect("page").rows.len(), DEFAULT_PAGE);
+}
+
+#[test]
+fn first_page_limit_honours_the_request_and_falls_back_to_default() {
+    // Absent/zero => DEFAULT_PAGE (R-3.3, QA-12 restart with no override).
+    assert_eq!(first_page_limit(None), DEFAULT_PAGE);
+    assert_eq!(first_page_limit(Some(0)), DEFAULT_PAGE);
+    // A supplied preference is honoured (QA-12: 150 => a 150-row first page).
+    assert_eq!(first_page_limit(Some(150)), 150);
+    // Clamped to the hard cap (R-3.4) and never below one row.
+    assert_eq!(first_page_limit(Some(HARD_CAP + 1)), HARD_CAP);
+    assert_eq!(first_page_limit(Some(1)), 1);
+}
+
+#[test]
+fn cache_result_set_slices_the_requested_first_page() {
+    // The first page is the request limit, not a hardcoded constant (QA-12).
+    let rows: Vec<Vec<JsonValue>> = (0..200).map(|index| vec![json!(index)]).collect();
+    let (id, set) = cache_result_set("c-first-page", columns(), rows, false, 3, 150);
+    assert_eq!(id.len(), 36, "result-set id is a UUID");
+    assert_eq!(set.rows.len(), 150);
+    assert_eq!(set.row_count_loaded, 150);
+    assert!(set.has_more);
+    assert_eq!(set.duration_ms, 3);
 }
 
 #[test]

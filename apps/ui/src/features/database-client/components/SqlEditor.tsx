@@ -369,7 +369,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           >
             {options.map((option, index) => (
               <Box
-                key={`${option.kind}:${option.label}`}
+                key={`${option.kind}:${option.label}:${index}`}
                 data-testid="db-autocomplete-option"
                 data-selected={index === highlight}
                 role="option"

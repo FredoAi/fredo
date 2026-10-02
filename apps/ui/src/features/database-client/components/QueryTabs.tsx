@@ -77,6 +77,16 @@ export interface QueryTabsProps {
   /** "Load more" page size — default 100 (PO decision 7). */
   pageSize?: number;
   /**
+   * First-page row limit from the "Default row limit" preference (R-3.3, PO
+   * decision 7) — default 100. Independent of the Load-more `pageSize`.
+   */
+  defaultRowLimit?: number;
+  /**
+   * Called when a query fails with a typed `connectionLost` (R-3.8) so the shell
+   * can mark the connection disconnected.
+   */
+  onConnectionLost?: (connectionId: string) => void;
+  /**
    * Load external SQL (history re-run / saved query open) into the active tab
    * when the nonce changes. Never auto-executes (R-4.2/R-4.3, ST-7 integration).
    */
@@ -101,6 +111,8 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
   connectionId,
   schemaNodes = [],
   pageSize = 100,
+  defaultRowLimit = 100,
+  onConnectionLost,
   externalSql = null,
   onQueryComplete,
   onActiveSqlChange,
@@ -171,6 +183,7 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
           mode,
           selection,
           confirmedStatementHashes: confirmedHashes,
+          limit: defaultRowLimit,
         });
         if (outcome.confirmationRequired) {
           updateTab(tabId, { running: false, confirmation: outcome.confirmationRequired });
@@ -182,6 +195,11 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
           error: outcome.error,
           confirmation: null,
         });
+        // R-3.8: a dropped connection notifies the shell so the session is
+        // marked disconnected (the backend has already removed the dead pool).
+        if (outcome.error?.kind === 'connectionLost') {
+          onConnectionLost?.(connectionId);
+        }
         // R-4.1: report the completed execution so the shell can append history.
         onQueryComplete?.({
           sql,
@@ -197,7 +215,7 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
         onQueryComplete?.({ sql, durationMs: 0, rowCount: 0, status: 'error' });
       }
     },
-    [connectionId, updateTab, onQueryComplete],
+    [connectionId, defaultRowLimit, updateTab, onQueryComplete, onConnectionLost],
   );
 
   const handleRun = useCallback(

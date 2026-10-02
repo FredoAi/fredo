@@ -192,6 +192,7 @@ async fn command_bodies_are_real_and_fail_closed_without_a_connection() {
         mode: QueryMode::Single,
         selection: None,
         confirmed_statement_hashes: Vec::new(),
+        limit: None,
     };
     let query_err = super::query::query_execute(query_args, &state)
         .await

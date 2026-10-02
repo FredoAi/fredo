@@ -132,6 +132,11 @@ export interface DbQueryArgs {
   mode: QueryMode;
   selection?: TextRange | null;
   confirmedStatementHashes: string[];
+  /**
+   * First-page row limit from the "Default row limit" preference (R-3.3, PO
+   * decision 7). Omitted/0 falls back to the backend's 100-row default.
+   */
+  limit?: number;
 }
 
 export interface DbColumn {
