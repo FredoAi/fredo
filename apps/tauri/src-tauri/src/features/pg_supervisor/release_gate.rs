@@ -1,25 +1,24 @@
 //! Cutover release gate (Spec #2978, S6; REQ-7.1/REQ-7.2).
 //!
 //! The ONE read-only decision source slice 6 consumes: it reports the
-//! compile-time [`PgAcquisitionMode`] and the presence of the one-shot cutover
-//! marker (`migration.postgres.completed`, [`MIGRATION_COMPLETED_KEY`]), and
-//! resolves the `shippedDefault`.
+//! compile-time [`PgAcquisitionMode`], the presence of the one-shot cutover
+//! marker (`migration.postgres.completed`, [`MIGRATION_COMPLETED_KEY`]), whether
+//! the one-shot leg will run this boot, and the resolved `shippedDefault`.
 //!
-//! # Fail-closed rule (no engine flip here)
+//! # Unconditional PostgreSQL default (Spec #2979 CU-1)
 //!
-//! [`decide_shipped_default`] returns [`ShippedDefault::Postgres`] ONLY when the
-//! cutover marker is present; while it is absent the default stays
-//! [`ShippedDefault::Sqlite`]. A `bundled` build cannot flip without the marker
-//! either — the acquisition mode prices the flip but never selects the engine.
-//! This module NEVER writes the marker, changes [`select_engine`] precedence, or
-//! flips the engine; it only reads.
+//! [`decide_shipped_default`] now returns [`ShippedDefault::Postgres`]
+//! UNCONDITIONALLY: PostgreSQL is the shipped default regardless of the marker
+//! or the acquisition mode. The marker gates ONLY the one-shot export leg (see
+//! [`migration_will_run`]). This module NEVER writes the marker, changes
+//! [`select_engine`] precedence, or flips the engine; it only reads.
 //!
 //! # Where the marker is read (read-only)
 //!
 //! The marker is written by the pre-install migration into the PostgreSQL
 //! `settings` table (`infrastructure/storage/migration/run.rs`). It is therefore
 //! read through the active [`AppStore`] data plane — PostgreSQL once the pool is
-//! installed, SQLite (absent) otherwise. A read error is fail-closed to SQLite.
+//! installed, SQLite (absent) otherwise. A read error is fail-closed to `false`.
 //!
 //! [`select_engine`]: crate::infrastructure::storage::engine::select_engine
 
@@ -28,19 +27,20 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::migration::MIGRATION_COMPLETED_KEY;
+use crate::infrastructure::storage::migration::{resolve_app_data_dir, MIGRATION_COMPLETED_KEY};
 use crate::infrastructure::storage::AppStore;
 
 use super::acquisition::{PgAcquisitionMode, ACQUISITION_MODE};
 
-/// The engine the shipped build should default to. Serialized camelCase
-/// (`sqlite` / `postgres`).
+/// The engine the shipped build defaults to. Serialized camelCase
+/// (`postgres`).
+///
+/// Since Spec #2979 CU-1 the shipped default is UNCONDITIONALLY PostgreSQL, so
+/// the historical `Sqlite` variant was removed (no dead code).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ShippedDefault {
-    /// Persistence stays on SQLite (the fail-closed default).
-    Sqlite,
-    /// The cutover marker is present; slice 6 may default to PostgreSQL.
+    /// PostgreSQL — the unconditional shipped default since Spec #2979 CU-1.
     Postgres,
 }
 
@@ -53,7 +53,10 @@ pub struct CutoverReleaseGate {
     pub acquisition_mode: PgAcquisitionMode,
     /// Whether the `migration.postgres.completed` marker is present.
     pub migration_completed: bool,
-    /// The resolved shipped default (fail-closed to SQLite).
+    /// Whether the one-shot cutover leg will run on this boot
+    /// (`fredo.db exists && !migration_completed`).
+    pub migration_will_run: bool,
+    /// The resolved shipped default (unconditionally PostgreSQL since CU-1).
     pub shipped_default: ShippedDefault,
     /// Human-readable explanation of the decision.
     pub reason: String,
@@ -61,35 +64,31 @@ pub struct CutoverReleaseGate {
 
 /// The ONE decision rule slice 6 consumes.
 ///
-/// SQLite unless the cutover marker is present; fail-closed while it is absent.
-/// The acquisition mode is part of the gate's report but does NOT itself select
-/// PostgreSQL — a `bundled` build still requires the marker (Q-1 is an open
-/// product input and is never assumed here).
-pub fn decide_shipped_default(_mode: PgAcquisitionMode, migration_completed: bool) -> ShippedDefault {
-    if migration_completed {
-        ShippedDefault::Postgres
-    } else {
-        ShippedDefault::Sqlite
-    }
+/// Spec #2979 CU-1: the shipped default is UNCONDITIONALLY PostgreSQL. The
+/// acquisition mode and the cutover marker are reported by the gate but do NOT
+/// select the engine — the marker gates only the one-shot export leg.
+pub fn decide_shipped_default(_mode: PgAcquisitionMode, _migration_completed: bool) -> ShippedDefault {
+    ShippedDefault::Postgres
 }
 
-/// The human-readable decision reason (names the marker and the fail-closed
-/// posture so the gate is self-explanatory).
+/// Whether the one-shot cutover leg will run on this boot (Spec #2979 CU-1):
+/// a legacy `fredo.db` exists AND the marker is absent. A fresh install (no
+/// `fredo.db`) yields `false` (R-1.1/R-4.1).
+pub fn migration_will_run(fredo_db_exists: bool, migration_completed: bool) -> bool {
+    fredo_db_exists && !migration_completed
+}
+
+/// The human-readable decision reason (names the unconditional default, the
+/// acquisition mode, and the marker posture so the gate is self-explanatory).
 fn decision_reason(mode: PgAcquisitionMode, migration_completed: bool) -> String {
-    match (migration_completed, mode) {
-        (true, _) => format!(
-            "{} is present; shipped default flips to postgres",
-            MIGRATION_COMPLETED_KEY
-        ),
-        (false, PgAcquisitionMode::Bundled) => format!(
-            "{} is absent; fail-closed to sqlite (bundled acquisition cannot flip without the marker)",
-            MIGRATION_COMPLETED_KEY
-        ),
-        (false, PgAcquisitionMode::RuntimeDownload) => format!(
-            "{} is absent; fail-closed to sqlite",
-            MIGRATION_COMPLETED_KEY
-        ),
-    }
+    let marker = if migration_completed {
+        "present"
+    } else {
+        "absent"
+    };
+    format!(
+        "shipped default is unconditionally postgres ({mode:?} acquisition, {MIGRATION_COMPLETED_KEY} {marker})"
+    )
 }
 
 /// Read-only marker probe over the active store: `true` only when
@@ -97,6 +96,17 @@ fn decision_reason(mode: PgAcquisitionMode, migration_completed: bool) -> String
 /// fail-closed to `false` (SQLite).
 async fn migration_marker_present(store: &AppStore) -> bool {
     matches!(store.get(MIGRATION_COMPLETED_KEY).await, Ok(Some(_)))
+}
+
+/// Whether the legacy source `<app_data_dir>/fredo.db` exists (Spec #2979 CU-1).
+/// Uses the SAME app-data-dir resolver as the migration leg, so the reported
+/// `migrationWillRun` can never diverge from the leg's source.
+fn legacy_fredo_db_exists(app: &AppHandle) -> bool {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|os_dir| resolve_app_data_dir(&os_dir).join("fredo.db").exists())
+        .unwrap_or(false)
 }
 
 /// The read-only cutover release gate command (REQ-7.1). Registered in `lib.rs`.
@@ -107,9 +117,11 @@ pub async fn cutover_release_gate(app: AppHandle) -> CutoverReleaseGate {
         None => false,
     };
     let shipped_default = decide_shipped_default(ACQUISITION_MODE, migration_completed);
+    let will_run = migration_will_run(legacy_fredo_db_exists(&app), migration_completed);
     CutoverReleaseGate {
         acquisition_mode: ACQUISITION_MODE,
         migration_completed,
+        migration_will_run: will_run,
         shipped_default,
         reason: decision_reason(ACQUISITION_MODE, migration_completed),
     }
@@ -119,47 +131,53 @@ pub async fn cutover_release_gate(app: AppHandle) -> CutoverReleaseGate {
 mod tests {
     use super::*;
 
-    /// REQ-7.2: while the marker is absent the default stays SQLite — for BOTH
-    /// acquisition modes (a `bundled` build cannot flip without the marker).
+    /// CU-1: the shipped default is unconditionally PostgreSQL — for BOTH
+    /// acquisition modes, with and without the marker.
     #[test]
-    fn decide_shipped_default_is_fail_closed_without_the_marker() {
-        assert_eq!(
-            decide_shipped_default(PgAcquisitionMode::RuntimeDownload, false),
-            ShippedDefault::Sqlite
-        );
-        assert_eq!(
-            decide_shipped_default(PgAcquisitionMode::Bundled, false),
-            ShippedDefault::Sqlite
-        );
+    fn decide_shipped_default_is_unconditionally_postgres() {
+        for mode in [
+            PgAcquisitionMode::RuntimeDownload,
+            PgAcquisitionMode::Bundled,
+        ] {
+            for completed in [false, true] {
+                assert_eq!(
+                    decide_shipped_default(mode, completed),
+                    ShippedDefault::Postgres,
+                    "mode {mode:?} / marker {completed} must default to postgres"
+                );
+            }
+        }
     }
 
-    /// REQ-7.1: the default flips to PostgreSQL only once the marker is present.
+    /// CU-1: `migrationWillRun = fredo.db exists && !migration_completed`.
     #[test]
-    fn decide_shipped_default_flips_only_with_the_marker() {
-        assert_eq!(
-            decide_shipped_default(PgAcquisitionMode::RuntimeDownload, true),
-            ShippedDefault::Postgres
+    fn migration_will_run_requires_a_source_and_no_marker() {
+        assert!(
+            !migration_will_run(false, false),
+            "a fresh install (no fredo.db) runs no leg"
         );
-        assert_eq!(
-            decide_shipped_default(PgAcquisitionMode::Bundled, true),
-            ShippedDefault::Postgres
+        assert!(
+            migration_will_run(true, false),
+            "an upgraded install runs the one-shot leg"
         );
+        assert!(
+            !migration_will_run(true, true),
+            "the marker skips the leg on every subsequent startup"
+        );
+        assert!(!migration_will_run(false, true));
     }
 
-    /// The reason names the marker and the fail-closed posture.
+    /// The reason names the unconditional default and the marker posture.
     #[test]
-    fn decision_reason_names_the_marker() {
-        assert!(
-            decision_reason(PgAcquisitionMode::RuntimeDownload, false)
-                .contains(MIGRATION_COMPLETED_KEY)
-        );
-        assert!(
-            decision_reason(PgAcquisitionMode::Bundled, false).contains("fail-closed"),
-            "a bundled build must be explicitly fail-closed without the marker"
-        );
-        assert!(
-            decision_reason(PgAcquisitionMode::RuntimeDownload, true).contains("flips to postgres")
-        );
+    fn decision_reason_names_the_unconditional_default_and_marker() {
+        let absent = decision_reason(PgAcquisitionMode::RuntimeDownload, false);
+        assert!(absent.contains("unconditionally postgres"), "{absent}");
+        assert!(absent.contains(MIGRATION_COMPLETED_KEY), "{absent}");
+        assert!(absent.contains("absent"), "{absent}");
+
+        let present = decision_reason(PgAcquisitionMode::Bundled, true);
+        assert!(present.contains("unconditionally postgres"), "{present}");
+        assert!(present.contains("present"), "{present}");
     }
 
     /// The read-only probe is fail-closed: absent ⇒ false; present ⇒ true.
@@ -191,13 +209,15 @@ mod tests {
         let gate = CutoverReleaseGate {
             acquisition_mode: PgAcquisitionMode::RuntimeDownload,
             migration_completed: false,
-            shipped_default: ShippedDefault::Sqlite,
+            migration_will_run: true,
+            shipped_default: ShippedDefault::Postgres,
             reason: "test".to_string(),
         };
         let json = serde_json::to_value(&gate).expect("serialize");
         assert_eq!(json["acquisitionMode"], "runtimeDownload");
         assert_eq!(json["migrationCompleted"], false);
-        assert_eq!(json["shippedDefault"], "sqlite");
+        assert_eq!(json["migrationWillRun"], true);
+        assert_eq!(json["shippedDefault"], "postgres");
         assert_eq!(json["reason"], "test");
 
         assert_eq!(

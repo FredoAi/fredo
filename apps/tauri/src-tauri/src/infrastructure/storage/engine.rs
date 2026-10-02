@@ -17,7 +17,7 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use super::migration::{MigrationGate, MigrationOutcome, MigrationStatusView};
@@ -93,6 +93,10 @@ pub enum Dialect {
 /// - `read_only` is a second handle pinned with `PRAGMA query_only=ON`, the
 ///   incumbent read-only guard `ProjectionEngine` established.
 pub struct SqliteEngine {
+    /// The database file this engine was opened on. Exposed via [`Self::path`]
+    /// so `AppStore` can locate the sibling control plane (`control.db`) without
+    /// re-deriving the app-data dir (Spec #2979 CU-1).
+    db_path: PathBuf,
     write: Mutex<Connection>,
     read_only: Mutex<Connection>,
 }
@@ -117,9 +121,16 @@ impl SqliteEngine {
         read_only.execute_batch("PRAGMA query_only=ON;")?;
 
         Ok(Arc::new(SqliteEngine {
+            db_path: db_path.to_path_buf(),
             write: Mutex::new(write),
             read_only: Mutex::new(read_only),
         }))
+    }
+
+    /// The database file this engine was opened on. The control-plane resolver
+    /// uses its parent as the resolved app-data dir (Spec #2979 CU-1).
+    pub fn path(&self) -> &Path {
+        &self.db_path
     }
 
     /// Lock the shared write connection (poison-recovering).
@@ -135,8 +146,8 @@ impl SqliteEngine {
     /// Read one `settings` KV value from the control plane.
     ///
     /// A missing table, a missing key, or any read error yields `None` -- the
-    /// selection contract's "absent => default" rule (fail-closed to SQLite),
-    /// never a hard failure at selection time.
+    /// selection contract's "absent => default" rule (the default is PostgreSQL
+    /// since Spec #2979 CU-1), never a hard failure at selection time.
     fn kv_get(&self, key: &str) -> Option<String> {
         let conn = lock(&self.write);
         conn.query_row(
@@ -289,16 +300,22 @@ pub enum EngineChoice {
     Postgres,
 }
 
-/// Resolve the engine choice (REQ-1/EARS-1.1).
+/// Resolve the engine choice (REQ-1/EARS-1.1; Spec #2979 CU-1).
 ///
-/// Precedence: `FREDO_STORAGE_ENGINE` (`sqlite` | `postgres`, case-insensitive)
-/// OVERRIDES the control-plane KV key `postgres.enabled` (`"true"` => Postgres,
-/// case-insensitive). An unset, blank, or unrecognized env value is treated as
-/// unset and falls back to the KV key; an absent (or unreadable) KV key =>
-/// SQLite -- the fail-closed default.
-pub fn select_engine(sqlite: &SqliteEngine) -> EngineChoice {
+/// The default is **PostgreSQL** (was SQLite). Precedence:
+/// `FREDO_STORAGE_ENGINE` (`postgres`, case-insensitive) selects PostgreSQL and
+/// OVERRIDES the control-plane KV key `postgres.enabled`. The legacy `sqlite`
+/// env value is REMOVED as a data-plane selection: it is inert/rejected and can
+/// never select SQLite (the control plane is not engine-selected). When the env
+/// is unset/blank/unrecognized, an explicit control-plane opt-out
+/// (`postgres.enabled = "false"`) still selects SQLite for a bounded backout;
+/// every other value (including absent) => PostgreSQL.
+///
+/// `control` is the DEDICATED control-plane engine (`control.db`), not the
+/// data-plane engine.
+pub fn select_engine(control: &SqliteEngine) -> EngineChoice {
     let env = std::env::var(STORAGE_ENGINE_ENV).ok();
-    let kv = sqlite.kv_get(PG_ENABLED_KEY);
+    let kv = control.kv_get(PG_ENABLED_KEY);
     resolve_engine_choice(env.as_deref(), kv.as_deref())
 }
 
@@ -307,12 +324,15 @@ pub fn select_engine(sqlite: &SqliteEngine) -> EngineChoice {
 fn resolve_engine_choice(env: Option<&str>, kv_enabled: Option<&str>) -> EngineChoice {
     match env.map(str::trim) {
         Some(value) if value.eq_ignore_ascii_case("postgres") => EngineChoice::Postgres,
-        Some(value) if value.eq_ignore_ascii_case("sqlite") => EngineChoice::Sqlite,
+        // `sqlite` is no longer an accepted data-plane selection (CU-1): the
+        // value is inert/rejected and falls through to the PostgreSQL default.
+        Some(value) if value.eq_ignore_ascii_case("sqlite") => EngineChoice::Postgres,
         // Unset, blank, or an unrecognized value: no override intent, so consult
-        // the KV key (a typo must not silently *disable* an enabled engine).
+        // the legacy control-plane opt-out. Only an explicit `"false"` keeps
+        // SQLite; absent/default => PostgreSQL.
         _ => match kv_enabled.map(str::trim) {
-            Some(value) if value.eq_ignore_ascii_case("true") => EngineChoice::Postgres,
-            _ => EngineChoice::Sqlite,
+            Some(value) if value.eq_ignore_ascii_case("false") => EngineChoice::Sqlite,
+            _ => EngineChoice::Postgres,
         },
     }
 }
@@ -900,29 +920,58 @@ mod tests {
     // -- selection precedence (pure rule) -------------------------------------
 
     #[test]
-    fn resolve_engine_choice_env_overrides_kv() {
-        // The env var is authoritative in BOTH directions.
+    fn resolve_engine_choice_env_postgres_overrides_kv() {
+        // The `postgres` env override is authoritative over any KV value.
         assert_eq!(
             resolve_engine_choice(Some("postgres"), Some("false")),
             EngineChoice::Postgres
         );
-        assert_eq!(
-            resolve_engine_choice(Some("sqlite"), Some("true")),
-            EngineChoice::Sqlite
-        );
     }
 
     #[test]
-    fn resolve_engine_choice_falls_back_to_kv() {
+    fn resolve_engine_choice_defaults_to_postgres() {
+        // The CU-1 flip: absent env + absent/`true` KV => PostgreSQL.
+        assert_eq!(resolve_engine_choice(None, None), EngineChoice::Postgres);
         assert_eq!(
             resolve_engine_choice(None, Some("true")),
             EngineChoice::Postgres
         );
         assert_eq!(
+            resolve_engine_choice(None, Some("")),
+            EngineChoice::Postgres
+        );
+    }
+
+    #[test]
+    fn resolve_engine_choice_honours_an_explicit_kv_opt_out() {
+        // The legacy control-plane `postgres.enabled=false` is the ONE bounded
+        // SQLite opt-out (backout); it is not an env-selected data plane.
+        assert_eq!(
             resolve_engine_choice(None, Some("false")),
             EngineChoice::Sqlite
         );
-        assert_eq!(resolve_engine_choice(None, None), EngineChoice::Sqlite);
+        assert_eq!(
+            resolve_engine_choice(None, Some("FALSE")),
+            EngineChoice::Sqlite
+        );
+    }
+
+    #[test]
+    fn resolve_engine_choice_rejects_the_sqlite_env_value() {
+        // `sqlite` is removed as a data-plane selection (CU-1): inert/rejected,
+        // so it can never select SQLite — even alongside an opt-out KV.
+        assert_eq!(
+            resolve_engine_choice(Some("sqlite"), None),
+            EngineChoice::Postgres
+        );
+        assert_eq!(
+            resolve_engine_choice(Some("sqlite"), Some("false")),
+            EngineChoice::Postgres
+        );
+        assert_eq!(
+            resolve_engine_choice(Some("SQLITE"), Some("true")),
+            EngineChoice::Postgres
+        );
     }
 
     #[test]
@@ -941,6 +990,11 @@ mod tests {
         );
         assert_eq!(
             resolve_engine_choice(Some("bogus"), None),
+            EngineChoice::Postgres
+        );
+        // A blank/unknown env still honours an explicit opt-out.
+        assert_eq!(
+            resolve_engine_choice(Some("bogus"), Some("false")),
             EngineChoice::Sqlite
         );
     }
@@ -954,6 +1008,10 @@ mod tests {
         assert_eq!(
             resolve_engine_choice(None, Some("TRUE")),
             EngineChoice::Postgres
+        );
+        assert_eq!(
+            resolve_engine_choice(None, Some("False")),
+            EngineChoice::Sqlite
         );
     }
 
@@ -969,13 +1027,13 @@ mod tests {
     }
 
     #[test]
-    fn select_engine_env_sqlite_overrides_enabled_kv() {
+    fn select_engine_env_sqlite_is_inert() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _env = set_env(STORAGE_ENGINE_ENV, "sqlite");
         let dir = tempfile::tempdir().unwrap();
         let engine = make_sqlite_engine(dir.path());
         seed_kv(&engine, PG_ENABLED_KEY, "true");
-        assert_eq!(select_engine(&engine), EngineChoice::Sqlite);
+        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
     }
 
     #[test]
@@ -989,12 +1047,22 @@ mod tests {
     }
 
     #[test]
-    fn select_engine_defaults_to_sqlite_when_nothing_is_set() {
+    fn select_engine_defaults_to_postgres_when_nothing_is_set() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _env = unset_env(STORAGE_ENGINE_ENV);
         let dir = tempfile::tempdir().unwrap();
-        // No `settings` table at all -> absent KV -> SQLite (fail-closed).
+        // No `settings` table at all -> absent KV -> PostgreSQL (CU-1 default).
         let engine = make_sqlite_engine(dir.path());
+        assert_eq!(select_engine(&engine), EngineChoice::Postgres);
+    }
+
+    #[test]
+    fn select_engine_honours_the_explicit_kv_opt_out() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = unset_env(STORAGE_ENGINE_ENV);
+        let dir = tempfile::tempdir().unwrap();
+        let engine = make_sqlite_engine(dir.path());
+        seed_kv(&engine, PG_ENABLED_KEY, "false");
         assert_eq!(select_engine(&engine), EngineChoice::Sqlite);
     }
 

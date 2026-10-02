@@ -1329,7 +1329,12 @@ mod tests {
     /// in-process (AppStore has no delete API). Used to prove the pass is
     /// idempotent without a process restart.
     fn clear_marker(dir: &Path, key: &str) {
-        let conn = Connection::open(dir.join("fredo.db")).expect("open db for marker clear");
+        // Spec #2979 CU-1: the synchronous backfill markers live on the control
+        // plane (`control.db`), not the data-plane `fredo.db`.
+        let conn = Connection::open(
+            dir.join(crate::infrastructure::storage::CONTROL_DB_FILENAME),
+        )
+        .expect("open db for marker clear");
         conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
             .expect("clear marker");
     }

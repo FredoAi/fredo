@@ -22,54 +22,101 @@ pub use migration::{
 };
 
 use anyhow::{anyhow, Result};
-use rusqlite::params;
+use rusqlite::{params, Connection, OpenFlags};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// The dedicated control-plane database filename (Spec #2979 CU-1).
+pub const CONTROL_DB_FILENAME: &str = "control.db";
+
+/// Resolve the dedicated control-plane database path under the resolved
+/// app-data dir (Spec #2979 CU-1): `<app_data_dir>/control.db`.
+///
+/// The synchronous control plane was split off `fredo.db` onto this file so
+/// `fredo.db` can be retained read-only (AC4/NFR); it is the ONE rule the
+/// control-plane store uses.
+pub fn resolve_control_db_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(CONTROL_DB_FILENAME)
+}
+
+/// The bounded ceiling on how many legacy `settings` rows the first-boot carry
+/// reads out of `fredo.db` (Spec #2979 CU-1; G-263 — no unbounded read).
+const CONTROL_CARRY_MAX_ROWS: i64 = 1_000;
+
 /// Persistent key-value store (the `settings` table), split into two planes
-/// (Spec #2975, ST-3).
+/// (Spec #2975, ST-3; Spec #2979 CU-1).
 ///
 /// - **Control plane** ([`Self::control_get`] / [`Self::control_set`]): ALWAYS
-///   synchronous SQLite on the shared write connection. It holds the keys that
-///   must be readable *before* PostgreSQL exists (`postgres.enabled`,
-///   `postgres_pid`, `postgres.password`) and the synchronous startup config
-///   path. These keys NEVER route through the pool.
+///   synchronous SQLite, now on its OWN `<app_data_dir>/control.db` (Spec #2979
+///   CU-1). It holds the keys that must be readable *before* PostgreSQL exists
+///   (`postgres.enabled`, `postgres_pid`, `postgres.password`) and the
+///   synchronous startup config path. These keys NEVER route through the pool.
 /// - **Data plane** ([`Self::get`] / [`Self::set`], async): routed through the
-///   shared [`EngineHandle`] and therefore engine-selected — SQLite by default,
-///   PostgreSQL once the supervisor installs the pool. Behavior is byte-equal to
-///   the incumbent SQLite path while the engine stays on SQLite.
+///   shared [`EngineHandle`] and therefore engine-selected — SQLite by default
+///   until CU-2 removes that arm, PostgreSQL once the supervisor installs the
+///   pool.
 ///
-/// The control-plane SQLite engine is captured at [`Self::open`] so it survives
-/// the swap-once handle's `SQLite -> PostgreSQL` transition: after the pool is
-/// installed the handle reports PostgreSQL, but the control plane keeps serving
-/// the synchronous startup/lifecycle reads.
+/// The control-plane SQLite engine is opened on `control.db` at [`Self::open`]
+/// so it is independent of the swap-once handle's `SQLite -> PostgreSQL`
+/// transition: after the pool is installed the handle reports PostgreSQL, but
+/// the control plane keeps serving the synchronous startup/lifecycle reads.
 pub struct AppStore {
     /// The shared swap-once engine handle (data plane).
     engine: Arc<EngineHandle>,
-    /// The always-SQLite control plane (shared write connection).
+    /// The always-SQLite control plane (`control.db`, shared write connection).
     control: Arc<SqliteEngine>,
 }
 
 impl AppStore {
-    /// Wrap the shared engine handle and materialize the `settings` schema on the
-    /// SQLite control plane.
+    /// Open the dedicated control plane and wrap the shared engine handle.
     ///
-    /// The handle MUST start on SQLite (the production `lib.rs` order: the shared
-    /// `SqliteEngine` exists before the supervisor can ever install PostgreSQL);
-    /// a handle already on PostgreSQL has no control plane and is rejected.
+    /// The control plane lives on `<app_data_dir>/control.db`, where the
+    /// app-data dir is the parent of the shared data-plane SQLite engine's
+    /// `fredo.db` (the production `lib.rs` order opens that engine first). The
+    /// handle MUST therefore start on SQLite; a handle already on PostgreSQL has
+    /// no synchronous SQLite source and is rejected.
+    ///
+    /// On the FIRST boot of this control plane (no rows yet) the legacy
+    /// `settings` rows are carried out of the existing `<app_data_dir>/fredo.db`
+    /// READ-ONLY and seeded into `control.db` (bounded). `fredo.db` is never
+    /// written by this path.
     pub fn open(engine: Arc<EngineHandle>) -> Result<Self> {
         let active = engine.engine();
-        let control = active.sqlite().cloned().ok_or_else(|| {
-            anyhow!("AppStore requires the shared SQLite control engine at open")
+        let data_engine = active.sqlite().cloned().ok_or_else(|| {
+            anyhow!("AppStore requires the shared SQLite engine at open to resolve the control plane")
         })?;
+        let app_data_dir = data_engine
+            .path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
 
+        let control = SqliteEngine::open(&resolve_control_db_path(&app_data_dir))?;
         control.write_conn().execute_batch(
             "CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );",
         )?;
+        // The data-plane SQLite engine (still active until the PostgreSQL pool
+        // installs; its SQLite arm is removed by CU-2) keeps its OWN `settings`
+        // schema, so the async `get`/`set` path stays byte-compatible on the
+        // SQLite arm while the control plane has moved to `control.db`.
+        data_engine.write_conn().execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )?;
+        carry_legacy_settings(&app_data_dir, &control)?;
 
         Ok(AppStore { engine, control })
+    }
+
+    /// The dedicated control-plane engine (`control.db`). Used by `lib.rs` to
+    /// resolve the engine selection from the control plane (Spec #2979 CU-1).
+    pub fn control_engine(&self) -> &Arc<SqliteEngine> {
+        &self.control
     }
 
     /// Test-only convenience: open a SQLite-backed store at `<data_dir>/fredo.db`.
@@ -167,6 +214,62 @@ impl AppStore {
     }
 }
 
+/// First-boot carry (Spec #2979 CU-1): when `control.db` has no rows yet and a
+/// legacy `<app_data_dir>/fredo.db` exists, read its `settings` rows through a
+/// READ-ONLY connection (bounded by [`CONTROL_CARRY_MAX_ROWS`]) and seed them
+/// into the control plane. A missing/unreadable/table-less legacy db is a
+/// no-op — the carry never fails a boot and never writes `fredo.db`.
+fn carry_legacy_settings(app_data_dir: &Path, control: &SqliteEngine) -> Result<()> {
+    // First boot only: an already-populated control plane is authoritative.
+    let existing: i64 = control
+        .write_conn()
+        .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+        .unwrap_or(0);
+    if existing > 0 {
+        return Ok(());
+    }
+
+    let legacy_path = app_data_dir.join("fredo.db");
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+
+    let rows = read_legacy_settings(&legacy_path);
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut conn = control.write_conn();
+    let tx = conn.transaction()?;
+    for (key, value) in &rows {
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Read at most [`CONTROL_CARRY_MAX_ROWS`] `settings` rows from `path` through a
+/// READ-ONLY connection. Any error (missing file, missing table, unreadable) is
+/// treated as "nothing to carry".
+fn read_legacy_settings(path: &Path) -> Vec<(String, String)> {
+    let Ok(conn) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT key, value FROM settings LIMIT ?1") else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![CONTROL_CARRY_MAX_ROWS], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(|row| row.ok()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,7 +329,16 @@ mod tests {
         assert_eq!(result, Some("fr".to_string()));
     }
 
-    // ── REQ-1/EARS-1.3: control plane is ALWAYS synchronous SQLite ─────────
+    // ── Spec #2979 CU-1: the control plane lives on `control.db` ───────────
+
+    #[test]
+    fn resolve_control_db_path_is_control_db_under_the_data_dir() {
+        assert_eq!(
+            resolve_control_db_path(Path::new("C:/appdata")),
+            PathBuf::from("C:/appdata").join(CONTROL_DB_FILENAME)
+        );
+        assert_eq!(CONTROL_DB_FILENAME, "control.db");
+    }
 
     #[tokio::test]
     async fn control_plane_round_trips_on_sqlite() {
@@ -255,8 +367,8 @@ mod tests {
             "postgres://postgres:secret@127.0.0.1:1/none",
         ))));
 
-        // ...but the CONTROL plane (the 3 control keys) still round-trips on the
-        // captured SQLite write connection — it never routes through the pool.
+        // ...but the CONTROL plane (its own `control.db`) still round-trips — it
+        // never routes through the pool.
         store.control_set("postgres.password", "loopback-secret").unwrap();
         assert_eq!(
             store.control_get("postgres.password").unwrap(),
@@ -272,19 +384,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn data_and_control_planes_share_the_sqlite_table_by_default() {
-        let (_dir, store) = make_store();
-        // On the default SQLite engine the data plane and the control plane are
-        // the SAME table, so a control write is visible to a data read.
+    async fn data_and_control_planes_are_separate_files() {
+        let (dir, store) = make_store();
+        // CU-1: the control plane is its OWN file under the resolved app-data
+        // dir, so `fredo.db` is not the control plane any more.
+        assert!(
+            dir.path().join(CONTROL_DB_FILENAME).exists(),
+            "the control plane must be materialized on control.db"
+        );
         store.control_set("shared", "value").unwrap();
         assert_eq!(
             store.get("shared").await.unwrap(),
-            Some("value".to_string())
+            None,
+            "a control-plane write must not be visible to the data plane"
         );
-        store.set("shared", "updated").await.unwrap();
+        store.set("data-only", "value").await.unwrap();
         assert_eq!(
-            store.control_get("shared").unwrap(),
-            Some("updated".to_string())
+            store.control_get("data-only").unwrap(),
+            None,
+            "a data-plane write must not be visible to the control plane"
+        );
+    }
+
+    #[tokio::test]
+    async fn control_plane_carries_legacy_settings_on_first_open_only() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed a legacy `fredo.db` settings row (the pre-CU-1 control plane).
+        {
+            let legacy = SqliteEngine::open(&dir.path().join("fredo.db")).unwrap();
+            let conn = legacy.write_conn();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('postgres.enabled', 'false')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let handle = EngineHandle::new(StoreEngine::Sqlite(
+            SqliteEngine::open(&dir.path().join("fredo.db")).unwrap(),
+        ));
+        let store = AppStore::open(handle).unwrap();
+        assert_eq!(
+            store.control_get("postgres.enabled").unwrap(),
+            Some("false".to_string()),
+            "the legacy settings row must be carried into control.db"
+        );
+
+        // A later control-plane change is authoritative: a re-open must NOT
+        // re-carry the stale legacy value (first boot only).
+        store.control_set("postgres.enabled", "true").unwrap();
+        let handle2 = EngineHandle::new(StoreEngine::Sqlite(
+            SqliteEngine::open(&dir.path().join("fredo.db")).unwrap(),
+        ));
+        let store2 = AppStore::open(handle2).unwrap();
+        assert_eq!(
+            store2.control_get("postgres.enabled").unwrap(),
+            Some("true".to_string()),
+            "the carry must run once; control.db is authoritative afterwards"
         );
     }
 
@@ -298,7 +461,7 @@ mod tests {
         ))));
         assert!(
             AppStore::open(handle).is_err(),
-            "opening an AppStore without a SQLite control engine must fail"
+            "opening an AppStore without a SQLite source for the control plane must fail"
         );
     }
 }

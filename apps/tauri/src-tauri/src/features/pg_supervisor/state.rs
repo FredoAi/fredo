@@ -5,8 +5,11 @@
 //! ([`super::runtime`]) / startup-safety primitives ([`super::sweep`],
 //! [`super::lock`]). It owns:
 //!
-//! * the disable-by-default decision (`postgres.enabled` absent ⇒ nothing is
-//!   locked, swept, or spawned — SQLite persistence is untouched, R-1.4);
+//! * the boot decision: since Spec #2979 CU-1 the engine default is PostgreSQL,
+//!   so the supervisor starts unless the legacy control-plane key
+//!   `postgres.enabled=false` opts out (nothing is locked, swept, or spawned —
+//!   SQLite persistence is untouched, R-1.4). The PID/password markers it reads
+//!   and writes live on the dedicated control plane (`control.db`);
 //! * the exclusive data-dir lock acquired BEFORE the orphan sweep (R-4.5);
 //! * the LAZY background start — `lib.rs` setup NEVER awaits `setup()/start()/
 //!   probe_ready()` (G-273/R-2.3), so the webview shell renders while the
@@ -829,6 +832,28 @@ mod tests {
         }
         store.control_set(PG_ENABLED_KEY, "true").expect("enable");
         assert!(pg_enabled(&store));
+    }
+
+    #[test]
+    fn the_postgres_password_lives_on_the_control_plane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_store(dir.path());
+
+        let password = ensure_password(&store);
+        assert!(!password.is_empty(), "a password is generated on first use");
+        assert_eq!(
+            store.control_get(PG_PASSWORD_KEY).expect("read"),
+            Some(password.clone()),
+            "the password is persisted on the control plane"
+        );
+        assert!(
+            dir.path()
+                .join(crate::infrastructure::storage::CONTROL_DB_FILENAME)
+                .exists(),
+            "the control plane must be materialized on control.db (CU-1)"
+        );
+        // Reused, never regenerated.
+        assert_eq!(ensure_password(&store), password);
     }
 
     #[test]

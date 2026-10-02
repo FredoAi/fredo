@@ -167,8 +167,25 @@ pub fn run() {
             // supervisor can read the resolved selection.
             let sqlite_engine = SqliteEngine::open(&data_dir.join("fredo.db"))
                 .expect("Failed to open the shared storage engine");
-            let engine_choice = select_engine(&sqlite_engine);
             let engine_handle = EngineHandle::new(StoreEngine::Sqlite(sqlite_engine));
+
+            // -- Control-plane store (Spec #2979 CU-1) -------------------------
+            // The synchronous control plane now lives on its OWN
+            // `<data_dir>/control.db` (split off `fredo.db`), so `fredo.db` can
+            // be retained read-only. `AppStore::open` also carries the legacy
+            // `settings` rows out of `fredo.db` READ-ONLY on first boot. The
+            // async data plane (`get`/`set`) still sits ON the shared handle;
+            // the setup closure below reads config via the synchronous control
+            // API — never `block_on`.
+            let app_store = Arc::new(
+                AppStore::open(engine_handle.clone()).expect("Failed to open settings store"),
+            );
+            app.manage(app_store.clone());
+
+            // -- Engine selection (Spec #2979 CU-1) ----------------------------
+            // Resolve the data-plane selection from the CONTROL plane; the
+            // default is PostgreSQL (the legacy `sqlite` env value is rejected).
+            let engine_choice = select_engine(app_store.control_engine());
             let storage_state = StorageEngineState::new(engine_handle.clone(), engine_choice);
             // Spec #2975 ST-2 rework: register the startup schema initializers
             // BEFORE the supervisor starts, so the registry is populated before
@@ -197,24 +214,14 @@ pub fn run() {
             // takes the exclusive side of this SAME gate.
             let migration_gate = app.state::<Arc<StorageEngineState>>().migration_gate();
 
-            // -- SQLite settings store (Spec #2975 ST-3) -----------------------
-            // The KV store sits ON the shared handle: the async data plane
-            // (`get`/`set`) is engine-selected, while the synchronous control
-            // plane (`control_get`/`control_set`) stays on SQLite. The setup
-            // closure below stays synchronous and reads config via the control
-            // API — never `block_on`.
-            let app_store = Arc::new(
-                AppStore::open(engine_handle.clone()).expect("Failed to open settings store"),
-            );
-            app.manage(app_store.clone());
-
             // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
-            // Disabled by default (`postgres.enabled` absent ⇒ no lock, no
-            // sweep, no spawn; SQLite persistence unchanged — R-1.4). When
-            // enabled it acquires the exclusive data-dir lock BEFORE the orphan
-            // sweep and LAZILY starts the postmaster on a background task:
-            // `setup` NEVER awaits the boot (G-273/R-2.3), so the webview shell
-            // renders while PostgreSQL starts.
+            // Since Spec #2979 CU-1 the engine default is PostgreSQL, so the
+            // supervisor starts by default; the legacy `postgres.enabled=false`
+            // control key is the bounded SQLite opt-out (R-1.4). When enabled it
+            // acquires the exclusive data-dir lock BEFORE the orphan sweep and
+            // LAZILY starts the postmaster on a background task: `setup` NEVER
+            // awaits the boot (G-273/R-2.3), so the webview shell renders while
+            // PostgreSQL starts.
             features::pg_supervisor::start_supervisor(app.handle());
 
             // -- FeatureStore (generic typed-column store for features) --------
