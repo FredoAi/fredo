@@ -25,6 +25,11 @@
   the snapshot over it.
   **Edge / FAIL:** any byte change to `fredo.db` during the migration leg; a deleted/renamed source;
   a migration that "helpfully" rewrites the source.
+  **Round 4 (2026-10-02) PASS.** Every `TableParity` reports `readOnlySource:true`; the export reads the read-only
+  `VACUUM INTO` snapshot (`%APPDATA%\com.fredo.app\migration\fredo.pre-cutover.db`, 3,967,512,576 bytes), never the
+  live file. The live `fredo.db` did grow during the window (4,029,865,984 → 4,067,405,824 bytes) from the app's own
+  pre-flip OTLP ingestion — not the migration leg. The executed backout restored the pre-cutover `fredo.db` byte-exact
+  (SHA-256 `D3A08E90…BCD3D4`, size 4,029,865,984).
 
 - [ ] **R-2 (`telemetry_spans` stays strictly READ-ONLY):** the migration export and the canonical
   backfill never write `telemetry_spans` (or `telemetry_logs`/`telemetry_metrics`); the read path
@@ -48,6 +53,10 @@
   `agent_session_rows`, `SpanStore` `telemetry_*`) serves from the ONE shared PostgreSQL pool with
   the slice-2/slice-3 semantics unchanged.
   **Edge / FAIL:** a store still reading SQLite after the flip; a per-store connection.
+  **Round 4 (2026-10-02) PASS.** After the flip the app served from the migrated PG store: a same-instant managed-`psql`
+  read (db `postgres`, port 56704) showed counts ABOVE the cutover parity snapshot (e.g. `chat_rows` 7,004 vs 6,982,
+  `telemetry_spans` 7,739 vs 7,708) — the stores were writing to PG post-flip. A second startup skipped the export
+  (`Skipped`, 0 tables) and stayed on postgres.
 
 - [ ] **R-6 (RTDB row-pipeline contract unchanged):** `infrastructure/rtdb/*` classifier / merge /
   flush / query semantics and the row wire types (`RowDelivery` / `RowDeliveryBatch`) are
