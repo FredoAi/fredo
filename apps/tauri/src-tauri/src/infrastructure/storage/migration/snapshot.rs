@@ -1,10 +1,13 @@
 //! Pre-cutover snapshot, verification, and the executable SQLite backout
 //! (ST-3, R-3.1/R-3.3/R-3.4).
 //!
-//! - [`take_snapshot`] runs `PRAGMA wal_checkpoint(TRUNCATE)` then
-//!   `VACUUM INTO <migration_dir>/fredo.pre-cutover.db`. Exactly ONE snapshot is
-//!   kept, overwritten per attempt, and never auto-deleted (Q-13) — it IS the
-//!   backout. `fredo.db` itself is never mutated or deleted by the migration leg.
+//! - [`take_snapshot`] opens the source `fredo.db` with a **strictly read-only**
+//!   handle and runs `VACUUM INTO <migration_dir>/fredo.pre-cutover.db`. The
+//!   read-only source is never written: `VACUUM INTO` reads a consistent
+//!   pre-cutover view (including committed WAL frames) and writes ONLY the
+//!   snapshot target. Exactly ONE snapshot is kept, overwritten per attempt, and
+//!   never auto-deleted (Q-13) — it IS the backout. `fredo.db` itself is never
+//!   mutated or deleted by the migration leg.
 //! - [`verify_snapshot`] re-opens the snapshot read-only and recomputes the same
 //!   per-table counts/checksums, so a caller can compare them against the
 //!   pre-cutover values.
@@ -21,10 +24,10 @@
 //! overwritten per cutover attempt (a re-run after a failed parity gate replaces
 //! it), retained **read-only for the life of the release** alongside `fredo.db`,
 //! and pruned only at the NEXT release's cleanup — never automatically by the
-//! migration leg. `take_snapshot` never mutates the source `fredo.db`, and
-//! `verify_rollback` never mutates the snapshot or `fredo.db` (it opens the
-//! snapshot with a strictly read-only handle). This is the executable SQLite
-//! backout artifact.
+//! migration leg. `take_snapshot` opens the source `fredo.db` strictly read-only
+//! and never mutates it, and `verify_rollback` never mutates the snapshot or
+//! `fredo.db` (it opens the snapshot with a strictly read-only handle). This is
+//! the executable SQLite backout artifact.
 
 use std::path::{Path, PathBuf};
 
@@ -49,9 +52,6 @@ pub struct SnapshotRecord {
     pub path: PathBuf,
     /// ISO-8601 UTC creation timestamp.
     pub created_at: String,
-    /// `true` when the pre-snapshot `wal_checkpoint(TRUNCATE)` completed without
-    /// a busy result.
-    pub checkpointed: bool,
     /// The source `fredo.db` byte size at snapshot time.
     pub source_bytes: u64,
 }
@@ -64,10 +64,10 @@ pub fn take_snapshot(source_db: &Path, migration_dir: &Path) -> Result<SnapshotR
 
 /// Take the ONE pre-cutover snapshot, honouring the **G-275** fault seam.
 ///
-/// The source is opened read-write ONLY for the sanctioned
-/// `wal_checkpoint(TRUNCATE)` touch and the `VACUUM INTO` (which reads the
-/// source and writes the destination — it never mutates `fredo.db`). A missing
-/// source is an error, never an accidentally-created empty database.
+/// The source is opened with a **strictly read-only** handle and `VACUUM INTO`
+/// reads a consistent pre-cutover view of it (including committed WAL frames)
+/// while writing ONLY the snapshot destination — `fredo.db` is never mutated.
+/// A missing source is an error, never an accidentally-created empty database.
 ///
 /// When `fault` is [`MigrationFault::SnapshotFail`] the step fails closed before
 /// touching the source (no snapshot is written), so the caller installs nothing.
@@ -93,16 +93,11 @@ pub fn take_snapshot_with_fault(
     })?;
 
     let snapshot_path = migration_dir.join(SNAPSHOT_FILENAME);
-    let conn = Connection::open_with_flags(source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    // The source is opened STRICTLY READ-ONLY. `VACUUM INTO` reads a consistent
+    // pre-cutover view of the source (including committed WAL frames) and writes
+    // only the snapshot target, so `fredo.db` stays byte-identical.
+    let conn = Connection::open_with_flags(source_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("[migration] open source '{}'", source_db.display()))?;
-
-    // The sanctioned pre-snapshot touch: fold WAL content into the main db file
-    // so the snapshot is complete and self-contained.
-    let (busy, _log, _checkpointed): (i64, i64, i64) = conn
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .context("[migration] wal_checkpoint(TRUNCATE)")?;
 
     // One snapshot, overwritten per attempt (never auto-deleted).
     if snapshot_path.exists() {
@@ -127,7 +122,6 @@ pub fn take_snapshot_with_fault(
     Ok(SnapshotRecord {
         path: snapshot_path,
         created_at: Utc::now().to_rfc3339(),
-        checkpointed: busy == 0,
         source_bytes,
     })
 }
@@ -368,6 +362,80 @@ mod tests {
              INSERT INTO rows (id, note) VALUES (1, 'x'), (2, NULL), (3, 'z');",
         )
         .expect("seed source");
+    }
+
+    /// SHA-256 of a file's raw bytes — the byte-identity oracle for the source
+    /// `fredo.db` across a snapshot.
+    fn file_sha256(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(path).expect("read fixture file");
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// R-2.1/R-4.2/R-3: `take_snapshot` must leave the source `fredo.db`
+    /// **byte-identical**, even when the source is in WAL mode with committed
+    /// frames still sitting in an uncheckpointed `-wal`. This is the regression
+    /// gate that forces the strictly read-only `VACUUM INTO` mechanism — the old
+    /// `wal_checkpoint(TRUNCATE)` rewrote the main file and would fail here.
+    #[test]
+    fn take_snapshot_leaves_a_wal_source_byte_identical_and_captures_wal_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("fredo.db");
+        let migration_dir = dir.path().join("migration");
+
+        // Seed in WAL mode and KEEP the writer open: the last connection's close
+        // would otherwise checkpoint and truncate the WAL, hiding the edge.
+        let writer = Connection::open(&source).expect("open source writer");
+        let mode: String = writer
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .expect("set WAL mode");
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+        // No automatic checkpoint, so the committed frames stay in the WAL.
+        writer
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .expect("disable auto-checkpoint");
+        writer
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES ('a', '1'), ('b', 'two');
+                 CREATE TABLE rows (id INTEGER PRIMARY KEY, note TEXT);
+                 INSERT INTO rows (id, note) VALUES (1, 'x'), (2, NULL), (3, 'z');",
+            )
+            .expect("seed source");
+
+        // The committed frames must be in an uncheckpointed `-wal` (beyond the
+        // 32-byte WAL header) at snapshot time.
+        let wal = PathBuf::from(format!("{}-wal", source.display()));
+        assert!(wal.exists(), "an uncheckpointed -wal must be present");
+        assert!(
+            std::fs::metadata(&wal).expect("stat -wal").len() > 32,
+            "the -wal must carry committed frames"
+        );
+
+        let before = file_sha256(&source);
+        let record = take_snapshot(&source, &migration_dir).expect("take snapshot");
+        let after = file_sha256(&source);
+        assert_eq!(
+            before, after,
+            "take_snapshot must leave the WAL-mode source fredo.db byte-identical"
+        );
+
+        // The snapshot still carries EVERY row, including those only in the WAL.
+        let parity = verify_snapshot(&record.path).expect("verify snapshot");
+        let settings = parity
+            .iter()
+            .find(|table| table.table == "settings")
+            .expect("settings parity");
+        assert_eq!(settings.source_rows, 2);
+        let rows = parity
+            .iter()
+            .find(|table| table.table == "rows")
+            .expect("rows parity");
+        assert_eq!(rows.source_rows, 3);
+
+        drop(writer);
     }
 
     #[test]
