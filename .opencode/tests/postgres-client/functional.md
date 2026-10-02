@@ -158,3 +158,21 @@ action executing more than one statement; a plaintext credential sentinel in rep
 an unbounded result grid with no default row limit or Load more; Mission Monitor blank while
 live/stored rows exist = **FAIL**. UNVERIFIED rows (no reachable induction lever) are not
 PASS — the verdict fails closed (G-033).
+
+## Round — #2950 (2026-10-02, round 2, `spec/2950 @ adc8760`) — PASS 15/15 + smoke 8/8
+
+- **F-1..F-15 (QA-1..QA-15):** PASS live. Round-1 PASS rows re-confirmed; the round-2 fixes verified:
+  - **F-12 (QA-12):** the stored `defaultRowLimit` now drives the first result page — Settings →
+    PostgreSQL → 137 → Save → restart → `SELECT * FROM qa_big` = `Showing 137 rows`; set 150 →
+    restart → `Showing 150 rows` (round 1 was a hardcoded 100 → FAIL).
+  - **F-14 (QA-14):** killing the embedded postmaster mid-session now surfaces the typed
+    `connectionLost` ("connection lost: the server is no longer reachable") and marks the
+    connection disconnected (round 1 surfaced `timeout` and stayed "connected").
+  - **F-3 (QA-3):** the autocomplete duplicate-key React console warning is gone (two same-named
+    columns render with no warning).
+- **Live receipts:** managed-`psql` PG reads (`max_connections=100` untuned baseline, see verdict
+  caveat) + webview DOM/screenshots + `telemetry_spans` (session `ses_f019b4335ffe017iyGOEEkdk4u`,
+  4 spans / 2 chat / 1 tool; MM rendered `TOOLS (1)` + RESPONSE + TOTAL 24,273).
+- **Environment (disclosed, not a spec defect):** embedded-PG `max_connections=8` contention and an
+  orphaned postmaster/`:9223` socket across `dev-env -Action Down`; remedied with the FS-5 untuned
+  data dir + a bounded orphan kill.
