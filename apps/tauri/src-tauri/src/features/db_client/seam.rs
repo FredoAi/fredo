@@ -9,17 +9,22 @@
 //!   consumes `connect`/`auth`/`timeout`; ST-4 consumes `timeout`/`query` and
 //!   the connection-lost leg. When unset/blank/unknown the seam is inert.
 //! * [`DBCLIENT_STATE_DIR_ENV`] — the writable directory test fixtures (error
-//!   configs, sentinels) are read from. Defaults to
-//!   [`DEFAULT_DBCLIENT_STATE_DIR`] (`.opencode/tmp/2950/dbclient/`).
+//!   configs, sentinels) are read from. In production the default is
+//!   `<app_data_dir>/dbclient` (resolved at startup and passed to
+//!   [`crate::features::db_client::state::DbClientState::from_env`]); the
+//!   repo-relative [`DEFAULT_DBCLIENT_STATE_DIR`] remains only as the inert
+//!   test fallback. The env override always wins.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Failure-injection env var (`connect|auth|timeout|query`; inert when unset).
 pub const DBCLIENT_FORCE_FAIL_ENV: &str = "FREDO_DBCLIENT_FORCE_FAIL";
 /// Writable state-dir override env var (inert in production).
 pub const DBCLIENT_STATE_DIR_ENV: &str = "FREDO_DBCLIENT_STATE_DIR";
-/// Default state dir used when [`DBCLIENT_STATE_DIR_ENV`] is unset/blank.
+/// Repo-relative state dir used only as the inert fallback (tests / `Default`).
 pub const DEFAULT_DBCLIENT_STATE_DIR: &str = ".opencode/tmp/2950/dbclient";
+/// Production subdirectory under the Tauri app-data dir (`<app_data_dir>/dbclient`).
+pub const DBCLIENT_APP_SUBDIR: &str = "dbclient";
 
 /// The named stage a forced failure is injected at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,4 +86,50 @@ pub fn resolve_state_dir(override_value: Option<&str>) -> PathBuf {
 pub fn state_dir() -> PathBuf {
     let override_value = std::env::var(DBCLIENT_STATE_DIR_ENV).ok();
     resolve_state_dir(override_value.as_deref())
+}
+
+/// Resolve the state dir rooted at the Tauri app-data dir. A non-blank
+/// [`DBCLIENT_STATE_DIR_ENV`] override wins (test fixtures); otherwise the
+/// production default `<app_data_dir>/dbclient`. This is the resolver the app
+/// uses at startup — [`resolve_state_dir`] is retained only as the inert
+/// repo-relative fallback.
+pub fn resolve_state_dir_in(override_value: Option<&str>, app_data_dir: &Path) -> PathBuf {
+    match override_value {
+        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.join(DBCLIENT_APP_SUBDIR),
+    }
+}
+
+/// Resolve the active state dir from [`DBCLIENT_STATE_DIR_ENV`], rooted at
+/// `app_data_dir` in production.
+pub fn state_dir_in(app_data_dir: &Path) -> PathBuf {
+    let override_value = std::env::var(DBCLIENT_STATE_DIR_ENV).ok();
+    resolve_state_dir_in(override_value.as_deref(), app_data_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_data_default_is_used_only_when_the_override_is_blank() {
+        let app_data = Path::new("C:/app-data");
+        assert_eq!(
+            resolve_state_dir_in(None, app_data),
+            PathBuf::from("C:/app-data/dbclient")
+        );
+        assert_eq!(
+            resolve_state_dir_in(Some(""), app_data),
+            PathBuf::from("C:/app-data/dbclient")
+        );
+        assert_eq!(
+            resolve_state_dir_in(Some("  "), app_data),
+            PathBuf::from("C:/app-data/dbclient")
+        );
+        // A non-blank override always wins (test fixtures).
+        assert_eq!(
+            resolve_state_dir_in(Some(" C:/tmp/dbclient "), app_data),
+            PathBuf::from("C:/tmp/dbclient")
+        );
+    }
 }

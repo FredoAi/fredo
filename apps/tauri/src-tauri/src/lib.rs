@@ -749,7 +749,12 @@ pub fn run() {
             // The single managed state every `db_*` command takes. ST-1 resolves
             // only the G-275 seams and opens NO pool; ST-2 populates the
             // per-connection pool registry.
-            app.manage(Arc::new(features::db_client::state::DbClientState::from_env()));
+            // Spec #2950 ST-7 integration: the production state dir is rooted at
+            // the resolved app-data dir (`<app_data_dir>/dbclient`), never the
+            // repo-relative test fallback; `FREDO_DBCLIENT_STATE_DIR` still wins.
+            app.manage(Arc::new(features::db_client::state::DbClientState::from_env(
+                &data_dir,
+            )));
 
 
             // -- OTLP receiver (gRPC :4317 + HTTP :4318) -----------------------

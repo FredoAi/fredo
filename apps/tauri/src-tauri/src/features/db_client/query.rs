@@ -604,6 +604,22 @@ impl ResultCache {
         self.map.len()
     }
 
+    /// Drop every cached result set belonging to `connection_id` (R-3.3/R-3.4
+    /// memory bound). Called on `db_disconnect` and connection delete so a
+    /// closed session's result rows are never retained.
+    pub(crate) fn release_connection(&mut self, connection_id: &str) {
+        let ids: Vec<String> = self
+            .map
+            .iter()
+            .filter(|(_, set)| set.connection_id == connection_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.map.remove(&id);
+            self.order.retain(|existing| existing != &id);
+        }
+    }
+
     /// Slice a page from a cached set. `None` when the id is unknown or belongs
     /// to a different connection.
     pub(crate) fn page(
@@ -642,6 +658,15 @@ fn result_cache() -> &'static Mutex<ResultCache> {
     CACHE.get_or_init(|| Mutex::new(ResultCache::default()))
 }
 
+/// Release every cached result set for `connection_id` (R-3.3/R-3.4). Wired
+/// into `db_disconnect` and connection delete so a closed session's rows are
+/// reclaimed. A poisoned cache is ignored — there is nothing safe to release.
+pub fn release_connection_results(connection_id: &str) {
+    if let Ok(mut cache) = result_cache().lock() {
+        cache.release_connection(connection_id);
+    }
+}
+
 /// Insert a result set into the process-wide cache and return its id plus the
 /// first page (R-3.3).
 fn cache_result_set(
@@ -665,4 +690,42 @@ fn cache_result_set(
         .page(connection_id, &id, 0, DEFAULT_PAGE)
         .expect("just-inserted result set");
     (id, set)
+}
+
+#[cfg(test)]
+mod cache_release_tests {
+    use super::*;
+
+    fn insert(cache: &mut ResultCache, connection_id: &str, id: &str) {
+        cache.insert(
+            connection_id.to_string(),
+            id.to_string(),
+            Vec::new(),
+            Vec::new(),
+            false,
+            0,
+        );
+    }
+
+    #[test]
+    fn release_connection_drops_only_that_connections_result_sets() {
+        let mut cache = ResultCache::default();
+        insert(&mut cache, "a", "r1");
+        insert(&mut cache, "a", "r2");
+        insert(&mut cache, "b", "r3");
+        assert_eq!(cache.len(), 3);
+
+        cache.release_connection("a");
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.page("a", "r1", 0, DEFAULT_PAGE).is_none());
+        assert!(cache.page("a", "r2", 0, DEFAULT_PAGE).is_none());
+        assert!(cache.page("b", "r3", 0, DEFAULT_PAGE).is_some());
+
+        // The released ids are also gone from the eviction order, so a later
+        // insert cannot resurrect or double-count them.
+        insert(&mut cache, "c", "r4");
+        assert_eq!(cache.len(), 2);
+        assert!(cache.page("c", "r4", 0, DEFAULT_PAGE).is_some());
+    }
 }

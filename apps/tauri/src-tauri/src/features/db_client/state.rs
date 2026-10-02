@@ -8,7 +8,9 @@
 //!
 //! * the G-275 seam values ([`DbClientState::force_fail`],
 //!   [`DbClientState::state_dir`]) are resolved once at construction from the
-//!   environment ([`DbClientState::from_env`]);
+//!   environment ([`DbClientState::from_env`]), with the production default
+//!   state dir rooted at the Tauri app-data dir passed in at startup
+//!   (`<app_data_dir>/dbclient`); the `FREDO_DBCLIENT_STATE_DIR` override wins;
 //! * the per-connection external `sqlx` pool registry is provided here for
 //!   ST-2 (`db_connect`/`db_disconnect`), but ST-1 **opens no pool** — the map
 //!   starts empty.
@@ -45,9 +47,14 @@ impl DbClientState {
         }
     }
 
-    /// Build state by resolving the G-275 seams from the environment.
-    pub fn from_env() -> Self {
-        Self::new(seam::force_fail_stage(), seam::state_dir())
+    /// Build state by resolving the G-275 seams from the environment, rooting
+    /// the default state dir at the Tauri app-data dir resolved at startup.
+    /// `FREDO_DBCLIENT_STATE_DIR` still overrides (test fixtures).
+    pub fn from_env(app_data_dir: &Path) -> Self {
+        Self::new(
+            seam::force_fail_stage(),
+            seam::state_dir_in(app_data_dir),
+        )
     }
 
     /// The active forced-failure stage (`None` = inert).
@@ -87,7 +94,9 @@ impl DbClientState {
 }
 
 impl Default for DbClientState {
+    /// Inert fallback (no app-data dir available): the repo-relative test dir.
+    /// Production always constructs via [`DbClientState::from_env`].
     fn default() -> Self {
-        Self::from_env()
+        Self::new(seam::force_fail_stage(), seam::state_dir())
     }
 }

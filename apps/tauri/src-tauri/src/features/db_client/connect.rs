@@ -536,6 +536,9 @@ pub fn connection_delete_with(
         .map_err(|e| ProbeError::new(DbErrorKind::Other, e).to_messages())?;
     remove_file_if_exists(&history_path(state, id)).map_err(|e| e.to_messages())?;
     remove_file_if_exists(&saved_queries_path(state, id)).map_err(|e| e.to_messages())?;
+    // R-3.3/R-3.4: release the deleted connection's cached result rows so the
+    // bounded cache cannot retain memory for a store that no longer exists.
+    super::query::release_connection_results(id);
     Ok(())
 }
 
@@ -590,10 +593,12 @@ pub async fn connect_with(
     })
 }
 
-/// Close a session and release its pool (R-3.8).
+/// Close a session and release its pool (R-3.8) plus its cached result rows
+/// (R-3.3/R-3.4).
 pub async fn disconnect(args: DbConnectArgs, state: &DbClientState) -> Result<(), Vec<String>> {
     if let Some(pool) = state.remove_pool(&args.connection_id).await {
         pool.close().await;
     }
+    super::query::release_connection_results(&args.connection_id);
     Ok(())
 }

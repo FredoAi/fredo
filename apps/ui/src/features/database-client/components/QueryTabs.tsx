@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Flex, Text } from '@chakra-ui/react';
 import { LuPlus, LuX } from 'react-icons/lu';
 import { dbQueryExecute, normalizeDbError } from '../lib/api';
@@ -76,17 +76,67 @@ export interface QueryTabsProps {
   schemaNodes?: SchemaNode[];
   /** "Load more" page size — default 100 (PO decision 7). */
   pageSize?: number;
+  /**
+   * Load external SQL (history re-run / saved query open) into the active tab
+   * when the nonce changes. Never auto-executes (R-4.2/R-4.3, ST-7 integration).
+   */
+  externalSql?: { sql: string; nonce: number } | null;
+  /** Called after a query completes so the shell can append history (R-4.1). */
+  onQueryComplete?: (entry: {
+    sql: string;
+    durationMs: number;
+    rowCount: number;
+    status: 'ok' | 'error';
+  }) => void;
+  /** Report the active tab's SQL upward (R-4.3 "save current query"). */
+  onActiveSqlChange?: (sql: string) => void;
+  /**
+   * Render an export affordance beside the results grid (R-4.4, ST-7
+   * integration). Receives the first result set (or `null`) and the running flag.
+   */
+  renderExport?: (activeSet: DbResultSet | null, running: boolean) => React.ReactNode;
 }
 
 export const QueryTabs: React.FC<QueryTabsProps> = ({
   connectionId,
   schemaNodes = [],
   pageSize = 100,
+  externalSql = null,
+  onQueryComplete,
+  onActiveSqlChange,
+  renderExport,
 }) => {
   const [tabs, setTabs] = useState<QueryTab[]>(() => [newTab(1)]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0] ?? null;
+  const activeTabIdRef = useRef<string | null>(activeTab?.id ?? null);
+  const onActiveSqlChangeRef = useRef(onActiveSqlChange);
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTab?.id ?? null;
+  }, [activeTab?.id]);
+
+  useEffect(() => {
+    onActiveSqlChangeRef.current = onActiveSqlChange;
+  }, [onActiveSqlChange]);
+
+  // Report the active tab's SQL for the "save current query" flow (R-4.3).
+  useEffect(() => {
+    onActiveSqlChangeRef.current?.(activeTab?.sql ?? '');
+  }, [activeTab?.sql]);
+
+  // Load external SQL into the active tab (no auto-execute — R-4.2/R-4.3).
+  useEffect(() => {
+    if (!externalSql) return;
+    const id = activeTabIdRef.current;
+    if (!id) return;
+    setTabs((previous) =>
+      previous.map((tab) =>
+        tab.id === id ? { ...tab, sql: externalSql.sql, dirty: true } : tab,
+      ),
+    );
+  }, [externalSql]);
 
   const updateTab = useCallback(
     (id: string, patch: Partial<QueryTab> | ((tab: QueryTab) => Partial<QueryTab>)) => {
@@ -132,14 +182,22 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
           error: outcome.error,
           confirmation: null,
         });
+        // R-4.1: report the completed execution so the shell can append history.
+        onQueryComplete?.({
+          sql,
+          durationMs: outcome.resultSets[0]?.durationMs ?? 0,
+          rowCount: outcome.resultSets.reduce((sum, set) => sum + set.rows.length, 0),
+          status: outcome.error ? 'error' : 'ok',
+        });
       } catch (error) {
         updateTab(tabId, {
           running: false,
           error: { kind: 'other', message: normalizeDbError(error) },
         });
+        onQueryComplete?.({ sql, durationMs: 0, rowCount: 0, status: 'error' });
       }
     },
-    [connectionId, updateTab],
+    [connectionId, updateTab, onQueryComplete],
   );
 
   const handleRun = useCallback(
@@ -326,16 +384,23 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
                 completions={completions}
               />
             </Box>
-            <Box flex="1" minHeight={0}>
-              <ResultsGrid
-                connectionId={connectionId}
-                resultSets={activeTab.resultSets}
-                pageSize={pageSize}
-                running={activeTab.running}
-                onResultSetUpdated={handleResultSetUpdated}
-                onLoadMoreError={handleLoadMoreError}
-              />
-            </Box>
+            <Flex flex="1" minHeight={0} direction="column" gap={1}>
+              {renderExport ? (
+                <Box data-testid="db-results-export" flexShrink={0} px={1}>
+                  {renderExport(activeTab.resultSets[0] ?? null, activeTab.running)}
+                </Box>
+              ) : null}
+              <Box flex="1" minHeight={0}>
+                <ResultsGrid
+                  connectionId={connectionId}
+                  resultSets={activeTab.resultSets}
+                  pageSize={pageSize}
+                  running={activeTab.running}
+                  onResultSetUpdated={handleResultSetUpdated}
+                  onLoadMoreError={handleLoadMoreError}
+                />
+              </Box>
+            </Flex>
           </>
         ) : null}
       </Box>

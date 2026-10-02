@@ -75,18 +75,46 @@ export interface SchemaTreeProps {
   connectionId: string | null;
   /** Selection callback (the inspector consumes the selected node). */
   onSelect?: (node: SchemaNode | null) => void;
+  /**
+   * Report the currently loaded (flattened) nodes upward so the shell can pass
+   * them to `QueryTabs` for schema-driven completion (R-3.9, ST-7 integration).
+   */
+  onNodesChange?: (nodes: SchemaNode[]) => void;
 }
 
-export const SchemaTree: React.FC<SchemaTreeProps> = ({ connectionId, onSelect }) => {
+export const SchemaTree: React.FC<SchemaTreeProps> = ({
+  connectionId,
+  onSelect,
+  onNodesChange,
+}) => {
   const [levels, setLevels] = useState<Map<string, LevelState>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onNodesChangeRef = useRef(onNodesChange);
 
-  // Keep the callback in a ref so a parent re-render never re-triggers a fetch.
+  // Keep the callbacks in refs so a parent re-render never re-triggers a fetch.
   useEffect(() => {
     onSelectRef.current = onSelect;
   }, [onSelect]);
+
+  useEffect(() => {
+    onNodesChangeRef.current = onNodesChange;
+  }, [onNodesChange]);
+
+  // Flatten every loaded level into one completion source (R-3.9). Only fires
+  // when a level actually loads, so it cannot loop with the parent's setState.
+  useEffect(() => {
+    const callback = onNodesChangeRef.current;
+    if (!callback) return;
+    const flat: SchemaNode[] = [];
+    for (const state of levels.values()) {
+      if (state.status === 'loaded' && Array.isArray(state.children)) {
+        flat.push(...state.children);
+      }
+    }
+    callback(flat);
+  }, [levels]);
 
   const load = useCallback(
     async (parentId: string | null) => {
@@ -101,7 +129,11 @@ export const SchemaTree: React.FC<SchemaTreeProps> = ({ connectionId, onSelect }
         const children = await dbSchemaList({ connectionId, parentId });
         setLevels((prev) => {
           const next = new Map(prev);
-          next.set(key, { status: 'loaded', children });
+          // Tolerant read: a non-array response degrades to an empty level.
+          next.set(key, {
+            status: 'loaded',
+            children: Array.isArray(children) ? children : [],
+          });
           return next;
         });
       } catch (error) {
