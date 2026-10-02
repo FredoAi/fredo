@@ -31,8 +31,7 @@ use postgresql_embedded::{PostgreSQL, Settings};
 use sqlx::Connection as _;
 
 use super::{
-    PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_INSTALL_SUBDIR, PG_READY_BOUND, PG_SETUP_BOUND,
-    PG_START_BOUND,
+    PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_READY_BOUND, PG_SETUP_BOUND, PG_START_BOUND,
 };
 
 /// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
@@ -146,13 +145,14 @@ impl PgRuntime {
     }
 
     /// Build a runtime with an injected kill primitive (test seam). The data dir
-    /// honours the FS-1 override; the install dir deliberately does NOT (the
-    /// `<app_data_dir>/postgres-install` distribution is always reused, so an
-    /// override needs no new download).
+    /// honours the FS-1 override; the install dir resolves through the shared
+    /// [`super::resolve_install_dir`] rule, so the **G-275** `FREDO_PG_INSTALL_DIR`
+    /// override (Spec #2978 S2) can never make the extraction dir and the archive
+    /// staging dir diverge.
     pub fn with_kill(app_data_dir: &Path, password: String, kill: KillTreeFn) -> Self {
         Self::with_dirs(
             &super::resolve_data_dir(app_data_dir),
-            &app_data_dir.join(PG_INSTALL_SUBDIR),
+            &super::resolve_install_dir(app_data_dir),
             password,
             kill,
             pg_stop_with_env_hook,

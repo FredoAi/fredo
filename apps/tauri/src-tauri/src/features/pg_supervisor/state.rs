@@ -303,6 +303,19 @@ pub fn start_supervisor(app: &AppHandle) {
                 data_dir = %pg_data_dir,
                 "embedded PostgreSQL enabled; holding the exclusive data-dir lock"
             );
+            // Spec #2978 S1 (AC1): record the compile-time acquisition mode and
+            // its declared price at boot, so the shipped choice and its
+            // installer/footprint consequence are observable on a running system.
+            tracing::info!(
+                target: "fredo::pg_supervisor",
+                mode = ?super::acquisition::ACQUISITION_MODE,
+                first_run_download_bytes = super::acquisition::PG_FIRST_RUN_DOWNLOAD_BYTES,
+                installer_delta_bundled_bytes = super::acquisition::PG_INSTALLER_DELTA_BUNDLED_BYTES,
+                bundled_archive_bytes = super::acquisition::PG_BUNDLED_ARCHIVE_BYTES,
+                extracted_payload_bytes = super::acquisition::PG_EXTRACTED_PAYLOAD_BYTES,
+                data_dir_delta_bytes = super::acquisition::PG_DATA_DIR_DELTA_BYTES,
+                "embedded PostgreSQL acquisition mode + declared price"
+            );
             app.manage(Arc::new(PgSupervisorState::new(None, Some(lock), pg_data_dir)));
             let handle = app.clone();
             let os_app_data_dir = os_app_data_dir.clone();
@@ -349,6 +362,19 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf, data_dir: PathBuf) 
     );
 
     let started = async {
+        // Spec #2978 S2: on the `runtime-download` path, acquire + verify the
+        // PostgreSQL archive through Fredo's ONE streaming engine BEFORE `setup()`
+        // extracts it. A failed acquisition returns a retryable `[pg:archive] …`
+        // error and stops the boot BEFORE any extraction, so no half-extracted
+        // distribution is left behind (REQ-4.1). The `bundled` path carries the
+        // archive in the binary and must not fetch at runtime (REQ-4.2).
+        if super::acquisition::ACQUISITION_MODE
+            == super::acquisition::PgAcquisitionMode::RuntimeDownload
+        {
+            super::acquisition::acquire_pg_archive(&os_app_data_dir)
+                .await
+                .map_err(|error| ("acquisition", error))?;
+        }
         runtime.setup().await.map_err(|error| ("setup", error))?;
         // Spec #2975 ST-2 (REQ-5/EARS-5.1): overlay the desktop server-memory
         // knobs onto the `initdb`-created postgresql.conf AFTER setup and BEFORE
